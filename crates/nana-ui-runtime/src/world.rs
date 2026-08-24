@@ -1608,12 +1608,14 @@ impl UiWorld {
         } else {
             !source.layout.white_space_nowrap
         };
+        let preserve_lines = source.layout.white_space == nana_ui_core::WhiteSpaceSpec::Pre;
         let measured = layout.width > 0.0 || layout.height > 0.0;
         if !measured {
             return crate::TextShapeConstraints {
                 wrap,
                 ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
                 shaping: self.text_shaping(id),
+                preserve_lines,
                 ..crate::TextShapeConstraints::default()
             };
         }
@@ -1646,6 +1648,7 @@ impl UiWorld {
             wrap,
             ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
             shaping: self.text_shaping(id),
+            preserve_lines,
         }
     }
 
@@ -5394,6 +5397,7 @@ fn shape_text_input_presentation(
         wrap: source.multiline && constraints.wrap,
         ellipsis: false,
         shaping: constraints.shaping,
+        preserve_lines: constraints.preserve_lines,
     };
     let (caret_x, caret_y, line_height) = shaper.text_position(
         id,
@@ -5690,6 +5694,13 @@ fn layout_semantics_changed(
         || previous.overflow_y != next.overflow_y
         || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
         || previous.white_space_nowrap != next.white_space_nowrap
+        || previous.white_space != next.white_space
+        || previous.text_align != next.text_align
+        || previous.float != next.float
+        || previous.clear != next.clear
+        || previous.grid_template_areas != next.grid_template_areas
+        || previous.grid_column_line_names != next.grid_column_line_names
+        || previous.grid_row_line_names != next.grid_row_line_names
         || previous.grid_columns != next.grid_columns
         || previous.grid_rows != next.grid_rows
         || previous.grid_columns_unsupported != next.grid_columns_unsupported
@@ -5697,6 +5708,9 @@ fn layout_semantics_changed(
         || previous.grid_auto_columns != next.grid_auto_columns
         || previous.grid_auto_rows != next.grid_auto_rows
         || previous.grid_auto_flow != next.grid_auto_flow
+        || previous.grid_columns_repeat != next.grid_columns_repeat
+        || previous.grid_rows_repeat != next.grid_rows_repeat
+        || previous.grid_placement != next.grid_placement
         || previous.border_width != next.border_width
 }
 
@@ -8225,6 +8239,7 @@ mod tests {
             wrap: true,
             ellipsis: true,
             shaping: crate::TextShaping::Advanced,
+            preserve_lines: false,
         };
         let style = ComputedStyle::default();
         let mut probe = ConstraintProbe::default();
@@ -8239,6 +8254,7 @@ mod tests {
                 wrap: true,
                 ellipsis: false,
                 shaping: crate::TextShaping::Advanced,
+                preserve_lines: false,
             })
         );
 
@@ -8252,6 +8268,7 @@ mod tests {
                 wrap: false,
                 ellipsis: false,
                 shaping: crate::TextShaping::Advanced,
+                preserve_lines: false,
             })
         );
     }
@@ -8873,9 +8890,7 @@ mod tests {
         queue.create(
             node(2),
             document(1),
-            NodeKind::Element {
-                tag: "card".into(),
-            },
+            NodeKind::Element { tag: "card".into() },
         );
         let layout = Arc::new(LayoutStyle {
             font_size: Some(32.0),
@@ -8925,7 +8940,10 @@ mod tests {
         let mut probe = ConstraintProbe::default();
         world.shape_text(&[node(1)], &mut probe).unwrap();
         assert_eq!(
-            probe.constraints.last().map(|constraints| constraints.max_width),
+            probe
+                .constraints
+                .last()
+                .map(|constraints| constraints.max_width),
             Some(Some(136.0)),
             "1em padding at font-size 32px must wrap at 200-32-32, not 200-16-16"
         );

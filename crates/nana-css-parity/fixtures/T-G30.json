@@ -1,0 +1,22 @@
+{
+  "id": "T-G30",
+  "title": "80px + auto-fit 只再放下 1 轨，第三项折行",
+  "status": "pass",
+  "viewport": [280, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:80px repeat(auto-fit,minmax(150px,1fr));width:280px;height:80px;gap:0",
+    "children": [
+      { "id": "a", "style": "height:40px" },
+      { "id": "b", "style": "height:40px" },
+      { "id": "c", "style": "height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 280, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "b", "x": 80, "y": 0, "w": 200, "h": 40 },
+    { "id": "c", "x": 0, "y": 40, "w": 80, "h": 40 }
+  ]
+}

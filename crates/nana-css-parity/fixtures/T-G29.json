@@ -1,0 +1,22 @@
+{
+  "id": "T-G29",
+  "title": "grid-template-areas + grid-area 命名区域",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:100px 100px;grid-template-rows:40px 40px;grid-template-areas:\"header header\" \"nav main\";width:200px;height:80px;gap:0",
+    "children": [
+      { "id": "header", "style": "grid-area:header" },
+      { "id": "nav", "style": "grid-area:nav" },
+      { "id": "main", "style": "grid-area:main" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "header", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "nav", "x": 0, "y": 40, "w": 100, "h": 40 },
+    { "id": "main", "x": 100, "y": 40, "w": 100, "h": 40 }
+  ]
+}

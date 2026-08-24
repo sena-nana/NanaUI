@@ -1,0 +1,22 @@
+{
+  "id": "T-G27",
+  "title": "auto-fit 只放下两轨，第三项折到第二行",
+  "status": "pass",
+  "viewport": [500, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));width:500px;height:80px;gap:0",
+    "children": [
+      { "id": "a", "style": "height:40px" },
+      { "id": "b", "style": "height:40px" },
+      { "id": "c", "style": "height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 500, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 250, "h": 40 },
+    { "id": "b", "x": 250, "y": 0, "w": 250, "h": 40 },
+    { "id": "c", "x": 0, "y": 40, "w": 250, "h": 40 }
+  ]
+}

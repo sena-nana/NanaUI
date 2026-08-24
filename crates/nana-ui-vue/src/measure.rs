@@ -16,8 +16,8 @@
 //! 产品 Vue 混合树走 `RuntimeDocument::flush` 文本+布局，不再另写一套 measure。
 //!
 //! 盒边 / content-box / inset / gap 解析消费 `nana-ui-core::box_layout`。
-//! 布局算法本身只在 Runtime 引擎里实现一次（wrap / 1D grid / percent / calc /
-//! absolute / fixed）。
+//! 布局算法本身只在 Runtime 引擎里实现一次（wrap / 2D grid / auto-fill /
+//! percent / calc / absolute / fixed）。
 
 #[cfg(test)]
 use crate::css_map::AlignSpec;
@@ -31,6 +31,7 @@ pub struct LayoutNode {
     pub id: String,
     pub style: LayoutStyle,
     pub children: Vec<LayoutNode>,
+    pub text: Option<String>,
 }
 
 impl LayoutNode {
@@ -39,6 +40,7 @@ impl LayoutNode {
             id: id.into(),
             style,
             children: Vec::new(),
+            text: None,
         }
     }
 
@@ -51,6 +53,7 @@ impl LayoutNode {
             id: id.into(),
             style,
             children,
+            text: None,
         }
     }
 }
@@ -80,6 +83,7 @@ fn to_style_tree(node: &LayoutNode) -> StyleLayoutNode {
         id: node.id.clone(),
         style: node.style.clone(),
         children: node.children.iter().map(to_style_tree).collect(),
+        text: node.text.clone(),
     }
 }
 
@@ -206,6 +210,25 @@ mod tests {
 
     fn map_of(root: &LayoutNode, w: f32, h: f32) -> BTreeMap<String, MeasuredBox> {
         measure_layout(root, w, h).into_iter().collect()
+    }
+
+    #[test]
+    fn inline_important_width_measures_100px() {
+        let node = node_from_css(
+            "box",
+            "width:100px !important;height:40px",
+            &[],
+            None,
+            None,
+            vec![],
+        );
+        let map = map_of(&node, 400.0, 80.0);
+        let box_ = map.get("box").expect("box");
+        assert!(
+            (box_.width - 100.0).abs() < 0.5,
+            "inline-only width:100px !important must measure 100, got {box_:?}"
+        );
+        assert!((box_.height - 40.0).abs() < 0.5, "height={box_:?}");
     }
 
     #[test]
@@ -1788,6 +1811,24 @@ mod tests {
         assert!(
             (map["primary"].width - 220.0).abs() < 0.01,
             "raw measure still uses first track; region_views must collapse"
+        );
+    }
+
+    #[test]
+    fn white_space_pre_text_grows_block_height() {
+        let mut style = LayoutStyle::default();
+        style.apply_css_text(
+            "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre",
+            None,
+            None,
+        );
+        let mut node = LayoutNode::with_children("root", style, Vec::new());
+        node.text = Some("ab\ncd".into());
+        let map = map_of(&node, 200.0, 80.0);
+        assert!(
+            (map["root"].height - 40.0).abs() < 0.01,
+            "pre + 2 lines × 20px must be 40, got {}",
+            map["root"].height
         );
     }
 }

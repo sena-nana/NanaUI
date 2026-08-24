@@ -1,0 +1,18 @@
+{
+  "id": "T-G31",
+  "title": "命名网格线 grid-column: start / end",
+  "status": "pass",
+  "viewport": [200, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:[start] 80px [mid] 120px [end];width:200px;height:40px;gap:0",
+    "children": [
+      { "id": "span", "style": "grid-column:start / end;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 40 },
+    { "id": "span", "x": 0, "y": 0, "w": 200, "h": 40 }
+  ]
+}

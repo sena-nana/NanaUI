@@ -1,0 +1,15 @@
+{
+  "id": "T-I03",
+  "title": "white-space:pre 保留换行增高",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre",
+    "text": "ab\ncd"
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 40 }
+  ]
+}

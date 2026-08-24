@@ -13,11 +13,11 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use nana_ui_core::LayoutStyle;
+use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec};
 
 use crate::bridge::{MessageBridge, WidgetId, WidgetProps};
 use crate::input::WheelInput;
-use crate::tree::{LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
+use crate::tree::{LayoutBox, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
 
 /// Matches [`nana_ui::RuntimeInputAdapter`] line-wheel scale.
 const LINE_SCROLL_EXTENT: f32 = 60.0;
@@ -216,6 +216,7 @@ pub fn scroll_into_view(
             if scrolls_axis(layout)
                 && let Some(applied) = scroll_ancestor_to_target(
                     doc,
+                    bridge,
                     layout_store,
                     scroll_store,
                     anc,
@@ -235,6 +236,7 @@ pub fn scroll_into_view(
 
 fn scroll_ancestor_to_target(
     doc: &mut NanaTreeDocument,
+    bridge: &MessageBridge,
     layout_store: &LayoutBoxStore,
     scroll_store: &ScrollOffsetStore,
     ancestor: NodeHandle,
@@ -277,6 +279,7 @@ fn scroll_ancestor_to_target(
     }
     scroll_store.enqueue_pending(ancestor.0, next);
     translate_descendants(doc, layout_store, ancestor, -applied_dx, -applied_dy);
+    apply_sticky_in_scroll_container(doc, bridge, layout_store, ancestor);
     Some(next)
 }
 
@@ -330,7 +333,8 @@ fn translate_descendants(
 /// Scene paint writeback.
 ///
 /// The Scene host does not drain a second scroll-task queue; this restores
-/// JS-visible geometry without rewriting Runtime layout.
+/// JS-visible geometry without rewriting Runtime layout. Sticky descendants
+/// are clamped onto the same view overlays after scroll translation.
 pub fn reapply_scroll_translations(
     doc: &mut NanaTreeDocument,
     bridge: &MessageBridge,
@@ -343,6 +347,112 @@ pub fn reapply_scroll_translations(
             continue;
         }
         translate_descendants(doc, layout_store, NodeHandle(id), -off.x, -off.y);
+        apply_sticky_in_scroll_container(doc, bridge, layout_store, NodeHandle(id));
+    }
+}
+
+fn apply_sticky_in_scroll_container(
+    doc: &mut NanaTreeDocument,
+    bridge: &MessageBridge,
+    layout_store: &LayoutBoxStore,
+    container: NodeHandle,
+) {
+    let Some(scrollport) = layout_store
+        .get(container)
+        .or_else(|| get_layout_box_from(layout_store, doc, container))
+    else {
+        return;
+    };
+    apply_sticky_tree(doc, bridge, layout_store, container, &scrollport);
+}
+
+fn apply_sticky_tree(
+    doc: &mut NanaTreeDocument,
+    bridge: &MessageBridge,
+    layout_store: &LayoutBoxStore,
+    parent: NodeHandle,
+    scrollport: &LayoutBox,
+) {
+    for child in doc.children_of(parent) {
+        apply_sticky_node(doc, bridge, layout_store, child, parent, scrollport);
+        if is_scroll_container(bridge, child.0) {
+            continue;
+        }
+        apply_sticky_tree(doc, bridge, layout_store, child, scrollport);
+    }
+}
+
+fn apply_sticky_node(
+    doc: &mut NanaTreeDocument,
+    bridge: &MessageBridge,
+    layout_store: &LayoutBoxStore,
+    sticky: NodeHandle,
+    parent: NodeHandle,
+    scrollport: &LayoutBox,
+) {
+    let Some(layout) = node_layout(bridge, sticky) else {
+        return;
+    };
+    if layout.position != PositionSpec::Sticky {
+        return;
+    }
+    let orig = layout_store.source_box(sticky);
+    let Some(view) = layout_store.get(sticky).or(orig) else {
+        return;
+    };
+    let parent_view = layout_store
+        .get(parent)
+        .or_else(|| get_layout_box_from(layout_store, doc, parent))
+        .unwrap_or(*scrollport);
+
+    let mut x = view.x;
+    let mut y = view.y;
+    if let Some(top) = resolve_sticky_inset(layout.offset_top, scrollport.height) {
+        y = y.max(scrollport.y + top);
+    }
+    if let Some(left) = resolve_sticky_inset(layout.offset_left, scrollport.width) {
+        x = x.max(scrollport.x + left);
+    }
+    if let Some(bottom) = resolve_sticky_inset(layout.offset_bottom, scrollport.height) {
+        y = y.min(scrollport.y + scrollport.height - bottom - view.height);
+    }
+    if let Some(right) = resolve_sticky_inset(layout.offset_right, scrollport.width) {
+        x = x.min(scrollport.x + scrollport.width - right - view.width);
+    }
+    y = clamp_inside(y, parent_view.y, parent_view.height, view.height);
+    x = clamp_inside(x, parent_view.x, parent_view.width, view.width);
+
+    let extra_x = x - view.x;
+    let extra_y = y - view.y;
+    if extra_x == 0.0 && extra_y == 0.0 {
+        return;
+    }
+    let mut stuck = view;
+    stuck.x = x;
+    stuck.y = y;
+    layout_store.overlay_view(stuck);
+    translate_descendants(doc, layout_store, sticky, extra_x, extra_y);
+}
+
+fn node_layout(bridge: &MessageBridge, id: NodeHandle) -> Option<&LayoutStyle> {
+    bridge.get(id.0).map(|widget| &widget.props.layout)
+}
+
+fn resolve_sticky_inset(spec: Option<LengthSpec>, base: f32) -> Option<f32> {
+    match spec {
+        Some(LengthSpec::Px(px)) => Some(px),
+        Some(LengthSpec::Percent(percent)) => Some(base * percent / 100.0),
+        other => LayoutStyle::resolve_inset(other, base),
+    }
+}
+
+fn clamp_inside(value: f32, origin: f32, extent: f32, size: f32) -> f32 {
+    let min = origin;
+    let max = origin + extent - size;
+    if max < min {
+        min
+    } else {
+        value.clamp(min, max)
     }
 }
 
@@ -353,6 +463,7 @@ pub fn set_scroll_offset(
     scroll_store: &ScrollOffsetStore,
     id: WidgetId,
     next: ScrollOffset,
+    bridge: Option<&MessageBridge>,
 ) -> ScrollOffset {
     let node = NodeHandle(id);
     let prev = doc.scroll_offset(node);
@@ -369,6 +480,9 @@ pub fn set_scroll_offset(
     if dx.abs() >= 0.5 || dy.abs() >= 0.5 {
         scroll_store.enqueue_pending(id, next);
         translate_descendants(doc, layout_store, NodeHandle(id), -dx, -dy);
+        if let Some(bridge) = bridge {
+            apply_sticky_in_scroll_container(doc, bridge, layout_store, node);
+        }
     }
     next
 }
@@ -397,8 +511,7 @@ pub(crate) fn sync_host_scroll_offset(
 mod tests {
     use super::*;
     use crate::bridge::{MessageBridge, WidgetKind, WidgetProps};
-    use crate::tree::LayoutBox;
-    use nana_ui_core::{LengthSpec, OverflowSpec};
+    use nana_ui_core::OverflowSpec;
 
     fn seed_scroll_tree() -> (
         NanaTreeDocument,
@@ -571,7 +684,7 @@ mod tests {
         layout_store.record(body, 0.0, 40.0, 220.0, 200.0);
         layout_store.record(content, 0.0, 40.0, 220.0, 400.0);
         layout_store.record(footer, 0.0, 250.0, 220.0, 40.0);
-        doc.apply_layout_boxes(&layout_store.snapshot());
+        doc.inject_layout_boxes(&layout_store.snapshot());
 
         let top_before = doc.layout_box(top).expect("top");
         let footer_before = doc.layout_box(footer).expect("footer");
@@ -629,6 +742,7 @@ mod tests {
             &scroll_store,
             scroller.0,
             ScrollOffset { x: 0.0, y: 120.0 },
+            None,
         );
 
         assert!((doc.scroll_offset(scroller).y - 120.0).abs() < 0.5);
@@ -659,6 +773,7 @@ mod tests {
             &scroll_store,
             scroller.0,
             ScrollOffset { x: 0.0, y: 120.0 },
+            None,
         );
         assert!((doc.scroll_offset(scroller).y - 120.0).abs() < 0.5);
         let box_ = get_layout_box_from(&layout_store, &doc, target).expect("target");
@@ -671,5 +786,155 @@ mod tests {
         let pending = scroll_store.take_pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].widget_id, scroller.0);
+    }
+
+    fn seed_sticky_scroll_tree() -> (
+        NanaTreeDocument,
+        MessageBridge,
+        LayoutBoxStore,
+        NodeHandle,
+        NodeHandle,
+        NodeHandle,
+        NodeHandle,
+    ) {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let body = doc.mount_root();
+        let scroller = doc.create_element("div");
+        let pad = doc.create_element("div");
+        let sticky = doc.create_element("div");
+        let label = doc.create_element("span");
+        let rest = doc.create_element("div");
+        doc.insert(scroller, body, None);
+        doc.insert(pad, scroller, None);
+        doc.insert(sticky, scroller, None);
+        doc.insert(label, sticky, None);
+        doc.insert(rest, scroller, None);
+
+        let mut bridge = MessageBridge::new();
+        let mut scroller_props = WidgetProps::default();
+        scroller_props.layout.overflow_y = OverflowSpec::Auto;
+        scroller_props.layout.height = Some(LengthSpec::Px(200.0));
+        bridge.register(scroller.0, WidgetKind::Column, scroller_props);
+        bridge.register(pad.0, WidgetKind::Box, WidgetProps::default());
+        let mut sticky_props = WidgetProps::default();
+        sticky_props.layout.position = PositionSpec::Sticky;
+        sticky_props.layout.offset_top = Some(LengthSpec::Px(0.0));
+        bridge.register(sticky.0, WidgetKind::Column, sticky_props);
+        bridge.register(label.0, WidgetKind::Text, WidgetProps::default());
+        bridge.register(rest.0, WidgetKind::Box, WidgetProps::default());
+
+        let layout_store = LayoutBoxStore::new();
+        layout_store.record(scroller, 0.0, 0.0, 300.0, 200.0);
+        layout_store.record(pad, 0.0, 0.0, 300.0, 40.0);
+        layout_store.record(sticky, 0.0, 40.0, 300.0, 30.0);
+        layout_store.record(label, 4.0, 44.0, 80.0, 20.0);
+        layout_store.record(rest, 0.0, 70.0, 300.0, 400.0);
+        doc.apply_layout_boxes(&layout_store.snapshot());
+
+        (doc, bridge, layout_store, scroller, pad, sticky, label)
+    }
+
+    #[test]
+    fn sticky_stays_in_scrollport_after_reapply() {
+        let (mut doc, bridge, layout_store, scroller, pad, sticky, label) =
+            seed_sticky_scroll_tree();
+        let rest = doc
+            .children_of(scroller)
+            .into_iter()
+            .find(|child| *child != pad && *child != sticky)
+            .expect("rest");
+        let scroll_store = ScrollOffsetStore::new();
+        set_scroll_offset(
+            &mut doc,
+            &layout_store,
+            &scroll_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 80.0 },
+            Some(&bridge),
+        );
+        reapply_scroll_translations(&mut doc, &bridge, &layout_store);
+
+        let stuck = get_layout_box_from(&layout_store, &doc, sticky).expect("sticky view");
+        assert!(
+            (stuck.y - 0.0).abs() < 0.5,
+            "sticky top:0 must clamp to scrollport, got y={}",
+            stuck.y
+        );
+        let pad_box = get_layout_box_from(&layout_store, &doc, pad).expect("pad");
+        assert!(
+            (pad_box.y + 80.0).abs() < 0.5,
+            "in-flow pad must keep scroll translation, got y={}",
+            pad_box.y
+        );
+        let label_box = get_layout_box_from(&layout_store, &doc, label).expect("label");
+        assert!(
+            (label_box.y - 4.0).abs() < 0.5,
+            "sticky children must move with the clamped box, got y={}",
+            label_box.y
+        );
+        let rest_box = get_layout_box_from(&layout_store, &doc, rest).expect("rest");
+        assert!(
+            (rest_box.y - (70.0 - 80.0)).abs() < 0.5,
+            "non-sticky siblings must not inherit sticky extra, got y={}",
+            rest_box.y
+        );
+        assert_eq!(
+            layout_store.source_box(sticky).expect("source").y,
+            40.0,
+            "source_box must ignore sticky overlays"
+        );
+        assert_eq!(
+            doc.layout_box(sticky).expect("runtime").y,
+            40.0,
+            "sticky projection must not write Runtime LayoutBox"
+        );
+    }
+
+    #[test]
+    fn sticky_scroll_clamp_stays_inside_parent() {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let body = doc.mount_root();
+        let scroller = doc.create_element("div");
+        let section = doc.create_element("section");
+        let sticky = doc.create_element("div");
+        doc.insert(scroller, body, None);
+        doc.insert(section, scroller, None);
+        doc.insert(sticky, section, None);
+
+        let mut bridge = MessageBridge::new();
+        let mut scroller_props = WidgetProps::default();
+        scroller_props.layout.overflow_y = OverflowSpec::Auto;
+        bridge.register(scroller.0, WidgetKind::Column, scroller_props);
+        bridge.register(section.0, WidgetKind::Column, WidgetProps::default());
+        let mut sticky_props = WidgetProps::default();
+        sticky_props.layout.position = PositionSpec::Sticky;
+        sticky_props.layout.offset_top = Some(LengthSpec::Px(0.0));
+        bridge.register(sticky.0, WidgetKind::Box, sticky_props);
+
+        let layout_store = LayoutBoxStore::new();
+        layout_store.record(scroller, 0.0, 0.0, 300.0, 200.0);
+        layout_store.record(section, 0.0, 0.0, 300.0, 120.0);
+        layout_store.record(sticky, 0.0, 0.0, 300.0, 40.0);
+        doc.apply_layout_boxes(&layout_store.snapshot());
+
+        let scroll_store = ScrollOffsetStore::new();
+        set_scroll_offset(
+            &mut doc,
+            &layout_store,
+            &scroll_store,
+            scroller.0,
+            ScrollOffset { x: 0.0, y: 100.0 },
+            Some(&bridge),
+        );
+        reapply_scroll_translations(&mut doc, &bridge, &layout_store);
+
+        let stuck = get_layout_box_from(&layout_store, &doc, sticky).expect("sticky");
+        // parent view y=-100, height=120 → sticky y in [-100, -20]
+        assert!(
+            (stuck.y + 20.0).abs() < 0.5,
+            "sticky must unstick at parent bottom, got y={}",
+            stuck.y
+        );
+        assert_eq!(doc.layout_box(sticky).expect("runtime").y, 0.0);
     }
 }

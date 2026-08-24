@@ -51,6 +51,28 @@ function emptyRect() {
   };
 }
 
+function readHostLayoutBox(nid) {
+  if (nid == null || !Number.isFinite(Number(nid))) return null;
+  try {
+    const box = hostCall("layoutBox", [Number(nid)]);
+    if (!box || typeof box !== "object") return null;
+    return box;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function metricPx(value, fallback) {
+  const n = Number(value);
+  if (Number.isFinite(n)) return Math.max(0, Math.round(n));
+  return fallback;
+}
+
+function offsetPx(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
 export function layoutRect(nid) {
   try {
     const box = hostCall("layoutBox", [nid]);
@@ -137,25 +159,82 @@ function writeHostScroll(nid, axis, next) {
 }
 
 /**
- * Install offsetWidth/clientWidth/scroll* from iced/measure layoutBox.
- * No border/padding split — those metrics share the same box.
+ * Install offset/client/scroll metrics from host layoutBox.
+ * offset* is the border box; client* is the padding box when the host
+ * sends clientWidth; scroll* uses scrollWidth when present.
+ * offsetLeft/Top are the real subset; offsetParent may be null without a node cache.
  * scrollTop/scrollLeft round-trip through host scroll contract.
  */
 export function defineLayoutMetrics(node, nid) {
-  const dim = (axis) => ({
+  const sizeMetric = (kind, axis) => ({
     configurable: true,
     enumerable: true,
     get() {
       const s = layoutSizePx(nid);
-      return axis === "w" ? s.width : s.height;
+      const border = axis === "w" ? s.width : s.height;
+      if (kind === "offset") return border;
+      const box = readHostLayoutBox(nid);
+      if (!box) return border;
+      if (kind === "client") {
+        return metricPx(axis === "w" ? box.clientWidth : box.clientHeight, border);
+      }
+      return metricPx(axis === "w" ? box.scrollWidth : box.scrollHeight, border);
     },
   });
-  Object.defineProperty(node, "offsetWidth", dim("w"));
-  Object.defineProperty(node, "offsetHeight", dim("h"));
-  Object.defineProperty(node, "clientWidth", dim("w"));
-  Object.defineProperty(node, "clientHeight", dim("h"));
-  Object.defineProperty(node, "scrollWidth", dim("w"));
-  Object.defineProperty(node, "scrollHeight", dim("h"));
+  Object.defineProperty(node, "offsetWidth", sizeMetric("offset", "w"));
+  Object.defineProperty(node, "offsetHeight", sizeMetric("offset", "h"));
+  Object.defineProperty(node, "clientWidth", sizeMetric("client", "w"));
+  Object.defineProperty(node, "clientHeight", sizeMetric("client", "h"));
+  Object.defineProperty(node, "scrollWidth", sizeMetric("scroll", "w"));
+  Object.defineProperty(node, "scrollHeight", sizeMetric("scroll", "h"));
+  Object.defineProperty(node, "offsetLeft", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const box = readHostLayoutBox(nid);
+      return box ? offsetPx(box.offsetLeft) : 0;
+    },
+  });
+  Object.defineProperty(node, "offsetTop", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const box = readHostLayoutBox(nid);
+      return box ? offsetPx(box.offsetTop) : 0;
+    },
+  });
+  Object.defineProperty(node, "clientLeft", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const box = readHostLayoutBox(nid);
+      return box ? offsetPx(box.clientLeft ?? box.borderWidth) : 0;
+    },
+  });
+  Object.defineProperty(node, "clientTop", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      const box = readHostLayoutBox(nid);
+      return box ? offsetPx(box.clientTop ?? box.borderWidth) : 0;
+    },
+  });
+  Object.defineProperty(node, "offsetParent", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      // offsetLeft/Top are the real subset; offsetParent may be null without a node cache.
+      const box = readHostLayoutBox(nid);
+      const id = Number(box && box.offsetParent) || 0;
+      if (!id) return null;
+      const cache = globalThis.__nanaNodeCache;
+      if (cache && typeof cache.get === "function") {
+        const found = cache.get(id);
+        return found == null ? null : found;
+      }
+      return null;
+    },
+  });
   Object.defineProperty(node, "scrollTop", {
     configurable: true,
     enumerable: true,

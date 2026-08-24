@@ -1,0 +1,20 @@
+{
+  "id": "T-I01",
+  "title": "display:inline-block 在块容器里并排",
+  "status": "pass",
+  "viewport": [300, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:300px;height:40px",
+    "children": [
+      { "id": "a", "style": "display:inline-block;width:80px;height:20px" },
+      { "id": "b", "style": "display:inline-block;width:80px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 40 },
+    { "id": "a", "x": 0, "y": 0, "w": 80, "h": 20 },
+    { "id": "b", "x": 80, "y": 0, "w": 80, "h": 20 }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "T-P19",
+  "title": "sticky 在 overflow:auto 内未滚动时仍是流内盒",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:200px;height:80px;overflow:auto",
+    "children": [
+      { "id": "a", "style": "position:sticky;top:0;width:200px;height:20px" },
+      { "id": "b", "style": "width:200px;height:80px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 20 },
+    { "id": "b", "x": 0, "y": 20, "w": 200, "h": 80 }
+  ]
+}

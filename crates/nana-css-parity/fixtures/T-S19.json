@@ -1,0 +1,27 @@
+{
+  "id": "T-S19",
+  "title": "width:min-content 折行等于最宽子项",
+  "status": "pass",
+  "viewport": [400, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:400px;height:80px;align-items:stretch",
+    "children": [
+      {
+        "id": "box",
+        "style": "display:flex;flex-direction:row;flex-wrap:wrap;width:min-content;height:80px;gap:0",
+        "children": [
+          { "id": "a", "style": "width:60px;height:40px;flex-shrink:0" },
+          { "id": "b", "style": "width:60px;height:40px;flex-shrink:0" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "box", "x": 0, "y": 0, "w": 60, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 60, "h": 40 },
+    { "id": "b", "x": 0, "y": 40, "w": 60, "h": 40 }
+  ]
+}

@@ -37,10 +37,12 @@ pub use action::{
     KeyContext,
 };
 pub use box_layout::{
-    AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
+    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
+    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
     LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes,
+    TextAlignSpec, ViewportAxis, WhiteSpaceSpec, resolve_grid_column_widths,
+    resolve_grid_track_sizes,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;

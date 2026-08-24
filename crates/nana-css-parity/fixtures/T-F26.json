@@ -1,0 +1,22 @@
+{
+  "id": "T-F26",
+  "title": "align-content:normal 与 stretch 同义",
+  "status": "pass",
+  "viewport": [200, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;flex-wrap:wrap;align-content:normal;align-items:stretch;width:200px;height:120px;gap:0",
+    "children": [
+      { "id": "a", "style": "width:100px" },
+      { "id": "b", "style": "width:100px" },
+      { "id": "c", "style": "width:100px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "a", "x": 0, "y": 0, "w": 100, "h": 60 },
+    { "id": "b", "x": 100, "y": 0, "w": 100, "h": 60 },
+    { "id": "c", "x": 0, "y": 60, "w": 100, "h": 60 }
+  ]
+}

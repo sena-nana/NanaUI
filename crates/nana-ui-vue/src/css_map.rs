@@ -28,10 +28,17 @@
 //! `position: static` 忽略 inset。`relative` / `absolute` / `fixed` inset 存为
 //! [`LengthSpec`]（px 或 `%`，measure 相对 CB 解析）。`absolute`：脱流 + nearest
 //! positioned；流内跳过，产品浮层走 Nana Overlay。`fixed`：脱流 + **视口**
-//! CB，根层绘制（非 Overlay 特判）。`sticky` defer。
+//! CB，根层绘制（非 Overlay 特判）。`sticky`：流内粘性定位（投影在布局侧）。
 //!
 //! **Overlay 分工**：L2 Dialog/Popover/Drawer/ContextMenu 剥离 companion CSS 的
 //! `fixed`/`sticky`；匿名 Vue/CSS 的 `position:fixed` 走视口子集。
+//!
+//! ## display / grid
+//! `display: contents` → [`DisplaySpec::Contents`]（不生成盒，亦非 `omits_box`）。
+//! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
+//! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
+//! Style Model（`grid_*_repeat`），由布局展开。只有嵌套 auto-fit / auto-fill
+//! 或无法展开的语法才置 [`GridTrackListUnsupported`]。
 //!
 //! ## margin / padding / gap
 //! 边长与 gap 存 [`LengthSpec`]（px / `%` / 轻量 calc）。margin/padding `%`
@@ -49,10 +56,12 @@
 //!（feature `scene-view`）。
 
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BoxSizing, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext, GridAutoFlow,
+    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
+    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
     LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    ViewportAxis, resolve_grid_column_widths, resolve_grid_track_sizes,
+    TextAlignSpec, ViewportAxis, WhiteSpaceSpec, resolve_grid_column_widths,
+    resolve_grid_track_sizes,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -64,8 +73,7 @@ impl CssLayoutParse for AlignSpec {
     fn parse(raw: &str) -> Option<Self> {
         Some(match raw.trim().to_ascii_lowercase().as_str() {
             "flex-start" | "start" | "left" | "top" => Self::Start,
-            // baseline ≈ start (no true baseline alignment).
-            "baseline" | "first baseline" | "last baseline" => Self::Start,
+            "baseline" | "first baseline" | "last baseline" => Self::Baseline,
             "center" => Self::Center,
             "flex-end" | "end" | "right" | "bottom" => Self::End,
             "stretch" | "normal" => Self::Stretch,
@@ -83,7 +91,7 @@ impl CssLayoutParse for JustifySpec {
             "space-between" => Self::SpaceBetween,
             "space-around" => Self::SpaceAround,
             "space-evenly" => Self::SpaceEvenly,
-            "stretch" | "normal" => Self::Start,
+            "stretch" | "normal" => Self::Stretch,
             _ => return None,
         })
     }
@@ -126,11 +134,14 @@ impl CssLayoutParse for LengthSpec {
         if s.eq_ignore_ascii_case("100%") || s.eq_ignore_ascii_case("fill") {
             return Some(Self::Fill);
         }
-        if s.eq_ignore_ascii_case("max-content")
-            || s.eq_ignore_ascii_case("min-content")
-            || s.eq_ignore_ascii_case("fit-content")
-        {
-            return Some(Self::Shrink);
+        if s.eq_ignore_ascii_case("max-content") {
+            return Some(Self::MaxContent);
+        }
+        if s.eq_ignore_ascii_case("min-content") {
+            return Some(Self::MinContent);
+        }
+        if s.eq_ignore_ascii_case("fit-content") {
+            return Some(Self::FitContent);
         }
         // min() / max() / clamp() before bare calc / units.
         if let Some(spec) = parse_css_min_max_clamp(s) {
@@ -525,20 +536,15 @@ impl LayoutStyleCss for LayoutStyle {
 
     /// 解析 CSS 声明串（`a: b; c: d`）写入自身。
     ///
+    /// Trailing `!important` is stripped so the length/keyword still parses.
+    /// Cascade promotion of the flag is [`crate::css_cascade::rebuild_layout_style`].
     /// Stylesheet cascade hot path prefers cached
     /// [`crate::css_cascade::DeclarationEntry`] → [`Self::apply_css_property`]
     /// instead of re-splitting rule text on every match.
     fn apply_css_text(&mut self, style: &str, percent_w: Option<f32>, percent_h: Option<f32>) {
-        for decl in style.split(';') {
-            let decl = decl.trim();
-            if decl.is_empty() {
-                continue;
-            }
-            let Some((raw_key, raw_val)) = decl.split_once(':') else {
-                continue;
-            };
-            self.apply_css_property(raw_key.trim(), raw_val.trim(), percent_w, percent_h);
-        }
+        for_each_css_decl(style, |key, val| {
+            self.apply_css_property(key, val, percent_w, percent_h);
+        });
     }
 
     /// 解析单个 CSS 属性。
@@ -555,16 +561,22 @@ impl LayoutStyleCss for LayoutStyle {
         } else {
             key.to_ascii_lowercase()
         };
+        // Inline / prop / object style may still carry `!important`; strip so
+        // `width:100px !important` parses as 100px. Flag precedence is cascade.
+        let (stripped, _) = split_important_flag(val);
         // Author stylesheets often use `var(--token, fallback)` — expand fallback
         // so overflow/length keywords still parse (tokens themselves stay unresolved).
-        let val_owned = expand_css_var_fallback(val);
+        let val_owned = expand_css_var_fallback(&stripped);
         let val = val_owned.as_str();
         match key.as_str() {
             "display" if val.eq_ignore_ascii_case("none") => {
                 self.display = Some(DisplaySpec::None);
                 self.hidden = true;
             }
-            "display" if val.eq_ignore_ascii_case("contents") => {}
+            "display" if val.eq_ignore_ascii_case("contents") => {
+                self.display = Some(DisplaySpec::Contents);
+                self.hidden = false;
+            }
             "display"
                 if val.eq_ignore_ascii_case("flex") || val.eq_ignore_ascii_case("inline-flex") =>
             {
@@ -578,9 +590,14 @@ impl LayoutStyleCss for LayoutStyle {
                 self.grid_rows = None;
                 self.grid_columns_unsupported = None;
                 self.grid_rows_unsupported = None;
+                self.grid_columns_repeat = None;
+                self.grid_rows_repeat = None;
                 self.grid_auto_columns = None;
                 self.grid_auto_rows = None;
                 self.grid_auto_flow = None;
+                self.grid_template_areas = None;
+                self.grid_column_line_names = None;
+                self.grid_row_line_names = None;
                 if self.direction.is_none() {
                     self.direction = Some(FlexDirection::Row);
                 }
@@ -601,6 +618,14 @@ impl LayoutStyleCss for LayoutStyle {
                 if self.align_items == AlignSpec::Start {
                     self.align_items = AlignSpec::Stretch;
                 }
+            }
+            "display" if val.eq_ignore_ascii_case("inline") => {
+                self.display = Some(DisplaySpec::Inline);
+                self.hidden = false;
+            }
+            "display" if val.eq_ignore_ascii_case("inline-block") => {
+                self.display = Some(DisplaySpec::InlineBlock);
+                self.hidden = false;
             }
             "display"
                 if val.eq_ignore_ascii_case("grid") || val.eq_ignore_ascii_case("inline-grid") =>
@@ -981,6 +1006,11 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "white-space" if val.eq_ignore_ascii_case("nowrap") => {
                 self.white_space_nowrap = true;
+                self.white_space = WhiteSpaceSpec::Nowrap;
+            }
+            "white-space" if val.eq_ignore_ascii_case("pre") => {
+                self.white_space_nowrap = false;
+                self.white_space = WhiteSpaceSpec::Pre;
             }
             "white-space"
                 if matches!(
@@ -989,6 +1019,35 @@ impl LayoutStyleCss for LayoutStyle {
                 ) =>
             {
                 self.white_space_nowrap = false;
+                self.white_space = WhiteSpaceSpec::Normal;
+            }
+            "text-align" => {
+                let kw = val.trim().to_ascii_lowercase();
+                self.text_align = match kw.as_str() {
+                    "left" | "start" => TextAlignSpec::Start,
+                    "center" => TextAlignSpec::Center,
+                    "right" | "end" => TextAlignSpec::End,
+                    _ => self.text_align,
+                };
+            }
+            "float" => {
+                let kw = val.trim().to_ascii_lowercase();
+                self.float = match kw.as_str() {
+                    "left" => FloatSpec::Left,
+                    "right" => FloatSpec::Right,
+                    "none" => FloatSpec::None,
+                    _ => self.float,
+                };
+            }
+            "clear" => {
+                let kw = val.trim().to_ascii_lowercase();
+                self.clear = match kw.as_str() {
+                    "left" => ClearSpec::Left,
+                    "right" => ClearSpec::Right,
+                    "both" => ClearSpec::Both,
+                    "none" => ClearSpec::None,
+                    _ => self.clear,
+                };
             }
             "font-size" => {
                 if let Some(px) = parse_css_font_size(val) {
@@ -1023,9 +1082,7 @@ impl LayoutStyleCss for LayoutStyle {
             "grid-template-columns" => {
                 let trimmed = val.trim();
                 if trimmed.eq_ignore_ascii_case("none") || trimmed.is_empty() {
-                    self.grid_columns = None;
-                    self.grid_columns_unsupported = None;
-                    recompute_grid_axis_direction(self);
+                    clear_grid_template_axis(self, true);
                 } else if self.display.is_some_and(DisplaySpec::is_flex_container) {
                     // Inert under display:flex — do not author competing tracks.
                 } else {
@@ -1035,18 +1092,15 @@ impl LayoutStyleCss for LayoutStyle {
             "grid-template-rows" => {
                 let trimmed = val.trim();
                 if trimmed.eq_ignore_ascii_case("none") || trimmed.is_empty() {
-                    self.grid_rows = None;
-                    self.grid_rows_unsupported = None;
-                    recompute_grid_axis_direction(self);
+                    clear_grid_template_axis(self, false);
                 } else if self.display.is_some_and(DisplaySpec::is_flex_container) {
                     // Inert under display:flex — do not author competing tracks.
                 } else {
                     apply_grid_template_axis(self, trimmed, percent_h, false);
                 }
             }
-            // grid-auto-*: parse & store; layout (measure) does **not** consume
-            // (implicit tracks / auto-placement = full 2D defer). Same track grammar
-            // as template; auto-fit/fill → Unsupported flag, not silent drop.
+            // grid-auto-*: parse & store for layout (implicit tracks / auto-placement).
+            // Same track grammar as template (including mixed auto-fit / auto-fill).
             "grid-auto-columns" => {
                 if self.display.is_some_and(DisplaySpec::is_flex_container) {
                     // inert under flex
@@ -1066,6 +1120,48 @@ impl LayoutStyleCss for LayoutStyle {
                     self.grid_auto_flow = Some(flow);
                 }
             }
+            "grid-template-areas" => {
+                if self.display.is_some_and(DisplaySpec::is_flex_container) {
+                } else if let Some(areas) = parse_grid_template_areas(val) {
+                    self.grid_template_areas = Some(areas);
+                    if self.display.is_none() {
+                        self.display = Some(DisplaySpec::Grid);
+                    }
+                }
+            }
+            "grid-column" => {
+                if let Some((start, end)) = parse_grid_axis_placement(val) {
+                    self.grid_placement.column_start = start;
+                    self.grid_placement.column_end = end;
+                }
+            }
+            "grid-row" => {
+                if let Some((start, end)) = parse_grid_axis_placement(val) {
+                    self.grid_placement.row_start = start;
+                    self.grid_placement.row_end = end;
+                }
+            }
+            "grid-column-start" => {
+                if let Some(line) = parse_grid_line(val) {
+                    self.grid_placement.column_start = line;
+                }
+            }
+            "grid-column-end" => {
+                if let Some(line) = parse_grid_line(val) {
+                    self.grid_placement.column_end = line;
+                }
+            }
+            "grid-row-start" => {
+                if let Some(line) = parse_grid_line(val) {
+                    self.grid_placement.row_start = line;
+                }
+            }
+            "grid-row-end" => {
+                if let Some(line) = parse_grid_line(val) {
+                    self.grid_placement.row_end = line;
+                }
+            }
+            "grid-area" => apply_grid_area(&mut self.grid_placement, val),
             "visibility" if val.eq_ignore_ascii_case("hidden") => self.hidden = true,
             "visibility" if val.eq_ignore_ascii_case("visible") => {
                 // do not unhide if display:none
@@ -1462,7 +1558,12 @@ pub fn parse_gap_length(input: &str) -> Option<LengthSpec> {
         | LengthSpec::Min2(_, _)
         | LengthSpec::Max2(_, _)
         | LengthSpec::Clamp3(_, _, _) => Some(spec),
-        LengthSpec::Fill | LengthSpec::Shrink | LengthSpec::Auto => None,
+        LengthSpec::Fill
+        | LengthSpec::Shrink
+        | LengthSpec::Auto
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => None,
     }
 }
 
@@ -1620,7 +1721,7 @@ fn apply_box_edge_shorthand(
     }
 }
 
-/// After clearing columns/rows with `none`, pick 1D axis:
+/// After clearing a template axis, pick remaining tracks / auto-fill:
 /// columns → Row；仅 rows → Column；双边皆空 → `display:grid|inline-grid` 默认 Row（勿残留 Column）。
 fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
     let has_cols = layout.grid_columns.as_ref().is_some_and(|t| !t.is_empty());
@@ -1634,19 +1735,48 @@ fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
     }
 }
 
-/// 解析结果：支持轨列表 / 明确 Unsupported / 非法。
+/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / 明确 Unsupported / 非法。
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridTrackListParse {
     Tracks(Vec<GridTrack>),
-    /// `repeat(auto-fit|auto-fill)` 等 defer 语法；**不是**解析失败、也不是 `none`。
+    /// 整表 `repeat(auto-fit|auto-fill, <track-list>)`；布局按容器展开。
+    RepeatAuto(GridRepeatAuto),
+    /// 混写 auto-fit/auto-fill 等无法展开的语法；**不是**解析失败、也不是 `none`。
     Unsupported(GridTrackListUnsupported),
     Invalid,
 }
 
+fn set_grid_template_axis(
+    layout: &mut LayoutStyle,
+    columns: bool,
+    tracks: Option<Vec<GridTrack>>,
+    unsupported: Option<GridTrackListUnsupported>,
+    repeat: Option<GridRepeatAuto>,
+    names: Option<Vec<Vec<String>>>,
+) {
+    if columns {
+        layout.grid_columns = tracks;
+        layout.grid_columns_unsupported = unsupported;
+        layout.grid_columns_repeat = repeat;
+        layout.grid_column_line_names = names;
+    } else {
+        layout.grid_rows = tracks;
+        layout.grid_rows_unsupported = unsupported;
+        layout.grid_rows_repeat = repeat;
+        layout.grid_row_line_names = names;
+    }
+}
+
+fn clear_grid_template_axis(layout: &mut LayoutStyle, columns: bool) {
+    set_grid_template_axis(layout, columns, None, None, None, None);
+    recompute_grid_axis_direction(layout);
+}
+
 /// Apply `grid-template-columns` (`columns=true`) or `grid-template-rows`.
 ///
-/// `repeat(auto-fit|fill)` → [`GridTrackListUnsupported`] 旗标；**不**发明假轨、
-/// **不**静默当作未声明。布局仍只读 `grid_columns` / `grid_rows`。
+/// 固定轨写入 `grid_columns` / `grid_rows`。整表 / 混写 `repeat(auto-fit|auto-fill, …)`
+/// 写入 `grid_*_repeat`（布局展开）。成功的 auto-fit / auto-fill **不**置 unsupported。
+/// 无法解析的值清空该轴，避免留下旧模板。
 fn apply_grid_template_axis(
     layout: &mut LayoutStyle,
     raw: &str,
@@ -1655,13 +1785,29 @@ fn apply_grid_template_axis(
 ) {
     match parse_grid_track_list_result(raw, percent_base) {
         GridTrackListParse::Tracks(tracks) => {
-            if columns {
-                layout.grid_columns = Some(tracks);
-                layout.grid_columns_unsupported = None;
-            } else {
-                layout.grid_rows = Some(tracks);
-                layout.grid_rows_unsupported = None;
+            set_grid_template_axis(
+                layout,
+                columns,
+                Some(tracks),
+                None,
+                None,
+                parse_grid_line_names(raw),
+            );
+            if layout.display.is_none() {
+                layout.display = Some(DisplaySpec::Grid);
             }
+            recompute_grid_axis_direction(layout);
+        }
+        GridTrackListParse::RepeatAuto(mut rep) => {
+            attach_repeat_line_name_patterns(&mut rep, raw);
+            set_grid_template_axis(
+                layout,
+                columns,
+                None,
+                None,
+                Some(rep),
+                parse_grid_line_names(raw),
+            );
             if layout.display.is_none() {
                 layout.display = Some(DisplaySpec::Grid);
             }
@@ -1670,23 +1816,21 @@ fn apply_grid_template_axis(
         GridTrackListParse::Unsupported(unsup) => {
             // Explicit Unsupported — clear this axis's tracks (value is not a
             // supported list) but record why; do not pretend the property was absent.
-            if columns {
-                layout.grid_columns = None;
-                layout.grid_columns_unsupported = Some(unsup);
-            } else {
-                layout.grid_rows = None;
-                layout.grid_rows_unsupported = Some(unsup);
-            }
+            set_grid_template_axis(layout, columns, None, Some(unsup), None, None);
             if layout.display.is_none() {
                 layout.display = Some(DisplaySpec::Grid);
             }
             recompute_grid_axis_direction(layout);
         }
-        GridTrackListParse::Invalid => {}
+        GridTrackListParse::Invalid => {
+            // Do not keep a previous template when the new value fails to parse
+            // (`80px repeat(auto-fit, garbage)` must not silently stay `80px`).
+            set_grid_template_axis(layout, columns, None, None, None, None);
+        }
     }
 }
 
-/// Parse `grid-auto-columns` / `grid-auto-rows`（存储；布局 **不**消费 — 2D defer）。
+/// Parse `grid-auto-columns` / `grid-auto-rows`（存储，供布局消费）。
 fn apply_grid_auto_tracks(raw: &str, percent_base: Option<f32>, dest: &mut Option<Vec<GridTrack>>) {
     let trimmed = raw.trim();
     if trimmed.eq_ignore_ascii_case("auto") {
@@ -1699,8 +1843,10 @@ fn apply_grid_auto_tracks(raw: &str, percent_base: Option<f32>, dest: &mut Optio
     }
     match parse_grid_track_list_result(trimmed, percent_base) {
         GridTrackListParse::Tracks(tracks) => *dest = Some(tracks),
-        // auto-fit/fill on auto tracks: leave unchanged (also deferred).
-        GridTrackListParse::Unsupported(_) | GridTrackListParse::Invalid => {}
+        // auto-fit/fill on auto tracks: leave unchanged.
+        GridTrackListParse::RepeatAuto(_)
+        | GridTrackListParse::Unsupported(_)
+        | GridTrackListParse::Invalid => {}
     }
 }
 
@@ -1714,13 +1860,310 @@ fn parse_grid_auto_flow(raw: &str) -> Option<GridAutoFlow> {
     }
 }
 
+fn is_css_ident(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first.is_ascii_digit() || first == '-' && raw[1..].starts_with(|c: char| c.is_ascii_digit())
+    {
+        return false;
+    }
+    let ident_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || !c.is_ascii();
+    ident_char(first) && chars.all(ident_char)
+}
+
+fn parse_grid_template_areas(raw: &str) -> Option<GridTemplateAreas> {
+    let mut cells = Vec::new();
+    let mut rest = raw.trim();
+    if rest.eq_ignore_ascii_case("none") || rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        if !rest.starts_with('"') && !rest.starts_with('\'') {
+            return None;
+        }
+        let quote = rest.as_bytes()[0] as char;
+        rest = &rest[1..];
+        let Some(end) = rest.find(quote) else {
+            return None;
+        };
+        let row: Vec<String> = rest[..end]
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        if row.is_empty() {
+            return None;
+        }
+        if let Some(width) = cells.first().map(|r: &Vec<String>| r.len()) {
+            if row.len() != width {
+                return None;
+            }
+        }
+        cells.push(row);
+        rest = rest[end + 1..].trim_start();
+    }
+    if cells.is_empty() {
+        return None;
+    }
+    Some(GridTemplateAreas { cells })
+}
+
+fn parse_repeat_line_name_count(count_raw: &str) -> usize {
+    let count = count_raw.trim();
+    if count.eq_ignore_ascii_case("auto-fit") || count.eq_ignore_ascii_case("auto-fill") {
+        return 1;
+    }
+    count
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=64).contains(n))
+        .unwrap_or(1)
+}
+
+fn split_auto_repeat_segments(raw: &str) -> Option<(&str, &str, &str)> {
+    let mut rest = raw;
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        let offset = raw.len() - rest.len();
+        if let Some(after) = strip_prefix_ci(rest, "repeat(")
+            && let Some((inner, suffix)) = split_paren_inner(after)
+            && let Some((count_raw, pattern)) = inner.split_once(',')
+        {
+            let count = count_raw.trim();
+            if count.eq_ignore_ascii_case("auto-fit") || count.eq_ignore_ascii_case("auto-fill") {
+                return Some((raw[..offset].trim(), pattern.trim(), suffix.trim()));
+            }
+        }
+        if rest.starts_with('[') {
+            let end = rest.find(']')? + 1;
+            rest = &rest[end..];
+            continue;
+        }
+        let token_end = rest
+            .find(|c: char| c.is_whitespace() || c == '[')
+            .unwrap_or(rest.len());
+        if token_end == 0 {
+            break;
+        }
+        rest = &rest[token_end..];
+    }
+    None
+}
+
+fn attach_repeat_line_name_patterns(rep: &mut GridRepeatAuto, raw: &str) {
+    let Some((prefix, pattern, suffix)) = split_auto_repeat_segments(raw) else {
+        return;
+    };
+    if let Some(names) = parse_grid_line_names(prefix) {
+        rep.prefix_line_names = names;
+    }
+    if let Some(names) = parse_grid_line_names(pattern) {
+        rep.pattern_line_names = names;
+    }
+    if let Some(names) = parse_grid_line_names(suffix) {
+        rep.suffix_line_names = names;
+    }
+}
+
+fn parse_grid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
+    // n tracks ⇒ n+1 lines. `[name]` attaches to the current line; a track
+    // token opens the next line.
+    let mut names = vec![Vec::new()];
+    let mut rest = raw.trim();
+    let mut saw = false;
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        if rest.starts_with('[') {
+            let Some(end) = rest.find(']') else {
+                return None;
+            };
+            let group: Vec<String> = rest[1..end]
+                .split_whitespace()
+                .filter(|s| is_css_ident(s))
+                .map(|s| s.to_string())
+                .collect();
+            names
+                .last_mut()
+                .expect("line table starts with line 1")
+                .extend(group);
+            saw = true;
+            rest = rest[end + 1..].trim_start();
+            continue;
+        }
+        if let Some(after) = strip_prefix_ci(rest, "repeat(") {
+            if let Some((inner, next)) = split_paren_inner(after) {
+                if let Some((count_raw, pattern)) = inner.split_once(',')
+                    && let Some(inner_names) = parse_grid_line_names(pattern)
+                {
+                    let reps = parse_repeat_line_name_count(count_raw);
+                    let inner_names = GridRepeatAuto::merge_line_name_pattern(&inner_names, reps);
+                    names = GridRepeatAuto::join_line_name_lists(&names, &inner_names);
+                    saw = true;
+                }
+                rest = next.trim_start();
+                continue;
+            }
+            break;
+        }
+        let token_end = rest
+            .find(|c: char| c.is_whitespace() || c == '[')
+            .unwrap_or(rest.len());
+        if token_end == 0 {
+            break;
+        }
+        names.push(Vec::new());
+        rest = rest[token_end..].trim_start();
+    }
+    if !saw {
+        return None;
+    }
+    Some(names)
+}
+
+/// CSS `<grid-line>` subset: `auto` / integer / `span N` / custom-ident.
+fn parse_grid_line(raw: &str) -> Option<GridLine> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("auto") {
+        return Some(GridLine::Auto);
+    }
+    if let Some(rest) = strip_prefix_ci(s, "span") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(GridLine::Span(1));
+        }
+        if let Some(n) = rest
+            .split_whitespace()
+            .find_map(|part| part.parse::<u16>().ok())
+        {
+            if n >= 1 {
+                return Some(GridLine::Span(n));
+            }
+            return None;
+        }
+        // `span name` — treat as span 1 of that named line (name kept).
+        if is_css_ident(rest) {
+            return Some(GridLine::Name(rest.to_string()));
+        }
+        return None;
+    }
+    if let Ok(n) = s.parse::<i32>() {
+        if n == 0 {
+            return None;
+        }
+        return Some(GridLine::Index(n));
+    }
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    match parts.as_slice() {
+        [ident] if is_css_ident(ident) => Some(GridLine::Name((*ident).to_string())),
+        [ident, n] if is_css_ident(ident) => {
+            let occ = n.parse::<u16>().ok().filter(|v| *v >= 1)?;
+            Some(if occ == 1 {
+                GridLine::Name((*ident).to_string())
+            } else {
+                GridLine::NthName((*ident).to_string(), occ)
+            })
+        }
+        [n, ident] if is_css_ident(ident) => {
+            let occ = n.parse::<u16>().ok().filter(|v| *v >= 1)?;
+            Some(if occ == 1 {
+                GridLine::Name((*ident).to_string())
+            } else {
+                GridLine::NthName((*ident).to_string(), occ)
+            })
+        }
+        _ => None,
+    }
+}
+
+/// `grid-column` / `grid-row`: `<grid-line> [ / <grid-line> ]?`.
+/// Omitted end is `auto`. `none` / empty / unparsed → `None` (leave unchanged).
+fn parse_grid_axis_placement(raw: &str) -> Option<(GridLine, GridLine)> {
+    let s = raw.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if let Some((start_raw, end_raw)) = s.split_once('/') {
+        Some((parse_grid_line(start_raw)?, parse_grid_line(end_raw)?))
+    } else {
+        Some((parse_grid_line(s)?, GridLine::Auto))
+    }
+}
+
+/// `grid-area`: 命名区域，或 row-start / column-start / row-end / column-end。
+fn apply_grid_area(placement: &mut GridPlacement, raw: &str) {
+    let s = raw.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        return;
+    }
+    if !s.contains('/') && is_css_ident(s) && s.parse::<i32>().is_err() {
+        placement.area = Some(s.to_string());
+        placement.row_start = GridLine::Auto;
+        placement.column_start = GridLine::Auto;
+        placement.row_end = GridLine::Auto;
+        placement.column_end = GridLine::Auto;
+        return;
+    }
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return;
+    }
+    let Some(lines) = parts
+        .iter()
+        .map(|p| parse_grid_line(p))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+    placement.area = None;
+    match lines.as_slice() {
+        [row_start] => {
+            placement.row_start = row_start.clone();
+            placement.column_start = GridLine::Auto;
+            placement.row_end = GridLine::Auto;
+            placement.column_end = GridLine::Auto;
+        }
+        [row_start, column_start] => {
+            placement.row_start = row_start.clone();
+            placement.column_start = column_start.clone();
+            placement.row_end = GridLine::Auto;
+            placement.column_end = GridLine::Auto;
+        }
+        [row_start, column_start, row_end] => {
+            placement.row_start = row_start.clone();
+            placement.column_start = column_start.clone();
+            placement.row_end = row_end.clone();
+            placement.column_end = GridLine::Auto;
+        }
+        [row_start, column_start, row_end, column_end] => {
+            placement.row_start = row_start.clone();
+            placement.column_start = column_start.clone();
+            placement.row_end = row_end.clone();
+            placement.column_end = column_end.clone();
+        }
+        _ => {}
+    }
+}
+
 /// 解析 `grid-template-columns` / `rows`（及 `grid-auto-*` 轨表）轻量子集。
 ///
 /// 支持：`px` / `%` / `fr` / `auto` / `max-content`/`min-content`/`fit-content`、
 /// `fit-content(<length-percentage>)`、`minmax(min, Nfr|px|%|auto|*-content)`、
 /// `repeat(N, …)`（固定次数）。
 ///
-/// `repeat(auto-fit|auto-fill)` → [`GridTrackListParse::Unsupported`]（勿静默丢弃）。
+/// 整表或混写 `repeat(auto-fit|auto-fill, <track-list>)` →
+/// [`GridTrackListParse::RepeatAuto`]（`prefix` / pattern / `suffix`）。
+/// 嵌套 auto-fit / auto-fill 或无法展开的 pattern → [`GridTrackListParse::Unsupported`]。
 /// `percent_base` 用于把轨上的 `%` 收成 px。
 ///
 /// 未解析的 `var(--token)`（无 lookup / 无 fallback）在该轨位置降级为
@@ -1752,7 +2195,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
         if rest.is_empty() {
             break;
         }
-        // repeat(N, tracks…) — fixed N only；auto-fit/fill → Unsupported。
+        // repeat(N, tracks…) — fixed N expands；整表 auto-fit/fill 保留 pattern。
         if let Some(after) = strip_prefix_ci(rest, "repeat(") {
             let Some((inner, next)) = split_paren_inner(after) else {
                 return GridTrackListParse::Invalid;
@@ -1761,11 +2204,40 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                 return GridTrackListParse::Invalid;
             };
             let count_raw = count_raw.trim();
-            if count_raw.eq_ignore_ascii_case("auto-fit") {
-                return GridTrackListParse::Unsupported(GridTrackListUnsupported::RepeatAutoFit);
-            }
-            if count_raw.eq_ignore_ascii_case("auto-fill") {
-                return GridTrackListParse::Unsupported(GridTrackListUnsupported::RepeatAutoFill);
+            if count_raw.eq_ignore_ascii_case("auto-fit")
+                || count_raw.eq_ignore_ascii_case("auto-fill")
+            {
+                let kind = if count_raw.eq_ignore_ascii_case("auto-fit") {
+                    GridTrackListUnsupported::RepeatAutoFit
+                } else {
+                    GridTrackListUnsupported::RepeatAutoFill
+                };
+                let unit = match parse_grid_track_list(pattern.trim(), percent_base) {
+                    GridTrackListParse::Tracks(unit) if !unit.is_empty() => unit,
+                    GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
+                        return GridTrackListParse::Unsupported(kind);
+                    }
+                    GridTrackListParse::Invalid | GridTrackListParse::Tracks(_) => {
+                        return GridTrackListParse::Invalid;
+                    }
+                };
+                let suffix = match parse_grid_track_list(next.trim(), percent_base) {
+                    GridTrackListParse::Tracks(extra) => extra,
+                    GridTrackListParse::Invalid if next.trim().is_empty() => Vec::new(),
+                    GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
+                        return GridTrackListParse::Unsupported(kind);
+                    }
+                    GridTrackListParse::Invalid => {
+                        return GridTrackListParse::Invalid;
+                    }
+                };
+                return GridTrackListParse::RepeatAuto(GridRepeatAuto {
+                    kind,
+                    tracks: unit,
+                    prefix: tracks,
+                    suffix,
+                    ..Default::default()
+                });
             }
             let Ok(count) = count_raw.parse::<usize>() else {
                 return GridTrackListParse::Invalid;
@@ -1781,6 +2253,9 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                 }
                 other @ (GridTrackListParse::Unsupported(_) | GridTrackListParse::Invalid) => {
                     return other;
+                }
+                GridTrackListParse::RepeatAuto(rep) => {
+                    return GridTrackListParse::Unsupported(rep.kind);
                 }
                 GridTrackListParse::Tracks(_) => return GridTrackListParse::Invalid,
             }
@@ -1799,7 +2274,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
             {
                 GridTrack::Auto
             } else if let Some(px) = parse_css_length_px(inner, percent_base) {
-                // ≈ minmax(auto, <arg>)：柔性轨 + 像素上限（1D 子集）。
+                // ≈ minmax(auto, <arg>)：柔性轨 + 像素上限。
                 GridTrack::MinMax {
                     min_px: 0.0,
                     fr: 1.0,
@@ -1827,6 +2302,13 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
             };
             tracks.push(track);
             rest = next;
+            continue;
+        }
+        if rest.starts_with('[') {
+            let Some(end) = rest.find(']') else {
+                return GridTrackListParse::Invalid;
+            };
+            rest = rest[end + 1..].trim_start();
             continue;
         }
         let token_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
@@ -2016,22 +2498,23 @@ pub fn active_font_sizes() -> FontSizeContext {
 }
 
 /// Extract `--name: value` declarations from a declaration block (not a full sheet).
+///
+/// Trailing `!important` is stripped the same way [`LayoutStyleCss::apply_css_property`]
+/// does, so `var(--gap)` receives `8px` rather than `8px !important`.
 pub fn extract_css_custom_properties_from_decls(
     decls: &str,
 ) -> std::collections::BTreeMap<String, String> {
     let mut map = std::collections::BTreeMap::new();
-    for decl in decls.split(';') {
-        let decl = decl.trim();
-        let Some((raw_key, raw_val)) = decl.split_once(':') else {
-            continue;
-        };
-        let key = raw_key.trim();
+    for_each_css_decl(decls, |key, raw_val| {
         if let Some(name) = key.strip_prefix("--")
             && !name.is_empty()
         {
-            map.insert(format!("--{name}"), raw_val.trim().to_string());
+            let (value, _) = split_important_flag(raw_val);
+            if !value.is_empty() {
+                map.insert(format!("--{name}"), value);
+            }
         }
-    }
+    });
     map
 }
 
@@ -2340,6 +2823,34 @@ fn expand_css_var_fallback(input: &str) -> String {
     // Unresolved var() without fallback is removed (single-value props fail closed).
     // Grid track lists must use [`expand_css_vars_for_grid_tracks`] instead.
     expand_css_vars_with_unresolved(input, None)
+}
+
+fn for_each_css_decl(style: &str, mut visit: impl FnMut(&str, &str)) {
+    for decl in style.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        let Some((raw_key, raw_val)) = decl.split_once(':') else {
+            continue;
+        };
+        visit(raw_key.trim(), raw_val.trim());
+    }
+}
+
+/// Parse trailing `!important` (case-insensitive; whitespace around `!` / ident).
+///
+/// Returns `(value without flag, is_important)`.
+pub(crate) fn split_important_flag(value: &str) -> (String, bool) {
+    let trimmed = value.trim();
+    let Some(bang) = trimmed.rfind('!') else {
+        return (trimmed.to_string(), false);
+    };
+    let after = trimmed[bang + 1..].trim();
+    if after.eq_ignore_ascii_case("important") {
+        return (trimmed[..bang].trim_end().to_string(), true);
+    }
+    (trimmed.to_string(), false)
 }
 
 /// Expand `var()` for grid track lists: unresolved tokens become `auto` so the
@@ -2721,8 +3232,11 @@ pub fn parse_margin_length(input: &str) -> Option<LengthSpec> {
 
 fn parse_box_edge_length_inner(input: &str, clamp_px_non_negative: bool) -> Option<LengthSpec> {
     let s = input.trim();
-    if s.is_empty() || s.eq_ignore_ascii_case("auto") || s.eq_ignore_ascii_case("none") {
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
         return None;
+    }
+    if s.eq_ignore_ascii_case("auto") {
+        return Some(LengthSpec::Auto);
     }
     let lower = s.to_ascii_lowercase();
     if lower.starts_with("calc(")
@@ -2778,6 +3292,26 @@ pub fn parse_css_length_px(input: &str, percent_base: Option<f32>) -> Option<f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_important_parses_as_normal_declaration() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("width:100px !important", None, None);
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(100.0)),
+            "inline-only width:100px !important must parse as 100, not drop the declaration"
+        );
+
+        let mut cased = LayoutStyle::default();
+        cased.apply_css_property("height", "40px!IMPORTANT", None, None);
+        assert_eq!(cased.height, Some(LengthSpec::Px(40.0)));
+
+        let mut spaced = LayoutStyle::default();
+        spaced.apply_css_text("width: 80px ! Important; height: 20px", None, None);
+        assert_eq!(spaced.width, Some(LengthSpec::Px(80.0)));
+        assert_eq!(spaced.height, Some(LengthSpec::Px(20.0)));
+    }
 
     #[test]
     fn parses_flex_row_gap_padding_percent_width() {
@@ -3501,23 +4035,48 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             }
         )));
 
-        assert!(
-            matches!(
-                parse_grid_track_list_result("repeat(auto-fit,minmax(220px,1fr))", None),
-                GridTrackListParse::Unsupported(GridTrackListUnsupported::RepeatAutoFit)
-            ),
-            "auto-fit must be explicit Unsupported, not silent drop"
+        assert_eq!(
+            parse_grid_track_list_result("repeat(auto-fit,minmax(220px,1fr))", None),
+            GridTrackListParse::RepeatAuto(GridRepeatAuto {
+                kind: GridTrackListUnsupported::RepeatAutoFit,
+                tracks: vec![GridTrack::MinMax {
+                    min_px: 220.0,
+                    fr: 1.0,
+                    max_px: None,
+                }],
+                ..Default::default()
+            }),
         );
-        assert!(
-            matches!(
-                parse_grid_track_list_result("repeat(auto-fill, minmax(100px, 1fr))", None),
-                GridTrackListParse::Unsupported(GridTrackListUnsupported::RepeatAutoFill)
-            ),
-            "auto-fill must be explicit Unsupported"
+        assert_eq!(
+            parse_grid_track_list_result("repeat(auto-fill, minmax(100px, 1fr))", None),
+            GridTrackListParse::RepeatAuto(GridRepeatAuto {
+                kind: GridTrackListUnsupported::RepeatAutoFill,
+                tracks: vec![GridTrack::MinMax {
+                    min_px: 100.0,
+                    fr: 1.0,
+                    max_px: None,
+                }],
+                ..Default::default()
+            }),
         );
         assert!(
             parse_grid_template_columns("repeat(auto-fit,minmax(220px,1fr))", None).is_none(),
-            "compat Option API returns None for Unsupported"
+            "compat Option API returns None for auto-fit (layout expands via RepeatAuto)"
+        );
+        assert_eq!(
+            parse_grid_track_list_result("100px repeat(auto-fit,minmax(220px,1fr))", None),
+            GridTrackListParse::RepeatAuto(GridRepeatAuto {
+                kind: GridTrackListUnsupported::RepeatAutoFit,
+                tracks: vec![GridTrack::MinMax {
+                    min_px: 220.0,
+                    fr: 1.0,
+                    max_px: None,
+                }],
+                prefix: vec![GridTrack::Px(100.0)],
+                suffix: Vec::new(),
+                ..Default::default()
+            }),
+            "mixed 100px + repeat(auto-fit) must expand against available size"
         );
 
         let mut auto_fit_layout = LayoutStyle::default();
@@ -3526,12 +4085,31 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             Some(800.0),
             None,
         );
-        assert_eq!(
-            auto_fit_layout.grid_columns_unsupported,
-            Some(GridTrackListUnsupported::RepeatAutoFit)
+        assert!(
+            auto_fit_layout.grid_columns_unsupported.is_none(),
+            "successful auto-fit is not unsupported"
         );
         assert!(auto_fit_layout.grid_columns.is_none());
-        assert!(auto_fit_layout.has_unsupported_grid_template());
+        assert!(
+            !auto_fit_layout.has_unsupported_grid_template(),
+            "successful auto-fit must not set has_unsupported_grid_template"
+        );
+        let auto_fit_repeat = auto_fit_layout
+            .grid_columns_repeat
+            .as_ref()
+            .expect("auto-fit must store GridRepeatAuto pattern");
+        assert_eq!(
+            auto_fit_repeat.kind,
+            GridTrackListUnsupported::RepeatAutoFit
+        );
+        assert_eq!(
+            auto_fit_repeat.tracks,
+            vec![GridTrack::MinMax {
+                min_px: 220.0,
+                fr: 1.0,
+                max_px: None,
+            }]
+        );
 
         // NanaRepoPage authoring: honest fixed-count tracks (not auto-fit).
         let repo = parse_grid_template_columns("repeat(2,minmax(240px,1fr))", None).unwrap();
@@ -3603,9 +4181,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.grid_auto_flow, Some(GridAutoFlow::ColumnDense));
         assert!(
             layout.has_deferred_grid_auto(),
-            "layout must mark grid-auto-* as deferred for consumers"
+            "grid-auto-* fields stored for layout"
         );
-        // 1D layout still consumes only template columns — not auto tracks.
+        // Explicit template columns stay on `grid_columns`; auto tracks are
+        // implicit and consumed by 2D placement, not this list.
         assert_eq!(layout.active_grid_columns().map(|c| c.len()), Some(2));
         assert_eq!(layout.gap, None);
         assert_eq!(layout.row_gap, Some(LengthSpec::Px(8.0)));
@@ -3616,9 +4195,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn place_items_and_baseline_align() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("place-items: center; align-items: baseline", None, None);
-        // Later align-items wins over place-items when both present in one block…
-        // apply order is declaration order: place-items then align-items → baseline≈Start.
-        assert_eq!(layout.align_items, AlignSpec::Start);
+        // Later align-items wins over place-items when both present in one block.
+        assert_eq!(layout.align_items, AlignSpec::Baseline);
 
         let mut placed = LayoutStyle::default();
         placed.apply_css_text("place-items: center", None, None);
@@ -3712,6 +4290,40 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
+    fn extract_custom_properties_strips_important_flag() {
+        let map = extract_css_custom_properties_from_decls(
+            "--gap: 8px !important; --w: 80px!IMPORTANT; --plain: 4px",
+        );
+        assert_eq!(
+            map.get("--gap").map(String::as_str),
+            Some("8px"),
+            "custom-prop !important must strip so var(--gap) is a length, not '8px !important'"
+        );
+        assert_eq!(map.get("--w").map(String::as_str), Some("80px"));
+        assert_eq!(map.get("--plain").map(String::as_str), Some("4px"));
+
+        // calc(var(--w) + 10px) fails to parse if the flag stays attached.
+        with_active_css_vars(&map, || {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text("width: calc(var(--w) + 10px); gap: var(--gap)", None, None);
+            assert_eq!(
+                layout.width,
+                Some(LengthSpec::Px(90.0)),
+                "width via var() + calc must resolve after stripping !important"
+            );
+            assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
+        });
+
+        let doc =
+            collect_document_css_custom_properties(":root { --gap: 8px !important; }", "light");
+        assert_eq!(
+            doc.get("--gap").map(String::as_str),
+            Some("8px"),
+            "document scrape must strip custom-prop !important"
+        );
+    }
+
+    #[test]
     fn stylesheet_custom_props_resolve_var_without_fallback() {
         let vars = collect_css_custom_properties(
             ":root { --app-corner-radius: 16px; --radius-md: var(--app-corner-radius); --radius-sm: calc(var(--app-corner-radius) * .75); }",
@@ -3728,6 +4340,228 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             assert_eq!(layout.border_radius, Some(12.0));
             assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
         });
+    }
+
+    #[test]
+    fn display_contents_does_not_generate_or_omit_box() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:contents", None, None);
+        assert_eq!(layout.display, Some(DisplaySpec::Contents));
+        assert!(!layout.hidden);
+        assert!(!layout.omits_box());
+        assert!(!layout.generates_box());
+    }
+
+    #[test]
+    fn grid_column_start_span() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("grid-column: 1 / span 2", None, None);
+        assert_eq!(layout.grid_placement.column_start, GridLine::Index(1));
+        assert_eq!(layout.grid_placement.column_end, GridLine::Span(2));
+        assert!(layout.grid_placement.row_start.is_auto());
+        assert!(layout.grid_placement.row_end.is_auto());
+
+        layout.apply_css_text("grid-column: none", None, None);
+        assert_eq!(layout.grid_placement.column_start, GridLine::Index(1));
+        assert_eq!(layout.grid_placement.column_end, GridLine::Span(2));
+
+        layout.apply_css_text("grid-column: auto", None, None);
+        assert_eq!(layout.grid_placement.column_start, GridLine::Auto);
+        assert_eq!(layout.grid_placement.column_end, GridLine::Auto);
+    }
+
+    #[test]
+    fn grid_row_span() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("grid-row: span 2", None, None);
+        assert_eq!(layout.grid_placement.row_start, GridLine::Span(2));
+        assert_eq!(layout.grid_placement.row_end, GridLine::Auto);
+        assert!(layout.grid_placement.column_start.is_auto());
+        assert!(layout.grid_placement.column_end.is_auto());
+    }
+
+    #[test]
+    fn grid_area_four_lines() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("grid-area: 1 / 2 / 3 / 4", None, None);
+        assert_eq!(layout.grid_placement.row_start, GridLine::Index(1));
+        assert_eq!(layout.grid_placement.column_start, GridLine::Index(2));
+        assert_eq!(layout.grid_placement.row_end, GridLine::Index(3));
+        assert_eq!(layout.grid_placement.column_end, GridLine::Index(4));
+    }
+
+    #[test]
+    fn grid_named_area_and_named_lines() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:[start] 80px [mid] 120px [end];\
+             grid-template-areas:\"header header\" \"nav main\"",
+            None,
+            None,
+        );
+        assert_eq!(layout.named_column_line("start"), Some(1));
+        assert_eq!(layout.named_column_line("mid"), Some(2));
+        assert_eq!(layout.named_column_line("end"), Some(3));
+        assert_eq!(
+            layout
+                .grid_template_areas
+                .as_ref()
+                .and_then(|a| a.lookup("header")),
+            Some((0, 0, 2, 1))
+        );
+
+        let mut item = LayoutStyle::default();
+        item.apply_css_text("grid-area: header", None, None);
+        assert_eq!(item.grid_placement.area.as_deref(), Some("header"));
+
+        item.apply_css_text("grid-column: start / end", None, None);
+        assert_eq!(
+            item.grid_placement.column_start,
+            GridLine::Name("start".into())
+        );
+        assert_eq!(item.grid_placement.column_end, GridLine::Name("end".into()));
+    }
+
+    #[test]
+    fn auto_fit_stores_repeat_pattern() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))",
+            None,
+            None,
+        );
+        assert!(layout.grid_columns.is_none());
+        assert!(
+            layout.grid_columns_unsupported.is_none(),
+            "successful auto-fit is stored on grid_columns_repeat, not the unsupported flag"
+        );
+        assert!(!layout.has_unsupported_grid_template());
+        let rep = layout
+            .grid_columns_repeat
+            .as_ref()
+            .expect("auto-fit stores GridRepeatAuto, not just the flag");
+        assert_eq!(rep.kind, GridTrackListUnsupported::RepeatAutoFit);
+        assert_eq!(
+            rep.tracks,
+            vec![GridTrack::MinMax {
+                min_px: 220.0,
+                fr: 1.0,
+                max_px: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn invalid_mixed_auto_fit_clears_previous_tracks() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:grid;grid-template-columns:80px", None, None);
+        assert_eq!(layout.grid_columns, Some(vec![GridTrack::Px(80.0)]));
+        layout.apply_css_text(
+            "grid-template-columns:80px repeat(auto-fit, garbage)",
+            None,
+            None,
+        );
+        assert!(
+            layout.grid_columns.is_none(),
+            "invalid mixed auto-fit must not keep leftover 80px, got {:?}",
+            layout.grid_columns
+        );
+        assert!(layout.grid_columns_repeat.is_none());
+    }
+
+    #[test]
+    fn auto_fit_keeps_prefix_line_names() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:[start] 80px repeat(auto-fit, [mid] 1fr [end])",
+            None,
+            None,
+        );
+        let names = layout
+            .grid_column_line_names
+            .as_ref()
+            .expect("prefix + in-repeat names must reach the engine");
+        assert!(
+            names
+                .first()
+                .is_some_and(|line| line.iter().any(|n| n == "start")),
+            "prefix [start] dropped: {names:?}"
+        );
+        assert!(
+            names.iter().any(|line| line.iter().any(|n| n == "mid")),
+            "in-repeat [mid] dropped: {names:?}"
+        );
+        let repeat = layout
+            .grid_columns_repeat
+            .as_ref()
+            .expect("mixed auto-fit stores GridRepeatAuto");
+        assert!(
+            repeat
+                .pattern_line_names
+                .iter()
+                .any(|line| line.iter().any(|n| n == "mid")),
+            "pattern [mid] must be stored for layout expansion, got {:?}",
+            repeat.pattern_line_names
+        );
+        let expanded = repeat.expand_line_names(3);
+        let mid_count = expanded
+            .iter()
+            .filter(|line| line.iter().any(|n| n == "mid"))
+            .count();
+        assert_eq!(
+            mid_count, 3,
+            "auto-fit line names must copy per repetition, got {expanded:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_repeat_copies_line_names_per_count() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:repeat(3,[mid] 80px)",
+            None,
+            None,
+        );
+        let names = layout
+            .grid_column_line_names
+            .as_ref()
+            .expect("fixed repeat names");
+        let mid_count = names
+            .iter()
+            .filter(|line| line.iter().any(|n| n == "mid"))
+            .count();
+        assert_eq!(
+            mid_count, 3,
+            "repeat(3, [mid] 80px) must copy [mid] three times, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn grid_line_nth_name_parses() {
+        assert_eq!(
+            parse_grid_line("foo 2"),
+            Some(GridLine::NthName("foo".into(), 2))
+        );
+        assert_eq!(
+            parse_grid_line("2 foo"),
+            Some(GridLine::NthName("foo".into(), 2))
+        );
+    }
+
+    #[test]
+    fn display_flex_clears_grid_columns_repeat() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))",
+            None,
+            None,
+        );
+        assert!(layout.grid_columns_repeat.is_some());
+        layout.apply_css_text("display:flex", None, None);
+        assert_eq!(layout.display, Some(DisplaySpec::Flex));
+        assert!(layout.grid_columns_repeat.is_none());
+        assert!(layout.grid_rows_repeat.is_none());
+        assert!(layout.grid_columns_unsupported.is_none());
     }
 
     #[test]
@@ -3895,7 +4729,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(fixed.z_index, Some(10));
         let mut sticky = LayoutStyle::default();
         sticky.apply_css_text("position:sticky;top:0", None, None);
-        assert!(sticky.position.is_unsupported_positioning());
+        assert_eq!(sticky.position, PositionSpec::Sticky);
+        assert!(!sticky.position.is_unsupported_positioning());
     }
 
     #[test]
@@ -4081,6 +4916,19 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         layout.apply_css_text("display: block", None, None);
         assert_eq!(layout.display, Some(DisplaySpec::Block));
         assert_eq!(layout.direction, Some(FlexDirection::Column));
+    }
+
+    #[test]
+    fn white_space_pre_and_font_metrics_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre",
+            None,
+            None,
+        );
+        assert_eq!(layout.white_space, WhiteSpaceSpec::Pre);
+        assert_eq!(layout.font_size, Some(16.0));
+        assert_eq!(layout.line_height, Some(LineHeightSpec::Absolute(20.0)));
     }
 
     #[test]

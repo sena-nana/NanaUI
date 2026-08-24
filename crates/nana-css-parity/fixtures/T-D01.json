@@ -1,0 +1,28 @@
+{
+  "id": "T-D01",
+  "title": "display:contents 提升进 flex 行",
+  "status": "pass",
+  "viewport": [400, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:row;gap:10px;width:400px;height:40px;align-items:flex-start",
+    "children": [
+      {
+        "id": "wrapper",
+        "style": "display:contents",
+        "children": [
+          { "id": "a", "style": "width:40px;height:40px" },
+          { "id": "b", "style": "width:40px;height:40px" }
+        ]
+      },
+      { "id": "c", "style": "width:40px;height:40px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 40 },
+    { "id": "a", "x": 0, "y": 0, "w": 40, "h": 40 },
+    { "id": "b", "x": 50, "y": 0, "w": 40, "h": 40 },
+    { "id": "c", "x": 100, "y": 0, "w": 40, "h": 40 }
+  ]
+}

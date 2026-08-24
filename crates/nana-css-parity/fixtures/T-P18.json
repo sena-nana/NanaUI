@@ -1,0 +1,20 @@
+{
+  "id": "T-P18",
+  "title": "sticky 文档流未贴住（无 overflow）",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:200px;height:80px",
+    "children": [
+      { "id": "a", "style": "position:sticky;top:8px;width:200px;height:20px" },
+      { "id": "b", "style": "width:200px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "a", "x": 0, "y": 0, "w": 200, "h": 20 },
+    { "id": "b", "x": 0, "y": 20, "w": 200, "h": 20 }
+  ]
+}

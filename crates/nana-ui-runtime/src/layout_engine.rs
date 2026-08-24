@@ -3,8 +3,10 @@ use std::sync::Arc;
 
 use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
-    AlignSpec, BoxSizing, FlexDirection, FlexWrap, FontSizeContext, GridTrack, JustifySpec,
-    LayoutStyle, LengthSpec, PositionSpec, resolve_grid_track_sizes,
+    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
+    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
+    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec,
+    resolve_grid_track_sizes,
 };
 
 use crate::{
@@ -31,9 +33,11 @@ impl LayoutViewport {
 /// Backend-neutral layout owner used by canonical Runtime applications.
 ///
 /// Consumes the same `LayoutStyle` and shaped text metrics stored in `UiWorld`
-/// (flex wrap / 1D grid / percent / calc / absolute / fixed) and returns atomic
-/// layout writeback. Vue `measure_layout` and css-parity call
-/// [`Self::layout_style_tree`] so mixed trees and fixtures share this algorithm.
+/// (flex wrap / `display:grid` 2D tracks·repeat·areas·placement via
+/// `uses_2d_grid` / percent / calc / absolute / fixed / float / IFC subset)
+/// and returns atomic layout writeback. Vue `measure_layout` and css-parity
+/// call [`Self::layout_style_tree`] so mixed trees and fixtures share this
+/// algorithm.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RuntimeLayoutEngine;
 
@@ -41,11 +45,12 @@ pub struct RuntimeLayoutEngine;
 ///
 /// Vue `LayoutNode` and css-parity fixtures adapt onto this type; they do not
 /// keep a second layout algorithm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StyleLayoutNode {
     pub id: String,
     pub style: LayoutStyle,
     pub children: Vec<StyleLayoutNode>,
+    pub text: Option<String>,
 }
 
 impl RuntimeLayoutEngine {
@@ -220,8 +225,10 @@ impl RuntimeLayoutEngine {
             if let Some(parent) = parent {
                 queue.insert(parent, id, None);
             }
-            let omit = parent_omitted || node.style.omits_box();
-            if omit {
+            // `display:none` / hidden omit self and descendants. `display:contents`
+            // omits only self from the name→box map; descendants still layout.
+            let omit_descendants = parent_omitted || node.style.omits_box();
+            if omit_descendants || !node.style.generates_box() {
                 omitted.insert(id);
             }
             queue.set_style(
@@ -232,8 +239,20 @@ impl RuntimeLayoutEngine {
                 },
             );
             names.insert(id, node.id.clone());
+            if let Some(text) = node.text.as_deref() {
+                queue.set_text(id, crate::TextContent { value: text.into() });
+            }
             for child in &node.children {
-                add(child, Some(id), omit, document, queue, names, omitted, next);
+                add(
+                    child,
+                    Some(id),
+                    omit_descendants,
+                    document,
+                    queue,
+                    names,
+                    omitted,
+                    next,
+                );
             }
             id
         }
@@ -250,6 +269,13 @@ impl RuntimeLayoutEngine {
         world
             .commit(queue)
             .expect("style-tree mutations are well-formed");
+        let order = world.document_order(document);
+        world
+            .resolve_styles(&order)
+            .expect("style-tree style resolve is infallible");
+        world
+            .shape_text(&order, &mut crate::MeasureTextShaper)
+            .expect("style-tree text shaping is infallible");
         let layouts = self
             .layout_document(&world, document, viewport)
             .expect("style-tree layout is infallible");
@@ -388,6 +414,265 @@ fn subtree_unchanged(
         && cached.height == size.height
 }
 
+fn collect_flow_children(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+) -> Result<Vec<StableNodeId>, UiWorldError> {
+    let mut out = Vec::new();
+    collect_flow_children_into(children, nodes, &mut out)?;
+    Ok(out)
+}
+
+fn collect_flow_children_into(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+    out: &mut Vec<StableNodeId>,
+) -> Result<(), UiWorldError> {
+    for child in children.iter().copied() {
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        if style.omits_box() {
+            continue;
+        }
+        if style.display.is_some_and(DisplaySpec::is_contents) {
+            let nested = match nodes.get(child)? {
+                Some(node) => (*node.children).clone(),
+                None => continue,
+            };
+            collect_flow_children_into(&nested, nodes, out)?;
+            continue;
+        }
+        if style.position.is_out_of_flow() {
+            continue;
+        }
+        out.push(child);
+    }
+    Ok(())
+}
+
+fn collect_positioned_children(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+) -> Result<Vec<StableNodeId>, UiWorldError> {
+    let mut out = Vec::new();
+    collect_positioned_children_into(children, nodes, &mut out)?;
+    Ok(out)
+}
+
+fn collect_positioned_children_into(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+    out: &mut Vec<StableNodeId>,
+) -> Result<(), UiWorldError> {
+    for child in children.iter().copied() {
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        if style.omits_box() {
+            continue;
+        }
+        if style.display.is_some_and(DisplaySpec::is_contents) {
+            let nested = match nodes.get(child)? {
+                Some(node) => (*node.children).clone(),
+                None => continue,
+            };
+            collect_positioned_children_into(&nested, nodes, out)?;
+            continue;
+        }
+        if style.position.is_out_of_flow() {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+fn collect_floated_children(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+) -> Result<Vec<StableNodeId>, UiWorldError> {
+    let mut out = Vec::new();
+    collect_floated_children_into(children, nodes, &mut out)?;
+    Ok(out)
+}
+
+fn collect_floated_children_into(
+    children: &[StableNodeId],
+    nodes: &mut LayoutInputMap<'_>,
+    out: &mut Vec<StableNodeId>,
+) -> Result<(), UiWorldError> {
+    for child in children.iter().copied() {
+        let Some(style) = nodes.style(child) else {
+            continue;
+        };
+        if style.omits_box() {
+            continue;
+        }
+        if style.display.is_some_and(DisplaySpec::is_contents) {
+            let nested = match nodes.get(child)? {
+                Some(node) => (*node.children).clone(),
+                None => continue,
+            };
+            collect_floated_children_into(&nested, nodes, out)?;
+            continue;
+        }
+        if style.is_floated() && !style.position.is_out_of_flow() {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PackedFloat {
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+}
+
+#[derive(Debug, Default)]
+struct PackedFloats {
+    items: Vec<PackedFloat>,
+    /// Occupied bottom of left floats after pack/wrap, relative to content origin.
+    left_bottom: f32,
+    /// Occupied bottom of right floats after pack/wrap, relative to content origin.
+    right_bottom: f32,
+}
+
+/// Geometric same-side pack/wrap. Bottoms are the occupied extent after wrapping,
+/// not the pre-pack max of each float's own height (so `clear` clears the second row).
+#[allow(clippy::too_many_arguments)]
+fn pack_floated_children(
+    floated: &[StableNodeId],
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<PackedFloats, UiWorldError> {
+    let mut items = Vec::with_capacity(floated.len());
+    let mut left_cursor_x = content_origin.x;
+    let mut left_line_y = content_origin.y;
+    let mut left_line_bottom = content_origin.y;
+    let mut right_cursor_x = content_origin.x + content.width;
+    let mut right_line_y = content_origin.y;
+    let mut right_line_bottom = content_origin.y;
+    for child in floated {
+        let Some(child_style) = nodes.style(*child) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
+        let child_size = intrinsic_size_scoped(
+            *child,
+            content,
+            Some(FlexDirection::Row),
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?;
+        let child_fonts = fonts_of(child_style, child_font_px);
+        let margin = child_style.resolved_margin_against_fonts(Some(content.width), child_fonts);
+        let outer_w = child_size.width + margin.left + margin.right;
+        // A float's own `clear` uses packed bottoms of earlier floats, same
+        // contract as in-flow clear (not the pre-pack max of each float).
+        let clear_bottom = match child_style.clear {
+            ClearSpec::None => None,
+            ClearSpec::Left => Some(left_line_bottom),
+            ClearSpec::Right => Some(right_line_bottom),
+            ClearSpec::Both => Some(left_line_bottom.max(right_line_bottom)),
+        };
+        let (x, y) = match child_style.float {
+            FloatSpec::Right => {
+                if let Some(bottom) = clear_bottom
+                    && bottom > right_line_y + 0.5
+                {
+                    right_cursor_x = content_origin.x + content.width;
+                    right_line_y = bottom;
+                }
+                if right_cursor_x < content_origin.x + content.width - 0.5
+                    && right_cursor_x - outer_w < content_origin.x - 0.5
+                {
+                    right_cursor_x = content_origin.x + content.width;
+                    right_line_y = right_line_bottom;
+                }
+                let x = (right_cursor_x - child_size.width - margin.right).max(content_origin.x);
+                let y = right_line_y + margin.top;
+                right_cursor_x = x - margin.left;
+                right_line_bottom = right_line_bottom.max(y + child_size.height + margin.bottom);
+                (x, y)
+            }
+            _ => {
+                if let Some(bottom) = clear_bottom
+                    && bottom > left_line_y + 0.5
+                {
+                    left_cursor_x = content_origin.x;
+                    left_line_y = bottom;
+                }
+                if left_cursor_x > content_origin.x + 0.5
+                    && left_cursor_x + outer_w > content_origin.x + content.width + 0.5
+                {
+                    left_cursor_x = content_origin.x;
+                    left_line_y = left_line_bottom;
+                }
+                let x = left_cursor_x + margin.left;
+                let y = left_line_y + margin.top;
+                left_cursor_x = x + child_size.width + margin.right;
+                left_line_bottom = left_line_bottom.max(y + child_size.height + margin.bottom);
+                (x, y)
+            }
+        };
+        items.push(PackedFloat {
+            id: *child,
+            origin: Point { x, y },
+            size: child_size,
+        });
+    }
+    Ok(PackedFloats {
+        items,
+        left_bottom: (left_line_bottom - content_origin.y).max(0.0),
+        right_bottom: (right_line_bottom - content_origin.y).max(0.0),
+    })
+}
+
+fn sort_by_order(ids: &mut [StableNodeId], nodes: &LayoutInputMap<'_>) {
+    ids.sort_by_key(|id| nodes.style(*id).map(|style| style.order).unwrap_or(0));
+}
+
+fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputMap<'_>) -> bool {
+    if !style.display.is_some_and(DisplaySpec::is_grid_container) {
+        return false;
+    }
+    if style.active_grid_columns().is_some()
+        || style.active_grid_rows().is_some()
+        || style.grid_columns_repeat.is_some()
+        || style.grid_rows_repeat.is_some()
+        || style.grid_auto_flow.is_some()
+        || style
+            .grid_auto_columns
+            .as_ref()
+            .is_some_and(|tracks| !tracks.is_empty())
+        || style
+            .grid_auto_rows
+            .as_ref()
+            .is_some_and(|tracks| !tracks.is_empty())
+        || style
+            .grid_template_areas
+            .as_ref()
+            .is_some_and(|areas| !areas.cells.is_empty())
+    {
+        return true;
+    }
+    flow.iter().any(|id| {
+        nodes
+            .style(*id)
+            .is_some_and(|child| !child.grid_placement.is_auto())
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Point {
     x: f32,
@@ -484,20 +769,18 @@ fn intrinsic_size_scoped(
         (available.height - chrome.height).max(0.0),
     );
     let direction = style.direction.unwrap_or(FlexDirection::Column);
-    let mut flow_children = Vec::new();
-    for child in children.iter().copied() {
-        let include = nodes
-            .style(child)
-            .is_some_and(|style| !style.omits_box() && !style.position.is_out_of_flow());
-        if include {
-            flow_children.push(child);
-        }
-    }
+    let flow_children = collect_flow_children(&children, nodes)?;
     let mut child_sizes = Vec::with_capacity(flow_children.len());
+    let grid_measure = uses_2d_grid(style, &flow_children, nodes);
     for child in &flow_children {
+        let child_available = nodes
+            .style(*child)
+            .filter(|_| grid_measure)
+            .map(|child_style| grid_item_measure_available(child_style.as_ref(), content_available))
+            .unwrap_or(content_available);
         child_sizes.push(intrinsic_size_scoped(
             *child,
-            content_available,
+            child_available,
             Some(direction),
             viewport,
             child_font_px,
@@ -520,7 +803,20 @@ fn intrinsic_size_scoped(
         FlexDirection::Row => style.active_grid_columns(),
         FlexDirection::Column => style.active_grid_rows(),
     };
-    let children = if let Some(tracks) = grid_tracks.filter(|tracks| !tracks.is_empty()) {
+    let children = if uses_2d_grid(style, &flow_children, nodes) {
+        let grid = layout_grid_2d(
+            style,
+            &flow_children,
+            &child_sizes,
+            content_available,
+            fonts,
+            nodes,
+        );
+        Size::new(
+            grid_axis_extent(&grid.col_sizes, grid.col_gap),
+            grid_axis_extent(&grid.row_sizes, grid.row_gap),
+        )
+    } else if let Some(tracks) = grid_tracks.filter(|tracks| !tracks.is_empty()) {
         let auto_sizes = auto_track_contributions(
             &flow_children,
             tracks,
@@ -589,14 +885,30 @@ fn intrinsic_size_scoped(
                 .max(text_line_box_height_px(fs, style.line_height));
         }
     }
-    // Auto width is max-content. Only unconstrained roots fill `available.width`.
-    let default_width = if parent_direction.is_none()
-        && style.width != Some(LengthSpec::Shrink)
-        && !flow_children.is_empty()
-    {
-        available.width
+    let max_content_w = content.width + chrome.width;
+    let stacked_min_w = child_sizes
+        .iter()
+        .map(|size| size.width)
+        .fold(0.0f32, f32::max)
+        + chrome.width;
+    // nowrap row: min-content cannot be narrower than the packed sum.
+    // wrap / column / block: min-content is the largest child (plus chrome).
+    let min_content_w = if wrapping || direction.is_column() {
+        stacked_min_w
     } else {
-        content.width + chrome.width
+        max_content_w
+    };
+    let default_width = match style.width {
+        Some(LengthSpec::MinContent) => min_content_w,
+        Some(LengthSpec::MaxContent) | Some(LengthSpec::Shrink) => max_content_w,
+        Some(LengthSpec::FitContent) => max_content_w.min(available.width).max(stacked_min_w),
+        _ if parent_direction.is_none()
+            && !style.width.is_some_and(LengthSpec::is_content_sized)
+            && !flow_children.is_empty() =>
+        {
+            available.width
+        }
+        _ => max_content_w,
     };
     let default_height = content.height + chrome.height;
     let mut width = resolve_axis(
@@ -719,11 +1031,8 @@ fn place_node_scoped(
     }
     let fonts = fonts_of(style, parent_font_px);
     let child_font_px = fonts.element_px;
-    let (relative_x, relative_y) = style.relative_offset_against_fonts(
-        Some(containing.width),
-        Some(containing.height),
-        fonts,
-    );
+    let (relative_x, relative_y) =
+        style.relative_offset_against_fonts(Some(containing.width), Some(containing.height), fonts);
     let origin = Point {
         x: origin.x + relative_x,
         y: origin.y + relative_y,
@@ -764,42 +1073,66 @@ fn place_node_scoped(
         size.width - padding.left - padding.right - border * 2.0,
         size.height - padding.top - padding.bottom - border * 2.0,
     );
-    let direction = style.direction.unwrap_or(FlexDirection::Column);
-    let mut keyed = Vec::new();
-    for child in child_ids.iter().copied() {
-        let Some(child_style) = nodes.style(child) else {
-            continue;
-        };
-        if child_style.omits_box() {
-            continue;
-        }
-        keyed.push((child_style.order, child));
+    let mut direction = style.direction.unwrap_or(FlexDirection::Column);
+    let mut flow = collect_flow_children(&child_ids, nodes)?;
+    let mut positioned = collect_positioned_children(&child_ids, nodes)?;
+    let floated = if style
+        .display
+        .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+    {
+        Vec::new()
+    } else {
+        collect_floated_children(&child_ids, nodes)?
+    };
+    if !floated.is_empty() {
+        flow.retain(|id| !floated.contains(id));
     }
-    keyed.sort_by_key(|(order, _)| *order);
-    let mut children = keyed.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
-    if style.flex_reverse {
-        children.reverse();
+    sort_by_order(&mut flow, nodes);
+    sort_by_order(&mut positioned, nodes);
+    let packed_floats = if floated.is_empty() {
+        PackedFloats::default()
+    } else {
+        pack_floated_children(
+            &floated,
+            content_origin,
+            content,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?
+    };
+    let float_left_bottom = packed_floats.left_bottom;
+    let float_right_bottom = packed_floats.right_bottom;
+    let grid_2d = uses_2d_grid(style, &flow, nodes);
+    let ifc = !grid_2d
+        && !style
+            .display
+            .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+        && flow
+            .iter()
+            .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
+    if ifc {
+        direction = FlexDirection::Row;
     }
-    let mut flow = Vec::new();
-    let mut positioned = Vec::new();
-    for child in children {
-        let in_flow = nodes
-            .style(child)
-            .is_some_and(|child_style| !child_style.position.is_out_of_flow());
-        if in_flow {
-            flow.push(child);
-        } else {
-            positioned.push(child);
-        }
+    if style.flex_reverse && !grid_2d && !ifc {
+        flow.reverse();
+        positioned.reverse();
     }
     let parent_box = gap_containing_block(style, content);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let mut child_sizes = Vec::with_capacity(flow.len());
     for child in &flow {
+        let child_available = nodes
+            .style(*child)
+            .filter(|_| grid_2d)
+            .map(|child_style| grid_item_measure_available(child_style.as_ref(), content))
+            .unwrap_or(content);
         child_sizes.push(intrinsic_size_scoped(
             *child,
-            content,
+            child_available,
             Some(direction),
             viewport,
             child_font_px,
@@ -808,181 +1141,307 @@ fn place_node_scoped(
             scope,
         )?);
     }
-    let wrap = style.flex_wrap;
-    let wrapping = match direction {
-        FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
-        FlexDirection::Column => {
-            matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content.height > 0.5
-        }
-    };
-    let grid_tracks = match direction {
-        FlexDirection::Row => style.active_grid_columns(),
-        FlexDirection::Column => style.active_grid_rows(),
-    };
-    let mut justify = style.justify_content;
-    if style.flex_reverse {
-        justify = flip_justify_for_reverse(justify);
-    }
-    let mut lines = if wrapping {
-        pack_wrap_lines(
-            &flow,
-            &child_sizes,
-            direction,
-            main_extent(content, direction),
-            gap,
-            grid_tracks,
+    if grid_2d {
+        let grid = layout_grid_2d(style, &flow, &child_sizes, content, fonts, nodes);
+        place_grid_2d_items(
+            &grid,
+            content_origin,
+            content,
+            style,
             viewport,
             child_font_px,
             nodes,
-        )
+            intrinsic,
+            output,
+            scope,
+        )?;
     } else {
-        vec![(0..flow.len()).collect()]
-    };
-    if matches!(wrap, FlexWrap::WrapReverse) {
-        lines.reverse();
-    }
-    let mut cross_cursor = 0.0;
-    for line in &lines {
-        let line_flow: Vec<StableNodeId> = line.iter().map(|&index| flow[index]).collect();
-        let mut line_sizes: Vec<Size> = line.iter().map(|&index| child_sizes[index]).collect();
-        let line_tracks = grid_tracks.map(|tracks| {
-            let start = line.first().copied().unwrap_or(0);
-            let end = line
-                .last()
-                .map(|index| index + 1)
-                .unwrap_or(0)
-                .min(tracks.len());
-            let start = start.min(end);
-            &tracks[start..end]
-        });
-        if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
-            apply_grid_main_sizes(
-                &line_flow,
-                &mut line_sizes,
-                direction,
-                content,
-                gap,
-                tracks,
-                viewport,
-                child_font_px,
-                nodes,
-                intrinsic,
-                scope,
-            )?;
-        } else {
-            distribute_flex_main(
-                &line_flow,
-                &mut line_sizes,
-                direction,
-                content,
-                gap,
-                viewport,
-                child_font_px,
-                nodes,
-            );
-        }
-        let line_cross = line_flow
-            .iter()
-            .zip(line_sizes.iter())
-            .map(|(child, size)| {
-                let margin = nodes
-                    .style(*child)
-                    .map(|style| {
-                        style.resolved_margin_against_fonts(
-                            Some(content.width),
-                            fonts_of(style.as_ref(), child_font_px),
-                        )
-                    })
-                    .unwrap_or_default();
-                cross_extent(*size, direction) + cross_margin(margin, direction)
-            })
-            .fold(0.0, f32::max);
-        let occupied = main_occupied(
-            &line_flow,
-            &line_sizes,
-            direction,
-            content,
-            gap,
-            child_font_px,
-            nodes,
-        );
-        let (mut cursor, effective_gap) = justify_offsets(
-            justify,
-            main_extent(content, direction),
-            occupied,
-            gap,
-            line_flow.len(),
-        );
-        for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
-            let Some(child_style) = nodes.style(child) else {
-                continue;
+        let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
+        let wrapping = ifc
+            || match direction {
+                FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+                FlexDirection::Column => {
+                    matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content.height > 0.5
+                }
             };
-            let child_style = child_style.as_ref();
-            let child_fonts = fonts_of(child_style, child_font_px);
-            let margin = child_style.resolved_margin_against_fonts(Some(content.width), child_fonts);
-            let align = child_style.resolved_align_self(style.align_items);
-            let cross_available =
-                cross_extent(content, direction) - cross_margin(margin, direction);
-            if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
-                set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
+        let grid_tracks = match direction {
+            FlexDirection::Row => style.active_grid_columns(),
+            FlexDirection::Column => style.active_grid_rows(),
+        };
+        let mut justify = if ifc {
+            match style.text_align {
+                TextAlignSpec::Start => JustifySpec::Start,
+                TextAlignSpec::Center => JustifySpec::Center,
+                TextAlignSpec::End => JustifySpec::End,
             }
-            let cross_offset = match align {
-                AlignSpec::Start | AlignSpec::Stretch => {
-                    cross_cursor + cross_start_margin(margin, direction)
-                }
-                AlignSpec::Center => {
-                    cross_cursor
-                        + ((cross_extent(content, direction) - cross_extent(child_size, direction))
-                            / 2.0)
-                            .max(0.0)
-                }
-                AlignSpec::End => {
-                    cross_cursor
-                        + (cross_extent(content, direction)
-                            - cross_extent(child_size, direction)
-                            - cross_end_margin(margin, direction))
-                        .max(0.0)
-                }
-            };
-            let main_start = cursor + main_start_margin(margin, direction);
-            let child_origin = match direction {
-                FlexDirection::Row => Point {
-                    x: content_origin.x + main_start,
-                    y: content_origin.y + cross_offset,
-                },
-                FlexDirection::Column => Point {
-                    x: content_origin.x + cross_offset,
-                    y: content_origin.y + main_start,
-                },
-            };
-            if !subtree_unchanged(
-                child,
-                child_origin,
-                child_size,
-                content,
-                child_style,
-                child_fonts,
-                scope,
-            ) {
-                place_node_scoped(
-                    child,
-                    child_origin,
-                    child_size,
+        } else {
+            style.justify_content
+        };
+        if style.flex_reverse && !ifc {
+            justify = flip_justify_for_reverse(justify);
+        }
+        let mut lines = if wrapping {
+            pack_wrap_lines(
+                &flow,
+                &child_sizes,
+                direction,
+                main_extent(content, direction),
+                gap,
+                grid_tracks,
+                viewport,
+                child_font_px,
+                nodes,
+                ifc,
+            )
+        } else {
+            vec![(0..flow.len()).collect()]
+        };
+        if matches!(wrap, FlexWrap::WrapReverse) {
+            lines.reverse();
+        }
+        let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32)> = Vec::with_capacity(lines.len());
+        for line in &lines {
+            let line_flow: Vec<StableNodeId> = line.iter().map(|&index| flow[index]).collect();
+            let mut line_sizes: Vec<Size> = line.iter().map(|&index| child_sizes[index]).collect();
+            let line_tracks = grid_tracks.map(|tracks| {
+                let start = line.first().copied().unwrap_or(0);
+                let end = line
+                    .last()
+                    .map(|index| index + 1)
+                    .unwrap_or(0)
+                    .min(tracks.len());
+                let start = start.min(end);
+                &tracks[start..end]
+            });
+            if let Some(tracks) = line_tracks.filter(|tracks| !tracks.is_empty()) {
+                apply_grid_main_sizes(
+                    &line_flow,
+                    &mut line_sizes,
+                    direction,
                     content,
+                    gap,
+                    tracks,
                     viewport,
                     child_font_px,
                     nodes,
                     intrinsic,
-                    output,
                     scope,
                 )?;
+            } else {
+                distribute_flex_main(
+                    &line_flow,
+                    &mut line_sizes,
+                    direction,
+                    content,
+                    gap,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                );
             }
-            cursor += main_extent(child_size, direction)
-                + main_start_margin(margin, direction)
-                + main_end_margin(margin, direction)
-                + effective_gap;
+            let line_cross = line_flow
+                .iter()
+                .zip(line_sizes.iter())
+                .map(|(child, size)| {
+                    let margin = nodes
+                        .style(*child)
+                        .map(|style| {
+                            style.resolved_margin_against_fonts(
+                                Some(content.width),
+                                fonts_of(style.as_ref(), child_font_px),
+                            )
+                        })
+                        .unwrap_or_default();
+                    cross_extent(*size, direction) + cross_margin(margin, direction)
+                })
+                .fold(0.0, f32::max);
+            packed.push((line_flow, line_sizes, line_cross));
         }
-        cross_cursor += line_cross + cross_gap;
+        let line_count = packed.len();
+        let container_cross = cross_extent(content, direction);
+        let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
+            let total = packed.iter().map(|(_, _, cross)| *cross).sum::<f32>()
+                + cross_gap * line_count.saturating_sub(1) as f32;
+            if matches!(
+                style.align_content,
+                JustifySpec::Stretch | JustifySpec::Start
+            ) && style.align_content == JustifySpec::Stretch
+            {
+                let leftover = (container_cross - total).max(0.0);
+                let extra = leftover / line_count as f32;
+                for packed_line in &mut packed {
+                    packed_line.2 += extra;
+                }
+                (0.0, cross_gap)
+            } else {
+                justify_offsets(
+                    style.align_content,
+                    container_cross,
+                    total,
+                    cross_gap,
+                    line_count,
+                )
+            }
+        } else {
+            (0.0, cross_gap)
+        };
+        for (line_flow, line_sizes, line_cross) in packed {
+            let occupied = main_occupied(
+                &line_flow,
+                &line_sizes,
+                direction,
+                content,
+                gap,
+                child_font_px,
+                nodes,
+            );
+            let auto_main = count_auto_main_margins(&line_flow, direction, nodes);
+            let (mut cursor, effective_gap, auto_main_share) = if auto_main > 0 {
+                let free = (main_extent(content, direction) - occupied).max(0.0);
+                (0.0, gap, free / auto_main as f32)
+            } else {
+                let (start, extra_gap) = justify_offsets(
+                    justify,
+                    main_extent(content, direction),
+                    occupied,
+                    gap,
+                    line_flow.len(),
+                );
+                (start, extra_gap, 0.0)
+            };
+            let line_baseline = line_flow
+                .iter()
+                .filter_map(|id| {
+                    nodes
+                        .style(*id)
+                        .map(|s| s.approximate_baseline(child_font_px))
+                })
+                .fold(0.0f32, f32::max);
+            for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
+                let Some(child_style) = nodes.style(child) else {
+                    continue;
+                };
+                let child_style = child_style.as_ref();
+                let child_fonts = fonts_of(child_style, child_font_px);
+                let clear_y =
+                    clear_offset(child_style.clear, float_left_bottom, float_right_bottom);
+                if clear_y > 0.0 {
+                    if direction.is_column() {
+                        cursor = cursor.max(clear_y);
+                    } else {
+                        cross_cursor = cross_cursor.max(clear_y);
+                    }
+                }
+                let mut margin =
+                    child_style.resolved_margin_against_fonts(Some(content.width), child_fonts);
+                let line_box_cross = if line_count > 1 {
+                    line_cross
+                } else {
+                    container_cross
+                };
+                apply_auto_margins(
+                    child_style,
+                    direction,
+                    &mut margin,
+                    auto_main_share,
+                    line_box_cross,
+                    child_size,
+                );
+                let align = child_style.resolved_align_self(style.align_items);
+                let cross_available = line_box_cross - cross_margin(margin, direction);
+                if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
+                    set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
+                }
+                let cross_offset = match align {
+                    AlignSpec::Start | AlignSpec::Stretch => {
+                        cross_cursor + cross_start_margin(margin, direction)
+                    }
+                    AlignSpec::Baseline => {
+                        let base = child_style.approximate_baseline(child_fonts.element_px);
+                        cross_cursor + (line_baseline - base).max(0.0)
+                    }
+                    AlignSpec::Center => {
+                        cross_cursor
+                            + ((line_box_cross - cross_extent(child_size, direction)) / 2.0)
+                                .max(0.0)
+                    }
+                    AlignSpec::End => {
+                        cross_cursor
+                            + (line_box_cross
+                                - cross_extent(child_size, direction)
+                                - cross_end_margin(margin, direction))
+                            .max(0.0)
+                    }
+                };
+                let main_start = cursor + main_start_margin(margin, direction);
+                let child_origin = match direction {
+                    FlexDirection::Row => Point {
+                        x: content_origin.x + main_start,
+                        y: content_origin.y + cross_offset,
+                    },
+                    FlexDirection::Column => Point {
+                        x: content_origin.x + cross_offset,
+                        y: content_origin.y + main_start,
+                    },
+                };
+                if !subtree_unchanged(
+                    child,
+                    child_origin,
+                    child_size,
+                    content,
+                    child_style,
+                    child_fonts,
+                    scope,
+                ) {
+                    place_node_scoped(
+                        child,
+                        child_origin,
+                        child_size,
+                        content,
+                        viewport,
+                        child_font_px,
+                        nodes,
+                        intrinsic,
+                        output,
+                        scope,
+                    )?;
+                }
+                cursor += main_extent(child_size, direction)
+                    + main_start_margin(margin, direction)
+                    + main_end_margin(margin, direction)
+                    + effective_gap;
+            }
+            cross_cursor += line_cross + extra_cross_gap;
+        }
+    }
+    for packed in &packed_floats.items {
+        let Some(child_style) = nodes.style(packed.id) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
+        let child_fonts = fonts_of(child_style, child_font_px);
+        if !subtree_unchanged(
+            packed.id,
+            packed.origin,
+            packed.size,
+            content,
+            child_style,
+            child_fonts,
+            scope,
+        ) {
+            place_node_scoped(
+                packed.id,
+                packed.origin,
+                packed.size,
+                content,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+        }
     }
     for child in positioned {
         let Some(child_style) = nodes.style(child) else {
@@ -1324,7 +1783,12 @@ fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::Par
     // Auto-height wrap: row-gap % falls back to width (T-W05/W06). A Fill/px
     // height is a definite CB and must not use the parent/viewport leftover.
     let height = match style.height {
-        None | Some(LengthSpec::Auto) | Some(LengthSpec::Shrink) => None,
+        None
+        | Some(LengthSpec::Auto)
+        | Some(LengthSpec::Shrink)
+        | Some(LengthSpec::MinContent)
+        | Some(LengthSpec::MaxContent)
+        | Some(LengthSpec::FitContent) => None,
         Some(LengthSpec::Fill) => Some(content.height).filter(|value| *value > 0.0),
         Some(_) => Some(content.height).filter(|value| *value > 0.0),
     };
@@ -1350,6 +1814,22 @@ fn demote_fill_spec(spec: Option<LengthSpec>) -> Option<LengthSpec> {
         }
         other => other,
     }
+}
+
+/// `100%` / `Fill` against a definite grid CB must not become the auto-track
+/// contribution. Measure that axis as indefinite (same as auto tracks).
+fn grid_item_measure_available(style: &LayoutStyle, content: Size) -> Size {
+    let width = if style.width.is_some() && demote_fill_spec(style.width).is_none() {
+        0.0
+    } else {
+        content.width
+    };
+    let height = if style.height.is_some() && demote_fill_spec(style.height).is_none() {
+        0.0
+    } else {
+        content.height
+    };
+    Size::new(width, height)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1390,7 +1870,13 @@ fn resolve_child_main(
     fonts: FontSizeContext,
 ) -> Option<f32> {
     match spec {
-        None | Some(LengthSpec::Fill) | Some(LengthSpec::Shrink) | Some(LengthSpec::Auto) => None,
+        None
+        | Some(LengthSpec::Fill)
+        | Some(LengthSpec::Shrink)
+        | Some(LengthSpec::Auto)
+        | Some(LengthSpec::MinContent)
+        | Some(LengthSpec::MaxContent)
+        | Some(LengthSpec::FitContent) => None,
         Some(other) => other
             .resolve_with_fonts(
                 Some(percent_base),
@@ -1420,6 +1906,804 @@ fn content_box_main_border_size(
         }
 }
 
+struct GridPlacedItem {
+    id: StableNodeId,
+    col: usize,
+    row: usize,
+    col_span: usize,
+    row_span: usize,
+    intrinsic: Size,
+}
+
+struct Grid2DLayout {
+    col_sizes: Vec<f32>,
+    row_sizes: Vec<f32>,
+    col_gap: f32,
+    row_gap: f32,
+    items: Vec<GridPlacedItem>,
+}
+
+fn grid_axis_extent(sizes: &[f32], gap: f32) -> f32 {
+    sizes.iter().copied().sum::<f32>() + gap * sizes.len().saturating_sub(1) as f32
+}
+
+fn explicit_column_tracks(style: &LayoutStyle, content_w: f32, col_gap: f32) -> Vec<GridTrack> {
+    explicit_tracks(
+        style.grid_columns_repeat.as_ref(),
+        style.active_grid_columns(),
+        style
+            .grid_template_areas
+            .as_ref()
+            .map(GridTemplateAreas::column_count)
+            .unwrap_or(0),
+        content_w,
+        col_gap,
+        GridTrack::Fr(1.0),
+    )
+}
+
+fn explicit_row_tracks(style: &LayoutStyle, content_h: f32, row_gap: f32) -> Vec<GridTrack> {
+    explicit_tracks(
+        style.grid_rows_repeat.as_ref(),
+        style.active_grid_rows(),
+        style
+            .grid_template_areas
+            .as_ref()
+            .map(GridTemplateAreas::row_count)
+            .unwrap_or(0),
+        content_h,
+        row_gap,
+        GridTrack::Auto,
+    )
+}
+
+fn explicit_tracks(
+    repeat: Option<&GridRepeatAuto>,
+    tracks: Option<&[GridTrack]>,
+    area_count: usize,
+    container: f32,
+    gap: f32,
+    area_fallback: GridTrack,
+) -> Vec<GridTrack> {
+    if let Some(repeat) = repeat {
+        repeat.expand(container, gap)
+    } else if let Some(tracks) = tracks {
+        tracks.to_vec()
+    } else if area_count > 0 {
+        vec![area_fallback; area_count]
+    } else {
+        Vec::new()
+    }
+}
+
+fn expanded_repeat_line_names(
+    repeat: Option<&GridRepeatAuto>,
+    container: f32,
+    gap: f32,
+) -> Option<Vec<Vec<String>>> {
+    let repeat = repeat.filter(|rep| rep.has_line_names())?;
+    let names = repeat.expand_line_names(repeat.fill_count(container, gap));
+    names.iter().any(|line| !line.is_empty()).then_some(names)
+}
+
+fn implicit_grid_track(auto: Option<&[GridTrack]>, implicit_index: usize) -> GridTrack {
+    match auto {
+        Some(tracks) if !tracks.is_empty() => tracks[implicit_index % tracks.len()],
+        _ => GridTrack::Auto,
+    }
+}
+
+fn ensure_grid_tracks(
+    tracks: &mut Vec<GridTrack>,
+    needed: usize,
+    auto: Option<&[GridTrack]>,
+    explicit: usize,
+) {
+    while tracks.len() < needed {
+        let implicit_index = tracks.len().saturating_sub(explicit);
+        tracks.push(implicit_grid_track(auto, implicit_index));
+    }
+}
+
+/// 1-based CSS line → 0-based track boundary against the explicit grid.
+/// Negative indexes count from the end (`-1` is the last line = `explicit` as
+/// an exclusive track end).
+fn grid_line_boundary(index: i32, explicit: usize) -> i32 {
+    if index > 0 {
+        index - 1
+    } else if index < 0 {
+        explicit as i32 + index + 1
+    } else {
+        0
+    }
+}
+
+fn resolve_named_line(
+    line: &GridLine,
+    container: &LayoutStyle,
+    columns: bool,
+    after: Option<i32>,
+    names: Option<&[Vec<String>]>,
+) -> GridLine {
+    match line {
+        GridLine::Name(name) | GridLine::NthName(name, _) => {
+            let occurrence = line.name_occurrence().unwrap_or(1) as u32;
+            let index = if let Some(prev) = after {
+                if columns {
+                    container.named_column_line_after_from(name, prev, names)
+                } else {
+                    container.named_row_line_after_from(name, prev, names)
+                }
+            } else if columns {
+                container.named_column_line_nth_from(name, occurrence, names)
+            } else {
+                container.named_row_line_nth_from(name, occurrence, names)
+            };
+            index.map(GridLine::Index).unwrap_or(GridLine::Auto)
+        }
+        other => other.clone(),
+    }
+}
+
+fn resolve_item_grid_placement(
+    container: &LayoutStyle,
+    placement: &nana_ui_core::GridPlacement,
+    explicit_cols: usize,
+    explicit_rows: usize,
+    col_names: Option<&[Vec<String>]>,
+    row_names: Option<&[Vec<String>]>,
+) -> (Option<i32>, usize, Option<i32>, usize) {
+    if let Some(name) = placement.area.as_deref() {
+        if let Some(areas) = container.grid_template_areas.as_ref() {
+            if let Some((col, row, col_span, row_span)) = areas.lookup(name) {
+                return (
+                    Some(col as i32),
+                    col_span.max(1),
+                    Some(row as i32),
+                    row_span.max(1),
+                );
+            }
+        }
+        if let Some((col, row, col_span, row_span)) = container
+            .grid_template_areas
+            .as_ref()
+            .and_then(|areas| areas.lookup(name))
+        {
+            return (Some(col as i32), col_span, Some(row as i32), row_span);
+        }
+    }
+    let col_start = resolve_named_line(&placement.column_start, container, true, None, col_names);
+    let col_end_after = match (
+        &col_start,
+        placement.column_start.as_name(),
+        placement.column_end.as_name(),
+    ) {
+        (GridLine::Index(s), Some(a), Some(b)) if a == b => Some(*s),
+        _ => None,
+    };
+    let col_end = resolve_named_line(
+        &placement.column_end,
+        container,
+        true,
+        col_end_after,
+        col_names,
+    );
+    let row_start = resolve_named_line(&placement.row_start, container, false, None, row_names);
+    let row_end_after = match (
+        &row_start,
+        placement.row_start.as_name(),
+        placement.row_end.as_name(),
+    ) {
+        (GridLine::Index(s), Some(a), Some(b)) if a == b => Some(*s),
+        _ => None,
+    };
+    let row_end = resolve_named_line(
+        &placement.row_end,
+        container,
+        false,
+        row_end_after,
+        row_names,
+    );
+    let (col_origin, col_span) = resolve_grid_axis(&col_start, &col_end, explicit_cols);
+    let (row_origin, row_span) = resolve_grid_axis(&row_start, &row_end, explicit_rows);
+    (col_origin, col_span, row_origin, row_span)
+}
+
+fn resolve_grid_axis(start: &GridLine, end: &GridLine, explicit: usize) -> (Option<i32>, usize) {
+    let span_of = |n: u16| (n as usize).max(1);
+    match (start, end) {
+        (GridLine::Index(s), GridLine::Index(e)) => {
+            let s = grid_line_boundary(*s, explicit);
+            let e = grid_line_boundary(*e, explicit);
+            let span = if e > s { (e - s) as usize } else { 1 };
+            (Some(s), span)
+        }
+        (GridLine::Index(s), GridLine::Span(n)) => {
+            (Some(grid_line_boundary(*s, explicit)), span_of(*n))
+        }
+        (GridLine::Span(n), GridLine::Index(e)) => {
+            let span = span_of(*n);
+            (Some(grid_line_boundary(*e, explicit) - span as i32), span)
+        }
+        (GridLine::Span(n), GridLine::Auto)
+        | (GridLine::Auto, GridLine::Span(n))
+        | (GridLine::Span(n), GridLine::Span(_)) => (None, span_of(*n)),
+        (GridLine::Index(s), GridLine::Auto) => (Some(grid_line_boundary(*s, explicit)), 1),
+        (GridLine::Auto, GridLine::Index(e)) => {
+            let end = grid_line_boundary(*e, explicit);
+            (Some(end - 1), 1)
+        }
+        (GridLine::Auto, GridLine::Auto)
+        | (GridLine::Name(_), _)
+        | (_, GridLine::Name(_))
+        | (GridLine::NthName(_, _), _)
+        | (_, GridLine::NthName(_, _)) => (None, 1),
+    }
+}
+
+/// Per-row occupied column ranges `[start, end)`, merged and sorted.
+#[derive(Default)]
+struct GridOccupancy {
+    rows: HashMap<usize, Vec<(usize, usize)>>,
+}
+
+impl GridOccupancy {
+    fn range_free(ranges: &[(usize, usize)], start: usize, end: usize) -> bool {
+        !ranges.iter().any(|&(a, b)| a < end && start < b)
+    }
+
+    fn free(&self, row: usize, col: usize, row_span: usize, col_span: usize) -> bool {
+        let end = col.saturating_add(col_span);
+        for r in row..row.saturating_add(row_span) {
+            if let Some(ranges) = self.rows.get(&r)
+                && !Self::range_free(ranges, col, end)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn occupy(&mut self, row: usize, col: usize, row_span: usize, col_span: usize) {
+        let end = col.saturating_add(col_span);
+        for r in row..row.saturating_add(row_span) {
+            let ranges = self.rows.entry(r).or_default();
+            ranges.push((col, end));
+            ranges.sort_unstable();
+            let mut merged: Vec<(usize, usize)> = Vec::new();
+            for (a, b) in ranges.drain(..) {
+                if let Some(last) = merged.last_mut() {
+                    if a <= last.1 {
+                        last.1 = last.1.max(b);
+                        continue;
+                    }
+                }
+                merged.push((a, b));
+            }
+            *ranges = merged;
+        }
+    }
+}
+
+fn search_grid_auto_slot(
+    occupied: &GridOccupancy,
+    row_origin: Option<usize>,
+    col_origin: Option<usize>,
+    row_span: usize,
+    col_span: usize,
+    col_wrap: usize,
+    row_wrap: usize,
+    start_row: usize,
+    start_col: usize,
+    column_flow: bool,
+) -> (usize, usize) {
+    if let (Some(row), Some(col)) = (row_origin, col_origin) {
+        return (row, col);
+    }
+    let search_limit = 4096usize;
+    if column_flow {
+        let row_wrap = row_wrap.max(row_span);
+        if let Some(col) = col_origin {
+            for row in start_row..start_row.saturating_add(search_limit) {
+                if occupied.free(row, col, row_span, col_span) {
+                    return (row, col);
+                }
+            }
+            // Past the scanned region — never silently reuse `start_row`.
+            return (start_row.saturating_add(search_limit), col);
+        }
+        if let Some(row) = row_origin {
+            for c in 0..search_limit {
+                if occupied.free(row, c, row_span, col_span) {
+                    return (row, c);
+                }
+            }
+            return (row, search_limit);
+        }
+        let mut col = start_col;
+        for _ in 0..search_limit {
+            let row_begin = if col == start_col { start_row } else { 0 };
+            let last = row_wrap.saturating_sub(row_span);
+            if row_begin <= last {
+                for row in row_begin..=last {
+                    if occupied.free(row, col, row_span, col_span) {
+                        return (row, col);
+                    }
+                }
+            }
+            col += 1;
+        }
+        (row_wrap, col)
+    } else {
+        let col_wrap = col_wrap.max(col_span);
+        if let Some(row) = row_origin {
+            let last = col_wrap.saturating_sub(col_span);
+            for col in 0..=last {
+                if occupied.free(row, col, row_span, col_span) {
+                    return (row, col);
+                }
+            }
+            // Implicit columns beyond the explicit wrap — never (row, 0).
+            for col in last.saturating_add(1)..last.saturating_add(1).saturating_add(search_limit) {
+                if occupied.free(row, col, row_span, col_span) {
+                    return (row, col);
+                }
+            }
+            return (row, last.saturating_add(1).saturating_add(search_limit));
+        }
+        if let Some(col) = col_origin {
+            for row in start_row..start_row.saturating_add(search_limit) {
+                if occupied.free(row, col, row_span, col_span) {
+                    return (row, col);
+                }
+            }
+            return (start_row.saturating_add(search_limit), col);
+        }
+        let mut row = start_row;
+        for _ in 0..search_limit {
+            let col_begin = if row == start_row { start_col } else { 0 };
+            let last = col_wrap.saturating_sub(col_span);
+            if col_begin <= last {
+                for col in col_begin..=last {
+                    if occupied.free(row, col, row_span, col_span) {
+                        return (row, col);
+                    }
+                }
+            }
+            row += 1;
+        }
+        (row, start_col)
+    }
+}
+
+fn collapse_unoccupied_tracks(
+    tracks: &[GridTrack],
+    items: &mut [GridPlacedItem],
+    columns: bool,
+) -> Vec<GridTrack> {
+    let n = tracks.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut used = vec![false; n];
+    for item in items.iter() {
+        let (origin, span) = if columns {
+            (item.col, item.col_span)
+        } else {
+            (item.row, item.row_span)
+        };
+        let end = origin.saturating_add(span).min(n);
+        for i in origin..end {
+            used[i] = true;
+        }
+    }
+    if used.iter().all(|occupied| *occupied) {
+        return tracks.to_vec();
+    }
+    let mut map = vec![0usize; n];
+    let mut next = Vec::new();
+    for (index, track) in tracks.iter().copied().enumerate() {
+        if used[index] {
+            map[index] = next.len();
+            next.push(track);
+        }
+    }
+    if next.is_empty() {
+        return tracks.to_vec();
+    }
+    for item in items.iter_mut() {
+        if columns {
+            if item.col < n {
+                item.col = map[item.col];
+            }
+        } else if item.row < n {
+            item.row = map[item.row];
+        }
+    }
+    next
+}
+
+fn layout_grid_2d(
+    style: &LayoutStyle,
+    flow: &[StableNodeId],
+    child_sizes: &[Size],
+    content: Size,
+    fonts: FontSizeContext,
+    nodes: &LayoutInputMap<'_>,
+) -> Grid2DLayout {
+    let col_gap = style
+        .resolved_column_gap_against_fonts(Some(content.width).filter(|width| *width > 0.0), fonts);
+    let row_gap = style.resolved_row_gap_against_fonts(
+        Some(content.height)
+            .filter(|height| *height > 0.0)
+            .or(Some(content.width).filter(|width| *width > 0.0)),
+        fonts,
+    );
+    let mut col_tracks = explicit_column_tracks(style, content.width, col_gap);
+    let mut row_tracks = explicit_row_tracks(style, content.height, row_gap);
+    let explicit_cols = col_tracks.len();
+    let explicit_rows = row_tracks.len();
+    let auto_cols = style.grid_auto_columns.as_deref().filter(|t| !t.is_empty());
+    let auto_rows = style.grid_auto_rows.as_deref().filter(|t| !t.is_empty());
+    let auto_flow = style.grid_auto_flow.unwrap_or(GridAutoFlow::Row);
+    let column_flow = auto_flow.is_column();
+    let dense = auto_flow.is_dense();
+
+    let default_placement = GridPlacement::default();
+    let col_repeat_names =
+        expanded_repeat_line_names(style.grid_columns_repeat.as_ref(), content.width, col_gap);
+    let row_repeat_names =
+        expanded_repeat_line_names(style.grid_rows_repeat.as_ref(), content.height, row_gap);
+    let col_names = col_repeat_names
+        .as_deref()
+        .or(style.grid_column_line_names.as_deref());
+    let row_names = row_repeat_names
+        .as_deref()
+        .or(style.grid_row_line_names.as_deref());
+    let mut pending = Vec::with_capacity(flow.len());
+    for (id, intrinsic) in flow.iter().copied().zip(child_sizes.iter().copied()) {
+        let child_style = nodes.style(id);
+        let placement = child_style
+            .as_ref()
+            .map(|child| &child.grid_placement)
+            .unwrap_or(&default_placement);
+        let (col_origin, col_span, row_origin, row_span) = resolve_item_grid_placement(
+            style,
+            placement,
+            explicit_cols,
+            explicit_rows,
+            col_names,
+            row_names,
+        );
+        pending.push((
+            id,
+            intrinsic,
+            col_origin,
+            col_span.max(1),
+            row_origin,
+            row_span.max(1),
+        ));
+    }
+
+    let mut occupied = GridOccupancy::default();
+    let mut items: Vec<GridPlacedItem> = Vec::with_capacity(pending.len());
+    let mut placed = vec![false; pending.len()];
+
+    let place_at = |items: &mut Vec<GridPlacedItem>,
+                    col_tracks: &mut Vec<GridTrack>,
+                    row_tracks: &mut Vec<GridTrack>,
+                    occupied: &mut GridOccupancy,
+                    id: StableNodeId,
+                    intrinsic: Size,
+                    row: usize,
+                    col: usize,
+                    row_span: usize,
+                    col_span: usize| {
+        ensure_grid_tracks(
+            col_tracks,
+            col.saturating_add(col_span),
+            auto_cols,
+            explicit_cols,
+        );
+        ensure_grid_tracks(
+            row_tracks,
+            row.saturating_add(row_span),
+            auto_rows,
+            explicit_rows,
+        );
+        occupied.occupy(row, col, row_span, col_span);
+        items.push(GridPlacedItem {
+            id,
+            col,
+            row,
+            col_span,
+            row_span,
+            intrinsic,
+        });
+    };
+
+    // Pass 1: both axes definite.
+    for (index, &(id, intrinsic, col_origin, col_span, row_origin, row_span)) in
+        pending.iter().enumerate()
+    {
+        let (Some(col), Some(row)) = (col_origin, row_origin) else {
+            continue;
+        };
+        let col = col.max(0) as usize;
+        let row = row.max(0) as usize;
+        place_at(
+            &mut items,
+            &mut col_tracks,
+            &mut row_tracks,
+            &mut occupied,
+            id,
+            intrinsic,
+            row,
+            col,
+            row_span,
+            col_span,
+        );
+        placed[index] = true;
+    }
+
+    let mut cursor_row = 0usize;
+    let mut cursor_col = 0usize;
+    for (index, &(id, intrinsic, col_origin, col_span, row_origin, row_span)) in
+        pending.iter().enumerate()
+    {
+        if placed[index] {
+            continue;
+        }
+        if let Some(col) = col_origin {
+            ensure_grid_tracks(
+                &mut col_tracks,
+                (col.max(0) as usize).saturating_add(col_span),
+                auto_cols,
+                explicit_cols,
+            );
+        }
+        if let Some(row) = row_origin {
+            ensure_grid_tracks(
+                &mut row_tracks,
+                (row.max(0) as usize).saturating_add(row_span),
+                auto_rows,
+                explicit_rows,
+            );
+        }
+        if col_tracks.is_empty() {
+            ensure_grid_tracks(&mut col_tracks, col_span, auto_cols, explicit_cols);
+        } else if col_span > col_tracks.len() {
+            ensure_grid_tracks(&mut col_tracks, col_span, auto_cols, explicit_cols);
+        }
+        if row_tracks.is_empty() {
+            ensure_grid_tracks(&mut row_tracks, row_span, auto_rows, explicit_rows);
+        } else if row_span > row_tracks.len() {
+            ensure_grid_tracks(&mut row_tracks, row_span, auto_rows, explicit_rows);
+        }
+        let start_row = if dense { 0 } else { cursor_row };
+        let start_col = if dense { 0 } else { cursor_col };
+        let (row, col) = search_grid_auto_slot(
+            &occupied,
+            row_origin.map(|v| v.max(0) as usize),
+            col_origin.map(|v| v.max(0) as usize),
+            row_span,
+            col_span,
+            col_tracks.len(),
+            row_tracks.len(),
+            start_row,
+            start_col,
+            column_flow,
+        );
+        place_at(
+            &mut items,
+            &mut col_tracks,
+            &mut row_tracks,
+            &mut occupied,
+            id,
+            intrinsic,
+            row,
+            col,
+            row_span,
+            col_span,
+        );
+        if !dense {
+            if column_flow {
+                cursor_col = col;
+                cursor_row = row.saturating_add(row_span);
+            } else {
+                cursor_row = row;
+                cursor_col = col.saturating_add(col_span);
+            }
+        }
+    }
+
+    if style
+        .grid_columns_repeat
+        .as_ref()
+        .is_some_and(|repeat| repeat.kind.is_auto_fit())
+    {
+        col_tracks = collapse_unoccupied_tracks(&col_tracks, &mut items, true);
+    }
+    if style
+        .grid_rows_repeat
+        .as_ref()
+        .is_some_and(|repeat| repeat.kind.is_auto_fit())
+    {
+        row_tracks = collapse_unoccupied_tracks(&row_tracks, &mut items, false);
+    }
+
+    let mut col_auto = vec![0.0f32; col_tracks.len()];
+    let mut row_auto = vec![0.0f32; row_tracks.len()];
+    for item in &items {
+        if item.col_span == 1 && item.col < col_auto.len() {
+            col_auto[item.col] = col_auto[item.col].max(item.intrinsic.width);
+        }
+        if item.row_span == 1 && item.row < row_auto.len() {
+            row_auto[item.row] = row_auto[item.row].max(item.intrinsic.height);
+        }
+    }
+    let col_sizes = resolve_grid_track_sizes(&col_tracks, content.width, col_gap, &col_auto);
+    let mut row_sizes = resolve_grid_track_sizes(&row_tracks, content.height, row_gap, &row_auto);
+    // Leftover definite height goes to *empty* auto rows so `height:100%` /
+    // empty stretch have a cell, without inflating content-sized auto rows.
+    distribute_auto_track_leftover(&row_tracks, &mut row_sizes, content.height, row_gap);
+    Grid2DLayout {
+        col_sizes,
+        row_sizes,
+        col_gap,
+        row_gap,
+        items,
+    }
+}
+
+fn distribute_auto_track_leftover(
+    tracks: &[GridTrack],
+    sizes: &mut [f32],
+    container: f32,
+    gap: f32,
+) {
+    if container <= 0.5 || sizes.is_empty() || sizes.len() != tracks.len() {
+        return;
+    }
+    let used = sizes.iter().copied().sum::<f32>() + gap * sizes.len().saturating_sub(1) as f32;
+    let leftover = container - used;
+    if leftover <= 0.5 {
+        return;
+    }
+    // Only empty auto rows (no intrinsic). Content-sized auto rows stay
+    // tight so `align-items:start` items keep their packed y (T-G26).
+    let autos: Vec<usize> = tracks
+        .iter()
+        .enumerate()
+        .filter(|(index, track)| matches!(track, GridTrack::Auto) && sizes[*index] <= 0.5)
+        .map(|(index, _)| index)
+        .collect();
+    if autos.is_empty() {
+        return;
+    }
+    let share = leftover / autos.len() as f32;
+    for index in autos {
+        sizes[index] += share;
+    }
+}
+
+fn grid_track_offsets(sizes: &[f32], gap: f32) -> Vec<f32> {
+    let mut out = Vec::with_capacity(sizes.len());
+    let mut acc = 0.0;
+    for (index, size) in sizes.iter().copied().enumerate() {
+        out.push(acc);
+        acc += size;
+        if index + 1 < sizes.len() {
+            acc += gap;
+        }
+    }
+    out
+}
+
+fn grid_span_extent(sizes: &[f32], start: usize, span: usize, gap: f32) -> f32 {
+    if span == 0 || start >= sizes.len() {
+        return 0.0;
+    }
+    let end = start.saturating_add(span).min(sizes.len());
+    let sum: f32 = sizes[start..end].iter().copied().sum();
+    sum + gap * (end - start).saturating_sub(1) as f32
+}
+
+fn size_is_indefinite(spec: Option<LengthSpec>) -> bool {
+    !spec.is_some_and(LengthSpec::is_definite_declared)
+}
+
+/// After tracks exist, percent / Fill resolve against the final cell.
+fn used_in_grid_cell(spec: Option<LengthSpec>, intrinsic: f32, cell: f32) -> f32 {
+    match spec {
+        Some(LengthSpec::Fill) => cell.max(0.0),
+        Some(LengthSpec::Percent(percent)) => (cell * percent / 100.0).max(0.0),
+        Some(LengthSpec::CalcPercentOffset { percent, offset_px }) => {
+            (cell * percent / 100.0 + offset_px).max(0.0)
+        }
+        _ => intrinsic,
+    }
+}
+
+fn align_in_grid_cell(align: AlignSpec, used: f32, cell: f32, stretch: bool) -> (f32, f32) {
+    if stretch {
+        return (0.0, cell.max(0.0));
+    }
+    if used + 1e-6 >= cell {
+        return (0.0, used);
+    }
+    let offset = match align {
+        AlignSpec::Start | AlignSpec::Stretch | AlignSpec::Baseline => 0.0,
+        AlignSpec::Center => ((cell - used) / 2.0).max(0.0),
+        AlignSpec::End => (cell - used).max(0.0),
+    };
+    (offset, used)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_grid_2d_items(
+    grid: &Grid2DLayout,
+    content_origin: Point,
+    content: Size,
+    style: &LayoutStyle,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut IntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
+    let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
+    for item in &grid.items {
+        let Some(child_style) = nodes.style(item.id) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
+        let child_fonts = fonts_of(child_style, child_font_px);
+        let cell_x = col_off.get(item.col).copied().unwrap_or(0.0);
+        let cell_y = row_off.get(item.row).copied().unwrap_or(0.0);
+        let cell_w = grid_span_extent(&grid.col_sizes, item.col, item.col_span, grid.col_gap);
+        let cell_h = grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
+        let justify = child_style.resolved_justify_self(style.justify_items);
+        let align = child_style.resolved_align_self(style.align_items);
+        let stretch_x = justify == AlignSpec::Stretch && size_is_indefinite(child_style.width);
+        let stretch_y = align == AlignSpec::Stretch && size_is_indefinite(child_style.height);
+        let measured_w = used_in_grid_cell(child_style.width, item.intrinsic.width, cell_w);
+        let measured_h = used_in_grid_cell(child_style.height, item.intrinsic.height, cell_h);
+        let (off_x, used_w) = align_in_grid_cell(justify, measured_w, cell_w, stretch_x);
+        let (off_y, used_h) = align_in_grid_cell(align, measured_h, cell_h, stretch_y);
+        let child_size = Size::new(used_w, used_h);
+        let child_origin = Point {
+            x: content_origin.x + cell_x + off_x,
+            y: content_origin.y + cell_y + off_y,
+        };
+        if !subtree_unchanged(
+            item.id,
+            child_origin,
+            child_size,
+            content,
+            child_style,
+            child_fonts,
+            scope,
+        ) {
+            place_node_scoped(
+                item.id,
+                child_origin,
+                child_size,
+                content,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pack_wrap_lines(
     children: &[StableNodeId],
@@ -1431,6 +2715,7 @@ fn pack_wrap_lines(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
+    break_on_blocks: bool,
 ) -> Vec<Vec<usize>> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
@@ -1439,6 +2724,11 @@ fn pack_wrap_lines(
         let Some(style) = nodes.style(*child) else {
             continue;
         };
+        let block_break = break_on_blocks && !style.is_inline_level();
+        if block_break && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            line_main = 0.0;
+        }
         let margin = style.resolved_margin_against_fonts(
             Some(content_main),
             fonts_of(style.as_ref(), parent_font_px),
@@ -1469,6 +2759,10 @@ fn pack_wrap_lines(
             line_main += gap + outer;
         }
         current.push(index);
+        if block_break && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            line_main = 0.0;
+        }
     }
     if !current.is_empty() {
         lines.push(current);
@@ -1504,6 +2798,7 @@ fn wrap_intrinsic_size(
         viewport,
         parent_font_px,
         nodes,
+        false,
     );
     if matches!(wrap, FlexWrap::WrapReverse) {
         lines.reverse();
@@ -2059,7 +3354,7 @@ fn justify_offsets(
 ) -> (f32, f32) {
     let free = (available - occupied).max(0.0);
     match justify {
-        JustifySpec::Start => (0.0, base_gap),
+        JustifySpec::Start | JustifySpec::Stretch => (0.0, base_gap),
         JustifySpec::Center => (free / 2.0, base_gap),
         JustifySpec::End => (free, base_gap),
         JustifySpec::SpaceBetween if count > 1 => (0.0, base_gap + free / (count - 1) as f32),
@@ -2072,6 +3367,87 @@ fn justify_offsets(
             (extra, base_gap + extra)
         }
         _ => (0.0, base_gap),
+    }
+}
+
+fn clear_offset(clear: ClearSpec, left_bottom: f32, right_bottom: f32) -> f32 {
+    match clear {
+        ClearSpec::None => 0.0,
+        ClearSpec::Left => left_bottom,
+        ClearSpec::Right => right_bottom,
+        ClearSpec::Both => left_bottom.max(right_bottom),
+    }
+}
+
+fn count_auto_main_margins(
+    line: &[StableNodeId],
+    direction: FlexDirection,
+    nodes: &LayoutInputMap<'_>,
+) -> usize {
+    line.iter()
+        .map(|id| {
+            let Some(style) = nodes.style(*id) else {
+                return 0;
+            };
+            match direction {
+                FlexDirection::Row => {
+                    usize::from(style.margin_auto_left()) + usize::from(style.margin_auto_right())
+                }
+                FlexDirection::Column => {
+                    usize::from(style.margin_auto_top()) + usize::from(style.margin_auto_bottom())
+                }
+            }
+        })
+        .sum()
+}
+
+fn apply_auto_margins(
+    style: &LayoutStyle,
+    direction: FlexDirection,
+    margin: &mut nana_ui_core::PaddingSpec,
+    auto_main_share: f32,
+    line_cross: f32,
+    child_size: Size,
+) {
+    match direction {
+        FlexDirection::Row => {
+            if style.margin_auto_left() {
+                margin.left += auto_main_share;
+            }
+            if style.margin_auto_right() {
+                margin.right += auto_main_share;
+            }
+            let used = child_size.height + margin.top + margin.bottom;
+            let free = (line_cross - used).max(0.0);
+            match (style.margin_auto_top(), style.margin_auto_bottom()) {
+                (true, true) => {
+                    margin.top += free / 2.0;
+                    margin.bottom += free / 2.0;
+                }
+                (true, false) => margin.top += free,
+                (false, true) => margin.bottom += free,
+                (false, false) => {}
+            }
+        }
+        FlexDirection::Column => {
+            if style.margin_auto_top() {
+                margin.top += auto_main_share;
+            }
+            if style.margin_auto_bottom() {
+                margin.bottom += auto_main_share;
+            }
+            let used = child_size.width + margin.left + margin.right;
+            let free = (line_cross - used).max(0.0);
+            match (style.margin_auto_left(), style.margin_auto_right()) {
+                (true, true) => {
+                    margin.left += free / 2.0;
+                    margin.right += free / 2.0;
+                }
+                (true, false) => margin.left += free,
+                (false, true) => margin.right += free,
+                (false, false) => {}
+            }
+        }
     }
 }
 
@@ -2180,8 +3556,9 @@ mod tests {
     use std::sync::Arc;
 
     use nana_ui_core::{
-        BoxSizing, DisplaySpec, FlexDirection, FlexWrap, GridTrack, JustifySpec, LayoutStyle,
-        LengthSpec, PositionSpec,
+        AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, GridLine,
+        GridPlacement, GridRepeatAuto, GridTrack, GridTrackListUnsupported, JustifySpec,
+        LayoutStyle, LengthSpec, LineHeightSpec, PositionSpec, WhiteSpaceSpec,
     };
 
     use crate::{
@@ -3216,6 +4593,7 @@ mod tests {
                         ..LayoutStyle::default()
                     },
                     children: Vec::new(),
+                    text: None,
                 },
                 StyleLayoutNode {
                     id: "b".into(),
@@ -3225,8 +4603,10 @@ mod tests {
                         ..LayoutStyle::default()
                     },
                     children: Vec::new(),
+                    text: None,
                 },
             ],
+            text: None,
         };
         let boxes = RuntimeLayoutEngine
             .layout_style_tree(&tree, LayoutViewport::new(400.0, 80.0))
@@ -3254,7 +4634,9 @@ mod tests {
                     ..LayoutStyle::default()
                 },
                 children: Vec::new(),
+                text: None,
             }],
+            text: None,
         };
         let boxes = RuntimeLayoutEngine
             .layout_style_tree(&tree, LayoutViewport::new(200.0, 80.0))
@@ -3290,8 +4672,11 @@ mod tests {
                         ..LayoutStyle::default()
                     },
                     children: Vec::new(),
+                    text: None,
                 }],
+                text: None,
             }],
+            text: None,
         };
         let boxes = RuntimeLayoutEngine
             .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
@@ -3330,7 +4715,9 @@ mod tests {
                     ..LayoutStyle::default()
                 },
                 children: Vec::new(),
+                text: None,
             }],
+            text: None,
         };
         let boxes = RuntimeLayoutEngine
             .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
@@ -3363,7 +4750,9 @@ mod tests {
                     ..LayoutStyle::default()
                 },
                 children: Vec::new(),
+                text: None,
             }],
+            text: None,
         };
         let boxes = RuntimeLayoutEngine
             .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
@@ -3373,5 +4762,523 @@ mod tests {
             boxes["child"].height, 64.0,
             "2em min-height against parent font-size 32px must be 64px, not 32px"
         );
+    }
+
+    fn box_map(root: &StyleLayoutNode, vw: f32, vh: f32) -> HashMap<String, LayoutBox> {
+        RuntimeLayoutEngine
+            .layout_style_tree(root, LayoutViewport::new(vw, vh))
+            .into_iter()
+            .collect()
+    }
+
+    fn px_box(id: &str, width: f32, height: f32) -> StyleLayoutNode {
+        StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(width)),
+                height: Some(LengthSpec::Px(height)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        }
+    }
+
+    #[test]
+    fn align_content_center_and_space_between_on_wrapped_row() {
+        let children = (0..4)
+            .map(|i| px_box(&format!("i{i}"), 80.0, 40.0))
+            .collect::<Vec<_>>();
+        let make = |align_content| StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                flex_wrap: FlexWrap::Wrap,
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(160.0)),
+                gap: Some(LengthSpec::Px(8.0)),
+                align_items: AlignSpec::Start,
+                align_content,
+                ..LayoutStyle::default()
+            },
+            children: children.clone(),
+            text: None,
+        };
+        let center = box_map(&make(JustifySpec::Center), 200.0, 160.0);
+        assert!((center["i0"].y - 36.0).abs() < 0.01);
+        assert!((center["i1"].y - 36.0).abs() < 0.01);
+        assert!((center["i2"].y - 84.0).abs() < 0.01);
+        assert!((center["i3"].y - 84.0).abs() < 0.01);
+        let between = box_map(&make(JustifySpec::SpaceBetween), 200.0, 160.0);
+        assert!((between["i0"].y - 0.0).abs() < 0.01);
+        assert!((between["i2"].y - 120.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn display_contents_hoists_children_into_flex_row_gap() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                gap: Some(LengthSpec::Px(10.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "contents".into(),
+                style: LayoutStyle {
+                    display: Some(DisplaySpec::Contents),
+                    ..LayoutStyle::default()
+                },
+                children: vec![px_box("a", 50.0, 40.0), px_box("b", 50.0, 40.0)],
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            !boxes.contains_key("contents"),
+            "display:contents must be absent from the box map"
+        );
+        assert!((boxes["a"].x - 0.0).abs() < 0.01);
+        assert!((boxes["b"].x - 60.0).abs() < 0.01);
+        assert_eq!(boxes["a"].width, 50.0);
+        assert_eq!(boxes["b"].width, 50.0);
+    }
+
+    #[test]
+    fn grid_2d_auto_flow_wraps_fourth_item_to_second_row() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(100.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                grid_columns: Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]),
+                ..LayoutStyle::default()
+            },
+            children: (0..4)
+                .map(|i| px_box(&format!("i{i}"), 50.0, 50.0))
+                .collect(),
+            text: None,
+        };
+        let boxes = box_map(&tree, 100.0, 100.0);
+        assert_eq!(boxes["i0"].x, 0.0);
+        assert_eq!(boxes["i0"].y, 0.0);
+        assert_eq!(boxes["i1"].x, 50.0);
+        assert_eq!(boxes["i1"].y, 0.0);
+        assert_eq!(boxes["i2"].x, 0.0);
+        assert_eq!(boxes["i2"].y, 50.0);
+        assert_eq!(boxes["i3"].x, 50.0);
+        assert_eq!(boxes["i3"].y, 50.0);
+    }
+
+    #[test]
+    fn grid_column_span_two_on_three_columns() {
+        let first = StyleLayoutNode {
+            id: "a".into(),
+            style: LayoutStyle {
+                height: Some(LengthSpec::Px(50.0)),
+                grid_placement: GridPlacement {
+                    column_start: GridLine::Span(2),
+                    ..GridPlacement::default()
+                },
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(150.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                grid_columns: Some(vec![
+                    GridTrack::Px(50.0),
+                    GridTrack::Px(50.0),
+                    GridTrack::Px(50.0),
+                ]),
+                ..LayoutStyle::default()
+            },
+            children: vec![first, px_box("b", 50.0, 50.0), px_box("c", 50.0, 50.0)],
+            text: None,
+        };
+        let boxes = box_map(&tree, 150.0, 100.0);
+        assert!((boxes["a"].x - 0.0).abs() < 0.01);
+        assert!((boxes["a"].width - 100.0).abs() < 0.01);
+        assert!((boxes["b"].x - 100.0).abs() < 0.01);
+        assert!((boxes["b"].y - 0.0).abs() < 0.01);
+        assert!((boxes["c"].x - 0.0).abs() < 0.01);
+        assert!((boxes["c"].y - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn grid_justify_self_end_in_definite_column() {
+        let mut item = px_box("item", 50.0, 50.0);
+        item.style.justify_self = Some(AlignSpec::End);
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(50.0)),
+                grid_columns: Some(vec![GridTrack::Px(200.0)]),
+                ..LayoutStyle::default()
+            },
+            children: vec![item],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 50.0);
+        assert!((boxes["item"].x - 150.0).abs() < 0.01);
+        assert_eq!(boxes["item"].width, 50.0);
+    }
+
+    #[test]
+    fn grid_auto_fit_fills_two_minmax_tracks_in_500px() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(500.0)),
+                height: Some(LengthSpec::Px(50.0)),
+                grid_columns_repeat: Some(GridRepeatAuto {
+                    kind: GridTrackListUnsupported::RepeatAutoFit,
+                    tracks: vec![GridTrack::MinMax {
+                        min_px: 200.0,
+                        fr: 1.0,
+                        max_px: None,
+                    }],
+                    ..Default::default()
+                }),
+                ..LayoutStyle::default()
+            },
+            children: vec![px_box("a", 50.0, 50.0), px_box("b", 50.0, 50.0)],
+            text: None,
+        };
+        let boxes = box_map(&tree, 500.0, 50.0);
+        assert!(
+            (boxes["b"].x - 250.0).abs() < 0.5,
+            "auto-fit minmax(200px,1fr) in 500px must keep 2 tracks, got b.x={}",
+            boxes["b"].x
+        );
+        assert!((boxes["a"].x - 0.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn white_space_pre_measures_explicit_newlines() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                font_size: Some(16.0),
+                line_height: Some(LineHeightSpec::Absolute(20.0)),
+                white_space: WhiteSpaceSpec::Pre,
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: Some("ab\ncd".into()),
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["root"].height - 40.0).abs() < 0.01,
+            "pre + 2 lines × 20px line-height must be 40, got {}",
+            boxes["root"].height
+        );
+    }
+
+    #[test]
+    fn grid_percent_and_fill_resolve_against_final_cell() {
+        let fill = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Percent(100.0)),
+                height: Some(LengthSpec::Fill),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(300.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]),
+                ..LayoutStyle::default()
+            },
+            children: vec![fill("a"), fill("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 300.0, 40.0);
+        assert!(
+            (boxes["a"].width - 100.0).abs() < 0.5 && (boxes["a"].height - 40.0).abs() < 0.5,
+            "100%/Fill must fill the 100px track, not stay 0, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].width - 200.0).abs() < 0.5 && (boxes["b"].height - 40.0).abs() < 0.5,
+            "100%/Fill must fill the 1fr cell, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn empty_grid_item_stretches_into_track() {
+        let empty = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle::default(),
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(300.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Fr(1.0)]),
+                // CSS `display:grid` initial align-items is stretch (css_map sets this).
+                align_items: AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            },
+            children: vec![empty("a"), empty("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 300.0, 40.0);
+        assert!(
+            (boxes["a"].width - 100.0).abs() < 0.5 && (boxes["a"].height - 40.0).abs() < 0.5,
+            "empty + stretch must fill the track, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].width - 200.0).abs() < 0.5 && (boxes["b"].height - 40.0).abs() < 0.5,
+            "empty + stretch 1fr, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn same_side_floats_do_not_overlap() {
+        let floated = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(60.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                float: FloatSpec::Left,
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![floated("a"), floated("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!((boxes["a"].x - 0.0).abs() < 0.5);
+        assert!((boxes["a"].y - 0.0).abs() < 0.5);
+        assert!(
+            (boxes["b"].y - 40.0).abs() < 0.5,
+            "second left float must wrap below, got {:?}",
+            boxes["b"]
+        );
+        assert!((boxes["b"].x - 0.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn float_own_clear_starts_below_packed_same_side() {
+        let left = |id: &str, clear: ClearSpec| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(60.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                float: FloatSpec::Left,
+                clear,
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![left("a", ClearSpec::None), left("b", ClearSpec::Left)],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!((boxes["a"].x - 0.0).abs() < 0.5);
+        assert!((boxes["a"].y - 0.0).abs() < 0.5);
+        assert!(
+            (boxes["b"].y - 40.0).abs() < 0.5 && (boxes["b"].x - 0.0).abs() < 0.5,
+            "float with clear:left must start below packed left, not beside it, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn ifc_block_sibling_starts_new_line() {
+        let inline = |id: &str, x: f32| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(x)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let block = StyleLayoutNode {
+            id: "mid".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![inline("a", 40.0), block, inline("c", 40.0)],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!((boxes["a"].y - 0.0).abs() < 0.5);
+        assert!(
+            (boxes["mid"].y - 20.0).abs() < 0.5,
+            "block sibling must break the IFC line, got {:?}",
+            boxes["mid"]
+        );
+        assert!(
+            (boxes["c"].y - 40.0).abs() < 0.5,
+            "inline after block starts a new line, got {:?}",
+            boxes["c"]
+        );
+    }
+
+    #[test]
+    fn named_line_nth_uses_second_foo() {
+        let item = StyleLayoutNode {
+            id: "cell".into(),
+            style: LayoutStyle {
+                height: Some(LengthSpec::Px(40.0)),
+                grid_placement: GridPlacement {
+                    column_start: GridLine::NthName("foo".into(), 2),
+                    column_end: GridLine::Name("foo".into()),
+                    ..GridPlacement::default()
+                },
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                grid_column_line_names: Some(vec![
+                    vec!["foo".into()],
+                    vec!["foo".into()],
+                    vec!["foo".into()],
+                ]),
+                ..LayoutStyle::default()
+            },
+            children: vec![item],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            (boxes["cell"].x - 80.0).abs() < 0.5 && (boxes["cell"].width - 120.0).abs() < 0.5,
+            "foo 2 / next foo must be the 120px track, got {:?}",
+            boxes["cell"]
+        );
+    }
+
+    #[test]
+    fn auto_fill_nth_named_line_uses_expanded_copies() {
+        let item = StyleLayoutNode {
+            id: "cell".into(),
+            style: LayoutStyle {
+                height: Some(LengthSpec::Px(40.0)),
+                grid_placement: GridPlacement {
+                    column_start: GridLine::NthName("mid".into(), 2),
+                    column_end: GridLine::Name("mid".into()),
+                    ..GridPlacement::default()
+                },
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(240.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns_repeat: Some(GridRepeatAuto {
+                    kind: GridTrackListUnsupported::RepeatAutoFill,
+                    tracks: vec![GridTrack::Px(80.0)],
+                    pattern_line_names: vec![vec!["mid".into()], Vec::new()],
+                    ..Default::default()
+                }),
+                // Pattern stored once — engine must expand, not resolve mid 2
+                // against this single copy (which would miss and auto-place at 0).
+                grid_column_line_names: Some(vec![vec!["mid".into()], Vec::new()]),
+                ..LayoutStyle::default()
+            },
+            children: vec![item],
+            text: None,
+        };
+        let boxes = box_map(&tree, 240.0, 40.0);
+        assert!(
+            (boxes["cell"].x - 80.0).abs() < 0.5 && (boxes["cell"].width - 80.0).abs() < 0.5,
+            "mid 2 after auto-fit expansion must be the second 80px track, got {:?}",
+            boxes["cell"]
+        );
+    }
+
+    #[test]
+    fn grid_auto_slot_overflow_does_not_reuse_origin() {
+        let occupied = {
+            let mut occ = GridOccupancy::default();
+            occ.occupy(0, 0, 1, 2);
+            occ
+        };
+        let (row, col) = search_grid_auto_slot(&occupied, Some(0), None, 1, 1, 2, 1, 0, 0, false);
+        assert!(
+            !(row == 0 && col == 0),
+            "full explicit row must not silently place at (0,0), got ({row},{col})"
+        );
+        assert_eq!(row, 0);
+        assert!(col >= 2, "implicit column past wrap, got {col}");
     }
 }

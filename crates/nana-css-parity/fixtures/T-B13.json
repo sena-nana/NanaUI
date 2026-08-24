@@ -1,0 +1,18 @@
+{
+  "id": "T-B13",
+  "title": "margin:0 auto 块级水平居中",
+  "status": "pass",
+  "viewport": [400, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:400px;height:80px",
+    "children": [
+      { "id": "child", "style": "width:100px;height:40px;margin:0 auto" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
+    { "id": "child", "x": 150, "y": 0, "w": 100, "h": 40 }
+  ]
+}

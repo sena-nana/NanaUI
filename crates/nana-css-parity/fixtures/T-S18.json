@@ -1,0 +1,25 @@
+{
+  "id": "T-S18",
+  "title": "width:fit-content 钳到可用宽度",
+  "status": "pass",
+  "viewport": [80, 40],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:80px;height:40px",
+    "children": [
+      {
+        "id": "box",
+        "style": "display:flex;flex-direction:row;width:fit-content;height:40px;gap:0;flex-shrink:0",
+        "children": [
+          { "id": "a", "style": "width:60px;height:40px;flex-shrink:0" },
+          { "id": "b", "style": "width:60px;height:40px;flex-shrink:0" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "box", "x": 0, "y": 0, "w": 80, "h": 40 }
+  ]
+}

@@ -33,6 +33,8 @@ impl FlexDirection {
 }
 
 /// 交叉轴对齐（`align-items` / `align-self`）。
+///
+/// `Baseline` 用字号近似第一行基线（`0.8em`）；无字号时回退 Start。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AlignSpec {
     #[default]
@@ -40,9 +42,12 @@ pub enum AlignSpec {
     Center,
     End,
     Stretch,
+    Baseline,
 }
 
-/// 主轴分布（justify-content）。Runtime layout 用 Space / Fill 意图表达。
+/// 主轴分布（justify-content）与多行 `align-content`。
+///
+/// `Stretch` 只对多行 `align-content` 有意义：把剩余交叉空间均分给各行。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum JustifySpec {
     #[default]
@@ -52,6 +57,7 @@ pub enum JustifySpec {
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
+    Stretch,
 }
 
 /// overflow / overflow-x / overflow-y。
@@ -83,8 +89,14 @@ pub enum DisplaySpec {
     InlineFlex,
     Block,
     Grid,
-    /// `inline-grid`：与 [`Self::Grid`] 同属网格容器；1D 轨子集布局消费与 `grid` 相同。
+    /// `inline-grid`：与 [`Self::Grid`] 同属网格容器；轨 / auto-fill 布局消费与 `grid` 相同。
     InlineGrid,
+    /// `display: contents`：自身不生成盒子，子项提升到父级格式化上下文。
+    Contents,
+    /// `display: inline`：行内级；在块容器里参与 IFC 子集。
+    Inline,
+    /// `display: inline-block`：行内级盒子，可有独立宽高。
+    InlineBlock,
 }
 
 impl DisplaySpec {
@@ -97,12 +109,63 @@ impl DisplaySpec {
     pub fn is_flex_container(self) -> bool {
         matches!(self, Self::Flex | Self::InlineFlex)
     }
+
+    /// `display: contents`。
+    pub fn is_contents(self) -> bool {
+        matches!(self, Self::Contents)
+    }
+
+    /// 行内级（`inline` / `inline-block`）。flex/grid 项会被块化。
+    pub fn is_inline_level(self) -> bool {
+        matches!(self, Self::Inline | Self::InlineBlock)
+    }
 }
 
-/// `grid-template-*` 中已识别但布局仍 defer 的语法（勿当成 `none` / 静默丢弃）。
-///
-/// 对照 [MDN: repeat()](https://developer.mozilla.org/en-US/docs/Web/CSS/repeat)：
-/// `auto-fit` / `auto-fill` 依赖隐式轨折叠，完整 2D grid 未兑现前不得假展开。
+/// `text-align` 子集（IFC 行内对齐；块/列容器上的行内子项）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextAlignSpec {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+
+/// `white-space` 子集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WhiteSpaceSpec {
+    #[default]
+    Normal,
+    Nowrap,
+    /// 保留空格与换行；按换行拆成多行量测。
+    Pre,
+}
+
+/// `float` 子集（块/IFC：左/右浮动 + `clear`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FloatSpec {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+impl FloatSpec {
+    pub fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// `clear` 子集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ClearSpec {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+/// `repeat(auto-fit|auto-fill)` 种类。布局按容器尺寸展开轨，不再当作缺口。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GridTrackListUnsupported {
     /// `repeat(auto-fit, …)`
@@ -118,15 +181,301 @@ impl GridTrackListUnsupported {
             Self::RepeatAutoFill => "repeat(auto-fill)",
         }
     }
+
+    pub fn is_auto_fit(self) -> bool {
+        matches!(self, Self::RepeatAutoFit)
+    }
 }
 
-/// `grid-auto-flow`（解析保留；1D 轨子集**不**消费 — 完整 2D / auto-placement defer）。
+/// `repeat(auto-fit|auto-fill, <track-list>)` 的可展开模式。
+///
+/// 可与前后固定轨混写：`prefix + repeat*N + suffix`。
+/// 线名按 CSS 在每次重复时复制，接缝处相邻名字合并。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GridRepeatAuto {
+    pub kind: GridTrackListUnsupported,
+    pub tracks: Vec<GridTrack>,
+    #[serde(default)]
+    pub prefix: Vec<GridTrack>,
+    #[serde(default)]
+    pub suffix: Vec<GridTrack>,
+    /// Prefix track list line names (`prefix.len() + 1` 行，可为空)。
+    #[serde(default)]
+    pub prefix_line_names: Vec<Vec<String>>,
+    /// In-repeat pattern line names (`tracks.len() + 1` 行)；布局按次数展开。
+    #[serde(default)]
+    pub pattern_line_names: Vec<Vec<String>>,
+    /// Suffix track list line names.
+    #[serde(default)]
+    pub suffix_line_names: Vec<Vec<String>>,
+}
+
+impl Default for GridRepeatAuto {
+    fn default() -> Self {
+        Self {
+            kind: GridTrackListUnsupported::RepeatAutoFit,
+            tracks: Vec::new(),
+            prefix: Vec::new(),
+            suffix: Vec::new(),
+            prefix_line_names: Vec::new(),
+            pattern_line_names: Vec::new(),
+            suffix_line_names: Vec::new(),
+        }
+    }
+}
+
+impl GridRepeatAuto {
+    fn track_min(track: GridTrack, container: f32) -> f32 {
+        let fixed = track.as_fixed_against(container).unwrap_or(0.0);
+        track.min_px().max(fixed)
+    }
+
+    fn list_min(tracks: &[GridTrack], container: f32, gap: f32) -> f32 {
+        if tracks.is_empty() {
+            return 0.0;
+        }
+        let mut min = 0.0f32;
+        for (i, track) in tracks.iter().copied().enumerate() {
+            if i > 0 {
+                min += gap.max(0.0);
+            }
+            min += Self::track_min(track, container);
+        }
+        min
+    }
+
+    /// How many pattern repetitions fit in `container` with `gap` between tracks.
+    pub fn fill_count(&self, container: f32, gap: f32) -> usize {
+        if self.tracks.is_empty() {
+            return 1;
+        }
+        let gap = gap.max(0.0);
+        let prefix = Self::list_min(&self.prefix, container, gap);
+        let suffix = Self::list_min(&self.suffix, container, gap);
+        let mut reserved = prefix + suffix;
+        if !self.prefix.is_empty() {
+            reserved += gap;
+        }
+        if !self.suffix.is_empty() {
+            reserved += gap;
+        }
+        let remaining = (container.max(0.0) - reserved).max(0.0);
+        let min_rep = Self::list_min(&self.tracks, container, gap);
+        if min_rep <= 1e-6 {
+            return 1;
+        }
+        let step = min_rep + gap;
+        ((remaining + gap) / step).floor().max(1.0) as usize
+    }
+
+    /// Repeat the pattern `n` times (at least once) and wrap prefix/suffix.
+    pub fn expand_n(&self, n: usize) -> Vec<GridTrack> {
+        let n = n.max(1);
+        let mut out =
+            Vec::with_capacity(self.prefix.len() + n * self.tracks.len() + self.suffix.len());
+        out.extend_from_slice(&self.prefix);
+        for _ in 0..n {
+            out.extend_from_slice(&self.tracks);
+        }
+        out.extend_from_slice(&self.suffix);
+        out
+    }
+
+    /// `auto-fill`: as many repetitions as fit. `auto-fit`: same count; caller
+    /// collapses empty tracks after placement.
+    pub fn expand(&self, container: f32, gap: f32) -> Vec<GridTrack> {
+        self.expand_n(self.fill_count(container, gap))
+    }
+
+    /// CSS: repeating a named-line pattern joins adjacent names at the seam.
+    /// `repeat(3, [a] 1fr [b])` → `[a] 1fr [b a] 1fr [b a] 1fr [b]`.
+    pub fn merge_line_name_pattern(pattern: &[Vec<String>], n: usize) -> Vec<Vec<String>> {
+        if pattern.is_empty() || n == 0 {
+            return Vec::new();
+        }
+        let mut out = pattern.to_vec();
+        for _ in 1..n {
+            out = Self::join_line_name_lists(&out, pattern);
+        }
+        out
+    }
+
+    pub fn join_line_name_lists(left: &[Vec<String>], right: &[Vec<String>]) -> Vec<Vec<String>> {
+        if left.is_empty() {
+            return right.to_vec();
+        }
+        if right.is_empty() {
+            return left.to_vec();
+        }
+        let mut out = left.to_vec();
+        if let Some(first) = right.first()
+            && let Some(last) = out.last_mut()
+        {
+            last.extend(first.iter().cloned());
+        }
+        if right.len() > 1 {
+            out.extend(right.iter().skip(1).cloned());
+        }
+        out
+    }
+
+    /// Expand stored prefix / pattern / suffix line names for `n` repetitions.
+    pub fn expand_line_names(&self, n: usize) -> Vec<Vec<String>> {
+        let n = n.max(1);
+        let pattern = if self.pattern_line_names.is_empty() {
+            if self.tracks.is_empty() {
+                Vec::new()
+            } else {
+                vec![Vec::new(); self.tracks.len() + 1]
+            }
+        } else {
+            self.pattern_line_names.clone()
+        };
+        let expanded = Self::merge_line_name_pattern(&pattern, n);
+        let prefix = if self.prefix_line_names.is_empty() && !self.prefix.is_empty() {
+            vec![Vec::new(); self.prefix.len() + 1]
+        } else {
+            self.prefix_line_names.clone()
+        };
+        let suffix = if self.suffix_line_names.is_empty() && !self.suffix.is_empty() {
+            vec![Vec::new(); self.suffix.len() + 1]
+        } else {
+            self.suffix_line_names.clone()
+        };
+        let mid = Self::join_line_name_lists(&prefix, &expanded);
+        Self::join_line_name_lists(&mid, &suffix)
+    }
+
+    pub fn has_line_names(&self) -> bool {
+        self.pattern_line_names.iter().any(|line| !line.is_empty())
+            || self.prefix_line_names.iter().any(|line| !line.is_empty())
+            || self.suffix_line_names.iter().any(|line| !line.is_empty())
+    }
+}
+
+/// `grid-auto-flow`（2D 自动放置：row / column，可选 dense）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GridAutoFlow {
     Row,
     Column,
     RowDense,
     ColumnDense,
+}
+
+impl GridAutoFlow {
+    pub fn is_column(self) -> bool {
+        matches!(self, Self::Column | Self::ColumnDense)
+    }
+
+    pub fn is_dense(self) -> bool {
+        matches!(self, Self::RowDense | Self::ColumnDense)
+    }
+}
+
+/// CSS grid 线：`auto` / 1-based 索引（负值从末尾） / `span N` / 命名线。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GridLine {
+    #[default]
+    Auto,
+    /// 1-based line index; negative counts from the end.
+    Index(i32),
+    Span(u16),
+    /// Custom ident（`grid-column: main` / `[header-start]`）。第一根同名线。
+    Name(String),
+    /// `foo 2` / `2 foo`：第 N 根同名线（N ≥ 2）。
+    NthName(String, u16),
+}
+
+impl GridLine {
+    pub fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    pub fn as_name(&self) -> Option<&str> {
+        match self {
+            Self::Name(name) | Self::NthName(name, _) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// 1-based 同名线序号；匿名 / 非 Name 为 `None`。
+    pub fn name_occurrence(&self) -> Option<u16> {
+        match self {
+            Self::Name(_) => Some(1),
+            Self::NthName(_, n) => Some((*n).max(1)),
+            _ => None,
+        }
+    }
+}
+
+/// Item `grid-column` / `grid-row` / `grid-area` placement.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GridPlacement {
+    pub column_start: GridLine,
+    pub column_end: GridLine,
+    pub row_start: GridLine,
+    pub row_end: GridLine,
+    /// `grid-area: header` 命名区域（优先于线号）。
+    #[serde(default)]
+    pub area: Option<String>,
+}
+
+impl GridPlacement {
+    pub fn is_auto(&self) -> bool {
+        self.area.is_none()
+            && matches!(self.column_start, GridLine::Auto)
+            && matches!(self.column_end, GridLine::Auto)
+            && matches!(self.row_start, GridLine::Auto)
+            && matches!(self.row_end, GridLine::Auto)
+    }
+}
+
+/// `grid-template-areas` 行×列名称表。`"."` 是空洞。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GridTemplateAreas {
+    pub cells: Vec<Vec<String>>,
+}
+
+impl GridTemplateAreas {
+    /// 命名区域的 (col, row, col_span, row_span)，0-based。
+    pub fn lookup(&self, name: &str) -> Option<(usize, usize, usize, usize)> {
+        if name.is_empty() || name == "." {
+            return None;
+        }
+        let mut min_r = usize::MAX;
+        let mut min_c = usize::MAX;
+        let mut max_r = 0usize;
+        let mut max_c = 0usize;
+        let mut found = false;
+        for (r, row) in self.cells.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if cell == name {
+                    found = true;
+                    min_r = min_r.min(r);
+                    min_c = min_c.min(c);
+                    max_r = max_r.max(r);
+                    max_c = max_c.max(c);
+                }
+            }
+        }
+        if !found {
+            return None;
+        }
+        Some((
+            min_c,
+            min_r,
+            max_c.saturating_sub(min_c) + 1,
+            max_r.saturating_sub(min_r) + 1,
+        ))
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.cells.iter().map(|row| row.len()).max().unwrap_or(0)
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.cells.len()
+    }
 }
 
 /// `position` — Style Model 子集。
@@ -136,7 +485,7 @@ pub enum GridAutoFlow {
 /// - `Absolute`：measure 最小子集（脱流 + 相对 nearest positioned padding box）；
 ///   流内跳过；产品浮层仍走 Nana Overlay，不实现完整定位引擎
 /// - `Fixed`：视口 containing block + inset 子集（脱流；根层绘制）
-/// - `Sticky`：仍 defer（缺口）
+/// - `Sticky`：流内布局；滚动投影按 nearest scrollport + inset 钳制
 ///
 /// **与 Nana Overlay 分工**：L2 Dialog/Popover/Drawer/ContextMenu 剥离 CSS
 /// `fixed`/`sticky`，走 Overlay 合同；普通节点的 `position:fixed` 走本视口子集。
@@ -149,14 +498,14 @@ pub enum PositionSpec {
     Absolute,
     /// 视口固定定位子集（CB = 当前窗口/content viewport）。
     Fixed,
-    /// 缺口（defer）：粘性定位未兑现。
+    /// 流内粘性定位：未滚动时与 static 同盒；滚动后按 inset 钳制。
     Sticky,
 }
 
 impl PositionSpec {
-    /// 尚未兑现的定位模式（目前仅 `Sticky`）。
+    /// 已兑现全部定位模式；保留给诊断兼容。
     pub fn is_unsupported_positioning(self) -> bool {
-        matches!(self, Self::Sticky)
+        false
     }
 
     pub fn applies_relative_offset(self) -> bool {
@@ -589,6 +938,12 @@ pub enum LengthSpec {
     Fill,
     Shrink,
     Auto,
+    /// CSS `min-content`：尽量收缩的固有尺寸。
+    MinContent,
+    /// CSS `max-content`：不折行的固有尺寸。
+    MaxContent,
+    /// CSS `fit-content`：`min(max-content, max(min-content, available))`。
+    FitContent,
 }
 
 impl LengthSpec {
@@ -648,7 +1003,12 @@ impl LengthSpec {
                 let hi = max.resolve_with_fonts(percent_base, viewport, fonts)?;
                 Some(v.clamp(lo.min(hi), lo.max(hi)))
             }
-            Self::Fill | Self::Shrink | Self::Auto => None,
+            Self::Fill
+            | Self::Shrink
+            | Self::Auto
+            | Self::MinContent
+            | Self::MaxContent
+            | Self::FitContent => None,
         }
     }
 
@@ -671,6 +1031,13 @@ impl LengthSpec {
     ) -> Option<f32> {
         self.resolve_with_fonts(percent_base, viewport, fonts)
             .map(|v| v.max(0.0))
+    }
+
+    pub fn is_content_sized(self) -> bool {
+        matches!(
+            self,
+            Self::Shrink | Self::MinContent | Self::MaxContent | Self::FitContent
+        )
     }
 
     /// 声明尺寸是否按 content-box 字面长度理解（非 Fill 分配）。
@@ -872,8 +1239,7 @@ pub struct LayoutStyle {
     /// `align-self`；`None` = `auto`（继承容器 `align-items`）。
     #[serde(default)]
     pub align_self: Option<AlignSpec>,
-    /// `align-content`（多行 flex 线间分布；自动交叉尺寸时常无无剩余空间）。
-    /// 复用 [`JustifySpec`]（含 `space-*`）；`stretch`/`normal` ≈ Start。
+    /// `align-content`（多行 flex 线间分布；`stretch`/`normal` 均分剩余交叉空间）。
     #[serde(default)]
     pub align_content: JustifySpec,
     pub justify_content: JustifySpec,
@@ -894,9 +1260,21 @@ pub struct LayoutStyle {
     /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
     #[serde(default)]
     pub text_overflow_ellipsis: bool,
-    /// `white-space: nowrap`。
+    /// `white-space: nowrap`（与 [`Self::white_space`] 同步）。
     #[serde(default)]
     pub white_space_nowrap: bool,
+    /// `white-space` 子集。
+    #[serde(default)]
+    pub white_space: WhiteSpaceSpec,
+    /// `text-align`（IFC 行对齐）。
+    #[serde(default)]
+    pub text_align: TextAlignSpec,
+    /// `float` 子集。
+    #[serde(default)]
+    pub float: FloatSpec,
+    /// `clear` 子集。
+    #[serde(default)]
+    pub clear: ClearSpec,
     /// Computed `font-size` in CSS px. `None` = inherit (then initial / ControlSize).
     #[serde(default)]
     pub font_size: Option<f32>,
@@ -920,22 +1298,40 @@ pub struct LayoutStyle {
     /// `grid-template-rows` 轻量轨道（堆叠区；Column 主轴）。
     #[serde(default)]
     pub grid_rows: Option<Vec<GridTrack>>,
-    /// `grid-template-columns` 含 defer 语法（如 `repeat(auto-fit)`）；**非** `none`。
-    /// 布局仍只读 [`Self::grid_columns`]；本字段供诊断，避免静默丢轨。
+    /// `grid-template-columns` 无法展开的语法（嵌套 auto-fit / auto-fill、坏 token）。
+    /// 成功的 `repeat(auto-fit|auto-fill)` **不**走这里，见 [`Self::grid_columns_repeat`]。
     #[serde(default)]
     pub grid_columns_unsupported: Option<GridTrackListUnsupported>,
     /// 同 [`Self::grid_columns_unsupported`]，针对 `grid-template-rows`。
     #[serde(default)]
     pub grid_rows_unsupported: Option<GridTrackListUnsupported>,
-    /// `grid-auto-columns`：解析保留；**布局不消费**（隐式列轨 / 2D defer）。
+    /// `grid-auto-columns`：隐式列轨（2D 自动放置超出模板时追加）。
     #[serde(default)]
     pub grid_auto_columns: Option<Vec<GridTrack>>,
-    /// `grid-auto-rows`：解析保留；**布局不消费**（隐式行轨 / 2D defer）。
+    /// `grid-auto-rows`：隐式行轨（2D 自动放置超出模板时追加）。
     #[serde(default)]
     pub grid_auto_rows: Option<Vec<GridTrack>>,
-    /// `grid-auto-flow`：解析保留；**布局不消费**（auto-placement defer）。
+    /// `grid-auto-flow`：2D 自动放置方向（缺省 row）。
     #[serde(default)]
     pub grid_auto_flow: Option<GridAutoFlow>,
+    /// `repeat(auto-fit|auto-fill, …)` 列模式；布局按容器展开。
+    #[serde(default)]
+    pub grid_columns_repeat: Option<GridRepeatAuto>,
+    /// 同行模式，针对 `grid-template-rows`。
+    #[serde(default)]
+    pub grid_rows_repeat: Option<GridRepeatAuto>,
+    /// `grid-column` / `grid-row` 项放置。
+    #[serde(default)]
+    pub grid_placement: GridPlacement,
+    /// `grid-template-areas` 命名区域。
+    #[serde(default)]
+    pub grid_template_areas: Option<GridTemplateAreas>,
+    /// 列线名称（线 i 的名字列表；长度 = 轨数 + 1）。
+    #[serde(default)]
+    pub grid_column_line_names: Option<Vec<Vec<String>>>,
+    /// 行线名称。
+    #[serde(default)]
+    pub grid_row_line_names: Option<Vec<Vec<String>>>,
     pub hidden: bool,
     /// CSS `opacity` (0..=1). `None` = unset / inherit (treated as 1.0 at paint).
     /// Parsed with other declarations so L1 adapters need not re-scan the style
@@ -1004,6 +1400,10 @@ impl Default for LayoutStyle {
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,
             white_space_nowrap: false,
+            white_space: WhiteSpaceSpec::Normal,
+            text_align: TextAlignSpec::Start,
+            float: FloatSpec::None,
+            clear: ClearSpec::None,
             font_size: None,
             font_weight: None,
             font_family: None,
@@ -1017,6 +1417,12 @@ impl Default for LayoutStyle {
             grid_auto_columns: None,
             grid_auto_rows: None,
             grid_auto_flow: None,
+            grid_columns_repeat: None,
+            grid_rows_repeat: None,
+            grid_placement: GridPlacement::default(),
+            grid_template_areas: None,
+            grid_column_line_names: None,
+            grid_row_line_names: None,
             hidden: false,
             opacity: None,
             background: None,
@@ -1113,8 +1519,9 @@ impl LayoutStyle {
     ) -> f32 {
         match direction {
             FlexDirection::Row => self.resolved_column_gap_against_fonts(cb.width, fonts),
-            FlexDirection::Column => self
-                .resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts),
+            FlexDirection::Column => {
+                self.resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts)
+            }
         }
     }
 
@@ -1137,8 +1544,9 @@ impl LayoutStyle {
         fonts: FontSizeContext,
     ) -> f32 {
         match direction {
-            FlexDirection::Row => self
-                .resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts),
+            FlexDirection::Row => {
+                self.resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts)
+            }
             FlexDirection::Column => self.resolved_column_gap_against_fonts(cb.width, fonts),
         }
     }
@@ -1407,15 +1815,147 @@ impl LayoutStyle {
         self.hidden || matches!(self.display, Some(DisplaySpec::None))
     }
 
-    /// Column tracks that participate in layout.
+    /// Generates a layout / paint box. `display:contents` does not.
+    pub fn generates_box(&self) -> bool {
+        !self.omits_box() && !self.display.is_some_and(DisplaySpec::is_contents)
+    }
+
+    /// 行内级盒子（块容器里走 IFC 子集；flex/grid 项会被块化）。
+    pub fn is_inline_level(&self) -> bool {
+        self.display.is_some_and(DisplaySpec::is_inline_level)
+    }
+
+    pub fn is_floated(&self) -> bool {
+        !self.float.is_none() && !self.position.is_out_of_flow()
+    }
+
+    /// 某边 margin 是否为 `auto`（含 `margin: 0 auto` 简写）。
+    pub fn margin_auto_left(&self) -> bool {
+        edge_is_auto(self.margin_left, self.margin)
+    }
+
+    pub fn margin_auto_right(&self) -> bool {
+        edge_is_auto(self.margin_right, self.margin)
+    }
+
+    pub fn margin_auto_top(&self) -> bool {
+        edge_is_auto(self.margin_top, self.margin)
+    }
+
+    pub fn margin_auto_bottom(&self) -> bool {
+        edge_is_auto(self.margin_bottom, self.margin)
+    }
+
+    /// 第一行基线相对 border-box 顶边的近似偏移。
+    pub fn approximate_baseline(&self, fallback_font_px: f32) -> f32 {
+        let font = self.font_size.unwrap_or(fallback_font_px).max(0.0);
+        let pad = self.resolved_padding_against(None);
+        let border = self.resolved_border_width();
+        pad.top + border + font * 0.8
+    }
+
+    /// 查找命名网格线（1-based）。含 `name-start` / `name-end` 由 areas 推导。
+    pub fn named_column_line(&self, name: &str) -> Option<i32> {
+        self.named_column_line_nth(name, 1)
+    }
+
+    /// 第 `occurrence` 根同名列线（1-based occurrence，1 = 第一根）。
+    pub fn named_column_line_nth(&self, name: &str, occurrence: u32) -> Option<i32> {
+        self.named_column_line_nth_from(name, occurrence, None)
+    }
+
+    /// Like [`Self::named_column_line_nth`], but resolve against expanded names
+    /// (auto-fit / repeat copies) when `names` is `Some`.
+    pub fn named_column_line_nth_from(
+        &self,
+        name: &str,
+        occurrence: u32,
+        names: Option<&[Vec<String>]>,
+    ) -> Option<i32> {
+        lookup_named_line_nth(
+            name,
+            names.or(self.grid_column_line_names.as_deref()),
+            self.grid_template_areas.as_ref(),
+            true,
+            occurrence,
+        )
+    }
+
+    /// 列线上 `after_line`（1-based）之后的下一根同名线。
+    pub fn named_column_line_after(&self, name: &str, after_line: i32) -> Option<i32> {
+        self.named_column_line_after_from(name, after_line, None)
+    }
+
+    pub fn named_column_line_after_from(
+        &self,
+        name: &str,
+        after_line: i32,
+        names: Option<&[Vec<String>]>,
+    ) -> Option<i32> {
+        lookup_named_line_after(
+            name,
+            names.or(self.grid_column_line_names.as_deref()),
+            after_line,
+        )
+    }
+
+    pub fn named_row_line(&self, name: &str) -> Option<i32> {
+        self.named_row_line_nth(name, 1)
+    }
+
+    pub fn named_row_line_nth(&self, name: &str, occurrence: u32) -> Option<i32> {
+        self.named_row_line_nth_from(name, occurrence, None)
+    }
+
+    pub fn named_row_line_nth_from(
+        &self,
+        name: &str,
+        occurrence: u32,
+        names: Option<&[Vec<String>]>,
+    ) -> Option<i32> {
+        lookup_named_line_nth(
+            name,
+            names.or(self.grid_row_line_names.as_deref()),
+            self.grid_template_areas.as_ref(),
+            false,
+            occurrence,
+        )
+    }
+
+    pub fn named_row_line_after(&self, name: &str, after_line: i32) -> Option<i32> {
+        self.named_row_line_after_from(name, after_line, None)
+    }
+
+    pub fn named_row_line_after_from(
+        &self,
+        name: &str,
+        after_line: i32,
+        names: Option<&[Vec<String>]>,
+    ) -> Option<i32> {
+        lookup_named_line_after(
+            name,
+            names.or(self.grid_row_line_names.as_deref()),
+            after_line,
+        )
+    }
+
+    /// `justify-self: auto` → 容器 `justify-items`（缺省 Stretch，对齐 CSS Grid）。
+    pub fn resolved_justify_self(&self, parent_justify_items: Option<AlignSpec>) -> AlignSpec {
+        self.justify_self
+            .or(parent_justify_items)
+            .unwrap_or(AlignSpec::Stretch)
+    }
+
+    /// Explicit `grid-template-columns` tracks that participate in layout.
     ///
     /// CSS: `grid-template-columns` is inert on flex containers. Tracks remain
-    /// active when `display` is `grid` / `inline-grid` / unset (Nana 1D-grid
-    /// subset compat) or other non-flex values.
+    /// active when `display` is `grid` / `inline-grid` / unset (compat) or other
+    /// non-flex values.
     ///
-    /// **不**消费 [`Self::grid_auto_columns`]（隐式轨 defer）。若
-    /// [`Self::grid_columns_unsupported`] 有值且 `grid_columns` 为空，表示作者
-    /// 写了 defer 语法而非未声明。
+    /// Implicit columns come from [`Self::grid_auto_columns`] / auto-placement.
+    /// [`Self::grid_columns_repeat`] expands `repeat(auto-fit|auto-fill)` at layout.
+    /// If [`Self::grid_columns_unsupported`] is set, the author wrote
+    /// mixed/unexpandable syntax (not a successful `repeat(auto-fit|fill)`).
     pub fn active_grid_columns(&self) -> Option<&[GridTrack]> {
         if self.display.is_some_and(DisplaySpec::is_flex_container) {
             return None;
@@ -1425,7 +1965,7 @@ impl LayoutStyle {
 
     /// Row tracks that participate in layout (see [`Self::active_grid_columns`]).
     ///
-    /// **不**消费 [`Self::grid_auto_rows`]。
+    /// Implicit rows come from [`Self::grid_auto_rows`] / auto-placement.
     pub fn active_grid_rows(&self) -> Option<&[GridTrack]> {
         if self.display.is_some_and(DisplaySpec::is_flex_container) {
             return None;
@@ -1433,7 +1973,7 @@ impl LayoutStyle {
         self.grid_rows.as_deref().filter(|t| !t.is_empty())
     }
 
-    /// `grid-auto-*` 已解析但布局仍 defer（完整 2D / auto-placement）。
+    /// Author wrote `grid-auto-*` / `grid-auto-flow` (consumed by 2D placement).
     pub fn has_deferred_grid_auto(&self) -> bool {
         self.grid_auto_columns
             .as_ref()
@@ -1442,7 +1982,10 @@ impl LayoutStyle {
             || self.grid_auto_flow.is_some()
     }
 
-    /// `grid-template-columns` / `rows` 含明确 Unsupported（如 `repeat(auto-fit)`）。
+    /// 作者写了无法展开的模板（嵌套 auto-fit / auto-fill、混写垃圾等）。
+    ///
+    /// 成功的 `repeat(auto-fit|auto-fill)` 写在 [`Self::grid_columns_repeat`] /
+    /// [`Self::grid_rows_repeat`]，**不**置本旗标。
     pub fn has_unsupported_grid_template(&self) -> bool {
         self.grid_columns_unsupported.is_some() || self.grid_rows_unsupported.is_some()
     }
@@ -1545,13 +2088,88 @@ fn definite_length(v: Option<f32>) -> Option<f32> {
     v.filter(|n| *n > 0.0)
 }
 
+fn edge_is_auto(longhand: Option<LengthSpec>, uniform: Option<LengthSpec>) -> bool {
+    matches!(longhand.or(uniform), Some(LengthSpec::Auto))
+}
+
+fn lookup_named_line_after(
+    name: &str,
+    lines: Option<&[Vec<String>]>,
+    after_line: i32,
+) -> Option<i32> {
+    let lines = lines?;
+    for (i, names) in lines.iter().enumerate() {
+        let line = (i as i32) + 1;
+        if line > after_line && names.iter().any(|n| n == name) {
+            return Some(line);
+        }
+    }
+    None
+}
+
+fn lookup_named_line_nth(
+    name: &str,
+    lines: Option<&[Vec<String>]>,
+    areas: Option<&GridTemplateAreas>,
+    columns: bool,
+    occurrence: u32,
+) -> Option<i32> {
+    let want = occurrence.max(1);
+    let mut seen = 0u32;
+    if let Some(lines) = lines {
+        for (i, names) in lines.iter().enumerate() {
+            if names.iter().any(|n| n == name) {
+                seen += 1;
+                if seen == want {
+                    return Some((i as i32) + 1);
+                }
+            }
+        }
+    }
+    if want != 1 {
+        return None;
+    }
+    let areas = areas?;
+    if let Some((col, row, _col_span, _row_span)) = areas.lookup(name) {
+        return Some(if columns {
+            col as i32 + 1
+        } else {
+            row as i32 + 1
+        });
+    }
+    let start = name.strip_suffix("-start");
+    let end = name.strip_suffix("-end");
+    if let Some(base) = start {
+        let (col, row, _, _) = areas.lookup(base)?;
+        return Some(if columns {
+            col as i32 + 1
+        } else {
+            row as i32 + 1
+        });
+    }
+    if let Some(base) = end {
+        let (col, row, col_span, row_span) = areas.lookup(base)?;
+        return Some(if columns {
+            col as i32 + col_span as i32 + 1
+        } else {
+            row as i32 + row_span as i32 + 1
+        });
+    }
+    None
+}
+
 fn resolve_edge_length(
     spec: Option<LengthSpec>,
     percent_base: Option<f32>,
     fonts: FontSizeContext,
 ) -> Option<f32> {
     spec.and_then(|s| match s {
-        LengthSpec::Fill | LengthSpec::Shrink | LengthSpec::Auto => None,
+        LengthSpec::Fill
+        | LengthSpec::Shrink
+        | LengthSpec::Auto
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => None,
         other => other.resolve_non_negative_fonts(percent_base, None, fonts),
     })
 }
@@ -1563,7 +2181,12 @@ fn resolve_edge_length_signed(
     fonts: FontSizeContext,
 ) -> Option<f32> {
     spec.and_then(|s| match s {
-        LengthSpec::Fill | LengthSpec::Shrink | LengthSpec::Auto => None,
+        LengthSpec::Fill
+        | LengthSpec::Shrink
+        | LengthSpec::Auto
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => None,
         other => other.resolve_with_fonts(percent_base, None, fonts),
     })
 }
@@ -1575,7 +2198,13 @@ fn resolve_min_size(
     fonts: FontSizeContext,
 ) -> f32 {
     match spec {
-        None | Some(LengthSpec::Auto) | Some(LengthSpec::Shrink) | Some(LengthSpec::Fill) => 0.0,
+        None
+        | Some(LengthSpec::Auto)
+        | Some(LengthSpec::Shrink)
+        | Some(LengthSpec::Fill)
+        | Some(LengthSpec::MinContent)
+        | Some(LengthSpec::MaxContent)
+        | Some(LengthSpec::FitContent) => 0.0,
         Some(other) => other
             .resolve_non_negative_fonts(percent_base, viewport, fonts)
             .unwrap_or(0.0),
@@ -1589,7 +2218,12 @@ fn resolve_max_size(
     fonts: FontSizeContext,
 ) -> Option<f32> {
     match spec? {
-        LengthSpec::Fill | LengthSpec::Auto | LengthSpec::Shrink => None,
+        LengthSpec::Fill
+        | LengthSpec::Auto
+        | LengthSpec::Shrink
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => None,
         other => other
             .resolve_non_negative_fonts(percent_base, viewport, fonts)
             .filter(|v| v.is_finite()),
@@ -1643,7 +2277,8 @@ fn resolve_box_edge_specs_signed(
 #[cfg(test)]
 mod tests {
     use super::{
-        BoxSizing, FlexDirection, FontSizeContext, LayoutStyle, LengthSpec, OverflowSpec, ParentBox,
+        BoxSizing, FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle, LengthSpec,
+        OverflowSpec, ParentBox,
     };
 
     #[test]
@@ -1993,5 +2628,46 @@ mod tests {
         assert!((h[0] - 100.0).abs() < 0.01);
         assert!((h[1] - 130.0).abs() < 0.01);
         assert!((h[2] - 130.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn named_grid_line_nth_skips_first_occurrence() {
+        let layout = LayoutStyle {
+            grid_column_line_names: Some(vec![
+                vec!["foo".into()],
+                vec!["foo".into()],
+                vec!["foo".into()],
+            ]),
+            ..LayoutStyle::default()
+        };
+        assert_eq!(layout.named_column_line("foo"), Some(1));
+        assert_eq!(layout.named_column_line_nth("foo", 2), Some(2));
+        assert_eq!(layout.named_column_line_nth("foo", 3), Some(3));
+        assert_eq!(layout.named_column_line_after("foo", 1), Some(2));
+        assert_eq!(layout.named_column_line_after("foo", 2), Some(3));
+        assert_eq!(layout.named_column_line_after("foo", 3), None);
+    }
+
+    #[test]
+    fn merge_line_name_pattern_copies_per_repetition() {
+        let pattern = vec![vec!["mid".to_string()], vec!["end".to_string()]];
+        let once = GridRepeatAuto::merge_line_name_pattern(&pattern, 1);
+        assert_eq!(once, pattern);
+        let twice = GridRepeatAuto::merge_line_name_pattern(&pattern, 2);
+        assert_eq!(
+            twice,
+            vec![
+                vec!["mid".to_string()],
+                vec!["end".to_string(), "mid".to_string()],
+                vec!["end".to_string()],
+            ]
+        );
+        assert_eq!(
+            twice
+                .iter()
+                .filter(|line| line.iter().any(|n| n == "mid"))
+                .count(),
+            2
+        );
     }
 }

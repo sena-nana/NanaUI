@@ -21,6 +21,7 @@ use crate::scroll::{
 };
 use crate::tree::{
     ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
+    query_scroll_content_size,
 };
 
 /// Shared handles used by DOM + semantic bridge host ops.
@@ -813,37 +814,14 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         api.register("layoutBox", move |args| {
             let el = arg_handle(args, 0)?;
             let guard = lock_doc(&host.document)?;
+            let bridge = lock_bridge(&host.bridge)?;
             // Prefer Scene paint writeback so getBoundingClientRect matches drawing.
-            Ok(match get_layout_box_from(&host.layout_boxes, &guard, el) {
-                Some(b) => HostValue::Object(
-                    [
-                        ("x".into(), HostValue::Number(b.x as f64)),
-                        ("y".into(), HostValue::Number(b.y as f64)),
-                        ("width".into(), HostValue::Number(b.width as f64)),
-                        ("height".into(), HostValue::Number(b.height as f64)),
-                        ("top".into(), HostValue::Number(b.y as f64)),
-                        ("left".into(), HostValue::Number(b.x as f64)),
-                        ("bottom".into(), HostValue::Number((b.y + b.height) as f64)),
-                        ("right".into(), HostValue::Number((b.x + b.width) as f64)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-                None => HostValue::Object(
-                    [
-                        ("x".into(), HostValue::Number(0.0)),
-                        ("y".into(), HostValue::Number(0.0)),
-                        ("width".into(), HostValue::Number(0.0)),
-                        ("height".into(), HostValue::Number(0.0)),
-                        ("top".into(), HostValue::Number(0.0)),
-                        ("left".into(), HostValue::Number(0.0)),
-                        ("bottom".into(), HostValue::Number(0.0)),
-                        ("right".into(), HostValue::Number(0.0)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-            })
+            Ok(layout_box_host_value(
+                &guard,
+                &bridge,
+                &host.layout_boxes,
+                el,
+            ))
         });
     }
     {
@@ -871,12 +849,14 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let x = args.get(1).and_then(HostValue::as_f64).unwrap_or(0.0) as f32;
             let y = args.get(2).and_then(HostValue::as_f64).unwrap_or(0.0) as f32;
             let mut guard = lock_doc(&host.document)?;
+            let bridge = lock_bridge(&host.bridge)?;
             let next = set_scroll_offset(
                 &mut guard,
                 &host.layout_boxes,
                 &shared_scroll_offset_store(),
                 widget_id(el),
                 ScrollOffset { x, y },
+                Some(&bridge),
             );
             Ok(HostValue::Object(
                 [
@@ -1178,6 +1158,94 @@ fn is_falsey_attr_value(value: &HostValue) -> bool {
         HostValue::Number(n) if *n == 0.0 => true,
         _ => false,
     }
+}
+
+fn layout_box_host_value(
+    doc: &NanaTreeDocument,
+    bridge: &MessageBridge,
+    store: &LayoutBoxStore,
+    el: NodeHandle,
+) -> HostValue {
+    let box_ = get_layout_box_from(store, doc, el);
+    let (x, y, width, height) = match box_ {
+        Some(b) => (b.x as f64, b.y as f64, b.width as f64, b.height as f64),
+        None => (0.0, 0.0, 0.0, 0.0),
+    };
+    let border_width = node_layout(bridge, el)
+        .and_then(|layout| layout.border_width)
+        .unwrap_or(0.0) as f64;
+    let client_width = (width - 2.0 * border_width).max(0.0);
+    let client_height = (height - 2.0 * border_width).max(0.0);
+    let (scroll_width, scroll_height) =
+        query_scroll_content_size(store, doc, el, client_width as f32, client_height as f32);
+    let (offset_parent, offset_left, offset_top) =
+        offset_parent_metrics(doc, bridge, store, el, x, y);
+    HostValue::Object(
+        [
+            ("x", x),
+            ("y", y),
+            ("width", width),
+            ("height", height),
+            ("top", y),
+            ("left", x),
+            ("bottom", y + height),
+            ("right", x + width),
+            ("borderWidth", border_width),
+            ("clientWidth", client_width),
+            ("clientHeight", client_height),
+            ("scrollWidth", scroll_width as f64),
+            ("scrollHeight", scroll_height as f64),
+            ("offsetParent", offset_parent),
+            ("offsetLeft", offset_left),
+            ("offsetTop", offset_top),
+            ("clientLeft", border_width),
+            ("clientTop", border_width),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), HostValue::Number(value)))
+        .collect(),
+    )
+}
+
+fn node_layout(bridge: &MessageBridge, el: NodeHandle) -> Option<&nana_ui_core::LayoutStyle> {
+    bridge.get(widget_id(el)).map(|widget| &widget.props.layout)
+}
+
+fn is_offset_parent_position(position: nana_ui_core::PositionSpec) -> bool {
+    matches!(
+        position,
+        nana_ui_core::PositionSpec::Relative
+            | nana_ui_core::PositionSpec::Absolute
+            | nana_ui_core::PositionSpec::Fixed
+            | nana_ui_core::PositionSpec::Sticky
+    )
+}
+
+fn offset_parent_metrics(
+    doc: &NanaTreeDocument,
+    bridge: &MessageBridge,
+    store: &LayoutBoxStore,
+    el: NodeHandle,
+    x: f64,
+    y: f64,
+) -> (f64, f64, f64) {
+    let mut current = doc.parent_node(el);
+    while let Some(parent) = current {
+        let positioned = node_layout(bridge, parent)
+            .is_some_and(|layout| is_offset_parent_position(layout.position));
+        if positioned {
+            return match get_layout_box_from(store, doc, parent) {
+                Some(parent_box) => (
+                    parent.0 as f64,
+                    x - parent_box.x as f64,
+                    y - parent_box.y as f64,
+                ),
+                None => (parent.0 as f64, 0.0, 0.0),
+            };
+        }
+        current = doc.parent_node(parent);
+    }
+    (0.0, x, y)
 }
 
 fn lock_doc(
@@ -1849,6 +1917,320 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_important_beats_inline_style_box() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let box_el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("class"),
+                HostValue::string("sized"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("style"),
+                HostValue::string("width:200px;height:40px"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(box_el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".sized{width:80px !important;height:40px}",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let got = doc
+            .layout_box(NodeHandle(box_el as u64))
+            .expect("sized box");
+        assert!(
+            (got.width - 80.0).abs() < 0.5,
+            "stylesheet !important must beat inline width:200px, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn inline_important_beats_stylesheet_important_box() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let box_el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("class"),
+                HostValue::string("sized"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("style"),
+                HostValue::string("width:200px !important;height:40px"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(box_el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".sized{width:80px !important;height:40px}",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let got = doc
+            .layout_box(NodeHandle(box_el as u64))
+            .expect("sized box");
+        assert!(
+            (got.width - 200.0).abs() < 0.5,
+            "inline !important must beat stylesheet !important (200 vs 80), got {got:?}"
+        );
+    }
+
+    #[test]
+    fn inline_only_important_width_box() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let box_el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("style"),
+                HostValue::string("width:100px !important;height:40px"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(box_el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let got = doc
+            .layout_box(NodeHandle(box_el as u64))
+            .expect("inline important box");
+        assert!(
+            (got.width - 100.0).abs() < 0.5,
+            "inline-only width:100px !important must be 100, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_important_survives_incremental_width_prop() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let box_el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("class"),
+                HostValue::string("sized"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(box_el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".sized{width:80px !important;height:40px}",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+        {
+            let guard = doc.lock().unwrap();
+            let got = guard
+                .layout_box(NodeHandle(box_el as u64))
+                .expect("sized box before width prop");
+            assert!(
+                (got.width - 80.0).abs() < 0.5,
+                "precondition: stylesheet important width is 80, got {got:?}"
+            );
+        }
+
+        // Vue layout prop (not `style`) must not drop stylesheet !important.
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("width"),
+                HostValue::string("200px"),
+            ],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let got = doc
+            .layout_box(NodeHandle(box_el as u64))
+            .expect("sized box after width prop");
+        assert!(
+            (got.width - 80.0).abs() < 0.5,
+            "stylesheet !important must survive patchProp(width, 200px), got {got:?}"
+        );
+    }
+
+    #[test]
+    fn prop_important_width_beats_stylesheet_important_box() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let box_el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("class"),
+                HostValue::string("sized"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(box_el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".sized{width:80px !important;height:40px}",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(box_el),
+                HostValue::string("width"),
+                HostValue::string("200px !important"),
+            ],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let doc = doc.lock().unwrap();
+        let got = doc
+            .layout_box(NodeHandle(box_el as u64))
+            .expect("sized box after important width prop");
+        assert!(
+            (got.width - 200.0).abs() < 0.5,
+            "prop !important must beat stylesheet !important (200 vs 80), got {got:?}"
+        );
+    }
+
+    #[test]
     fn closest_and_query_selector_all_host_ops() {
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
         let bridge = Arc::new(Mutex::new(MessageBridge::new()));
@@ -2345,6 +2727,116 @@ mod tests {
         assert!((top - 480.0).abs() < 1.0, "scrollTop={top}");
 
         shared_scroll_offset_store().clear();
+    }
+
+    #[test]
+    fn layout_box_splits_client_scroll_and_offset_metrics() {
+        use crate::bridge::WidgetProps;
+        use nana_ui_core::{LengthSpec, PositionSpec};
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let store = Arc::new(LayoutBoxStore::new());
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge_and_layout(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+            Arc::clone(&store),
+        );
+
+        let body = {
+            let guard = doc.lock().unwrap();
+            guard.mount_root().0 as f64
+        };
+        let parent = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let child = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        let inner = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(parent),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(child),
+                HostValue::Number(parent),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(inner),
+                HostValue::Number(child),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+
+        {
+            let mut parent_props = WidgetProps::default();
+            parent_props.layout.position = PositionSpec::Relative;
+            let mut child_props = WidgetProps::default();
+            child_props.layout.border_width = Some(4.0);
+            child_props.layout.width = Some(LengthSpec::Px(80.0));
+            let mut b = bridge.lock().unwrap();
+            if let Some(w) = b.get_mut(parent as u64) {
+                w.props.layout = parent_props.layout;
+            }
+            if let Some(w) = b.get_mut(child as u64) {
+                w.props.layout = child_props.layout;
+            }
+        }
+
+        store.record(NodeHandle(parent as u64), 10.0, 20.0, 200.0, 100.0);
+        store.record(NodeHandle(child as u64), 30.0, 50.0, 80.0, 40.0);
+        store.record(NodeHandle(inner as u64), 30.0, 50.0, 120.0, 24.0);
+        {
+            let mut guard = doc.lock().unwrap();
+            guard.apply_layout_boxes(&store.snapshot());
+        }
+
+        let box_ = api
+            .call("layoutBox", &[HostValue::Number(child)])
+            .expect("layoutBox");
+        let HostValue::Object(map) = box_ else {
+            panic!("expected object");
+        };
+        let num = |key: &str| map.get(key).and_then(HostValue::as_f64).unwrap_or(f64::NAN);
+        assert_eq!(num("width"), 80.0);
+        assert_eq!(num("height"), 40.0);
+        assert_eq!(num("borderWidth"), 4.0);
+        assert_eq!(num("clientWidth"), 72.0);
+        assert_eq!(num("clientHeight"), 32.0);
+        assert!(
+            num("clientWidth") < num("width"),
+            "clientWidth must subtract uniform border"
+        );
+        assert_eq!(num("scrollWidth"), 120.0);
+        assert!(num("scrollWidth") >= num("clientWidth"));
+        assert_eq!(num("offsetParent"), parent);
+        assert_eq!(num("offsetLeft"), 20.0);
+        assert_eq!(num("offsetTop"), 30.0);
     }
 
     #[test]
