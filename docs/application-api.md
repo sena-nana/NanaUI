@@ -1,80 +1,92 @@
 # 应用 API
 
-这是查入口用的。第一次写应用请先看 [开始](start.md)。
+查入口用。第一次写应用先看 [开始](start.md) 和 [框架如何运行](how-it-works.md)。签名以 rustdoc 为准，这篇不复制每一份类型。
 
-新应用从 `nana_ui::runtime` 进：`AppContext`、`create_component`、`on`，宿主用 `RuntimeProgram` + `run_runtime`。画出来的权威是同一条：保留树 → 场景 → 画进宿主窗口。
+## 你该依赖什么
 
-已经有 Vue 界面时，再用兼容路径落到同一棵树上，见 [Vue](vue.md)。不要把 Vue 当新应用的起点。
+| 消费方 | crate / 包 | 入口 |
+| --- | --- | --- |
+| 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`RuntimeProgram`、`run_runtime` |
+| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowSettings`、`WindowCommand`、`InputEvent` |
+| Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
+| Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
+| Vue renderer | `@nanaui/nanavue-runtime` | `createNanaApp()` |
 
-| 你在写 | 入口 |
+不要直接依赖 `nana-ui-devtools`、`nana-css-parity` 来画产品界面。前者是无头调试，后者是 CSS 对照测试。
+
+新代码从 `nana_ui::runtime` 引入控件。crate 根再导出是兼容面。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
+
+## Cargo feature
+
+`nana-ui` 默认 `[]`。按职责打开：
+
+| feature | 作用 |
 | --- | --- |
-| 新的桌面界面 | `nana_ui::runtime` |
-| Vue 组件（兼容） | `@nanaui/nanavue-components` 的 `nana-*` |
-| Vue 普通标签 + CSS 子集（兼容） | `createNanaApp()` |
+| `hosted` | `run_runtime`、winit、AccessKit；隐含 `gpu` |
+| `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuView` |
+| `bundled-fonts` | 嵌入 Noto Sans SC |
+| `components` | 下面组件族的聚合 |
+| `full` | fonts + components + hosted + syntax-highlighting |
+| `calendar` / `charts` / `controls` / `feedback` / `graph-canvas` / `image-viewer` / `overlays` / `popover` / `qr-code` / `rich-text` / `math` / `diagrams` / `selects` / `settings-components` / `surfaces` / `xy-pad` | 按族裁剪 |
+| `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 
-业务状态、鉴权、配置盘、Region 内容由应用拥有。NanaUI 只提供通用控件与合同。
+Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 
-## 窗口与应用图标
+## RuntimeProgram
 
-任务栏 / exe / Dock 图标是应用身份，不是 UI `Icon` 字形。未设置时用默认几何标记。
+应用实现这个 trait，再 `run_runtime::<App>(RuntimeWindowSettings::new("…"))`。
 
-- Rust：`register_application_icon` 或 `WindowSettings::icon` / `WindowCommand::SetIcon`
-- JS：`Nana.windows.setApplicationIcon(icon)`，`create({ icon })`，`handle.setIcon(icon)`；`icon` 为 `{ png }` 或 `{ width, height, rgba }`
-- Windows exe：`build.rs` 里 `nana_app_icon::embed_windows()` 或 `embed_windows_from(ico)`
-- macOS Dock：`nana-window::set_application_icon_png`；`.app` 用 `nana-package-app`
+| 方法 | 职责 |
+| --- | --- |
+| `initialize` | 建程序实例；可返回要在第一帧 `update` 的消息 |
+| `document` / `document_mut` | 按 `WindowId` 交出 `RuntimeDocument` |
+| `update` | 宿主级消息；保持便宜 |
+| `theme_mode` | 深色 / 浅色 |
+| `window_material_mode` | 可选；默认实色 |
+| `host_textures` | 可选；slot → `HostTexture` |
+| `scene_gpu_renderers` | 可选；`None` = 默认 `gpu-view` painter；空表 = 不画 |
+| `scene_resource_producers` | 可选；Scene 采样前的离屏生产 |
+| `prepare_window_frame` | flush 前准备纹理 |
+| `window_frame_presented` | present 后释放旧资源 |
+| `bind_window` | present 之后填内容 |
+| `rebuild_gpu` | 设备丢失后重绑资源 |
+| `window_event` / `input_event` | 窗口生命周期与原始输入 |
+| `next_wakeup` / `wake` | 与重绘无关的定时工作 |
+| `host_failure` | 宿主已从该错误恢复；默认忽略 |
 
-## L3 最小路径
+`RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`。原生窗口句柄不穿过这条边界。
 
-```rust
-use nana_ui::runtime::{AppContext, Button, Entity, Text};
-use nana_ui::{RuntimeProgram, run_runtime};
+## 建树
 
-// 1. AppContext 持有 UiWorld 与 typed view state
-// 2. create_component / mount 投影到保留树
-// 3. on / observe 更新 view；导航用 dispatch_program，由宿主在下一帧合并投递
-// 4. update 只换槽；宿主先 present，再 bind_window 填内容
-// 5. run_runtime 注入宿主 Window / Device / Queue，由 SceneWgpuPainter 绘制
+```text
+RuntimeDocument::new(DocumentId)
+AppContext::create_component(document, Button::new("…"))
+append_child / mount { scope.child("key", …) }
+on(button, |_, Activate, cx| { cx.dispatch_program(Msg); })
+update_component(entity, |view, _| { … })
 ```
 
-- 新应用：`nana_ui::runtime`。crate 根控件表是兼容面。
-- 宿主 Scene：`runtime` 或 `runtime::host`。观测：`runtime::perf`。
-- Gallery / 适配器可用 `runtime::internal`；不要把它当第二套产品 API。
+`mount` 是 keyed 子树协调，不是第二套渲染器。Vue 不得用 `create_component` 分配 ID，它绑定自己已有的节点。
 
-## L1 / L2
-
-- JS：`createNanaApp()`（[`packages/nanavue-runtime`](../packages/nanavue-runtime/README.md)）。
-- Rust 宿主：`nana_ui_vue::prelude`（`mount_vue_as_nana`、`NanaVueApp`、`VueRuntimeProgram`、输入类型、`HostApiRegistry`）。
-- CSS cascade / `parse_stylesheet` / measure：adapter internals，不是应用 prelude。
-
-`NanaTreeDocument` / `MessageBridge` / `LayoutBoxStore` 是 Vue 兼容投影，**不是**保留权威。
-host op 进 `PendingHostOps`，`flush_host_frame` 才 commit。
+对外身份是 `StableNodeId` / `Entity<V>`。不要依赖内部实体编码。
 
 ## 扩展控件
 
 | 目标 | 路径 |
-|------|------|
-| 进入布局、命中、Scene 的新语义控件 | `UiExtension` + `ExtensionRegistrar::register_component`（Runtime `ComponentRegistry` / `ComponentTypeId`）+ Vue `nana-*` tag。额外属性走 `SemanticSpec::attr`，不要为每个业务控件加 `WidgetKind`。 |
-| 仅 JS 描述符、props 白名单、命令 | `NativeComponentRegistry`（JS host 组件工厂表）+ `Nana.components.call` |
-| GPU 内容 | `CustomRenderNode` 不透明键 + 宿主 `HostTexture`（generation / `replace_view`）。不要把 Cubism 直写 Surface。 |
+| --- | --- |
+| 进入布局、命中、Scene | `UiExtension` + `register_component`；Vue 再加 `nana-*` |
+| 仅 JS 命令 / props 白名单 | `NativeComponentRegistry` + `Nana.components.call` |
+| GPU 内容 | `GpuTextureView` / `GpuView` + 宿主纹理或 `SceneGpuRenderer` |
 
-两张 Registry 不是同一条 ABI。只注册其中一张不会让另一条路径生效。不支持动态 dylib，不公开 Bevy Entity。
+不支持动态 dylib。
 
-## 性能（默认语义，不要手写脏位）
+## 性能上你不用手写的
 
-- mutation commit 后 Runtime 自己调度；`DirtyMask` 不公开。
-- `dispatch_program` 按类型保留最后一条，在下一帧交给 `RuntimeProgram::update`，不在当前指针处理里执行。
-- `update` 只做便宜的导航/槽位；宿主先 present 停泊内容，再调用 `bind_window` 填页。
-- `set_desktop_slots` 换 inspector/primary：停泊上一份内容并挂回已有树；槽位未变则是空操作。
-- 无变更不刷帧；文本 intrinsic 不变则 layout-stop。
-- 大列表必须 `AppContext::materialize_virtual_*`，窗口外不建 live entity。
-- GPU 换纹理升 generation/revision，不重建布局。
-- 不要把 facade 查询（例如 `LayoutBoxStore::snapshot`）当成每帧热路径。
+mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。`dispatch_program` 按类型保留最后一条，在下一帧 `update`。
 
 ## 非目标
 
-- 以 crate 根控件表定义新框架合同。
-- 把三个 Vue facade 当成第二棵 ECS/DOM 树。
-- 完整浏览器、Tauri、裸 `@vue/runtime-dom` 产物、WebView 产品路径。
-- 第二套 Device/Queue、CPU 回读伪装零拷贝、控件拿窗口句柄。
-
-细则：[`architecture.md`](architecture.md)、[`runtime-scene.md`](runtime-scene.md)、[`vue.md`](vue.md)。
+- 完整浏览器、Tauri、裸 `@vue/runtime-dom` 产物、WebView 产品路径
+- 第二套 Device / Queue、CPU 回读伪装零拷贝
+- 控件拿窗口句柄
+- 以 crate 根控件表或 Vue 的 DOM facade 定义新的框架合同

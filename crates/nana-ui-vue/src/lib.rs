@@ -61,7 +61,8 @@
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
-//! See [`docs/start.md`](../../../docs/start.md) and
+//! See [`docs/how-it-works.md`](../../../docs/how-it-works.md),
+//! [`docs/start.md`](../../../docs/start.md) and
 //! [`docs/vue.md`](../../../docs/vue.md).
 //!
 //! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the

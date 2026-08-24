@@ -1,12 +1,13 @@
-//! NanaUI L3 adapter and the Scene/WGPU paint of Runtime/UiScene.
+//! NanaUI adapter and the Scene/WGPU paint of Runtime/UiScene.
 //!
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
-//! New L3 applications should use [`runtime`] (`AppContext`, `mount`,
+//! New applications should use [`runtime`] (`AppContext`, `mount`,
 //! `ComponentView`, `register_component`). See
+//! [`docs/how-it-works.md`](../../../docs/how-it-works.md),
 //! [`docs/start.md`](../../../docs/start.md),
 //! [`docs/application-api.md`](../../../docs/application-api.md).
 //! Crate-root widget re-exports are a compatibility surface, not the extension
-//! contract. L1/L2 Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
+//! contract. Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!
 //! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
 //! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].

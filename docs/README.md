@@ -1,37 +1,38 @@
 # NanaUI 文档
 
-第一次看，按这个顺序读就够了。
+给要**写应用**的人。仓库 [README](../README.md) 说明这套框架和其他 UI 差在哪；这里说明怎么接到你的窗口上。
 
-1. 仓库 [README](../README.md) 说明这套框架解决什么问题。
-2. 下面这篇 [开始](start.md)：怎么跑起来、界面怎么写、东西各自归谁。
-3. 然后只看你正在做的那一件：按钮和面板、实时画面、或者窗口本身。
+改 NanaUI 自身请看 [架构](architecture.md) 和 [Runtime 与 Scene](runtime-scene.md)，不要从那两篇开始写产品。
 
-NanaUI 画的是原生窗口。界面是一棵树：按钮、文字、侧栏和角色、特效、游戏视口都是树上的节点。窗口和图形设备由你的应用拿着，框架画进去。Vue 可以兼容已有代码，但新应用不要从 Vue 起步。
+## 先读
 
-## 先把东西做出来
+1. [框架如何运行](how-it-works.md) — 树、所有权、一帧怎么走、GPU 节点是什么
+2. [开始](start.md) — Cargo feature、第一扇窗口、`RuntimeProgram`
 
-| 你现在要做的 | 看 |
+## 按任务
+
+| 你要做的 | 看 |
 | --- | --- |
-| 跑起来，写第一棵界面 | [开始](start.md) |
 | 按钮、输入、对话框、侧栏 | [控件](components.md) |
-| 角色、特效、着色器、游戏视口 | [实时画面](gpu.md) |
-| 标题栏、图标、模糊、多窗口 | [窗口](window.md) |
-| 颜色、尺寸、字体长什么样 | [视觉](look.md) |
+| 工作区、Region、Dock、设置页 | [工作区](workspace.md) |
+| 着色器、预览视口、宿主纹理 | [实时画面](gpu.md) |
+| 标题栏、图标、系统材质、多窗口 | [窗口](window.md) |
+| 颜色、尺寸、字体、主题 | [视觉](look.md) |
 
-## 有 Vue 代码要迁过来时
+## Vue 兼容
 
-| 你现在要做的 | 看 |
+已有 Vue / JS 界面要落到同一棵原生树时再看这些。新应用不要从这里起步。
+
+| 你要做的 | 看 |
 | --- | --- |
-| 把 Vue 落到同一棵树上 | [Vue](vue.md) |
+| Vue 怎么进这棵树 | [Vue](vue.md) |
 | 兼容路径里 CSS 能写到哪 | [布局](layout.md) |
 
-## 查接口、看内部
-
-做完第一扇窗口、知道自己在改哪一层之后，再读这些。它们解释系统怎么接在一起，不是入门教材。
+## 查阅
 
 | 主题 | 看 |
 | --- | --- |
-| `nana_ui::runtime`、Host API、扩展控件 | [应用 API](application-api.md) |
-| crate 怎么分层、工作区怎么摆 | [架构](architecture.md) |
-| 树怎么记住、怎么更新、怎么画成一帧 | [Runtime 与 Scene](runtime-scene.md) |
-| Android（实验） | [Android](android.md) |
+| 入口类型、feature、扩展控件 | [应用 API](application-api.md) |
+| crate 分层、所有权（改框架时） | [架构](architecture.md) |
+| 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
+| Android（实验，非产品目标） | [Android](android.md) |
