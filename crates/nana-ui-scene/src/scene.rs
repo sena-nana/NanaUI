@@ -6,7 +6,7 @@ use nana_ui_core::{
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
-    LayoutBox, StableNodeId, StandardVisual, TextHorizontalAlignment, TextShaping,
+    LayoutBox, NodeKind, StableNodeId, StandardVisual, TextHorizontalAlignment, TextShaping,
     TextVerticalAlignment,
 };
 
@@ -474,7 +474,13 @@ impl UiScene {
         }
     }
 
+    /// Skip duplicate Vue `#text` children when the host already paints that
+    /// string. Independent element children, such as list rows inside a Card,
+    /// keep their own labels.
     fn parent_already_paints_text(&self, node: &ExtractedNode) -> bool {
+        if !matches!(&*node.kind, NodeKind::Text) {
+            return false;
+        }
         let Some(parent) = node.parent.and_then(|id| self.nodes.get(&id)) else {
             return false;
         };
@@ -6109,5 +6115,77 @@ mod tests {
         });
         scene.apply_delta([heading, text_node(4, 3, "Title")], []);
         assert_eq!(visible_text_count(&scene, &[id(3), id(4)]), 1);
+    }
+
+    #[test]
+    fn card_child_list_item_keeps_its_label() {
+        let mut card = node(1, None, &[2]);
+        card.text = Some(TextContent {
+            value: "Outputs".into(),
+        });
+        card.standard_visual = Some(StandardVisual::Card {
+            title: Some(Arc::from("Outputs")),
+            kind: nana_ui_core::CardKind::Surface,
+            loading: false,
+            loading_phase: 0.0,
+        });
+        card.component_geometry = Some(ComponentGeometry::Card {
+            title: Some(ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 80.0,
+                    height: 18.0,
+                },
+                content: Arc::from("Outputs"),
+                color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+            }),
+            content: LayoutBox {
+                x: 10.0,
+                y: 36.0,
+                width: 160.0,
+                height: 36.0,
+            },
+            elevation: None,
+            spinner: None,
+        });
+
+        let mut item = node(2, Some(1), &[]);
+        item.kind = Arc::new(NodeKind::Element {
+            tag: "list-item".into(),
+        });
+        item.text = Some(TextContent {
+            value: "Window".into(),
+        });
+        item.standard_visual = Some(StandardVisual::ListItem {
+            leading: None,
+            content: None,
+            trailing: None,
+        });
+        item.component_geometry = Some(ComponentGeometry::ListItem {
+            leading: None,
+            content: Some(LayoutBox {
+                x: 10.0,
+                y: 36.0,
+                width: 160.0,
+                height: 36.0,
+            }),
+            trailing: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([card, item], []);
+        assert_eq!(visible_text_count(&scene, &[id(1), id(2)]), 2);
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(2),
+                    slot: 2,
+                })
+                .map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::Text { content, .. }) if content == "Window"
+        ));
     }
 }
