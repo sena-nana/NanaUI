@@ -3139,6 +3139,22 @@ mod tests {
     }
 
     #[test]
+    fn omitted_flex_shrink_stays_unspecified() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("width:150px;height:40px", None, None);
+        assert_eq!(layout.flex_shrink, None);
+    }
+
+    #[test]
+    fn flex_initial_writes_css_shrink() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("flex: initial", None, None);
+        assert_eq!(layout.flex_grow, Some(0.0));
+        assert_eq!(layout.flex_shrink, Some(1.0));
+        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
+    }
+
+    #[test]
     fn flex_one_sets_grow_not_blind_width() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("flex: 1", None, None);

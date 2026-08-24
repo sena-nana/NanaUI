@@ -8,6 +8,8 @@ Rust 第一路径用控件自己的布局，不写 CSS。这篇只描述 Vue 兼
 
 **Flex。** 横排、纵排、换行、间距、对齐、拉伸和收缩、`order`。侧栏加主区用这一套就够。
 
+未写 `flex-shrink` 时按 **0** 处理，不是网页 CSS 的 initial **1**。溢出的定宽行（列表、工具条）会保留盒子，不会被悄悄压扁。需要网页那种收缩时，显式写 `flex-shrink` 或 `flex: initial`。`flex: none` / `auto` / 数字简写仍按 CSS 含义写 shrink。
+
 **尺寸。** 像素、百分比、`min` / `max`、简单加减、`vw` / `vh`、`em` / `rem`、`min()` / `max()` / `clamp()`。
 
 **盒子。** padding、margin、边框计入盒子。默认按 border-box。
