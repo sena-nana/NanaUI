@@ -11,6 +11,8 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 - macOS：透明标题栏 + full-size content，NanaUI 画 36px 标题栏，左侧给系统红黄绿留 78px。
 - Windows / Linux：关掉系统 decorations，由 `AppTitleBar` 画最小化、最大化、关闭。
 
+自绘 chrome 可拖窗口客户区最外 8px 缩放（四边与四角）。系统 caption、最大化、全屏、`resizable: false` 交给平台边框或禁用，不叠第二套命中。
+
 没有自绘标题栏的窗口设 `WindowSettings::system_caption(true)`，避免 Windows 无框窗口失去关闭按钮。
 
 关闭 / 最小化 / 最大化是窗口动作。控件发出语义（`WindowChromeAction`），Scene host 去执行。普通控件拿不到窗口句柄。

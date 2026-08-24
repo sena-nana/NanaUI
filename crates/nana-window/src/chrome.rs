@@ -41,22 +41,99 @@ pub fn drag_custom_title_bar<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     drag(window)
 }
 
+/// Client-chrome edge used to start a native frame resize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameResizeEdge {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+/// Starts an OS-owned frame resize. Windows uses `WM_NCLBUTTONDOWN`; other
+/// platforms return false so the host can fall back.
+pub fn resize_custom_frame<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        resize_windows(window, edge)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, edge);
+        false
+    }
+}
+
+/// Captures a macOS frame so later pointer moves can resize origin and size
+/// together through `NSWindow::setFrame`.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct LiveFrameResize {
+    edge: FrameResizeEdge,
+    origin_x: f64,
+    origin_y: f64,
+    width: f64,
+    height: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl LiveFrameResize {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> Option<Self> {
+        let window = appkit_window(window)?;
+        let frame = window.frame();
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        Some(Self {
+            edge,
+            origin_x: frame.origin.x,
+            origin_y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height,
+            mouse_x: mouse.x,
+            mouse_y: mouse.y,
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        let Some(window) = appkit_window(window) else {
+            return false;
+        };
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        let min = window.minSize();
+        let content_min = window.contentMinSize();
+        let max = window.maxSize();
+        let next = live_frame_after_delta(
+            [self.origin_x, self.origin_y, self.width, self.height],
+            mouse.x - self.mouse_x,
+            mouse.y - self.mouse_y,
+            self.edge,
+            (
+                min.width.max(content_min.width),
+                min.height.max(content_min.height),
+            ),
+            (max.width, max.height),
+        );
+        window.setFrame_display(
+            objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(next[0], next[1]),
+                objc2_foundation::NSSize::new(next[2], next[3]),
+            ),
+            true,
+        );
+        true
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
-    use objc2_app_kit::NSView;
-    use raw_window_handle::RawWindowHandle;
-
-    let Ok(handle) = window.window_handle() else {
+    let Some(window) = appkit_window(window) else {
         return false;
     };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return false;
-    };
-    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let Some(window) = view.window() else {
-        return false;
-    };
-
     window.setMovable(enabled);
     true
 }
@@ -64,20 +141,12 @@ fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> b
 #[cfg(target_os = "macos")]
 fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSApplication, NSView};
-    use raw_window_handle::RawWindowHandle;
+    use objc2_app_kit::NSApplication;
 
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
-    let Ok(handle) = window.window_handle() else {
-        return false;
-    };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return false;
-    };
-    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let Some(window) = view.window() else {
+    let Some(window) = appkit_window(window) else {
         return false;
     };
     let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
@@ -90,6 +159,78 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     true
 }
 
+#[cfg(target_os = "macos")]
+fn appkit_window<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2_app_kit::NSView;
+    use raw_window_handle::RawWindowHandle;
+
+    let Ok(handle) = window.window_handle() else {
+        return None;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    view.window()
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn live_frame_after_delta(
+    start: [f64; 4],
+    dx: f64,
+    dy: f64,
+    edge: FrameResizeEdge,
+    min: (f64, f64),
+    max: (f64, f64),
+) -> [f64; 4] {
+    let [mut x, mut y, mut width, mut height] = start;
+    let west = matches!(
+        edge,
+        FrameResizeEdge::West | FrameResizeEdge::NorthWest | FrameResizeEdge::SouthWest
+    );
+    let east = matches!(
+        edge,
+        FrameResizeEdge::East | FrameResizeEdge::NorthEast | FrameResizeEdge::SouthEast
+    );
+    let south = matches!(
+        edge,
+        FrameResizeEdge::South | FrameResizeEdge::SouthEast | FrameResizeEdge::SouthWest
+    );
+    let north = matches!(
+        edge,
+        FrameResizeEdge::North | FrameResizeEdge::NorthEast | FrameResizeEdge::NorthWest
+    );
+    if east {
+        width += dx;
+    } else if west {
+        x += dx;
+        width -= dx;
+    }
+    if north {
+        height += dy;
+    } else if south {
+        y += dy;
+        height -= dy;
+    }
+    let min_w = min.0.min(max.0);
+    let max_w = min.0.max(max.0);
+    let min_h = min.1.min(max.1);
+    let max_h = min.1.max(max.1);
+    let right = x + width;
+    let top = y + height;
+    width = width.clamp(min_w, max_w);
+    height = height.clamp(min_h, max_h);
+    if west {
+        x = right - width;
+    }
+    if south {
+        y = top - height;
+    }
+    [x, y, width, height]
+}
+
 #[cfg(not(target_os = "macos"))]
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(_window: &W, _enabled: bool) -> bool {
     true
@@ -97,11 +238,38 @@ fn set_drag_enabled<W: HasWindowHandle + ?Sized>(_window: &W, _enabled: bool) ->
 
 #[cfg(target_os = "windows")]
 fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::HTCAPTION;
+    send_nc_lbutton_down(window, HTCAPTION as usize)
+}
+
+#[cfg(target_os = "windows")]
+fn resize_windows<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> bool {
+    send_nc_lbutton_down(window, hit_test_for_edge(edge))
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn hit_test_for_edge(edge: FrameResizeEdge) -> usize {
+    // Win32 HT* values: left=10, right=11, top=12, top-left=13, top-right=14,
+    // bottom=15, bottom-left=16, bottom-right=17.
+    match edge {
+        FrameResizeEdge::West => 10,
+        FrameResizeEdge::East => 11,
+        FrameResizeEdge::North => 12,
+        FrameResizeEdge::NorthWest => 13,
+        FrameResizeEdge::NorthEast => 14,
+        FrameResizeEdge::South => 15,
+        FrameResizeEdge::SouthWest => 16,
+        FrameResizeEdge::SouthEast => 17,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn send_nc_lbutton_down<W: HasWindowHandle + ?Sized>(window: &W, hit: usize) -> bool {
     use raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::Foundation::{HWND, POINT};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN,
+        GetCursorPos, SendMessageW, WM_NCLBUTTONDOWN,
     };
 
     let Ok(handle) = window.window_handle() else {
@@ -119,7 +287,7 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
         } else {
             0
         };
-        SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, lparam);
+        SendMessageW(hwnd, WM_NCLBUTTONDOWN, hit, lparam);
     }
     true
 }
@@ -194,7 +362,10 @@ fn clear_caption_style<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{WS_CAPTION, client_chrome_style_without_caption};
+    use super::{
+        FrameResizeEdge, WS_CAPTION, client_chrome_style_without_caption, hit_test_for_edge,
+        live_frame_after_delta,
+    };
 
     const WS_BORDER: isize = 0x0080_0000;
     const WS_CLIPSIBLINGS: isize = 0x0400_0000;
@@ -212,5 +383,58 @@ mod tests {
         assert_eq!(next & WS_SYSMENU, WS_SYSMENU);
         assert_eq!(next & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
         assert_eq!(next & WS_VISIBLE, WS_VISIBLE);
+    }
+
+    #[test]
+    fn live_frame_grows_and_clamps_from_each_edge() {
+        let start = [100.0, 200.0, 400.0, 300.0];
+        let min = (120.0, 80.0);
+        let max = (800.0, 600.0);
+        let cases = [
+            (
+                40.0,
+                0.0,
+                FrameResizeEdge::East,
+                [100.0, 200.0, 440.0, 300.0],
+            ),
+            (
+                40.0,
+                0.0,
+                FrameResizeEdge::West,
+                [140.0, 200.0, 360.0, 300.0],
+            ),
+            (
+                0.0,
+                30.0,
+                FrameResizeEdge::North,
+                [100.0, 200.0, 400.0, 330.0],
+            ),
+            (
+                0.0,
+                30.0,
+                FrameResizeEdge::South,
+                [100.0, 230.0, 400.0, 270.0],
+            ),
+            (
+                350.0,
+                0.0,
+                FrameResizeEdge::West,
+                [380.0, 200.0, 120.0, 300.0],
+            ),
+            (
+                500.0,
+                400.0,
+                FrameResizeEdge::NorthEast,
+                [100.0, 200.0, 800.0, 600.0],
+            ),
+        ];
+        for (dx, dy, edge, expected) in cases {
+            assert_eq!(
+                live_frame_after_delta(start, dx, dy, edge, min, max),
+                expected
+            );
+        }
+        assert_eq!(hit_test_for_edge(FrameResizeEdge::West), 10);
+        assert_eq!(hit_test_for_edge(FrameResizeEdge::SouthEast), 17);
     }
 }
