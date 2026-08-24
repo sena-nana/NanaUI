@@ -18,6 +18,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
 GPUI_PACKAGES = {"gpui"}
+ICED_WINIT_MARKERS = ("iced-rs/winit",)
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 GPU_BACKEND_PACKAGES = {
     "ash",
@@ -64,6 +65,19 @@ def main() -> int:
             "engine/ is present; Iced and GPUI observation trees were removed from the tree"
         )
 
+    lock_text = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+    for marker in ICED_WINIT_MARKERS:
+        if marker in lock_text:
+            failures.append(
+                f"Cargo.lock still pins {marker}; hosted windowing must use crates.io winit"
+            )
+
+    vendor_accesskit = ROOT / "vendor" / "accesskit_winit"
+    if vendor_accesskit.exists():
+        failures.append(
+            "vendor/accesskit_winit is present; use crates.io accesskit_winit with crates.io winit"
+        )
+
     root_metadata = metadata(ROOT / "Cargo.toml")
     forbidden = ICED_PACKAGES | GPUI_PACKAGES
     for package in root_metadata["packages"]:
@@ -93,7 +107,10 @@ def main() -> int:
         return 1
 
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
-    print(f"Engine boundary: OK (Iced/GPUI trees removed; backend-neutral: {neutral})")
+    print(
+        f"Engine boundary: OK (Iced/GPUI trees removed; crates.io winit; "
+        f"backend-neutral: {neutral})"
+    )
     return 0
 
 

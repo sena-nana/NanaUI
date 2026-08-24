@@ -1,5 +1,5 @@
 use raw_window_handle::HasWindowHandle;
-use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy, clear_vibrancy};
+use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
 
 use crate::{Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome};
 
@@ -39,7 +39,7 @@ pub(crate) fn clear<W: HasWindowHandle + ?Sized>(window: &W) {
 }
 
 pub(crate) fn set_application_icon_png(png: &[u8]) {
-    use objc2::MainThreadMarker;
+    use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
@@ -50,5 +50,8 @@ pub(crate) fn set_application_icon_png(png: &[u8]) {
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
         return;
     };
-    NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
+    // AppKit requires the main thread; `mtm` is taken above.
+    unsafe {
+        NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
+    }
 }
