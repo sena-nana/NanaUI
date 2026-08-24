@@ -1,30 +1,21 @@
-# vue-counter / vue-todo
+# vue-counter
 
-Vue Custom Renderer → Rust `NanaTreeDocument` / `MessageBridge` → Runtime / UiScene → `SceneWgpuPainter`。
-Blitz / paint-stub / paint-vello / CustomContent 已移除。
+引擎探针：Vue Custom Renderer → Runtime / UiScene。用来验收 host op、语义桥和无头点击，**不是**应用模板。
 
-可见 UI 经 `createWidget` / 语义降维 → `MessageBridge` → `UiWorld`。
-
-## Commands
+窗口化 Vue 应用对照 `examples/vue-hosted-acceptance`。产品说明见 [Vue](../../docs/vue.md)。
 
 ```bash
-# Headless Counter (V8, legacy DOM probe tree)
+# 无头 Counter
 cargo run -p vue-counter -- counter
 
-# Semantic message bridge (createWidget → BridgeEvent → Runtime props)
+# 语义桥
 cargo run -p vue-counter -- counter --semantic --clicks=2
 
-# Headless Todo
+# 无头 Todo
 cargo run -p vue-counter -- todo
 
-# Simulate clicks on legacy probe (hit-test → onClick)
-cargo run -p vue-counter -- counter --clicks=3
-
-# Release path: compose-shim → V8Snapshot (host-free snapshot; full Vue IIFE stays SourceUtf8)
-cargo run -p vue-counter --release -- counter --clicks=2 --bytecode
-
-# Windowed NanaUI driven by semantic snapshot
+# 窗口（同一套 Scene host）
 cargo run -p vue-counter --features windowed -- --window
 ```
 
-Default engine is V8 (`engine-v8`).
+默认引擎是 V8（`engine-v8`）。

@@ -1,10 +1,11 @@
-//! Canonical L3 application API.
+//! Canonical application API.
 //!
 //! Prefer this module over crate-root widget re-exports. See
+//! [`docs/how-it-works.md`](../../../docs/how-it-works.md) and
 //! [`docs/application-api.md`](../../../docs/application-api.md).
 //!
 //! Typed views and `register_component` live here. Scene types are also under
-//! [`host`]; Issue #8 counters under [`perf`]. [`internal`] is the same Runtime
+//! [`host`]; frame counters under [`perf`]. [`internal`] is the same Runtime
 //! crate for Gallery and host adapters — not a second contract.
 
 /// Scene host: retained document, render scene, opaque GPU slot keys.

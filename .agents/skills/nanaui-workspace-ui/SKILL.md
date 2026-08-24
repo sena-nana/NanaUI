@@ -7,7 +7,7 @@ description: Maintain NanaUI's Workspace and UI system. Product path is Runtime 
 
 ## Rules
 
-- Read [`docs/architecture.md`](../../../docs/architecture.md), [`docs/look.md`](../../../docs/look.md), [`docs/components.md`](../../../docs/components.md), [`docs/window.md`](../../../docs/window.md), and the matching LiliaUI source before
+- Read [`docs/how-it-works.md`](../../../docs/how-it-works.md), [`docs/workspace.md`](../../../docs/workspace.md), [`docs/look.md`](../../../docs/look.md), [`docs/components.md`](../../../docs/components.md), [`docs/window.md`](../../../docs/window.md), crate-boundary notes in [`docs/architecture.md`](../../../docs/architecture.md), and the matching LiliaUI source before
   changing structure or visuals.
 - Keep application content and business state outside the framework. Pass content through public
   Region and message contracts; keep sample navigation and documents in Demo state.

@@ -1,0 +1,108 @@
+# 框架如何运行
+
+这篇是 NanaUI 的心智模型。读完应能判断：状态放哪、一帧谁在做事、实时画面怎么进树。函数签名见 [应用 API](application-api.md)；实现细节见 [Runtime 与 Scene](runtime-scene.md)。
+
+## 三个事实
+
+1. **界面是一棵保留树。** `Text`、`Button`、侧栏、对话框、一块实时画面都是节点。框架记住这棵树，做布局、命中、焦点和绘制。你不写控件的像素坐标。
+2. **窗口和 GPU 是你的。** 应用（或 `run_runtime` 代你做的那层宿主）拥有 Window、Surface、Device、Queue。NanaUI 画进去，不另开一套设备，也不把画面拷到 CPU 再贴回 GPU。
+3. **实时画面是树上的成员，不是洞，也不是覆盖层。** 它占据布局位置，被裁切、被挡住、可以被点。合成顺序就是文档顺序。
+
+## 谁拥有什么
+
+```text
+应用
+  业务状态、配置、鉴权
+  每个 Region / Dock pane 里放什么
+  这一帧着色器 / 视口画成哪张纹理
+  窗口恢复（位置、最大化、上次所在屏）
+
+NanaUI
+  控件语义与交互
+  布局、滚动、命中、焦点、IME、无障碍增量
+  把树抽成 UiScene，画进你的 Surface
+
+nana-window
+  系统材质（Vibrancy / Mica / Acrylic）和标题栏拖拽桥
+  普通控件拿不到 HWND / NSWindow
+```
+
+`Workspace`、`Dock`、`Settings` 提供桌面壳的**结构**（区域、分隔、折叠、Tab）。区域里的文档、资源列表、预览内容仍是应用的。
+
+## 你怎么接到这棵树上
+
+新应用实现 `RuntimeProgram`，调用 `run_runtime`。
+
+```text
+initialize     建 RuntimeDocument，create_component，on(...)
+document()     按 WindowId 交出那棵树
+update         只处理宿主级消息（开窗、换 GPU、持久化）
+               按钮点击不要走这里，用 on / observe
+host_textures / scene_gpu_renderers / scene_resource_producers
+               可选：把实时画面接到树上
+prepare_window_frame / window_frame_presented
+               可选：在 flush 前画好纹理，present 后再释放旧资源
+```
+
+控件交互：`AppContext::on(button, |_, Activate, cx| { ... })`。需要开窗或换纹理时，在闭包里 `cx.dispatch_program(Message)`，下一帧进入 `update`。`update` 保持便宜；把页面内容填进树放在 `bind_window`（present 之后）。
+
+完整程序见 [开始](start.md)。
+
+## 一帧
+
+`run_runtime` 内部（`run_runtime_scene`）每扇需要重绘的窗口大致走：
+
+```text
+1. 消化 dispatch_program 的消息 → RuntimeProgram::update
+2. prepare_window_frame          → 你把最新纹理准备好
+3. RuntimeDocument::flush        → 样式、文字、布局、命中、抽取
+4. 外部资源生产（若有）          → 同一 Device/Queue，提交在 Scene 采样之前
+5. SceneWgpuPainter::paint       → 按文档顺序画进 Surface
+6. queue.submit + present
+7. window_frame_presented        → 现在才能丢掉上一帧的纹理
+8. bind_window                   → 需要的话再填内容
+```
+
+无变更时 flush 是空转，宿主不应空刷。动画、实时 GPU、普通 UI 的唤醒是分开的：一块实时画面在动，不该迫使整棵 Runtime 全量更新。
+
+应用**不要**自己跑一套布局或把控件坐标写进树。`flush` 会调宿主文字整形（`NanaTextShaper`）和 `RuntimeLayoutEngine`。
+
+对外身份是 `DocumentId` / `StableNodeId`（以及类型化的 `Entity<V>`）。内部用什么 ECS 存储不是 API。
+
+## 实时画面怎么成为节点
+
+两条常用接入，都落在 `CustomRenderNode` 上，和 Button 一样被布局、裁剪、命中：
+
+| 你有什么 | 挂什么 | 宿主做什么 |
+| --- | --- | --- |
+| 已经画到一张可采样纹理（离屏场景、多层合成） | `GpuTextureView`（slot 字符串） | `HostTextureRegistry::register`；painter 在节点位置采样 `"nana.host-texture"` |
+| 可以写进当前 UI 的 render pass | `GpuView` | 默认有一个演示用 painter；产品里实现 `SceneGpuRenderer`，用宿主 Device 编码进当前 encoder |
+
+多层实时内容就是相邻的几张 `GpuTextureView`。不要为某一种业务画面发明直写 Surface 的控件。
+
+必须先画到纹理、再被 UI 采样的内容，用 `SceneResourceProducer`：编码发生在 Scene 采样之前，仍是同一对 Device / Queue。同一资源在一帧里出现冲突的 revision，这一帧会被拒绝，不会偷偷选其中一个。
+
+换纹理时升 generation / revision，不要拆掉布局节点。细则见 [实时画面](gpu.md)。
+
+## Vue 是输入，不是另一套窗口
+
+Rust 控件、Vue 的 `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。
+
+```text
+Rust  create_component  ──┐
+Vue   nana-* props      ──┼─► UiWorld ─► UiScene ─► SceneWgpuPainter
+Vue   div + CSS 子集    ──┘
+```
+
+没有 WebView。`createNanaApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。
+
+## 不要做的
+
+这些是合同，不是风格建议：
+
+- 为界面再 `request_device` 一次，或让实时内容用另一套 Queue 提交却期望和 UI 对齐
+- 把 GPU 画面读回 CPU、编码成图，再当图标贴回去
+- 在 UI 画完之后再往 Surface 上盖一层实时画面
+- 让控件拿窗口句柄去调系统 API
+- 把整窗 WebView 当成 NanaUI 的壳
+- 把 crate 根上的旧控件再导出、或 `nana_ui::dock::*` 适配器，当成第二套产品 API（新代码从 `nana_ui::runtime` 进；产品 Dock 是 Runtime 的 `Dock` / `DockWorkspace`）

@@ -1,61 +1,135 @@
 # 开始
 
-先跑起来，再写一棵最小的界面。细节和内部机制后面再查。
+先看 [框架如何运行](how-it-works.md)。这篇把第一扇窗口写出来。
+
+## 依赖
+
+`nana-ui` 默认 feature 为空：不启用 `hosted` 就没有 `run_runtime`，不启用 `gpu` 就没有 painter。桌面应用最少：
+
+```toml
+[dependencies]
+nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["hosted", "bundled-fonts"] }
+```
+
+`hosted` 会带上 `gpu`、winit 和 AccessKit。更多控件族见 [应用 API](application-api.md) 的 feature 表。Rust 1.92+。
+
+仓库本身用 path / git 消费，尚未作为 crates.io 包发布。
 
 ## 先看成品
 
 在仓库根目录：
 
 ```bash
-# 控件、侧栏、深色/浅色
 cargo run -p component-gallery
-
-# 界面和实时画面画在同一个窗口里
-cargo run -p nana-ui --example hosted-gpu-demo --features bundled-fonts,gpu
+cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
-Gallery 只是示例，不是你的产品骨架。有 Vue 旧代码要迁时，再看 `examples/vue-counter` 和 [Vue](vue.md)。
+Gallery 是控件目录，不是你的产品骨架。最小宿主对照 `examples/runtime-host-fixture`；多窗口对照 `crates/nana-ui/examples/window-chrome-multi-window.rs`。
 
-## 这套框架怎么理解
+## 第一扇窗口
 
-你写的是一棵界面树。`Text`、`Button`、侧栏、对话框，以及一块实时画面，都是树上的节点：一起排版，一起裁剪，点到谁就是谁。
-
-应用打开窗口、创建图形设备。NanaUI 画进这个窗口，不另开一套设备，也不把画面拷到 CPU 再贴回去。
-
-业务状态、配置文件、每个区域里放什么、角色这一帧画什么，都是你的。NanaUI 不替你存设置，也不内置登录或任何产品业务。
-
-## 写一棵界面
-
-新应用用 `nana_ui::runtime`。先建一份文档，往上挂控件，再接到点击：
+应用做三件事：建一棵 `RuntimeDocument`，实现 `RuntimeProgram`，调用 `run_runtime`。
 
 ```rust
-use nana_ui::runtime::{
-    Activate, Button, DocumentId, List, RuntimeDocument, Text,
+use std::convert::Infallible;
+
+use nana_ui::runtime::{Activate, Button, DocumentId, List, RuntimeDocument, Text};
+use nana_ui::{
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
+    run_runtime,
 };
+use nana_ui_platform::{WindowEvent, WindowId};
 
-let document_id = DocumentId::new(1).unwrap();
-let mut document = RuntimeDocument::new(document_id);
-let cx = document.context_mut();
+struct App {
+    document: RuntimeDocument,
+}
 
-let root = cx.create_component(document_id, List::new())?;
-let title = cx.create_component(document_id, Text::new("你好"))?;
-let start = cx.create_component(document_id, Button::new("开始"))?;
-cx.append_child(root, title)?;
-cx.append_child(root, start)?;
-cx.on(start, move |_button, _event: &Activate, _cx| {
-    // 改你自己的状态
-})?;
+impl App {
+    fn mount() -> Self {
+        let document_id = DocumentId::new(1).expect("document id");
+        let mut document = RuntimeDocument::new(document_id);
+        let cx = document.context_mut();
+
+        let root = cx.create_component(document_id, List::new()).unwrap();
+        let title = cx.create_component(document_id, Text::new("你好")).unwrap();
+        let start = cx.create_component(document_id, Button::new("开始")).unwrap();
+        cx.append_child(root, title).unwrap();
+        cx.append_child(root, start).unwrap();
+        cx.on(start, move |_button, _event: &Activate, _cx| {
+            // 改你自己的状态。需要开窗或换 GPU 时：cx.dispatch_program(msg)
+        })
+        .unwrap();
+
+        Self { document }
+    }
+}
+
+impl RuntimeProgram for App {
+    type Message = ();
+    type Error = Infallible;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        Ok((Self::mount(), Vec::new()))
+    }
+
+    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&self.document)
+    }
+
+    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+        (id == WindowId::PRIMARY).then_some(&mut self.document)
+    }
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        ThemeMode::Dark
+    }
+
+    fn window_event(
+        &mut self,
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        match event {
+            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
+}
+
+fn main() -> Result<(), nana_ui::HostedRunError> {
+    run_runtime::<App>(RuntimeWindowSettings::new("NanaUI"))
+}
 ```
 
-然后实现 `RuntimeProgram`：按窗口交出这份文档，在 `update` 里消化消息。最后 `run_runtime` 打开窗口、注入图形设备并开始画。完整的窗口、多窗口和事件循环，对照 `crates/nana-ui/examples/window-chrome-multi-window.rs` 和 `examples/runtime-host-fixture`。
+`bundled-fonts` 开启时，宿主会注册 Noto Sans SC 并设为界面默认字体。关掉则回落到系统字体，不能当设计稿。
 
-crate 根上那些控件再导出是旧名字，新代码不要当第二套 API 用。
+新代码从 `nana_ui::runtime` 引入控件。crate 根上的同名再导出是兼容面，不要当第二套 API。
 
-## 接下来做什么
+## 状态放哪
 
-- 各种控件怎么拼、怎么自己加一种：[控件](components.md)
-- 把 Live2D、着色器、预览视口放进这棵树：[实时画面](gpu.md)
-- 标题栏、图标、系统模糊、再开一扇窗：[窗口](window.md)
-- 颜色和尺寸：[视觉](look.md)
+| 东西 | 放哪 |
+| --- | --- |
+| 按钮是否 loading、输入框当前值 | 对应控件（`update_component`）或你的 view state |
+| 打开了哪个文档、登录态、设置值 | 应用自己的结构，NanaUI 不替你存盘 |
+| 侧栏宽度、Region 折叠 | `WorkspaceModel`，见 [工作区](workspace.md) |
+| 这一帧的实时画面 | 你的 GPU 资源 + `HostTextureRegistry`，见 [实时画面](gpu.md) |
 
-查函数签名和扩展方式时用 [应用 API](application-api.md)。想知道树如何更新、一帧如何画出来，再读 [Runtime 与 Scene](runtime-scene.md)。
+`RuntimeProgram::Message` 是跨窗口 / GPU / 持久化的宿主消息，不是每个点击的总线。
+
+## 接下来
+
+- 拼控件、加一种自己的：[控件](components.md)
+- 桌面壳：[工作区](workspace.md)
+- 把视口挂上树：[实时画面](gpu.md)
+- 标题栏与系统模糊：[窗口](window.md)
+- 深色 / 浅色与尺寸：[视觉](look.md)

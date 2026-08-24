@@ -1,61 +1,57 @@
 # 控件
 
-不要每个按钮自己画。用现成控件往树上挂。新应用在 Rust 里写：
+用现成控件往树上挂，不要每个按钮自己画。Rust 入口是 `nana_ui::runtime`。
 
 ```rust
 let button = cx.create_component(document_id, Button::new("保存"))?;
 cx.on(button, move |_button, _event: &Activate, _cx| {
-    // 写你的保存逻辑
+    // 应用自己的保存逻辑
 })?;
 ```
 
-能看见的按下、输入、开关、选中，都要改到你自己的状态上。不要放点了没反应的入口。
-
-迁 Vue 时，同一套控件从 `@nanaui/nanavue-components` 引入，进的是同一棵树：
+迁 Vue 时，同一套控件从 `@nanaui/nanavue-components` 引入，进同一棵树：
 
 ```js
 import { NanaButton, NanaInput, NanaDialog } from "@nanaui/nanavue-components";
 import "@nanaui/nanavue-components/controls.css";
 ```
 
-## 有什么
+名称对照和 props 见该包 README。视觉与尺寸见 [视觉](look.md)。
 
-**操作与输入。** 按钮、图标按钮、输入、多行文本、复选框、开关、滑杆、选择、下拉、搜索下拉、分段控件、Tab、XYPad。
+## 目录
 
-**展示。** 卡片、列表行、表单行、空状态、进度、骨架屏、加载、状态徽章、提示、校验信息、二维码、图片查看、Markdown、日历热力、图表画布。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`Checkbox`、`Switch`、`Slider` / `RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`。
 
-**浮层。** 对话框、确认框、抽屉、气泡、菜单、右键菜单、命令面板、Tooltip。浮层由框架放在窗口里，靠近边缘时自己收进视口，应用不必算坐标。
+**展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`GraphCanvas`。
 
-**壳层。** 标题栏、应用壳、工作区、侧栏、设置行和设置页、Dock、分栏。壳层是通用桌面结构；每个区域里放什么仍由应用决定。
+**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`Menu` / `ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。
 
-视觉和尺寸见 [视觉](look.md)。
+**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
-## 自己加控件
+部分族需要 Cargo feature（`calendar`、`charts`、`overlays`、`rich-text` 等），见 [应用 API](application-api.md)。未启用的模块不会编进你的二进制。
 
-常见需求用组合现有控件就能做。真的要新增一种会参与排版、点击和绘制的控件时：
+## 交互
 
-- 在 Rust 里注册成界面控件，并提供对应的 `nana-*` Vue 标签，这样它和按钮一样走进布局和点击。
-- 如果只是给 JavaScript 一组命令和属性白名单，走宿主组件表，不要指望它自动变成可点的界面节点。
-- 实时画面用 [实时画面](gpu.md) 那条路，不要在控件里直接往窗口上画。
+可见的按下、输入、开关、选中都接到真实状态：`on` / `observe`，或 `update_component`。
 
-不要为每个业务控件发明一套私有绘制。动态加载二进制插件不是这条路。
+典型事件：`Activate`（按钮）、`TextChanged`、`ToggleChanged`、`SliderChanged`、`TabsEvent`、`SearchDropdownEvent`、`ContextMenuEvent`。签名以 rustdoc 为准。
 
-## 内部如何工作
+需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`，下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 
-公开只读目录是 `component_catalog()` / `component_support()`。默认绘制路径由同一份声明推导，不另维护一份名单。当前目录里的控件都走 Runtime。
+## 文本与列表
 
-内建与插件共用 `AppContext` 上的 `ComponentRegistry`。稳定身份是 `ComponentTypeId`（例如 `nana.button`）。Vue 的 `nana-*` 标签和 Rust 的 `create_component<C>` 都解析到这张表。`bind` 只把通用 UI 投影进 `UiWorld`；业务 state 留在 `AppContext.views`。
+`TextInput` / `TextArea` 持有已提交的 UTF-8、选区和 IME preedit。它们是视图侧编辑模型：文档 revision、撤销、冲突、持久化仍由应用拥有。可选 feature `syntax-highlighting` 在同一 `TextArea` 上启用名为 `"highlight"` 的 presenter，不另造一套编辑器。
 
-两张注册表不是同一条 ABI：
+大列表、表格、树用 `AppContext::materialize_virtual_*`。可见窗口外不建 live 节点；滚动不重排整棵布局。
 
-| 你要 | 注册到 |
-| --- | --- |
-| 进入布局、点击、Scene 的新控件 | `ExtensionRegistrar::register_component` + Vue `nana-*` |
-| 仅 JS 的 props / 事件 / 命令白名单 | `NativeComponentRegistry` + `Nana.components.call` |
-| GPU 内容 | `CustomRenderNode` + 宿主 `HostTexture` |
+## 自己加一种控件
 
-只注册其中一张，另一条路径不会自动生效。不要靠扩展 `WidgetKind` 来加业务控件。
+多数需求用现有控件组合即可。真要新增一种会参与排版、点击和绘制的控件：
 
-浮层的 exclusive active 和焦点恢复只存在 `UiWorld`。切到另一个浮层时，不活跃的子树退出布局、点击和绘制；模态会限制焦点范围。
+1. 实现 Runtime 的 `ComponentView` / `RegisterableComponent`。
+2. 用 `UiExtension` + `ExtensionRegistrar::register_component` 登记。稳定身份是 `ComponentTypeId`（如 `nana.button`、`app.preview-card`）。
+3. 若 Vue 也要用，提供对应的 `nana-*` 标签。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。
 
-大列表、表格的窗口几何在 `nana-ui-core`：可见范围外不建 live entity，滚动不重排整棵布局，只让受影响的命中和绘制失效。
+只给 JavaScript 一组命令和属性白名单时，走 Vue 的 `NativeComponentRegistry`（`Nana.components.call`）。那张表**不会**让节点自动进入布局和命中。
+
+实时画面不要做成「自己往窗口上画的控件」，走 [实时画面](gpu.md)。不支持动态加载 dylib 插件。
