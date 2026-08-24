@@ -292,6 +292,7 @@ pub struct SidebarRow {
     pub state: SidebarRowState,
     pub tone: SidebarRowTone,
     pub disclosure: Option<bool>,
+    pub hovered: bool,
     pub style: NodeStyle,
 }
 
@@ -307,6 +308,7 @@ impl SidebarRow {
             state: SidebarRowState::Idle,
             tone: SidebarRowTone::Default,
             disclosure: None,
+            hovered: false,
             style: NodeStyle::default(),
         }
     }
@@ -372,7 +374,7 @@ impl SidebarRow {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.justify_content = if self.tools.is_some() {
+        layout.justify_content = if self.visible_tools().is_some() {
             if self.slots.leading.is_some() {
                 JustifySpec::SpaceBetween
             } else {
@@ -397,9 +399,10 @@ impl SidebarRow {
         style.foreground = Some(match (self.tone, self.state) {
             (SidebarRowTone::Warning, _) => SemanticColorRole::Warning,
             (SidebarRowTone::Error, _) => SemanticColorRole::Danger,
-            (_, SidebarRowState::Active | SidebarRowState::AncestorActive) => {
-                SemanticColorRole::Text
-            }
+            // The selected row carries the accent; an ancestor of the selection
+            // only gets the heavier weight, so one row reads as current.
+            (_, SidebarRowState::Active) => SemanticColorRole::Accent,
+            (_, SidebarRowState::AncestorActive) => SemanticColorRole::Text,
             (_, SidebarRowState::Idle | SidebarRowState::Disabled) => SemanticColorRole::Faint,
         });
         style.background = None;
@@ -448,17 +451,28 @@ impl SidebarRow {
             let mut rgba = SemanticPalette::for_mode(world.theme_mode())
                 .get(role)
                 .as_rgba_array();
-            rgba[3] *= ROW_TEXT_ALPHA;
+            // The accent on the selected row has to stay saturated; everything
+            // else sits back so the current row reads first.
+            if self.state != SidebarRowState::Active {
+                rgba[3] *= ROW_TEXT_ALPHA;
+            }
             Arc::make_mut(&mut style.layout).color = Some(rgba);
         }
         style
+    }
+
+    /// Row tools stay out of the way until the pointer is on the row, so a long
+    /// label owns the full width at rest instead of being clipped by chrome the
+    /// user cannot reach yet.
+    fn visible_tools(&self) -> Option<StableNodeId> {
+        self.tools.filter(|_| self.hovered)
     }
 
     fn projected_slots(&self) -> ListItemSlots {
         ListItemSlots {
             leading: self.slots.leading,
             content: self.slots.content,
-            trailing: self.tools.or(self.slots.trailing),
+            trailing: self.visible_tools().or(self.slots.trailing),
         }
     }
 
@@ -470,6 +484,7 @@ impl SidebarRow {
             return;
         }
         let mut style = world.node_style(tools).cloned().unwrap_or_default();
+        let hidden = !self.hovered;
         let layout = Arc::make_mut(&mut style.layout);
         let mut changed = false;
         if layout.flex_grow != Some(0.0) {
@@ -482,6 +497,10 @@ impl SidebarRow {
         }
         if layout.width != Some(LengthSpec::Shrink) {
             layout.width = Some(LengthSpec::Shrink);
+            changed = true;
+        }
+        if layout.hidden != hidden {
+            layout.hidden = hidden;
             changed = true;
         }
         if changed {
@@ -1728,6 +1747,27 @@ mod tests {
             Some(StandardVisual::ListItem {
                 leading: Some(leading.stable_id()),
                 content: None,
+                trailing: None,
+            }),
+            "row tools stay out of the trailing slot until the row is hovered"
+        );
+        assert!(
+            context
+                .world()
+                .node_style(close.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+
+        context
+            .set_pointer_hover(document(), 1, Some(row.stable_id()))
+            .unwrap();
+        assert_eq!(
+            context.world().standard_visual(row.stable_id()),
+            Some(StandardVisual::ListItem {
+                leading: Some(leading.stable_id()),
+                content: None,
                 trailing: Some(close.stable_id()),
             })
         );
@@ -1760,6 +1800,16 @@ mod tests {
         );
         assert!(label_box.x + label_box.width <= tools_box.x + 0.5);
         assert_eq!(context.world().text(row.stable_id()), Some("着色器"));
+
+        context.set_pointer_hover(document(), 1, None).unwrap();
+        assert!(
+            context
+                .world()
+                .node_style(close.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
     }
 
     #[test]
@@ -1774,21 +1824,35 @@ mod tests {
                 SidebarRow::new("工作区").state(SidebarRowState::Active),
             )
             .unwrap();
+        let ancestor = context
+            .create_component(
+                document(),
+                SidebarRow::new("项目").state(SidebarRowState::AncestorActive),
+            )
+            .unwrap();
         let idle_style = context.world().node_style(idle.stable_id()).unwrap();
         let active_style = context.world().node_style(active.stable_id()).unwrap();
+        let ancestor_style = context.world().node_style(ancestor.stable_id()).unwrap();
         assert_eq!(idle_style.foreground, Some(SemanticColorRole::Faint));
-        assert_eq!(active_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(active_style.foreground, Some(SemanticColorRole::Accent));
+        assert_eq!(ancestor_style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(
             active_style.interaction.selected.background,
             Some(SemanticColorRole::Selected)
         );
         let idle_color = idle_style.layout.color.expect("idle text color");
         let active_color = active_style.layout.color.expect("active text color");
+        let ancestor_color = ancestor_style.layout.color.expect("ancestor text color");
         assert!((idle_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
-        assert!((active_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
+        assert!((ancestor_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
         let palette = SemanticPalette::for_mode(context.world().theme_mode());
+        assert_eq!(
+            active_color,
+            palette.accent.as_rgba_array(),
+            "the selected row keeps the accent at full strength"
+        );
         assert_eq!(&idle_color[..3], &palette.faint.as_rgba_array()[..3]);
-        assert_eq!(&active_color[..3], &palette.text.as_rgba_array()[..3]);
+        assert_eq!(&ancestor_color[..3], &palette.text.as_rgba_array()[..3]);
     }
 
     fn mount_section(

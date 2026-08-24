@@ -670,6 +670,94 @@ impl ComponentView for IconButton {
     }
 }
 
+/// Non-interactive glyph for inline decoration. Hosts that need a hit target or
+/// hover paint use [`IconButton`] instead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IconGlyph {
+    pub icon: nana_ui_core::Icon,
+    pub size: f32,
+    pub style: NodeStyle,
+}
+
+impl IconGlyph {
+    pub fn new(icon: nana_ui_core::Icon) -> Self {
+        Self {
+            icon,
+            size: nana_ui_core::ControlSize::Small.icon_size(),
+            style: NodeStyle {
+                foreground: Some(nana_ui_core::SemanticColorRole::Muted),
+                ..NodeStyle::default()
+            },
+        }
+    }
+
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = size.max(0.0);
+        self
+    }
+
+    pub fn role(mut self, role: nana_ui_core::SemanticColorRole) -> Self {
+        self.style.foreground = Some(role);
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    fn effective_style(&self) -> NodeStyle {
+        let mut style = self.style.clone();
+        let layout = Arc::make_mut(&mut style.layout);
+        let edge = nana_ui_core::LengthSpec::Px(self.size);
+        layout.width = Some(edge);
+        layout.height = Some(edge);
+        layout.min_width = Some(edge);
+        layout.min_height = Some(edge);
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        style
+    }
+}
+
+impl ComponentView for IconGlyph {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "icon-glyph".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        let visual = StandardVisual::Icon {
+            icon: self.icon,
+            size: self.size,
+            tooltip: None,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.effective_style(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
+        );
+    }
+}
+
 /// Non-interactive content surface. Actions belong to explicit child controls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {

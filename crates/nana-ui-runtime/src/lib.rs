@@ -139,7 +139,8 @@ pub use nana_ui_core::{
     GraphTargetId, GraphTargetKind, GraphViewport, JustifySpec, KeyContext, LayoutStyle,
     LengthSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone,
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
-    TableCursor, TableNavigation, ThemeMode, TreeNavigation, TreeNode, TreeViewEvent,
+    TableCursor, TableNavigation, TextAlignSpec, ThemeMode, TreeNavigation, TreeNode,
+    TreeViewEvent,
     ValidationIntent, VirtualListLayout, VirtualListMaterialization,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
@@ -195,7 +196,8 @@ pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use view_components::{
     Activate, Button, Card, Checkbox, ComponentView, Dialog, HostedTextarea, IconButton,
-    IconButtonTooltip, List, ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged, OverlayHost,
+    IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, Menu, MenuItem, OverlayChanged,
+    OverlayHost,
     RangeAdjustment, RangeChanged, RangeDragState, RangeField, ScrollAxes, ScrollChanged,
     ScrollView, Slider, SliderChanged, SliderError, Switch, Tab, TabList, TabSelected, Table,
     TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, ToggleChanged,

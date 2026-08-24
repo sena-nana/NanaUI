@@ -10,6 +10,8 @@ pub enum Icon {
     Appearance,
     ArrowLeft,
     ArrowRight,
+    ArrowUp,
+    Bot,
     ChevronDown,
     ChevronRight,
     Chart,
@@ -17,14 +19,19 @@ pub enum Icon {
     Eye,
     File,
     Folder,
+    GitBranch,
     Maximize,
+    MessageSquarePlus,
     Minimize,
     Moon,
     Nodes,
+    Paperclip,
     Restore,
     Search,
     Settings,
+    ShieldCheck,
     Sidebar,
+    Sparkles,
     Workspace,
 }
 
@@ -52,6 +59,8 @@ impl Icon {
             "appearance" | "palette" | "sun" | "sun-medium" | "paintbrush" => Self::Appearance,
             "arrow-left" | "arrowleft" | "back" | "chevron-left" => Self::ArrowLeft,
             "arrow-right" | "arrowright" => Self::ArrowRight,
+            "arrow-up" | "arrowup" | "chevron-up" => Self::ArrowUp,
+            "bot" | "bot-message-square" | "robot" => Self::Bot,
             "chevron-right" => Self::ChevronRight,
             "chevron-down" | "arrow-down" => Self::ChevronDown,
             "chart" | "line-chart" | "linechart" => Self::Chart,
@@ -59,17 +68,24 @@ impl Icon {
             "eye" | "visibility" | "eye-off" | "eyeoff" => Self::Eye,
             "file" | "document" => Self::File,
             "folder" | "directory" | "folder-open" | "folderopen" => Self::Folder,
+            "git-branch" | "gitbranch" | "branch" => Self::GitBranch,
             "maximize" | "square" => Self::Maximize,
+            "message-square-plus" | "messagesquareplus" | "square-plus" => {
+                Self::MessageSquarePlus
+            }
             "minimize" | "minus" => Self::Minimize,
             "moon" | "dark" => Self::Moon,
             "nodes" | "graph" | "network" | "layout-grid" | "grid" => Self::Nodes,
+            "paperclip" | "attachment" | "paper-clip" => Self::Paperclip,
             "restore" | "refresh-cw" | "refreshcw" | "rotate-cw" | "reload" | "sync" => {
                 Self::Restore
             }
             "search" | "magnifier" | "magnifying-glass" => Self::Search,
             "settings" | "gear" | "cog" | "sliders" | "sliders-horizontal" => Self::Settings,
+            "shield-check" | "shieldcheck" | "shield" => Self::ShieldCheck,
             "sidebar" | "panel-left" | "layout-panel-left" | "panel-left-open"
             | "panelleftopen" | "panel-left-close" | "panelleftclose" => Self::Sidebar,
+            "sparkles" | "sparkle" | "wand-sparkles" => Self::Sparkles,
             "workspace" | "layout-dashboard" | "home" | "house" => Self::Workspace,
             _ => return None,
         })
@@ -107,6 +123,22 @@ mod tests {
         assert_eq!(Icon::parse_name("lucide-minus"), Some(Icon::Minimize));
         assert_eq!(Icon::parse_name("lucide-square"), Some(Icon::Maximize));
         assert_eq!(Icon::parse_name("lucide-refresh-cw"), Some(Icon::Restore));
+        assert_eq!(Icon::parse_name("lucide-arrow-up"), Some(Icon::ArrowUp));
+        assert_eq!(Icon::parse_name("lucide-bot"), Some(Icon::Bot));
+        assert_eq!(
+            Icon::parse_name("lucide-git-branch"),
+            Some(Icon::GitBranch)
+        );
+        assert_eq!(
+            Icon::parse_name("lucide-message-square-plus"),
+            Some(Icon::MessageSquarePlus)
+        );
+        assert_eq!(Icon::parse_name("lucide-paperclip"), Some(Icon::Paperclip));
+        assert_eq!(
+            Icon::parse_name("lucide-shield-check"),
+            Some(Icon::ShieldCheck)
+        );
+        assert_eq!(Icon::parse_name("lucide-sparkles"), Some(Icon::Sparkles));
     }
 
     #[test]
@@ -115,7 +147,6 @@ mod tests {
         assert_eq!(Icon::parse_name("lucide-trash-2"), None);
         assert_eq!(Icon::parse_name("lucide-pin"), None);
         assert_eq!(Icon::parse_name("lucide-pencil"), None);
-        assert_eq!(Icon::parse_name("lucide-git-branch"), None);
         assert_eq!(Icon::parse_name("lucide-user-round"), None);
         assert_eq!(Icon::parse_name("lucide-map-pin"), None);
         assert_eq!(Icon::parse_name("lucide-copy"), None);
@@ -124,6 +155,5 @@ mod tests {
         assert_eq!(Icon::parse_name("lucide-list-checks"), None);
         assert_eq!(Icon::parse_name("lucide-unknown"), None);
         assert_eq!(Icon::parse_name("lucide-send"), None);
-        assert_eq!(Icon::parse_name("lucide-sparkles"), None);
     }
 }
