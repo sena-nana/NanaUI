@@ -669,6 +669,8 @@ pub struct DesktopShell {
     pub title_leading: Option<StableNodeId>,
     pub title_center: Option<StableNodeId>,
     pub title_trailing: Option<StableNodeId>,
+    pub title_center_width: Option<f32>,
+    pub title_window_controls: Option<bool>,
     pub model: WorkspaceModel,
     pub style: NodeStyle,
 }
@@ -691,6 +693,8 @@ impl DesktopShell {
             title_leading: None,
             title_center: None,
             title_trailing: None,
+            title_center_width: None,
+            title_window_controls: None,
             model: WorkspaceModel::new(),
             style: NodeStyle::default(),
         }
@@ -726,6 +730,25 @@ impl DesktopShell {
 
     pub fn title_trailing(mut self, trailing: StableNodeId) -> Self {
         self.title_trailing = Some(trailing);
+        self
+    }
+
+    /// Width of the centred title column when the shell creates the title bar.
+    ///
+    /// The default suits a short product title; a breadcrumb needs more room or
+    /// it wraps and clips inside the fixed column.
+    pub fn title_center_width(mut self, width: f32) -> Self {
+        self.title_center_width = Some(width);
+        self
+    }
+
+    /// Whether the shell-created title bar mounts its own window controls.
+    ///
+    /// The mounted controls are presentation only. Hosts that bind their own
+    /// minimize / maximize / close buttons pass `false` to avoid a second,
+    /// inert set of buttons.
+    pub fn title_window_controls(mut self, show: bool) -> Self {
+        self.title_window_controls = Some(show);
         self
     }
 
@@ -1028,6 +1051,8 @@ impl AppContext {
             snapshot.title_leading,
             snapshot.title_center,
             snapshot.title_trailing,
+            snapshot.title_center_width,
+            snapshot.title_window_controls,
         )?;
         if let Some(title_bar) = title_bar {
             let _ = self.assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar));
@@ -1524,6 +1549,7 @@ fn ensure_overlay_host(
         .stable_id())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_title_bar(
     context: &mut AppContext,
     document: DocumentId,
@@ -1532,6 +1558,8 @@ fn ensure_title_bar(
     leading: Option<StableNodeId>,
     center: Option<StableNodeId>,
     trailing: Option<StableNodeId>,
+    center_width: Option<f32>,
+    window_controls: Option<bool>,
 ) -> Result<Option<StableNodeId>, FrameworkError> {
     if let Some(id) = existing.filter(|id| context.world().contains(*id)) {
         return Ok(Some(id));
@@ -1543,6 +1571,12 @@ fn ensure_title_bar(
     let center = center.filter(|id| context.world().contains(*id));
     let trailing = trailing.filter(|id| context.world().contains(*id));
     let mut bar = AppTitleBar::new(Arc::clone(title));
+    if let Some(width) = center_width {
+        bar = bar.center_width(width);
+    }
+    if let Some(show) = window_controls {
+        bar = bar.show_window_controls(show);
+    }
     if let Some(leading) = leading {
         bar = bar.leading(leading);
     }
@@ -2965,6 +2999,51 @@ mod tests {
             .assemble_desktop_shell(entity)
             .expect("assemble desktop shell");
         entity
+    }
+
+    #[test]
+    fn desktop_shell_forwards_center_width_and_suppresses_mounted_controls() {
+        let mut context = AppContext::new();
+        let center = context
+            .create_detached_component(document(), Text::new("Nana › 很长的面包屑上下文标题"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .title("Nana")
+                .title_center(center.stable_id())
+                .title_center_width(420.0)
+                .title_window_controls(false),
+        );
+        let bar = context
+            .read(shell, |shell| shell.title_bar)
+            .unwrap()
+            .expect("shell creates a title bar");
+        let snapshot = context
+            .read(Entity::<AppTitleBar>::from_stable_id(bar), Clone::clone)
+            .unwrap();
+        assert_eq!(snapshot.center_width, 420.0);
+        assert!(!snapshot.show_window_controls);
+        assert!(
+            snapshot.controls.is_none(),
+            "suppressed chrome must not mount a second control strip"
+        );
+
+        context
+            .layout_document(document(), LayoutViewport::new(1180.0, 760.0))
+            .unwrap();
+        let center_slot = context
+            .world()
+            .node(bar)
+            .unwrap()
+            .children
+            .into_iter()
+            .find(|&id| node_tag(context.world(), id).as_deref() == Some(CENTER_COLUMN_TAG))
+            .expect("center column");
+        assert_eq!(
+            context.world().layout_box(center_slot).unwrap().width,
+            420.0
+        );
     }
 
     #[test]

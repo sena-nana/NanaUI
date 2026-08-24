@@ -1916,6 +1916,38 @@ impl AppContext {
         self.activate_component(entity, |button| button.disabled)
     }
 
+    fn enclosing_sidebar_row(&self, id: StableNodeId) -> Option<Entity<SidebarRow>> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<SidebarRow>())
+            {
+                return Some(Entity::from_stable_id(id));
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+
+    fn sync_sidebar_row_hover(
+        &mut self,
+        row: Option<Entity<SidebarRow>>,
+        hovered: bool,
+    ) -> Result<(), FrameworkError> {
+        let Some(row) = row else {
+            return Ok(());
+        };
+        if self.read(row, |row| row.hovered == hovered)? {
+            return Ok(());
+        }
+        self.update_component(row, |row, _| {
+            row.hovered = hovered;
+        })?;
+        Ok(())
+    }
+
     fn enclosing_sidebar_section(&self, id: StableNodeId) -> Option<Entity<SidebarSection>> {
         let mut current = Some(id);
         while let Some(id) = current {
@@ -2587,6 +2619,12 @@ impl AppContext {
                 self.sync_sidebar_section_hover(previous, target)?;
             }
             self.sync_sidebar_section_hover(target, target)?;
+            let previous_row = previous.and_then(|id| self.enclosing_sidebar_row(id));
+            let next_row = target.and_then(|id| self.enclosing_sidebar_row(id));
+            if previous_row.map(Entity::stable_id) != next_row.map(Entity::stable_id) {
+                self.sync_sidebar_row_hover(previous_row, false)?;
+            }
+            self.sync_sidebar_row_hover(next_row, true)?;
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }

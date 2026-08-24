@@ -258,8 +258,13 @@ fn triggered_menu_style(
         0.0
     };
     if !open {
+        // A closed surface clips to its own box, so a trigger needs a box wide
+        // enough to show its glyph instead of collapsing to zero width.
+        let trigger_width = trigger.map(|_| LengthSpec::Px(trigger_h.max(1.0)));
         return NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
+                width: trigger_width,
+                min_width: trigger_width,
                 height: Some(LengthSpec::Px(trigger_h.max(1.0))),
                 overflow_x: OverflowSpec::Hidden,
                 overflow_y: OverflowSpec::Hidden,
