@@ -1646,6 +1646,57 @@ mod tests {
     }
 
     #[test]
+    fn unspecified_flex_shrink_does_not_crush_definite_row() {
+        // Issue #22: Vue CSS that omits flex-shrink stays 0, not CSS initial 1.
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text("width:150px;height:40px", None, None);
+        let mut b = LayoutStyle::default();
+        b.apply_css_text("width:150px;height:40px", None, None);
+        assert_eq!(a.flex_shrink, None);
+        assert_eq!(b.flex_shrink, None);
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::leaf("a", a), LayoutNode::leaf("b", b)],
+        );
+        let map = map_of(&root, 240.0, 100.0);
+        assert!((map["a"].width - 150.0).abs() < 0.01);
+        assert!((map["b"].width - 150.0).abs() < 0.01);
+        assert!((map["b"].x - 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_initial_shrinks_overflowing_definite_row() {
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text("width:150px;flex:initial;height:40px", None, None);
+        let mut b = LayoutStyle::default();
+        b.apply_css_text("width:150px;flex:initial;height:40px", None, None);
+        assert_eq!(a.flex_shrink, Some(1.0));
+        assert_eq!(b.flex_shrink, Some(1.0));
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::leaf("a", a), LayoutNode::leaf("b", b)],
+        );
+        let map = map_of(&root, 240.0, 100.0);
+        assert!((map["a"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
     fn flex_shrink_min_width_freezes_and_redistributes() {
         // T-F19: equal shrink would be 100/100; min 120 freezes a → b gets 80
         let mut root_s = LayoutStyle::default();

@@ -885,6 +885,8 @@ pub struct LayoutStyle {
     pub justify_self: Option<AlignSpec>,
     /// `flex-grow`；>0 时主轴随父方向 Fill。
     pub flex_grow: Option<f32>,
+    /// `flex-shrink`。`None` 按 0，不是 CSS initial 1，避免溢出的定宽行被压扁。
+    /// Vue 写了 `flex-shrink` 或 `flex: initial` 时仍是 `Some(1.0)`。
     pub flex_shrink: Option<f32>,
     pub flex_basis: Option<LengthSpec>,
     pub overflow_x: OverflowSpec,

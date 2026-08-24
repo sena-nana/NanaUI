@@ -1810,9 +1810,10 @@ fn distribute_flex_main(
             .unwrap_or(if fill_main { 1.0 } else { 0.0 })
             .max(0.0);
         grows.push(grow);
-        // Unspecified shrink stays 0 so overflowing definite rows (lists) keep
-        // their boxes. Fixtures that need shrink set `flex-shrink` explicitly
-        // (T-F18/F19).
+        // Unspecified shrink stays 0 (not CSS initial 1) so overflowing
+        // definite rows (lists, toolbars) keep their boxes. Vue CSS that
+        // wants CSS shrink writes `flex-shrink` or `flex: initial`
+        // (`Some(1.0)`). css-parity T-F18/F19 set it explicitly.
         shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
         match resolve_child_main(main, content_main, viewport, fonts) {
             Some(value) => {
@@ -2643,6 +2644,53 @@ mod tests {
         assert_eq!(layouts[&id(2)].width, 50.0);
         assert_eq!(layouts[&id(3)].x, 70.0);
         assert_eq!(layouts[&id(3)].width, 230.0);
+    }
+
+    #[test]
+    fn unspecified_flex_shrink_keeps_overflowing_definite_row() {
+        // Issue #22: omitted flex-shrink is 0, not CSS initial 1.
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        for value in 2..=3 {
+            queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+            queue.insert(id(1), id(value), None);
+        }
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    direction: Some(FlexDirection::Row),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for value in [2, 3] {
+            queue.set_style(
+                id(value),
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(150.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+        world.commit(queue).unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(200.0, 40.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(layouts[&id(2)].width, 150.0);
+        assert_eq!(layouts[&id(3)].width, 150.0);
+        assert_eq!(layouts[&id(3)].x, 150.0);
     }
 
     #[test]
