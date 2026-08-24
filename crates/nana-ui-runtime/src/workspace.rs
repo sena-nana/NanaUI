@@ -380,13 +380,20 @@ impl Workspace {
         mutations: &mut MutationQueue,
     ) {
         let overlay = self.region_overlay(state);
-        let region = region_style(
+        let mut region = region_style(
             state,
             self.region_extent(state.id()),
             overlay,
             edges,
             self.workspace_corners,
         );
+        // 8px bar is centered on the painted edge, so half sits in the
+        // neighboring track and must not be clipped by this region.
+        if self.shows_resize_handle(state.id()) {
+            let layout = Arc::make_mut(&mut region.layout);
+            layout.overflow_x = OverflowSpec::Visible;
+            layout.overflow_y = OverflowSpec::Visible;
+        }
         let style = overlay_region_style(world.node_style(content), region);
         project_common(
             content,
@@ -1843,11 +1850,15 @@ mod tests {
     }
 
     #[test]
-    fn resize_handle_is_centered_on_the_sidebar_painted_edge() {
+    fn resize_handle_covers_the_painted_edge() {
         let mut context = AppContext::new();
         let sidebar = context
             .create_component(document(), SidebarFrame::new())
             .expect("sidebar")
+            .stable_id();
+        let inspector = context
+            .create_component(document(), SidebarFrame::new())
+            .expect("inspector")
             .stable_id();
         let primary = surface(&mut context);
         let layout = WorkspaceLayout::new([
@@ -1855,6 +1866,9 @@ mod tests {
                 .size(200.0)
                 .resizable(true),
             RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+            RegionState::new(RegionId::Inspector, RegionRole::Inspector)
+                .size(200.0)
+                .resizable(true),
         ])
         .expect("layout");
         let entity = mount(
@@ -1864,6 +1878,7 @@ mod tests {
                 [
                     WorkspaceRegionSlot::new(RegionId::Resources, sidebar),
                     WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                    WorkspaceRegionSlot::new(RegionId::Inspector, inspector),
                 ],
             ),
         );
@@ -1872,19 +1887,32 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(800.0, 400.0))
             .unwrap();
 
-        let handle = context
-            .read(entity, |workspace| {
-                workspace.handles.get(&RegionId::Resources).copied()
-            })
-            .unwrap()
-            .expect("sidebar handle");
-        let region = context.world().layout_box(sidebar).unwrap();
-        let bar = context.world().layout_box(handle).unwrap();
-        assert!(
-            (bar.x + bar.width / 2.0 - (region.x + region.width)).abs() < 0.5,
-            "handle center {} vs painted edge {}",
-            bar.x + bar.width / 2.0,
-            region.x + region.width
-        );
+        let handles = context
+            .read(entity, |workspace| workspace.handles.clone())
+            .unwrap();
+        for (id, content, start_edge) in [
+            (RegionId::Resources, sidebar, false),
+            (RegionId::Inspector, inspector, true),
+        ] {
+            let handle = *handles.get(&id).expect("handle");
+            let region = context.world().layout_box(content).unwrap();
+            let bar = context.world().layout_box(handle).unwrap();
+            let edge = if start_edge {
+                region.x
+            } else {
+                region.x + region.width
+            };
+            assert!((bar.x + bar.width / 2.0 - edge).abs() < 0.5);
+            assert!((bar.width - RESIZE_HANDLE_SIZE).abs() < 0.5);
+            assert!((bar.height - region.height).abs() < 0.5);
+            assert!(
+                !context
+                    .world()
+                    .node_style(content)
+                    .unwrap()
+                    .layout
+                    .clips_overflow()
+            );
+        }
     }
 }

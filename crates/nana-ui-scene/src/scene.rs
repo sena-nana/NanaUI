@@ -3185,7 +3185,9 @@ impl UiScene {
             if !is_opacity_group(&self.nodes, ancestor) {
                 opacity *= local_opacity(ancestor);
             }
-            if ancestor.source_style.layout.clips_overflow() {
+            if ancestor.source_style.layout.clips_overflow()
+                && !(is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent)
+            {
                 clips.push(ClipRegion {
                     bounds: SceneRect {
                         x: layout.x,
@@ -3292,6 +3294,13 @@ fn local_opacity(node: &ExtractedNode) -> f32 {
         .opacity
         .unwrap_or(1.0)
         .clamp(0.0, 1.0)
+}
+
+fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
+    matches!(
+        node.kind.as_ref(),
+        NodeKind::Element { tag } if tag == "workspace-resize-handle"
+    )
 }
 
 fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
@@ -3688,6 +3697,45 @@ mod tests {
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    #[test]
+    fn workspace_resize_handle_is_not_clipped_by_its_region() {
+        let mut region = node(1, None, &[2]);
+        region.layout = LayoutBox {
+            x: 200.0,
+            y: 0.0,
+            width: 180.0,
+            height: 400.0,
+        };
+        let layout = Arc::make_mut(&mut region.source_style.layout);
+        layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+        layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
+
+        let mut handle = node(2, Some(1), &[]);
+        handle.kind = Arc::new(NodeKind::Element {
+            tag: "workspace-resize-handle".into(),
+        });
+        handle.layout = LayoutBox {
+            x: 196.0,
+            y: 0.0,
+            width: 8.0,
+            height: 400.0,
+        };
+        style_mut(&mut handle).background = Some([0.5, 0.5, 0.5, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([region, handle], []);
+        let painted = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("handle quad");
+        assert_eq!(painted.bounds.width, 8.0);
+        assert!(
+            painted.clips.is_empty(),
+            "region overflow must not clip the overlay bar, got {:?}",
+            painted.clips
+        );
     }
 
     #[test]
