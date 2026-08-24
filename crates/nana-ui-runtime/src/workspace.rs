@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PositionSpec, RESIZE_HANDLE_SIZE, RegionId,
-    RegionPlacement, RegionRole, RegionScope, RegionState, SemanticColorRole, UI_METRICS,
-    WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
+    AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PaddingSpec, PositionSpec,
+    RESIZE_HANDLE_SIZE, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
+    SemanticColorRole, UI_METRICS, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
 };
 
 use crate::view_components::{List, project_common};
@@ -439,11 +439,15 @@ impl Workspace {
             if world.standard_visual(handle).is_some() {
                 mutations.set_standard_visual(handle, None);
             }
+            let padding = world
+                .node_style(region)
+                .map(|style| style.layout.resolved_padding())
+                .unwrap_or_default();
             project_common(
                 handle,
                 world,
                 mutations,
-                &handle_style(state.placement_value(), highlighted),
+                &handle_style(state.placement_value(), highlighted, padding),
                 InteractionState {
                     pointer_events: true,
                     focusable: true,
@@ -851,14 +855,16 @@ fn primary_radius(workspace_corners: bool, edges: RegionEdges) -> f32 {
 }
 
 fn default_handle_style(highlighted: bool) -> NodeStyle {
-    handle_style(RegionPlacement::Start, highlighted)
+    handle_style(RegionPlacement::Start, highlighted, PaddingSpec::default())
 }
 
-fn handle_style(placement: RegionPlacement, highlighted: bool) -> NodeStyle {
+/// 8px bar centered on the painted edge. Insets undo content-box padding.
+fn handle_style(placement: RegionPlacement, highlighted: bool, padding: PaddingSpec) -> NodeStyle {
     let horizontal = matches!(
         placement,
         RegionPlacement::Start | RegionPlacement::Primary | RegionPlacement::End
     );
+    let half = RESIZE_HANDLE_SIZE / 2.0;
     let mut style = NodeStyle::default();
     style.background = highlighted.then_some(SemanticColorRole::BorderStrong);
     let layout = Arc::make_mut(&mut style.layout);
@@ -870,21 +876,25 @@ fn handle_style(placement: RegionPlacement, highlighted: bool) -> NodeStyle {
         layout.width = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
         layout.height = Some(LengthSpec::Fill);
         layout.min_width = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
-        layout.offset_top = Some(LengthSpec::Px(0.0));
-        layout.offset_bottom = Some(LengthSpec::Px(0.0));
+        layout.offset_top = Some(LengthSpec::Px(-padding.top));
+        layout.offset_bottom = Some(LengthSpec::Px(-padding.bottom));
         match placement {
-            RegionPlacement::End => layout.offset_left = Some(LengthSpec::Px(0.0)),
-            _ => layout.offset_right = Some(LengthSpec::Px(0.0)),
+            RegionPlacement::End => {
+                layout.offset_left = Some(LengthSpec::Px(-(padding.left + half)));
+            }
+            _ => layout.offset_right = Some(LengthSpec::Px(-(padding.right + half))),
         }
     } else {
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
         layout.min_height = Some(LengthSpec::Px(RESIZE_HANDLE_SIZE));
-        layout.offset_left = Some(LengthSpec::Px(0.0));
-        layout.offset_right = Some(LengthSpec::Px(0.0));
+        layout.offset_left = Some(LengthSpec::Px(-padding.left));
+        layout.offset_right = Some(LengthSpec::Px(-padding.right));
         match placement {
-            RegionPlacement::Bottom => layout.offset_top = Some(LengthSpec::Px(0.0)),
-            _ => layout.offset_bottom = Some(LengthSpec::Px(0.0)),
+            RegionPlacement::Bottom => {
+                layout.offset_top = Some(LengthSpec::Px(-(padding.top + half)));
+            }
+            _ => layout.offset_bottom = Some(LengthSpec::Px(-(padding.bottom + half))),
         }
     }
     style
@@ -1223,7 +1233,7 @@ mod tests {
     use nana_ui_core::{NarrowBehavior, RegionRole, RegionScope, WorkspaceMutation};
 
     use super::*;
-    use crate::{AppContext, DocumentId, MountState, PositionSpec};
+    use crate::{AppContext, DocumentId, MountState, PositionSpec, SidebarFrame};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -1829,6 +1839,52 @@ mod tests {
                     .region_extent(&RegionId::Resources))
                 .unwrap(),
             240.0
+        );
+    }
+
+    #[test]
+    fn resize_handle_is_centered_on_the_sidebar_painted_edge() {
+        let mut context = AppContext::new();
+        let sidebar = context
+            .create_component(document(), SidebarFrame::new())
+            .expect("sidebar")
+            .stable_id();
+        let primary = surface(&mut context);
+        let layout = WorkspaceLayout::new([
+            RegionState::new(RegionId::Resources, RegionRole::Resources)
+                .size(200.0)
+                .resizable(true),
+            RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+        ])
+        .expect("layout");
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(
+                &WorkspaceModel::with_layout(layout),
+                [
+                    WorkspaceRegionSlot::new(RegionId::Resources, sidebar),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                ],
+            ),
+        );
+        context.assemble_workspace(entity).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let handle = context
+            .read(entity, |workspace| {
+                workspace.handles.get(&RegionId::Resources).copied()
+            })
+            .unwrap()
+            .expect("sidebar handle");
+        let region = context.world().layout_box(sidebar).unwrap();
+        let bar = context.world().layout_box(handle).unwrap();
+        assert!(
+            (bar.x + bar.width / 2.0 - (region.x + region.width)).abs() < 0.5,
+            "handle center {} vs painted edge {}",
+            bar.x + bar.width / 2.0,
+            region.x + region.width
         );
     }
 }
