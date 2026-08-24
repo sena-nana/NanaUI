@@ -72,8 +72,8 @@ Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 - Pointer: NativeActivity `MotionEvent` → `RuntimeInputAdapter`.
 - Keyboard: NativeActivity `KeyEvent` → Runtime text (US-QWERTY subset + Backspace /
   arrows). NativeActivity has no InputConnection; IME / AX are no-op.
-- Cross-compile: workspace still patches `vendor/arboard` for `nana-ui-platform`
-  clipboard on Android (not an Iced dependency).
+- Clipboard: Android does not compile `arboard` / `OsClipboard`. Hosts use
+  `UnsupportedClipboard`; `PlatformCapabilities::clipboard` stays false.
 
 ## Device / KeyEvent notes
 

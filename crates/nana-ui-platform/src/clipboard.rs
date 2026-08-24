@@ -1,8 +1,9 @@
 //! Clipboard host boundary.
 //!
-//! Desktop uses the OS clipboard via `arboard` ([`OsClipboard`]). Android MVP keeps
-//! [`UnsupportedClipboard`] and `PlatformCapabilities::clipboard = false` until a
-//! real Android clipboard path exists — do not flip the bit for a no-op stub.
+//! Desktop uses the OS clipboard via `arboard` ([`OsClipboard`]). Android does
+//! not compile arboard; [`default_shared_clipboard`] installs
+//! [`UnsupportedClipboard`]. Keep `PlatformCapabilities::clipboard = false`
+//! until a real Android clipboard path exists.
 
 use std::sync::{Arc, Mutex};
 
@@ -70,11 +71,13 @@ impl ClipboardHost for MemoryClipboard {
 }
 
 /// Desktop OS clipboard (`arboard`). Construction never panics; unavailable
-/// backends report failed reads/writes.
+/// backends report failed reads/writes. Not compiled on Android.
+#[cfg(not(target_os = "android"))]
 pub struct OsClipboard {
     inner: Option<arboard::Clipboard>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl std::fmt::Debug for OsClipboard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OsClipboard")
@@ -83,6 +86,7 @@ impl std::fmt::Debug for OsClipboard {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl OsClipboard {
     pub fn new() -> Self {
         Self {
@@ -95,12 +99,14 @@ impl OsClipboard {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Default for OsClipboard {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl ClipboardHost for OsClipboard {
     fn read_text(&mut self) -> Option<String> {
         self.inner.as_mut()?.get_text().ok()

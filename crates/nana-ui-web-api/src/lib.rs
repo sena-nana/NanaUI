@@ -28,9 +28,11 @@ const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub use nana_ui_platform::{
     ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
-    MemoryClipboard, NativeFetchHost, OsClipboard, SharedClipboardHost, SharedFetchHost,
-    UnsupportedClipboard, default_shared_clipboard, shared_clipboard, shared_fetch_host,
+    MemoryClipboard, NativeFetchHost, SharedClipboardHost, SharedFetchHost, UnsupportedClipboard,
+    default_shared_clipboard, shared_clipboard, shared_fetch_host,
 };
+#[cfg(not(target_os = "android"))]
+pub use nana_ui_platform::OsClipboard;
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
 pub const WEB_API_SHIM_JS: &str = include_str!("shim.js");
