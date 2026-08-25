@@ -1541,13 +1541,11 @@ impl UiWorld {
                     if let Some(message) = intrinsic.message {
                         validate_text_metrics(id, message)?;
                     }
-                    if self
-                        .world
-                        .get::<EmptyStateTextPresentation>(self.entities[&id])
-                        != Some(&intrinsic)
-                    {
-                        empty_shaped.push((id, intrinsic));
-                    }
+                    // The shaped block is republished even when the metrics
+                    // are unchanged: it lives in `NodeStyle`, which
+                    // `EmptyState::project` rewrites from its own static
+                    // style, so an unrelated re-projection can drop it.
+                    empty_shaped.push((id, intrinsic));
                 }
                 continue;
             }
@@ -1600,7 +1598,7 @@ impl UiWorld {
                 shaped.push((id, metrics, presentation));
             }
         }
-        let changed = !shaped.is_empty() || !empty_shaped.is_empty() || !modal_shaped.is_empty();
+        let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, presentation) in shaped {
             *self.component_mut::<TextMetrics>(id) = metrics;
             if let Some(presentation) = presentation {
@@ -1610,7 +1608,7 @@ impl UiWorld {
             }
         }
         for (id, presentation) in empty_shaped {
-            self.apply_empty_state_text_presentation(id, presentation);
+            changed |= self.apply_empty_state_text_presentation(id, presentation);
         }
         for (id, presentation) in modal_shaped {
             self.world
@@ -1635,14 +1633,24 @@ impl UiWorld {
         Ok(changed)
     }
 
+    /// Publishes the shaped title/message block and reports whether anything
+    /// changed, so a pass that only re-confirms the current block stays idle.
     fn apply_empty_state_text_presentation(
         &mut self,
         id: StableNodeId,
         presentation: EmptyStateTextPresentation,
-    ) {
-        self.world
-            .entity_mut(self.entities[&id])
-            .insert(presentation);
+    ) -> bool {
+        let mut changed = false;
+        if self
+            .world
+            .get::<EmptyStateTextPresentation>(self.entities[&id])
+            != Some(&presentation)
+        {
+            self.world
+                .entity_mut(self.entities[&id])
+                .insert(presentation);
+            changed = true;
+        }
         let Some(StandardVisual::EmptyState {
             icon,
             compact,
@@ -1650,7 +1658,7 @@ impl UiWorld {
             ..
         }) = self.world.get::<StandardVisual>(self.entities[&id])
         else {
-            return;
+            return changed;
         };
         let spacing = if *compact { 2.0 } else { 6.0 };
         let vertical = if *compact { 8.0 } else { 24.0 };
@@ -1673,7 +1681,9 @@ impl UiWorld {
             if let Some(parent) = self.node(id).and_then(|node| node.parent) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
             }
+            changed = true;
         }
+        changed
     }
 
     fn text_input_presentation_source(
