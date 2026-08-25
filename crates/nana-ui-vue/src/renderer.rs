@@ -210,17 +210,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             props.element_tag.clone_from(&element_tag);
             let handle = guard.create_element(&element_tag);
             if !props.label.is_empty() {
+                // The attribute is the DOM facade. The label itself lives only
+                // on the widget element, which paints and announces it; a
+                // `#text` child here would be a second copy that `patchProp`
+                // never refreshes.
                 guard.set_attribute(handle, "label", &props.label);
-                if matches!(
-                    kind,
-                    WidgetKind::Text
-                        | WidgetKind::Button
-                        | WidgetKind::Chip
-                        | WidgetKind::SidebarRow
-                        | WidgetKind::ListItem
-                ) {
-                    guard.set_element_text(handle, &props.label);
-                }
             }
             if props.disabled {
                 guard.set_attribute(handle, "disabled", "");

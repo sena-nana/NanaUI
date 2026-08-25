@@ -682,6 +682,11 @@ pub struct NanaTreeDocument {
     logical_height: f32,
     scale_factor: f32,
     synced_semantic_revision: Option<u64>,
+    /// Nodes whose Runtime `LayoutStyle` is written by a qualified component
+    /// projection, recorded by the last semantic sync. Those components already
+    /// consumed `props.layout` when they were built, so the CSS cascade
+    /// writeback must not overwrite the geometry they projected.
+    component_owned_layout: HashSet<u64>,
     pending_accessibility_updated: BTreeMap<StableNodeId, nana_ui_runtime::AccessibilityNode>,
     pending_accessibility_removed: BTreeSet<StableNodeId>,
     pending_accessibility_generation: u64,
@@ -790,6 +795,7 @@ impl NanaTreeDocument {
             logical_height,
             scale_factor: scale,
             synced_semantic_revision: None,
+            component_owned_layout: HashSet::new(),
             pending_accessibility_updated: BTreeMap::new(),
             pending_accessibility_removed: BTreeSet::new(),
             pending_accessibility_generation: 0,
@@ -861,6 +867,9 @@ impl NanaTreeDocument {
                 continue;
             };
             if !self.runtime.contains(id) && !self.nodes.contains_key(&raw_id) {
+                continue;
+            }
+            if self.component_owned_layout.contains(&raw_id) {
                 continue;
             }
             let current = self.runtime.node_style(id);
@@ -1338,6 +1347,7 @@ impl NanaTreeDocument {
         }
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
+        let mut component_owned_layout = HashSet::new();
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
@@ -1420,6 +1430,10 @@ impl NanaTreeDocument {
                 &mut pending,
             ) || is_shell_composer_slot(snapshot, widget)
             {
+                // The component consumed `props.layout` when it was built and
+                // now owns this node's LayoutStyle. Record it so the cascade
+                // writeback leaves the projected geometry alone.
+                component_owned_layout.insert(id.get());
                 continue;
             }
             let style = NodeStyle {
@@ -1521,6 +1535,7 @@ impl NanaTreeDocument {
                 mutations.set_text_input(id, None);
             }
         }
+        self.component_owned_layout = component_owned_layout;
         self.commit_extra(mutations).ok();
         pending.apply(self.runtime.context_mut());
         self.adopt_runtime_allocated_ids();
@@ -5741,6 +5756,74 @@ mod tests {
                     )
             })
             .count()
+    }
+
+    /// Every kind that used to get a mount-time `#text` child must paint and
+    /// announce its label from the widget element alone, so dropping the child
+    /// can neither blank a label nor leave a second copy that `patchProp` never
+    /// refreshes.
+    #[test]
+    fn labelled_widget_kinds_own_their_label_without_a_text_child() {
+        fn settle(doc: &mut NanaTreeDocument, bridge: &crate::MessageBridge) {
+            doc.sync_semantic_styles(&bridge.snapshot());
+            runtime_layout(doc, 400.0, 240.0);
+            doc.flush_runtime_systems();
+        }
+
+        for kind in [
+            crate::WidgetKind::Text,
+            crate::WidgetKind::Button,
+            crate::WidgetKind::Chip,
+            crate::WidgetKind::SidebarRow,
+            crate::WidgetKind::ListItem,
+        ] {
+            let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+            let widget = doc.create_element(kind.element_tag());
+            doc.insert(widget, doc.mount_root(), None);
+            let mut bridge = crate::MessageBridge::new();
+            bridge.register(
+                widget.0,
+                kind,
+                crate::WidgetProps {
+                    label: "Label".into(),
+                    element_tag: kind.element_tag().into(),
+                    ..Default::default()
+                },
+            );
+
+            settle(&mut doc, &bridge);
+            assert_eq!(
+                visible_text_primitive_count(&doc, widget),
+                1,
+                "{kind:?} must paint its label without a #text child"
+            );
+
+            bridge.patch_prop(
+                widget.0,
+                "label",
+                &nana_js_engine::HostValue::string("Renamed"),
+            );
+            settle(&mut doc, &bridge);
+
+            assert_eq!(
+                visible_text_primitive_count(&doc, widget),
+                1,
+                "{kind:?} must still paint exactly one label after a patch"
+            );
+            let announced: Vec<_> = doc
+                .accessibility_snapshot()
+                .into_iter()
+                .filter_map(|node| Some((node.id, node.label?.to_string())))
+                .collect();
+            assert_eq!(
+                announced,
+                vec![(
+                    StableNodeId::try_from(widget).unwrap(),
+                    "Renamed".to_owned()
+                )],
+                "{kind:?} must announce the patched label exactly once, with no stale copy"
+            );
+        }
     }
 
     #[test]
