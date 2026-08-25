@@ -9,12 +9,13 @@ use nana_ui_runtime::{
     ComputedStyle, GlyphCache, LayoutBox, StableNodeId, TextContent, TextMetrics,
     TextShapeConstraints, TextShaper, TextShaping,
 };
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Product text shaper for Runtime flush on the Nana WGPU host path.
 #[derive(Debug)]
 pub struct NanaTextShaper {
-    font_system: FontSystem,
+    font_system: SharedFontSystem,
 }
 
 impl Default for NanaTextShaper {
@@ -25,7 +26,31 @@ impl Default for NanaTextShaper {
     }
 }
 
-pub(crate) fn nana_font_system() -> FontSystem {
+/// One font database shared by Runtime shaping and paint-time rasterization.
+pub(crate) type SharedFontSystem = Arc<Mutex<FontSystem>>;
+
+static FONT_SYSTEM: OnceLock<SharedFontSystem> = OnceLock::new();
+
+/// The process-wide font system.
+///
+/// `FontSystem::new()` enumerates system fonts, and under `bundled-fonts` it
+/// also parses every bundled face. Runtime shaping ([`NanaTextShaper`]) and
+/// paint-time glyph rasterization (`TextPipeline`) both need the same database,
+/// and on the product path they run sequentially on one thread, so a single
+/// shared instance loads the font data once and the lock never contends.
+pub(crate) fn nana_font_system() -> SharedFontSystem {
+    Arc::clone(FONT_SYSTEM.get_or_init(|| Arc::new(Mutex::new(build_font_system()))))
+}
+
+/// Borrow the shared font system. Recovers from poisoning because a panic
+/// elsewhere leaves the font database itself intact.
+pub(crate) fn lock_font_system(shared: &SharedFontSystem) -> MutexGuard<'_, FontSystem> {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn build_font_system() -> FontSystem {
     #[cfg(not(feature = "bundled-fonts"))]
     {
         FontSystem::new()
@@ -198,7 +223,8 @@ impl NanaTextShaper {
     ) -> Buffer {
         let font_size = style.font_size.max(f32::MIN_POSITIVE);
         let line_height = resolved_line_height(style).max(f32::MIN_POSITIVE);
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
+        let mut fonts = lock_font_system(&self.font_system);
+        let mut buffer = Buffer::new(&mut fonts, Metrics::new(font_size, line_height));
         buffer.set_size(
             Some(constraints.max_width.unwrap_or(f32::INFINITY)),
             Some(constraints.max_height.unwrap_or(f32::INFINITY)),
@@ -220,12 +246,12 @@ impl NanaTextShaper {
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
         };
         buffer.set_text(text, &attrs, shaping, None);
-        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer.shape_until_scroll(&mut fonts, false);
 
         let (min_width, min_height, has_rtl) = measure(&buffer);
         if has_rtl {
             buffer.set_size(Some(min_width), Some(min_height));
-            buffer.shape_until_scroll(&mut self.font_system, false);
+            buffer.shape_until_scroll(&mut fonts, false);
         }
         buffer
     }
@@ -400,6 +426,30 @@ mod tests {
     fn assert_positive_finite(metrics: TextMetrics) {
         assert!(metrics.width.is_finite() && metrics.width > 0.0);
         assert!(metrics.height.is_finite() && metrics.height > 0.0);
+    }
+
+    #[test]
+    fn every_shaper_shares_one_font_database() {
+        let first = NanaTextShaper::default();
+        let second = NanaTextShaper::default();
+        let painter_side = nana_font_system();
+
+        // Runtime shaping and paint-time rasterization must reach the same
+        // database. A second instance reparses every bundled face.
+        assert!(Arc::ptr_eq(&first.font_system, &second.font_system));
+        assert!(Arc::ptr_eq(&first.font_system, &painter_side));
+
+        // Shaping through one handle must not disturb the other.
+        let mut shaper = second;
+        let metrics = shaper.shape(
+            node(),
+            &TextContent {
+                value: "shared".into(),
+            },
+            &ComputedStyle::default(),
+            TextShapeConstraints::default(),
+        );
+        assert_positive_finite(metrics);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use nana_ui_runtime::{
     AccessibilityDelta, AppContext, DocumentId, FrameStage, FrameworkError, LayoutViewport,
-    SystemWork, TextShaper,
+    StableNodeId, SystemWork, TextShaper,
 };
 
 use crate::{SceneDelta, UiScene};
@@ -141,6 +141,8 @@ impl RuntimeDocument {
         let mut accessibility_removed = BTreeSet::new();
         let mut consumed = Vec::new();
         let mut scene_batches = Vec::new();
+        let mut hit_dirty: Vec<StableNodeId> = Vec::new();
+        let mut hit_scroll_updates: Vec<(StableNodeId, [f32; 2])> = Vec::new();
 
         self.context.begin_frame_profile();
         loop {
@@ -169,23 +171,12 @@ impl RuntimeDocument {
                 self.context.finish_frame_profile();
                 return Err(error);
             }
-            let scroll_updates = self.context.take_scroll_hit_updates();
-            if !work.input_hit_test.is_empty() || !work.layout.is_empty() {
-                if work.layout.is_empty()
-                    && self
-                        .context
-                        .hit_test_work_is_scroll_only(&work.input_hit_test, &scroll_updates)
-                {
-                    // Pure scrolling: patch the scrolled subtree's entry
-                    // transforms in place instead of rebuilding the document.
-                    for (scroller, delta) in scroll_updates {
-                        self.context
-                            .update_hit_test_scroll(self.document, scroller, delta);
-                    }
-                } else {
-                    self.context.rebuild_hit_test(self.document);
-                }
-            }
+            // Hit-test work is accumulated and applied once after the loop
+            // settles. Text/layout feedback can re-dirty the same nodes across
+            // passes, and rebuilding per pass paid for the index N times while
+            // only the last result was ever observable.
+            hit_scroll_updates.extend(self.context.take_scroll_hit_updates());
+            hit_dirty.extend(work.input_hit_test.iter().copied());
 
             let started = std::time::Instant::now();
             let accessibility = self.context.world().project_accessibility_delta(&work);
@@ -207,6 +198,7 @@ impl RuntimeDocument {
             scene_batches.push((extracted, work.render_removals.clone()));
             consumed.push(work);
         }
+        self.apply_hit_test_work(hit_dirty, hit_scroll_updates);
         self.context.finish_frame_profile();
 
         for (extracted, removals) in scene_batches {
@@ -234,6 +226,39 @@ impl RuntimeDocument {
                 removed: accessibility_removed.into_iter().collect(),
             },
         })
+    }
+
+    /// Bring the hit index up to date once for the settled frame.
+    ///
+    /// `dirty` is the INPUT set, which layout writeback marks on exactly the
+    /// nodes whose box moved. Scheduled-layout nodes are deliberately not used:
+    /// layout invalidation propagates to ancestors, so patching from it would
+    /// rebuild from the document root for any leaf resize.
+    ///
+    /// Pure scrolling patches entry transforms in place. Otherwise the changed
+    /// subtrees are spliced, and only a structural change the splice cannot
+    /// express falls back to a full document rebuild.
+    fn apply_hit_test_work(
+        &mut self,
+        mut dirty: Vec<StableNodeId>,
+        scroll_updates: Vec<(StableNodeId, [f32; 2])>,
+    ) {
+        if dirty.is_empty() {
+            return;
+        }
+        dirty.sort_unstable();
+        dirty.dedup();
+        if self
+            .context
+            .hit_test_work_is_scroll_only(&dirty, &scroll_updates)
+        {
+            for (scroller, delta) in scroll_updates {
+                self.context
+                    .update_hit_test_scroll(self.document, scroller, delta);
+            }
+            return;
+        }
+        self.context.rebuild_hit_test_for(self.document, &dirty);
     }
 }
 
@@ -434,6 +459,107 @@ mod tests {
             "inspector switch left dirty work ({} passes)",
             idle.passes
         );
+    }
+
+    #[test]
+    fn multi_pass_flush_updates_the_hit_index_once() {
+        use nana_ui_runtime::{DesktopShell, SidebarFrame, Text};
+
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                let intrinsic = text.value.len() as f32 * 8.0;
+                let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+                TextMetrics {
+                    width,
+                    height: if constraints.wrap && width < intrinsic {
+                        36.0
+                    } else {
+                        18.0
+                    },
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let navigation = runtime
+            .context_mut()
+            .create_detached_component(document, SidebarFrame::new())
+            .unwrap();
+        let primary = runtime
+            .context_mut()
+            .create_detached_component(document, Text::new("stage"))
+            .unwrap();
+        let inspector = runtime
+            .context_mut()
+            .create_detached_component(document, Text::new("inspector"))
+            .unwrap();
+        let shell = runtime
+            .context_mut()
+            .create_component(
+                document,
+                DesktopShell::new()
+                    .navigation(navigation.stable_id())
+                    .primary(primary.stable_id())
+                    .inspector(inspector.stable_id()),
+            )
+            .unwrap();
+        runtime.context_mut().assemble_desktop_shell(shell).unwrap();
+
+        let first = runtime
+            .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
+            .unwrap();
+        let built = hit_entries_built(&runtime);
+        let live = runtime.context().world().len();
+
+        // The settle loop ran several passes. Rebuilding per pass cost the index
+        // once per pass while only the last result was ever observable, so the
+        // frame's total must stay within a single document's worth of entries.
+        assert!(first.passes > 1, "expected a multi-pass settle");
+        assert!(
+            built <= live,
+            "{} passes built {built} hit entries for {live} nodes",
+            first.passes
+        );
+
+        // Retyping one leaf must patch only what moved. Layout invalidation
+        // propagates to ancestors, so a patch keyed on scheduled layout instead
+        // of written boxes lands back at the document root and rebuilds the
+        // whole index for a single label.
+        let mut retype = nana_ui_runtime::MutationQueue::new();
+        retype.set_text(
+            inspector.stable_id(),
+            TextContent {
+                value: "inspector pane".into(),
+            },
+        );
+        runtime.context_mut().commit_mutations(retype).unwrap();
+        runtime
+            .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
+            .unwrap();
+        let edit_built = hit_entries_built(&runtime);
+        assert!(
+            edit_built < live,
+            "one leaf edit built {edit_built} hit entries for {live} nodes; expected a patch, not a rebuild"
+        );
+    }
+
+    /// Hit entries the last flush built. Frame counters are scoped to the
+    /// flush, so this covers every settle pass in it.
+    fn hit_entries_built(runtime: &RuntimeDocument) -> usize {
+        runtime
+            .context()
+            .world()
+            .last_work_counters()
+            .hit_test_nodes_rebuilt
+            .unwrap_or_default()
     }
 
     #[test]

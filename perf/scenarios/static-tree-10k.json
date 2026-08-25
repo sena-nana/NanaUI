@@ -14,7 +14,8 @@
     "render_extraction",
     "render_encode",
     "memory",
-    "allocations"
+    "allocations",
+    "work_counters"
   ],
   "invariants": [
     {
@@ -24,7 +25,15 @@
       "value": 0,
       "status": "required",
       "note": "See perf/README.md §8.1 for the frames_after_idle definition. Missing stays not-evaluable, never 0."
+    },
+    {
+      "name": "validation_cost_tracks_the_batch_not_the_tree",
+      "path": "work_counters.validation_nodes_scanned",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "Validating the construction batch must not walk the retained world. Deliberately a small constant, not a fraction of nodes=10000: a validator that pre-collects world state scales with the tree and fails here while every timing still looks plausible. Missing stays not-evaluable."
     }
   ],
-  "notes": "§8.1 static_ui judged when frames_after_idle is present. static-tree-50k stays unsupported."
+  "notes": "§8.1 static_ui judged when frames_after_idle is present. static-tree-50k stays unsupported. validation_nodes_scanned comes from initial_work, the construction drain."
 }

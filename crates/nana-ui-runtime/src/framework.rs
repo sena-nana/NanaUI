@@ -1158,6 +1158,17 @@ impl AppContext {
         self.record_stage(FrameStage::HitTest, started);
     }
 
+    /// Patch only the subtrees covering `dirty`, falling back to a full document
+    /// rebuild when the change is structural. See
+    /// [`UiWorld::rebuild_hit_test_scoped`].
+    pub fn rebuild_hit_test_for(&mut self, document: DocumentId, dirty: &[StableNodeId]) {
+        let started = self.stage_clock();
+        if !self.world.rebuild_hit_test_scoped(document, dirty) {
+            self.world.rebuild_hit_test(document);
+        }
+        self.record_stage(FrameStage::HitTest, started);
+    }
+
     /// Drain recorded scroll deltas for the in-place hit-index patch.
     pub fn take_scroll_hit_updates(&mut self) -> Vec<(StableNodeId, [f32; 2])> {
         self.world.take_scroll_hit_updates()

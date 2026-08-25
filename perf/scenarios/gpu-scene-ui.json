@@ -35,6 +35,14 @@
       "value": 1,
       "status": "required",
       "note": "A painted UI+HostTexture frame must issue at least one real draw. Missing stays not-evaluable."
+    },
+    {
+      "name": "settled_frame_allocates_no_gpu_resources",
+      "path": "work_counters.gpu_buffer_reallocations",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "A steady-state frame after warmup must reuse every buffer, atlas texture, and bind group. Quad/mesh growth, host-texture reupload, and affine glyph atlas creation all land in this slot, so a per-frame resource creation regression fails here even when the frame still hits its time budget. Missing stays not-evaluable."
     }
   ],
   "notes": "Catalog GpuScene UiOnly: runners must load this JSON and materialize viewport + host_texture + ui_nodes (UI chrome around a GPU content slot). nana-gpu-scene-benchmark reads --scenario; it must not invent a private hosted-gpu-demo tree. Encode/submit timings come from FrameProfiler on that host path. No CPU readback. Missing adapter is unsupported (exit 2)."

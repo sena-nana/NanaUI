@@ -1,7 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{
-    Align, Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Wrap,
-};
+use cosmic_text::{Align, Attrs, Buffer, Color, Metrics, Shaping, SwashCache, SwashContent, Wrap};
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::SceneTextSpan;
@@ -9,10 +7,11 @@ use std::collections::{HashMap, VecDeque};
 
 use super::clip::{self, LogicalRect};
 use super::color::{orthographic, pack_linear, to_rgba8, with_opacity};
-use crate::nana_text::{letter_spacing_em, resolve_family};
 use crate::PhysicalRect;
+use crate::nana_text::{letter_spacing_em, resolve_family};
 
 const SHAPE_CACHE_CAP: usize = 512;
+const AFFINE_CACHE_CAP: usize = 128;
 const ATLAS_ROW_ALIGN: u32 = 64;
 
 const AFFINE_GLYPH_SHADER: &str = concat!(
@@ -80,7 +79,8 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 );
 
 pub(super) struct TextPipeline {
-    font_system: FontSystem,
+    /// Shared with Runtime shaping; see [`crate::nana_text::nana_font_system`].
+    font_system: crate::nana_text::SharedFontSystem,
     #[allow(dead_code)]
     cache: cryoglyph::Cache,
     atlas: cryoglyph::TextAtlas,
@@ -88,7 +88,8 @@ pub(super) struct TextPipeline {
     swash: SwashCache,
     renderers: Vec<cryoglyph::TextRenderer>,
     affine: AffineGlyphPipeline,
-    affine_slots: Vec<AffineSlot>,
+    affine_cache: AffineCache,
+    frame: u64,
     /// Shaped paragraphs reused across frames. Shaping is the dominant CPU
     /// cost of a text-heavy frame and identical text+style+box repeats on
     /// every repaint (scroll, hover, unrelated animations), so the shaped
@@ -98,6 +99,10 @@ pub(super) struct TextPipeline {
     prev_frame_texts: usize,
     frame_affines: usize,
     prev_frame_affines: usize,
+    /// GPU allocations the affine cache could not avoid this frame. Drained into
+    /// the host's observed GPU work so a cache regression shows up as per-frame
+    /// resource creation instead of only as a slower frame.
+    frame_gpu_allocations: usize,
 }
 
 struct AffineGlyphPipeline {
@@ -113,6 +118,106 @@ struct AffineSlot {
     bind_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     vertex_count: u32,
+}
+
+/// Everything that determines an affine text node's rasterized atlas and its
+/// vertex buffer. When all of it repeats, the GPU resources are byte-identical
+/// and are reused instead of rebuilt.
+///
+/// Rotated or scaled text takes the affine path on every repaint, so without
+/// this key a spinning label allocated a texture, a bind group and a vertex
+/// buffer every frame.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct AffineKey {
+    shape: ShapeKey,
+    origin_bits: [u32; 2],
+    scale_bits: u32,
+    affine_bits: [u32; 6],
+    clip_bits: [u32; 12],
+    color_bits: [u32; 4],
+}
+
+struct AffineEntry {
+    key: AffineKey,
+    slot: AffineSlot,
+    /// Frame that last used this entry. Entries the frame in flight already
+    /// handed out as a `PreparedText` index are never evicted.
+    frame: u64,
+}
+
+/// Affine text GPU resources reused across frames, evicted least-recently-used.
+#[derive(Default)]
+struct AffineCache {
+    /// Stable slot storage. `PreparedText::index` addresses this directly, so
+    /// an evicted entry clears its slot rather than shifting the vector.
+    slots: Vec<Option<AffineEntry>>,
+    index: HashMap<AffineKey, usize>,
+    hits: usize,
+    misses: usize,
+    evictions: usize,
+}
+
+impl AffineCache {
+    fn get(&mut self, key: &AffineKey, frame: u64) -> Option<usize> {
+        let Some(&slot) = self.index.get(key) else {
+            self.misses += 1;
+            return None;
+        };
+        self.hits += 1;
+        if let Some(entry) = self.slots.get_mut(slot).and_then(Option::as_mut) {
+            entry.frame = frame;
+        }
+        Some(slot)
+    }
+
+    fn insert(&mut self, key: AffineKey, slot: AffineSlot, frame: u64) -> usize {
+        let entry = AffineEntry {
+            key: key.clone(),
+            slot,
+            frame,
+        };
+        let index = match self.reclaim(frame) {
+            Some(index) => {
+                self.slots[index] = Some(entry);
+                index
+            }
+            None => {
+                self.slots.push(Some(entry));
+                self.slots.len() - 1
+            }
+        };
+        self.index.insert(key, index);
+        index
+    }
+
+    /// Slot to overwrite once the cache is full: the least recently used entry
+    /// the frame in flight is not holding. Eviction only runs at the cap, so
+    /// the scan is off the per-glyph path, and a frame with more affine text
+    /// than the cap keeps every live entry and grows instead.
+    fn reclaim(&mut self, frame: u64) -> Option<usize> {
+        if self.index.len() < AFFINE_CACHE_CAP {
+            return None;
+        }
+        let (index, key) = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
+            .filter(|(_, entry)| entry.frame != frame)
+            .min_by_key(|(_, entry)| entry.frame)
+            .map(|(index, entry)| (index, entry.key.clone()))?;
+        self.index.remove(&key);
+        self.slots[index] = None;
+        self.evictions += 1;
+        Some(index)
+    }
+
+    fn slot(&self, index: usize) -> Option<&AffineSlot> {
+        self.slots
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(|entry| &entry.slot)
+    }
 }
 
 #[repr(C)]
@@ -238,12 +343,14 @@ impl TextPipeline {
             swash: SwashCache::new(),
             renderers: Vec::new(),
             affine: AffineGlyphPipeline::new(device, format),
-            affine_slots: Vec::new(),
+            affine_cache: AffineCache::default(),
+            frame: 0,
             shape_cache: ShapeCache::default(),
             frame_texts: 0,
             prev_frame_texts: 0,
             frame_affines: 0,
             prev_frame_affines: 0,
+            frame_gpu_allocations: 0,
         }
     }
 
@@ -252,15 +359,13 @@ impl TextPipeline {
         self.frame_texts = 0;
         self.prev_frame_affines = self.frame_affines;
         self.frame_affines = 0;
+        self.frame_gpu_allocations = 0;
+        self.frame = self.frame.wrapping_add(1);
         // Renderer high-water decay: keep the GPU-side working set near the
         // last frame's text count instead of retaining a peak forever.
         let keep = self.prev_frame_texts + 8;
         if self.renderers.len() > keep {
             self.renderers.truncate(keep);
-        }
-        let keep_affine = self.prev_frame_affines + 8;
-        if self.affine_slots.len() > keep_affine {
-            self.affine_slots.truncate(keep_affine);
         }
         self.viewport.update(
             queue,
@@ -283,6 +388,21 @@ impl TextPipeline {
             self.shape_cache.misses,
             self.shape_cache.evictions,
         )
+    }
+
+    /// Affine glyph resource cache counters: (hits, misses, evictions). A miss
+    /// is one atlas texture, bind group, and vertex buffer creation.
+    pub(super) fn affine_cache_stats(&self) -> (usize, usize, usize) {
+        (
+            self.affine_cache.hits,
+            self.affine_cache.misses,
+            self.affine_cache.evictions,
+        )
+    }
+
+    /// GPU allocations this frame's affine text could not reuse.
+    pub(super) fn take_frame_gpu_allocations(&mut self) -> usize {
+        std::mem::take(&mut self.frame_gpu_allocations)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -376,8 +496,9 @@ impl TextPipeline {
             },
         };
         if self.shape_cache.get(&key).is_none() {
+            let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
             let mut buffer = Buffer::new(
-                &mut self.font_system,
+                &mut fonts,
                 Metrics::new(physical_size, physical_line_height),
             );
             buffer.set_size(Some(physical_width), Some(physical_height));
@@ -398,7 +519,8 @@ impl TextPipeline {
             } else {
                 buffer.set_text(content, &attrs, shaping, align);
             }
-            buffer.shape_until_scroll(&mut self.font_system, false);
+            buffer.shape_until_scroll(&mut fonts, false);
+            drop(fonts);
             self.shape_cache.insert(key.clone(), buffer);
         }
         let laid_out_height = {
@@ -479,11 +601,12 @@ impl TextPipeline {
             bounds: text_bounds,
             default_color: rgba8_color(default_color),
         };
+        let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
         let result = self.renderers[index].prepare(
             device,
             queue,
             encoder,
-            &mut self.font_system,
+            &mut fonts,
             &mut self.atlas,
             &self.viewport,
             [area],
@@ -503,13 +626,14 @@ impl TextPipeline {
                 device,
                 queue,
                 encoder,
-                &mut self.font_system,
+                &mut fonts,
                 &mut self.atlas,
                 &self.viewport,
                 [area],
                 &mut self.swash,
             );
         }
+        drop(fonts);
         Some(PreparedText {
             index,
             kind: PreparedKind::Cryoglyph,
@@ -528,16 +652,30 @@ impl TextPipeline {
         fragment_clip: clip::FragmentClip,
         default_color: [f32; 4],
     ) -> Option<PreparedText> {
+        let cache_key = AffineKey {
+            shape: key.clone(),
+            origin_bits: [aligned[0].to_bits(), aligned[1].to_bits()],
+            scale_bits: scale.to_bits(),
+            affine_bits: affine.map(f32::to_bits),
+            clip_bits: fragment_clip.to_bits(),
+            color_bits: default_color.map(f32::to_bits),
+        };
+        self.frame_affines += 1;
+        if let Some(index) = self.affine_cache.get(&cache_key, self.frame) {
+            return Some(PreparedText {
+                index,
+                kind: PreparedKind::Affine,
+            });
+        }
+
         let buffer = self.shape_cache.entries.get(key).expect("shaped above");
         let origin_physical = [aligned[0] * scale, aligned[1] * scale];
+        let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
         let mut packed = Vec::new();
         for run in buffer.layout_runs() {
             for glyph in run.glyphs {
                 let physical = glyph.physical((origin_physical[0], origin_physical[1]), 1.0);
-                let Some(image) = self
-                    .swash
-                    .get_image(&mut self.font_system, physical.cache_key)
-                    .clone()
+                let Some(image) = self.swash.get_image(&mut fonts, physical.cache_key).clone()
                 else {
                     continue;
                 };
@@ -636,19 +774,16 @@ impl TextPipeline {
             mapped_at_creation: false,
         });
         queue.write_buffer(&vertex_buffer, 0, vertex_bytes);
-        let index = self.frame_affines;
-        self.frame_affines += 1;
+        // The atlas texture and the vertex buffer are the two memory allocations
+        // a cache hit avoids.
+        self.frame_gpu_allocations = self.frame_gpu_allocations.saturating_add(2);
         let slot = AffineSlot {
             _atlas: atlas_texture,
             bind_group,
             vertices: vertex_buffer,
             vertex_count: vertices.len() as u32,
         };
-        if self.affine_slots.len() <= index {
-            self.affine_slots.push(slot);
-        } else {
-            self.affine_slots[index] = slot;
-        }
+        let index = self.affine_cache.insert(cache_key, slot, self.frame);
         Some(PreparedText {
             index,
             kind: PreparedKind::Affine,
@@ -671,7 +806,7 @@ impl TextPipeline {
                 let _ = renderer.render(&self.atlas, &self.viewport, pass);
             }
             PreparedKind::Affine => {
-                let Some(slot) = self.affine_slots.get(prepared.index) else {
+                let Some(slot) = self.affine_cache.slot(prepared.index) else {
                     return;
                 };
                 if slot.vertex_count == 0 {

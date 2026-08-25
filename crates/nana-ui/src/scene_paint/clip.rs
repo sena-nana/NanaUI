@@ -117,6 +117,20 @@ impl FragmentClip {
         inv_ef: [0.0, 0.0],
     };
 
+    /// Exact bit pattern of the clip, for use as a resource-cache key.
+    pub(super) fn to_bits(self) -> [u32; 12] {
+        let mut bits = [0u32; 12];
+        for (slot, value) in bits.iter_mut().zip(
+            self.rect
+                .iter()
+                .chain(self.inv_abcd.iter())
+                .chain(self.inv_ef.iter()),
+        ) {
+            *slot = value.to_bits();
+        }
+        bits
+    }
+
     fn from_local(bounds: SceneRect, inverse: [f32; 6]) -> Self {
         Self {
             rect: [bounds.x, bounds.y, bounds.width, bounds.height],

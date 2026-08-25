@@ -332,6 +332,10 @@ struct ScaleWork {
     glyph_cache_misses: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_eviction: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_nodes_scanned: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hit_test_nodes_rebuilt: Option<usize>,
 }
 
 /// Issue #8 catalog workloads that reuse existing Runtime APIs (IME, dock,
@@ -396,6 +400,8 @@ impl From<WorkCounters> for ScaleWork {
             glyph_cache_hits: counters.glyph_cache_hits,
             glyph_cache_misses: counters.glyph_cache_misses,
             cache_eviction: counters.cache_eviction,
+            validation_nodes_scanned: counters.validation_nodes_scanned,
+            hit_test_nodes_rebuilt: counters.hit_test_nodes_rebuilt,
         }
     }
 }

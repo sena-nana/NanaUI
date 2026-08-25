@@ -41,6 +41,77 @@ impl StableNodeId {
     }
 }
 
+/// Deepest retained tree the frame pipeline accepts.
+///
+/// Style resolution walks ancestors, layout and hit-test walk descendants, and
+/// paint walks the scene: all recursive. Tree shape comes from application or JS
+/// input and is not trustworthy, so the bound is enforced once where the tree is
+/// written. Real UIs nest one to two orders of magnitude below this.
+pub const MAX_TREE_DEPTH: usize = 512;
+
+/// Retired node IDs, stored as coalesced inclusive runs.
+///
+/// Retirement is permanent: a stale handle must never alias a node created
+/// later. Both ID allocators ([`crate::AppContext`] and the Vue tree) are
+/// strictly monotonic, so churning a list retires consecutive IDs. Keeping runs
+/// instead of one entry per ID bounds the ledger by the number of gaps in the
+/// allocation stream rather than by every node ever destroyed, with identical
+/// membership semantics.
+#[derive(Debug, Default)]
+struct RetiredIds {
+    /// Sorted, disjoint, and never adjacent: `(start, end)` inclusive.
+    runs: Vec<(u64, u64)>,
+    len: usize,
+}
+
+impl RetiredIds {
+    /// Index of the run containing `value`, or the insertion point.
+    fn locate(&self, value: u64) -> Result<usize, usize> {
+        self.runs.binary_search_by(|(start, end)| {
+            if value < *start {
+                std::cmp::Ordering::Greater
+            } else if value > *end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    }
+
+    fn contains(&self, id: StableNodeId) -> bool {
+        self.locate(id.get()).is_ok()
+    }
+
+    fn insert(&mut self, id: StableNodeId) {
+        let value = id.get();
+        let Err(index) = self.locate(value) else {
+            return;
+        };
+        let joins_previous = index > 0 && self.runs[index - 1].1.checked_add(1) == Some(value);
+        let joins_next =
+            index < self.runs.len() && Some(self.runs[index].0) == value.checked_add(1);
+        match (joins_previous, joins_next) {
+            (true, true) => {
+                self.runs[index - 1].1 = self.runs[index].1;
+                self.runs.remove(index);
+            }
+            (true, false) => self.runs[index - 1].1 = value,
+            (false, true) => self.runs[index].0 = value,
+            (false, false) => self.runs.insert(index, (value, value)),
+        }
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Stored runs. This is the ledger's real memory cost.
+    fn runs(&self) -> usize {
+        self.runs.len()
+    }
+}
+
 /// Stable document/window ownership boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentId(u64);
@@ -174,6 +245,15 @@ pub enum UiWorldError {
         parent: StableNodeId,
         child: StableNodeId,
     },
+    /// Parenting `child` under `parent` would exceed [`MAX_TREE_DEPTH`]. Style
+    /// resolution, layout, hit-test and paint all recurse over the retained
+    /// tree, so the depth bound is enforced where the tree is written rather
+    /// than re-checked in every walk.
+    TreeTooDeep {
+        parent: StableNodeId,
+        child: StableNodeId,
+        depth: usize,
+    },
     InvalidBefore {
         parent: StableNodeId,
         before: StableNodeId,
@@ -231,6 +311,16 @@ impl fmt::Display for UiWorldError {
             Self::Cycle { parent, child } => write!(
                 formatter,
                 "parenting node {} under node {} would create a cycle",
+                child.get(),
+                parent.get()
+            ),
+            Self::TreeTooDeep {
+                parent,
+                child,
+                depth,
+            } => write!(
+                formatter,
+                "parenting node {} under node {} would reach depth {depth}, past the {MAX_TREE_DEPTH} limit",
                 child.get(),
                 parent.get()
             ),
@@ -326,7 +416,7 @@ struct PlannedNode {
 pub struct UiWorld {
     world: World,
     entities: HashMap<StableNodeId, Entity>,
-    retired: HashSet<StableNodeId>,
+    retired: RetiredIds,
     dirty_entities: HashSet<StableNodeId>,
     focused: HashMap<DocumentId, StableNodeId>,
     hit_test_index: HashMap<DocumentId, Vec<HitEntry>>,
@@ -371,6 +461,14 @@ pub struct UiWorld {
     detached: HashSet<StableNodeId>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
     live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,
+    /// Nodes carrying an `OverlayHostState` component. Overlay bookkeeping walks
+    /// this index instead of every entity, so clearing references from a removed
+    /// node costs the host count rather than the world size.
+    overlay_host_nodes: HashSet<StableNodeId>,
+    /// Nodes visited by mutation validation since the last drain, summed over
+    /// every commit the next frame will consume. Validation must scale with the
+    /// batch, not the retained world; this is the sentinel for that invariant.
+    validation_nodes_scanned: usize,
 }
 
 impl Default for UiWorld {
@@ -384,7 +482,7 @@ impl UiWorld {
         Self {
             world: World::new(),
             entities: HashMap::new(),
-            retired: HashSet::new(),
+            retired: RetiredIds::default(),
             dirty_entities: HashSet::new(),
             focused: HashMap::new(),
             hit_test_index: HashMap::new(),
@@ -417,6 +515,8 @@ impl UiWorld {
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
+            overlay_host_nodes: HashSet::new(),
+            validation_nodes_scanned: 0,
         }
     }
 
@@ -455,7 +555,18 @@ impl UiWorld {
     }
 
     pub fn is_retired(&self, id: StableNodeId) -> bool {
-        self.retired.contains(&id)
+        self.retired.contains(id)
+    }
+
+    /// Total IDs retired over this world's lifetime.
+    pub fn retired_ids(&self) -> usize {
+        self.retired.len()
+    }
+
+    /// Coalesced runs backing the retired ledger. Sequential allocation keeps
+    /// this near-constant while [`Self::retired_ids`] grows with churn.
+    pub fn retired_id_runs(&self) -> usize {
+        self.retired.runs()
     }
 
     pub fn generation(&self) -> u64 {
@@ -768,6 +879,9 @@ impl UiWorld {
             glyph_cache_hits: None,
             glyph_cache_misses: None,
             cache_eviction: None,
+            // A drain always follows the commits it drains, so 0 here is an
+            // observed "validated nothing", not a missing measurement.
+            validation_nodes_scanned: Some(std::mem::take(&mut self.validation_nodes_scanned)),
         };
         work.render_removals.sort_unstable();
         work.accessibility_removals.sort_unstable();
@@ -1164,6 +1278,12 @@ impl UiWorld {
     pub fn overlay_host(&self, id: StableNodeId) -> Option<OverlayHostState> {
         let entity = *self.entities.get(&id)?;
         self.world.get::<OverlayHostState>(entity).copied()
+    }
+
+    /// Nodes that carry an `OverlayHostState`. Overlay validation iterates this
+    /// instead of the entity index so cost tracks host count, not world size.
+    fn overlay_host_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.overlay_host_nodes.iter().copied()
     }
 
     /// Project the visible accessibility tree from the same retained authority.
@@ -1716,19 +1836,216 @@ impl UiWorld {
     /// or layout work. Pointer dispatch walks that tree in z/order with clip
     /// early-out instead of flattening and sorting every query.
     pub fn rebuild_hit_test(&mut self, document: DocumentId) {
+        let roots = self.document_roots(document);
+        let seeds = roots
+            .iter()
+            .copied()
+            .map(|id| (id, IDENTITY_AFFINE))
+            .collect::<Vec<_>>();
+        let mut forest = self.build_hit_forest(seeds);
+        for root in &mut forest {
+            sort_hit_children(root);
+        }
+        forest.sort_by_key(|entry| (entry.z_index, entry.order));
+        self.note_hit_nodes_built(&forest);
+        self.hit_test_index.insert(document, forest);
+    }
+
+    /// Rebuild only the subtrees covering `dirty` instead of the whole document.
+    ///
+    /// Returns `false` when the change cannot be expressed as a local splice and
+    /// the caller must fall back to [`Self::rebuild_hit_test`]. Structural cases
+    /// that escalate: no existing index for the document, a dirty node whose
+    /// parent chain is not represented in the index while still being live, and
+    /// a dirty document root that changed root membership.
+    pub fn rebuild_hit_test_scoped(
+        &mut self,
+        document: DocumentId,
+        dirty: &[StableNodeId],
+    ) -> bool {
+        if dirty.is_empty() {
+            return true;
+        }
+        if !self.hit_test_index.contains_key(&document) {
+            return false;
+        }
+        let Some(roots) = self.minimal_hit_patch_roots(document, dirty) else {
+            return false;
+        };
+        for root in roots {
+            if !self.patch_hit_subtree(document, root) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reduce `dirty` to the shallowest nodes that cover it, dropping any node
+    /// that already has a dirty ancestor. `None` means a dirty node belongs to
+    /// another document and the caller should not attempt a scoped patch.
+    fn minimal_hit_patch_roots(
+        &self,
+        document: DocumentId,
+        dirty: &[StableNodeId],
+    ) -> Option<Vec<StableNodeId>> {
+        let mut pending = HashSet::new();
+        for &id in dirty {
+            if !self.contains(id) {
+                // A despawned node was already spliced out by `retain_hit_tree`.
+                continue;
+            }
+            if self.component::<Identity>(id).document != document {
+                return None;
+            }
+            pending.insert(id);
+        }
+        let mut roots = Vec::new();
+        for &id in &pending {
+            let mut cursor = self.parent_id(id);
+            let mut covered = false;
+            while let Some(ancestor) = cursor {
+                if pending.contains(&ancestor) {
+                    covered = true;
+                    break;
+                }
+                cursor = self.parent_id(ancestor);
+            }
+            if !covered {
+                roots.push(id);
+            }
+        }
+        roots.sort_unstable();
+        Some(roots)
+    }
+
+    /// Replace `root`'s entry (and its descendants) in place. Reuses the parent
+    /// entry's accumulated transform so no walk from the document root is
+    /// needed. Returns `false` when the splice point is missing and the caller
+    /// must rebuild the document.
+    fn patch_hit_subtree(&mut self, document: DocumentId, root: StableNodeId) -> bool {
+        let parent = self.parent_id(root);
+        let Some(parent) = parent else {
+            // Document roots: membership is owned by `live_document_roots`, so a
+            // root entering or leaving the set is a structural change.
+            let roots = self.document_roots(document);
+            let present = self
+                .hit_test_index
+                .get(&document)
+                .is_some_and(|forest| forest.iter().any(|entry| entry.id == root));
+            let expected = roots.contains(&root) && self.node_hit_visible(root);
+            if present != expected {
+                return false;
+            }
+            if !expected {
+                return true;
+            }
+            let position = roots.iter().position(|id| *id == root).unwrap_or_default();
+            let mut rebuilt = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
+            let Some(mut entry) = rebuilt.pop() else {
+                return false;
+            };
+            entry.order = position;
+            sort_hit_children(&mut entry);
+            self.note_hit_nodes_built(std::slice::from_ref(&entry));
+            let Some(forest) = self.hit_test_index.get_mut(&document) else {
+                return false;
+            };
+            if let Some(slot) = forest.iter_mut().find(|slot| slot.id == root) {
+                *slot = entry;
+            } else {
+                forest.push(entry);
+            }
+            forest.sort_by_key(|entry| (entry.z_index, entry.order));
+            return true;
+        };
+
+        // The parent's own entry supplies the inherited transform. Its scroll is
+        // read live because scroll never invalidates the parent entry itself.
+        let Some(parent_transform) = self
+            .hit_test_index
+            .get(&document)
+            .and_then(|forest| find_hit_transform(forest, parent))
+        else {
+            // Parent is absent from the index. That is correct only when the
+            // parent is itself not hit-visible; otherwise the index is stale.
+            return !self.node_hit_visible(parent);
+        };
+        let scroll = *self.component::<ScrollOffset>(parent);
+        let child_transform =
+            then_affine(parent_transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
+        let siblings = Arc::clone(&self.component::<Hierarchy>(parent).children);
+        let position = siblings.iter().position(|id| *id == root);
+        let Some(position) = position else {
+            return false;
+        };
+        let mut rebuilt = self.build_hit_forest(vec![(root, child_transform)]);
+        let entry = rebuilt.pop().map(|mut entry| {
+            entry.order = position;
+            sort_hit_children(&mut entry);
+            entry
+        });
+        if let Some(entry) = entry.as_ref() {
+            self.note_hit_nodes_built(std::slice::from_ref(entry));
+        }
+        let Some(forest) = self.hit_test_index.get_mut(&document) else {
+            return false;
+        };
+        let Some(parent_entry) = find_hit_entry_mut(forest, parent) else {
+            return false;
+        };
+        match entry {
+            Some(entry) => {
+                if let Some(slot) = parent_entry
+                    .children
+                    .iter_mut()
+                    .find(|slot| slot.id == root)
+                {
+                    *slot = entry;
+                } else {
+                    parent_entry.children.push(entry);
+                }
+            }
+            // The subtree turned invisible: drop it from the parent.
+            None => parent_entry.children.retain(|slot| slot.id != root),
+        }
+        parent_entry
+            .children
+            .sort_by_key(|child| (child.z_index, child.order));
+        true
+    }
+
+    /// Whether `id` would contribute an entry to the hit index.
+    fn node_hit_visible(&self, id: StableNodeId) -> bool {
+        self.contains(id) && self.component::<ResolvedStyle>(id).0.visible
+    }
+
+    /// Every build path funnels through here, so recording once keeps the
+    /// sentinel honest for both a scoped patch and a full rebuild.
+    fn note_hit_nodes_built(&mut self, forest: &[HitEntry]) {
+        let built = forest.iter().map(count_hit_entries).sum::<usize>();
+        self.bump_last_counters(|counters| counters.record_hit_test_rebuild(built));
+    }
+
+    /// Build hit entries for `seeds` and their visible descendants. Each seed
+    /// carries the accumulated transform of its parent, so a scoped patch can
+    /// resume from an existing entry instead of walking from the document root.
+    ///
+    /// `order` is assigned per sibling group from `Hierarchy` position. It is
+    /// only ever compared between siblings, so a spliced subtree stays sortable
+    /// against untouched siblings without renumbering the document.
+    fn build_hit_forest(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<HitEntry> {
         struct Built {
             entry: HitEntry,
             parent: Option<usize>,
         }
-        let roots = self.document_roots(document);
-        let mut stack = roots
+        let mut stack = seeds
             .into_iter()
+            .enumerate()
             .rev()
-            .map(|id| (id, IDENTITY_AFFINE, None::<usize>))
+            .map(|(position, (id, transform))| (id, transform, None::<usize>, position))
             .collect::<Vec<_>>();
-        let mut built = Vec::new();
-        let mut order = 0;
-        while let Some((id, parent_transform, parent)) = stack.pop() {
+        let mut built: Vec<Built> = Vec::new();
+        while let Some((id, parent_transform, parent, position)) = stack.pop() {
             let style = self.component::<ResolvedStyle>(id).0.as_ref();
             if !style.visible {
                 continue;
@@ -1796,19 +2113,22 @@ impl UiWorld {
                     self_clips,
                     child_clips,
                     z_index: self.stacking_z_index(id),
-                    order,
+                    order: position,
                     hittable,
                     menu,
                     children: Vec::new(),
                 },
                 parent,
             });
-            order += 1;
+            // Sibling position is the sort key. Invisible siblings are skipped
+            // and leave gaps, which is harmless because only relative order
+            // between surviving siblings is ever compared.
             stack.extend(
                 children
                     .iter()
+                    .enumerate()
                     .rev()
-                    .map(|child| (*child, child_transform, Some(index))),
+                    .map(|(position, child)| (*child, child_transform, Some(index), position)),
             );
         }
         let n = built.len();
@@ -1828,12 +2148,7 @@ impl UiWorld {
                     .push(child);
             }
         }
-        let mut forest = entries.into_iter().flatten().collect::<Vec<_>>();
-        for root in &mut forest {
-            sort_hit_children(root);
-        }
-        forest.sort_by_key(|entry| (entry.z_index, entry.order));
-        self.hit_test_index.insert(document, forest);
+        entries.into_iter().flatten().collect::<Vec<_>>()
     }
 
     /// Drain the scroll deltas recorded since the last drain.
@@ -1894,8 +2209,17 @@ impl UiWorld {
         patch_hit_scroll(entries, scroller, &subtree, delta);
     }
 
+    /// Topmost hit at `(x, y)`.
+    ///
+    /// Walks the same order as [`Self::hit_test_candidates`] but returns at the
+    /// first hit, so pointer dispatch on every move does not collect and then
+    /// discard the full candidate list.
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        self.hit_test_candidates(document, x, y).into_iter().next()
+        let forest = self.hit_test_index.get(&document)?;
+        forest
+            .iter()
+            .rev()
+            .find_map(|node| first_hit_candidate(node, x, y))
     }
 
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
@@ -1943,9 +2267,15 @@ impl UiWorld {
         if queue.is_empty() {
             return Ok(report);
         }
+        let mut scanned = 0;
+        let mut validated = Ok(());
         if !self.validate_simple_mutation(queue.as_slice())? {
-            ValidationPlan::new(self).validate(queue.as_slice())?;
+            let mut plan = ValidationPlan::new(self);
+            validated = plan.validate(queue.as_slice());
+            scanned = plan.scanned;
         }
+        self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
+        validated?;
         self.generation = self.generation.wrapping_add(1);
         report.generation = self.generation;
         for mutation in queue.as_slice() {
@@ -1989,6 +2319,7 @@ impl UiWorld {
             });
         }
         let mut ancestor = Some(*parent);
+        let mut depth = 0usize;
         while let Some(id) = ancestor {
             if id == *child {
                 return Err(UiWorldError::Cycle {
@@ -1996,9 +2327,13 @@ impl UiWorld {
                     child: *child,
                 });
             }
+            depth += 1;
             ancestor = self.identity_and_parent(id)?.1;
         }
-        Ok(true)
+        // Near the depth limit the child's own height decides, and measuring it
+        // is exactly the walk this fast path exists to avoid. Hand those rare
+        // batches to the planner, which already bounds depth.
+        Ok(depth < MAX_TREE_DEPTH)
     }
 
     fn identity_and_parent(
@@ -2181,6 +2516,7 @@ impl UiWorld {
                         self.animation_deadlines.remove(&(deadline, animation_id));
                     }
                     self.clear_overlay_references(id);
+                    self.overlay_host_nodes.remove(&id);
                     self.detached.remove(&id);
                     self.forget_visual_presence(entity);
                     let _ = self.world.despawn(entity);
@@ -2474,6 +2810,7 @@ impl UiWorld {
                     return;
                 }
                 self.world.entity_mut(entity).insert(*state);
+                self.overlay_host_nodes.insert(*host);
                 self.mark(*host, DirtyMask::ACCESSIBILITY);
                 if let Some(inactive) = previous
                     .and_then(|previous| previous.active)
@@ -4431,23 +4768,39 @@ impl UiWorld {
     }
 
     fn clear_overlay_references(&mut self, removed: StableNodeId) {
+        self.clear_overlay_references_for(&[removed]);
+    }
+
+    /// Drop `removed` from every overlay host that still points at it. Takes a
+    /// slice so tearing down a subtree walks the host index once instead of
+    /// once per removed node.
+    fn clear_overlay_references_for(&mut self, removed: &[StableNodeId]) {
+        if self.overlay_host_nodes.is_empty() || removed.is_empty() {
+            return;
+        }
         let updates = self
-            .entities
+            .overlay_host_nodes
             .iter()
-            .filter_map(|(&host, &entity)| {
-                (host != removed)
+            .filter_map(|&host| {
+                let entity = *self.entities.get(&host)?;
+                (!removed.contains(&host))
                     .then(|| self.world.get::<OverlayHostState>(entity).copied())
                     .flatten()
                     .and_then(|mut state| {
                         let previous = state;
-                        let restore_focus = (state.active == Some(removed))
+                        let restore_focus = state
+                            .active
+                            .is_some_and(|active| removed.contains(&active))
                             .then_some(state.restore_focus)
                             .flatten();
-                        if state.active == Some(removed) {
+                        if state.active.is_some_and(|active| removed.contains(&active)) {
                             state.active = None;
                             state.restore_focus = None;
                         }
-                        if state.restore_focus == Some(removed) {
+                        if state
+                            .restore_focus
+                            .is_some_and(|target| removed.contains(&target))
+                        {
                             state.restore_focus = None;
                         }
                         (state != previous).then_some((host, entity, state, restore_focus))
@@ -4863,8 +5216,8 @@ impl UiWorld {
                     .entity_mut(self.entities[&id])
                     .insert(OverlayHostState::default());
             }
-            self.clear_overlay_references(id);
         }
+        self.clear_overlay_references_for(subtree);
         self.pending_render_removals.sort_unstable();
         self.pending_render_removals.dedup();
         self.pending_accessibility_removals.sort_unstable();
@@ -5522,6 +5875,36 @@ fn sort_hit_children(node: &mut HitEntry) {
     }
 }
 
+/// Accumulated transform of `id`'s existing entry, used as the splice point for
+/// a scoped rebuild so the patch never walks up to the document root.
+fn find_hit_transform(forest: &[HitEntry], id: StableNodeId) -> Option<[f32; 6]> {
+    for entry in forest {
+        if entry.id == id {
+            return Some(entry.transform);
+        }
+        if let Some(transform) = find_hit_transform(&entry.children, id) {
+            return Some(transform);
+        }
+    }
+    None
+}
+
+fn find_hit_entry_mut(forest: &mut [HitEntry], id: StableNodeId) -> Option<&mut HitEntry> {
+    for entry in forest {
+        if entry.id == id {
+            return Some(entry);
+        }
+        if let Some(found) = find_hit_entry_mut(&mut entry.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn count_hit_entries(entry: &HitEntry) -> usize {
+    1 + entry.children.iter().map(count_hit_entries).sum::<usize>()
+}
+
 fn retain_hit_tree(nodes: &mut Vec<HitEntry>, id: StableNodeId) {
     nodes.retain_mut(|node| {
         if node.id == id {
@@ -5553,6 +5936,46 @@ fn patch_hit_scroll(
         }
         patch_hit_scroll(&mut node.children, scroller, subtree, delta);
     }
+}
+
+/// First candidate `collect_hit_candidates` would push for this subtree.
+///
+/// Mirrors that traversal exactly and returns at the first would-be push. Kept
+/// beside it so the two orders stay in step; the pair is pinned by
+/// `hit_test_matches_the_first_collected_candidate`.
+fn first_hit_candidate(node: &HitEntry, x: f32, y: f32) -> Option<StableNodeId> {
+    if !node
+        .self_clips
+        .iter()
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
+    {
+        return None;
+    }
+    let menu_hit = node
+        .menu
+        .is_some_and(|menu| transformed_contains(menu, node.transform, x, y));
+    let children_ok = node
+        .child_clips
+        .iter()
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y));
+    let menu_z = node.z_index.max(1_000);
+    if children_ok {
+        for child in node.children.iter().rev() {
+            if menu_hit && child.z_index <= menu_z {
+                return Some(node.id);
+            }
+            if let Some(found) = first_hit_candidate(child, x, y) {
+                return Some(found);
+            }
+        }
+    }
+    if menu_hit {
+        return Some(node.id);
+    }
+    if node.hittable && transformed_contains(node.layout, node.transform, x, y) {
+        return Some(node.id);
+    }
+    None
 }
 
 fn collect_hit_candidates(node: &HitEntry, x: f32, y: f32, out: &mut Vec<StableNodeId>) {
@@ -5704,20 +6127,34 @@ fn layout_semantics_changed(
         || previous.border_width != next.border_width
 }
 
+/// Validate-then-apply staging for one mutation batch.
+///
+/// Every field is an overlay over `source`, never a copy of it: validation cost
+/// tracks the batch, not the retained world. `parked`, `pointer_captures`, and
+/// `animations` fall back to `source` on a miss instead of being pre-filled, and
+/// overlay-host walks use `UiWorld::overlay_host_ids`.
 struct ValidationPlan<'a> {
     source: &'a UiWorld,
     nodes: HashMap<StableNodeId, PlannedNode>,
     removed: HashSet<StableNodeId>,
     newly_retired: HashSet<StableNodeId>,
-    parked: HashSet<StableNodeId>,
+    /// Mount overrides staged by this batch. Absent means "ask `source`".
+    parked: HashMap<StableNodeId, bool>,
     interactions: HashMap<StableNodeId, InteractionState>,
     styles: HashMap<StableNodeId, NodeStyle>,
     focus: HashMap<DocumentId, Option<StableNodeId>>,
-    pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
-    animations: HashMap<AnimationId, AnimationSpec>,
+    /// Cloned from `source` on first pointer-capture mutation. Batches that do
+    /// not touch capture never pay for it.
+    pointer_captures: Option<HashMap<(DocumentId, u64), StableNodeId>>,
+    /// Cloned from `source` on first animation mutation, same rationale.
+    animations: Option<HashMap<AnimationId, AnimationSpec>>,
     text_inputs: HashMap<StableNodeId, Option<TextInputState>>,
     overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
     accessibility: HashMap<StableNodeId, AccessibilityState>,
+    /// Nodes visited by whole-set walks during this validation. Reported through
+    /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
+    /// test instead of silently costing a frame.
+    scanned: usize,
 }
 
 impl<'a> ValidationPlan<'a> {
@@ -5727,28 +6164,72 @@ impl<'a> ValidationPlan<'a> {
             nodes: HashMap::new(),
             removed: HashSet::new(),
             newly_retired: HashSet::new(),
-            parked: source
-                .entities
-                .keys()
-                .copied()
-                .filter(|id| !source.is_mounted(*id))
-                .collect(),
+            parked: HashMap::new(),
             interactions: HashMap::new(),
             styles: HashMap::new(),
             focus: HashMap::new(),
-            pointer_captures: source.pointer_captures.clone(),
-            animations: source
-                .animations
-                .iter()
-                .map(|(&id, animation)| (id, animation.spec))
-                .collect(),
+            pointer_captures: None,
+            animations: None,
             text_inputs: HashMap::new(),
             overlay_hosts: HashMap::new(),
             accessibility: HashMap::new(),
+            scanned: 0,
         }
     }
 
-    fn validate(mut self, mutations: &[UiMutation]) -> Result<(), UiWorldError> {
+    /// Staged mount state. A node this batch created has no `MountState` in
+    /// `source`, and `mount_state` returning `None` correctly reads as unparked.
+    fn is_parked(&self, id: StableNodeId) -> bool {
+        if let Some(&parked) = self.parked.get(&id) {
+            return parked;
+        }
+        self.source.mount_state(id) == Some(MountState::Parked)
+    }
+
+    fn set_parked(&mut self, id: StableNodeId, parked: bool) {
+        self.parked.insert(id, parked);
+    }
+
+    fn pointer_captures_mut(&mut self) -> &mut HashMap<(DocumentId, u64), StableNodeId> {
+        if self.pointer_captures.is_none() {
+            self.pointer_captures = Some(self.source.pointer_captures.clone());
+        }
+        self.pointer_captures
+            .as_mut()
+            .expect("initialized directly above")
+    }
+
+    fn pointer_capture(&self, document: DocumentId, pointer_id: u64) -> Option<StableNodeId> {
+        match &self.pointer_captures {
+            Some(captures) => captures.get(&(document, pointer_id)).copied(),
+            None => self.source.pointer_capture(document, pointer_id),
+        }
+    }
+
+    fn animations_mut(&mut self) -> &mut HashMap<AnimationId, AnimationSpec> {
+        if self.animations.is_none() {
+            self.animations = Some(
+                self.source
+                    .animations
+                    .iter()
+                    .map(|(&id, animation)| (id, animation.spec))
+                    .collect(),
+            );
+        }
+        self.animations
+            .as_mut()
+            .expect("initialized directly above")
+    }
+
+    /// Overlay hosts staged by this batch plus those already in `source`.
+    fn overlay_host_candidates(&mut self) -> Vec<StableNodeId> {
+        let mut hosts = self.overlay_hosts.keys().copied().collect::<HashSet<_>>();
+        hosts.extend(self.source.overlay_host_ids());
+        self.scanned = self.scanned.saturating_add(hosts.len());
+        hosts.into_iter().collect()
+    }
+
+    fn validate(&mut self, mutations: &[UiMutation]) -> Result<(), UiWorldError> {
         for mutation in mutations {
             match mutation {
                 UiMutation::Create { id, document, .. } => self.create(*id, *document)?,
@@ -5898,31 +6379,31 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::CapturePointer { pointer_id, target } => {
                     let document = self.node(*target)?.document;
-                    if self.parked.contains(target) {
+                    if self.is_parked(*target) {
                         return Err(UiWorldError::NotPointerInteractive(*target));
                     }
-                    self.pointer_captures
+                    self.pointer_captures_mut()
                         .insert((document, *pointer_id), *target);
                 }
                 UiMutation::ReleasePointer { pointer_id, target } => {
                     let document = self.node(*target)?.document;
-                    if self.pointer_captures.get(&(document, *pointer_id)) != Some(target) {
+                    if self.pointer_capture(document, *pointer_id) != Some(*target) {
                         return Err(UiWorldError::PointerCaptureMismatch {
                             pointer_id: *pointer_id,
                             target: *target,
                         });
                     }
-                    self.pointer_captures.remove(&(document, *pointer_id));
+                    self.pointer_captures_mut().remove(&(document, *pointer_id));
                 }
                 UiMutation::StartAnimation { animation } => {
                     self.node(animation.target)?;
-                    if !animation.is_valid() || self.parked.contains(&animation.target) {
+                    if !animation.is_valid() || self.is_parked(animation.target) {
                         return Err(UiWorldError::InvalidAnimation(animation.id));
                     }
-                    self.animations.insert(animation.id, *animation);
+                    self.animations_mut().insert(animation.id, *animation);
                 }
                 UiMutation::StopAnimation { id } => {
-                    if self.animations.remove(id).is_none() {
+                    if self.animations_mut().remove(id).is_none() {
                         return Err(UiWorldError::MissingAnimation(*id));
                     }
                 }
@@ -5955,7 +6436,7 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetIme { id, composition } => {
                     let document = self.node(*id)?.document;
-                    if composition.is_some() && self.parked.contains(id) {
+                    if composition.is_some() && self.is_parked(*id) {
                         return Err(UiWorldError::NotFocused(*id));
                     }
                     let focused = self
@@ -6030,11 +6511,11 @@ impl<'a> ValidationPlan<'a> {
         if self.exists(id) {
             return Err(UiWorldError::DuplicateNode(id));
         }
-        if self.source.retired.contains(&id) || self.newly_retired.contains(&id) {
+        if self.source.is_retired(id) || self.newly_retired.contains(&id) {
             return Err(UiWorldError::RetiredNode(id));
         }
         self.removed.remove(&id);
-        self.parked.remove(&id);
+        self.set_parked(id, false);
         self.nodes.insert(
             id,
             PlannedNode {
@@ -6068,6 +6549,16 @@ impl<'a> ValidationPlan<'a> {
         {
             return Err(UiWorldError::InvalidBefore { parent, before });
         }
+        let depth = self
+            .ancestor_depth(parent)?
+            .saturating_add(self.subtree_height(child)?);
+        if depth > MAX_TREE_DEPTH {
+            return Err(UiWorldError::TreeTooDeep {
+                parent,
+                child,
+                depth,
+            });
+        }
         self.detach(child)?;
         let siblings = &mut self.node_mut(parent)?.children;
         let index = before
@@ -6075,9 +6566,44 @@ impl<'a> ValidationPlan<'a> {
             .unwrap_or(siblings.len());
         siblings.insert(index, child);
         self.node_mut(child)?.parent = Some(parent);
-        let parked = self.parked.contains(&parent);
+        let parked = self.is_parked(parent);
         self.set_parked_subtree(child, parked)?;
         Ok(())
+    }
+
+    /// Levels from `id` up to its root, counting `id` itself.
+    fn ancestor_depth(&mut self, id: StableNodeId) -> Result<usize, UiWorldError> {
+        let mut depth = 1;
+        let mut cursor = self.node(id)?.parent;
+        while let Some(ancestor) = cursor {
+            depth += 1;
+            if depth > MAX_TREE_DEPTH {
+                // `has_ancestor` already rejected cycles, so this is genuine
+                // depth rather than a loop.
+                return Ok(depth);
+            }
+            cursor = self.node(ancestor)?.parent;
+        }
+        Ok(depth)
+    }
+
+    /// Levels from `root` down to its deepest descendant, counting `root`.
+    /// Stops climbing once past the limit; the caller only needs to know that.
+    fn subtree_height(&mut self, root: StableNodeId) -> Result<usize, UiWorldError> {
+        let mut frontier = vec![root];
+        let mut height = 0;
+        while !frontier.is_empty() {
+            height += 1;
+            if height > MAX_TREE_DEPTH {
+                return Ok(height);
+            }
+            let mut next = Vec::new();
+            for id in frontier {
+                next.extend(self.node(id)?.children.iter().copied());
+            }
+            frontier = next;
+        }
+        Ok(height)
     }
 
     fn park(&mut self, root: StableNodeId) -> Result<(), UiWorldError> {
@@ -6099,10 +6625,14 @@ impl<'a> ValidationPlan<'a> {
                 self.focus.insert(document, None);
             }
         }
-        self.pointer_captures
-            .retain(|_, target| !parked.contains(target));
-        self.animations
-            .retain(|_, animation| !parked.contains(&animation.target));
+        if self.pointer_captures.is_some() || !self.source.pointer_captures.is_empty() {
+            self.pointer_captures_mut()
+                .retain(|_, target| !parked.contains(target));
+        }
+        if self.animations.is_some() || !self.source.animations.is_empty() {
+            self.animations_mut()
+                .retain(|_, animation| !parked.contains(&animation.target));
+        }
         for id in subtree {
             self.clear_overlay_references(id);
         }
@@ -6122,11 +6652,7 @@ impl<'a> ValidationPlan<'a> {
 
     fn set_parked_subtree(&mut self, root: StableNodeId, parked: bool) -> Result<(), UiWorldError> {
         for id in self.subtree(root)? {
-            if parked {
-                self.parked.insert(id);
-            } else {
-                self.parked.remove(&id);
-            }
+            self.set_parked(id, parked);
         }
         Ok(())
     }
@@ -6166,9 +6692,14 @@ impl<'a> ValidationPlan<'a> {
             self.removed.insert(id);
             self.newly_retired.insert(id);
             self.parked.remove(&id);
-            self.pointer_captures.retain(|_, target| *target != id);
-            self.animations
-                .retain(|_, animation| animation.target != id);
+            if self.pointer_captures.is_some() || !self.source.pointer_captures.is_empty() {
+                self.pointer_captures_mut()
+                    .retain(|_, target| *target != id);
+            }
+            if self.animations.is_some() || !self.source.animations.is_empty() {
+                self.animations_mut()
+                    .retain(|_, animation| animation.target != id);
+            }
             self.text_inputs.remove(&id);
             self.clear_overlay_references(id);
         }
@@ -6176,14 +6707,7 @@ impl<'a> ValidationPlan<'a> {
     }
 
     fn clear_overlay_references(&mut self, removed: StableNodeId) {
-        let hosts = self
-            .source
-            .entities
-            .keys()
-            .copied()
-            .chain(self.overlay_hosts.keys().copied())
-            .collect::<HashSet<_>>();
-        for host in hosts {
+        for host in self.overlay_host_candidates() {
             if host == removed || !self.exists(host) {
                 continue;
             }
@@ -6207,14 +6731,7 @@ impl<'a> ValidationPlan<'a> {
     }
 
     fn validate_overlay_hosts(&mut self) -> Result<(), UiWorldError> {
-        let hosts = self
-            .source
-            .entities
-            .keys()
-            .copied()
-            .chain(self.overlay_hosts.keys().copied())
-            .collect::<HashSet<_>>();
-        for host in hosts {
+        for host in self.overlay_host_candidates() {
             if !self.exists(host) {
                 continue;
             }
@@ -6306,7 +6823,7 @@ impl<'a> ValidationPlan<'a> {
 
     fn focus_target_visible(&mut self, mut id: StableNodeId) -> Result<bool, UiWorldError> {
         loop {
-            if self.parked.contains(&id) {
+            if self.is_parked(id) {
                 return Ok(false);
             }
             let layout = self
@@ -6333,17 +6850,17 @@ impl<'a> ValidationPlan<'a> {
         document: DocumentId,
         target: StableNodeId,
     ) -> Result<bool, UiWorldError> {
-        let hosts = self
-            .source
-            .entities
-            .keys()
-            .copied()
-            .chain(self.overlay_hosts.keys().copied())
-            .collect::<HashSet<_>>();
-        let order = self.planned_document_order(document)?;
+        let hosts = self.overlay_host_candidates();
+        if hosts.is_empty() {
+            return Ok(true);
+        }
+        // Document order only breaks ties between competing modals, so it stays
+        // unevaluated until a first modal is found. Hosts that exist with no
+        // active surface are the common case and must not pay for the walk.
+        let mut order: Option<Vec<StableNodeId>> = None;
         let mut top = None;
         for host in hosts {
-            if !self.exists(host) || self.parked.contains(&host) {
+            if !self.exists(host) || self.is_parked(host) {
                 continue;
             }
             let Some(state) = self
@@ -6358,7 +6875,7 @@ impl<'a> ValidationPlan<'a> {
                 continue;
             };
             if !self.exists(active)
-                || self.parked.contains(&active)
+                || self.is_parked(active)
                 || self.node(host)?.document != document
                 || self.node(active)?.parent != Some(host)
                 || !self.focus_target_visible(active)?
@@ -6377,7 +6894,12 @@ impl<'a> ValidationPlan<'a> {
                     .or_else(|| self.source.node_style(active))
                     .and_then(|style| style.layout.z_index)
                     .unwrap_or_default();
+                if order.is_none() {
+                    order = Some(self.planned_document_order(document)?);
+                }
                 let document_order = order
+                    .as_ref()
+                    .expect("document order resolved directly above")
                     .iter()
                     .position(|candidate| *candidate == active)
                     .unwrap_or_default();
@@ -6403,10 +6925,11 @@ impl<'a> ValidationPlan<'a> {
             .copied()
             .chain(self.nodes.keys().copied())
             .collect::<HashSet<_>>();
+        self.scanned = self.scanned.saturating_add(ids.len());
         let mut roots = Vec::new();
         for id in ids {
             if self.exists(id)
-                && !self.parked.contains(&id)
+                && !self.is_parked(id)
                 && self.node(id)?.document == document
                 && self.node(id)?.parent.is_none()
             {
@@ -6417,7 +6940,7 @@ impl<'a> ValidationPlan<'a> {
         let mut order = Vec::new();
         let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
         while let Some(id) = stack.pop() {
-            if !self.exists(id) || self.parked.contains(&id) {
+            if !self.exists(id) || self.is_parked(id) {
                 continue;
             }
             order.push(id);
@@ -7257,18 +7780,6 @@ mod tests {
         DocumentId::new(value).unwrap()
     }
 
-    fn find_hit_transform(forest: &[HitEntry], id: StableNodeId) -> Option<[f32; 6]> {
-        for entry in forest {
-            if entry.id == id {
-                return Some(entry.transform);
-            }
-            if let Some(transform) = find_hit_transform(&entry.children, id) {
-                return Some(transform);
-            }
-        }
-        None
-    }
-
     fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) -> [f32; 6] {
         find_hit_transform(&world.hit_test_index[&document], id).expect("hit entry")
     }
@@ -7402,6 +7913,519 @@ mod tests {
             world.document_roots(document(1)),
             scanned(&world, document(1))
         );
+    }
+
+    fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+        LayoutBox {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Hit entries built so far. The counter accumulates until a drain, so
+    /// callers compare deltas around the build they are measuring.
+    fn hit_entries_built(world: &UiWorld) -> usize {
+        world
+            .last_work_counters()
+            .hit_test_nodes_rebuilt
+            .unwrap_or_default()
+    }
+
+    /// Flatten the hit forest into a comparable projection. `HitEntry` has no
+    /// `PartialEq`, and this captures everything pointer dispatch reads.
+    fn hit_shape(world: &UiWorld, document: DocumentId) -> Vec<(Vec<u64>, [u32; 6], bool, i32)> {
+        fn walk(
+            entry: &HitEntry,
+            path: &mut Vec<u64>,
+            out: &mut Vec<(Vec<u64>, [u32; 6], bool, i32)>,
+        ) {
+            path.push(entry.id.get());
+            out.push((
+                path.clone(),
+                entry.transform.map(f32::to_bits),
+                entry.hittable,
+                entry.z_index,
+            ));
+            for child in &entry.children {
+                walk(child, path, out);
+            }
+            path.pop();
+        }
+        let mut out = Vec::new();
+        for root in &world.hit_test_index[&document] {
+            walk(root, &mut Vec::new(), &mut out);
+        }
+        out
+    }
+
+    /// Probe a coordinate grid so equivalence is asserted on what dispatch sees,
+    /// not just on internal layout of the index.
+    fn hit_probe_grid(world: &UiWorld, document: DocumentId) -> Vec<Vec<StableNodeId>> {
+        let mut probes = Vec::new();
+        for step_y in 0..12 {
+            for step_x in 0..12 {
+                let x = step_x as f32 * 9.0;
+                let y = step_y as f32 * 9.0;
+                probes.push(world.hit_test_candidates(document, x, y));
+            }
+        }
+        probes
+    }
+
+    /// Grow a document of `rows` leaves under one column and return the world.
+    fn world_with_rows(rows: u64) -> UiWorld {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "column".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        for row in 0..rows {
+            let row_id = node(3 + row);
+            queue.create(row_id, document(1), NodeKind::Element { tag: "row".into() });
+            queue.insert(node(2), row_id, None);
+        }
+        world.commit(queue).unwrap();
+        world
+    }
+
+    #[test]
+    fn retired_ledger_stays_bounded_under_create_despawn_churn() {
+        let mut world = UiWorld::new();
+        let mut root = MutationQueue::new();
+        root.create(node(1), document(1), NodeKind::Document);
+        world.commit(root).unwrap();
+
+        // Mirror a v-for churning its rows: allocate monotonically, despawn the
+        // whole batch, repeat. Retirement stays permanent, so a stale handle
+        // still cannot alias, but the ledger must not grow with the churn.
+        let mut next = 2u64;
+        for _ in 0..200 {
+            let batch_start = next;
+            let mut create = MutationQueue::new();
+            for _ in 0..50 {
+                let id = node(next);
+                create.create(id, document(1), NodeKind::Element { tag: "row".into() });
+                create.insert(node(1), id, None);
+                next += 1;
+            }
+            world.commit(create).unwrap();
+            let mut despawn = MutationQueue::new();
+            for id in batch_start..next {
+                despawn.despawn_subtree(node(id));
+            }
+            world.commit(despawn).unwrap();
+            world.take_system_work();
+        }
+
+        let retired = world.retired_ids();
+        assert_eq!(retired, 200 * 50);
+        // Consecutive allocation coalesces into a single run regardless of how
+        // many IDs churned through it.
+        assert_eq!(world.retired_id_runs(), 1);
+
+        // The contract still holds: a stale handle cannot be revived.
+        let mut revive = MutationQueue::new();
+        revive.create(node(2), document(1), NodeKind::Text);
+        assert!(matches!(
+            world.commit(revive),
+            Err(UiWorldError::RetiredNode(_))
+        ));
+        assert!(world.is_retired(node(2)));
+        assert!(world.is_retired(node(next - 1)));
+        assert!(!world.is_retired(node(next)));
+        assert!(!world.is_retired(node(1)));
+    }
+
+    #[test]
+    fn retired_runs_coalesce_across_gaps_in_any_insert_order() {
+        let mut retired = RetiredIds::default();
+        for value in [10u64, 12, 11, 30, 1, 2, 29, 31] {
+            retired.insert(node(value));
+        }
+        assert_eq!(retired.len(), 8);
+        // {1,2} {10,11,12} {29,30,31}
+        assert_eq!(retired.runs(), 3);
+        for value in [1u64, 2, 10, 11, 12, 29, 30, 31] {
+            assert!(retired.contains(node(value)), "{value} must be retired");
+        }
+        for value in [3u64, 9, 13, 28, 32, u64::MAX] {
+            assert!(!retired.contains(node(value)), "{value} must be live");
+        }
+        // Re-inserting is idempotent and does not double-count.
+        retired.insert(node(11));
+        assert_eq!(retired.len(), 8);
+        assert_eq!(retired.runs(), 3);
+        // Bridging two runs merges them.
+        retired.insert(node(13));
+        for value in [
+            14u64, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+        ] {
+            retired.insert(node(value));
+        }
+        assert_eq!(retired.runs(), 2);
+    }
+
+    #[test]
+    fn batch_validation_cost_tracks_the_batch_not_the_retained_world() {
+        let small = 200u64;
+        let large = 10_000u64;
+
+        let mut small_world = world_with_rows(small);
+        let mut large_world = world_with_rows(large);
+        assert_eq!(small_world.len(), small as usize + 2);
+        assert_eq!(large_world.len(), large as usize + 2);
+
+        // A multi-mutation batch skips the single-mutation fast path, so this is
+        // the ValidationPlan route Vue takes on every flush.
+        let batch = |target: StableNodeId| {
+            let mut queue = MutationQueue::new();
+            queue.set_text(
+                target,
+                TextContent {
+                    value: "updated".into(),
+                },
+            );
+            queue.set_style(
+                target,
+                NodeStyle {
+                    layout: std::sync::Arc::new(crate::LayoutStyle {
+                        z_index: Some(3),
+                        ..crate::LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.set_scroll_offset(target, ScrollOffset { x: 0.0, y: 4.0 });
+            queue
+        };
+
+        small_world.commit(batch(node(3 + small - 1))).unwrap();
+        large_world.commit(batch(node(3 + large - 1))).unwrap();
+
+        // The 50x larger world must not cost 50x to validate. Before the overlay
+        // rewrite both numbers tracked `len()` exactly.
+        assert_eq!(validation_scanned(&mut small_world), 0);
+        assert_eq!(validation_scanned(&mut large_world), 0);
+    }
+
+    /// Nodes validation visited since the previous drain, which is the window a
+    /// frame consumes.
+    fn validation_scanned(world: &mut UiWorld) -> usize {
+        world
+            .take_system_work()
+            .validation_nodes_scanned
+            .unwrap_or_default()
+    }
+
+    /// Build a nested grid document with clipping, transforms, z-index and a
+    /// scroller so scoped patches are exercised against the tricky cases.
+    fn hit_fixture(columns: u64, rows: u64) -> UiWorld {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.write_layout(node(1), box_at(0.0, 0.0, 100.0, 100.0));
+        for column in 0..columns {
+            let column_id = node(10 + column * 100);
+            queue.create(
+                column_id,
+                document(1),
+                NodeKind::Element {
+                    tag: "column".into(),
+                },
+            );
+            queue.insert(node(1), column_id, None);
+            queue.write_layout(column_id, box_at(column as f32 * 10.0, 0.0, 10.0, 100.0));
+            queue.set_style(
+                column_id,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        overflow_y: OverflowSpec::Scroll,
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            for row in 0..rows {
+                let cell = node(11 + column * 100 + row);
+                queue.create(cell, document(1), NodeKind::Element { tag: "cell".into() });
+                queue.insert(column_id, cell, None);
+                queue.write_layout(
+                    cell,
+                    box_at(column as f32 * 10.0, row as f32 * 8.0, 10.0, 8.0),
+                );
+                if row % 3 == 0 {
+                    let mut raised = NodeStyle::default();
+                    Arc::make_mut(&mut raised.layout).z_index = Some(2);
+                    queue.set_style(cell, raised);
+                }
+            }
+        }
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        world.rebuild_hit_test(document(1));
+        world
+    }
+
+    #[test]
+    fn hit_test_matches_the_first_collected_candidate() {
+        let world = hit_fixture(6, 8);
+        // The short-circuit walk must agree with the collecting walk everywhere,
+        // including misses and clipped regions.
+        for step_y in 0..30 {
+            for step_x in 0..30 {
+                let x = step_x as f32 * 2.5 - 5.0;
+                let y = step_y as f32 * 3.5 - 5.0;
+                assert_eq!(
+                    world.hit_test(document(1), x, y),
+                    world
+                        .hit_test_candidates(document(1), x, y)
+                        .into_iter()
+                        .next(),
+                    "hit_test disagreed at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tree_depth_is_bounded_where_the_tree_is_written() {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        for id in 2..=(MAX_TREE_DEPTH as u64 + 8) {
+            create.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        world.commit(create).unwrap();
+
+        // A chain built one level at a time is rejected at the limit, not at a
+        // stack overflow inside style resolution or layout.
+        let mut depth = 1u64;
+        let rejected = loop {
+            let parent = node(depth);
+            let child = node(depth + 1);
+            let mut link = MutationQueue::new();
+            link.insert(parent, child, None);
+            match world.commit(link) {
+                Ok(_) => depth += 1,
+                Err(error) => break error,
+            }
+            assert!(depth < MAX_TREE_DEPTH as u64 + 8, "depth was never bounded");
+        };
+        assert!(matches!(rejected, UiWorldError::TreeTooDeep { .. }));
+        assert_eq!(depth as usize, MAX_TREE_DEPTH);
+
+        // The rejected batch left nothing behind, and the accepted tree still
+        // resolves and lays out without recursing past the bound.
+        assert_eq!(
+            world.node(node(MAX_TREE_DEPTH as u64 + 1)).unwrap().parent,
+            None
+        );
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.rebuild_hit_test(document(1));
+
+        // Splicing an already-deep detached subtree under a deep parent is
+        // rejected on the combined height, not just the parent's depth.
+        let mut detached = MutationQueue::new();
+        detached.insert(
+            node(MAX_TREE_DEPTH as u64 + 1),
+            node(MAX_TREE_DEPTH as u64 + 2),
+            None,
+        );
+        world.commit(detached).unwrap();
+        let mut splice = MutationQueue::new();
+        splice.insert(
+            node(MAX_TREE_DEPTH as u64),
+            node(MAX_TREE_DEPTH as u64 + 1),
+            None,
+        );
+        assert!(matches!(
+            world.commit(splice),
+            Err(UiWorldError::TreeTooDeep { .. })
+        ));
+    }
+
+    #[test]
+    fn scoped_hit_patch_matches_a_full_rebuild_for_a_leaf_layout_change() {
+        let mut world = hit_fixture(6, 8);
+        let target = node(11 + 3 * 100 + 5);
+
+        let mut move_cell = MutationQueue::new();
+        move_cell.write_layout(target, box_at(31.0, 41.0, 8.0, 6.0));
+        world.commit(move_cell).unwrap();
+        let work = world.take_system_work();
+        // The frame driver patches from the INPUT set, which layout writeback
+        // marks on exactly the nodes whose box moved.
+        let dirty = work.input_hit_test.clone();
+        assert_eq!(dirty, vec![target]);
+
+        let before_patch = hit_entries_built(&world);
+        assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+        let patched_built = hit_entries_built(&world) - before_patch;
+        let patched_shape = hit_shape(&world, document(1));
+        let patched_probe = hit_probe_grid(&world, document(1));
+
+        let before_full = hit_entries_built(&world);
+        world.rebuild_hit_test(document(1));
+        let full_built = hit_entries_built(&world) - before_full;
+        assert_eq!(patched_shape, hit_shape(&world, document(1)));
+        assert_eq!(patched_probe, hit_probe_grid(&world, document(1)));
+
+        // The whole point: the patch built a subtree, not the document.
+        assert_eq!(patched_built, 1);
+        assert!(
+            patched_built < full_built / 4,
+            "scoped patch built {patched_built} entries, full rebuild built {full_built}"
+        );
+    }
+
+    #[test]
+    fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
+        let mut world = hit_fixture(4, 6);
+        let column = node(10 + 100);
+        let cell = node(11 + 100 + 2);
+
+        // Hiding a cell drops it from the parent's children.
+        let mut hide = MutationQueue::new();
+        hide.set_style(
+            cell,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    hidden: true,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(hide).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let mut dirty = work.layout.clone();
+        dirty.extend(work.input_hit_test.iter().copied());
+        dirty.extend(work.style.iter().copied());
+        dirty.sort_unstable();
+        dirty.dedup();
+        assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+        let patched = hit_probe_grid(&world, document(1));
+        world.rebuild_hit_test(document(1));
+        assert_eq!(patched, hit_probe_grid(&world, document(1)));
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 12.0, 18.0)
+                .contains(&cell)
+        );
+
+        // Inserting a new child must land in Hierarchy order, not at the end.
+        let inserted = node(9_001);
+        let mut insert = MutationQueue::new();
+        insert.create(
+            inserted,
+            document(1),
+            NodeKind::Element { tag: "new".into() },
+        );
+        insert.insert(column, inserted, Some(node(11 + 100)));
+        insert.write_layout(inserted, box_at(10.0, 0.0, 10.0, 8.0));
+        world.commit(insert).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let mut dirty = work.layout.clone();
+        dirty.extend(work.input_hit_test.iter().copied());
+        dirty.sort_unstable();
+        dirty.dedup();
+        assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+        let patched = hit_probe_grid(&world, document(1));
+        world.rebuild_hit_test(document(1));
+        assert_eq!(patched, hit_probe_grid(&world, document(1)));
+        assert!(
+            world
+                .hit_test_candidates(document(1), 12.0, 3.0)
+                .contains(&inserted)
+        );
+
+        // Despawning the subtree keeps the index consistent with a rebuild.
+        let mut despawn = MutationQueue::new();
+        despawn.despawn_subtree(inserted);
+        world.commit(despawn).unwrap();
+        let work = world.take_system_work();
+        let mut dirty = work.layout.clone();
+        dirty.extend(work.input_hit_test.iter().copied());
+        dirty.sort_unstable();
+        dirty.dedup();
+        assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+        let patched = hit_probe_grid(&world, document(1));
+        world.rebuild_hit_test(document(1));
+        assert_eq!(patched, hit_probe_grid(&world, document(1)));
+    }
+
+    #[test]
+    fn overlay_validation_walks_hosts_not_every_entity() {
+        let rows = 5_000u64;
+        let mut world = world_with_rows(rows);
+
+        // One real overlay host with a modal surface: validation may walk hosts
+        // and document order, but must never enumerate the whole world per node.
+        let host = node(3);
+        let surface = node(3 + rows);
+        let mut open = MutationQueue::new();
+        open.create(
+            surface,
+            document(1),
+            NodeKind::Element {
+                tag: "dialog".into(),
+            },
+        );
+        open.insert(host, surface, None);
+        open.set_accessibility(
+            surface,
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                modal: true,
+                ..AccessibilityState::default()
+            },
+        );
+        open.set_overlay_host(
+            host,
+            OverlayHostState {
+                active: Some(surface),
+                restore_focus: None,
+            },
+        );
+        world.commit(open).unwrap();
+        // Close the measurement window on setup so the next reading is the
+        // overlay-aware batch alone.
+        validation_scanned(&mut world);
+
+        // Host-only bookkeeping: one host, so the walk is one node wide.
+        let mut touch = MutationQueue::new();
+        touch.set_text(node(4), TextContent { value: "a".into() });
+        touch.set_text(node(5), TextContent { value: "b".into() });
+        world.commit(touch).unwrap();
+        assert_eq!(validation_scanned(&mut world), 1);
+
+        // Despawning the surface clears host references without a world scan.
+        let mut close = MutationQueue::new();
+        close.despawn_subtree(surface);
+        close.set_text(node(4), TextContent { value: "c".into() });
+        world.commit(close).unwrap();
+        let scanned = validation_scanned(&mut world);
+        assert!(
+            scanned < rows as usize,
+            "overlay teardown scanned {scanned} of {} nodes",
+            world.len()
+        );
+        assert_eq!(world.overlay_host(host).unwrap().active, None);
     }
 
     #[test]
@@ -10292,6 +11316,54 @@ mod tests {
         assert_eq!(work.state, vec![node(2), node(3)]);
         assert!(work.style.is_empty());
         assert!(work.render_extraction.is_empty());
+    }
+
+    #[test]
+    fn state_only_invalidation_stays_observable_without_scheduling_a_frame() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Element { tag: "a".into() });
+        queue.insert(node(1), node(2), None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+
+        world
+            .set_pointer_hover(document(1), 7, Some(node(2)))
+            .unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
+        // Without interaction styling nothing downstream reads the hover, so the
+        // drain must not claim a frame's worth of work.
+        assert!(work.is_empty());
+
+        let mut styled = MutationQueue::new();
+        styled.set_style(
+            node(2),
+            NodeStyle {
+                interaction: crate::InteractionStyle {
+                    hovered: crate::SemanticPaint {
+                        background: Some(SemanticColorRole::Hover),
+                        ..crate::SemanticPaint::default()
+                    },
+                    ..crate::InteractionStyle::default()
+                },
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(styled).unwrap();
+        world.take_system_work();
+        world.set_pointer_hover(document(1), 7, None).unwrap();
+        world.take_system_work();
+
+        world
+            .set_pointer_hover(document(1), 7, Some(node(2)))
+            .unwrap();
+        // The same hover now has a consumer, and STYLE carries the frame.
+        let work = world.take_system_work();
+        assert_eq!(work.state, vec![node(2)]);
+        assert_eq!(work.style, vec![node(2)]);
+        assert!(!work.is_empty());
     }
 
     #[test]
