@@ -146,6 +146,13 @@ struct Kind(Arc<NodeKind>);
 #[derive(Component, Clone)]
 struct ResolvedStyle(Arc<ComputedStyle>);
 
+fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
+    match visual {
+        Some(StandardVisual::MenuSurface { open, .. }) => Some(*open),
+        _ => None,
+    }
+}
+
 #[derive(Component)]
 struct Hierarchy {
     parent: Option<StableNodeId>,
@@ -2738,6 +2745,7 @@ impl UiWorld {
                     empty_state_presentation_changed,
                     modal_presentation_changed,
                     modal_state_changed,
+                    menu_state_changed,
                 ) = {
                     let previous_visual = self.world.get::<StandardVisual>(entity);
                     (
@@ -2758,6 +2766,10 @@ impl UiWorld {
                             ) => old_busy != busy || old_danger != danger,
                             _ => false,
                         },
+                        // Whether a menu's items take part in layout follows the
+                        // surface's own open state, so opening it has to reach
+                        // them the way an overlay host reaches its branch.
+                        menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
                     )
                 };
                 if let Some(visual) = visual {
@@ -2793,6 +2805,18 @@ impl UiWorld {
                             0
                         },
                 );
+                if menu_state_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
+                            | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                    self.mark_ancestors(*id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                }
                 if modal_state_changed {
                     self.mark_subtree(
                         *id,
@@ -5043,10 +5067,7 @@ impl UiWorld {
         let Some(parent) = self.component::<Hierarchy>(id).parent else {
             return true;
         };
-        !matches!(
-            self.standard_visual(parent),
-            Some(StandardVisual::MenuSurface { open: false, .. })
-        )
+        menu_surface_open(self.standard_visual(parent).as_ref()) != Some(false)
     }
 
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
