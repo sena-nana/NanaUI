@@ -70,9 +70,7 @@ impl Icon {
             "folder" | "directory" | "folder-open" | "folderopen" => Self::Folder,
             "git-branch" | "gitbranch" | "branch" => Self::GitBranch,
             "maximize" | "square" => Self::Maximize,
-            "message-square-plus" | "messagesquareplus" | "square-plus" => {
-                Self::MessageSquarePlus
-            }
+            "message-square-plus" | "messagesquareplus" | "square-plus" => Self::MessageSquarePlus,
             "minimize" | "minus" => Self::Minimize,
             "moon" | "dark" => Self::Moon,
             "nodes" | "graph" | "network" | "layout-grid" | "grid" => Self::Nodes,
@@ -125,10 +123,7 @@ mod tests {
         assert_eq!(Icon::parse_name("lucide-refresh-cw"), Some(Icon::Restore));
         assert_eq!(Icon::parse_name("lucide-arrow-up"), Some(Icon::ArrowUp));
         assert_eq!(Icon::parse_name("lucide-bot"), Some(Icon::Bot));
-        assert_eq!(
-            Icon::parse_name("lucide-git-branch"),
-            Some(Icon::GitBranch)
-        );
+        assert_eq!(Icon::parse_name("lucide-git-branch"), Some(Icon::GitBranch));
         assert_eq!(
             Icon::parse_name("lucide-message-square-plus"),
             Some(Icon::MessageSquarePlus)
