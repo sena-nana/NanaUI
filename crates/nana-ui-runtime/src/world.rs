@@ -1836,7 +1836,11 @@ impl UiWorld {
 
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
         let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
-        if !self.presence_live(id) || !self.overlay_branch_active(id) || style.omits_box() {
+        if !self.presence_live(id)
+            || !self.overlay_branch_active(id)
+            || !self.menu_branch_open(id)
+            || style.omits_box()
+        {
             Arc::make_mut(&mut style).hidden = true;
         }
         style
@@ -4373,6 +4377,7 @@ impl UiWorld {
                     bounds,
                     trigger.as_ref(),
                     *gap,
+                    style,
                     &self.style_model.palette,
                 ))
             }
@@ -5003,7 +5008,10 @@ impl UiWorld {
             background,
             border_color,
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
-            visible: !layout.omits_box() && inherited.visible && self.overlay_branch_active(id),
+            visible: !layout.omits_box()
+                && inherited.visible
+                && self.overlay_branch_active(id)
+                && self.menu_branch_open(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
             font_family: layout
@@ -5026,6 +5034,19 @@ impl UiWorld {
         };
         self.overlay_host(parent)
             .is_none_or(|state| state.active == Some(id))
+    }
+
+    /// A closed menu keeps its items in the tree but out of the frame. They
+    /// would otherwise stretch the trigger they hang under, since the trigger
+    /// and the surface share one box.
+    fn menu_branch_open(&self, id: StableNodeId) -> bool {
+        let Some(parent) = self.component::<Hierarchy>(id).parent else {
+            return true;
+        };
+        !matches!(
+            self.standard_visual(parent),
+            Some(StandardVisual::MenuSurface { open: false, .. })
+        )
     }
 
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -6847,7 +6868,16 @@ impl<'a> ValidationPlan<'a> {
                         .node_style(id)
                         .map(|style| style.layout.as_ref())
                 });
-            if layout.is_some_and(|layout| layout.omits_box()) || !self.overlay_branch_active(id)? {
+            if layout.is_some_and(|layout| layout.omits_box())
+                || !self.overlay_branch_active(id)?
+                || self
+                    .node(id)?
+                    .parent
+                    .and_then(|parent| self.source.standard_visual(parent))
+                    .is_some_and(|visual| {
+                        matches!(visual, StandardVisual::MenuSurface { open: false, .. })
+                    })
+            {
                 return Ok(false);
             }
             let Some(parent) = self.node(id)?.parent else {

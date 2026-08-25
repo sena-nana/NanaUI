@@ -1947,6 +1947,7 @@ impl UiScene {
                 }
                 Some(ComponentGeometry::MenuSurface {
                     trigger,
+                    trigger_surface,
                     surface,
                     search,
                     search_field,
@@ -1955,6 +1956,27 @@ impl UiScene {
                     background,
                     border,
                 }) => {
+                    if let Some(chrome) = trigger_surface
+                        && (chrome.background.is_some() || chrome.border.is_some())
+                    {
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 3 },
+                            node: id,
+                            bounds: scene_rect(chrome.bounds),
+                            transform,
+                            clips: clips.clone(),
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Quad {
+                                background: chrome.background,
+                                border_color: chrome.border,
+                                border_width: chrome.border_width,
+                                corner_radius: chrome.corner_radius,
+                                shadow: None,
+                            },
+                        });
+                    }
                     if let Some(trigger) = trigger {
                         self.insert_primitive(component_text_primitive(
                             id,
@@ -4142,6 +4164,7 @@ mod tests {
             height: 72.0,
         };
         menu.standard_visual = Some(StandardVisual::MenuSurface {
+            open: true,
             kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
             trigger: None,
             gap: 0.0,
@@ -4165,6 +4188,7 @@ mod tests {
             highlighted: None,
         });
         menu.component_geometry = Some(ComponentGeometry::MenuSurface {
+            trigger_surface: None,
             trigger: None,
             surface: LayoutBox {
                 x: 8.0,

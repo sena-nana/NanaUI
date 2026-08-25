@@ -75,7 +75,8 @@ pub use component_registry::{
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
-    ComponentElevation, ComponentGeometry, ComponentTextRegion, ComputedStyle, CustomRenderNode,
+    ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface, ComputedStyle,
+    CustomRenderNode,
     EventListeners, EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
     InteractionStyle, LayoutBox, LayoutInput, MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput,
     MountState, NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset,
