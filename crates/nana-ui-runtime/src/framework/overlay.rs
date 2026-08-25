@@ -723,8 +723,8 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::{
-        Button, LayoutBox, Menu, MenuItem, MountState, NodeKind, OverlayHost, Toast, ToastTone,
-        Tooltip,
+        ActionMenu, ActionMenuItem, Button, LayoutBox, MountState, NodeKind, OverlayHost, Toast,
+        ToastTone, Tooltip,
     };
     use std::sync::{
         Arc,
@@ -1215,12 +1215,14 @@ mod tests {
         let menu_host = context
             .create_component(document, OverlayHost::new())
             .unwrap();
-        let menu = context.create_component(document, Menu::new()).unwrap();
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
         let first = context
-            .create_component(document, MenuItem::new("First"))
+            .create_component(document, ActionMenuItem::new("First"))
             .unwrap();
         let disabled = context
-            .create_component(document, MenuItem::new("Disabled").disabled(true))
+            .create_component(document, ActionMenuItem::new("Disabled").disabled(true))
             .unwrap();
         context.append_child(menu_host, menu).unwrap();
         context.append_child(menu, first).unwrap();
@@ -1342,7 +1344,9 @@ mod tests {
         let toast = context
             .create_component(document, Toast::new("Save failed", ToastTone::Danger))
             .unwrap();
-        let menu = context.create_component(document, Menu::new()).unwrap();
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
         context.append_child(host, toast).unwrap();
         context.append_child(host, menu).unwrap();
 
@@ -1377,9 +1381,17 @@ mod tests {
         context.append_child(host, toast).unwrap();
         context.activate_overlay(host, toast).unwrap();
 
-        assert!(!context.route_overlay_key(document, OverlayKey::Escape).unwrap());
+        assert!(
+            !context
+                .route_overlay_key(document, OverlayKey::Escape)
+                .unwrap()
+        );
         assert_eq!(
-            context.world().overlay_host(host.stable_id()).unwrap().active,
+            context
+                .world()
+                .overlay_host(host.stable_id())
+                .unwrap()
+                .active,
             Some(toast.stable_id())
         );
     }
@@ -1406,9 +1418,11 @@ mod tests {
             Err(FrameworkError::ViewType(unknown.stable_id()))
         );
 
-        let menu = context.create_component(document, Menu::new()).unwrap();
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
         let item = context
-            .create_component(document, MenuItem::new("Hidden"))
+            .create_component(document, ActionMenuItem::new("Hidden"))
             .unwrap();
         context.append_child(host, menu).unwrap();
         context.append_child(menu, item).unwrap();
@@ -1455,11 +1469,13 @@ mod tests {
         let host = context
             .create_component(document, OverlayHost::new())
             .unwrap();
-        let menu = context.create_component(document, Menu::new()).unwrap();
-        let mut lower_view = MenuItem::new("Lower");
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
+        let mut lower_view = ActionMenuItem::new("Lower");
         Arc::make_mut(&mut lower_view.style.layout).z_index = Some(2_000);
         let lower = context.create_component(document, lower_view).unwrap();
-        let mut upper_view = MenuItem::new("Upper");
+        let mut upper_view = ActionMenuItem::new("Upper");
         Arc::make_mut(&mut upper_view.style.layout).z_index = Some(3_000);
         let upper = context.create_component(document, upper_view).unwrap();
         context.append_child(host, menu).unwrap();

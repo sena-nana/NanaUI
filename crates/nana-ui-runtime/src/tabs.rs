@@ -3,9 +3,8 @@
 //! Application code owns tab values, order persistence, and pane/window
 //! identity. This type reports select/reorder/close/transfer results and keeps
 //! retained option order in sync with a successful reorder. Scene paints each
-//! option through the same [`crate::SegmentedOption`] /
-//! [`crate::StandardVisual::SelectionOption`] chrome as
-//! [`crate::SegmentedControl::tabs()`]. Iced `Tabs` has no close control, so
+//! option through [`crate::SegmentedOption`] / [`crate::StandardVisual::SelectionOption`]
+//! with [`crate::SelectionChrome::Tabs`]. Iced `Tabs` has no close control, so
 //! close stays a request: the application owns removal.
 
 use std::sync::Arc;

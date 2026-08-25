@@ -2974,57 +2974,6 @@ impl UiScene {
                         ));
                     }
                 }
-                Some(StandardVisual::Slider { ratio }) => {
-                    let thumb_extent = 14.0_f32.min(bounds.width).min(bounds.height);
-                    let track_inset = thumb_extent / 2.0;
-                    let track = SceneRect {
-                        x: bounds.x + track_inset,
-                        y: bounds.y + (bounds.height - 4.0) / 2.0,
-                        width: (bounds.width - thumb_extent).max(0.0),
-                        height: 4.0,
-                    };
-                    self.insert_primitive(visual_quad(
-                        &visual_context,
-                        3,
-                        track,
-                        VisualQuadStyle {
-                            background: node.style.border_color,
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: 2.0,
-                        },
-                    ));
-                    self.insert_primitive(visual_quad(
-                        &visual_context,
-                        4,
-                        SceneRect {
-                            width: track.width * ratio,
-                            ..track
-                        },
-                        VisualQuadStyle {
-                            background: node.style.background,
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: 2.0,
-                        },
-                    ));
-                    self.insert_primitive(visual_quad(
-                        &visual_context,
-                        5,
-                        SceneRect {
-                            x: bounds.x + track.width * ratio,
-                            y: bounds.y + (bounds.height - thumb_extent) / 2.0,
-                            width: thumb_extent,
-                            height: thumb_extent,
-                        },
-                        VisualQuadStyle {
-                            background: node.style.background,
-                            border_color: node.style.border_color,
-                            border_width: 1.0,
-                            corner_radius: thumb_extent / 2.0,
-                        },
-                    ));
-                }
                 Some(StandardVisual::Range { ratio, size, .. }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
                     let track_band = match node.component_geometry.as_ref() {
@@ -5418,7 +5367,14 @@ mod tests {
         style_mut(&mut checkbox).border_color = Some([0.1, 0.2, 0.3, 1.0]);
 
         let mut slider = node(2, None, &[]);
-        slider.standard_visual = Some(StandardVisual::Slider { ratio: 0.25 });
+        slider.standard_visual = Some(StandardVisual::Range {
+            label: None,
+            value: Arc::from("25"),
+            unit: None,
+            size: nana_ui_core::ControlSize::Medium,
+            ratio: 0.25,
+            invalid: false,
+        });
         style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
         style_mut(&mut slider).border_color = Some([0.4, 0.4, 0.4, 1.0]);
 

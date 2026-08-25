@@ -93,125 +93,6 @@ impl RovingFocusPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RadioGroup {
-    pub label: Option<Arc<str>>,
-    pub orientation: SelectionOrientation,
-    pub style: NodeStyle,
-}
-
-impl RadioGroup {
-    pub fn new() -> Self {
-        Self {
-            label: None,
-            orientation: SelectionOrientation::Horizontal,
-            style: NodeStyle::default(),
-        }
-    }
-
-    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl Default for RadioGroup {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ComponentView for RadioGroup {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "radiogroup".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: false,
-                focusable: false,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::RadioGroup,
-                label: self.label.clone(),
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Radio {
-    pub label: Arc<str>,
-    pub checked: bool,
-    pub disabled: bool,
-    pub style: NodeStyle,
-}
-
-impl Radio {
-    pub fn new(label: impl Into<Arc<str>>) -> Self {
-        Self {
-            label: label.into(),
-            checked: false,
-            disabled: false,
-            style: NodeStyle::default(),
-        }
-    }
-
-    pub fn checked(mut self, checked: bool) -> Self {
-        self.checked = checked;
-        self
-    }
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl ComponentView for Radio {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "radio".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Radio,
-                label: Some(Arc::clone(&self.label)),
-                disabled: self.disabled,
-                checked: Some(self.checked),
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct SegmentedControl {
     pub label: Option<Arc<str>>,
     pub orientation: SelectionOrientation,
@@ -227,26 +108,17 @@ pub struct SegmentedControl {
 
 impl SegmentedControl {
     pub fn new() -> Self {
-        Self::with_chrome(SelectionChrome::Segmented, ControlSize::Medium)
-    }
-
-    /// Independent tab strip: same selection contract, no segmented border.
-    pub fn tabs() -> Self {
-        Self::with_chrome(SelectionChrome::Tabs, ControlSize::Small)
-    }
-
-    fn with_chrome(chrome: SelectionChrome, size: ControlSize) -> Self {
         Self {
             label: None,
             orientation: SelectionOrientation::Horizontal,
-            chrome,
+            chrome: SelectionChrome::Segmented,
             fill: false,
-            size,
+            size: ControlSize::Medium,
             options: Vec::new(),
             selected: None,
             focus_target: None,
             roving_focus: RovingFocusPolicy::default(),
-            style: selection_chrome_style(chrome, size, false),
+            style: selection_chrome_style(SelectionChrome::Segmented, ControlSize::Medium, false),
         }
     }
 
@@ -268,18 +140,9 @@ impl SegmentedControl {
         self.style = selection_chrome_style(self.chrome, self.size, fill);
         self
     }
-    pub fn chrome(mut self, chrome: SelectionChrome) -> Self {
-        self.chrome = chrome;
-        self.style = selection_chrome_style(chrome, self.size, self.fill);
-        self
-    }
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
-    }
-
-    pub const fn chrome_value(&self) -> SelectionChrome {
-        self.chrome
     }
 
     pub const fn fill_value(&self) -> bool {
@@ -312,25 +175,12 @@ impl Default for SegmentedControl {
 impl ComponentView for SegmentedControl {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
-            tag: match self.chrome {
-                SelectionChrome::Segmented => "segmented-control".into(),
-                SelectionChrome::Tabs => "tabs".into(),
-            },
+            tag: "segmented-control".into(),
         }
     }
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut style = self.style.clone();
-        let layout = Arc::make_mut(&mut style.layout);
-        match self.chrome {
-            SelectionChrome::Segmented => {
-                layout.border_radius = Some(world.theme_metrics().radius_md);
-            }
-            SelectionChrome::Tabs => {
-                layout.border_radius = None;
-                style.background = None;
-                style.border = None;
-            }
-        }
+        Arc::make_mut(&mut style.layout).border_radius = Some(world.theme_metrics().radius_md);
         project_common(
             id,
             world,
@@ -341,10 +191,7 @@ impl ComponentView for SegmentedControl {
                 focusable: false,
             },
             AccessibilityState {
-                role: match self.chrome {
-                    SelectionChrome::Segmented => AccessibilityRole::RadioGroup,
-                    SelectionChrome::Tabs => AccessibilityRole::TabList,
-                },
+                role: AccessibilityRole::RadioGroup,
                 label: self.label.clone(),
                 ..AccessibilityState::default()
             },
@@ -670,9 +517,8 @@ mod tests {
 
     #[test]
     fn tabs_chrome_uses_independent_surface_and_tab_roles() {
-        let tabs = SegmentedControl::tabs();
-        assert_eq!(tabs.chrome_value(), SelectionChrome::Tabs);
-        assert_eq!(tabs.size_value(), ControlSize::Small);
+        let tabs = crate::Tabs::new("preview");
+        assert_eq!(tabs.size, ControlSize::Small);
         assert_eq!(tabs.style.layout.border_width, Some(0.0));
         assert_eq!(tabs.style.layout.gap, Some(LengthSpec::Px(4.0)));
         assert!(tabs.style.background.is_none());

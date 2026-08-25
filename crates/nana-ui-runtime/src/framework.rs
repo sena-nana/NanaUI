@@ -26,14 +26,13 @@ use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
     DocumentId, Dropdown, EmptyState, FormField, FrameProfile, FrameProfiler, FrameStage,
-    IconButton, LabeledValue, List, ListItem, ListItemSlots, MenuItem, ModalSlots, ModalSurface,
-    MountState, MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover, PopoverClosed,
-    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField,
-    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
-    SearchDropdown, SearchDropdownEvent, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, Slider, SliderChanged, StableNodeId, StandardVisual, Switch, Tab, TabList,
-    TabSelected, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
+    IconButton, LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
+    MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled,
+    Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent,
+    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown,
+    SearchDropdownEvent, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
+    StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
     TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
     UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
@@ -2085,10 +2084,6 @@ impl AppContext {
         Ok(true)
     }
 
-    pub fn activate_menu_item(&mut self, entity: Entity<MenuItem>) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |item| item.disabled)
-    }
-
     pub fn activate_action_menu_item(
         &mut self,
         entity: Entity<ActionMenuItem>,
@@ -2120,24 +2115,6 @@ impl AppContext {
             current = self.world.node(id).and_then(|node| node.parent);
         }
         Ok(())
-    }
-
-    pub fn activate_radio(&mut self, entity: Entity<crate::Radio>) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |radio| radio.disabled || radio.checked)
-    }
-
-    pub fn activate_tab(&mut self, entity: Entity<Tab>) -> Result<bool, FrameworkError> {
-        let Some(parent) = self.world.node(entity.id).and_then(|node| node.parent) else {
-            return Ok(false);
-        };
-        if self
-            .views
-            .get(&parent)
-            .is_some_and(|view| view.is::<TabList>())
-        {
-            return self.select_tab(Entity::from_stable_id(parent), entity);
-        }
-        Ok(false)
     }
 
     pub fn activate_segmented_option(
@@ -3843,20 +3820,6 @@ impl AppContext {
                 if self
                     .views
                     .get(&request.target)
-                    .is_some_and(|view| view.is::<Slider>())
-                {
-                    return value
-                        .parse::<f32>()
-                        .ok()
-                        .map(|value| {
-                            self.set_slider_value(Entity::from_stable_id(request.target), value)
-                        })
-                        .transpose()
-                        .map(|changed| changed.unwrap_or(false));
-                }
-                if self
-                    .views
-                    .get(&request.target)
                     .is_some_and(|view| view.is::<RangeField>())
                 {
                     return value
@@ -4854,81 +4817,6 @@ impl AppContext {
             cx.emit(ContextMenuEvent::Dismiss);
             true
         })
-    }
-
-    pub fn set_slider_value(
-        &mut self,
-        entity: Entity<Slider>,
-        value: f32,
-    ) -> Result<bool, FrameworkError> {
-        if self.read(entity, |slider| slider.disabled)? {
-            return Ok(false);
-        }
-        if !value.is_finite() {
-            return Err(FrameworkError::InvalidComponentValue(entity.id));
-        }
-        self.update_component(entity, |slider, cx| {
-            let value = value.clamp(slider.minimum, slider.maximum);
-            if slider.value == value {
-                return false;
-            }
-            slider.value = value;
-            cx.emit(SliderChanged { value });
-            true
-        })
-    }
-
-    /// Select one direct Tab child with one retained-state commit. Typed Tab
-    /// state is published only after that commit succeeds; observers run next.
-    pub fn select_tab(
-        &mut self,
-        tab_list: Entity<TabList>,
-        selected: Entity<Tab>,
-    ) -> Result<bool, FrameworkError> {
-        self.read(tab_list, |_| ())?;
-        self.read(selected, |_| ())?;
-        let list_node = self
-            .world
-            .node(tab_list.id)
-            .ok_or(FrameworkError::MissingView(tab_list.id))?;
-        if !list_node.children.contains(&selected.id) {
-            return Err(FrameworkError::InvalidComponentHierarchy {
-                parent: tab_list.id,
-                child: selected.id,
-            });
-        }
-        if self.read(selected, |tab| tab.disabled || tab.selected)? {
-            return Ok(false);
-        }
-
-        let mut mutations = MutationQueue::new();
-        let mut staged = Vec::new();
-        for id in list_node.children {
-            let Some(tab) = self
-                .views
-                .get(&id)
-                .and_then(|view| view.downcast_ref::<Tab>())
-            else {
-                continue;
-            };
-            let next_selected = id == selected.id;
-            if tab.selected == next_selected {
-                continue;
-            }
-            let mut next = tab.clone();
-            next.selected = next_selected;
-            next.project(id, &self.world, &mut mutations);
-            staged.push((id, next));
-        }
-        mutations.request_focus(list_node.document, Some(selected.id));
-        self.world.commit(mutations)?;
-        for (id, tab) in staged {
-            self.views.insert(id, Box::new(tab));
-        }
-        self.update_component(tab_list, |_tab_list, cx| {
-            cx.emit(TabSelected { tab: selected.id });
-        })?;
-        Ok(true)
     }
 
     /// Select one professional tab by application-owned value.
@@ -6077,7 +5965,6 @@ impl AppContext {
         self.bind_activation::<SidebarSection>(Self::activate_sidebar_section);
         self.bind_activation::<SettingsCollapsibleCard>(Self::activate_settings_collapsible_card);
         self.bind_activation::<Tabs>(Self::activate_tabs);
-        self.bind_activation::<MenuItem>(Self::activate_menu_item);
         self.bind_activation::<ActionMenuItem>(Self::activate_action_menu_item);
         self.bind_activation::<Select>(Self::toggle_select);
         self.bind_activation::<Dropdown>(Self::toggle_dropdown);
@@ -6085,11 +5972,9 @@ impl AppContext {
         self.bind_activation::<Popover>(Self::toggle_popover);
         self.bind_activation::<ActionMenu>(Self::toggle_action_menu);
         self.bind_activation::<ContextMenu>(Self::dismiss_context_menu);
-        self.bind_activation::<crate::Radio>(Self::activate_radio);
         self.bind_activation::<Checkbox>(Self::toggle_checkbox);
         self.bind_activation::<Switch>(Self::toggle_switch);
         self.bind_activation::<Progress>(Self::cancel_progress);
-        self.bind_activation::<Tab>(Self::activate_tab);
         self.bind_activation::<SegmentedOption>(Self::activate_segmented_option);
     }
 
@@ -6252,11 +6137,10 @@ mod tests {
 
     use crate::{
         Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
-        ListItem, NodeStyle, Radio, RangeChanged, RangeField, ScrollAxes, ScrollChanged,
-        ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Slider,
-        SliderChanged, StandardVisual, Switch, Tab, TabList, TabSelected, Table, TableCell,
-        TableCellFocused, TableNavigation, TableRow, Text, TextArea, TextChanged, TextContent,
-        TextInput, TextSelection, ToggleChanged,
+        ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
+        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, StandardVisual, Switch,
+        TabOption, Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text,
+        TextArea, TextChanged, TextContent, TextInput, TextSelection, ToggleChanged,
     };
 
     #[derive(Debug)]
@@ -6956,7 +6840,9 @@ mod tests {
         let slider = context
             .create_component(
                 document,
-                Slider::new(25.0, 0.0, 100.0).unwrap().label("Volume"),
+                RangeField::new(25.0, 0.0, 100.0, 1.0)
+                    .unwrap()
+                    .label("Volume"),
             )
             .unwrap();
         let toggles = Arc::new(Mutex::new(Vec::new()));
@@ -6969,17 +6855,17 @@ mod tests {
         let slider_values = Arc::new(Mutex::new(Vec::new()));
         let values = Arc::clone(&slider_values);
         context
-            .on(slider, move |_slider, event: &SliderChanged, _cx| {
+            .on(slider, move |_slider, event: &RangeChanged, _cx| {
                 values.lock().unwrap().push(event.value);
             })
             .unwrap();
 
         assert!(context.toggle_checkbox(checkbox).unwrap());
         assert!(context.toggle_switch(switch).unwrap());
-        assert!(context.set_slider_value(slider, 150.0).unwrap());
-        assert!(!context.set_slider_value(slider, 100.0).unwrap());
+        assert!(context.set_range_value(slider, 150.0).unwrap());
+        assert!(!context.set_range_value(slider, 100.0).unwrap());
         assert_eq!(
-            context.set_slider_value(slider, f32::NAN),
+            context.set_range_value(slider, f64::NAN),
             Err(FrameworkError::InvalidComponentValue(slider.stable_id()))
         );
 
@@ -7015,7 +6901,14 @@ mod tests {
         );
         assert_eq!(
             context.world().standard_visual(slider.stable_id()),
-            Some(StandardVisual::Slider { ratio: 1.0 })
+            Some(StandardVisual::Range {
+                label: Some(Arc::from("Volume")),
+                value: Arc::from("100"),
+                unit: None,
+                size: nana_ui_core::ControlSize::Medium,
+                ratio: 1.0,
+                invalid: false,
+            })
         );
         let accessibility = context.world().project_accessibility(document);
         assert_eq!(accessibility[0].role, crate::AccessibilityRole::Checkbox);
@@ -7103,14 +6996,14 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let slider = context
-            .create_component(document, Slider::new(25.0, 0.0, 100.0).unwrap())
+            .create_component(document, RangeField::new(25.0, 0.0, 100.0, 1.0).unwrap())
             .unwrap();
         let generation = context.world().generation();
         let visual = context.world().standard_visual(slider.stable_id());
 
         assert!(
             context
-                .update_component(slider, |slider, _cx| slider.value = f32::NAN)
+                .update_component(slider, |slider, _cx| slider.value = f64::NAN)
                 .is_err()
         );
         assert_eq!(context.read(slider, |slider| slider.value).unwrap(), 25.0);
@@ -7138,10 +7031,10 @@ mod tests {
             )
             .unwrap();
         let menu = context
-            .create_component(document, crate::Menu::new().label("Actions"))
+            .create_component(document, crate::ActionMenu::new().open(true))
             .unwrap();
         let menu_item = context
-            .create_component(document, MenuItem::new("Build"))
+            .create_component(document, crate::ActionMenuItem::new("Build"))
             .unwrap();
         context.append_child(host, dialog).unwrap();
         context.append_child(host, menu).unwrap();
@@ -7228,7 +7121,7 @@ mod tests {
             context.world().focused(document),
             Some(menu_item.stable_id())
         );
-        assert!(context.activate_menu_item(menu_item).unwrap());
+        assert!(context.activate_action_menu_item(menu_item).unwrap());
         assert_eq!(*activations.lock().unwrap(), 1);
         assert_eq!(context.world().pointer_capture(document, 7), None);
         assert!(
@@ -7288,47 +7181,6 @@ mod tests {
             Some(crate::OverlayHostState::default())
         );
         assert!(!context.dismiss_overlay(host).unwrap());
-    }
-
-    #[test]
-    fn tab_selection_commits_one_group_and_emits_after_publication() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let tabs = context
-            .create_component(document, TabList::new().label("Workspace"))
-            .unwrap();
-        let first = context
-            .create_component(document, Tab::new("Preview").selected(true))
-            .unwrap();
-        let second = context
-            .create_component(document, Tab::new("Program"))
-            .unwrap();
-        context.append_child(tabs, first).unwrap();
-        context.append_child(tabs, second).unwrap();
-        let observed = Arc::new(Mutex::new(None));
-        let selected = Arc::clone(&observed);
-        context
-            .on(tabs, move |_tabs, event: &TabSelected, _cx| {
-                *selected.lock().unwrap() = Some(event.tab);
-            })
-            .unwrap();
-        context.world_mut().take_system_work();
-        let generation = context.world().generation();
-
-        assert!(context.select_tab(tabs, second).unwrap());
-        assert!(!context.read(first, |tab| tab.selected).unwrap());
-        assert!(context.read(second, |tab| tab.selected).unwrap());
-        assert_eq!(context.world().focused(document), Some(second.stable_id()));
-        assert_eq!(*observed.lock().unwrap(), Some(second.stable_id()));
-        assert_eq!(context.world().generation(), generation + 1);
-        assert!(!context.select_tab(tabs, second).unwrap());
-
-        let accessibility = context.world().project_accessibility(document);
-        assert_eq!(accessibility[0].role, crate::AccessibilityRole::TabList);
-        assert_eq!(accessibility[1].selected, Some(false));
-        assert_eq!(accessibility[2].selected, Some(true));
-        let work = context.world_mut().take_system_work();
-        assert_eq!(work.style, vec![first.stable_id(), second.stable_id()]);
     }
 
     #[test]
@@ -7453,20 +7305,20 @@ mod tests {
         let control = context
             .create_component(
                 document,
-                SegmentedControl::tabs()
+                Tabs::new("code")
                     .size(nana_ui_core::ControlSize::Small)
-                    .fill(true),
+                    .fill(true)
+                    .options([
+                        TabOption::new("code", "Code"),
+                        TabOption::new("preview", "Preview"),
+                    ]),
             )
             .unwrap();
-        let first = context
-            .create_detached_component(document, SegmentedOption::new("Code"))
-            .unwrap();
-        let second = context
-            .create_detached_component(document, SegmentedOption::new("Preview"))
-            .unwrap();
-        context
-            .set_segmented_options(control, vec![first, second], Some(first))
-            .unwrap();
+        let first = Entity::<SegmentedOption>::from_stable_id(
+            context
+                .read(control, |tabs| tabs.option_nodes()[0].1)
+                .unwrap(),
+        );
         context
             .update_component(first, |option, _| {
                 *option = SegmentedOption::new("Code")
@@ -7474,11 +7326,11 @@ mod tests {
                     .with_selected(true);
             })
             .unwrap();
-        assert!(
-            !context
-                .set_segmented_options(control, vec![first, second], Some(first))
-                .unwrap()
-        );
+        context
+            .update_component(control, |tabs, _| {
+                tabs.fill = true;
+            })
+            .unwrap();
         assert!(context.read(first, |option| option.fill).unwrap());
         assert_eq!(
             context
@@ -7718,46 +7570,6 @@ mod tests {
         let empty = context.world().layout_box(empty.stable_id()).unwrap();
         assert_eq!(empty.width, 6.0);
         assert_eq!(empty.height, nana_ui_core::ControlSize::Medium.height());
-    }
-
-    #[test]
-    fn radio_activation_is_shared_by_semantic_input_and_rejects_checked_or_disabled() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let radio = context
-            .create_component(document, Radio::new("Code"))
-            .unwrap();
-        let activations = Arc::new(Mutex::new(0));
-        let observed = Arc::clone(&activations);
-        context
-            .on(radio, move |_radio, _event: &Activate, _cx| {
-                *observed.lock().unwrap() += 1
-            })
-            .unwrap();
-        assert!(
-            context
-                .apply_accessibility_action(
-                    document,
-                    AccessibilityActionRequest {
-                        target: radio.stable_id(),
-                        action: AccessibilityAction::Click
-                    },
-                )
-                .unwrap()
-        );
-        assert_eq!(*activations.lock().unwrap(), 1);
-        context
-            .update_component(radio, |radio, _cx| radio.checked = true)
-            .unwrap();
-        assert!(!context.activate_node(radio.stable_id()).unwrap());
-        context
-            .update_component(radio, |radio, _cx| {
-                radio.checked = false;
-                radio.disabled = true;
-            })
-            .unwrap();
-        assert!(!context.activate_node(radio.stable_id()).unwrap());
-        assert_eq!(*activations.lock().unwrap(), 1);
     }
 
     #[test]
