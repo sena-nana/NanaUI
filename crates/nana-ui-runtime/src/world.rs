@@ -6768,7 +6768,9 @@ impl<'a> ValidationPlan<'a> {
                     AccessibilityRole::Dialog | AccessibilityRole::AlertDialog => {
                         accessibility.modal
                     }
-                    AccessibilityRole::Menu | AccessibilityRole::Tooltip => true,
+                    AccessibilityRole::Menu
+                    | AccessibilityRole::Tooltip
+                    | AccessibilityRole::Status => true,
                     _ => false,
                 }) {
                     return Err(UiWorldError::InvalidOverlayHost(host));

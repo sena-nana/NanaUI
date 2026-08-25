@@ -45,6 +45,7 @@ pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
+pub(crate) use overlay::overlay_kind_for_role;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -5431,6 +5432,7 @@ impl AppContext {
                 });
                 let mut rollback = MutationQueue::new();
                 rollback.set_overlay_host(host.id, rollback_state);
+                rollback.set_interaction(host.id, self.overlay_host_interaction(rollback_active));
                 rollback.request_focus(overlay_node.document, rollback_focus);
                 self.commit_mutations(rollback)?;
                 return Err(error);
@@ -5528,13 +5530,30 @@ impl AppContext {
                     .filter(|id| self.overlay_focus_candidate(document, *id))
             });
         let host_id = host.id;
+        let interaction = self.overlay_host_interaction(next.active);
         self.update_component(host, |_host, cx| {
             cx.mutations().set_overlay_host(host_id, next);
+            cx.mutations().set_interaction(host_id, interaction);
             cx.mutations().request_focus(document, focus);
             cx.emit(OverlayChanged {
                 active: next.active,
             });
         })
+    }
+
+    /// A host stretches across its whole region, so it may only take the
+    /// pointer while a modal overlay is up; a passive one such as a toast has
+    /// to leave the workspace underneath usable. Projection cannot decide this
+    /// because it reads the world before the new activation is committed.
+    fn overlay_host_interaction(&self, active: Option<StableNodeId>) -> crate::InteractionState {
+        let blocks_pointer = active
+            .and_then(|id| self.world.accessibility(id))
+            .and_then(|accessibility| overlay_kind_for_role(accessibility.role))
+            .is_some_and(RuntimeOverlayKind::blocks_pointer);
+        crate::InteractionState {
+            pointer_events: blocks_pointer,
+            focusable: false,
+        }
     }
 
     /// Move table focus using backend-neutral navigation intent. The retained

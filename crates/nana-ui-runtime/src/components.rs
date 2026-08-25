@@ -1098,6 +1098,7 @@ pub enum AccessibilityRole {
     Menu,
     MenuItem,
     Tooltip,
+    Status,
     Image,
     #[default]
     Generic,
