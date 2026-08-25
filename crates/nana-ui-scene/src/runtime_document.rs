@@ -462,6 +462,79 @@ mod tests {
     }
 
     #[test]
+    fn empty_state_keeps_its_text_block_across_reprojection() {
+        use nana_ui_runtime::EmptyState;
+
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                let intrinsic = text.value.len() as f32 * 8.0;
+                let width = constraints.max_width.unwrap_or(intrinsic).min(intrinsic);
+                TextMetrics {
+                    width,
+                    height: 18.0,
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let empty = runtime
+            .context_mut()
+            .create_component(document, EmptyState::new("Nothing here yet"))
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
+        let settled = runtime
+            .context()
+            .world()
+            .layout_box(empty.stable_id())
+            .unwrap()
+            .height;
+        assert!(
+            settled > 48.0,
+            "shaped title must add height on top of the 24px insets, got {settled}"
+        );
+
+        // Projection is unconditional, so even an update that changes nothing
+        // rewrites the style carrying the shaped text block.
+        runtime
+            .context_mut()
+            .update_component(empty, |_, _| {})
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
+
+        let after = runtime
+            .context()
+            .world()
+            .layout_box(empty.stable_id())
+            .unwrap()
+            .height;
+        assert_eq!(
+            after, settled,
+            "re-projection collapsed the empty state's text block"
+        );
+
+        let idle = runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
+        assert!(
+            idle.is_idle(),
+            "republishing the shaped block must not keep the document dirty ({} passes)",
+            idle.passes
+        );
+    }
+
+    #[test]
     fn multi_pass_flush_updates_the_hit_index_once() {
         use nana_ui_runtime::{DesktopShell, SidebarFrame, Text};
 
