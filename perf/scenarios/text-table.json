@@ -47,6 +47,14 @@
       "value": 1,
       "status": "required",
       "note": "MeasureTextShaper em-width GlyphCache insert miss on the table bench, not the product NanaTextShaper hinter. Fake 0 / all-hit fails. Missing stays not-evaluable."
+    },
+    {
+      "name": "table_validation_cost_tracks_the_batch_not_the_table",
+      "path": "work_counters.validation_nodes_scanned",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "A window materialization on 10000x100 logical cells must validate its own batch only. Deliberately a small constant, decoupled from rows, columns, and live_ui_entities: a validator that pre-collects world state scales with the retained window and fails here while every timing still looks plausible. Missing stays not-evaluable."
     }
   ],
   "notes": "Mapped onto nana-framework-benchmark virtual_scales kind=table 10k×100. Most cells are short_cell_len=8; each 40-row band keeps wrapped_cells=4 long wrapping cells (wrapped_cell_len=256) that are shaped against the 80px column box. glyph_cache_* is the bench MeasureTextShaper em-width GlyphCache lookup/insert, not product NanaTextShaper hintering. Omitted when null. wrap/eviction attendance is not this gate."

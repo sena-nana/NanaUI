@@ -42,6 +42,11 @@
 /// is `Some` after a shaping pass that consulted the layout cache (including
 /// 0). GPU upload / draw-batch are `None` until a renderer that actually
 /// encodes/submits records them.
+///
+/// `validation_nodes_scanned`, `hit_test_nodes_rebuilt`, and
+/// `gpu_buffer_reallocations` are the incremental-work sentinels: each one is a
+/// place where a full-world implementation can silently cancel the incremental
+/// contract while every other counter still looks correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WorkCounters {
     pub entities_total: usize,
@@ -92,8 +97,19 @@ pub struct WorkCounters {
     /// Observed `queue.write_buffer` bytes this frame. `None` until a host
     /// encodes/submits. Not an estimate; missing stays omitted, never a fake 0.
     pub gpu_upload_bytes: Option<usize>,
-    /// GPU buffer reallocations observed this frame. `None` until a host encodes.
+    /// GPU buffer and texture allocations observed this frame, counting the
+    /// per-frame resource creation a cache was supposed to avoid. `None` until a
+    /// host encodes.
     pub gpu_buffer_reallocations: Option<usize>,
+    /// Retained nodes a mutation-batch validation pass visited. The cost of
+    /// validating a batch must track the batch, not the retained world, so this
+    /// is the sentinel for a validator that regressed to a full scan. `None`
+    /// until a commit path reports it.
+    pub validation_nodes_scanned: Option<usize>,
+    /// Hit-test entries rebuilt this frame. Incremental invalidation must patch
+    /// the changed subtrees, so this is the sentinel for a rebuild that regressed
+    /// to the whole document. `None` until a frame driver reports it.
+    pub hit_test_nodes_rebuilt: Option<usize>,
 }
 
 /// GPU work a renderer observed while encoding or submitting a real frame.
@@ -183,6 +199,24 @@ impl WorkCounters {
         fold_optional_count(
             &mut self.gpu_buffer_reallocations,
             other.gpu_buffer_reallocations,
+        );
+        fold_optional_count(
+            &mut self.validation_nodes_scanned,
+            other.validation_nodes_scanned,
+        );
+        fold_optional_count(
+            &mut self.hit_test_nodes_rebuilt,
+            other.hit_test_nodes_rebuilt,
+        );
+    }
+
+    /// Record hit-test entries built by a rebuild or patch that actually ran.
+    /// Not recorded when the frame left the index alone.
+    pub fn record_hit_test_rebuild(&mut self, nodes: usize) {
+        self.hit_test_nodes_rebuilt = Some(
+            self.hit_test_nodes_rebuilt
+                .unwrap_or(0)
+                .saturating_add(nodes),
         );
     }
 
@@ -408,6 +442,38 @@ mod tests {
         });
         assert_eq!(total.glyph_cache_hits, Some(3));
         assert_eq!(total.glyph_cache_misses, Some(4));
+    }
+
+    #[test]
+    fn incremental_work_sentinels_stay_none_until_a_pass_reports_them() {
+        let counters = WorkCounters::default();
+        assert_eq!(counters.validation_nodes_scanned, None);
+        assert_eq!(counters.hit_test_nodes_rebuilt, None);
+
+        let mut recorded = WorkCounters::default();
+        // A rebuild that ran and built nothing is an observation, not a gap.
+        recorded.record_hit_test_rebuild(0);
+        assert_eq!(recorded.hit_test_nodes_rebuilt, Some(0));
+        recorded.record_hit_test_rebuild(3);
+        recorded.record_hit_test_rebuild(4);
+        assert_eq!(recorded.hit_test_nodes_rebuilt, Some(7));
+        assert_eq!(recorded.validation_nodes_scanned, None);
+
+        // Folding drains sums each sentinel; a drain that reports neither must
+        // not turn a missing measurement into a zero.
+        let mut total = WorkCounters {
+            validation_nodes_scanned: Some(2),
+            ..WorkCounters::default()
+        };
+        total.accumulate(recorded);
+        assert_eq!(total.validation_nodes_scanned, Some(2));
+        assert_eq!(total.hit_test_nodes_rebuilt, Some(7));
+        total.accumulate(WorkCounters {
+            validation_nodes_scanned: Some(5),
+            ..WorkCounters::default()
+        });
+        assert_eq!(total.validation_nodes_scanned, Some(7));
+        assert_eq!(total.hit_test_nodes_rebuilt, Some(7));
     }
 
     #[test]

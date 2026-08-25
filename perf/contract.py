@@ -803,6 +803,8 @@ WORK_COUNTER_KEYS = (
     "glyph_cache_hits",
     "glyph_cache_misses",
     "cache_eviction",
+    "validation_nodes_scanned",
+    "hit_test_nodes_rebuilt",
     "batch_rebuilds",
     "draw_batches",
     "draw_calls",

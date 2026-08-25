@@ -20,6 +20,14 @@
       "value": 64,
       "status": "required",
       "note": "Issue #8 §3.2 requires dirty layout-style propagation, not a full 5k extract. Evaluate when work_counters.render_nodes_changed is present."
+    },
+    {
+      "name": "layout_style_does_not_rebuild_the_hit_index",
+      "path": "work_counters.hit_test_nodes_rebuilt",
+      "op": "lte",
+      "value": 64,
+      "status": "required",
+      "note": "Resizing one node must patch its hit subtree, not rebuild the 5k document. Deliberately a small constant, not a fraction of tree_nodes. Layout invalidation propagates to ancestors, so a rebuild keyed on scheduled layout instead of written boxes lands back at the document root and fails here. Missing stays not-evaluable."
     }
   ]
 }

@@ -172,6 +172,13 @@ impl SceneWgpuPainter {
         self.text.shape_cache_stats()
     }
 
+    /// Affine (rotated / skewed) text GPU resource cache counters: (hits,
+    /// misses, evictions). Each miss creates an atlas texture, a bind group and
+    /// a vertex buffer, so a static transform must not keep missing.
+    pub fn affine_text_cache_stats(&self) -> (usize, usize, usize) {
+        self.text.affine_cache_stats()
+    }
+
     /// Record host `queue.submit` duration for the last encoded frame.
     pub fn record_submit(&mut self, duration: std::time::Duration) {
         if let Some(timings) = &mut self.last_gpu_timings {
@@ -637,6 +644,9 @@ impl SceneWgpuPainter {
         );
         let encode = encode_started.elapsed();
         self.host_textures.trim();
+        for _ in 0..self.text.take_frame_gpu_allocations() {
+            gpu_work.record_realloc();
+        }
         self.last_gpu_work = Some(gpu_work.snapshot());
         self.last_gpu_timings = Some(GpuStageTimings {
             batch,
@@ -1600,7 +1610,10 @@ mod tests {
             [],
         );
         let mut renderers = SceneGpuRendererRegistry::new();
-        renderers.insert("test.fill", Arc::new(FillClipRenderer::new(&device, format)));
+        renderers.insert(
+            "test.fill",
+            Arc::new(FillClipRenderer::new(&device, format)),
+        );
         let (probe_x, probe_y) = aabb_outside_rotated_overflow_probe();
         let viewport = ScenePaintViewport {
             logical_size: [64.0, 64.0],
@@ -2278,6 +2291,98 @@ mod tests {
         (scene, registry, [bg, fg])
     }
 
+    /// A labeled button under a rotation, so its text takes the affine glyph
+    /// path rather than the cryoglyph atlas path.
+    fn rotated_label_scene() -> UiScene {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let button = context
+            .create_component(
+                document,
+                RuntimeButton::new("Hi")
+                    .kind(ButtonKind::Selected)
+                    .layout(Arc::new(nana_ui_core::LayoutStyle {
+                        transform: Some(PaintTransform {
+                            a: k,
+                            b: k,
+                            c: -k,
+                            d: k,
+                            ..PaintTransform::default()
+                        }),
+                        ..(*square_button_layout()).clone()
+                    })),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
+        context.commit_mutations(layout).unwrap();
+        commit_scene(&mut context)
+    }
+
+    #[test]
+    fn affine_text_reuses_gpu_resources_across_repaints_with_identical_pixels() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let scene = rotated_label_scene();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+
+        let paint_once = |painter: &mut SceneWgpuPainter| -> Vec<u8> {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui affine cache test"),
+            });
+            painter
+                .paint(&scene, &mut encoder, &view, viewport, None, None)
+                .unwrap();
+            queue.submit([encoder.finish()]);
+            readback_rgba(
+                &device,
+                &queue,
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nana-ui affine cache readback"),
+                }),
+                &texture,
+                64,
+                64,
+            )
+        };
+
+        let first = paint_once(&mut painter);
+        let (hits, misses, _) = painter.affine_text_cache_stats();
+        assert!(
+            misses > 0,
+            "rotated label must take the affine glyph path at least once"
+        );
+        assert_eq!(hits, 0);
+
+        // Each miss creates an atlas texture, a bind group and a vertex buffer.
+        // Repainting an unchanged rotated label must create none of them.
+        for _ in 0..4 {
+            let repaint = paint_once(&mut painter);
+            assert_eq!(
+                first, repaint,
+                "reused affine GPU resources must produce identical pixels"
+            );
+        }
+        let (hits, misses_after, evictions) = painter.affine_text_cache_stats();
+        assert_eq!(
+            misses_after, misses,
+            "static affine text must not recreate GPU resources per frame"
+        );
+        assert_eq!(hits, misses * 4);
+        assert_eq!(evictions, 0);
+    }
+
     fn labeled_selected_button_scene() -> UiScene {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -2367,7 +2472,9 @@ mod tests {
                 }
             }
         }
-        panic!("sibling must overlap a pixel inside the rotated AABB but outside the parallelogram");
+        panic!(
+            "sibling must overlap a pixel inside the rotated AABB but outside the parallelogram"
+        );
     }
 
     fn rotated_overflow_parent(
@@ -2524,7 +2631,7 @@ mod tests {
                 ..ComputedStyle::default()
             }),
             text: Some(TextContent {
-                value: "██".into(),
+                value: "██".into()
             }),
             text_metrics: None,
             z_index: 0,
@@ -2564,9 +2671,7 @@ mod tests {
     ) -> ExtractedNode {
         ExtractedNode {
             id: StableNodeId::new(value).unwrap(),
-            kind: Arc::new(NodeKind::Element {
-                tag: "div".into(),
-            }),
+            kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: Some(StableNodeId::new(parent).unwrap()),
             children: Arc::new(Vec::new()),
             layout: LayoutBox {

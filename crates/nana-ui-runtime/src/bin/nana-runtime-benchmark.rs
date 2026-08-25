@@ -142,6 +142,10 @@ struct WorkSnapshot {
     glyph_cache_misses: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_eviction: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_nodes_scanned: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hit_test_nodes_rebuilt: Option<usize>,
 }
 
 #[derive(Serialize, Clone)]
@@ -689,6 +693,8 @@ impl From<WorkCounters> for WorkSnapshot {
             glyph_cache_hits: counters.glyph_cache_hits,
             glyph_cache_misses: counters.glyph_cache_misses,
             cache_eviction: counters.cache_eviction,
+            validation_nodes_scanned: counters.validation_nodes_scanned,
+            hit_test_nodes_rebuilt: counters.hit_test_nodes_rebuilt,
         }
     }
 }
@@ -798,6 +804,7 @@ fn work_snapshot(work: &SystemWork, world: &UiWorld) -> WorkSnapshot {
         glyph_cache_hits: last.glyph_cache_hits,
         glyph_cache_misses: last.glyph_cache_misses,
         cache_eviction: last.cache_eviction,
+        hit_test_nodes_rebuilt: last.hit_test_nodes_rebuilt,
         ..from_work
     }
 }
@@ -807,7 +814,13 @@ fn run_systems(world: &mut UiWorld, document: DocumentId, work: &SystemWork) {
     world.reconcile_focus(&work.focus_ime);
     let _ = world.project_accessibility_nodes(&work.accessibility);
     let _ = world.layout_inputs(&work.layout).unwrap();
-    if !work.input_hit_test.is_empty() {
+    // Mirror RuntimeDocument: patch the subtrees whose geometry changed and fall
+    // back to a full rebuild only when the change is structural. Always
+    // rebuilding the document here would measure a path the product no longer
+    // takes.
+    if !work.input_hit_test.is_empty()
+        && !world.rebuild_hit_test_scoped(document, &work.input_hit_test)
+    {
         world.rebuild_hit_test(document);
     }
     let _ = world.extract_nodes(&work.render_extraction);
