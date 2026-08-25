@@ -332,8 +332,6 @@ pub struct ComponentTriggerSurface {
     pub bounds: LayoutBox,
     pub background: Option<[f32; 4]>,
     pub border: Option<[f32; 4]>,
-    pub border_width: f32,
-    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

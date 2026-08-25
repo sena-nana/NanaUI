@@ -273,22 +273,22 @@ fn triggered_menu_style(
         0.0
     };
     if !open {
-        let Some(_) = trigger else {
-            // Nothing to press and nothing to show, so the node keeps the
-            // smallest box that stays out of the way.
-            return NodeStyle {
-                layout: Arc::new(nana_ui_core::LayoutStyle {
-                    width: Some(LengthSpec::Px(1.0)),
-                    height: Some(LengthSpec::Px(1.0)),
-                    overflow_x: OverflowSpec::Hidden,
-                    overflow_y: OverflowSpec::Hidden,
-                    ..nana_ui_core::LayoutStyle::default()
-                }),
-                foreground: Some(SemanticColorRole::Text),
-                ..NodeStyle::default()
-            };
+        if trigger.is_some() {
+            return trigger_button_style();
+        }
+        // Nothing to press and nothing to show, so the node keeps the smallest
+        // box that stays out of the way.
+        return NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                width: Some(LengthSpec::Px(1.0)),
+                height: Some(LengthSpec::Px(1.0)),
+                overflow_x: OverflowSpec::Hidden,
+                overflow_y: OverflowSpec::Hidden,
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            foreground: Some(SemanticColorRole::Text),
+            ..NodeStyle::default()
         };
-        return trigger_button_style(trigger_h);
     }
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -310,14 +310,14 @@ fn triggered_menu_style(
 
 /// The trigger carries the same chrome contract as a subtle `Button`, so the
 /// hover and press colours resolve through the usual interaction overlay.
-fn trigger_button_style(height: f32) -> NodeStyle {
+fn trigger_button_style() -> NodeStyle {
     let mut style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             // A button hugs its label. Without this the surrounding stack
             // stretches the trigger and it reads as a field, not a control.
             align_self: Some(nana_ui_core::AlignSpec::Start),
-            height: Some(LengthSpec::Px(height)),
-            min_height: Some(LengthSpec::Px(height)),
+            height: Some(LengthSpec::Px(TRIGGER_HEIGHT)),
+            min_height: Some(LengthSpec::Px(TRIGGER_HEIGHT)),
             padding_left: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
             padding_right: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
             border_width: Some(1.0),
@@ -425,40 +425,31 @@ pub(crate) fn menu_surface_geometry(
     } else {
         bounds
     };
+    let label = trigger.filter(|value| !value.is_empty());
     let trigger_bounds = LayoutBox {
         x: bounds.x,
         y: bounds.y,
         width: bounds.width,
         height: trigger_h,
     };
-    let has_trigger = trigger.is_some_and(|value| !value.is_empty());
     ComponentGeometry::MenuSurface {
-        trigger: trigger
-            .filter(|value| !value.is_empty())
-            .map(|value| ComponentTextRegion {
-                bounds: LayoutBox {
-                    x: trigger_bounds.x + TRIGGER_PADDING_X,
-                    y: trigger_bounds.y,
-                    width: (trigger_bounds.width - TRIGGER_PADDING_X * 2.0).max(0.0),
-                    height: trigger_h,
-                },
-                content: Arc::clone(value),
-                color: Some(
-                    style
-                        .color
-                        .unwrap_or_else(|| palette.text.as_rgba_array()),
-                ),
-                font_size: 13.0,
-                font_weight: None,
-            }),
+        trigger: label.map(|value| ComponentTextRegion {
+            bounds: LayoutBox {
+                x: trigger_bounds.x + TRIGGER_PADDING_X,
+                width: (trigger_bounds.width - TRIGGER_PADDING_X * 2.0).max(0.0),
+                ..trigger_bounds
+            },
+            content: Arc::clone(value),
+            color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
+            font_size: 13.0,
+            font_weight: None,
+        }),
         // Hover and press already resolved into the computed style, so the
         // trigger reads its chrome from there rather than the raw palette.
-        trigger_surface: has_trigger.then(|| crate::ComponentTriggerSurface {
+        trigger_surface: label.map(|_| crate::ComponentTriggerSurface {
             bounds: trigger_bounds,
             background: style.background,
             border: style.border_color,
-            border_width: 1.0,
-            corner_radius: UI_METRICS.radius_sm,
         }),
         surface,
         search: None,
@@ -556,7 +547,7 @@ mod tests {
                 height: TRIGGER_HEIGHT,
             },
         );
-        queue.set_style(id, trigger_button_style(TRIGGER_HEIGHT));
+        queue.set_style(id, trigger_button_style());
         queue.set_standard_visual(
             id,
             Some(StandardVisual::MenuSurface {
