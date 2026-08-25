@@ -680,6 +680,103 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// The counter as the Runtime projects it, which is what a screen reader
+    /// reads. [`count_label`] reads the JS-side bridge props instead, so the two
+    /// together separate a dropped press from a stale projection.
+    fn count_a11y_label(session: &VueAgentSession<V8Engine>) -> String {
+        session
+            .accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some("count"))
+            .and_then(|node| node.label)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_widget_keeps_its_projected_geometry_across_a_bare_pump() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        let button = session
+            .accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some("increment"))
+            .expect("increment in a11y dump");
+        let handle = NodeHandle(button.id);
+        let projected = {
+            let document = session.host().document();
+            let guard = document.lock().expect("doc");
+            guard.layout_box(handle).expect("projected button box")
+        };
+
+        // A pump runs the CSS cascade writeback without a semantic sync. The
+        // button's padding and min-height come from its Runtime component, so
+        // the cascade must leave them alone; otherwise the box collapses to the
+        // bare text and the pointer falls through to the column behind it.
+        session.host_mut().resolve_layout();
+
+        let document = session.host().document();
+        let guard = document.lock().expect("doc");
+        assert_eq!(
+            guard.layout_box(handle),
+            Some(projected),
+            "cascade writeback must not overwrite component-projected geometry"
+        );
+    }
+
+    /// `createWidget` seeds the label as an attribute only. A `#text` child
+    /// would announce a second copy that `patchProp` never refreshes, so every
+    /// label the mounted app exposes must belong to exactly one a11y node.
+    #[test]
+    fn mounted_widgets_announce_each_label_once() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        session.click_agent_id("increment").expect("click");
+
+        let labels: Vec<_> = session
+            .accessibility_dump()
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            labels.len(),
+            unique.len(),
+            "each label must come from one retained node, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "count = 1"),
+            "the counter label must track the click, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_clicks_advance_the_counter_in_both_projections() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        assert_eq!(count_label(&session), "count = 0");
+        assert_eq!(count_a11y_label(&session), "count = 0");
+
+        for expected in 1..=3 {
+            session.click_agent_id("increment").expect("click");
+            let expected = format!("count = {expected}");
+            assert_eq!(
+                count_label(&session),
+                expected,
+                "bridge props must record every press"
+            );
+            assert_eq!(
+                count_a11y_label(&session),
+                expected,
+                "a11y projection must not lag the press it already handled"
+            );
+        }
+    }
+
     #[test]
     fn vue_session_click_updates_semantic_and_a11y() {
         let mut session =
