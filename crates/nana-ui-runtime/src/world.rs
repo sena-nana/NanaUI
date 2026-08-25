@@ -4693,7 +4693,7 @@ impl UiWorld {
             .expect("entity must have runtime component")
     }
 
-    fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
+    pub(crate) fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
         let mut current = Some(id);
         while let Some(candidate) = current {
             if candidate == ancestor {
