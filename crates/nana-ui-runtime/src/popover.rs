@@ -313,6 +313,9 @@ fn triggered_menu_style(
 fn trigger_button_style(height: f32) -> NodeStyle {
     let mut style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
+            // A button hugs its label. Without this the surrounding stack
+            // stretches the trigger and it reads as a field, not a control.
+            align_self: Some(nana_ui_core::AlignSpec::Start),
             height: Some(LengthSpec::Px(height)),
             min_height: Some(LengthSpec::Px(height)),
             padding_left: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
