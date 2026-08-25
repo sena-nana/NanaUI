@@ -41,11 +41,11 @@ use crate::{
 mod assemble;
 mod overlay;
 pub use assemble::AssemblyScope;
+pub(crate) use overlay::overlay_kind_for_role;
 pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
-pub(crate) use overlay::overlay_kind_for_role;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -2284,8 +2284,21 @@ impl AppContext {
                     .filter(|id| enabled.contains(id))
                     .or_else(|| enabled.first().copied())
             });
+        let mut surface_stale = false;
+        for entity in &options {
+            if !self.read(*entity, |option| {
+                option.size == size
+                    && option.chrome == chrome
+                    && option.fill == fill
+                    && option.selected == (Some(entity.id) == selected_id)
+            })? {
+                surface_stale = true;
+                break;
+            }
+        }
         if current == (option_ids.clone(), selected_id, focus_target)
             && control_node.children == option_ids
+            && !surface_stale
         {
             return Ok(false);
         }
@@ -5664,6 +5677,26 @@ impl AppContext {
         Ok(read(view))
     }
 
+    fn inherit_segmented_option_surface<T: 'static>(&self, id: StableNodeId, staged: &mut T) {
+        if TypeId::of::<T>() != TypeId::of::<SegmentedOption>() {
+            return;
+        }
+        let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
+            return;
+        };
+        let Some(control) = self
+            .views
+            .get(&parent)
+            .and_then(|view| view.downcast_ref::<SegmentedControl>())
+        else {
+            return;
+        };
+        let (size, chrome, fill) = (control.size, control.chrome, control.fill);
+        // SAFETY: `TypeId` matched `SegmentedOption`.
+        let option = unsafe { &mut *std::ptr::from_mut(staged).cast::<SegmentedOption>() };
+        option.synchronize_surface(size, chrome, fill);
+    }
+
     /// Update typed state, deliver closure events, then atomically commit all
     /// retained-tree mutations produced by the update.
     pub fn update<V: View, R>(
@@ -5705,6 +5738,7 @@ impl AppContext {
                 program_messages: &mut program_messages,
             },
         );
+        self.inherit_segmented_option_surface(entity.id, &mut staged);
         let delivered = self.deliver_events(
             entity.id,
             &mut staged,
@@ -5762,6 +5796,7 @@ impl AppContext {
                 program_messages: &mut program_messages,
             },
         );
+        self.inherit_segmented_option_surface(entity.id, view);
         let delivered = self.deliver_events(
             entity.id,
             view,
@@ -7409,6 +7444,52 @@ mod tests {
         assert_eq!(accessibility[1].checked, Some(true));
         assert_eq!(accessibility[2].checked, Some(false));
         assert_eq!(context.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn updating_a_filled_tab_option_keeps_the_control_surface() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let control = context
+            .create_component(
+                document,
+                SegmentedControl::tabs()
+                    .size(nana_ui_core::ControlSize::Small)
+                    .fill(true),
+            )
+            .unwrap();
+        let first = context
+            .create_detached_component(document, SegmentedOption::new("Code"))
+            .unwrap();
+        let second = context
+            .create_detached_component(document, SegmentedOption::new("Preview"))
+            .unwrap();
+        context
+            .set_segmented_options(control, vec![first, second], Some(first))
+            .unwrap();
+        context
+            .update_component(first, |option, _| {
+                *option = SegmentedOption::new("Code")
+                    .size(nana_ui_core::ControlSize::Small)
+                    .with_selected(true);
+            })
+            .unwrap();
+        assert!(
+            !context
+                .set_segmented_options(control, vec![first, second], Some(first))
+                .unwrap()
+        );
+        assert!(context.read(first, |option| option.fill).unwrap());
+        assert_eq!(
+            context
+                .read(first, |option| option.style.layout.width.clone())
+                .unwrap(),
+            Some(LengthSpec::Fill)
+        );
+        assert_eq!(
+            context.read(first, |option| option.node_kind()).unwrap(),
+            NodeKind::Element { tag: "tab".into() }
+        );
     }
 
     #[test]
