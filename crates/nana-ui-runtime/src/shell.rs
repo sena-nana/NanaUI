@@ -591,15 +591,21 @@ impl AppShell {
                 layout.flex_shrink = Some(0.0);
                 layout.z_index = Some(layout.z_index.unwrap_or(OVERLAY_Z_INDEX));
             });
-            let has_content = world
-                .node(overlay)
-                .is_some_and(|node| !node.children.is_empty());
-            let interaction = InteractionState {
-                pointer_events: has_content,
-                focusable: false,
-            };
-            if world.interaction(overlay) != Some(interaction) {
-                mutations.set_interaction(overlay, interaction);
+            // An `OverlayHost` decides this from the active overlay's kind, and
+            // that activation changes without re-projecting the shell, so the
+            // host has to own the field. Any other node the caller supplied as
+            // the overlay region keeps the content-presence rule.
+            if world.overlay_host(overlay).is_none() {
+                let has_content = world
+                    .node(overlay)
+                    .is_some_and(|node| !node.children.is_empty());
+                let interaction = InteractionState {
+                    pointer_events: has_content,
+                    focusable: false,
+                };
+                if world.interaction(overlay) != Some(interaction) {
+                    mutations.set_interaction(overlay, interaction);
+                }
             }
         }
     }

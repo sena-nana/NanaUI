@@ -622,6 +622,7 @@ fn accessibility_role_name(role: AccessibilityRole) -> &'static str {
         AccessibilityRole::Menu => "menu",
         AccessibilityRole::MenuItem => "menu-item",
         AccessibilityRole::Tooltip => "tooltip",
+        AccessibilityRole::Status => "status",
         AccessibilityRole::Image => "image",
         AccessibilityRole::Generic => "generic",
     }

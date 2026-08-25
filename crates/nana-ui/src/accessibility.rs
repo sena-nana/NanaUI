@@ -719,6 +719,7 @@ const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
         AccessibilityRole::Menu => Role::Menu,
         AccessibilityRole::MenuItem => Role::MenuItem,
         AccessibilityRole::Tooltip => Role::Tooltip,
+        AccessibilityRole::Status => Role::Status,
         AccessibilityRole::Image => Role::Image,
         AccessibilityRole::Generic => Role::GenericContainer,
     }

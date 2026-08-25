@@ -14,15 +14,35 @@ pub enum RuntimeOverlayKind {
     Dialog,
     Menu,
     Tooltip,
+    /// A passive announcement such as a toast. It never takes the pointer or
+    /// the focus, so the workspace underneath stays fully usable while it
+    /// shows.
+    Status,
 }
 
 impl RuntimeOverlayKind {
-    pub(super) const fn blocks_pointer(self) -> bool {
+    pub(crate) const fn blocks_pointer(self) -> bool {
         matches!(self, Self::Dialog | Self::Menu)
     }
 
     const fn traps_focus(self) -> bool {
         matches!(self, Self::Dialog | Self::Menu)
+    }
+}
+
+/// Overlay behaviour follows the announced role, so a component opts into a
+/// kind by projecting the matching [`AccessibilityRole`].
+pub(crate) const fn overlay_kind_for_role(
+    role: crate::AccessibilityRole,
+) -> Option<RuntimeOverlayKind> {
+    match role {
+        crate::AccessibilityRole::Dialog | crate::AccessibilityRole::AlertDialog => {
+            Some(RuntimeOverlayKind::Dialog)
+        }
+        crate::AccessibilityRole::Menu => Some(RuntimeOverlayKind::Menu),
+        crate::AccessibilityRole::Tooltip => Some(RuntimeOverlayKind::Tooltip),
+        crate::AccessibilityRole::Status => Some(RuntimeOverlayKind::Status),
+        _ => None,
     }
 }
 
@@ -173,7 +193,7 @@ impl AppContext {
                 RuntimeOverlayKind::Menu => {
                     self.dismiss_overlay(Entity::from_stable_id(overlay.host))?
                 }
-                RuntimeOverlayKind::Tooltip => false,
+                RuntimeOverlayKind::Tooltip | RuntimeOverlayKind::Status => false,
             };
         }
         Ok(OverlayPointerDecision {
@@ -212,6 +232,9 @@ impl AppContext {
                             self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
                         }
                     }
+                    // An announcement is not something Escape acts on, so it
+                    // must not swallow the key from whatever sits underneath.
+                    RuntimeOverlayKind::Status => return Ok(false),
                 }
                 Ok(true)
             }
@@ -456,14 +479,7 @@ impl AppContext {
     }
 
     pub(super) fn runtime_overlay_kind(&self, id: StableNodeId) -> Option<RuntimeOverlayKind> {
-        match self.world.accessibility(id)?.role {
-            crate::AccessibilityRole::Dialog | crate::AccessibilityRole::AlertDialog => {
-                Some(RuntimeOverlayKind::Dialog)
-            }
-            crate::AccessibilityRole::Menu => Some(RuntimeOverlayKind::Menu),
-            crate::AccessibilityRole::Tooltip => Some(RuntimeOverlayKind::Tooltip),
-            _ => None,
-        }
+        overlay_kind_for_role(self.world.accessibility(id)?.role)
     }
 
     pub(super) fn dialog_allows(&self, root: StableNodeId, trigger: DialogCloseTrigger) -> bool {
@@ -706,7 +722,10 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Button, LayoutBox, Menu, MenuItem, MountState, NodeKind, OverlayHost, Tooltip};
+    use crate::{
+        Button, LayoutBox, Menu, MenuItem, MountState, NodeKind, OverlayHost, Toast, ToastTone,
+        Tooltip,
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering as AtomicOrdering},
@@ -1309,6 +1328,60 @@ mod tests {
         context.dismiss_overlay(host).unwrap();
 
         assert_eq!(context.world.focused(document), None);
+    }
+
+    #[test]
+    /// A host fills its whole region, so it may only take the pointer while a
+    /// modal overlay is up. A toast has to leave the workspace usable.
+    fn only_a_modal_overlay_makes_the_host_take_the_pointer() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let toast = context
+            .create_component(document, Toast::new("Save failed", ToastTone::Danger))
+            .unwrap();
+        let menu = context.create_component(document, Menu::new()).unwrap();
+        context.append_child(host, toast).unwrap();
+        context.append_child(host, menu).unwrap();
+
+        let pointer_events = |context: &AppContext| {
+            context
+                .world()
+                .interaction(host.stable_id())
+                .unwrap()
+                .pointer_events
+        };
+
+        assert!(!pointer_events(&context));
+        assert!(context.activate_overlay(host, toast).unwrap());
+        assert!(!pointer_events(&context));
+        assert!(context.activate_overlay(host, menu).unwrap());
+        assert!(pointer_events(&context));
+        assert!(context.dismiss_overlay(host).unwrap());
+        assert!(!pointer_events(&context));
+    }
+
+    #[test]
+    /// Escape belongs to whatever the toast floats over, not to the toast.
+    fn a_toast_does_not_swallow_escape() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let toast = context
+            .create_component(document, Toast::new("Save failed", ToastTone::Danger))
+            .unwrap();
+        context.append_child(host, toast).unwrap();
+        context.activate_overlay(host, toast).unwrap();
+
+        assert!(!context.route_overlay_key(document, OverlayKey::Escape).unwrap());
+        assert_eq!(
+            context.world().overlay_host(host.stable_id()).unwrap().active,
+            Some(toast.stable_id())
+        );
     }
 
     #[test]

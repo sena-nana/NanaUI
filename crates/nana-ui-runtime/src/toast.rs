@@ -161,8 +161,7 @@ impl ComponentView for Toast {
                 inert()
             },
             AccessibilityState {
-                // Product status/alert. No matching role; AlertDialog is modal overlay.
-                role: AccessibilityRole::Generic,
+                role: AccessibilityRole::Status,
                 label: Some(Arc::clone(&self.title)),
                 description: self.resolved_description(),
                 ..AccessibilityState::default()
@@ -314,7 +313,7 @@ mod tests {
             .unwrap();
         let id = toast.stable_id();
         let accessibility = context.world().accessibility(id).unwrap();
-        assert_eq!(accessibility.role, AccessibilityRole::Generic);
+        assert_eq!(accessibility.role, AccessibilityRole::Status);
         assert_eq!(accessibility.label.as_deref(), Some("Sync failed"));
         assert_eq!(
             accessibility.description.as_deref(),

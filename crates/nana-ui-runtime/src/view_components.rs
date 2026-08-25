@@ -1580,12 +1580,20 @@ impl ComponentView for OverlayHost {
         if world.overlay_host(id).is_none() {
             mutations.set_overlay_host(id, OverlayHostState::default());
         }
+        // Whether a host takes the pointer follows the active overlay's kind,
+        // which activation resolves and writes. Projection would only see the
+        // state from before that commit, so it carries the value forward and
+        // starts out transparent.
+        let interaction = world.interaction(id).unwrap_or(InteractionState {
+            pointer_events: false,
+            focusable: false,
+        });
         project_common(
             id,
             world,
             mutations,
             &self.style,
-            InteractionState::default(),
+            interaction,
             AccessibilityState::default(),
         );
     }
