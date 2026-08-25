@@ -530,6 +530,59 @@ mod tests {
         assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
     }
 
+    /// The trigger is the only pressable affordance a closed menu has, so it
+    /// must carry its own background rather than reading as bare text.
+    #[test]
+    fn a_closed_trigger_paints_button_chrome() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        let id = StableNodeId::new(1).unwrap();
+        queue.create(
+            id,
+            document(),
+            NodeKind::Element {
+                tag: "action-menu".into(),
+            },
+        );
+        queue.write_layout(
+            id,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: TRIGGER_HEIGHT,
+            },
+        );
+        queue.set_style(id, trigger_button_style(TRIGGER_HEIGHT));
+        queue.set_standard_visual(
+            id,
+            Some(StandardVisual::MenuSurface {
+                kind: MenuSurfaceKind::ActionMenu,
+                open: false,
+                trigger: Some(Arc::from("Actions")),
+                gap: 0.0,
+                query: None,
+                rows: Arc::from([]),
+                highlighted: None,
+            }),
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[id]).unwrap();
+        let Some(ComponentGeometry::MenuSurface {
+            trigger,
+            trigger_surface,
+            ..
+        }) = world.component_geometry(id)
+        else {
+            panic!("expected menu surface geometry");
+        };
+        let chrome = trigger_surface.expect("trigger chrome");
+        assert!(chrome.background.is_some(), "trigger has a filled surface");
+        assert_eq!(chrome.bounds.height, TRIGGER_HEIGHT);
+        let label = trigger.expect("trigger label");
+        assert!(label.bounds.x > 0.0, "label sits inside the button padding");
+    }
+
     /// The trigger and the surface share one box, so a closed menu whose items
     /// still took part in layout would be stretched to their width.
     #[test]

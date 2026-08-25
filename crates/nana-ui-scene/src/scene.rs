@@ -1960,7 +1960,7 @@ impl UiScene {
                         && (chrome.background.is_some() || chrome.border.is_some())
                     {
                         self.insert_primitive(ScenePrimitive {
-                            id: PrimitiveId { node: id, slot: 3 },
+                            id: PrimitiveId { node: id, slot: 1 },
                             node: id,
                             bounds: scene_rect(chrome.bounds),
                             transform,
