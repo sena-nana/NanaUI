@@ -4697,6 +4697,52 @@ impl AppContext {
         Ok(())
     }
 
+    /// Closes every open popover whose policy `allows` dismissal. A popover
+    /// keeps its state when `inside` sits in its own subtree, so pressing one
+    /// of its items still activates that item.
+    fn close_open_popovers(
+        &mut self,
+        inside: Option<StableNodeId>,
+        allows: fn(&Popover) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        let mut dismissed = false;
+        for id in ids {
+            if inside.is_some_and(|node| self.world.is_descendant_or_self(node, id)) {
+                continue;
+            }
+            if let Some(entity) = self.view_entity::<Popover>(id) {
+                if self.read(entity, |popover| popover.open && allows(popover))? {
+                    self.toggle_popover(entity)?;
+                    dismissed = true;
+                }
+            } else if let Some(entity) = self.view_entity::<ActionMenu>(id)
+                && self.read(entity, |menu| menu.popover.open && allows(&menu.popover))?
+            {
+                self.toggle_action_menu(entity)?;
+                dismissed = true;
+            }
+        }
+        Ok(dismissed)
+    }
+
+    /// Light dismiss for toggle-driven popovers, mirroring the outside-press
+    /// rule the overlay host applies to dialogs and menus. `inside` is the node
+    /// under the pointer. Returns whether anything closed; the caller consumes
+    /// the press in that case so it cannot also drive the control underneath,
+    /// nor re-open the popover through its own trigger.
+    pub fn dismiss_popovers_outside(
+        &mut self,
+        inside: Option<StableNodeId>,
+    ) -> Result<bool, FrameworkError> {
+        self.close_open_popovers(inside, |popover| popover.close_on_outside)
+    }
+
+    /// Escape closes every open popover that allows it.
+    pub fn dismiss_popovers_on_escape(&mut self) -> Result<bool, FrameworkError> {
+        self.close_open_popovers(None, |popover| popover.close_on_escape)
+    }
+
     pub fn toggle_popover(&mut self, entity: Entity<Popover>) -> Result<bool, FrameworkError> {
         self.update_component(entity, |popover, cx| {
             popover.open = !popover.open;

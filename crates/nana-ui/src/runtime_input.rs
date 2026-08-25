@@ -76,6 +76,13 @@ impl RuntimeInputAdapter {
                     prevent_default: true,
                 });
             }
+            if matches!(overlay_key, Some(OverlayKey::Escape))
+                && context.dismiss_popovers_on_escape()?
+            {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
+            }
         }
         if let InputEvent::Keyboard {
             pressed: true,
@@ -190,6 +197,15 @@ impl RuntimeInputAdapter {
                             || target.is_some()
                     }
                     PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
+                        if context.dismiss_popovers_outside(target)? {
+                            // Consume the press that dismissed the popover.
+                            // Activation needs a press recorded here to match
+                            // on release, so skipping it also stops this click
+                            // from reaching the control underneath.
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         context.dismiss_detached_menus(target)?;
                         let split_handle = context.split_handle_near(document, *x, *y);
                         let dock_handle = context.dock_handle_near(document, *x, *y);
@@ -637,10 +653,11 @@ mod tests {
     use super::*;
     use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
     use nana_ui_runtime::{
-        Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Dialog, Dock, DockAxis, DockNode,
-        LayoutBox, Menu, MenuItem, ModalSlots, MutationQueue, OverlayHost, OverlayHostState,
-        RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption,
-        SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea, TextInput,
+        ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum,
+        Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, Menu, MenuItem, ModalSlots,
+        MutationQueue, OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics,
+        ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table,
+        TableCell, TableRow, Text, TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1641,6 +1658,176 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(*activations.lock().unwrap(), 0);
+    }
+
+    /// Lays a popover over a button so the two never overlap, and reports the
+    /// shared activation counter of the button.
+    fn popover_over_button(
+        context: &mut AppContext,
+        document: DocumentId,
+    ) -> (Entity<ActionMenu>, Arc<Mutex<u32>>) {
+        let underlay = context
+            .create_component(document, Button::new("Underlay"))
+            .unwrap();
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
+        let activations = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&activations);
+        context
+            .on(underlay, move |_button, _event: &Activate, _cx| {
+                *observed.lock().unwrap() += 1;
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            underlay.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 60.0,
+            },
+        );
+        layout.write_layout(
+            menu.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 100.0,
+                width: 200.0,
+                height: 100.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+        (menu, activations)
+    }
+
+    #[test]
+    fn outside_press_closes_the_popover_without_reaching_the_underlay() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let (menu, activations) = popover_over_button(&mut context, document);
+        let adapter = RuntimeInputAdapter::default();
+
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 20.0, 20.0),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Up, 20.0, 20.0),
+            )
+            .unwrap();
+
+        assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
+        // An app-owned trigger button sits outside the popover too, so letting
+        // this press through would toggle the menu straight back open.
+        assert_eq!(*activations.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn press_inside_the_popover_leaves_it_open() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let (menu, _) = popover_over_button(&mut context, document);
+        let item = context
+            .create_component(document, ActionMenuItem::new("Rename"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            item.stable_id(),
+            LayoutBox {
+                x: 4.0,
+                y: 104.0,
+                width: 192.0,
+                height: 28.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+        let adapter = RuntimeInputAdapter::default();
+
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Down, 20.0, 110.0),
+            )
+            .unwrap();
+
+        assert!(context.read(menu, |menu| menu.popover.open).unwrap());
+    }
+
+    #[test]
+    fn escape_closes_the_popover() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let (menu, _) = popover_over_button(&mut context, document);
+        let adapter = RuntimeInputAdapter::default();
+        let escape = InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".into(),
+            text: None,
+            code: "Escape".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
+    }
+
+    #[test]
+    fn a_popover_that_opts_out_ignores_outside_presses_and_escape() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let (menu, _) = popover_over_button(&mut context, document);
+        context
+            .update_component(menu, |menu, _| {
+                menu.popover.close_on_outside = false;
+                menu.popover.close_on_escape = false;
+            })
+            .unwrap();
+        let adapter = RuntimeInputAdapter::default();
+
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Down, 20.0, 20.0),
+            )
+            .unwrap();
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &InputEvent::Keyboard {
+                    pressed: true,
+                    key: "Escape".into(),
+                    text: None,
+                    code: "Escape".into(),
+                    repeat: false,
+                    modifiers: InputModifiers::default(),
+                },
+            )
+            .unwrap();
+
+        assert!(context.read(menu, |menu| menu.popover.open).unwrap());
     }
 
     #[test]
