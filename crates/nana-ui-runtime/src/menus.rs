@@ -538,6 +538,7 @@ impl crate::ComponentView for ContextMenu {
         if self.open {
             let visual = StandardVisual::MenuSurface {
                 kind: MenuSurfaceKind::ContextMenu,
+                open: true,
                 trigger: None,
                 gap: 0.0,
                 query: self.searchable.then(|| Arc::clone(&self.query)),
@@ -762,6 +763,7 @@ pub(crate) fn context_menu_geometry(
         })
         .collect();
     ComponentGeometry::MenuSurface {
+        trigger_surface: None,
         trigger: None,
         surface: bounds,
         search,

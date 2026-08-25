@@ -223,6 +223,7 @@ pub enum StandardVisual {
     },
     MenuSurface {
         kind: MenuSurfaceKind,
+        open: bool,
         trigger: Option<Arc<str>>,
         gap: f32,
         query: Option<Arc<str>>,
@@ -322,6 +323,17 @@ pub struct ComponentTextRegion {
     pub color: Option<[f32; 4]>,
     pub font_size: f32,
     pub font_weight: Option<u16>,
+}
+
+/// Button chrome drawn behind a component's own trigger, so a menu can look
+/// pressable without the caller supplying a separate button node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComponentTriggerSurface {
+    pub bounds: LayoutBox,
+    pub background: Option<[f32; 4]>,
+    pub border: Option<[f32; 4]>,
+    pub border_width: f32,
+    pub corner_radius: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -497,6 +509,7 @@ pub enum ComponentGeometry {
     },
     MenuSurface {
         trigger: Option<ComponentTextRegion>,
+        trigger_surface: Option<ComponentTriggerSurface>,
         surface: LayoutBox,
         search: Option<ComponentTextRegion>,
         search_field: Option<LayoutBox>,

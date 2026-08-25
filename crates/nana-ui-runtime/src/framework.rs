@@ -2093,7 +2093,33 @@ impl AppContext {
         &mut self,
         entity: Entity<ActionMenuItem>,
     ) -> Result<bool, FrameworkError> {
-        self.activate_component(entity, |item| item.disabled)
+        let activated = self.activate_component(entity, |item| item.disabled)?;
+        if activated {
+            self.close_owning_menu(entity.id)?;
+        }
+        Ok(activated)
+    }
+
+    /// Picking a command dismisses the menu that offered it, so the caller does
+    /// not have to mirror the open state just to close it again.
+    fn close_owning_menu(&mut self, item: StableNodeId) -> Result<(), FrameworkError> {
+        let mut current = self.world.node(item).and_then(|node| node.parent);
+        while let Some(id) = current {
+            if let Some(entity) = self.view_entity::<ActionMenu>(id) {
+                if self.read(entity, |menu| menu.popover.open)? {
+                    self.toggle_action_menu(entity)?;
+                }
+                return Ok(());
+            }
+            if let Some(entity) = self.view_entity::<Popover>(id) {
+                if self.read(entity, |popover| popover.open)? {
+                    self.toggle_popover(entity)?;
+                }
+                return Ok(());
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        Ok(())
     }
 
     pub fn activate_radio(&mut self, entity: Entity<crate::Radio>) -> Result<bool, FrameworkError> {

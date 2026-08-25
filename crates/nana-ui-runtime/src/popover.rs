@@ -19,7 +19,10 @@ const ACTION_MENU_WIDTH: f32 = 200.0;
 const ACTION_MENU_PADDING: f32 = 4.0;
 const ACTION_MENU_GAP: f32 = 4.0;
 const MENU_MIN_WIDTH: f32 = 120.0;
-pub(crate) const TRIGGER_HEIGHT: f32 = 16.0;
+/// The trigger is a real button, so it matches the compact control height
+/// rather than hugging its glyphs.
+pub(crate) const TRIGGER_HEIGHT: f32 = UI_METRICS.compact_control_height;
+const TRIGGER_PADDING_X: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopoverToggled {
@@ -216,6 +219,7 @@ pub(crate) fn project_menu_surface(
     if has_chrome {
         let visual = StandardVisual::MenuSurface {
             kind,
+            open,
             trigger: trigger.clone(),
             gap,
             query: None,
@@ -227,6 +231,17 @@ pub(crate) fn project_menu_surface(
         }
     } else if world.standard_visual(id).is_some() {
         mutations.set_standard_visual(id, None);
+    }
+    // The trigger label is measured like any other button label, so the closed
+    // surface can size itself to the text instead of a fixed box.
+    let trigger_text = trigger.as_deref().unwrap_or("");
+    if world.text(id) != Some(trigger_text) {
+        mutations.set_text(
+            id,
+            crate::TextContent {
+                value: trigger_text.to_string(),
+            },
+        );
     }
     project_common(
         id,
@@ -258,21 +273,22 @@ fn triggered_menu_style(
         0.0
     };
     if !open {
-        // A closed surface clips to its own box, so a trigger needs a box wide
-        // enough to show its glyph instead of collapsing to zero width.
-        let trigger_width = trigger.map(|_| LengthSpec::Px(trigger_h.max(1.0)));
-        return NodeStyle {
-            layout: Arc::new(nana_ui_core::LayoutStyle {
-                width: trigger_width,
-                min_width: trigger_width,
-                height: Some(LengthSpec::Px(trigger_h.max(1.0))),
-                overflow_x: OverflowSpec::Hidden,
-                overflow_y: OverflowSpec::Hidden,
-                ..nana_ui_core::LayoutStyle::default()
-            }),
-            foreground: Some(SemanticColorRole::Text),
-            ..NodeStyle::default()
+        let Some(_) = trigger else {
+            // Nothing to press and nothing to show, so the node keeps the
+            // smallest box that stays out of the way.
+            return NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    width: Some(LengthSpec::Px(1.0)),
+                    height: Some(LengthSpec::Px(1.0)),
+                    overflow_x: OverflowSpec::Hidden,
+                    overflow_y: OverflowSpec::Hidden,
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                foreground: Some(SemanticColorRole::Text),
+                ..NodeStyle::default()
+            };
         };
+        return trigger_button_style(trigger_h);
     }
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -290,6 +306,29 @@ fn triggered_menu_style(
         foreground: Some(SemanticColorRole::Text),
         ..NodeStyle::default()
     }
+}
+
+/// The trigger carries the same chrome contract as a subtle `Button`, so the
+/// hover and press colours resolve through the usual interaction overlay.
+fn trigger_button_style(height: f32) -> NodeStyle {
+    let mut style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            height: Some(LengthSpec::Px(height)),
+            min_height: Some(LengthSpec::Px(height)),
+            padding_left: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
+            padding_right: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
+            border_width: Some(1.0),
+            border_radius: Some(UI_METRICS.radius_sm),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
+        background: Some(SemanticColorRole::Subtle),
+        border: Some(SemanticColorRole::BorderSoft),
+        foreground: Some(SemanticColorRole::Text),
+        ..NodeStyle::default()
+    };
+    style.interaction.hovered.background = Some(SemanticColorRole::Hover);
+    style.interaction.pressed.background = Some(SemanticColorRole::Active);
+    style
 }
 
 pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
@@ -328,6 +367,7 @@ pub(crate) fn project_anchored_menu(
     if open {
         let visual = StandardVisual::MenuSurface {
             kind,
+            open,
             trigger: None,
             gap: 0.0,
             query: None,
@@ -363,6 +403,7 @@ pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
     gap: f32,
+    style: &crate::ComputedStyle,
     palette: &SemanticPalette,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
@@ -381,21 +422,41 @@ pub(crate) fn menu_surface_geometry(
     } else {
         bounds
     };
+    let trigger_bounds = LayoutBox {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: trigger_h,
+    };
+    let has_trigger = trigger.is_some_and(|value| !value.is_empty());
     ComponentGeometry::MenuSurface {
         trigger: trigger
             .filter(|value| !value.is_empty())
             .map(|value| ComponentTextRegion {
                 bounds: LayoutBox {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: bounds.width,
+                    x: trigger_bounds.x + TRIGGER_PADDING_X,
+                    y: trigger_bounds.y,
+                    width: (trigger_bounds.width - TRIGGER_PADDING_X * 2.0).max(0.0),
                     height: trigger_h,
                 },
                 content: Arc::clone(value),
-                color: Some(palette.text.as_rgba_array()),
+                color: Some(
+                    style
+                        .color
+                        .unwrap_or_else(|| palette.text.as_rgba_array()),
+                ),
                 font_size: 13.0,
                 font_weight: None,
             }),
+        // Hover and press already resolved into the computed style, so the
+        // trigger reads its chrome from there rather than the raw palette.
+        trigger_surface: has_trigger.then(|| crate::ComponentTriggerSurface {
+            bounds: trigger_bounds,
+            background: style.background,
+            border: style.border_color,
+            border_width: 1.0,
+            corner_radius: UI_METRICS.radius_sm,
+        }),
         surface,
         search: None,
         search_field: None,
@@ -456,6 +517,44 @@ mod tests {
     }
 
     #[test]
+    fn choosing_an_item_closes_the_menu_that_offered_it() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(document(), ActionMenu::new().trigger("Actions").open(true))
+            .unwrap();
+        let item = context
+            .create_component(document(), crate::ActionMenuItem::new("Rename"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        assert!(context.activate_action_menu_item(item).unwrap());
+        assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
+    }
+
+    /// The trigger and the surface share one box, so a closed menu whose items
+    /// still took part in layout would be stretched to their width.
+    #[test]
+    fn a_closed_menu_keeps_its_items_out_of_the_layout() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(document(), ActionMenu::new().trigger("Actions"))
+            .unwrap();
+        let item = context
+            .create_component(document(), crate::ActionMenuItem::new("Rename"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        let omits_box = |context: &AppContext| {
+            context
+                .world()
+                .layout_style(item.stable_id())
+                .unwrap()
+                .omits_box()
+        };
+        assert!(omits_box(&context));
+        context.toggle_action_menu(menu).unwrap();
+        assert!(!omits_box(&context));
+    }
+
+    #[test]
     fn popover_closed_keeps_the_trigger_and_open_reserves_surface_padding() {
         let mut context = AppContext::new();
         let popover = context
@@ -473,7 +572,12 @@ mod tests {
         let closed = context.world().node_style(id).unwrap();
         assert!(!closed.layout.hidden);
         assert_eq!(closed.layout.height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
-        assert!(closed.background.is_none());
+        // A closed trigger is a pressable button, not bare text.
+        assert_eq!(closed.background, Some(SemanticColorRole::Subtle));
+        assert_eq!(closed.border, Some(SemanticColorRole::BorderSoft));
+        assert!(closed.interaction.hovered.background.is_some());
+        assert!(closed.interaction.pressed.background.is_some());
+        assert!(closed.layout.width.is_none(), "trigger sizes to its label");
         context
             .update_component(popover, |popover, _| {
                 popover.open = true;
