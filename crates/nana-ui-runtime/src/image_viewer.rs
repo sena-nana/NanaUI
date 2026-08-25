@@ -37,7 +37,7 @@ pub enum ImageViewerEvent {
 }
 
 /// Application-owned visual content. NanaUI never stores pixels or codecs.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ImageViewerContent {
     #[default]
     None,

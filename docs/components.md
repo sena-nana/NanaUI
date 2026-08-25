@@ -28,7 +28,9 @@ import "@nanaui/nanavue-components/controls.css";
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
-部分族需要 Cargo feature（`calendar`、`charts`、`overlays`、`rich-text` 等），见 [应用 API](application-api.md)。未启用的模块不会编进你的二进制。
+部分族需要 Cargo feature（`calendar`、`charts`、`overlays`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 只控制 `nana-ui` 的再导出路径和 `ComponentSupport` 的 `compiled` 标记；控件实现都在 `nana-ui-runtime` 里，不启用也照样编译，仍可从 `nana_ui::runtime` 取到。要真正裁二进制得在 `nana-ui-runtime` 一侧做，目前没有。
+
+`GraphCanvas` 默认只画网格、节点框和边，节点内部内容由应用往子节点里放。`NativeMarkdown` 解析 mermaid 与公式围栏并给出 presenter 槽，但**不渲染**图和公式——那两样由宿主自己画进槽里。
 
 ## 交互
 
@@ -36,13 +38,27 @@ import "@nanaui/nanavue-components/controls.css";
 
 典型事件：`Activate`（按钮）、`TextChanged`、`ToggleChanged`、`RangeChanged`、`TabsEvent`、`SearchDropdownEvent`、`ContextMenuEvent`。签名以 rustdoc 为准。
 
+右键（button 2）派发 `SecondaryPress`，从命中节点往上找到第一个注册了该事件的节点，事件里带命中节点与坐标。框架不开菜单、不塞默认项：要不要弹、弹什么，由应用在 handler 里决定（通常是 `ContextMenu`）。没人注册就什么都不发生。
+
 需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`，下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 
 ## 文本与列表
 
 `TextInput` / `TextArea` 持有已提交的 UTF-8、选区和 IME preedit。它们是视图侧编辑模型：文档 revision、撤销、冲突、持久化仍由应用拥有。可选 feature `syntax-highlighting` 在同一 `TextArea` 上启用名为 `"highlight"` 的 presenter，不另造一套编辑器。
 
+剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。
+
 大列表、表格、树用 `AppContext::materialize_virtual_*`。可见窗口外不建 live 节点；滚动不重排整棵布局。
+
+## 滚动与滚动条
+
+`ScrollView` 是滚动容器。位置权威是 Runtime 的 `ScrollOffset`，尺寸权威是布局后发布的 `ScrollMetrics`；滚动条不另存一份偏移。
+
+`ScrollView::scrollbars` 选三种：`AutoHide`（默认，指针进容器才现，overlay 式不占布局）、`Always`（能滚就常驻，画轨道底）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。Vue 侧用 `scrollbars="always|hidden"`。
+
+轨道与滑块几何在 `nana-ui-core` 的 `scrollbar` 模块，颜色取 `border_strong`（拖拽时 `muted`）与 `subtle`。Scene 侧就是两个普通 quad，不走特殊通道。滑块拖拽与轨道点击（按下即把滑块居中到落点）由 `AppContext::begin_scrollbar_drag` 一族处理，走指针 capture。
+
+滚动条是 overlay，不占布局宽度；两轴都能滚时各让出末端一个轨道厚度，避免拐角重叠。
 
 ## 自己加一种控件
 

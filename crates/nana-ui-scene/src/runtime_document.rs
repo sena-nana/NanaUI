@@ -72,7 +72,8 @@ impl RuntimeDocument {
     /// framework-owned layout. Applications do not write widget geometry.
     ///
     /// A viewport change forces one drain pass so layout still runs. That pass
-    /// is the only full `layout_document` for the resize.
+    /// is the only relayout for the resize, and it reuses every subtree the new
+    /// viewport did not move.
     pub fn flush(
         &mut self,
         viewport: LayoutViewport,
@@ -86,7 +87,7 @@ impl RuntimeDocument {
             context.shape_text(&work.text, shaper)?;
             if force_layout || !work.layout.is_empty() {
                 if force_layout {
-                    context.layout_document(document, viewport)?;
+                    context.layout_document_for_viewport(document, viewport)?;
                 } else {
                     // `shape_text` may have marked additional LAYOUT nodes
                     // (intrinsic changes propagate) after the drain; include
@@ -372,15 +373,91 @@ mod tests {
             nana_ui_runtime::StageStatus::Unsupported
         );
 
-        let layouts_before_resize = runtime.context().layout_full_invocations();
+        let full_before_resize = runtime.context().layout_full_invocations();
+        let passes_before_resize = runtime.context().layout_invocations();
         let resized = runtime
             .flush(LayoutViewport::new(640.0, 180.0), &mut TestShaper)
             .unwrap();
         assert!(!resized.is_idle());
         assert_eq!(
-            runtime.context().layout_full_invocations() - layouts_before_resize,
+            runtime.context().layout_invocations() - passes_before_resize,
             1,
-            "viewport change must run one full layout, not a pre-layout plus drain layout"
+            "viewport change must run one layout pass, not a pre-layout plus drain layout"
+        );
+        assert_eq!(
+            runtime.context().layout_full_invocations() - full_before_resize,
+            0,
+            "a document with no viewport-relative box must resize against the retained cache"
+        );
+    }
+
+    #[test]
+    fn a_viewport_relative_box_follows_a_resize_and_gives_up_incremental_layout() {
+        use nana_ui_core::{LayoutStyle, LengthSpec, ViewportAxis};
+
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics {
+                    width: text.value.len() as f32 * 8.0,
+                    height: 18.0,
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let half_viewport = LayoutStyle {
+            height: Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 50.0,
+            }),
+            ..Default::default()
+        };
+        let button = runtime
+            .context_mut()
+            .create_component(
+                document,
+                Button::new("Build").layout(Arc::new(half_viewport)),
+            )
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .context()
+                .world()
+                .layout_box(button.stable_id())
+                .unwrap()
+                .height,
+            90.0
+        );
+
+        let full_before_resize = runtime.context().layout_full_invocations();
+        runtime
+            .flush(LayoutViewport::new(320.0, 360.0), &mut TestShaper)
+            .unwrap();
+        assert_eq!(
+            runtime.context().layout_full_invocations() - full_before_resize,
+            1,
+            "a vh box reads the viewport directly, so the retained cache cannot answer for it"
+        );
+        assert_eq!(
+            runtime
+                .context()
+                .world()
+                .layout_box(button.stable_id())
+                .unwrap()
+                .height,
+            180.0,
+            "the vh box must follow the new viewport"
         );
     }
 

@@ -2559,13 +2559,11 @@ impl VueHost {
                 .expect("vue bridge")
                 .get(target.0)
                 .is_some_and(|widget| {
-                    matches!(
-                        widget.kind,
-                        WidgetKind::Input
-                            | WidgetKind::Textarea
-                            | WidgetKind::ContextMenu
-                            | WidgetKind::Select
-                    )
+                    widget.kind.is_choice_field()
+                        || matches!(
+                            widget.kind,
+                            WidgetKind::Input | WidgetKind::Textarea | WidgetKind::ContextMenu
+                        )
                 });
             let document = self.document.lock().expect("vue doc");
             (

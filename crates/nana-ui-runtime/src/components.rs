@@ -97,9 +97,16 @@ pub enum StandardVisual {
         size: ControlSize,
         secure: bool,
         invalid: bool,
+        /// Numeric spinner affordance at the trailing edge. `NumberInput` is a
+        /// text input that also steps, so it reuses this visual instead of
+        /// growing a second editable contract.
+        steppers: bool,
     },
     Checkbox {
         checked: bool,
+        /// Mixed state. Wins over `checked` when painting and in a11y.
+        indeterminate: bool,
+        size: ControlSize,
     },
     Icon {
         icon: Icon,
@@ -123,6 +130,15 @@ pub enum StandardVisual {
         size: ControlSize,
         ratio: f32,
         invalid: bool,
+    },
+    /// Scroll container chrome. Carries policy only: the track and thumb boxes
+    /// come from the authoritative [`ScrollOffset`] / [`ScrollMetrics`] at
+    /// extraction time, so no scroll position is duplicated here.
+    Scrollbar {
+        axes: crate::ScrollAxes,
+        visibility: nana_ui_core::ScrollbarVisibility,
+        revealed: bool,
+        dragging: Option<nana_ui_core::ScrollbarAxis>,
     },
     Card {
         title: Option<Arc<str>>,
@@ -167,6 +183,8 @@ pub enum StandardVisual {
         disabled: bool,
         size: ControlSize,
         show_focus_ring: bool,
+        /// Draws a radio ring, and a dot when selected, before the label.
+        indicator: bool,
     },
     Progress {
         value_ratio: f32,
@@ -331,6 +349,104 @@ pub struct ComponentTriggerSurface {
     pub border: Option<[f32; 4]>,
 }
 
+/// Resolved spinner chrome at the trailing edge of a numeric field.
+///
+/// Both halves stay drawn while the field is enabled; `increment_enabled` /
+/// `decrement_enabled` only report whether the value can still move, so the
+/// control does not resize as it reaches a bound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberSteppers {
+    pub increment: LayoutBox,
+    pub decrement: LayoutBox,
+    pub increment_color: [f32; 4],
+    pub decrement_color: [f32; 4],
+    pub increment_enabled: bool,
+    pub decrement_enabled: bool,
+    pub glyph_size: f32,
+}
+
+impl NumberSteppers {
+    /// Signed step count for a point, or `None` when it misses both halves.
+    pub fn step_at(&self, x: f32, y: f32) -> Option<i32> {
+        if contains(self.increment, x, y) {
+            return self.increment_enabled.then_some(1);
+        }
+        if contains(self.decrement, x, y) {
+            return self.decrement_enabled.then_some(-1);
+        }
+        None
+    }
+}
+
+fn contains(bounds: LayoutBox, x: f32, y: f32) -> bool {
+    x >= bounds.x && x < bounds.x + bounds.width && y >= bounds.y && y < bounds.y + bounds.height
+}
+
+/// Resolved radio ring chrome for one selection option.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadioIndicator {
+    pub ring: LayoutBox,
+    pub ring_color: [f32; 4],
+    /// Present only while the option is selected.
+    pub dot: Option<(LayoutBox, [f32; 4])>,
+}
+
+/// One axis of resolved scrollbar chrome.
+///
+/// `track` is the full band along the viewport edge and is also the drag hit
+/// region; `thumb` is the draggable handle inside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarBar {
+    pub track: LayoutBox,
+    pub thumb: LayoutBox,
+    /// Painted only when the container keeps its bars resident.
+    pub track_background: Option<[f32; 4]>,
+    pub thumb_background: [f32; 4],
+    pub thumb_radius: f32,
+    /// Largest content offset this axis can reach.
+    pub max_offset: f32,
+}
+
+impl ScrollbarBar {
+    /// Position along the scrolling axis for a viewport point.
+    pub fn axis_position(&self, axis: nana_ui_core::ScrollbarAxis, x: f32, y: f32) -> f32 {
+        match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => x,
+            nana_ui_core::ScrollbarAxis::Vertical => y,
+        }
+    }
+
+    /// Re-derive the axis track so drag maths stay in one place.
+    pub fn track_geometry(
+        &self,
+        axis: nana_ui_core::ScrollbarAxis,
+    ) -> nana_ui_core::ScrollbarTrack {
+        match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => nana_ui_core::ScrollbarTrack {
+                origin: self.track.x,
+                length: self.track.width,
+                thumb_origin: self.thumb.x,
+                thumb_length: self.thumb.width,
+                max_offset: self.max_offset,
+            },
+            nana_ui_core::ScrollbarAxis::Vertical => nana_ui_core::ScrollbarTrack {
+                origin: self.track.y,
+                length: self.track.height,
+                thumb_origin: self.thumb.y,
+                thumb_length: self.thumb.height,
+                max_offset: self.max_offset,
+            },
+        }
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.track.x
+            && x < self.track.x + self.track.width
+            && y >= self.track.y
+            && y < self.track.y + self.track.height
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComponentElevation {
     pub color: [f32; 4],
@@ -403,6 +519,7 @@ pub enum ComponentGeometry {
         selection_color: [f32; 4],
         caret_color: [f32; 4],
         preedit_color: [f32; 4],
+        steppers: Option<NumberSteppers>,
     },
     Switch {
         label: ComponentTextRegion,
@@ -417,6 +534,10 @@ pub enum ComponentGeometry {
         value: ComponentTextRegion,
         unit: Option<ComponentTextRegion>,
         track: LayoutBox,
+    },
+    Scrollbar {
+        horizontal: Option<ScrollbarBar>,
+        vertical: Option<ScrollbarBar>,
     },
     Card {
         title: Option<ComponentTextRegion>,
@@ -457,6 +578,7 @@ pub enum ComponentGeometry {
         icon: Option<(Icon, LayoutBox, [f32; 4])>,
         label: ComponentTextRegion,
         focus_ring: Option<[f32; 4]>,
+        indicator: Option<RadioIndicator>,
     },
     Progress {
         track: LayoutBox,
@@ -1101,6 +1223,7 @@ pub enum AccessibilityRole {
     Tab,
     RadioGroup,
     Radio,
+    Separator,
     Dialog,
     AlertDialog,
     Menu,
@@ -1120,6 +1243,10 @@ pub struct AccessibilityState {
     pub description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
+    /// Tri-state checkbox in its mixed state. Wins over `checked`.
+    pub mixed: bool,
+    /// Layout direction of a composite such as a radio group or tab list.
+    pub orientation: Option<crate::SelectionOrientation>,
     pub selected: Option<bool>,
     pub multiline: bool,
     pub editable: bool,
@@ -1143,6 +1270,8 @@ pub struct AccessibilityNode {
     pub description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
+    pub mixed: bool,
+    pub orientation: Option<crate::SelectionOrientation>,
     pub selected: Option<bool>,
     pub multiline: bool,
     pub editable: bool,
@@ -1368,12 +1497,20 @@ impl TextInputState {
 ///
 /// [`Self::fit`] is presentation-only. Host-texture sampling uses it to choose
 /// a destination rect; other renderers ignore Fill.
-#[derive(Component, Debug, Clone, PartialEq, Eq)]
+///
+/// [`Self::params`] carries per-node presentation values whose meaning is
+/// defined by `renderer` alone. Runtime never interprets them, so a renderer
+/// can reach its own painter without Runtime learning a shading model.
+/// [`Self::dedicated_pass`] asks the painter to open a pass for this node
+/// instead of joining the current one.
+#[derive(Component, Debug, Clone, PartialEq)]
 pub struct CustomRenderNode {
     pub renderer: Arc<str>,
     pub resource: Arc<str>,
     pub revision: u64,
     pub fit: nana_ui_core::ContentFit,
+    pub params: Option<Arc<[f32]>>,
+    pub dedicated_pass: bool,
 }
 
 impl CustomRenderNode {
@@ -1387,12 +1524,40 @@ impl CustomRenderNode {
             resource: resource.into(),
             revision,
             fit: nana_ui_core::ContentFit::Fill,
+            params: None,
+            dedicated_pass: false,
         }
     }
 
     pub const fn with_fit(mut self, fit: nana_ui_core::ContentFit) -> Self {
         self.fit = fit;
         self
+    }
+
+    /// Attaches renderer-defined presentation values. Non-finite entries become
+    /// zero so a painter never uploads NaN into a uniform.
+    pub fn with_params(mut self, params: impl IntoIterator<Item = f32>) -> Self {
+        self.params = Some(
+            params
+                .into_iter()
+                .map(|value| if value.is_finite() { value } else { 0.0 })
+                .collect(),
+        );
+        self
+    }
+
+    /// Requests a dedicated render pass for this node.
+    pub const fn with_dedicated_pass(mut self, dedicated_pass: bool) -> Self {
+        self.dedicated_pass = dedicated_pass;
+        self
+    }
+
+    /// Renderer-defined parameter at `index`, or `None` when absent.
+    pub fn param(&self, index: usize) -> Option<f32> {
+        self.params
+            .as_ref()
+            .and_then(|params| params.get(index))
+            .copied()
     }
 }
 

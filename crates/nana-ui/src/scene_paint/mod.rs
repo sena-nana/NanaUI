@@ -49,7 +49,7 @@ use mesh::{MeshPipeline, MeshRange};
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct ScenePaintViewport {
     /// Scene dest rect size in logical pixels.
     pub logical_size: [f32; 2],
@@ -87,6 +87,23 @@ pub struct SceneWgpuPainter {
     /// stale stream.
     validated_scenes: HashMap<u64, Arc<[RenderOperation]>>,
     validated_order: VecDeque<u64>,
+    /// What the last encoded frame left in `dest`, when that content can be
+    /// reused. See [`PaintedDest`].
+    painted: Option<PaintedDest>,
+}
+
+/// Identity of the pixels currently held by `dest`.
+///
+/// The same scene instance painted into the same viewport produces the same
+/// pixels, and `dest` keeps them until the next paint, so such a frame only has
+/// to re-blit. Recorded only for frames that are fully described by the scene:
+/// host texture and GPU-slot content changes behind an unchanged scene, so
+/// those frames re-encode every time.
+#[derive(Clone, Copy, PartialEq)]
+struct PaintedDest {
+    instance: u64,
+    viewport: ScenePaintViewport,
+    size: [u32; 2],
 }
 
 enum DrawCommand {
@@ -147,6 +164,7 @@ impl SceneWgpuPainter {
             last_dest_pass_counts: None,
             validated_scenes: HashMap::new(),
             validated_order: VecDeque::new(),
+            painted: None,
         }
     }
 
@@ -216,6 +234,7 @@ impl SceneWgpuPainter {
             self.last_gpu_work = None;
             self.last_gpu_timings = None;
             self.last_dest_pass_counts = None;
+            self.painted = None;
             return Ok(());
         }
 
@@ -235,6 +254,48 @@ impl SceneWgpuPainter {
         let origin = paint_origin([0.0, 0.0], viewport.scene_origin);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
         let gpu_work = GpuWorkSink::new();
+        let clear = wgpu::Color {
+            r: viewport.clear_color[0] as f64,
+            g: viewport.clear_color[1] as f64,
+            b: viewport.clear_color[2] as f64,
+            a: viewport.clear_color[3] as f64,
+        };
+        let painted = PaintedDest {
+            instance,
+            viewport,
+            size: dest_physical,
+        };
+
+        if self.painted == Some(painted)
+            && let Some(dest) = self.dest.as_ref()
+            && dest.width == dest_physical[0]
+            && dest.height == dest_physical[1]
+        {
+            let encode_started = Instant::now();
+            let mut dest_passes = DestPassCounts {
+                msaa_allocated: dest.msaa_allocated,
+                ..DestPassCounts::default()
+            };
+            dest.blit(
+                encoder,
+                target,
+                blit_origin[0],
+                blit_origin[1],
+                viewport.physical_size,
+                viewport.clear.then_some(clear),
+                Some(&gpu_work),
+                &mut dest_passes,
+            );
+            self.last_gpu_work = Some(gpu_work.snapshot());
+            self.last_gpu_timings = Some(GpuStageTimings {
+                batch: std::time::Duration::ZERO,
+                gpu_upload: std::time::Duration::ZERO,
+                encode: encode_started.elapsed(),
+                submit: std::time::Duration::ZERO,
+            });
+            self.last_dest_pass_counts = Some(dest_passes);
+            return Ok(());
+        }
 
         let batch_started = Instant::now();
         self.quads.begin_frame();
@@ -557,12 +618,6 @@ impl SceneWgpuPainter {
             );
         }
         let dest = self.dest.as_ref().expect("dest target");
-        let clear = wgpu::Color {
-            r: viewport.clear_color[0] as f64,
-            g: viewport.clear_color[1] as f64,
-            b: viewport.clear_color[2] as f64,
-            a: viewport.clear_color[3] as f64,
-        };
         let sample_count = if gpu_interleaved { 1 } else { 4 };
         let initial_load = if viewport.clear {
             wgpu::LoadOp::Clear(clear)
@@ -655,6 +710,18 @@ impl SceneWgpuPainter {
             submit: std::time::Duration::ZERO,
         });
         self.last_dest_pass_counts = Some(dest_passes);
+        // Host-driven pixels (host textures, GPU slots) can change while the
+        // scene stands still, so only fully scene-described frames may be
+        // reused by the next paint.
+        self.painted = commands
+            .iter()
+            .all(|command| {
+                !matches!(
+                    command,
+                    DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
+                )
+            })
+            .then_some(painted);
         Ok(())
     }
 }
@@ -890,18 +957,20 @@ fn encode_ordered(
                             bounds,
                             clip,
                         } if bounds.width > 0 && bounds.height > 0 => {
-                            if renderer.draw_in_pass(
-                                node,
-                                &mut pass,
-                                SceneGpuPassContext {
-                                    device: pipelines.device,
-                                    queue: pipelines.queue,
-                                    bounds: *bounds,
-                                    clip: *clip,
-                                    dest_size: dest_physical,
-                                    gpu_work: Some(pipelines.gpu_work),
-                                },
-                            ) {
+                            if !node.custom.dedicated_pass
+                                && renderer.draw_in_pass(
+                                    node,
+                                    &mut pass,
+                                    SceneGpuPassContext {
+                                        device: pipelines.device,
+                                        queue: pipelines.queue,
+                                        bounds: *bounds,
+                                        clip: *clip,
+                                        dest_size: dest_physical,
+                                        gpu_work: Some(pipelines.gpu_work),
+                                    },
+                                )
+                            {
                                 restore_dest_viewport(&mut pass, dest_physical);
                                 index += 1;
                                 continue;
@@ -1246,12 +1315,12 @@ mod tests {
         };
         let (texture, view) = test_copy_target(&device, format, 64, 64);
 
-        let paint_once = |painter: &mut SceneWgpuPainter| -> Vec<u8> {
+        let paint_once = |painter: &mut SceneWgpuPainter, scene: &UiScene| -> Vec<u8> {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("nana-ui shape cache test"),
             });
             painter
-                .paint(&scene, &mut encoder, &view, viewport, None, None)
+                .paint(scene, &mut encoder, &view, viewport, None, None)
                 .unwrap();
             queue.submit([encoder.finish()]);
             readback_rgba(
@@ -1266,7 +1335,7 @@ mod tests {
             )
         };
 
-        let first = paint_once(&mut painter);
+        let first = paint_once(&mut painter, &scene);
         let (hits_after_first, misses_after_first, _) = painter.text_shape_cache_stats();
         assert!(
             misses_after_first > 0,
@@ -1274,7 +1343,10 @@ mod tests {
         );
         assert_eq!(hits_after_first, 0);
 
-        let second = paint_once(&mut painter);
+        // A clone carries the same text under a fresh scene instance, so the
+        // frame is rebatched and the shaping cache is the only thing that can
+        // save the work.
+        let second = paint_once(&mut painter, &scene.clone());
         let (hits_after_second, misses_after_second, _) = painter.text_shape_cache_stats();
         assert_eq!(
             misses_after_second, misses_after_first,
@@ -1288,6 +1360,105 @@ mod tests {
             first, second,
             "cached shaping must produce identical pixels"
         );
+    }
+
+    #[test]
+    fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let scene = labeled_selected_button_scene();
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+
+        let paint_once = |painter: &mut SceneWgpuPainter| -> Vec<u8> {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui unchanged repaint"),
+            });
+            painter
+                .paint(&scene, &mut encoder, &view, viewport, None, None)
+                .unwrap();
+            queue.submit([encoder.finish()]);
+            readback_rgba(
+                &device,
+                &queue,
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nana-ui unchanged repaint readback"),
+                }),
+                &texture,
+                64,
+                64,
+            )
+        };
+
+        let first = paint_once(&mut painter);
+        let encoded = painter
+            .last_dest_pass_counts
+            .expect("first frame encodes the scene");
+        assert!(
+            encoded.msaa > 0 && encoded.blit == 1,
+            "first frame must paint the scene into dest, got {encoded:?}"
+        );
+        assert!(
+            painter.last_gpu_work().unwrap().draw_calls > 0,
+            "first frame must issue draws"
+        );
+
+        let second = paint_once(&mut painter);
+        let reused = painter
+            .last_dest_pass_counts
+            .expect("repaint still encodes the blit");
+        assert_eq!(
+            (reused.msaa, reused.color, reused.blit),
+            (0, 0, 1),
+            "unchanged scene and viewport must only re-blit dest, got {reused:?}"
+        );
+        let work = painter.last_gpu_work().unwrap();
+        assert_eq!(
+            work.gpu_upload_bytes, 0,
+            "reused frame must not re-upload quads or meshes"
+        );
+        assert_eq!(
+            first, second,
+            "re-blitting dest must produce the same pixels as encoding it"
+        );
+
+        // A scene change gives up the reuse and paints again.
+        let mut changed = scene.clone();
+        changed.apply_delta(
+            [colored_quad_node(
+                99,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [0.0, 1.0, 0.0, 1.0],
+            )],
+            [],
+        );
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui changed repaint"),
+        });
+        painter
+            .paint(&changed, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        let repainted = painter
+            .last_dest_pass_counts
+            .expect("changed scene encodes again");
+        assert!(
+            repainted.msaa > 0,
+            "a changed scene must give up the reuse and repaint dest, got {repainted:?}"
+        );
+        drop(texture);
     }
 
     #[test]
@@ -2337,12 +2508,12 @@ mod tests {
         };
         let (texture, view) = test_copy_target(&device, format, 64, 64);
 
-        let paint_once = |painter: &mut SceneWgpuPainter| -> Vec<u8> {
+        let paint_once = |painter: &mut SceneWgpuPainter, scene: &UiScene| -> Vec<u8> {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("nana-ui affine cache test"),
             });
             painter
-                .paint(&scene, &mut encoder, &view, viewport, None, None)
+                .paint(scene, &mut encoder, &view, viewport, None, None)
                 .unwrap();
             queue.submit([encoder.finish()]);
             readback_rgba(
@@ -2357,7 +2528,7 @@ mod tests {
             )
         };
 
-        let first = paint_once(&mut painter);
+        let first = paint_once(&mut painter, &scene);
         let (hits, misses, _) = painter.affine_text_cache_stats();
         assert!(
             misses > 0,
@@ -2366,9 +2537,11 @@ mod tests {
         assert_eq!(hits, 0);
 
         // Each miss creates an atlas texture, a bind group and a vertex buffer.
-        // Repainting an unchanged rotated label must create none of them.
+        // Repainting an unchanged rotated label must create none of them. Clones
+        // carry the same label under a fresh instance so every frame is
+        // rebatched and the affine cache is what has to absorb it.
         for _ in 0..4 {
-            let repaint = paint_once(&mut painter);
+            let repaint = paint_once(&mut painter, &scene.clone());
             assert_eq!(
                 first, repaint,
                 "reused affine GPU resources must produce identical pixels"

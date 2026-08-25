@@ -211,6 +211,18 @@ struct HitEntry {
     children: Vec<HitEntry>,
 }
 
+/// Ancestor-chain answers memoized for the length of one pass.
+///
+/// Presence and stacking are properties of a node's whole ancestor chain, and
+/// a pass (extraction, hit-index rebuild) visits sets of nodes that share most
+/// of that chain. Filling this while walking turns per-node chain walks into
+/// one walk per chain.
+#[derive(Default)]
+struct AncestorMemo {
+    live: HashMap<StableNodeId, bool>,
+    stacking: HashMap<StableNodeId, i32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSnapshot {
     pub id: StableNodeId,
@@ -460,6 +472,10 @@ pub struct UiWorld {
     clip_visuals: usize,
     /// Nodes with an authored `z-index`. Stacking walks skip when this is zero.
     z_index_nodes: usize,
+    /// Live nodes whose box resolves against the viewport (`position: fixed`,
+    /// `vw` / `vh`). While this is zero, every viewport dependency reaches a
+    /// node through its available size, so a resize can relayout incrementally.
+    viewport_basis_nodes: usize,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
     presence_flags: HashMap<Entity, PresenceFlags>,
@@ -519,6 +535,7 @@ impl UiWorld {
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,
+            viewport_basis_nodes: 0,
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
@@ -2066,6 +2083,7 @@ impl UiWorld {
             .map(|(position, (id, transform))| (id, transform, None::<usize>, position))
             .collect::<Vec<_>>();
         let mut built: Vec<Built> = Vec::new();
+        let mut memo = AncestorMemo::default();
         while let Some((id, parent_transform, parent, position)) = stack.pop() {
             let style = self.component::<ResolvedStyle>(id).0.as_ref();
             if !style.visible {
@@ -2133,7 +2151,7 @@ impl UiWorld {
                     transform,
                     self_clips,
                     child_clips,
-                    z_index: self.stacking_z_index(id),
+                    z_index: self.stacking_z_index_memo(id, &mut memo),
                     order: position,
                     hittable,
                     menu,
@@ -2256,16 +2274,23 @@ impl UiWorld {
 
     /// Produce a renderer-neutral snapshot in retained document order.
     pub fn extract_document(&self, document: DocumentId) -> Vec<ExtractedNode> {
+        let mut memo = AncestorMemo::default();
         self.document_order(document)
             .into_iter()
-            .filter_map(|id| self.extract_node(id).filter(|node| node.style.visible))
+            .filter_map(|id| {
+                self.extract_node_memo(id, &mut memo)
+                    .filter(|node| node.style.visible)
+            })
             .collect()
     }
 
     /// Extract only dirty nodes. Hidden nodes stay present with `visible=false`
     /// so an incremental renderer can remove their previous primitives.
     pub fn extract_nodes(&self, ids: &[StableNodeId]) -> Vec<ExtractedNode> {
-        ids.iter().filter_map(|&id| self.extract_node(id)).collect()
+        let mut memo = AncestorMemo::default();
+        ids.iter()
+            .filter_map(|&id| self.extract_node_memo(id, &mut memo))
+            .collect()
     }
 
     pub fn commit(&mut self, queue: MutationQueue) -> Result<CommitReport, UiWorldError> {
@@ -3108,17 +3133,37 @@ impl UiWorld {
     }
 
     pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
+        self.presence_live_memo(id, &mut AncestorMemo::default())
+    }
+
+    /// [`Self::presence_live`] that records every chain it walks. A pass over
+    /// many nodes of one subtree answers the shared ancestors once.
+    fn presence_live_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> bool {
         if !self.is_mounted(id) {
             return false;
         }
+        if self.detached.is_empty() {
+            return true;
+        }
+        let mut chain = Vec::new();
         let mut current = Some(id);
+        let mut live = true;
         while let Some(node) = current {
+            if let Some(&known) = memo.live.get(&node) {
+                live = known;
+                break;
+            }
+            chain.push(node);
             if self.detached.contains(&node) {
-                return false;
+                live = false;
+                break;
             }
             current = self.parent_id(node);
         }
-        true
+        for node in chain {
+            memo.live.insert(node, live);
+        }
+        live
     }
 
     fn presence_flags_of(&self, entity: Entity) -> PresenceFlags {
@@ -3129,6 +3174,10 @@ impl UiWorld {
                 .world
                 .get::<NodeStyle>(entity)
                 .is_some_and(|style| style.layout.z_index.is_some()),
+            viewport: self
+                .world
+                .get::<NodeStyle>(entity)
+                .is_some_and(|style| style.layout.depends_on_viewport()),
         }
     }
 
@@ -3143,6 +3192,11 @@ impl UiWorld {
         }
         self.note_presence_counts(previous.confirm, next.confirm, previous.clip, next.clip);
         self.note_z_index_presence(previous.z_index, next.z_index);
+        bump_presence(
+            &mut self.viewport_basis_nodes,
+            previous.viewport,
+            next.viewport,
+        );
         if next == PresenceFlags::NONE {
             self.presence_flags.remove(&entity);
         } else {
@@ -3168,6 +3222,14 @@ impl UiWorld {
         }
     }
 
+    /// `true` while some live node's box resolves against the viewport
+    /// (`position: fixed`, `vw` / `vh`). Such a box moves on a viewport change
+    /// even when its containing block is unchanged, so incremental relayout
+    /// cannot reuse retained boxes across a resize.
+    pub fn uses_viewport_basis(&self) -> bool {
+        self.viewport_basis_nodes != 0
+    }
+
     fn note_z_index_presence(&mut self, was_present: bool, now_present: bool) {
         bump_presence(&mut self.z_index_nodes, was_present, now_present);
     }
@@ -3187,8 +3249,12 @@ impl UiWorld {
         self.apply_presence_flags(entity, PresenceFlags::NONE);
     }
 
-    fn extract_node(&self, id: StableNodeId) -> Option<ExtractedNode> {
-        if !self.presence_live(id) {
+    fn extract_node_memo(
+        &self,
+        id: StableNodeId,
+        memo: &mut AncestorMemo,
+    ) -> Option<ExtractedNode> {
+        if !self.presence_live_memo(id, memo) {
             return None;
         }
         let entity = *self.entities.get(&id)?;
@@ -3248,13 +3314,25 @@ impl UiWorld {
             StandardVisual::SelectionOption { .. } => style
                 .color
                 .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
-            StandardVisual::Checkbox { checked: true }
-            | StandardVisual::Switch { checked: true, .. } => {
+            StandardVisual::Checkbox {
+                checked,
+                indeterminate,
+                ..
+            } => {
+                if *checked || *indeterminate {
+                    self.style_model.palette.accent_text.as_rgba_array()
+                } else {
+                    self.style_model.palette.muted.as_rgba_array()
+                }
+            }
+            StandardVisual::Switch { checked: true, .. } => {
                 self.style_model.palette.accent_text.as_rgba_array()
             }
-            StandardVisual::Checkbox { checked: false }
-            | StandardVisual::Switch { checked: false, .. } => {
+            StandardVisual::Switch { checked: false, .. } => {
                 self.style_model.palette.muted.as_rgba_array()
+            }
+            StandardVisual::Scrollbar { .. } => {
+                self.style_model.palette.border_strong.as_rgba_array()
             }
             StandardVisual::Range { .. }
             | StandardVisual::Card { .. }
@@ -3302,7 +3380,7 @@ impl UiWorld {
             children: Arc::clone(&hierarchy.children),
             layout: *self.world.get::<LayoutBox>(entity)?,
             scroll_offset: *self.world.get::<ScrollOffset>(entity)?,
-            z_index: self.stacking_z_index(id),
+            z_index: self.stacking_z_index_memo(id, memo),
             source_style,
             style,
             text: if has_text {
@@ -3330,25 +3408,42 @@ impl UiWorld {
         })
     }
 
-    fn stacking_z_index(&self, id: StableNodeId) -> i32 {
+    /// Nearest authored `z-index` at or above `id`, recording the chain so a
+    /// pass over a subtree pays for each ancestor once.
+    fn stacking_z_index_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> i32 {
         if self.z_index_nodes == 0 {
             return 0;
         }
+        let mut chain = Vec::new();
         let mut current = Some(id);
-        while let Some(id) = current {
-            if let Some(z_index) = self
+        let mut z_index = 0;
+        while let Some(node) = current {
+            if let Some(&known) = memo.stacking.get(&node) {
+                z_index = known;
+                break;
+            }
+            let Some(&entity) = self.entities.get(&node) else {
+                break;
+            };
+            if let Some(authored) = self
                 .world
-                .get::<NodeStyle>(self.entities[&id])
+                .get::<NodeStyle>(entity)
                 .and_then(|style| style.layout.z_index)
             {
-                return z_index;
+                z_index = authored;
+                memo.stacking.insert(node, authored);
+                break;
             }
+            chain.push(node);
             current = self
                 .world
-                .get::<Hierarchy>(self.entities[&id])
+                .get::<Hierarchy>(entity)
                 .and_then(|hierarchy| hierarchy.parent);
         }
-        0
+        for node in chain {
+            memo.stacking.insert(node, z_index);
+        }
+        z_index
     }
 
     fn derive_component_geometry(
@@ -3553,17 +3648,74 @@ impl UiWorld {
                     focus_ring: None,
                 })
             }
-            StandardVisual::TextInput { size, invalid, .. } => {
+            StandardVisual::TextInput {
+                size,
+                invalid,
+                steppers,
+                ..
+            } => {
                 let presentation = self
                     .world
                     .get::<TextInputPresentation>(self.entities[&id])?;
+                let accessibility = self.world.get::<AccessibilityState>(self.entities[&id]);
+                let disabled = accessibility.is_some_and(|state| state.disabled);
+                let steppers = steppers
+                    .then(|| {
+                        let band = (size.height() / 2.0).min(content.height / 2.0);
+                        let width = size.indicator_size();
+                        if band <= 0.0 || width <= 0.0 || content.width <= width {
+                            return None;
+                        }
+                        let x = content.x + content.width - width;
+                        let numeric = accessibility.map(|state| {
+                            (
+                                state.numeric_value.unwrap_or_default(),
+                                state.numeric_minimum,
+                                state.numeric_maximum,
+                            )
+                        });
+                        let can_increment = !disabled
+                            && numeric.is_none_or(|(value, _, maximum)| {
+                                maximum.is_none_or(|maximum| value < maximum)
+                            });
+                        let can_decrement = !disabled
+                            && numeric.is_none_or(|(value, minimum, _)| {
+                                minimum.is_none_or(|minimum| value > minimum)
+                            });
+                        let active = self.style_model.palette.muted.as_rgba_array();
+                        let inert = self.style_model.palette.faint.as_rgba_array();
+                        Some(crate::NumberSteppers {
+                            increment: LayoutBox {
+                                x,
+                                y: content.y + (content.height - band * 2.0) / 2.0,
+                                width,
+                                height: band,
+                            },
+                            decrement: LayoutBox {
+                                x,
+                                y: content.y + (content.height - band * 2.0) / 2.0 + band,
+                                width,
+                                height: band,
+                            },
+                            increment_color: if can_increment { active } else { inert },
+                            decrement_color: if can_decrement { active } else { inert },
+                            increment_enabled: can_increment,
+                            decrement_enabled: can_decrement,
+                            glyph_size: (width - 2.0).max(1.0),
+                        })
+                    })
+                    .flatten();
+                let content = match steppers {
+                    Some(steppers) => LayoutBox {
+                        width: (content.width - steppers.increment.width - 4.0).max(0.0),
+                        ..content
+                    },
+                    None => content,
+                };
                 let focused =
                     self.focused.get(&self.component::<Identity>(id).document) == Some(&id);
                 let metrics = self.text_metrics(id).unwrap_or_default();
-                let multiline = self
-                    .world
-                    .get::<AccessibilityState>(self.entities[&id])
-                    .is_some_and(|state| state.multiline);
+                let multiline = accessibility.is_some_and(|state| state.multiline);
                 let requested_scroll = *self.component::<ScrollOffset>(id);
                 let mut scroll_x = if multiline {
                     requested_scroll.x
@@ -3671,6 +3823,7 @@ impl UiWorld {
                     selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
                     caret_color: self.style_model.palette.accent.as_rgba_array(),
                     preedit_color: self.style_model.palette.accent.as_rgba_array(),
+                    steppers,
                 })
             }
             StandardVisual::Switch {
@@ -3805,6 +3958,127 @@ impl UiWorld {
                     track_border: fade(track_border),
                     thumb_background: fade(thumb_background),
                 })
+            }
+            StandardVisual::Scrollbar {
+                axes,
+                visibility,
+                revealed,
+                dragging,
+            } => {
+                if !revealed || matches!(visibility, nana_ui_core::ScrollbarVisibility::Hidden) {
+                    return None;
+                }
+                let metrics = self.scroll_metrics(id)?;
+                let offset = self.scroll_offset(id).unwrap_or_default();
+                let chrome = nana_ui_core::SCROLLBAR_METRICS;
+                let palette = &self.style_model.palette;
+                let track_background =
+                    matches!(visibility, nana_ui_core::ScrollbarVisibility::Always)
+                        .then(|| palette.subtle.as_rgba_array());
+                let scrolls = |axis: nana_ui_core::ScrollbarAxis| match axis {
+                    nana_ui_core::ScrollbarAxis::Horizontal => {
+                        axes.horizontal() && metrics.content_width > metrics.viewport_width
+                    }
+                    nana_ui_core::ScrollbarAxis::Vertical => {
+                        axes.vertical() && metrics.content_height > metrics.viewport_height
+                    }
+                };
+                let bar = |axis: nana_ui_core::ScrollbarAxis| {
+                    if !scrolls(axis) {
+                        return None;
+                    }
+                    let horizontal = matches!(axis, nana_ui_core::ScrollbarAxis::Horizontal);
+                    // Give up the far corner only when the other axis also has
+                    // a bar, so the two never overlap.
+                    let corner = if scrolls(match axis {
+                        nana_ui_core::ScrollbarAxis::Horizontal => {
+                            nana_ui_core::ScrollbarAxis::Vertical
+                        }
+                        nana_ui_core::ScrollbarAxis::Vertical => {
+                            nana_ui_core::ScrollbarAxis::Horizontal
+                        }
+                    }) {
+                        chrome.thickness
+                    } else {
+                        0.0
+                    };
+                    let along = if horizontal {
+                        (bounds.width - corner).max(0.0)
+                    } else {
+                        (bounds.height - corner).max(0.0)
+                    };
+                    let track = nana_ui_core::scrollbar_track(
+                        if horizontal {
+                            metrics.viewport_width
+                        } else {
+                            metrics.viewport_height
+                        },
+                        if horizontal {
+                            metrics.content_width
+                        } else {
+                            metrics.content_height
+                        },
+                        if horizontal { offset.x } else { offset.y },
+                        if horizontal { bounds.x } else { bounds.y },
+                        along,
+                        chrome,
+                    )?;
+                    let active = *dragging == Some(axis);
+                    let thumb_inset = ((chrome.thickness - chrome.thumb_thickness) / 2.0).max(0.0);
+                    let (track_box, thumb_box) = if horizontal {
+                        let track_y = bounds.y + bounds.height - chrome.thickness;
+                        (
+                            LayoutBox {
+                                x: track.origin,
+                                y: track_y,
+                                width: track.length,
+                                height: chrome.thickness,
+                            },
+                            LayoutBox {
+                                x: track.thumb_origin,
+                                y: track_y + thumb_inset,
+                                width: track.thumb_length,
+                                height: chrome.thumb_thickness,
+                            },
+                        )
+                    } else {
+                        let track_x = bounds.x + bounds.width - chrome.thickness;
+                        (
+                            LayoutBox {
+                                x: track_x,
+                                y: track.origin,
+                                width: chrome.thickness,
+                                height: track.length,
+                            },
+                            LayoutBox {
+                                x: track_x + thumb_inset,
+                                y: track.thumb_origin,
+                                width: chrome.thumb_thickness,
+                                height: track.thumb_length,
+                            },
+                        )
+                    };
+                    Some(crate::ScrollbarBar {
+                        track: track_box,
+                        thumb: thumb_box,
+                        track_background,
+                        thumb_background: if active {
+                            palette.muted.as_rgba_array()
+                        } else {
+                            palette.border_strong.as_rgba_array()
+                        },
+                        thumb_radius: chrome.thumb_radius(),
+                        max_offset: track.max_offset,
+                    })
+                };
+                let horizontal = bar(nana_ui_core::ScrollbarAxis::Horizontal);
+                let vertical = bar(nana_ui_core::ScrollbarAxis::Vertical);
+                (horizontal.is_some() || vertical.is_some()).then_some(
+                    crate::ComponentGeometry::Scrollbar {
+                        horizontal,
+                        vertical,
+                    },
+                )
             }
             StandardVisual::Range {
                 label,
@@ -4173,10 +4447,51 @@ impl UiWorld {
                 icon,
                 size,
                 show_focus_ring,
-                ..
+                indicator,
+                selected,
+                disabled,
             } => {
                 let icon_extent = size.icon_size().min(content.height);
-                let base_padding = size.padding_x() + 2.0;
+                let base_padding = if *indicator {
+                    size.radio_lead()
+                } else {
+                    size.padding_x() + 2.0
+                };
+                let ring = indicator.then(|| {
+                    let extent = size.indicator_size().min(bounds.height);
+                    let ring = LayoutBox {
+                        x: bounds.x + nana_ui_core::RADIO_ROW_INSET,
+                        y: bounds.y + (bounds.height - extent) / 2.0,
+                        width: extent,
+                        height: extent,
+                    };
+                    let (ring_color, dot_color) = if *disabled {
+                        let faint = self.style_model.palette.faint.as_rgba_array();
+                        (faint, faint)
+                    } else if *selected {
+                        let accent = self.style_model.palette.accent.as_rgba_array();
+                        (accent, accent)
+                    } else {
+                        (
+                            self.style_model.palette.border_strong.as_rgba_array(),
+                            self.style_model.palette.accent.as_rgba_array(),
+                        )
+                    };
+                    let dot_extent = extent / 2.5;
+                    crate::RadioIndicator {
+                        ring,
+                        ring_color,
+                        dot: selected.then_some((
+                            LayoutBox {
+                                x: ring.x + (extent - dot_extent) / 2.0,
+                                y: ring.y + (extent - dot_extent) / 2.0,
+                                width: dot_extent,
+                                height: dot_extent,
+                            },
+                            dot_color,
+                        )),
+                    }
+                });
                 let icon_bounds = icon.map(|icon| {
                     (
                         icon,
@@ -4211,6 +4526,7 @@ impl UiWorld {
                     focus_ring: (*show_focus_ring
                         && self.focused.get(&self.component::<Identity>(id).document) == Some(&id))
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
+                    indicator: ring,
                 })
             }
             StandardVisual::Progress {
@@ -4658,6 +4974,8 @@ impl UiWorld {
                     .confirm_action_effect(id)
                     .is_some_and(|effect| effect.0),
             checked: state.checked,
+            mixed: state.mixed,
+            orientation: state.orientation,
             selected: state.selected,
             multiline: state.multiline,
             editable: state.editable,
@@ -4920,7 +5238,9 @@ impl UiWorld {
             border: local.border,
         };
         let accessibility = self.component::<AccessibilityState>(id);
-        let selected = accessibility.checked == Some(true) || accessibility.selected == Some(true);
+        let selected = accessibility.checked == Some(true)
+            || accessibility.mixed
+            || accessibility.selected == Some(true);
         if selected {
             paint = paint.overlay(local.interaction.selected);
         }
@@ -5303,6 +5623,8 @@ struct PresenceFlags {
     confirm: bool,
     clip: bool,
     z_index: bool,
+    /// Style resolves against the viewport (`position: fixed`, `vw` / `vh`).
+    viewport: bool,
 }
 
 impl PresenceFlags {
@@ -5310,6 +5632,7 @@ impl PresenceFlags {
         confirm: false,
         clip: false,
         z_index: false,
+        viewport: false,
     };
 }
 

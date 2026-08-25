@@ -78,7 +78,34 @@ impl ControlSize {
             Self::Large => 16.0,
         }
     }
+
+    /// Square extent of a checkbox box or radio ring.
+    pub const fn indicator_size(self) -> f32 {
+        match self {
+            Self::Small => 14.0,
+            Self::Medium => 16.0,
+            Self::Large => 18.0,
+        }
+    }
+
+    /// Gap between an indicator and its label.
+    pub const fn indicator_gap(self) -> f32 {
+        match self {
+            Self::Small => 6.0,
+            Self::Medium => 8.0,
+            Self::Large => 8.0,
+        }
+    }
+
+    /// Left inset a radio row reserves before its label: a small row inset,
+    /// the ring, and the label gap.
+    pub const fn radio_lead(self) -> f32 {
+        RADIO_ROW_INSET + self.indicator_size() + self.indicator_gap()
+    }
 }
+
+/// Left inset of a radio ring inside its row, so hover chrome is not flush.
+pub const RADIO_ROW_INSET: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {

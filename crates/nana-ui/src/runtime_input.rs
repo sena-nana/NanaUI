@@ -1,23 +1,47 @@
 //! Stable platform-input routing for Nana-native Runtime components.
 
 use nana_ui_core::TableNavigation;
-use nana_ui_platform::{ImeEvent, InputDisposition, InputEvent, PointerPhase};
+use nana_ui_platform::{
+    ImeEvent, InputDisposition, InputEvent, PointerPhase, SharedClipboardHost,
+    default_shared_clipboard,
+};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
     GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
     XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const DEFAULT_LINE_SCROLL_EXTENT: f32 = 60.0;
 
+/// Pasteboard shared by every adapter that does not carry its own.
+///
+/// The OS pasteboard is one system resource, and adapters are built per event,
+/// so the backend is opened once per process instead of once per keystroke.
+fn process_clipboard() -> &'static SharedClipboardHost {
+    static CLIPBOARD: OnceLock<SharedClipboardHost> = OnceLock::new();
+    CLIPBOARD.get_or_init(default_shared_clipboard)
+}
+
 /// Converts renderer-neutral platform input into typed Runtime component
 /// actions. It owns no input or component state.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone)]
 pub struct RuntimeInputAdapter {
     pub line_scroll_extent: f32,
     pub table_page_rows: usize,
+    clipboard: Option<SharedClipboardHost>,
+}
+
+impl std::fmt::Debug for RuntimeInputAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeInputAdapter")
+            .field("line_scroll_extent", &self.line_scroll_extent)
+            .field("table_page_rows", &self.table_page_rows)
+            .field("own_clipboard", &self.clipboard.is_some())
+            .finish()
+    }
 }
 
 impl Default for RuntimeInputAdapter {
@@ -25,13 +49,43 @@ impl Default for RuntimeInputAdapter {
         Self {
             line_scroll_extent: DEFAULT_LINE_SCROLL_EXTENT,
             table_page_rows: 10,
+            clipboard: None,
         }
     }
 }
 
 impl RuntimeInputAdapter {
+    /// Route clipboard shortcuts through `clipboard` instead of the process
+    /// pasteboard. Hosts with their own backend, and tests, install one here.
+    #[must_use]
+    pub fn with_clipboard(mut self, clipboard: SharedClipboardHost) -> Self {
+        self.clipboard = Some(clipboard);
+        self
+    }
+
+    fn clipboard(&self) -> &SharedClipboardHost {
+        match &self.clipboard {
+            Some(clipboard) => clipboard,
+            None => process_clipboard(),
+        }
+    }
+
+    fn read_clipboard(&self) -> Option<String> {
+        self.clipboard()
+            .lock()
+            .ok()?
+            .read_text()
+            .filter(|text| !text.is_empty())
+    }
+
+    fn write_clipboard(&self, text: &str) -> bool {
+        self.clipboard()
+            .lock()
+            .is_ok_and(|mut clipboard| clipboard.write_text(text))
+    }
+
     pub fn dispatch(
-        self,
+        &self,
         context: &mut AppContext,
         document: DocumentId,
         event: &InputEvent,
@@ -43,7 +97,7 @@ impl RuntimeInputAdapter {
     /// component behavior such as tooltip delay uses this clock; no component
     /// owns a timer or requests frames while idle.
     pub fn dispatch_at(
-        self,
+        &self,
         context: &mut AppContext,
         document: DocumentId,
         event: &InputEvent,
@@ -163,7 +217,8 @@ impl RuntimeInputAdapter {
                 };
                 let component_handled = match phase {
                     PointerPhase::Move => {
-                        context.update_range_drag(document, *pointer_id, *x)?
+                        context.update_scrollbar_drag(document, *pointer_id, *x, *y)?
+                            || context.update_range_drag(document, *pointer_id, *x)?
                             || context.update_xy_pad_drag(
                                 document,
                                 *pointer_id,
@@ -196,6 +251,17 @@ impl RuntimeInputAdapter {
                             )?
                             || target.is_some()
                     }
+                    PointerPhase::Down if *button == 2 => {
+                        // A secondary press outside an open popover dismisses
+                        // it and goes no further, matching the primary press.
+                        if context.dismiss_popovers_outside(target)? {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        context.dismiss_detached_menus(target)?;
+                        context.secondary_press_at(document, *x, *y)?.is_some()
+                    }
                     PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
                         if context.dismiss_popovers_outside(target)? {
                             // Consume the press that dismissed the popover.
@@ -207,6 +273,17 @@ impl RuntimeInputAdapter {
                             });
                         }
                         context.dismiss_detached_menus(target)?;
+                        // Scrollbars overlay content, so they claim the press
+                        // before the node underneath sees it.
+                        if *button == 0
+                            && let Some((view, axis)) =
+                                context.scrollbar_target_near(document, *x, *y)
+                            && context.begin_scrollbar_drag(*pointer_id, view, axis, *x, *y)?
+                        {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         let split_handle = context.split_handle_near(document, *x, *y);
                         let dock_handle = context.dock_handle_near(document, *x, *y);
                         let workspace_handle = context.workspace_handle_near(document, *x, *y);
@@ -264,7 +341,9 @@ impl RuntimeInputAdapter {
                                     )?;
                                 } else {
                                     context.press_pointer(document, *pointer_id, target)?;
-                                    if context.is_range_field(target) {
+                                    if context.press_number_stepper(target, *x, *y)? {
+                                        context.release_pointer(document, *pointer_id);
+                                    } else if context.is_range_field(target) {
                                         context.begin_range_drag(
                                             document,
                                             *pointer_id,
@@ -288,7 +367,8 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
-                        if context.end_range_drag(document, *pointer_id, false)?
+                        if context.end_scrollbar_drag(document, *pointer_id, false)?
+                            || context.end_range_drag(document, *pointer_id, false)?
                             || context.end_xy_pad_drag(document, *pointer_id, false)?
                             || context.end_graph_canvas_pointer(
                                 document,
@@ -318,6 +398,7 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Cancel => {
+                        let scrollbar = context.end_scrollbar_drag(document, *pointer_id, true)?;
                         let range = context.end_range_drag(document, *pointer_id, true)?;
                         let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
                         let graph = context.end_graph_canvas_pointer(
@@ -336,7 +417,8 @@ impl RuntimeInputAdapter {
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
                         let calendar = context.clear_calendar_heatmap_hover(document)?;
-                        range
+                        scrollbar
+                            || range
                             || xy_pad
                             || graph
                             || split
@@ -414,6 +496,11 @@ impl RuntimeInputAdapter {
                 ..
             } if *pressed && !modifiers.alt && !modifiers.shift => {
                 let primary = modifiers.control || modifiers.meta;
+                if primary && self.dispatch_clipboard_shortcut(context, document, key)? {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
                 let range_adjustment = (!primary)
                     .then_some(match key.as_str() {
                         "ArrowLeft" | "ArrowDown" => Some(RangeAdjustment::Decrement),
@@ -484,6 +571,32 @@ impl RuntimeInputAdapter {
                     });
                 }
                 if !primary {
+                    let number_steps = match key.as_str() {
+                        "ArrowUp" => Some(1),
+                        "ArrowDown" => Some(-1),
+                        _ => None,
+                    };
+                    if let Some(steps) = number_steps
+                        && context.step_focused_number_input(document, steps)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), "Enter")
+                        && context.commit_focused_number_input(document)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
+                    if matches!(key.as_str(), "Escape")
+                        && context.revert_focused_number_input(document)?
+                    {
+                        return Ok(InputDisposition {
+                            prevent_default: true,
+                        });
+                    }
                     let palette_nav = match key.as_str() {
                         "ArrowUp" => Some(nana_ui_runtime::ActionPickerNavigation::Previous),
                         "ArrowDown" => Some(nana_ui_runtime::ActionPickerNavigation::Next),
@@ -590,6 +703,46 @@ impl RuntimeInputAdapter {
         })
     }
 
+    /// Apply Ctrl/Cmd + C / X / V / A to the focused Runtime editor.
+    ///
+    /// The Runtime owns what is selected and what an edit does; this adapter
+    /// only moves text between that selection and the host pasteboard. A copy
+    /// with nothing selected leaves the pasteboard alone rather than clearing
+    /// it, and a paste with an empty pasteboard is not an edit.
+    fn dispatch_clipboard_shortcut(
+        &self,
+        context: &mut AppContext,
+        document: DocumentId,
+        key: &str,
+    ) -> Result<bool, FrameworkError> {
+        if key.eq_ignore_ascii_case("a") {
+            return context.select_all_focused_text(document);
+        }
+        if key.eq_ignore_ascii_case("c") {
+            return Ok(context
+                .focused_selected_text(document)
+                .is_some_and(|text| self.write_clipboard(&text)));
+        }
+        if key.eq_ignore_ascii_case("x") {
+            let Some(text) = context.focused_selected_text(document) else {
+                return Ok(false);
+            };
+            // Never delete text the pasteboard refused to take.
+            if !self.write_clipboard(&text) {
+                return Ok(false);
+            }
+            context.cut_focused_text(document)?;
+            return Ok(true);
+        }
+        if key.eq_ignore_ascii_case("v") {
+            let Some(text) = self.read_clipboard() else {
+                return Ok(false);
+            };
+            return context.replace_focused_text(document, &text);
+        }
+        Ok(false)
+    }
+
     /// Route platform IME into the focused Runtime editor.
     ///
     /// Retained TextInput/TextArea/SearchDropdown/CommandPalette state is the
@@ -597,7 +750,7 @@ impl RuntimeInputAdapter {
     /// focused editable field, or a blocking overlay, consumes the event so a
     /// second host IME path cannot also mutate it.
     pub fn dispatch_ime(
-        self,
+        &self,
         context: &mut AppContext,
         document: DocumentId,
         event: &ImeEvent,
@@ -651,7 +804,9 @@ fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
+    use nana_ui_platform::{
+        ImeEvent, InputModifiers, MemoryClipboard, PointerType, shared_clipboard,
+    };
     use nana_ui_runtime::{
         ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum,
         Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, ModalSlots, MutationQueue,
@@ -776,6 +931,70 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(button.stable_id()), Some("Running"));
+    }
+
+    #[test]
+    fn a_right_button_press_dispatches_a_secondary_press_without_activating() {
+        use nana_ui_runtime::SecondaryPress;
+        use std::sync::{Arc, Mutex};
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, Button::new("Build"))
+            .unwrap();
+        let presses = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&presses);
+        context
+            .on(button, move |_button, press: &SecondaryPress, _cx| {
+                observed.lock().unwrap().push(*press);
+            })
+            .unwrap();
+        context
+            .on(button, |button, _event: &Activate, _cx| {
+                button.label = "Running".into();
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 120.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        let mut secondary = pointer(PointerPhase::Down, 30.0, 30.0);
+        if let InputEvent::Pointer { button, .. } = &mut secondary {
+            *button = 2;
+        }
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &secondary)
+                .unwrap()
+                .prevent_default
+        );
+        let press = *presses
+            .lock()
+            .unwrap()
+            .first()
+            .expect("one secondary press");
+        assert_eq!(press.target, button.stable_id());
+        assert_eq!((press.x, press.y), (30.0, 30.0));
+
+        // The release must not activate: no press was recorded for button 2.
+        let mut release = pointer(PointerPhase::Up, 30.0, 30.0);
+        if let InputEvent::Pointer { button, .. } = &mut release {
+            *button = 2;
+        }
+        adapter.dispatch(&mut context, document, &release).unwrap();
+        assert_eq!(context.world().text(button.stable_id()), Some("Build"));
     }
 
     #[test]
@@ -1093,6 +1312,140 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(input.stable_id()), Some("NanaU"));
+    }
+
+    #[test]
+    fn clipboard_shortcuts_move_text_between_the_editor_and_the_pasteboard() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("Nana"))
+            .unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        let adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        let primary = |key: &str| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+        };
+
+        // Nothing is selected yet, so a copy must not clear the pasteboard.
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &primary("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(clipboard.lock().unwrap().read_text(), None);
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("a"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("x"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some(""));
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("Nana")
+        );
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("v"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("v"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("NanaNana"));
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("a"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("NanaNana"));
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("NanaNana")
+        );
+    }
+
+    #[test]
+    fn a_read_only_field_copies_but_never_loses_text_to_a_cut() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("Nana").read_only(true))
+            .unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        let adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        let primary = |key: &str| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                meta: true,
+                ..InputModifiers::default()
+            },
+        };
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("a"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("x"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("Nana")
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("Nana"));
+
+        assert!(clipboard.lock().unwrap().write_text("pasted"));
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &primary("v"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("Nana"));
     }
 
     #[test]

@@ -617,6 +617,7 @@ fn accessibility_role_name(role: AccessibilityRole) -> &'static str {
         AccessibilityRole::Tab => "tab",
         AccessibilityRole::RadioGroup => "radio-group",
         AccessibilityRole::Radio => "radio",
+        AccessibilityRole::Separator => "separator",
         AccessibilityRole::Dialog => "dialog",
         AccessibilityRole::AlertDialog => "alert-dialog",
         AccessibilityRole::Menu => "menu",
@@ -872,6 +873,272 @@ mod tests {
             assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
             assert!(pixels.iter().any(|channel| *channel != 0));
         }
+    }
+
+    /// Real GPU evidence that `CustomRenderNode::params` reaches the painter:
+    /// changing only a `GpuView` palette must change the painted pixels.
+    #[test]
+    fn gpu_view_palette_params_reach_the_default_painter() {
+        use nana_ui::default_scene_gpu_renderers;
+        use nana_ui::runtime::{GpuView, GpuViewPalette};
+
+        const WIDTH: u32 = 96;
+        const HEIGHT: u32 = 96;
+
+        let Ok(mut gpu) = OffscreenSnapshots::new() else {
+            return;
+        };
+        let renderers = default_scene_gpu_renderers();
+        let document_id = DocumentId::new(1).expect("document");
+        let mut document = RuntimeDocument::new(document_id);
+        let view = document
+            .context_mut()
+            .create_component(
+                document_id,
+                GpuView::new(1).palette(GpuViewPalette {
+                    background: [1.0, 0.0, 0.0, 1.0],
+                    accent: [1.0, 0.0, 0.0, 1.0],
+                }),
+            )
+            .expect("gpu view");
+        let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
+
+        // `readback` returns RGBA; sum each channel over the whole frame.
+        let mut paint = |session: &mut RuntimeAgentSession| {
+            session.flush().expect("flush");
+            let scene = session.document().scene().clone();
+            let pixels = gpu
+                .paint(
+                    &scene,
+                    Size::new(WIDTH, HEIGHT),
+                    [0.0, 0.0, 0.0, 1.0],
+                    None,
+                    Some(&renderers),
+                )
+                .expect("offscreen paint with the gpu-view renderer");
+            pixels.chunks_exact(4).fold([0u64; 3], |mut acc, rgba| {
+                acc[0] += u64::from(rgba[0]);
+                acc[1] += u64::from(rgba[1]);
+                acc[2] += u64::from(rgba[2]);
+                acc
+            })
+        };
+
+        let red = paint(&mut session);
+        assert!(
+            red[0] > red[1] && red[0] > red[2],
+            "the red palette must paint red-dominant, got {red:?}"
+        );
+
+        session
+            .document_mut()
+            .context_mut()
+            .update_component(view, |view, _| {
+                view.palette = GpuViewPalette {
+                    background: [0.0, 1.0, 0.0, 1.0],
+                    accent: [0.0, 1.0, 0.0, 1.0],
+                };
+                view.invalidate_content();
+            })
+            .expect("recolor");
+        let green = paint(&mut session);
+        assert!(
+            green[1] > green[0] && green[1] > green[2],
+            "the recolored palette must reach the painter, got {green:?}"
+        );
+    }
+
+    /// Real GPU evidence that resident scrollbar chrome lands on the scrollport
+    /// edge: the right-hand columns must brighten once the bar is drawn.
+    #[test]
+    fn resident_scrollbar_paints_pixels_on_the_scrollport_edge() {
+        use nana_ui::runtime::{LengthSpec, NodeStyle, ScrollAxes, ScrollView, Text};
+        use nana_ui_core::ScrollbarVisibility;
+
+        const WIDTH: u32 = 160;
+        const HEIGHT: u32 = 120;
+
+        let Ok(mut gpu) = OffscreenSnapshots::new() else {
+            return;
+        };
+        let document_id = DocumentId::new(1).expect("document");
+        let mut document = RuntimeDocument::new(document_id);
+        let mut viewport = NodeStyle::default();
+        {
+            let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+            layout.width = Some(LengthSpec::Px(WIDTH as f32));
+            layout.height = Some(LengthSpec::Px(HEIGHT as f32));
+        }
+        let scroll = document
+            .context_mut()
+            .create_component(
+                document_id,
+                ScrollView::new(ScrollAxes::Vertical)
+                    .scrollbars(ScrollbarVisibility::Always)
+                    .style(viewport),
+            )
+            .expect("scroll view");
+        for index in 0..8 {
+            let mut row = NodeStyle::default();
+            {
+                let layout = std::sync::Arc::make_mut(&mut row.layout);
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(LengthSpec::Px(40.0));
+            }
+            let row = document
+                .context_mut()
+                .create_component(document_id, Text::new(format!("Row {index}")).style(row))
+                .expect("row");
+            document.context_mut().append_child(scroll, row).unwrap();
+        }
+        let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
+
+        // Brightness of the rightmost track-thick band versus the same band on
+        // the opposite edge, which never carries chrome.
+        let mut edges = |session: &mut RuntimeAgentSession| {
+            session.flush().expect("flush");
+            let scene = session.document().scene().clone();
+            let pixels = gpu
+                .paint(
+                    &scene,
+                    Size::new(WIDTH, HEIGHT),
+                    [0.0, 0.0, 0.0, 1.0],
+                    None,
+                    None,
+                )
+                .expect("offscreen paint");
+            let band = nana_ui_core::SCROLLBAR_METRICS.thickness as u32;
+            let mut right = 0u64;
+            let mut left = 0u64;
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let offset = ((y * WIDTH + x) * 4) as usize;
+                    let luma = u64::from(pixels[offset])
+                        + u64::from(pixels[offset + 1])
+                        + u64::from(pixels[offset + 2]);
+                    if x >= WIDTH - band {
+                        right += luma;
+                    } else if x < band {
+                        left += luma;
+                    }
+                }
+            }
+            (left, right)
+        };
+
+        let (left, right) = edges(&mut session);
+        assert!(
+            right > left,
+            "the resident bar must brighten the right edge: left {left}, right {right}"
+        );
+
+        session
+            .document_mut()
+            .context_mut()
+            .update_component(scroll, |scroll, _| {
+                scroll.scrollbars = ScrollbarVisibility::Hidden;
+            })
+            .expect("hide bars");
+        let (_, hidden_right) = edges(&mut session);
+        assert!(
+            hidden_right < right,
+            "hiding the bar must remove those pixels: {hidden_right} vs {right}"
+        );
+    }
+
+    #[test]
+    fn divider_and_radio_selection_reach_pixels() {
+        use nana_ui::runtime::{
+            Card, Divider, LengthSpec, NodeStyle, SegmentedControl, SegmentedOption,
+        };
+        use nana_ui_core::FlexDirection;
+
+        const WIDTH: u32 = 320;
+        const HEIGHT: u32 = 360;
+
+        if OffscreenSnapshots::new().is_err() {
+            return;
+        }
+        let document_id = DocumentId::new(1).expect("document");
+        let mut document = RuntimeDocument::new(document_id);
+        let mut column = NodeStyle::default();
+        {
+            let layout = std::sync::Arc::make_mut(&mut column.layout);
+            layout.width = Some(LengthSpec::Px(WIDTH as f32));
+            layout.height = Some(LengthSpec::Px(HEIGHT as f32));
+            layout.direction = Some(FlexDirection::Column);
+            layout.gap = Some(LengthSpec::Px(12.0));
+            layout.padding = Some(LengthSpec::Px(16.0));
+        }
+        let root = document
+            .context_mut()
+            .create_component(document_id, Card::new().style(column))
+            .expect("root");
+        let radios = document
+            .context_mut()
+            .create_component(document_id, SegmentedControl::radio_group())
+            .expect("radios");
+        let first = document
+            .context_mut()
+            .create_component(document_id, SegmentedOption::new("Automatic"))
+            .expect("first");
+        let second = document
+            .context_mut()
+            .create_component(document_id, SegmentedOption::new("Manual"))
+            .expect("second");
+        let divider = document
+            .context_mut()
+            .create_component(document_id, Divider::horizontal())
+            .expect("divider");
+        document.context_mut().append_child(root, radios).unwrap();
+        document.context_mut().append_child(radios, first).unwrap();
+        document.context_mut().append_child(radios, second).unwrap();
+        document.context_mut().append_child(root, divider).unwrap();
+        document
+            .context_mut()
+            .set_segmented_options(radios, vec![first, second], Some(second))
+            .expect("select");
+
+        let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
+        let boxes = |session: &RuntimeAgentSession, id| {
+            session
+                .document()
+                .context()
+                .world()
+                .layout_box(id)
+                .expect("layout")
+        };
+        let rule = boxes(&session, divider.stable_id());
+        let unselected = boxes(&session, first.stable_id());
+        let selected = boxes(&session, second.stable_id());
+        let (_, pixels) = session.screenshot_rgba().expect("pixels");
+        let luma = |x: f32, y: f32| {
+            let offset = ((y.round() as u32 * WIDTH + x.round() as u32) * 4) as usize;
+            u32::from(pixels[offset])
+                + u32::from(pixels[offset + 1])
+                + u32::from(pixels[offset + 2])
+        };
+
+        let row = luma(rule.x + rule.width * 0.5, rule.y);
+        let above = luma(rule.x + rule.width * 0.5, rule.y - 4.0);
+        assert!(
+            row > above,
+            "the hairline rule must paint its own row: {row} vs {above}"
+        );
+
+        // The ring sits a fixed inset in from the option's leading edge; only
+        // the selected one carries a filled dot at its center.
+        let dot_x = |option: nana_ui::runtime::LayoutBox| {
+            option.x
+                + nana_ui_core::RADIO_ROW_INSET
+                + nana_ui_core::ControlSize::Medium.indicator_size() / 2.0
+        };
+        let selected_dot = luma(dot_x(selected), selected.y + selected.height * 0.5);
+        let empty_ring = luma(dot_x(unselected), unselected.y + unselected.height * 0.5);
+        assert!(
+            selected_dot > empty_ring,
+            "only the selected radio fills its ring: {selected_dot} vs {empty_ring}"
+        );
     }
 
     #[test]

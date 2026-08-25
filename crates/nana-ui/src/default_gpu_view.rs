@@ -8,7 +8,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
-use nana_ui_runtime::{GPU_VIEW_RENDERER, GpuViewPalette};
+use nana_ui_runtime::{CustomRenderNode, GPU_VIEW_RENDERER, GpuViewPalette, gpu_view_params};
 use nana_ui_scene::PrimitiveId;
 
 use crate::gpu_view::GPU_VIEW_SHADER;
@@ -22,9 +22,12 @@ use crate::scene_gpu::{
 /// The hosted runtime installs this when a program leaves scene GPU renderers
 /// unset and host Device/Queue handles are available. [`Self::draw_in_pass`]
 /// encodes into the current Scene dest pass (Inline). [`Self::render`] opens a
-/// dedicated pass on the same encoder/target only when the painter cannot join.
-/// Palette comes from the constructor because
-/// [`nana_ui_runtime::CustomRenderNode`] does not encode [`GpuViewPalette`].
+/// dedicated pass on the same encoder/target when the node asks for one or the
+/// painter cannot join.
+///
+/// Per-node palette and seed arrive in [`nana_ui_runtime::CustomRenderNode`]
+/// `params` under [`gpu_view_params`]. The constructor palette is the fallback
+/// for nodes that carry no params.
 pub struct DefaultGpuViewRenderer {
     palette: GpuViewPalette,
     device: Option<Arc<wgpu::Device>>,
@@ -78,6 +81,38 @@ impl DefaultGpuViewRenderer {
     fn prepare_queue<'a>(&'a self, context: &'a SceneGpuPrepareContext<'_>) -> &'a wgpu::Queue {
         self.queue.as_deref().unwrap_or(context.queue)
     }
+
+    /// Per-node palette, falling back to the constructor palette when the node
+    /// carries no `params`.
+    fn node_palette(&self, custom: &CustomRenderNode) -> GpuViewPalette {
+        let Some(params) = custom.params.as_ref() else {
+            return self.palette;
+        };
+        if params.len() < gpu_view_params::LEN {
+            return self.palette;
+        }
+        GpuViewPalette {
+            background: rgba(params, gpu_view_params::BACKGROUND),
+            accent: rgba(params, gpu_view_params::ACCENT),
+        }
+    }
+
+    /// Per-node seed. Falls back to the revision so a host that omits `params`
+    /// still animates on content invalidation.
+    fn node_seed(&self, custom: &CustomRenderNode) -> f32 {
+        custom
+            .param(gpu_view_params::SEED)
+            .unwrap_or(custom.revision as f32 * 0.17)
+    }
+}
+
+fn rgba(params: &[f32], offset: usize) -> [f32; 4] {
+    [
+        params[offset],
+        params[offset + 1],
+        params[offset + 2],
+        params[offset + 3],
+    ]
 }
 
 impl fmt::Debug for DefaultGpuViewRenderer {
@@ -111,10 +146,11 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
             context.bounds.width * scale,
             context.bounds.height * scale,
         ];
+        let palette = self.node_palette(&node.custom);
         let uniform = ViewUniform {
-            color_a: self.palette.background,
-            color_b: self.palette.accent,
-            parameters: [node.custom.revision as f32 * 0.17, 0.0, 0.0, 0.0],
+            color_a: palette.background,
+            color_b: palette.accent,
+            parameters: [self.node_seed(&node.custom), 0.0, 0.0, 0.0],
         };
         if !prepared.slots.contains_key(&node.id) {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {

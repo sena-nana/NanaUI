@@ -17,7 +17,9 @@ pub mod graph;
 pub mod icon;
 pub mod layout;
 pub mod menu;
+pub mod number_field;
 pub mod overlay;
+pub mod scrollbar;
 pub mod selection;
 pub mod semantics;
 pub mod settings;
@@ -63,13 +65,18 @@ pub use layout::{
     WorkspaceLayout, WorkspaceLayoutError,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
+pub use scrollbar::{
+    SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarTrack, ScrollbarVisibility,
+    scrollbar_track,
+};
 pub use selection::{SelectionMove, SingleSelection};
 pub use semantics::{
     AnchoredMenuPlacement, ButtonKind, CardKind, ControlSize, DrawerSide, DropdownEvent,
-    DropdownSelection, PopoverAlignment, PopoverPlacement, StatusTone, SwitchControlPosition,
-    ToastTone, TooltipConfig, TooltipPlacement, ValidationIntent, WindowChrome, WindowChromeAction,
-    WindowControlMode, XYPadEvent, XYPadValue,
+    DropdownSelection, PopoverAlignment, PopoverPlacement, RADIO_ROW_INSET, StatusTone,
+    SwitchControlPosition, ToastTone, TooltipConfig, TooltipPlacement, ValidationIntent,
+    WindowChrome, WindowChromeAction, WindowControlMode, XYPadEvent, XYPadValue,
 };
 pub use settings::{
     AppearanceEvent, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,

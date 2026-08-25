@@ -27,14 +27,15 @@ use crate::{
     AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
     DocumentId, Dropdown, EmptyState, FormField, FrameProfile, FrameProfiler, FrameStage,
     IconButton, LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
-    MutationQueue, NodeKind, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled,
-    Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent,
-    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown,
-    SearchDropdownEvent, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
-    StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
-    TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
-    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
+    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover,
+    PopoverClosed, PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged,
+    RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset,
+    ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
+    SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, StandardVisual, Switch, Table,
+    TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter,
+    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, XYPad, XYPadDragState,
+    XYPadEvent,
 };
 
 mod assemble;
@@ -77,6 +78,14 @@ fn text_changed(state: &TextInputState) -> TextChanged {
     }
 }
 
+/// Build a scroll offset that moves one axis and holds the other.
+fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -> ScrollOffset {
+    match axis {
+        nana_ui_core::ScrollbarAxis::Horizontal => ScrollOffset { x: offset, y: hold },
+        nana_ui_core::ScrollbarAxis::Vertical => ScrollOffset { x: hold, y: offset },
+    }
+}
+
 impl EditableText for TextInput {
     type Change = TextChanged;
 
@@ -86,6 +95,30 @@ impl EditableText for TextInput {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn state(&self) -> &TextInputState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut TextInputState {
+        &mut self.state
+    }
+
+    fn change(&self) -> TextChanged {
+        text_changed(&self.state)
+    }
+}
+
+impl EditableText for NumberInput {
+    type Change = TextChanged;
+
+    fn accepts_input(&self) -> bool {
+        self.accepts_input()
+    }
+
+    fn replace_selection(&mut self, text: &str) -> bool {
+        self.state.replace_selection(text)
     }
 
     fn state(&self) -> &TextInputState {
@@ -304,6 +337,14 @@ struct ComponentLifecycle {
 
 type ActivationFn =
     Arc<dyn Fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError> + Send + Sync>;
+
+/// Emit [`SecondaryPress`] on a node whose concrete component type the caller
+/// no longer knows. Registered per type when a component is created.
+type SecondaryPressFn = Arc<
+    dyn Fn(&mut AppContext, StableNodeId, SecondaryPress) -> Result<(), FrameworkError>
+        + Send
+        + Sync,
+>;
 
 #[derive(Default)]
 pub struct ExtensionRegistrar {
@@ -599,6 +640,7 @@ pub struct AppContext {
     extensions: HashSet<String>,
     components: ComponentRegistry,
     activations: HashMap<TypeId, ActivationFn>,
+    secondary_presses: HashMap<TypeId, SecondaryPressFn>,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
@@ -611,6 +653,8 @@ pub struct AppContext {
     last_layout_scope: Vec<StableNodeId>,
     /// Full (`force_full`) [`Self::layout_document`] calls on this context.
     layout_full_invocations: usize,
+    /// Layout passes on this context, scoped and full.
+    layout_invocations: usize,
     program_messages: Vec<ProgramMessage>,
 }
 
@@ -742,6 +786,7 @@ impl AppContext {
             extensions: HashSet::new(),
             components: ComponentRegistry::default(),
             activations: HashMap::new(),
+            secondary_presses: HashMap::new(),
             assembled: HashMap::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
@@ -751,6 +796,7 @@ impl AppContext {
             layout_cache: crate::RetainedLayoutCache::default(),
             last_layout_scope: Vec::new(),
             layout_full_invocations: 0,
+            layout_invocations: 0,
             program_messages: Vec::new(),
         };
         context
@@ -1025,6 +1071,26 @@ impl AppContext {
         self.layout_document_impl(document, viewport, &dirty, false)
     }
 
+    /// Relayout the document for a new viewport.
+    ///
+    /// The retained layout cache is keyed by the size a node was measured
+    /// against, so a resize invalidates exactly the subtrees whose available
+    /// size moved and reuses the rest: the roots are the change set. The one
+    /// thing an available size cannot express is a box that reads the viewport
+    /// directly (`position: fixed`, `vw` / `vh`); while any of those are live
+    /// the resize falls back to a full pass.
+    pub fn layout_document_for_viewport(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+    ) -> Result<crate::CommitReport, FrameworkError> {
+        if self.world.uses_viewport_basis() {
+            return self.layout_document(document, viewport);
+        }
+        let roots = self.world.document_roots(document);
+        self.layout_document_impl(document, viewport, &roots, false)
+    }
+
     /// Nodes recomputed by the most recent layout pass; drains on read.
     pub fn take_last_layout_scope(&mut self) -> Vec<StableNodeId> {
         std::mem::take(&mut self.last_layout_scope)
@@ -1036,9 +1102,14 @@ impl AppContext {
         self.world.pending_layout_dirty()
     }
 
-    /// Full (`force_full`) layout passes. A viewport change must increment this once.
+    /// Full (`force_full`) layout passes, which discard the retained cache.
     pub fn layout_full_invocations(&self) -> usize {
         self.layout_full_invocations
+    }
+
+    /// Layout passes, scoped and full.
+    pub fn layout_invocations(&self) -> usize {
+        self.layout_invocations
     }
 
     fn layout_document_impl(
@@ -1048,6 +1119,7 @@ impl AppContext {
         dirty: &[StableNodeId],
         force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        self.layout_invocations += 1;
         if force_full {
             self.layout_full_invocations += 1;
         }
@@ -2647,6 +2719,7 @@ impl AppContext {
                 self.sync_sidebar_section_hover(previous, target)?;
             }
             self.sync_sidebar_section_hover(target, target)?;
+            self.sync_scroll_view_hover(previous, target)?;
             let previous_row = previous.and_then(|id| self.enclosing_sidebar_row(id));
             let next_row = target.and_then(|id| self.enclosing_sidebar_row(id));
             if previous_row.map(Entity::stable_id) != next_row.map(Entity::stable_id) {
@@ -3548,6 +3621,11 @@ impl AppContext {
         {
             return Ok(false);
         }
+        // A numeric draft settles before focus leaves it, so a half-typed value
+        // never survives as the visible text of an unfocused field.
+        if self.world.focused(document) != Some(target) {
+            self.commit_focused_number_input(document)?;
+        }
         if self.is_segmented_option_node(target) {
             let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
                 return Ok(false);
@@ -3698,6 +3776,9 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.replace_editable_selection(entity, text);
         }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.replace_editable_selection(entity, text);
+        }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
             return self.replace_editable_selection(entity, text);
         }
@@ -3720,6 +3801,9 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.delete_editable_backward(entity);
         }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.delete_editable_backward(entity);
+        }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
             return self.delete_editable_backward(entity);
         }
@@ -3733,6 +3817,129 @@ impl AppContext {
             return self.delete_editable_backward(entity);
         }
         Ok(false)
+    }
+
+    /// Text currently selected in the focused editor, or in the focused
+    /// rich-text block.
+    ///
+    /// An empty selection reports `None` so a host copy request never replaces
+    /// the pasteboard with an empty string. The Runtime does not touch the OS
+    /// pasteboard; the host writes what this returns.
+    pub fn focused_selected_text(&self, document: DocumentId) -> Option<String> {
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.editable_selected_text(entity);
+        }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.editable_selected_text(entity);
+        }
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.editable_selected_text(entity);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.editable_selected_text(entity);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.editable_selected_text(entity);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.editable_selected_text(entity);
+        }
+        let focused = self.world.focused(document)?;
+        if let Some(entity) = self.view_entity::<crate::SelectableRichText>(focused) {
+            return self
+                .read(entity, |text| text.copy_snapshot())
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot.text);
+        }
+        if let Some(entity) = self.view_entity::<crate::NativeMarkdown>(focused) {
+            return self
+                .read(entity, |markdown| markdown.copy_snapshot())
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot.text);
+        }
+        None
+    }
+
+    /// Remove the focused editor's selection and report what it held.
+    ///
+    /// Reports `None` without editing when the selection is empty or the field
+    /// rejects input, so a cut on a read-only field leaves both the value and
+    /// the pasteboard alone.
+    pub fn cut_focused_text(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<Option<String>, FrameworkError> {
+        let Some(text) = self.focused_selected_text(document) else {
+            return Ok(None);
+        };
+        if !self.replace_focused_text(document, "")? {
+            return Ok(None);
+        }
+        Ok(Some(text))
+    }
+
+    /// Select the whole value of the focused editor.
+    ///
+    /// Read-only and disabled fields still select, so their text can be copied.
+    pub fn select_all_focused_text(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.select_all_editable(entity);
+        }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.select_all_editable(entity);
+        }
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.select_all_editable(entity);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.select_all_editable(entity);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.select_all_editable(entity);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.select_all_editable(entity);
+        }
+        Ok(false)
+    }
+
+    fn editable_selected_text<C: EditableText>(&self, entity: Entity<C>) -> Option<String> {
+        self.read(entity, |editable| {
+            let state = editable.state();
+            if !state.selection.is_valid_for(&state.value) {
+                return None;
+            }
+            let range = state.selection.ordered();
+            (!range.is_empty()).then(|| state.value[range].to_owned())
+        })
+        .ok()
+        .flatten()
+    }
+
+    fn select_all_editable<C: EditableText>(
+        &mut self,
+        entity: Entity<C>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |editable, cx| {
+            let selection = TextSelection {
+                anchor: 0,
+                focus: editable.state().value.len(),
+            };
+            if editable.state().selection == selection {
+                return false;
+            }
+            editable.state_mut().selection = selection;
+            cx.emit(TextChanged {
+                value: editable.state().value.clone(),
+                selection,
+            });
+            true
+        })
     }
 
     fn delete_editable_backward<C: EditableText>(
@@ -3950,6 +4157,151 @@ impl AppContext {
                 checked: switch.checked,
             });
         })?;
+        Ok(true)
+    }
+
+    /// Publish a numeric value. The field snaps and clamps it, so hosts do not
+    /// have to reimplement the step grid to stay legal.
+    pub fn set_number_value(
+        &mut self,
+        entity: Entity<NumberInput>,
+        value: f64,
+    ) -> Result<bool, FrameworkError> {
+        if !value.is_finite() {
+            return Err(FrameworkError::InvalidComponentValue(entity.id));
+        }
+        self.update_component(entity, |input, cx| {
+            if !input.assign(value) {
+                return false;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
+        })
+    }
+
+    /// Move a numeric field by grid positions. Disabled and read-only fields
+    /// refuse, so a stepper press cannot bypass either flag.
+    pub fn step_number_input(
+        &mut self,
+        entity: Entity<NumberInput>,
+        steps: i32,
+    ) -> Result<bool, FrameworkError> {
+        if !self.read(entity, NumberInput::accepts_input)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |input, cx| {
+            if !input.step_value(steps) {
+                return false;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
+        })
+    }
+
+    /// Parse the in-progress draft into the committed value. An unparseable
+    /// draft restores the last committed value and reports no change.
+    pub fn commit_number_input(
+        &mut self,
+        entity: Entity<NumberInput>,
+    ) -> Result<bool, FrameworkError> {
+        let before = self.read(entity, NumberInput::value)?;
+        let touched = self.update_component(entity, |input, cx| {
+            if !input.commit_draft() {
+                return false;
+            }
+            if input.value() == before {
+                return true;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
+        })?;
+        Ok(touched)
+    }
+
+    /// Step the focused numeric field, if any. Returns whether it moved.
+    pub fn step_focused_number_input(
+        &mut self,
+        document: DocumentId,
+        steps: i32,
+    ) -> Result<bool, FrameworkError> {
+        match self.focused_number_input(document) {
+            Some(entity) => self.step_number_input(entity, steps),
+            None => Ok(false),
+        }
+    }
+
+    /// Commit the focused numeric field's draft, if any.
+    pub fn commit_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        match self.focused_number_input(document) {
+            Some(entity) => self.commit_number_input(entity),
+            None => Ok(false),
+        }
+    }
+
+    /// Discard the focused numeric field's draft and show the committed value
+    /// again. Nothing is emitted: the value never moved.
+    pub fn revert_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        self.update_component(entity, |input, _| {
+            let committed = input.spec.format(input.value());
+            if input.state.value == committed {
+                return false;
+            }
+            input.state.replace_value(committed);
+            true
+        })
+    }
+
+    fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
+        let target = self.world.focused(document)?;
+        self.view_entity(target)
+    }
+
+    /// Resolve a stepper press inside a numeric field to a signed step count.
+    ///
+    /// Coordinates are viewport-local, matching hit testing. Returns `None`
+    /// when the point is on the editable text instead of the spinner, so the
+    /// caller can fall through to caret placement.
+    pub fn number_stepper_at(&self, id: StableNodeId, x: f32, y: f32) -> Option<i32> {
+        let Some(crate::ComponentGeometry::TextInput {
+            steppers: Some(steppers),
+            ..
+        }) = self.world.component_geometry(id)
+        else {
+            return None;
+        };
+        steppers.step_at(x, y)
+    }
+
+    /// Route a pointer press on a numeric field's spinner. Returns whether the
+    /// press was consumed by a stepper.
+    pub fn press_number_stepper(
+        &mut self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(steps) = self.number_stepper_at(id, x, y) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.view_entity::<NumberInput>(id) else {
+            return Ok(false);
+        };
+        self.step_number_input(entity, steps)?;
         Ok(true)
     }
 
@@ -4659,6 +5011,43 @@ impl AppContext {
         self.activate_node(id)
     }
 
+    /// Route a secondary (right) press to the nearest `SecondaryPress` handler
+    /// at or above the hit node.
+    ///
+    /// Returns the node that handled it. The framework opens no menu and picks
+    /// no default items; an application with no handler gets `None`.
+    pub fn secondary_press_at(
+        &mut self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
+        }
+        let Some(target) = self.world.hit_test(document, x, y) else {
+            return Ok(None);
+        };
+        let press = SecondaryPress { target, x, y };
+        let mut current = Some(target);
+        while let Some(id) = current {
+            if self
+                .event_handlers
+                .contains_key(&(id, TypeId::of::<SecondaryPress>()))
+                && let Some(emit) = self
+                    .views
+                    .get(&id)
+                    .and_then(|view| self.secondary_presses.get(&view.as_ref().type_id()))
+                    .cloned()
+            {
+                emit(self, id, press)?;
+                return Ok(Some(id));
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        Ok(None)
+    }
+
     pub fn dismiss_detached_menus(
         &mut self,
         keep: Option<StableNodeId>,
@@ -5203,6 +5592,225 @@ impl AppContext {
             }
         }
         Ok(None)
+    }
+
+    /// Whether a node is a scroll container. Scrollbar drag and wheel routing
+    /// both key off this, so nothing else needs the view type.
+    pub fn is_scroll_view(&self, id: StableNodeId) -> bool {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<ScrollView>())
+    }
+
+    fn scrollbar_bar(
+        &self,
+        id: StableNodeId,
+        axis: nana_ui_core::ScrollbarAxis,
+    ) -> Option<crate::ScrollbarBar> {
+        match self.world.component_geometry(id) {
+            Some(crate::ComponentGeometry::Scrollbar {
+                horizontal,
+                vertical,
+            }) => match axis {
+                nana_ui_core::ScrollbarAxis::Horizontal => horizontal,
+                nana_ui_core::ScrollbarAxis::Vertical => vertical,
+            },
+            _ => None,
+        }
+    }
+
+    /// Which scrollbar axis of a scroll container a viewport point lands on.
+    ///
+    /// The vertical bar wins an overlap, matching its drawn order.
+    pub fn scrollbar_axis_at(
+        &self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<nana_ui_core::ScrollbarAxis> {
+        [
+            nana_ui_core::ScrollbarAxis::Vertical,
+            nana_ui_core::ScrollbarAxis::Horizontal,
+        ]
+        .into_iter()
+        .find(|axis| {
+            self.scrollbar_bar(id, *axis)
+                .is_some_and(|bar| bar.contains(x, y))
+        })
+    }
+
+    /// Find the innermost scroll container whose scrollbar is under a point.
+    ///
+    /// Scrollbars overlay content, so the hit-test target is usually a child of
+    /// the container that owns the bar.
+    pub fn scrollbar_target_near(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)> {
+        let mut current = self.world.hit_test(document, x, y);
+        while let Some(id) = current {
+            if let Some(axis) = self.scrollbar_axis_at(id, x, y) {
+                return Some((id, axis));
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
+    }
+
+    /// Grab a scrollbar. A press on bare track pages toward the point first, so
+    /// the thumb is under the pointer when the drag starts.
+    pub fn begin_scrollbar_drag(
+        &mut self,
+        pointer_id: u64,
+        target: StableNodeId,
+        axis: nana_ui_core::ScrollbarAxis,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(bar) = self.scrollbar_bar(target, axis) else {
+            return Ok(false);
+        };
+        let entity = Entity::<ScrollView>::from_stable_id(target);
+        self.read(entity, |_| ())?;
+        let position = bar.axis_position(axis, x, y);
+        let track = bar.track_geometry(axis);
+        // Cancel restores what the press started from, including any track jump.
+        let initial_offset = self.world.scroll_offset(target).unwrap_or_default();
+        let grab_offset = if track.thumb_contains(position) {
+            position - track.thumb_origin
+        } else {
+            // Centre the thumb on the press, then keep dragging from there.
+            let hold = self.axis_hold(target, axis);
+            let offset = track.offset_for_position(position);
+            self.scroll_to(entity, scroll_offset_on(axis, offset, hold))?;
+            track.thumb_length / 2.0
+        };
+        self.update_component(entity, |scroll, cx| {
+            scroll.dragging = Some(crate::ScrollbarDragState {
+                pointer_id,
+                axis,
+                grab_offset,
+                initial_offset,
+            });
+            cx.mutations().capture_pointer(pointer_id, target);
+        })?;
+        Ok(true)
+    }
+
+    /// The offset on the axis a drag is not touching, so it stays put.
+    fn axis_hold(&self, id: StableNodeId, axis: nana_ui_core::ScrollbarAxis) -> f32 {
+        let offset = self.world.scroll_offset(id).unwrap_or_default();
+        match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => offset.y,
+            nana_ui_core::ScrollbarAxis::Vertical => offset.x,
+        }
+    }
+
+    pub fn update_scrollbar_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_scroll_view(target) {
+            return Ok(false);
+        }
+        let entity = Entity::<ScrollView>::from_stable_id(target);
+        let Some(drag) = self.read(entity, |scroll| scroll.dragging)? else {
+            return Ok(false);
+        };
+        if drag.pointer_id != pointer_id {
+            return Ok(false);
+        }
+        let Some(bar) = self.scrollbar_bar(target, drag.axis) else {
+            return Ok(false);
+        };
+        let track = bar.track_geometry(drag.axis);
+        let offset =
+            track.offset_for_thumb_origin(bar.axis_position(drag.axis, x, y) - drag.grab_offset);
+        let hold = self.axis_hold(target, drag.axis);
+        self.scroll_to(entity, scroll_offset_on(drag.axis, offset, hold))
+    }
+
+    pub fn end_scrollbar_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        if !self.is_scroll_view(target) {
+            return Ok(false);
+        }
+        let entity = Entity::<ScrollView>::from_stable_id(target);
+        let Some(drag) = self.read(entity, |scroll| scroll.dragging)? else {
+            return Ok(false);
+        };
+        if drag.pointer_id != pointer_id {
+            return Ok(false);
+        }
+        if cancel {
+            self.scroll_to(entity, drag.initial_offset)?;
+        }
+        self.update_component(entity, |scroll, cx| {
+            scroll.dragging = None;
+            cx.mutations().release_pointer(pointer_id, target);
+        })?;
+        Ok(true)
+    }
+
+    /// Reveal auto-hiding scrollbars for the container under the pointer.
+    fn sync_scroll_view_hover(
+        &mut self,
+        previous: Option<StableNodeId>,
+        target: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let entered = target.and_then(|id| self.enclosing_scroll_view(id));
+        let left = previous.and_then(|id| self.enclosing_scroll_view(id));
+        if left == entered {
+            return Ok(());
+        }
+        if let Some(id) = left {
+            self.set_scroll_view_hover(id, false)?;
+        }
+        if let Some(id) = entered {
+            self.set_scroll_view_hover(id, true)?;
+        }
+        Ok(())
+    }
+
+    fn set_scroll_view_hover(
+        &mut self,
+        id: StableNodeId,
+        hovered: bool,
+    ) -> Result<(), FrameworkError> {
+        let entity = Entity::<ScrollView>::from_stable_id(id);
+        if self.read(entity, |scroll| scroll.hovered)? == hovered {
+            return Ok(());
+        }
+        self.update_component(entity, |scroll, _| {
+            scroll.hovered = hovered;
+        })?;
+        Ok(())
+    }
+
+    fn enclosing_scroll_view(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self.is_scroll_view(id) {
+                return Some(id);
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
     }
 
     /// Route a backend-neutral table navigation intent from current focus.
@@ -5997,10 +6605,23 @@ impl AppContext {
             .map_err(FrameworkError::from)
     }
 
-    fn stamp_component_type<C: ComponentView>(&self, id: StableNodeId, queue: &mut MutationQueue) {
+    fn stamp_component_type<C: ComponentView>(
+        &mut self,
+        id: StableNodeId,
+        queue: &mut MutationQueue,
+    ) {
         if let Some(entry) = self.components.get_by_rust(TypeId::of::<C>()) {
             queue.set_component_type(id, Some(entry.id.clone()));
         }
+        self.secondary_presses
+            .entry(TypeId::of::<C>())
+            .or_insert_with(|| {
+                Arc::new(|context: &mut AppContext, id, press| {
+                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
+                        cx.emit(press);
+                    })
+                })
+            });
     }
 
     fn allocate_id(&mut self) -> StableNodeId {
@@ -6873,7 +7494,11 @@ mod tests {
         assert_eq!(*slider_values.lock().unwrap(), vec![100.0]);
         assert_eq!(
             context.world().standard_visual(checkbox.stable_id()),
-            Some(StandardVisual::Checkbox { checked: true })
+            Some(StandardVisual::Checkbox {
+                checked: true,
+                indeterminate: false,
+                size: nana_ui_core::ControlSize::Medium,
+            })
         );
         assert_eq!(
             context
@@ -6949,6 +7574,307 @@ mod tests {
             hovered_checked.style.background, checkbox_paint.style.background,
             "a selected toggle must expose a distinct hover state"
         );
+    }
+
+    #[test]
+    fn an_indeterminate_checkbox_reads_mixed_and_paints_as_engaged() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mixed = context
+            .create_component(
+                document,
+                Checkbox::new("Notifications", false)
+                    .indeterminate(true)
+                    .size(nana_ui_core::ControlSize::Large),
+            )
+            .unwrap();
+        assert_eq!(
+            context.world().standard_visual(mixed.stable_id()),
+            Some(StandardVisual::Checkbox {
+                checked: false,
+                indeterminate: true,
+                size: nana_ui_core::ControlSize::Large,
+            })
+        );
+        assert_eq!(
+            context
+                .world()
+                .node_style(mixed.stable_id())
+                .unwrap()
+                .layout
+                .min_height,
+            Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Large.height()
+            ))
+        );
+        let accessibility = context.world().project_accessibility(document);
+        assert_eq!(accessibility[0].checked, Some(false));
+        assert!(
+            accessibility[0].mixed,
+            "a mixed checkbox must not read as merely unchecked"
+        );
+
+        // Mixed shares the engaged surface with checked, so a parent checkbox
+        // is not mistaken for an empty one.
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        let paint = context
+            .world()
+            .extract_nodes(&[mixed.stable_id()])
+            .pop()
+            .unwrap();
+        assert_eq!(
+            paint.style.background,
+            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+        );
+    }
+
+    #[test]
+    fn a_divider_is_an_inert_hairline_with_separator_semantics() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let horizontal = context
+            .create_component(document, crate::Divider::horizontal())
+            .unwrap();
+        let vertical = context
+            .create_component(
+                document,
+                crate::Divider::vertical().thickness(2.0).inset(8.0),
+            )
+            .unwrap();
+
+        let layout = |entity: StableNodeId| {
+            context
+                .world()
+                .node_style(entity)
+                .map(|style| Arc::clone(&style.layout))
+                .unwrap()
+        };
+        let horizontal_layout = layout(horizontal.stable_id());
+        assert_eq!(
+            horizontal_layout.width,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+        assert_eq!(
+            horizontal_layout.height,
+            Some(nana_ui_core::LengthSpec::Px(1.0))
+        );
+        let vertical_layout = layout(vertical.stable_id());
+        assert_eq!(
+            vertical_layout.width,
+            Some(nana_ui_core::LengthSpec::Px(2.0))
+        );
+        assert_eq!(vertical_layout.height, Some(nana_ui_core::LengthSpec::Fill));
+        assert_eq!(
+            vertical_layout.margin_top,
+            Some(nana_ui_core::LengthSpec::Px(8.0))
+        );
+
+        for divider in [horizontal.stable_id(), vertical.stable_id()] {
+            let interaction = context.world().interaction(divider).unwrap();
+            assert!(!interaction.pointer_events);
+            assert!(!interaction.focusable);
+            assert_eq!(
+                context.world().accessibility(divider).map(|s| s.role),
+                Some(crate::AccessibilityRole::Separator)
+            );
+        }
+        assert_eq!(
+            context
+                .world()
+                .accessibility(vertical.stable_id())
+                .and_then(|state| state.orientation),
+            Some(crate::SelectionOrientation::Vertical)
+        );
+    }
+
+    #[test]
+    fn a_number_input_steps_snaps_and_settles_its_draft() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                crate::NumberInput::new(1.0)
+                    .range(0.0, 2.0)
+                    .step(0.5)
+                    .precision(1)
+                    .label("Scale"),
+            )
+            .unwrap();
+        let values = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&values);
+        context
+            .on(input, move |_input, event: &crate::NumberChanged, _cx| {
+                observed.lock().unwrap().push(event.value);
+            })
+            .unwrap();
+
+        assert_eq!(
+            context.world().text_input(input.stable_id()).unwrap().value,
+            "1.0"
+        );
+        assert!(context.step_number_input(input, 1).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 1.5);
+        assert!(context.step_number_input(input, 2).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 2.0);
+        // Already at the maximum: no event, no phantom change.
+        assert!(!context.step_number_input(input, 1).unwrap());
+
+        // A draft is only adopted on commit, and it snaps to the step grid.
+        context
+            .update_component(input, |input, _| {
+                input.state.replace_value("0.7".to_owned());
+            })
+            .unwrap();
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 2.0);
+        assert!(context.commit_number_input(input).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 0.5);
+
+        // Nonsense restores the committed value instead of inventing one.
+        context
+            .update_component(input, |input, _| {
+                input.state.replace_value("banana".to_owned());
+            })
+            .unwrap();
+        assert!(context.commit_number_input(input).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 0.5);
+        assert_eq!(
+            context.world().text_input(input.stable_id()).unwrap().value,
+            "0.5"
+        );
+
+        assert_eq!(*values.lock().unwrap(), vec![1.5, 2.0, 0.5]);
+        let accessibility = context.world().project_accessibility(document);
+        assert_eq!(accessibility[0].role, crate::AccessibilityRole::TextInput);
+        assert_eq!(accessibility[0].numeric_value, Some(0.5));
+        assert_eq!(accessibility[0].numeric_minimum, Some(0.0));
+        assert_eq!(accessibility[0].numeric_maximum, Some(2.0));
+        assert_eq!(accessibility[0].numeric_step, Some(0.5));
+    }
+
+    #[test]
+    fn a_disabled_number_input_refuses_both_steppers() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                crate::NumberInput::new(4.0).range(0.0, 10.0).disabled(true),
+            )
+            .unwrap();
+        assert!(!context.step_number_input(input, 1).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 4.0);
+        let read_only = context
+            .create_component(
+                document,
+                crate::NumberInput::new(4.0)
+                    .range(0.0, 10.0)
+                    .read_only(true),
+            )
+            .unwrap();
+        assert!(!context.step_number_input(read_only, 1).unwrap());
+    }
+
+    #[test]
+    fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                crate::NumberInput::new(4.0).range(0.0, 10.0).step(1.0),
+            )
+            .unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            input.stable_id(),
+            crate::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut crate::MeasureTextShaper)
+            .unwrap();
+
+        let steppers = match context.world().component_geometry(input.stable_id()) {
+            Some(crate::ComponentGeometry::TextInput {
+                steppers: Some(steppers),
+                ..
+            }) => steppers,
+            other => panic!("expected spinner geometry, got {other:?}"),
+        };
+        let point = |bounds: crate::LayoutBox| {
+            (
+                bounds.x + bounds.width / 2.0,
+                bounds.y + bounds.height / 2.0,
+            )
+        };
+        let (up_x, up_y) = point(steppers.increment);
+        let (down_x, down_y) = point(steppers.decrement);
+        assert_eq!(
+            context.number_stepper_at(input.stable_id(), up_x, up_y),
+            Some(1)
+        );
+        assert_eq!(
+            context.number_stepper_at(input.stable_id(), down_x, down_y),
+            Some(-1)
+        );
+        // The editable text area is not a stepper, so caret placement still wins.
+        assert_eq!(
+            context.number_stepper_at(input.stable_id(), 8.0, 16.0),
+            None
+        );
+
+        assert!(
+            context
+                .press_number_stepper(input.stable_id(), up_x, up_y)
+                .unwrap()
+        );
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 5.0);
+        assert!(
+            context
+                .press_number_stepper(input.stable_id(), down_x, down_y)
+                .unwrap()
+        );
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 4.0);
+        assert!(
+            !context
+                .press_number_stepper(input.stable_id(), 8.0, 16.0)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn moving_focus_away_settles_a_pending_numeric_draft() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                crate::NumberInput::new(1.0).range(0.0, 9.0).step(1.0),
+            )
+            .unwrap();
+        let elsewhere = context
+            .create_component(document, Button::new("Done"))
+            .unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+        context
+            .update_component(input, |input, _| {
+                input.state.replace_value("7".to_owned());
+            })
+            .unwrap();
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 1.0);
+
+        assert!(context.focus_node(document, elsewhere.stable_id()).unwrap());
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 7.0);
     }
 
     #[test]
@@ -7900,6 +8826,405 @@ mod tests {
             offset.y
         );
         assert_eq!(offset.x, 0.0);
+    }
+
+    /// 200x120 scrollport holding 200px of rows, so the vertical axis overflows
+    /// by 80px.
+    fn overflowing_scroll_view(
+        context: &mut AppContext,
+        document: DocumentId,
+        visibility: nana_ui_core::ScrollbarVisibility,
+    ) -> Entity<ScrollView> {
+        let mut viewport = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut viewport.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(120.0));
+        }
+        let scroll = context
+            .create_component(
+                document,
+                ScrollView::new(ScrollAxes::Vertical)
+                    .scrollbars(visibility)
+                    .style(viewport),
+            )
+            .unwrap();
+        for index in 0..5 {
+            let mut row = NodeStyle::default();
+            {
+                let layout = Arc::make_mut(&mut row.layout);
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(LengthSpec::Px(40.0));
+            }
+            let row = context
+                .create_component(document, Text::new(format!("Row {index}")).style(row))
+                .unwrap();
+            context.append_child(scroll, row).unwrap();
+        }
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+            .unwrap();
+        scroll
+    }
+
+    fn vertical_bar(
+        context: &AppContext,
+        scroll: Entity<ScrollView>,
+    ) -> Option<crate::ScrollbarBar> {
+        match context.world().component_geometry(scroll.stable_id()) {
+            Some(crate::ComponentGeometry::Scrollbar { vertical, .. }) => vertical,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn auto_hiding_scrollbars_appear_on_hover_and_follow_the_scroll_offset() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = overflowing_scroll_view(
+            &mut context,
+            document,
+            nana_ui_core::ScrollbarVisibility::AutoHide,
+        );
+        assert!(
+            vertical_bar(&context, scroll).is_none(),
+            "an idle auto-hiding container draws no bar"
+        );
+
+        context
+            .set_pointer_hover_at(
+                document,
+                1,
+                Some(scroll.stable_id()),
+                std::time::Duration::ZERO,
+            )
+            .unwrap();
+        let bar = vertical_bar(&context, scroll).expect("hover reveals the bar");
+        // 120 of 200 content is visible, so the thumb takes 60% of the track.
+        assert!(
+            (bar.thumb.height - 72.0).abs() < 0.01,
+            "thumb {:?}",
+            bar.thumb
+        );
+        assert!(
+            (bar.thumb.y - bar.track.y).abs() < 0.01,
+            "thumb starts at the top"
+        );
+        assert!((bar.max_offset - 80.0).abs() < 0.01);
+        assert_eq!(bar.track_background, None, "auto-hide draws no track");
+
+        assert!(
+            context
+                .scroll_to(scroll, ScrollOffset { x: 0.0, y: 80.0 })
+                .unwrap()
+        );
+        let bar = vertical_bar(&context, scroll).expect("still hovered");
+        assert!(
+            (bar.thumb.y + bar.thumb.height - (bar.track.y + bar.track.height)).abs() < 0.01,
+            "a maxed offset pins the thumb to the track end: {:?}",
+            bar.thumb
+        );
+
+        context
+            .set_pointer_hover_at(document, 1, None, std::time::Duration::ZERO)
+            .unwrap();
+        assert!(
+            vertical_bar(&context, scroll).is_none(),
+            "leaving the container hides the bar again"
+        );
+    }
+
+    #[test]
+    fn resident_scrollbars_draw_a_track_without_hover() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = overflowing_scroll_view(
+            &mut context,
+            document,
+            nana_ui_core::ScrollbarVisibility::Always,
+        );
+        let bar = vertical_bar(&context, scroll).expect("resident bars need no hover");
+        assert!(bar.track_background.is_some());
+        assert!((bar.track.width - nana_ui_core::SCROLLBAR_METRICS.thickness).abs() < 0.01);
+        assert!(
+            (bar.track.x + bar.track.width - 200.0).abs() < 0.01,
+            "bar hugs the right edge"
+        );
+    }
+
+    #[test]
+    fn hidden_scrollbars_leave_wheel_scrolling_alone() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = overflowing_scroll_view(
+            &mut context,
+            document,
+            nana_ui_core::ScrollbarVisibility::Hidden,
+        );
+        context
+            .set_pointer_hover_at(
+                document,
+                1,
+                Some(scroll.stable_id()),
+                std::time::Duration::ZERO,
+            )
+            .unwrap();
+        assert!(vertical_bar(&context, scroll).is_none());
+        assert!(
+            context
+                .scroll_by(scroll, ScrollOffset { x: 0.0, y: 40.0 })
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().scroll_offset(scroll.stable_id()),
+            Some(ScrollOffset { x: 0.0, y: 40.0 })
+        );
+    }
+
+    #[test]
+    fn dragging_the_thumb_moves_the_authoritative_scroll_offset() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = overflowing_scroll_view(
+            &mut context,
+            document,
+            nana_ui_core::ScrollbarVisibility::Always,
+        );
+        let bar = vertical_bar(&context, scroll).expect("resident bar");
+        let grab_x = bar.thumb.x + bar.thumb.width / 2.0;
+        let grab_y = bar.thumb.y + bar.thumb.height / 2.0;
+        assert_eq!(
+            context.scrollbar_axis_at(scroll.stable_id(), grab_x, grab_y),
+            Some(nana_ui_core::ScrollbarAxis::Vertical)
+        );
+        assert!(
+            context
+                .begin_scrollbar_drag(
+                    7,
+                    scroll.stable_id(),
+                    nana_ui_core::ScrollbarAxis::Vertical,
+                    grab_x,
+                    grab_y,
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().pointer_capture(document, 7),
+            Some(scroll.stable_id())
+        );
+        assert_eq!(
+            context.world().scroll_offset(scroll.stable_id()),
+            Some(ScrollOffset::default()),
+            "grabbing the thumb must not jump the content"
+        );
+
+        // Travel is 48px for 80px of content, so half the travel is 40px.
+        assert!(
+            context
+                .update_scrollbar_drag(document, 7, grab_x, grab_y + 24.0)
+                .unwrap()
+        );
+        let offset = context.world().scroll_offset(scroll.stable_id()).unwrap();
+        assert!((offset.y - 40.0).abs() < 0.01, "offset {offset:?}");
+        assert_eq!(offset.x, 0.0, "a vertical drag holds the other axis");
+
+        assert!(
+            context
+                .update_scrollbar_drag(document, 7, grab_x, grab_y + 4000.0)
+                .unwrap()
+        );
+        assert!(
+            (context.world().scroll_offset(scroll.stable_id()).unwrap().y - 80.0).abs() < 0.01,
+            "the drag clamps at the maximum offset"
+        );
+
+        assert!(context.end_scrollbar_drag(document, 7, false).unwrap());
+        assert_eq!(context.world().pointer_capture(document, 7), None);
+        assert!(
+            !context
+                .update_scrollbar_drag(document, 7, grab_x, grab_y)
+                .unwrap(),
+            "a released pointer no longer drives the bar"
+        );
+    }
+
+    #[test]
+    fn pressing_bare_track_pages_toward_the_press_and_cancelling_restores_it() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroll = overflowing_scroll_view(
+            &mut context,
+            document,
+            nana_ui_core::ScrollbarVisibility::Always,
+        );
+        let bar = vertical_bar(&context, scroll).expect("resident bar");
+        let track_end = bar.track.y + bar.track.height - 1.0;
+        assert!(
+            context
+                .begin_scrollbar_drag(
+                    3,
+                    scroll.stable_id(),
+                    nana_ui_core::ScrollbarAxis::Vertical,
+                    bar.thumb.x + 1.0,
+                    track_end,
+                )
+                .unwrap()
+        );
+        assert!(
+            (context.world().scroll_offset(scroll.stable_id()).unwrap().y - 80.0).abs() < 0.01,
+            "a press below the thumb centres it on the press"
+        );
+        assert!(context.end_scrollbar_drag(document, 3, true).unwrap());
+        assert_eq!(
+            context.world().scroll_offset(scroll.stable_id()),
+            Some(ScrollOffset::default()),
+            "cancel restores the offset the drag started from"
+        );
+    }
+
+    #[test]
+    fn a_secondary_press_reaches_the_nearest_handler_above_the_hit_node() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut card = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut card.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(100.0));
+        }
+        let card = context
+            .create_component(document, Card::new().style(card))
+            .unwrap();
+        let mut row = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut row.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(40.0));
+        }
+        let row = context
+            .create_component(document, Button::new("Row").style(row))
+            .unwrap();
+        context.append_child(card, row).unwrap();
+        let presses = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&presses);
+        context
+            .on(card, move |_card, press: &SecondaryPress, _cx| {
+                observed.lock().unwrap().push(*press);
+            })
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 100.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        assert_eq!(
+            context.secondary_press_at(document, 20.0, 20.0).unwrap(),
+            Some(card.stable_id()),
+            "the press bubbles to the enclosing handler"
+        );
+        let press = *presses.lock().unwrap().first().expect("one press");
+        assert_eq!(press.target, row.stable_id(), "it carries the hit node");
+        assert_eq!((press.x, press.y), (20.0, 20.0));
+
+        assert_eq!(
+            context.secondary_press_at(document, 900.0, 900.0).unwrap(),
+            None,
+            "a press outside the tree hits nothing"
+        );
+        assert_eq!(presses.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn selection_reads_back_from_editors_and_from_focused_rich_text() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("Nana"))
+            .unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+        assert_eq!(
+            context.focused_selected_text(document),
+            None,
+            "a caret selects nothing"
+        );
+        assert!(context.select_all_focused_text(document).unwrap());
+        assert_eq!(
+            context.focused_selected_text(document).as_deref(),
+            Some("Nana")
+        );
+        assert!(
+            !context.select_all_focused_text(document).unwrap(),
+            "selecting all twice is not a change"
+        );
+        assert_eq!(
+            context.cut_focused_text(document).unwrap().as_deref(),
+            Some("Nana")
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some(""));
+        assert_eq!(context.cut_focused_text(document).unwrap(), None);
+
+        let text = context
+            .create_component(
+                document,
+                crate::SelectableRichText::new([crate::RichSpan::plain("Hello")]),
+            )
+            .unwrap();
+        assert!(context.focus_node(document, text.stable_id()).unwrap());
+        let area = crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 20.0,
+        };
+        let caret = |index: usize| index as f32 * crate::rich_text::GRAPHEME_ADVANCE + 1.0;
+        context
+            .read(text, |text| {
+                assert!(text.pointer_down(caret(0), 8.0, area));
+                assert!(text.pointer_move(caret(4), 8.0, area));
+                text.pointer_up(caret(4), 8.0, area)
+            })
+            .unwrap();
+        assert_eq!(
+            context.focused_selected_text(document).as_deref(),
+            Some("Hell"),
+            "a rich-text selection is what a host copy takes"
+        );
+        assert_eq!(
+            context.cut_focused_text(document).unwrap(),
+            None,
+            "rich text is not editable, so nothing is cut"
+        );
+    }
+
+    #[test]
+    fn a_secondary_press_without_a_handler_opens_nothing() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Px(120.0));
+            layout.height = Some(LengthSpec::Px(40.0));
+        }
+        let button = context
+            .create_component(document, Button::new("Build").style(style))
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(120.0, 40.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let generation = context.world().generation();
+        assert_eq!(
+            context.secondary_press_at(document, 10.0, 10.0).unwrap(),
+            None
+        );
+        assert_eq!(
+            context.world().generation(),
+            generation,
+            "an unhandled secondary press must not touch the tree"
+        );
+        assert!(context.world().focused(document).is_none());
+        let _ = button;
     }
 
     #[test]
@@ -9299,6 +10624,72 @@ mod tests {
                 .component_type(id)
                 .map(ComponentTypeId::as_str),
             Some("test.probe-card")
+        );
+    }
+
+    /// Documented containers and chrome must carry a type identity, or Vue tag
+    /// resolution and devtools cannot name the node.
+    #[test]
+    fn documented_containers_and_chrome_carry_a_type_identity() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        for (tag, type_id) in [
+            ("list", "nana.list"),
+            ("scroll-view", "nana.scroll-view"),
+            ("scroll", "nana.scroll-view"),
+            ("table", "nana.table"),
+            ("tr", "nana.table-row"),
+            ("td", "nana.table-cell"),
+            ("reorder-list", "nana.reorder-list"),
+            ("time-series-chart", "nana.time-series-chart"),
+            ("desktop-shell", "nana.desktop-shell"),
+            ("app-title-bar", "nana.app-title-bar"),
+            ("pane-chrome", "nana.pane-chrome"),
+            ("sidebar-section", "nana.sidebar-section"),
+            ("sidebar-footer", "nana.sidebar-footer"),
+            (
+                "settings-collapsible-card",
+                "nana.settings-collapsible-card",
+            ),
+        ] {
+            assert_eq!(
+                context
+                    .resolve_component_tag(tag)
+                    .map(ComponentTypeId::as_str),
+                Some(type_id),
+                "tag `{tag}` must resolve"
+            );
+        }
+
+        let list = context
+            .create_component(document, crate::List::new())
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(list.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.list")
+        );
+        let section = context
+            .create_component(document, crate::SidebarSection::new("Files"))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(section.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.sidebar-section")
+        );
+        let chart = context
+            .create_component(document, crate::TimeSeriesChart::new([1.0, 2.0]))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(chart.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.time-series-chart")
         );
     }
 

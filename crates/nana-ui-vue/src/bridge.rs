@@ -57,6 +57,10 @@ pub enum WidgetKind {
     Checkbox,
     Switch,
     Select,
+    /// Multi-select capable field → Runtime `Dropdown` (`nana.dropdown`).
+    Dropdown,
+    /// Query-filtered field → Runtime `SearchDropdown` (`nana.search`).
+    SearchDropdown,
     Tabs,
     Segmented,
     Range,
@@ -141,8 +145,9 @@ impl WidgetKind {
             "textarea" => Self::Textarea,
             "checkbox" | "check" => Self::Checkbox,
             "switch" | "toggle" => Self::Switch,
-            "select" | "pick-list" | "picklist" | "dropdown" => Self::Select,
-            "search" | "search-dropdown" | "searchdropdown" => Self::Select,
+            "select" | "pick-list" | "picklist" => Self::Select,
+            "dropdown" => Self::Dropdown,
+            "search" | "search-dropdown" | "searchdropdown" => Self::SearchDropdown,
             "tabs" | "tab-list" | "tablist" => Self::Tabs,
             "segmented" | "segmented-control" => Self::Segmented,
             "range" | "range-field" | "slider" => Self::Range,
@@ -201,6 +206,8 @@ impl WidgetKind {
             Self::Checkbox => "checkbox",
             Self::Switch => "switch",
             Self::Select => "select",
+            Self::Dropdown => "dropdown",
+            Self::SearchDropdown => "search-dropdown",
             Self::Tabs => "tabs",
             Self::Segmented => "segmented",
             Self::Range => "range",
@@ -258,6 +265,8 @@ impl WidgetKind {
             Self::Checkbox => "nana-checkbox",
             Self::Switch => "nana-switch",
             Self::Select => "nana-select",
+            Self::Dropdown => "nana-dropdown",
+            Self::SearchDropdown => "nana-search-dropdown",
             Self::Tabs => "nana-tabs",
             Self::Segmented => "nana-segmented",
             Self::Range => "nana-range",
@@ -300,6 +309,11 @@ impl WidgetKind {
             Self::AppShell => "nana-app-shell",
             Self::SettingsPage => "nana-settings-page",
         }
+    }
+
+    /// Select / Dropdown / SearchDropdown — one option list, three Runtime types.
+    pub fn is_choice_field(self) -> bool {
+        matches!(self, Self::Select | Self::Dropdown | Self::SearchDropdown)
     }
 
     pub fn is_layout(self) -> bool {
@@ -5677,16 +5691,45 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_class_maps_to_select_not_fixed_menu() {
+    fn dropdown_class_maps_to_dropdown_not_fixed_menu() {
         let mut bridge = MessageBridge::new();
         bridge.register(13, WidgetKind::Column, WidgetProps::default());
         bridge.patch_prop(13, "class", &HostValue::string("nana-dropdown"));
-        assert_eq!(bridge.get(13).unwrap().kind, WidgetKind::Select);
+        assert_eq!(bridge.get(13).unwrap().kind, WidgetKind::Dropdown);
         // Unregistered id is a no-op; register panel explicitly.
         bridge.register(14, WidgetKind::Column, WidgetProps::default());
         bridge.patch_prop(14, "class", &HostValue::string("nana-select"));
         bridge.patch_prop(14, "role", &HostValue::string("listbox"));
         assert_eq!(bridge.get(14).unwrap().kind, WidgetKind::Select);
+    }
+
+    /// Runtime keeps `nana.select`, `nana.dropdown` and `nana.search` apart, so
+    /// the bridge must not fold three option fields into one kind.
+    #[test]
+    fn select_dropdown_and_search_stay_distinct_kinds() {
+        assert_eq!(WidgetKind::parse("nana-select"), Some(WidgetKind::Select));
+        assert_eq!(WidgetKind::parse("pick-list"), Some(WidgetKind::Select));
+        assert_eq!(
+            WidgetKind::parse("nana-dropdown"),
+            Some(WidgetKind::Dropdown)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-search-dropdown"),
+            Some(WidgetKind::SearchDropdown)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-search"),
+            Some(WidgetKind::SearchDropdown)
+        );
+        for kind in [
+            WidgetKind::Select,
+            WidgetKind::Dropdown,
+            WidgetKind::SearchDropdown,
+        ] {
+            assert!(kind.is_choice_field(), "{kind:?} is an option field");
+            assert_eq!(WidgetKind::parse(kind.element_tag()), Some(kind));
+            assert_eq!(WidgetKind::parse(kind.as_str()), Some(kind));
+        }
     }
 
     #[test]

@@ -1361,60 +1361,64 @@ impl NanaTreeDocument {
             // a generic style/interaction/accessibility state first only to
             // overwrite it in the same transaction doubles validation, dirty
             // propagation and commit work for large component trees.
-            if !matches!(
-                widget.kind,
-                crate::WidgetKind::Input
-                    | crate::WidgetKind::Textarea
-                    | crate::WidgetKind::ContextMenu
-                    | crate::WidgetKind::Select
-                    | crate::WidgetKind::CommandPalette
-            ) && matches!(
-                widget.kind,
-                crate::WidgetKind::Button
-                    | crate::WidgetKind::Checkbox
-                    | crate::WidgetKind::Switch
-                    | crate::WidgetKind::Card
-                    | crate::WidgetKind::ListItem
-                    | crate::WidgetKind::Range
-                    | crate::WidgetKind::StatusBadge
-                    | crate::WidgetKind::ValidationMessage
-                    | crate::WidgetKind::EmptyState
-                    | crate::WidgetKind::LabeledValue
-                    | crate::WidgetKind::Segmented
-                    | crate::WidgetKind::Tabs
-                    | crate::WidgetKind::Progress
-                    | crate::WidgetKind::Spinner
-                    | crate::WidgetKind::FormField
-                    | crate::WidgetKind::InteractiveCard
-                    | crate::WidgetKind::SidebarFrame
-                    | crate::WidgetKind::SidebarRow
-                    | crate::WidgetKind::SettingsRow
-                    | crate::WidgetKind::SettingsCard
-                    | crate::WidgetKind::Skeleton
-                    | crate::WidgetKind::LevelMeter
-                    | crate::WidgetKind::Select
-                    | crate::WidgetKind::Dialog
-                    | crate::WidgetKind::Drawer
-                    | crate::WidgetKind::Popover
-                    | crate::WidgetKind::ContextMenu
-                    | crate::WidgetKind::Toast
-                    | crate::WidgetKind::Tooltip
-                    | crate::WidgetKind::ActionMenu
-                    | crate::WidgetKind::ActionMenuItem
-                    | crate::WidgetKind::XYPad
-                    | crate::WidgetKind::QrCode
-                    | crate::WidgetKind::CommandPalette
-                    | crate::WidgetKind::TreeView
-                    | crate::WidgetKind::CalendarHeatmap
-                    | crate::WidgetKind::ImageViewer
-                    | crate::WidgetKind::NativeMarkdown
-                    | crate::WidgetKind::GraphCanvas
-                    | crate::WidgetKind::Workspace
-                    | crate::WidgetKind::Dock
-                    | crate::WidgetKind::SplitPane
-                    | crate::WidgetKind::AppShell
-                    | crate::WidgetKind::SettingsPage
-            ) && self.runtime.text_input(id).is_some()
+            if !(widget.kind.is_choice_field()
+                || matches!(
+                    widget.kind,
+                    crate::WidgetKind::Input
+                        | crate::WidgetKind::Textarea
+                        | crate::WidgetKind::ContextMenu
+                        | crate::WidgetKind::CommandPalette
+                ))
+                && matches!(
+                    widget.kind,
+                    crate::WidgetKind::Button
+                        | crate::WidgetKind::Checkbox
+                        | crate::WidgetKind::Switch
+                        | crate::WidgetKind::Card
+                        | crate::WidgetKind::ListItem
+                        | crate::WidgetKind::Range
+                        | crate::WidgetKind::StatusBadge
+                        | crate::WidgetKind::ValidationMessage
+                        | crate::WidgetKind::EmptyState
+                        | crate::WidgetKind::LabeledValue
+                        | crate::WidgetKind::Segmented
+                        | crate::WidgetKind::Tabs
+                        | crate::WidgetKind::Progress
+                        | crate::WidgetKind::Spinner
+                        | crate::WidgetKind::FormField
+                        | crate::WidgetKind::InteractiveCard
+                        | crate::WidgetKind::SidebarFrame
+                        | crate::WidgetKind::SidebarRow
+                        | crate::WidgetKind::SettingsRow
+                        | crate::WidgetKind::SettingsCard
+                        | crate::WidgetKind::Skeleton
+                        | crate::WidgetKind::LevelMeter
+                        | crate::WidgetKind::Select
+                        | crate::WidgetKind::Dropdown
+                        | crate::WidgetKind::SearchDropdown
+                        | crate::WidgetKind::Dialog
+                        | crate::WidgetKind::Drawer
+                        | crate::WidgetKind::Popover
+                        | crate::WidgetKind::ContextMenu
+                        | crate::WidgetKind::Toast
+                        | crate::WidgetKind::Tooltip
+                        | crate::WidgetKind::ActionMenu
+                        | crate::WidgetKind::ActionMenuItem
+                        | crate::WidgetKind::XYPad
+                        | crate::WidgetKind::QrCode
+                        | crate::WidgetKind::CommandPalette
+                        | crate::WidgetKind::TreeView
+                        | crate::WidgetKind::CalendarHeatmap
+                        | crate::WidgetKind::ImageViewer
+                        | crate::WidgetKind::NativeMarkdown
+                        | crate::WidgetKind::GraphCanvas
+                        | crate::WidgetKind::Workspace
+                        | crate::WidgetKind::Dock
+                        | crate::WidgetKind::SplitPane
+                        | crate::WidgetKind::AppShell
+                        | crate::WidgetKind::SettingsPage
+                )
+                && self.runtime.text_input(id).is_some()
             {
                 // Queue before the new component projection: SetTextInput(None)
                 // clears the old committed value, then Button/ListItem may publish
@@ -1453,19 +1457,19 @@ impl NanaTreeDocument {
             let interaction = InteractionState {
                 pointer_events: !widget.props.disabled && !widget.props.layout.hidden,
                 focusable: !widget.props.disabled
-                    && matches!(
-                        widget.kind,
-                        crate::WidgetKind::Button
-                            | crate::WidgetKind::Chip
-                            | crate::WidgetKind::Input
-                            | crate::WidgetKind::Textarea
-                            | crate::WidgetKind::Checkbox
-                            | crate::WidgetKind::Switch
-                            | crate::WidgetKind::Select
-                            | crate::WidgetKind::Tabs
-                            | crate::WidgetKind::Segmented
-                            | crate::WidgetKind::Range
-                    ),
+                    && (widget.kind.is_choice_field()
+                        || matches!(
+                            widget.kind,
+                            crate::WidgetKind::Button
+                                | crate::WidgetKind::Chip
+                                | crate::WidgetKind::Input
+                                | crate::WidgetKind::Textarea
+                                | crate::WidgetKind::Checkbox
+                                | crate::WidgetKind::Switch
+                                | crate::WidgetKind::Tabs
+                                | crate::WidgetKind::Segmented
+                                | crate::WidgetKind::Range
+                        )),
             };
             if self.runtime.interaction(id) != Some(interaction) {
                 mutations.set_interaction(id, interaction);
@@ -2773,15 +2777,19 @@ fn resolve_widget_component_type(
     {
         return Some(id.clone());
     }
-    if widget.kind == crate::WidgetKind::Select {
-        if crate::widget_map::is_search_dropdown(&widget.props)
-            && let Some(id) = context.resolve_component_tag("search-dropdown")
+    if widget.kind.is_choice_field() {
+        let tag = if widget.kind == crate::WidgetKind::SearchDropdown
+            || crate::widget_map::is_search_dropdown(&widget.props)
         {
-            return Some(id.clone());
-        }
-        if crate::widget_map::is_dropdown_field(&widget.props)
-            && let Some(id) = context.resolve_component_tag("dropdown")
+            Some("search-dropdown")
+        } else if widget.kind == crate::WidgetKind::Dropdown
+            || crate::widget_map::is_dropdown_field(&widget.props)
         {
+            Some("dropdown")
+        } else {
+            None
+        };
+        if let Some(id) = tag.and_then(|tag| context.resolve_component_tag(tag)) {
             return Some(id.clone());
         }
     }
@@ -2797,59 +2805,60 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
     if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
         return false;
     }
-    matches!(
-        effective_kind(widget),
-        crate::WidgetKind::Column
-            | crate::WidgetKind::Box
-            | crate::WidgetKind::Row
-            | crate::WidgetKind::Button
-            | crate::WidgetKind::Chip
-            | crate::WidgetKind::Input
-            | crate::WidgetKind::Textarea
-            | crate::WidgetKind::Checkbox
-            | crate::WidgetKind::Range
-            | crate::WidgetKind::Spinner
-            | crate::WidgetKind::InteractiveCard
-            | crate::WidgetKind::Skeleton
-            | crate::WidgetKind::Tooltip
-            | crate::WidgetKind::ActionMenu
-            | crate::WidgetKind::ActionMenuItem
-            | crate::WidgetKind::Dialog
-            | crate::WidgetKind::Popover
-            | crate::WidgetKind::Switch
-            | crate::WidgetKind::Card
-            | crate::WidgetKind::Progress
-            | crate::WidgetKind::StatusBadge
-            | crate::WidgetKind::ValidationMessage
-            | crate::WidgetKind::Toast
-            | crate::WidgetKind::LevelMeter
-            | crate::WidgetKind::ImageViewer
-            | crate::WidgetKind::XYPad
-            | crate::WidgetKind::QrCode
-            | crate::WidgetKind::ListItem
-            | crate::WidgetKind::EmptyState
-            | crate::WidgetKind::LabeledValue
-            | crate::WidgetKind::FormField
-            | crate::WidgetKind::Drawer
-            | crate::WidgetKind::SidebarFrame
-            | crate::WidgetKind::SidebarRow
-            | crate::WidgetKind::SettingsRow
-            | crate::WidgetKind::SettingsCard
-            | crate::WidgetKind::ContextMenu
-            | crate::WidgetKind::CommandPalette
-            | crate::WidgetKind::Select
-            | crate::WidgetKind::Segmented
-            | crate::WidgetKind::Tabs
-            | crate::WidgetKind::TreeView
-            | crate::WidgetKind::CalendarHeatmap
-            | crate::WidgetKind::NativeMarkdown
-            | crate::WidgetKind::GraphCanvas
-            | crate::WidgetKind::Workspace
-            | crate::WidgetKind::Dock
-            | crate::WidgetKind::SplitPane
-            | crate::WidgetKind::AppShell
-            | crate::WidgetKind::SettingsPage
-    )
+    let kind = effective_kind(widget);
+    kind.is_choice_field()
+        || matches!(
+            kind,
+            crate::WidgetKind::Column
+                | crate::WidgetKind::Box
+                | crate::WidgetKind::Row
+                | crate::WidgetKind::Button
+                | crate::WidgetKind::Chip
+                | crate::WidgetKind::Input
+                | crate::WidgetKind::Textarea
+                | crate::WidgetKind::Checkbox
+                | crate::WidgetKind::Range
+                | crate::WidgetKind::Spinner
+                | crate::WidgetKind::InteractiveCard
+                | crate::WidgetKind::Skeleton
+                | crate::WidgetKind::Tooltip
+                | crate::WidgetKind::ActionMenu
+                | crate::WidgetKind::ActionMenuItem
+                | crate::WidgetKind::Dialog
+                | crate::WidgetKind::Popover
+                | crate::WidgetKind::Switch
+                | crate::WidgetKind::Card
+                | crate::WidgetKind::Progress
+                | crate::WidgetKind::StatusBadge
+                | crate::WidgetKind::ValidationMessage
+                | crate::WidgetKind::Toast
+                | crate::WidgetKind::LevelMeter
+                | crate::WidgetKind::ImageViewer
+                | crate::WidgetKind::XYPad
+                | crate::WidgetKind::QrCode
+                | crate::WidgetKind::ListItem
+                | crate::WidgetKind::EmptyState
+                | crate::WidgetKind::LabeledValue
+                | crate::WidgetKind::FormField
+                | crate::WidgetKind::Drawer
+                | crate::WidgetKind::SidebarFrame
+                | crate::WidgetKind::SidebarRow
+                | crate::WidgetKind::SettingsRow
+                | crate::WidgetKind::SettingsCard
+                | crate::WidgetKind::ContextMenu
+                | crate::WidgetKind::CommandPalette
+                | crate::WidgetKind::Segmented
+                | crate::WidgetKind::Tabs
+                | crate::WidgetKind::TreeView
+                | crate::WidgetKind::CalendarHeatmap
+                | crate::WidgetKind::NativeMarkdown
+                | crate::WidgetKind::GraphCanvas
+                | crate::WidgetKind::Workspace
+                | crate::WidgetKind::Dock
+                | crate::WidgetKind::SplitPane
+                | crate::WidgetKind::AppShell
+                | crate::WidgetKind::SettingsPage
+        )
 }
 
 fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f32) {
@@ -3508,6 +3517,7 @@ fn try_bind_registered_component(
     if missing_query
         && ((widget.kind == crate::WidgetKind::ContextMenu
             && context_menu_searchable(&widget.props))
+            || widget.kind == crate::WidgetKind::SearchDropdown
             || (widget.kind == crate::WidgetKind::Select
                 && crate::widget_map::is_search_dropdown(&widget.props)))
         && let Some(state) = context.world().text_input(id)
@@ -3968,7 +3978,9 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::Checkbox => AccessibilityRole::Checkbox,
         crate::WidgetKind::Switch => AccessibilityRole::Switch,
         crate::WidgetKind::Range => AccessibilityRole::Slider,
-        crate::WidgetKind::Select => AccessibilityRole::ComboBox,
+        crate::WidgetKind::Select
+        | crate::WidgetKind::Dropdown
+        | crate::WidgetKind::SearchDropdown => AccessibilityRole::ComboBox,
         crate::WidgetKind::Progress | crate::WidgetKind::LevelMeter => {
             AccessibilityRole::ProgressIndicator
         }
@@ -6200,7 +6212,11 @@ mod tests {
         let checkbox_id = StableNodeId::try_from(checkbox).unwrap();
         assert_eq!(
             doc.runtime.standard_visual(checkbox_id),
-            Some(nana_ui_runtime::StandardVisual::Checkbox { checked: true })
+            Some(nana_ui_runtime::StandardVisual::Checkbox {
+                checked: true,
+                indeterminate: false,
+                size: nana_ui_core::ControlSize::Medium,
+            })
         );
         let switch_id = StableNodeId::try_from(switch).unwrap();
         assert!(matches!(
