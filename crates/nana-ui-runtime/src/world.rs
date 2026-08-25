@@ -3256,8 +3256,7 @@ impl UiWorld {
             | StandardVisual::Switch { checked: false, .. } => {
                 self.style_model.palette.muted.as_rgba_array()
             }
-            StandardVisual::Slider { .. }
-            | StandardVisual::Range { .. }
+            StandardVisual::Range { .. }
             | StandardVisual::Card { .. }
             | StandardVisual::ListItem { .. }
             | StandardVisual::StatusBadge { .. }
@@ -6394,7 +6393,7 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetStandardVisual { id, visual } => {
                     self.node(*id)?;
                     let invalid_ratio = match visual {
-                        Some(StandardVisual::Slider { ratio })
+                        Some(StandardVisual::Range { ratio, .. })
                         | Some(StandardVisual::Progress {
                             value_ratio: ratio, ..
                         })

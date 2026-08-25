@@ -654,10 +654,10 @@ mod tests {
     use nana_ui_platform::{ImeEvent, InputModifiers, PointerType};
     use nana_ui_runtime::{
         ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum,
-        Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, Menu, MenuItem, ModalSlots,
-        MutationQueue, OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics,
-        ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table,
-        TableCell, TableRow, Text, TextArea, TextInput,
+        Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, ModalSlots, MutationQueue,
+        OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
+        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
+        Text, TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1840,9 +1840,11 @@ mod tests {
         let host = context
             .create_component(document, OverlayHost::new())
             .unwrap();
-        let menu = context.create_component(document, Menu::new()).unwrap();
+        let menu = context
+            .create_component(document, ActionMenu::new().open(true))
+            .unwrap();
         let item = context
-            .create_component(document, MenuItem::new("Build"))
+            .create_component(document, ActionMenuItem::new("Build"))
             .unwrap();
         context.append_child(background, host).unwrap();
         context.append_child(host, menu).unwrap();

@@ -500,11 +500,7 @@ impl RegisterableComponent for SegmentedControl {
     const TYPE_ID: &'static str = "nana.segmented";
     const TAGS: &'static [&'static str] = &["segmented", "segmented-control"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut component = if spec.type_id.as_str() == "nana.tabs" {
-            SegmentedControl::tabs()
-        } else {
-            SegmentedControl::new()
-        };
+        let mut component = SegmentedControl::new();
         component = component.size(spec.size).fill(flag_attr(spec, &["fill"]));
         if !spec.label.is_empty() {
             component = component.label(Arc::<str>::from(spec.label));

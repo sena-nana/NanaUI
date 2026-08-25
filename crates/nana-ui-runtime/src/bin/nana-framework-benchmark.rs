@@ -6,11 +6,11 @@ use nana_ui_core::{
     VirtualTreeRow,
 };
 use nana_ui_runtime::{
-    Activate, AppContext, Button, ContextPredicate, Dialog, Dock, DockAxis, DockNode, DocumentId,
-    KeyContext, LayoutViewport, List, MeasureTextShaper, Menu, NodeKind, NodeStyle, OverlayHost,
-    Popover, ScrollAxes, ScrollOffset, ScrollView, StableNodeId, SystemWork, Table, TableCell,
-    TableRow, Text, TextArea, TextContent, TextInput, Tooltip, VirtualListItems, VirtualTableItems,
-    VirtualTreeItems, WorkCounters,
+    ActionMenu, Activate, AppContext, Button, ContextPredicate, Dialog, Dock, DockAxis, DockNode,
+    DocumentId, KeyContext, LayoutViewport, List, MeasureTextShaper, NodeKind, NodeStyle,
+    OverlayHost, Popover, ScrollAxes, ScrollOffset, ScrollView, StableNodeId, SystemWork, Table,
+    TableCell, TableRow, Text, TextArea, TextContent, TextInput, Tooltip, VirtualListItems,
+    VirtualTableItems, VirtualTreeItems, WorkCounters,
 };
 use serde::Serialize;
 
@@ -1739,7 +1739,7 @@ fn bench_overlay() -> CatalogWorkloadCase {
         .create_component(document, Tooltip::new("Hint"))
         .unwrap();
     let menu = context
-        .create_component(document, Menu::new().label("Actions"))
+        .create_component(document, ActionMenu::new().open(true))
         .unwrap();
     let dialog = context
         .create_component(document, Dialog::new("Settings"))

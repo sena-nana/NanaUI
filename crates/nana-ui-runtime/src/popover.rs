@@ -578,8 +578,9 @@ mod tests {
 
         world.set_pointer_hover(document(), 1, Some(id)).unwrap();
         world.resolve_styles(&[id]).unwrap();
-        let Some(ComponentGeometry::MenuSurface { trigger_surface, .. }) =
-            world.component_geometry(id)
+        let Some(ComponentGeometry::MenuSurface {
+            trigger_surface, ..
+        }) = world.component_geometry(id)
         else {
             panic!("expected menu surface geometry");
         };

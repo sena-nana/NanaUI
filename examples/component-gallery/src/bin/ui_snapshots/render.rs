@@ -8,11 +8,12 @@ use nana_ui::runtime::{
     AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
     Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
     IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
-    ListItem as RuntimeListItem, MutationQueue, NodeStyle, RuntimeDocument, ScrollAxes,
-    ScrollOffset, ScrollView as RuntimeScrollView, Slider as RuntimeSlider,
-    Switch as RuntimeSwitch, Tab as RuntimeTab, TabList as RuntimeTabList, Table as RuntimeTable,
-    TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Text as RuntimeText,
-    TextArea as RuntimeTextArea, TextInput as RuntimeTextInput, TextVerticalAlignment,
+    ListItem as RuntimeListItem, MutationQueue, NodeStyle, RangeField as RuntimeRangeField,
+    RuntimeDocument, ScrollAxes, ScrollOffset, ScrollView as RuntimeScrollView,
+    Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Table as RuntimeTable,
+    TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Tabs as RuntimeTabs,
+    Text as RuntimeText, TextArea as RuntimeTextArea, TextInput as RuntimeTextInput,
+    TextVerticalAlignment,
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
@@ -726,14 +727,23 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
     let toggle = context.create_component(document_id, RuntimeSwitch::new("Auto build", true))?;
     let slider = context.create_component(
         document_id,
-        RuntimeSlider::new(68.0, 0.0, 100.0)?.label("Volume"),
+        RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0)?.label("Volume"),
     )?;
-    let tabs = context.create_component(document_id, RuntimeTabList::new().label("Output"))?;
-    let preview =
-        context.create_component(document_id, RuntimeTab::new("Preview").selected(true))?;
-    let program = context.create_component(document_id, RuntimeTab::new("Program"))?;
-    context.append_child(tabs, preview)?;
-    context.append_child(tabs, program)?;
+    let tabs = context.create_component(
+        document_id,
+        RuntimeTabs::new("preview").label("Output").options([
+            RuntimeTabOption::new("preview", "Preview"),
+            RuntimeTabOption::new("program", "Program"),
+        ]),
+    )?;
+    let option_ids = context.read(tabs, |tabs| {
+        tabs.option_nodes()
+            .iter()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>()
+    })?;
+    let preview = option_ids[0];
+    let program = option_ids[1];
     let scroll_component = RuntimeScrollView::new(ScrollAxes::Vertical)
         .label("Activity")
         .style(NodeStyle {
@@ -903,7 +913,7 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
             },
         ),
         (
-            preview.stable_id(),
+            preview,
             LayoutBox {
                 x: 28.0,
                 y: 390.0,
@@ -912,7 +922,7 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
             },
         ),
         (
-            program.stable_id(),
+            program,
             LayoutBox {
                 x: 152.0,
                 y: 390.0,

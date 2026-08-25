@@ -77,6 +77,30 @@ fn format_range_value(value: f64, step: f64) -> Arc<str> {
     Arc::from(format!("{value:.decimals$}"))
 }
 
+fn range_field_style() -> NodeStyle {
+    NodeStyle {
+        background: Some(nana_ui_core::SemanticColorRole::Accent),
+        border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
+        interaction: crate::InteractionStyle {
+            hovered: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
+                ..SemanticPaint::default()
+            },
+            focused: SemanticPaint {
+                border: Some(nana_ui_core::SemanticColorRole::Accent),
+                ..SemanticPaint::default()
+            },
+            disabled: SemanticPaint {
+                background: Some(nana_ui_core::SemanticColorRole::Faint),
+                border: Some(nana_ui_core::SemanticColorRole::Border),
+                ..SemanticPaint::default()
+            },
+            ..crate::InteractionStyle::default()
+        },
+        ..NodeStyle::default()
+    }
+}
+
 fn text_field_style(multiline: bool) -> NodeStyle {
     let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
     layout.width = Some(nana_ui_core::LengthSpec::Percent(100.0));
@@ -1096,18 +1120,8 @@ pub struct TableCellFocused {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TabSelected {
-    pub tab: StableNodeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToggleChanged {
     pub checked: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SliderChanged {
-    pub value: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1685,120 +1699,6 @@ impl crate::ModalSurface for Dialog {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Menu {
-    pub label: Option<Arc<str>>,
-    pub style: NodeStyle,
-}
-
-impl Menu {
-    pub fn new() -> Self {
-        Self {
-            label: None,
-            style: overlay_surface_style(320.0),
-        }
-    }
-
-    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-}
-
-impl Default for Menu {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ComponentView for Menu {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element { tag: "menu".into() }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: true,
-                focusable: false,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Menu,
-                label: self.label.clone(),
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MenuItem {
-    pub label: String,
-    pub disabled: bool,
-    pub style: NodeStyle,
-}
-
-impl MenuItem {
-    pub fn new(label: impl Into<String>) -> Self {
-        let label = label.into();
-        let button = Button::new(label.clone());
-        Self {
-            label,
-            disabled: false,
-            style: button.style,
-        }
-    }
-
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl ComponentView for MenuItem {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "menuitem".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.label.as_str()) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: self.label.clone(),
-                },
-            );
-        }
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::MenuItem,
-                label: Some(Arc::from(self.label.as_str())),
-                disabled: self.disabled,
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Tooltip {
     pub label: Arc<str>,
     pub config: nana_ui_core::TooltipConfig,
@@ -1850,34 +1750,6 @@ impl ComponentView for Tooltip {
                 ..AccessibilityState::default()
             },
         );
-    }
-}
-
-fn overlay_surface_style(max_width: f32) -> NodeStyle {
-    NodeStyle {
-        layout: Arc::new(nana_ui_core::LayoutStyle {
-            position: nana_ui_core::PositionSpec::Fixed,
-            max_width: Some(nana_ui_core::LengthSpec::Px(max_width)),
-            padding_left: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::UI_METRICS.panel_padding_x,
-            )),
-            padding_right: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::UI_METRICS.panel_padding_x,
-            )),
-            padding_top: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::UI_METRICS.panel_padding_y,
-            )),
-            padding_bottom: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::UI_METRICS.panel_padding_y,
-            )),
-            border_width: Some(1.0),
-            border_radius: Some(nana_ui_core::UI_METRICS.radius_md),
-            z_index: Some(1_000),
-            ..nana_ui_core::LayoutStyle::default()
-        }),
-        background: Some(nana_ui_core::SemanticColorRole::Surface),
-        border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
-        ..NodeStyle::default()
     }
 }
 
@@ -2221,111 +2093,6 @@ impl ComponentView for Switch {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Slider {
-    pub value: f32,
-    pub minimum: f32,
-    pub maximum: f32,
-    pub label: Option<Arc<str>>,
-    pub disabled: bool,
-    pub style: NodeStyle,
-}
-
-impl Slider {
-    pub fn new(value: f32, minimum: f32, maximum: f32) -> Result<Self, SliderError> {
-        if !value.is_finite() || !minimum.is_finite() || !maximum.is_finite() {
-            return Err(SliderError::NonFinite);
-        }
-        if minimum >= maximum {
-            return Err(SliderError::InvalidRange);
-        }
-        if !(minimum..=maximum).contains(&value) {
-            return Err(SliderError::OutOfRange);
-        }
-        Ok(Self {
-            value,
-            minimum,
-            maximum,
-            label: None,
-            disabled: false,
-            style: NodeStyle {
-                background: Some(nana_ui_core::SemanticColorRole::Accent),
-                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
-                interaction: crate::InteractionStyle {
-                    hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
-                        ..SemanticPaint::default()
-                    },
-                    focused: SemanticPaint {
-                        border: Some(nana_ui_core::SemanticColorRole::Accent),
-                        ..SemanticPaint::default()
-                    },
-                    disabled: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Faint),
-                        border: Some(nana_ui_core::SemanticColorRole::Border),
-                        ..SemanticPaint::default()
-                    },
-                    ..crate::InteractionStyle::default()
-                },
-                ..NodeStyle::default()
-            },
-        })
-    }
-
-    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-
-    pub fn ratio(&self) -> f32 {
-        (self.value - self.minimum) / (self.maximum - self.minimum)
-    }
-}
-
-impl ComponentView for Slider {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "slider".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::Slider {
-            ratio: self.ratio(),
-        };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
-        }
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Slider,
-                label: self.label.clone(),
-                value: Some(Arc::from(self.value.to_string())),
-                disabled: self.disabled,
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct RangeField {
     pub value: f64,
     pub minimum: f64,
@@ -2385,7 +2152,7 @@ impl RangeField {
             disabled: false,
             invalid: false,
             dragging: None,
-            style: Slider::new(value as f32, minimum as f32, maximum as f32)?.style,
+            style: range_field_style(),
         };
         field.value = field.quantize(value);
         Ok(field)
@@ -2497,162 +2264,6 @@ impl ComponentView for RangeField {
                 numeric_maximum: Some(self.maximum),
                 numeric_step: Some(self.step),
                 numeric_value: Some(self.value),
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct TabList {
-    pub label: Option<Arc<str>>,
-    pub style: NodeStyle,
-}
-
-impl TabList {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl ComponentView for TabList {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "tablist".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: false,
-                focusable: false,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::TabList,
-                label: self.label.clone(),
-                ..AccessibilityState::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tab {
-    pub label: String,
-    pub selected: bool,
-    pub disabled: bool,
-    pub style: NodeStyle,
-}
-
-impl Tab {
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            selected: false,
-            disabled: false,
-            style: NodeStyle {
-                layout: control_layout(nana_ui_core::UI_METRICS.selection_padding_x),
-                foreground: Some(nana_ui_core::SemanticColorRole::Muted),
-                background: Some(nana_ui_core::SemanticColorRole::Surface),
-                border: Some(nana_ui_core::SemanticColorRole::Border),
-                interaction: crate::InteractionStyle {
-                    selected: SemanticPaint {
-                        foreground: Some(nana_ui_core::SemanticColorRole::Text),
-                        background: Some(nana_ui_core::SemanticColorRole::Selected),
-                        border: Some(nana_ui_core::SemanticColorRole::Accent),
-                    },
-                    selected_hovered: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::SelectedHover),
-                        ..SemanticPaint::default()
-                    },
-                    selected_pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::SelectedPressed),
-                        ..SemanticPaint::default()
-                    },
-                    hovered: SemanticPaint {
-                        foreground: Some(nana_ui_core::SemanticColorRole::Text),
-                        background: Some(nana_ui_core::SemanticColorRole::Hover),
-                        ..SemanticPaint::default()
-                    },
-                    pressed: SemanticPaint {
-                        background: Some(nana_ui_core::SemanticColorRole::Active),
-                        ..SemanticPaint::default()
-                    },
-                    focused: SemanticPaint {
-                        border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
-                        ..SemanticPaint::default()
-                    },
-                    disabled: SemanticPaint {
-                        foreground: Some(nana_ui_core::SemanticColorRole::Faint),
-                        background: Some(nana_ui_core::SemanticColorRole::Subtle),
-                        border: Some(nana_ui_core::SemanticColorRole::BorderSoft),
-                    },
-                },
-                text_horizontal_alignment: TextHorizontalAlignment::Center,
-                text_vertical_alignment: TextVerticalAlignment::Center,
-            },
-        }
-    }
-
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
-        self
-    }
-
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-impl ComponentView for Tab {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element { tag: "tab".into() }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.label.as_str()) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: self.label.clone(),
-                },
-            );
-        }
-        project_common(
-            id,
-            world,
-            mutations,
-            &self.style,
-            InteractionState {
-                pointer_events: !self.disabled,
-                focusable: !self.disabled,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Tab,
-                label: Some(Arc::from(self.label.as_str())),
-                disabled: self.disabled,
-                selected: Some(self.selected),
                 ..AccessibilityState::default()
             },
         );

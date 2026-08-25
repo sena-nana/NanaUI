@@ -116,9 +116,6 @@ pub enum StandardVisual {
         loading_phase: f32,
         invalid: bool,
     },
-    Slider {
-        ratio: f32,
-    },
     Range {
         label: Option<Arc<str>>,
         value: Arc<str>,

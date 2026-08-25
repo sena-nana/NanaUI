@@ -1004,7 +1004,7 @@ const FIXTURE_REGISTRY: &[Fixture] = &[
     f(
         Component::SegmentedControl,
         "a11y-radio",
-        "RadioGroup and Radio semantics expose exactly one controlled checked option",
+        "SegmentedControl exposes RadioGroup and Radio roles for one controlled checked option",
     ),
     f(
         Component::SegmentedControl,
