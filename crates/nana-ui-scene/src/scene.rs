@@ -1971,8 +1971,8 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Quad {
                                 background: chrome.background,
                                 border_color: chrome.border,
-                                border_width: chrome.border_width,
-                                corner_radius: chrome.corner_radius,
+                                border_width: 1.0,
+                                corner_radius: UI_METRICS.radius_sm,
                                 shadow: None,
                             },
                         });
