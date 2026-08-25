@@ -1,5 +1,5 @@
 use raw_window_handle::HasWindowHandle;
-use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
+use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy, clear_vibrancy};
 
 use crate::{Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome};
 

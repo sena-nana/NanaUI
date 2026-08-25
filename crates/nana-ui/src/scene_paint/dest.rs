@@ -23,10 +23,7 @@ impl GroupSlot {
     }
 
     pub fn clip(clip: FragmentClip) -> Self {
-        Self {
-            opacity: 1.0,
-            clip,
-        }
+        Self { opacity: 1.0, clip }
     }
 }
 

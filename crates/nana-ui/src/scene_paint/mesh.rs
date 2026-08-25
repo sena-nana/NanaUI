@@ -5,20 +5,20 @@ use std::{
 
 use bytemuck::{Pod, Zeroable};
 use lyon::{
-    math::{point, Box2D, Point},
-    path::{builder::BorderRadii, Path, Winding},
+    math::{Box2D, Point, point},
+    path::{Path, Winding, builder::BorderRadii},
     tessellation::{
         BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
         StrokeVertex, VertexBuffers,
     },
 };
-use nana_ui_scene::{icon_geometry, IconPathCommand, IconShape};
+use nana_ui_scene::{IconPathCommand, IconShape, icon_geometry};
 
 use super::{
     clip::{FragmentClip, LogicalRect},
     color::{orthographic_scaled, pack_linear, with_opacity},
 };
-use crate::{icons::Icon, PhysicalRect};
+use crate::{PhysicalRect, icons::Icon};
 
 const INITIAL_VERTICES: usize = 1_024;
 const INITIAL_INDICES: usize = 2_048;
