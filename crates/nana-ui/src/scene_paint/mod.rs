@@ -2035,6 +2035,103 @@ mod tests {
     }
 
     #[test]
+    fn time_series_line_paints_capsule_coverage_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
+                time_series_stroke_node(
+                    2,
+                    vec![[8.0, 32.0], [56.0, 32.0], [56.0, 12.0]],
+                    2.0,
+                    [1.0, 0.0, 0.0, 1.0],
+                ),
+            ],
+            [],
+        );
+        assert!(
+            scene.primitives().any(|primitive| matches!(
+                primitive.kind,
+                ScenePrimitiveKind::Stroke { width, .. } if (width - 2.0).abs() < f32::EPSILON
+            )),
+            "TimeSeriesChart line must extract as Stroke, not tiled QuadBatch"
+        );
+        assert!(
+            scene.primitives().all(|primitive| !matches!(
+                primitive.kind,
+                ScenePrimitiveKind::QuadBatch {
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    ..
+                }
+            )),
+            "chart line must not keep the retired tiled-quad path"
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let midline = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_red_slot(midline),
+            "chart line midline must ink the 2px capsule, got {midline:?}"
+        );
+        let join = pixel(&pixels, 64, 56, 32);
+        assert!(
+            join[0] > 120,
+            "articulated join must keep the shared endpoint disc, got {join:?}"
+        );
+        let far = pixel(&pixels, 64, 32, 8);
+        assert!(
+            is_blue_slot(far),
+            "pixels outside the 2px capsule must stay the sibling fill, got {far:?}"
+        );
+        let covering_corner = pixel(&pixels, 64, 32, 28);
+        assert!(
+            covering_corner[2] > 120 && covering_corner[0] < 80,
+            "covering-quad corners 4px off the 1px radius must be discarded, got {covering_corner:?}"
+        );
+    }
+
+    fn time_series_stroke_node(
+        value: u64,
+        points: Vec<[f32; 2]>,
+        width: f32,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        let mut node = extracted_div(
+            value,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle::default(),
+            None,
+        );
+        node.standard_visual = Some(StandardVisual::TimeSeriesChart {
+            values: Arc::from([0.0, 1.0]),
+        });
+        node.component_geometry = Some(ComponentGeometry::TimeSeriesChart {
+            grid: Vec::new(),
+            area: Vec::new(),
+            line: points,
+            line_width: width,
+            grid_color: [0.0, 0.0, 0.0, 0.0],
+            area_color: [0.0, 0.0, 0.0, 0.0],
+            line_color: color,
+        });
+        node
+    }
+
+    #[test]
     fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
