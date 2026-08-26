@@ -8,10 +8,14 @@ use super::{
 use crate::PhysicalRect;
 
 const INITIAL_INSTANCES: usize = 256;
-/// Extra logical pixels so the covering quad has room for `fwidth` AA.
-const STROKE_AA_FRINGE: f32 = 1.0;
 const ROUND_CAP: f32 = 0.0;
 const BUTT_CAP: f32 = 1.0;
+
+pub(super) struct StrokeStyle<'a> {
+    pub width: f32,
+    pub widths: &'a [f32],
+    pub cap: StrokeCap,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -149,24 +153,22 @@ impl MeshPipeline {
     pub(super) fn push_stroke(
         &mut self,
         points: &[[f32; 2]],
-        widths: &[f32],
-        cap: StrokeCap,
+        style: StrokeStyle<'_>,
         affine: [f32; 6],
-        width: f32,
         color: [f32; 4],
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
-        if points.len() < 2 || width <= 0.0 {
+        if points.len() < 2 || style.width <= 0.0 {
             return None;
         }
         let start = self.pending_instances.len() as u32;
         append_stroke_instances(
             &mut self.pending_instances,
             points,
-            width,
-            widths,
-            cap,
+            style.width,
+            style.widths,
+            style.cap,
             pack_linear(with_opacity(color, opacity)),
         );
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
@@ -441,6 +443,9 @@ fn stamp_fragment_clip(instances: &mut [MeshInstance], start: usize, clip: Fragm
 mod tests {
     use super::*;
 
+    /// Extra logical pixels so the covering quad has room for `fwidth` AA.
+    const STROKE_AA_FRINGE: f32 = 1.0;
+
     fn capsule_distance(point: [f32; 2], p0: [f32; 2], p1: [f32; 2]) -> f32 {
         let pa = [point[0] - p0[0], point[1] - p0[1]];
         let ba = [p1[0] - p0[0], p1[1] - p0[1]];
@@ -454,32 +459,17 @@ mod tests {
         (point[0] - closest[0]).hypot(point[1] - closest[1])
     }
 
-    fn sd_uneven_capsule(point: [f32; 2], pa: [f32; 2], pb: [f32; 2], ra: f32, rb: f32) -> f32 {
-        let px = point[0] - pa[0];
-        let py = point[1] - pa[1];
-        let sx = pb[0] - pa[0];
-        let sy = pb[1] - pa[1];
-        let h = sx * sx + sy * sy;
-        if h < 1e-8 {
-            return (px * px + py * py).sqrt() - ra.max(rb);
-        }
-        let b = ra - rb;
-        if b * b >= h {
-            let d0 = (px * px + py * py).sqrt() - ra;
-            let d1 = (point[0] - pb[0]).hypot(point[1] - pb[1]) - rb;
-            return d0.min(d1);
-        }
-        let qx = (px * sy - py * sx).abs() / h;
-        let qy = (px * sx + py * sy) / h;
-        let cx = (h - b * b).sqrt();
-        let k = cx * qy - b * qx;
-        let n = qx * qx + qy * qy;
-        if k < 0.0 {
-            h.sqrt() * n - ra
-        } else if k > cx {
-            h.sqrt() * (n + 1.0 - 2.0 * qy) - rb
-        } else {
-            cx * qx + b * qy - ra
+    fn sd_variable_capsule(point: [f32; 2], a: [f32; 2], b: [f32; 2], r0: f32, r1: f32) -> f32 {
+        capsule_distance(point, a, b) - {
+            let pa = [point[0] - a[0], point[1] - a[1]];
+            let ba = [b[0] - a[0], b[1] - a[1]];
+            let denom = ba[0] * ba[0] + ba[1] * ba[1];
+            let t = if denom <= f32::EPSILON {
+                0.0
+            } else {
+                ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
+            };
+            r0 + (r1 - r0) * t
         }
     }
 
@@ -677,28 +667,28 @@ mod tests {
     }
 
     #[test]
-    fn uneven_capsule_matches_constant_radius() {
+    fn variable_capsule_matches_constant_radius() {
         let p0 = [0.0, 0.0];
         let p1 = [16.0, 0.0];
         let radius = 2.0;
         for point in [[8.0, 0.0], [0.0, 0.0], [16.0, 1.0], [8.0, 3.0], [-1.0, 0.0]] {
             let constant = capsule_distance(point, p0, p1) - radius;
-            let uneven = sd_uneven_capsule(point, p0, p1, radius, radius);
+            let variable = sd_variable_capsule(point, p0, p1, radius, radius);
             assert!(
-                (constant - uneven).abs() < 2e-4,
-                "point {point:?}: constant {constant} vs uneven {uneven}"
+                (constant - variable).abs() < 2e-4,
+                "point {point:?}: constant {constant} vs variable {variable}"
             );
         }
     }
 
     #[test]
-    fn uneven_capsule_keeps_large_end_and_thins() {
+    fn variable_capsule_keeps_large_end_and_thins() {
         let p0 = [0.0, 0.0];
         let p1 = [20.0, 0.0];
-        assert!(sd_uneven_capsule([0.0, 3.0], p0, p1, 4.0, 1.0) < 0.0);
-        assert!(sd_uneven_capsule([20.0, 0.4], p0, p1, 4.0, 1.0) < 0.0);
-        assert!(sd_uneven_capsule([20.0, 2.0], p0, p1, 4.0, 1.0) > 0.0);
-        assert!(sd_uneven_capsule([10.0, 0.0], p0, p1, 4.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([0.0, 3.0], p0, p1, 4.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([20.0, 0.4], p0, p1, 4.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([20.0, 2.0], p0, p1, 4.0, 1.0) > 0.0);
+        assert!(sd_variable_capsule([10.0, 0.0], p0, p1, 4.0, 1.0) < 0.0);
     }
 
     #[test]

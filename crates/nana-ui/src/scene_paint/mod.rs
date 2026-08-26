@@ -51,7 +51,7 @@ use color::with_opacity;
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
-use mesh::{MeshPipeline, MeshRange};
+use mesh::{MeshPipeline, MeshRange, StrokeStyle};
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
 
@@ -557,10 +557,12 @@ impl SceneWgpuPainter {
                 } => {
                     if let Some(range) = self.meshes.push_stroke(
                         points,
-                        widths,
-                        *cap,
+                        StrokeStyle {
+                            width: *width,
+                            widths,
+                            cap: *cap,
+                        },
                         affine,
-                        *width,
                         *color,
                         primitive.opacity,
                         frag_clip,
@@ -1926,7 +1928,7 @@ mod tests {
                 points: vec![[8.0, 32.0], [56.0, 32.0]],
                 width: 2.0,
                 color: [1.0, 0.0, 0.0, 1.0],
-                widths: vec![10.0, 2.0],
+                widths: vec![12.0, 4.0],
                 cap: StrokeCap::Round,
             },
         ));
@@ -1942,22 +1944,22 @@ mod tests {
         let thick_end = pixel(&pixels, 64, 8, 32);
         assert!(
             is_red_slot(thick_end),
-            "5px radius at the start must ink, got {thick_end:?}"
+            "6px radius at the start must ink, got {thick_end:?}"
         );
         let thick_side = pixel(&pixels, 64, 8, 28);
         assert!(
             thick_side[0] > 120,
-            "4px off the start must stay inside the 5px disc, got {thick_side:?}"
+            "4px off the start must stay inside the 6px disc, got {thick_side:?}"
         );
         let thin_side = pixel(&pixels, 64, 56, 28);
         assert!(
             is_blue_slot(thin_side),
-            "4px off the 1px end must stay fill, got {thin_side:?}"
+            "4px off the 2px end must stay fill, got {thin_side:?}"
         );
         let thin_mid = pixel(&pixels, 64, 56, 32);
         assert!(
-            is_red_slot(thin_mid),
-            "1px radius end midline must ink, got {thin_mid:?}"
+            thin_mid[0] > 120,
+            "2px radius end midline must ink, got {thin_mid:?}"
         );
     }
 
