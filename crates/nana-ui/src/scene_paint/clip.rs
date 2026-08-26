@@ -71,9 +71,6 @@ pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
 }
 
 /// Pixel origin of a span of `logical_extent` centered on `logical_center`.
-///
-/// Icons and vertically centered text share this so a 12px glyph and a 12px
-/// line box snap to the same physical top.
 pub(super) fn snap_centered_origin(
     logical_center: f32,
     logical_extent: f32,

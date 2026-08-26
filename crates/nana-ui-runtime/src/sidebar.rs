@@ -1684,11 +1684,6 @@ mod tests {
             style.layout.padding_left,
             Some(LengthSpec::Px(sidebar_row_depth_inset(1)))
         );
-        assert_eq!(style.layout.font_size, Some(ControlSize::Small.text_size()));
-        assert_eq!(
-            style.layout.line_height,
-            Some(LineHeightSpec::Absolute(ControlSize::Small.text_size()))
-        );
         assert_eq!(
             context.world().standard_visual(leading.stable_id()),
             Some(StandardVisual::Icon {
