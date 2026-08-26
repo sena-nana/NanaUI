@@ -902,6 +902,7 @@ impl NanaTreeDocument {
 
     /// Packed revision for a registered slot. Unresolved handles stay `0`.
     fn packed_host_texture_revision(&self, slot: &str) -> u64 {
+        let _ = slot;
         #[cfg(test)]
         if let Some(revision) = self.host_texture_revision_overrides.get(slot) {
             return *revision;
@@ -3128,7 +3129,7 @@ fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String
             );
         }
         crate::WidgetKind::GraphCanvas => {
-            if widget.props.native_props.get("model").is_some() {
+            if widget.props.native_props.contains_key("model") {
                 push(&mut extras, "model", &["model"]);
             } else {
                 let nodes = widget.props.native_props.get("nodes");
@@ -7713,8 +7714,8 @@ mod tests {
         );
         props.attrs.insert("tab".into(), "appearance".into());
         assert!(
-            props.native_props.get("settings").is_none()
-                && props.native_props.get("model").is_none(),
+            !props.native_props.contains_key("settings")
+                && !props.native_props.contains_key("model"),
             "attrs-only settings must not supply native_props"
         );
         let mut bridge = crate::MessageBridge::new();

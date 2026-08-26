@@ -87,18 +87,10 @@ pub struct SceneWgpuPainter {
     /// stale stream.
     validated_scenes: HashMap<u64, Arc<[RenderOperation]>>,
     validated_order: VecDeque<u64>,
-    /// What the last encoded frame left in `dest`, when that content can be
-    /// reused. See [`PaintedDest`].
+    /// Last fully scene-described dest; host textures / GPU slots skip reuse.
     painted: Option<PaintedDest>,
 }
 
-/// Identity of the pixels currently held by `dest`.
-///
-/// The same scene instance painted into the same viewport produces the same
-/// pixels, and `dest` keeps them until the next paint, so such a frame only has
-/// to re-blit. Recorded only for frames that are fully described by the scene:
-/// host texture and GPU-slot content changes behind an unchanged scene, so
-/// those frames re-encode every time.
 #[derive(Clone, Copy, PartialEq)]
 struct PaintedDest {
     instance: u64,
@@ -743,6 +735,7 @@ fn clip_dests_for(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wrap_drawn_with_clip_dests(
     commands: &mut Vec<DrawCommand>,
     start: usize,
@@ -2189,8 +2182,10 @@ mod tests {
             .unwrap();
         let mut layout = MutationQueue::new();
         write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
-        let mut style = nana_ui_runtime::NodeStyle::default();
-        style.layout = square_button_layout();
+        let mut style = nana_ui_runtime::NodeStyle {
+            layout: square_button_layout(),
+            ..Default::default()
+        };
         Arc::make_mut(&mut style.layout).transform = Some(nana_ui_core::PaintTransform {
             a: 0.0,
             b: 1.0,
@@ -2242,8 +2237,10 @@ mod tests {
             .unwrap();
         let mut layout = MutationQueue::new();
         write_box(&mut layout, button.stable_id(), 8.0, 16.0, 48.0, 32.0);
-        let mut style = nana_ui_runtime::NodeStyle::default();
-        style.layout = square_button_layout();
+        let mut style = nana_ui_runtime::NodeStyle {
+            layout: square_button_layout(),
+            ..Default::default()
+        };
         Arc::make_mut(&mut style.layout).letter_spacing = Some(8.0);
         layout.set_style(button.stable_id(), style);
         context.commit_mutations(layout).unwrap();

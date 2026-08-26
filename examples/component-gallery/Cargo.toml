@@ -36,11 +36,7 @@ snapshots = [
 ]
 
 [dependencies]
-nana-ui = {
-    path = "../../crates/nana-ui",
-    default-features = false,
-    features = ["components", "gpu", "hosted"],
-}
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["components", "gpu", "hosted"] }
 nana-ui-core = { workspace = true, optional = true }
 nana-ui-devtools = { workspace = true, optional = true, features = ["offscreen"] }
 nana-ui-platform.workspace = true

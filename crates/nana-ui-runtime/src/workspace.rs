@@ -1745,7 +1745,7 @@ mod tests {
             .unwrap();
         let resources_handle = *handles.get(&RegionId::Resources).expect("resources handle");
         let inspector_handle = *handles.get(&RegionId::Inspector).expect("inspector handle");
-        assert!(handles.get(&RegionId::Primary).is_none());
+        assert!(!handles.contains_key(&RegionId::Primary));
         assert!(
             context
                 .world()

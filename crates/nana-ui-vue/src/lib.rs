@@ -475,6 +475,7 @@ impl VueHost {
         canvas: SharedCanvasRuntime,
     ) -> Self {
         let theme = ThemeMode::Light;
+        #[cfg_attr(not(feature = "scene-view"), allow(unused_mut))]
         let mut document =
             NanaTreeDocument::with_id(document_id, physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();

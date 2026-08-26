@@ -878,12 +878,13 @@ fn intrinsic_size_scoped(
         children.width.max(text.width),
         children.height.max(text.height),
     );
-    if text_metrics.is_none() && flow_children.is_empty() {
-        if let Some(fs) = style.font_size.filter(|value| *value > 0.0) {
-            content.height = content
-                .height
-                .max(text_line_box_height_px(fs, style.line_height));
-        }
+    if text_metrics.is_none()
+        && flow_children.is_empty()
+        && let Some(fs) = style.font_size.filter(|value| *value > 0.0)
+    {
+        content.height = content
+            .height
+            .max(text_line_box_height_px(fs, style.line_height));
     }
     let max_content_w = content.width + chrome.width;
     let stacked_min_w = child_sizes
@@ -1629,44 +1630,44 @@ fn place_modal_children(
             0.0
         };
     let slot_height = (body.y + body.height - slot_y).max(0.0);
-    if let Some(id) = modal.slots.body {
-        if nodes.get(id)?.is_some() {
-            place_modal_slot(
-                id,
-                Point {
-                    x: body.x,
-                    y: slot_y,
-                },
-                Size::new(body.width, slot_height),
-                Size::new(body.width, slot_height),
-                viewport,
-                parent_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-            )?;
-        }
+    if let Some(id) = modal.slots.body
+        && nodes.get(id)?.is_some()
+    {
+        place_modal_slot(
+            id,
+            Point {
+                x: body.x,
+                y: slot_y,
+            },
+            Size::new(body.width, slot_height),
+            Size::new(body.width, slot_height),
+            viewport,
+            parent_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
     }
-    if let Some(id) = modal.slots.close_action {
-        if nodes.get(id)?.is_some() {
-            let close = chrome.close_box(surface, modal.kind);
-            place_modal_slot(
-                id,
-                Point {
-                    x: close.x,
-                    y: close.y,
-                },
-                Size::new(close.width, close.height),
-                Size::new(close.width, close.height),
-                viewport,
-                parent_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-            )?;
-        }
+    if let Some(id) = modal.slots.close_action
+        && nodes.get(id)?.is_some()
+    {
+        let close = chrome.close_box(surface, modal.kind);
+        place_modal_slot(
+            id,
+            Point {
+                x: close.x,
+                y: close.y,
+            },
+            Size::new(close.width, close.height),
+            Size::new(close.width, close.height),
+            viewport,
+            parent_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
     }
     let footer_y = surface.y + surface.height - chrome.footer_height;
     let action_band = match modal.kind {
@@ -1715,25 +1716,25 @@ fn place_modal_children(
         )?;
         action_right -= crate::overlay_surfaces::MODAL_ACTION_GAP;
     }
-    if let Some(id) = modal.slots.footer {
-        if nodes.get(id)?.is_some() {
-            let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
-            place_modal_slot(
-                id,
-                Point {
-                    x: surface.x + chrome.pad_x,
-                    y: footer_y,
-                },
-                Size::new(width, chrome.footer_height),
-                Size::new(width, chrome.footer_height),
-                viewport,
-                parent_font_px,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-            )?;
-        }
+    if let Some(id) = modal.slots.footer
+        && nodes.get(id)?.is_some()
+    {
+        let width = (action_right - (surface.x + chrome.pad_x)).max(0.0);
+        place_modal_slot(
+            id,
+            Point {
+                x: surface.x + chrome.pad_x,
+                y: footer_y,
+            },
+            Size::new(width, chrome.footer_height),
+            Size::new(width, chrome.footer_height),
+            viewport,
+            parent_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
     }
     Ok(())
 }
@@ -2053,24 +2054,16 @@ fn resolve_item_grid_placement(
     col_names: Option<&[Vec<String>]>,
     row_names: Option<&[Vec<String>]>,
 ) -> (Option<i32>, usize, Option<i32>, usize) {
-    if let Some(name) = placement.area.as_deref() {
-        if let Some(areas) = container.grid_template_areas.as_ref() {
-            if let Some((col, row, col_span, row_span)) = areas.lookup(name) {
-                return (
-                    Some(col as i32),
-                    col_span.max(1),
-                    Some(row as i32),
-                    row_span.max(1),
-                );
-            }
-        }
-        if let Some((col, row, col_span, row_span)) = container
-            .grid_template_areas
-            .as_ref()
-            .and_then(|areas| areas.lookup(name))
-        {
-            return (Some(col as i32), col_span, Some(row as i32), row_span);
-        }
+    if let Some(name) = placement.area.as_deref()
+        && let Some(areas) = container.grid_template_areas.as_ref()
+        && let Some((col, row, col_span, row_span)) = areas.lookup(name)
+    {
+        return (
+            Some(col as i32),
+            col_span.max(1),
+            Some(row as i32),
+            row_span.max(1),
+        );
     }
     let col_start = resolve_named_line(&placement.column_start, container, true, None, col_names);
     let col_end_after = match (
@@ -2172,11 +2165,11 @@ impl GridOccupancy {
             ranges.sort_unstable();
             let mut merged: Vec<(usize, usize)> = Vec::new();
             for (a, b) in ranges.drain(..) {
-                if let Some(last) = merged.last_mut() {
-                    if a <= last.1 {
-                        last.1 = last.1.max(b);
-                        continue;
-                    }
+                if let Some(last) = merged.last_mut()
+                    && a <= last.1
+                {
+                    last.1 = last.1.max(b);
+                    continue;
                 }
                 merged.push((a, b));
             }
@@ -2293,8 +2286,8 @@ fn collapse_unoccupied_tracks(
             (item.row, item.row_span)
         };
         let end = origin.saturating_add(span).min(n);
-        for i in origin..end {
-            used[i] = true;
+        for occupied in used.iter_mut().take(end).skip(origin) {
+            *occupied = true;
         }
     }
     if used.iter().all(|occupied| *occupied) {
@@ -2470,14 +2463,10 @@ fn layout_grid_2d(
                 explicit_rows,
             );
         }
-        if col_tracks.is_empty() {
-            ensure_grid_tracks(&mut col_tracks, col_span, auto_cols, explicit_cols);
-        } else if col_span > col_tracks.len() {
+        if col_span > col_tracks.len() {
             ensure_grid_tracks(&mut col_tracks, col_span, auto_cols, explicit_cols);
         }
-        if row_tracks.is_empty() {
-            ensure_grid_tracks(&mut row_tracks, row_span, auto_rows, explicit_rows);
-        } else if row_span > row_tracks.len() {
+        if row_span > row_tracks.len() {
             ensure_grid_tracks(&mut row_tracks, row_span, auto_rows, explicit_rows);
         }
         let start_row = if dense { 0 } else { cursor_row };

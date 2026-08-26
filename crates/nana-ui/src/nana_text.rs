@@ -268,9 +268,10 @@ fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
 }
 
 pub(crate) fn letter_spacing_em(letter_spacing_px: f32, font_size: f32) -> f32 {
-    if !letter_spacing_px.is_finite() || letter_spacing_px == 0.0 {
-        0.0
-    } else if font_size.abs() < f32::MIN_POSITIVE {
+    if !letter_spacing_px.is_finite()
+        || letter_spacing_px == 0.0
+        || font_size.abs() < f32::MIN_POSITIVE
+    {
         0.0
     } else {
         letter_spacing_px / font_size

@@ -2394,9 +2394,7 @@ fn graph_endpoint_from_json(
     port_key: &str,
     port_alias: &str,
 ) -> Option<GraphEndpoint> {
-    let Some(endpoint) = json_object_get(value, &[primary, alias]) else {
-        return None;
-    };
+    let endpoint = json_object_get(value, &[primary, alias])?;
     match endpoint {
         serde_json::Value::Object(_) => {
             let node = json_object_text(endpoint, &["node", "id"]);

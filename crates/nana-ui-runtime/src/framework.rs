@@ -1071,14 +1071,8 @@ impl AppContext {
         self.layout_document_impl(document, viewport, &dirty, false)
     }
 
-    /// Relayout the document for a new viewport.
-    ///
-    /// The retained layout cache is keyed by the size a node was measured
-    /// against, so a resize invalidates exactly the subtrees whose available
-    /// size moved and reuses the rest: the roots are the change set. The one
-    /// thing an available size cannot express is a box that reads the viewport
-    /// directly (`position: fixed`, `vw` / `vh`); while any of those are live
-    /// the resize falls back to a full pass.
+    /// Relayout after a viewport change. Roots are the dirty set unless a live
+    /// box reads the viewport directly (`position: fixed`, `vw` / `vh`).
     pub fn layout_document_for_viewport(
         &mut self,
         document: DocumentId,
@@ -8260,7 +8254,7 @@ mod tests {
         assert!(context.read(first, |option| option.fill).unwrap());
         assert_eq!(
             context
-                .read(first, |option| option.style.layout.width.clone())
+                .read(first, |option| option.style.layout.width)
                 .unwrap(),
             Some(LengthSpec::Fill)
         );

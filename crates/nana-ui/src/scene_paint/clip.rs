@@ -200,6 +200,7 @@ pub(super) fn extra_fragment_clips(
     rotated
 }
 
+#[cfg(test)]
 pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool {
     let [local_x, local_y] = transform_point(
         [
@@ -221,6 +222,7 @@ pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool
 
 /// Intersection of every rotated parallelogram. Axis-aligned clips are not in
 /// `clips` here; they stay on the GPU scissor.
+#[cfg(test)]
 pub(super) fn point_in_fragment_clips(x: f32, y: f32, clips: &[FragmentClip]) -> bool {
     clips
         .iter()
@@ -659,14 +661,14 @@ mod tests {
         let nested = [outer.clone(), inner.clone()];
         assert_eq!(
             fragment_clip(&nested, origin),
-            fragment_clip(&[inner.clone()], origin),
+            fragment_clip(std::slice::from_ref(&inner), origin),
             "Quad vertex attrs still carry only the innermost parallelogram"
         );
         assert_eq!(
             extra_fragment_clips(&nested, origin),
-            vec![fragment_clip(&[outer.clone()], origin)]
+            vec![fragment_clip(std::slice::from_ref(&outer), origin)]
         );
-        assert!(extra_fragment_clips(&[inner.clone()], origin).is_empty());
+        assert!(extra_fragment_clips(std::slice::from_ref(&inner), origin).is_empty());
         assert!(extra_fragment_clips(&[outer], origin).is_empty());
 
         let rotated = rotated_fragment_clips(&nested, origin);

@@ -1,4 +1,4 @@
-/target/
+target/
 /target-android/
 /dist/
 .DS_Store
