@@ -1,6 +1,7 @@
 // Adapted from historical Iced (MIT).
 struct SolidVertexInput {
     @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
     @location(0) color: vec4<f32>,
     @location(1) pos: vec2<f32>,
     @location(2) scale: vec2<f32>,
@@ -16,7 +17,7 @@ struct SolidVertexInput {
     @location(12) affine_ef: vec2<f32>,
     @location(13) clip_rect: vec4<f32>,
     @location(14) clip_inv_abcd: vec4<f32>,
-    @location(15) clip_inv_ef: vec2<f32>,
+    @location(15) clip_inv_ef: vec3<f32>,
 }
 
 struct SolidVertexOutput {
@@ -35,7 +36,8 @@ struct SolidVertexOutput {
     @location(11) world_pos: vec2<f32>,
     @location(12) clip_rect: vec4<f32>,
     @location(13) clip_inv_abcd: vec4<f32>,
-    @location(14) clip_inv_ef: vec2<f32>,
+    @location(14) clip_inv_ef: vec3<f32>,
+    @location(15) @interpolate(flat) instance_index: u32,
 }
 
 fn apply_affine(abcd: vec4<f32>, ef: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
@@ -83,6 +85,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.clip_rect = input.clip_rect;
     out.clip_inv_abcd = input.clip_inv_abcd;
     out.clip_inv_ef = input.clip_inv_ef;
+    out.instance_index = input.instance_index;
 
     return out;
 }
@@ -91,16 +94,29 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 fn solid_fs_main(
     input: SolidVertexOutput
 ) -> @location(0) vec4<f32> {
-    if !inside_transformed_rect(
+    if !inside_fragment_clip(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
-        input.clip_inv_ef
+        input.clip_inv_ef.xy,
+        input.clip_inv_ef.z,
+        0u,
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     ) {
         discard;
     }
 
-    var mixed_color: vec4<f32> = input.color;
+    let paint = paint_buffer.items[input.instance_index];
+    let local_uv = (input.local_pos - input.pos) / max(input.scale, vec2(0.0001));
+
+    if ((paint.flags & PAINT_POLYGON) != 0u) && !point_in_polygon(local_uv, paint) {
+        discard;
+    }
+
+    var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint);
 
     var dist = rounded_box_sdf(
         -(input.local_pos - input.pos - input.scale * 0.5) * 2.0,
@@ -110,7 +126,7 @@ fn solid_fs_main(
 
     if (input.border_width > 0.0) {
         mixed_color = mix(
-            input.color,
+            mixed_color,
             input.border_color,
             clamp(0.5 + dist + input.border_width, 0.0, 1.0)
         );

@@ -5,11 +5,13 @@
 //! inside the current dest (or opacity-group) pass; groups do not open a pass
 //! per HostTexture slot.
 
+mod backdrop;
 mod clip;
 mod color;
 mod dest;
 mod host_texture;
 mod icon;
+mod image_url;
 mod mesh;
 mod quad;
 mod text;
@@ -36,14 +38,16 @@ use crate::{
 /// How many distinct scene instances keep a validated operation stream.
 const VALIDATED_SCENE_CACHE: usize = 8;
 
+pub use image_url::set_background_image_url_base;
 pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
+use backdrop::BackdropPipeline;
 use clip::{
     FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips, local_rect,
-    paint_affine, paint_origin, physical_bounds, physical_scissor, rotated_fragment_clips,
-    transformed_aabb,
+    paint_affine, paint_origin, physical_bounds, physical_scissor, transformed_aabb,
 };
+use color::with_opacity;
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
@@ -75,6 +79,7 @@ pub struct SceneWgpuPainter {
     icons: IconPipeline,
     text: TextPipeline,
     host_textures: HostTexturePipeline,
+    backdrop: BackdropPipeline,
     dest: Option<DestTarget>,
     /// Shared across resize-driven `DestTarget` recreations so the blit
     /// pipeline is not recompiled on every interactive resize event. `None`
@@ -125,6 +130,9 @@ enum DrawCommand {
         bounds: PhysicalRect,
         clip: PhysicalRect,
     },
+    Backdrop {
+        index: u32,
+    },
     PushGroup {
         layer: usize,
         slot: u32,
@@ -143,6 +151,7 @@ impl SceneWgpuPainter {
             icons: IconPipeline::new(device, format),
             text: TextPipeline::new(device, queue, format),
             host_textures: HostTexturePipeline::new(device, queue, format),
+            backdrop: BackdropPipeline::new(device, format),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
             // the painter must not demand it, so degrade to per-recreate
@@ -302,6 +311,7 @@ impl SceneWgpuPainter {
         self.meshes.begin_frame();
         self.icons.begin_frame(&self.queue, dest_physical);
         self.text.begin_frame(&self.queue, dest_physical);
+        self.backdrop.begin_frame();
 
         let mut commands = Vec::new();
         let mut group_stack: Vec<nana_ui_scene::OpacityGroup> = Vec::new();
@@ -343,8 +353,11 @@ impl SceneWgpuPainter {
                     border_width,
                     corner_radius,
                     shadow,
+                    surface,
                 } => {
                     if let Some(index) = self.quads.push(
+                        &self.device,
+                        &self.queue,
                         bounds,
                         clip,
                         frag_clip,
@@ -355,7 +368,34 @@ impl SceneWgpuPainter {
                         *corner_radius,
                         *shadow,
                         primitive.opacity,
+                        surface,
                     ) {
+                        if let Some(filter) = surface.backdrop_filter.filter(|f| f.is_active()) {
+                            let world_bounds = if clip::is_translation(affine) {
+                                bounds
+                            } else {
+                                transformed_aabb(bounds, affine)
+                            };
+                            let phys = physical_bounds(world_bounds, scale, scissor);
+                            let radii = corner_radius.map(|r| r * scale);
+                            let bidx = self.backdrop.push(
+                                index,
+                                [
+                                    phys.x as f32,
+                                    phys.y as f32,
+                                    phys.width as f32,
+                                    phys.height as f32,
+                                ],
+                                radii,
+                                filter,
+                                frag_clip.for_physical_pixels(scale),
+                                scale,
+                                dest_physical,
+                                bounds,
+                                affine,
+                            );
+                            commands.push(DrawCommand::Backdrop { index: bidx });
+                        }
                         push_quad(&mut commands, index, scissor);
                     }
                 }
@@ -366,10 +406,13 @@ impl SceneWgpuPainter {
                     border_width,
                     corner_radius,
                     shadow,
+                    surface,
                 } => {
                     for item in batch {
                         let item_bounds = local_rect(*item);
                         if let Some(index) = self.quads.push(
+                            &self.device,
+                            &self.queue,
                             item_bounds,
                             clip,
                             frag_clip,
@@ -380,7 +423,35 @@ impl SceneWgpuPainter {
                             *corner_radius,
                             *shadow,
                             primitive.opacity,
+                            surface,
                         ) {
+                            if let Some(filter) = surface.backdrop_filter.filter(|f| f.is_active())
+                            {
+                                let world_bounds = if clip::is_translation(affine) {
+                                    item_bounds
+                                } else {
+                                    transformed_aabb(item_bounds, affine)
+                                };
+                                let phys = physical_bounds(world_bounds, scale, scissor);
+                                let radii = corner_radius.map(|r| r * scale);
+                                let bidx = self.backdrop.push(
+                                    index,
+                                    [
+                                        phys.x as f32,
+                                        phys.y as f32,
+                                        phys.width as f32,
+                                        phys.height as f32,
+                                    ],
+                                    radii,
+                                    filter,
+                                    frag_clip.for_physical_pixels(scale),
+                                    scale,
+                                    dest_physical,
+                                    item_bounds,
+                                    affine,
+                                );
+                                commands.push(DrawCommand::Backdrop { index: bidx });
+                            }
                             push_quad(&mut commands, index, scissor);
                         }
                     }
@@ -399,31 +470,54 @@ impl SceneWgpuPainter {
                     vertical_alignment,
                     spans,
                     letter_spacing,
+                    text_shadow,
                 } => {
-                    if let Some(prepared) = self.text.prepare(
-                        &self.device,
-                        &self.queue,
-                        encoder,
-                        bounds,
-                        clip,
-                        scale,
-                        content,
-                        *color,
-                        *size,
-                        *weight,
-                        family.as_deref(),
-                        *line_height,
-                        *wrap,
-                        *ellipsis,
-                        *shaping,
-                        *horizontal_alignment,
-                        *vertical_alignment,
-                        spans,
-                        *letter_spacing,
-                        affine,
-                        frag_clip,
-                        primitive.opacity,
-                    ) {
+                    let mut push_text =
+                        |extra_offset: [f32; 2], color_override: Option<[f32; 4]>| {
+                            self.text.prepare(
+                                &self.device,
+                                &self.queue,
+                                encoder,
+                                bounds,
+                                clip,
+                                scale,
+                                content,
+                                color_override.or(*color),
+                                *size,
+                                *weight,
+                                family.as_deref(),
+                                *line_height,
+                                *wrap,
+                                *ellipsis,
+                                *shaping,
+                                *horizontal_alignment,
+                                *vertical_alignment,
+                                spans,
+                                *letter_spacing,
+                                affine,
+                                frag_clip,
+                                primitive.opacity,
+                                extra_offset,
+                            )
+                        };
+                    if let Some(shadow) = text_shadow {
+                        let base_color = with_opacity(shadow.color, primitive.opacity);
+                        for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
+                            let scaled = [
+                                base_color[0],
+                                base_color[1],
+                                base_color[2],
+                                base_color[3] * alpha_scale,
+                            ];
+                            if let Some(prepared) = push_text(
+                                [shadow.offset_x + dx, shadow.offset_y + dy],
+                                Some(scaled),
+                            ) {
+                                commands.push(DrawCommand::Text { prepared, scissor });
+                            }
+                        }
+                    }
+                    if let Some(prepared) = push_text([0.0, 0.0], None) {
                         commands.push(DrawCommand::Text { prepared, scissor });
                     }
                 }
@@ -498,7 +592,9 @@ impl SceneWgpuPainter {
                             })
                             .and_then(|quad| match &quad.kind {
                                 ScenePrimitiveKind::Quad { corner_radius, .. } => {
-                                    Some((local_rect(quad.bounds), *corner_radius))
+                                    let radius =
+                                        corner_radius.iter().copied().fold(0.0f32, f32::max);
+                                    Some((local_rect(quad.bounds), radius))
                                 }
                                 _ => None,
                             })
@@ -593,6 +689,8 @@ impl SceneWgpuPainter {
             Some(&gpu_work),
         );
         self.icons.upload(&self.device, &self.queue);
+        self.backdrop
+            .upload(&self.device, &self.queue, dest_physical, Some(&gpu_work));
         let gpu_upload = upload_started.elapsed();
 
         let encode_started = Instant::now();
@@ -602,8 +700,9 @@ impl SceneWgpuPainter {
                 DrawCommand::HostTexture(_)
                     | DrawCommand::Custom { .. }
                     | DrawCommand::PushGroup { .. }
+                    | DrawCommand::Backdrop { .. }
             )
-        });
+        }) || self.backdrop.needs_backdrop();
         DestTarget::ensure(
             &mut self.dest,
             &self.device,
@@ -635,12 +734,13 @@ impl SceneWgpuPainter {
         };
         if gpu_interleaved {
             encode_ordered(
-                &EncodeOrdered {
+                &mut EncodeOrdered {
                     quads: &self.quads,
                     meshes: &self.meshes,
                     icons: &self.icons,
                     text: &self.text,
                     host_textures: &self.host_textures,
+                    backdrop: &mut self.backdrop,
                     device: &self.device,
                     queue: &self.queue,
                     gpu_work: &gpu_work,
@@ -673,6 +773,7 @@ impl SceneWgpuPainter {
                     DrawCommand::Text { .. }
                     | DrawCommand::Icon { .. }
                     | DrawCommand::HostTexture(_)
+                    | DrawCommand::Backdrop { .. }
                     | DrawCommand::Custom { .. }
                     | DrawCommand::PushGroup { .. }
                     | DrawCommand::PopGroup => {}
@@ -750,7 +851,9 @@ fn clip_dests_for(
         ScenePrimitiveKind::Custom(custom) if custom.renderer.as_ref() != "nana.host-texture"
     );
     if keep_innermost {
-        rotated_fragment_clips(clips, origin)
+        let mut dest = clip::rotated_fragment_clips(clips, origin);
+        dest.extend(clip::polygon_fragment_clips(clips, origin));
+        dest
     } else {
         extra_fragment_clips(clips, origin)
     }
@@ -851,12 +954,26 @@ fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect)
     });
 }
 
+fn text_shadow_draw_offsets(shadow: nana_ui_core::TextShadowSpec) -> Vec<(f32, f32, f32)> {
+    let mut out = vec![(0.0, 0.0, 1.0)];
+    let blur = shadow.blur_radius.max(0.0);
+    if blur > 0.5 {
+        let step = blur * 0.35;
+        out.push((step, 0.0, 0.55));
+        out.push((-step, 0.0, 0.55));
+        out.push((0.0, step, 0.55));
+        out.push((0.0, -step, 0.55));
+    }
+    out
+}
+
 struct EncodeOrdered<'a> {
     quads: &'a QuadPipeline,
     meshes: &'a MeshPipeline,
     icons: &'a IconPipeline,
     text: &'a TextPipeline,
     host_textures: &'a HostTexturePipeline,
+    backdrop: &'a mut BackdropPipeline,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     gpu_work: &'a GpuWorkSink,
@@ -868,7 +985,7 @@ struct GroupFrame {
 }
 
 fn encode_ordered(
-    pipelines: &EncodeOrdered<'_>,
+    pipelines: &mut EncodeOrdered<'_>,
     encoder: &mut wgpu::CommandEncoder,
     dest: &DestTarget,
     dest_physical: [u32; 2],
@@ -916,6 +1033,36 @@ fn encode_ordered(
                 index += 1;
             }
             _ => {
+                if let DrawCommand::Backdrop {
+                    index: backdrop_index,
+                } = &commands[index]
+                {
+                    let Some(request) = pipelines.backdrop.request(*backdrop_index).copied() else {
+                        index += 1;
+                        continue;
+                    };
+                    ensure_backdrop_target_ready(
+                        dest,
+                        encoder,
+                        dest_physical,
+                        &mut dest_load,
+                        dest_passes,
+                    );
+                    pipelines.backdrop.encode(
+                        pipelines.device,
+                        encoder,
+                        dest.color_view(),
+                        dest_physical,
+                        dest.color_view(),
+                        &request,
+                        pipelines.quads.paint_buffer(),
+                        Some(pipelines.gpu_work),
+                        &mut dest_passes.backdrop,
+                    );
+                    dest_load = wgpu::LoadOp::Load;
+                    index += 1;
+                    continue;
+                }
                 let mut pass = match stack.last() {
                     Some(frame) => {
                         let load = group_layer_load(&mut layer_ready, frame.layer);
@@ -931,6 +1078,7 @@ fn encode_ordered(
                 while index < commands.len() {
                     match &commands[index] {
                         DrawCommand::PushGroup { .. } | DrawCommand::PopGroup => break,
+                        DrawCommand::Backdrop { .. } => break,
                         DrawCommand::Quads { range, scissor } => {
                             pipelines.quads.draw(
                                 &mut pass,
@@ -1058,6 +1206,21 @@ fn restore_dest_viewport(pass: &mut wgpu::RenderPass<'_>, dest_physical: [u32; 2
         0.0,
         1.0,
     );
+}
+
+fn ensure_backdrop_target_ready(
+    dest: &DestTarget,
+    encoder: &mut wgpu::CommandEncoder,
+    dest_physical: [u32; 2],
+    dest_load: &mut wgpu::LoadOp<wgpu::Color>,
+    dest_passes: &mut DestPassCounts,
+) {
+    if matches!(*dest_load, wgpu::LoadOp::Clear(_)) {
+        let mut pass = dest.begin_color_pass(encoder, *dest_load, dest_passes);
+        restore_dest_viewport(&mut pass, dest_physical);
+        drop(pass);
+        *dest_load = wgpu::LoadOp::Load;
+    }
 }
 
 #[cfg(test)]
@@ -1864,6 +2027,8 @@ mod tests {
                 height: 20.0,
             },
             transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let rotated = {
             let k = std::f32::consts::FRAC_1_SQRT_2;
@@ -1884,6 +2049,8 @@ mod tests {
                     }
                     .around_center(16.0, 16.0, 32.0, 32.0),
                 ),
+                corner_radius: 0.0,
+                polygon_clip: None,
             }]
         };
         let custom = ScenePrimitiveKind::Custom(CustomRenderNode::new("test.fill", "slot", 1));
@@ -1891,8 +2058,9 @@ mod tests {
             background: Some([1.0, 0.0, 0.0, 1.0]),
             border_color: None,
             border_width: 0.0,
-            corner_radius: 0.0,
+            corner_radius: [0.0; 4],
             shadow: None,
+            surface: nana_ui_scene::QuadSurfacePaint::default(),
         };
         assert!(clip_dests_for(&custom, &aligned, origin).is_empty());
         assert!(clip_dests_for(&quad, &aligned, origin).is_empty());
@@ -2649,6 +2817,8 @@ mod tests {
                 }
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
         let aabb = super::clip::intersect_clips(
@@ -2911,19 +3081,27 @@ mod tests {
         node
     }
 
-    fn colored_quad_node(
+    fn extracted_div(
         value: u64,
+        children: &[u64],
         x: f32,
         y: f32,
         width: f32,
         height: f32,
-        color: [f32; 4],
+        layout: nana_ui_core::LayoutStyle,
+        background: Option<[f32; 4]>,
     ) -> ExtractedNode {
         ExtractedNode {
             id: StableNodeId::new(value).unwrap(),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: None,
-            children: Arc::new(Vec::new()),
+            children: Arc::new(
+                children
+                    .iter()
+                    .copied()
+                    .map(|child| StableNodeId::new(child).unwrap())
+                    .collect(),
+            ),
             layout: LayoutBox {
                 x,
                 y,
@@ -2932,14 +3110,11 @@ mod tests {
             },
             scroll_offset: nana_ui_runtime::ScrollOffset::default(),
             source_style: NodeStyle {
-                layout: Arc::new(nana_ui_core::LayoutStyle {
-                    background: Some(color),
-                    ..nana_ui_core::LayoutStyle::default()
-                }),
+                layout: Arc::new(layout),
                 ..NodeStyle::default()
             },
             style: Arc::new(ComputedStyle {
-                background: Some(color),
+                background,
                 ..ComputedStyle::default()
             }),
             text: None,
@@ -2954,6 +3129,29 @@ mod tests {
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    fn colored_quad_node(
+        value: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            &[],
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                background: Some(color),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+            Some(color),
+        )
     }
 
     fn commit_scene(context: &mut AppContext) -> UiScene {
@@ -3260,5 +3458,1331 @@ mod tests {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("scene GPU work test requires a WGPU device")
+    }
+
+    fn paint_surface_quad_node(
+        value: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        background: [f32; 4],
+        surface: nana_ui_scene::QuadSurfacePaint,
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            &[],
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                background: Some(background),
+                paint: nana_ui_core::PaintStyle {
+                    background_image: surface.background_image.clone(),
+                    mask: surface.mask.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Some(background),
+        )
+    }
+
+    fn frost_quad_node_with_fill(
+        value: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        fill: [f32; 4],
+        filter: nana_ui_core::BackdropFilter,
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            &[],
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                background: Some(fill),
+                paint: nana_ui_core::PaintStyle {
+                    backdrop_filter: Some(filter),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Some(fill),
+        )
+    }
+
+    fn clip_path_inset_round_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        inset_px: f32,
+        round_px: f32,
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            children,
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                border_radius: Some(0.0),
+                paint: nana_ui_core::PaintStyle {
+                    clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
+                        top: LengthSpec::Px(inset_px),
+                        right: LengthSpec::Px(inset_px),
+                        bottom: LengthSpec::Px(inset_px),
+                        left: LengthSpec::Px(inset_px),
+                        round: Some(LengthSpec::Px(round_px)),
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
+    fn clip_path_polygon_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            children,
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    clip_path: Some(nana_ui_core::ClipPath::Polygon(vec![
+                        nana_ui_core::ClipPoint {
+                            x: LengthSpec::Percent(0.0),
+                            y: LengthSpec::Percent(0.0),
+                        },
+                        nana_ui_core::ClipPoint {
+                            x: LengthSpec::Percent(100.0),
+                            y: LengthSpec::Percent(0.0),
+                        },
+                        nana_ui_core::ClipPoint {
+                            x: LengthSpec::Percent(50.0),
+                            y: LengthSpec::Percent(100.0),
+                        },
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
+    fn clip_path_inset_round_parent_rotated(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        round_px: f32,
+        transform: nana_ui_core::PaintTransform,
+    ) -> ExtractedNode {
+        let mut node =
+            clip_path_inset_round_parent(value, children, x, y, width, height, 0.0, round_px);
+        Arc::make_mut(&mut node.source_style.layout).transform = Some(transform);
+        node
+    }
+
+    fn frost_quad_child(
+        value: u64,
+        parent: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        fill: [f32; 4],
+        filter: nana_ui_core::BackdropFilter,
+    ) -> ExtractedNode {
+        let mut node = frost_quad_node_with_fill(value, x, y, width, height, fill, filter);
+        node.parent = Some(StableNodeId::new(parent).unwrap());
+        node
+    }
+
+    fn frost_quad_node_with_fill_and_transform(
+        value: u64,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        fill: [f32; 4],
+        filter: nana_ui_core::BackdropFilter,
+        transform: nana_ui_core::PaintTransform,
+    ) -> ExtractedNode {
+        let mut node = frost_quad_node_with_fill(value, x, y, width, height, fill, filter);
+        Arc::make_mut(&mut node.source_style.layout).transform = Some(transform);
+        node
+    }
+
+    #[test]
+    fn backdrop_blurs_content_behind_frost_panel() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let frost = nana_ui_core::BackdropFilter {
+            blur_radius: 8.0,
+            saturate: 1.0,
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 128.0, [1.0, 0.0, 0.0, 1.0]),
+                colored_quad_node(2, 64.0, 0.0, 192.0, 128.0, [0.0, 1.0, 0.0, 1.0]),
+                frost_quad_node_with_fill(3, 48.0, 48.0, 32.0, 32.0, [0.0, 0.0, 0.0, 0.0], frost),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [256.0, 128.0],
+            physical_size: [256, 128],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 256, 128);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost blur split"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 128);
+        let center = pixel(&pixels, 256, 64, 64);
+        assert!(
+            center[0] > 40 && center[1] > 40,
+            "frost center on red/green split must blend both channels, got {center:?}"
+        );
+        let dest_center = pixel(&pixels, 256, 128, 64);
+        assert!(
+            dest_center[1] > 180 && dest_center[0] < 40,
+            "dest-center UV without frost must stay pure green, got {dest_center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn backdrop_two_frost_panels_use_independent_regions() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let desaturate = nana_ui_core::BackdropFilter {
+            blur_radius: 4.0,
+            saturate: 0.0,
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 128.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+                colored_quad_node(2, 128.0, 0.0, 128.0, 64.0, [0.0, 1.0, 0.0, 1.0]),
+                frost_quad_node_with_fill(
+                    3,
+                    16.0,
+                    16.0,
+                    32.0,
+                    32.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    desaturate,
+                ),
+                frost_quad_node_with_fill(
+                    4,
+                    208.0,
+                    16.0,
+                    32.0,
+                    32.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    desaturate,
+                ),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [256.0, 64.0],
+            physical_size: [256, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 256, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost independent regions"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 64);
+        let left = pixel(&pixels, 256, 32, 32);
+        let right = pixel(&pixels, 256, 224, 32);
+        assert!(
+            left[1] > 30 && left[2] > 30 && left[0] < 120,
+            "left frost over red with saturate(0) must gray out, got {left:?}"
+        );
+        assert!(
+            right[0] > 100 && right[2] > 100 && right[1] > 150,
+            "right frost over green with saturate(0) must stay green-weighted, got {right:?}"
+        );
+        assert!(
+            left[0] + 40 < right[0],
+            "independent frost regions must not last-write-wins, left={left:?} right={right:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn backdrop_first_dest_command_survives_transparent_quad() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let desaturate = nana_ui_core::BackdropFilter {
+            blur_radius: 6.0,
+            saturate: 0.0,
+        };
+        scene.apply_delta(
+            [
+                frost_quad_node_with_fill(
+                    1,
+                    16.0,
+                    16.0,
+                    32.0,
+                    32.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    desaturate,
+                ),
+                colored_quad_node(2, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 0.0, 0.0]),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost survives transparent quad"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let center = pixel(&pixels, 64, 32, 32);
+        assert!(
+            center[2] < 80 && center[0] > 8 && center[1] > 8,
+            "frost over clear blue must survive a later transparent quad, got {center:?}"
+        );
+        let rb_delta = center[0]
+            .abs_diff(center[1])
+            .max(center[1].abs_diff(center[2]));
+        assert!(
+            rb_delta < 40,
+            "saturate(0) over blue must stay near-neutral, got {center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn backdrop_filter_forces_sample_count_one_dest_path() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [frost_quad_node_with_fill(
+                1,
+                8.0,
+                8.0,
+                48.0,
+                48.0,
+                [1.0, 1.0, 1.0, 0.35],
+                nana_ui_core::BackdropFilter {
+                    blur_radius: 12.0,
+                    saturate: 1.0,
+                },
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.1, 0.1, 0.1, 1.0],
+            clear: true,
+        };
+        let view = test_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost dest path"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("frost frame records dest passes");
+        assert_eq!(counts.msaa, 0, "backdrop frames must stay sample_count=1");
+        assert!(
+            counts.backdrop >= 3,
+            "frost must encode copy+blur+composite passes, got {counts:?}"
+        );
+        drop(encoder);
+    }
+
+    #[test]
+    fn inset_round_clip_corners_are_transparent_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                clip_path_inset_round_parent(1, &[2], 0.0, 0.0, 64.0, 64.0, 0.0, 32.0),
+                colored_quad_child(2, 1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui inset round clip"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let corner = pixel(&pixels, 64, 2, 2);
+        assert!(
+            corner[2] > 180 && corner[0] < 80,
+            "FragmentClip inset(0) round 32px must cut sharp child corners to clear blue; \
+             AABB-only scissor would stay red, got {corner:?}"
+        );
+        let center = pixel(&pixels, 64, 32, 32);
+        assert!(
+            center[0] > 200 && center[1] < 40,
+            "sharp red child interior must stay opaque red under rounded FragmentClip, got {center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn polygon_clip_path_cuts_child_corners_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                clip_path_polygon_parent(1, &[2], 0.0, 0.0, 64.0, 64.0),
+                colored_quad_child(2, 1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let child = scene
+            .primitive(nana_ui_scene::PrimitiveId {
+                node: StableNodeId::new(2).unwrap(),
+                slot: 0,
+            })
+            .expect("child quad");
+        assert!(
+            child
+                .clips
+                .iter()
+                .any(|clip| clip.polygon_clip.as_ref().is_some_and(|p| p.len() >= 3)),
+            "ancestor polygon clip must reach child primitive clips"
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui polygon ancestor clip"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let lower_left = pixel(&pixels, 64, 4, 60);
+        assert!(
+            lower_left[0] < 80,
+            "polygon clip must cut child fill outside the triangle; AABB-only would stay red at {lower_left:?}"
+        );
+        let center = pixel(&pixels, 64, 32, 24);
+        assert!(
+            center[0] > 200 && center[1] < 40,
+            "triangle interior must stay opaque red, got {center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn rotated_inset_round_clip_keeps_corner_radius_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        scene.apply_delta(
+            [
+                clip_path_inset_round_parent_rotated(
+                    1,
+                    &[2],
+                    0.0,
+                    0.0,
+                    64.0,
+                    64.0,
+                    24.0,
+                    nana_ui_core::PaintTransform {
+                        a: k,
+                        b: k,
+                        c: -k,
+                        d: k,
+                        ..Default::default()
+                    },
+                ),
+                colored_quad_child(2, 1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        // around_center(rotate 45°, box 0,0,64,64), k = 1/sqrt(2):
+        //   scene_x = k*lx - k*ly + 32
+        //   scene_y = k*lx + k*ly + 32(1-sqrt(2))   // ~ -13.255
+        // Diamond vertices ~ (32,-13.3), (77.3,32), (32,77.3), (-13.3,32) sit
+        // outside a 64x64 origin-0 viewport. dest = scene - scene_origin, so a
+        // 96x96 view at origin (-16,-16) puts the top vertex at dest ~ (48, 2.7).
+        //
+        // Probe dest (48, 8): pixel center (48.5, 8.5) -> scene (32.5, -7.5) ->
+        // local ~ (4.42, 3.72). Inside the sharp [0,64]^2 diamond (r=0 stays
+        // child-red) and outside the r=24 rounded-box SDF (dist to corner
+        // circle (24,24) ~ 28.2 > 24 -> dest/clear blue). Viewport (2,2)
+        // inverse-maps to local ~ (-10.4, 32), already outside the diamond.
+        let viewport = ScenePaintViewport {
+            logical_size: [96.0, 96.0],
+            physical_size: [96, 96],
+            scale_factor: 1.0,
+            scene_origin: [-16.0, -16.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 96, 96);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated inset round clip"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 96, 96);
+        let cutlet = pixel(&pixels, 96, 48, 8);
+        assert!(
+            cutlet[2] > 180 && cutlet[0] < 80,
+            "rotated inset(round) must SDF-round in the rotated frame, not zero radius; got {cutlet:?}"
+        );
+        let interior = pixel(&pixels, 96, 48, 48);
+        assert!(
+            interior[0] > 200 && interior[1] < 40,
+            "diamond interior must stay child-red under rounded FragmentClip, got {interior:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn host_texture_under_inset_round_ancestor_clips_corners() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                clip_path_inset_round_parent(1, &[2], 0.0, 0.0, 64.0, 64.0, 0.0, 32.0),
+                host_texture_child(2, 1, 0.0, 0.0, 64.0, 64.0, "layer"),
+            ],
+            [],
+        );
+        let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+        let registry = register_host_texture("layer", &view, 64, 64);
+        let (texture, target_view) = test_copy_target(&device, format, 64, 64);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui host texture inset round ancestor"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let corner = pixel(&pixels, 64, 2, 2);
+        assert!(
+            corner[2] > 180 && corner[1] < 80,
+            "HostTexture overflow clip must inherit ancestor inset(round) radius; got {corner:?}"
+        );
+        drop(texture);
+        drop(view);
+    }
+
+    #[test]
+    fn rotated_backdrop_filter_mixes_dest_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let frost = nana_ui_core::BackdropFilter {
+            blur_radius: 8.0,
+            saturate: 1.0,
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+                colored_quad_node(2, 64.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
+                frost_quad_node_with_fill_and_transform(
+                    3,
+                    48.0,
+                    16.0,
+                    32.0,
+                    32.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    frost,
+                    nana_ui_core::PaintTransform {
+                        a: k,
+                        b: k,
+                        c: -k,
+                        d: k,
+                        ..Default::default()
+                    },
+                ),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [128.0, 64.0],
+            physical_size: [128, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 128, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rotated frost"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("rotated frost records dest passes");
+        assert!(
+            counts.backdrop >= 3,
+            "rotated backdrop must encode copy+blur+composite, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 128, 64);
+        let center = pixel(&pixels, 128, 64, 32);
+        assert!(
+            center[0] > 30 && center[2] > 30,
+            "rotated frost centered on the red/blue edge must mix dest samples, got {center:?}"
+        );
+        // 45° around (64,32): diamond tips ≈ (64, 9.37), (86.63, 32), (64, 54.63),
+        // (41.37, 32). Unrotated AABB is [48,80]×[16,48]. Dest (64, 12) sits
+        // inside the diamond and outside that AABB; AABB composite would skip it.
+        let tip = pixel(&pixels, 128, 64, 12);
+        assert!(
+            tip[0] > 20 && tip[2] > 20,
+            "rotated frost must cover the diamond tip outside the unrotated AABB; \
+             AABB composite would leave a pure dest color, got {tip:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn frost_under_ancestor_polygon_clips_outside_triangle_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let frost = nana_ui_core::BackdropFilter {
+            blur_radius: 8.0,
+            saturate: 0.0,
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+                clip_path_polygon_parent(2, &[3], 0.0, 0.0, 64.0, 64.0),
+                frost_quad_child(3, 2, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 0.0, 0.0], frost),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost ancestor polygon"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let inside = pixel(&pixels, 64, 32, 24);
+        assert!(
+            inside[0] < 180 && (inside[0] as i16 - inside[1] as i16).abs() < 50,
+            "frost saturate(0) must gray dest inside the ancestor triangle, got {inside:?}"
+        );
+        let outside = pixel(&pixels, 64, 4, 60);
+        assert!(
+            outside[0] > 200 && outside[1] < 80,
+            "ancestor polygon must clip frost; AABB-only composite would desaturate {outside:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn gradient_white_to_transparent_source_over_red() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let gradient_surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 180.0,
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [1.0, 1.0, 1.0, 0.0],
+                        },
+                    ],
+                }),
+            )),
+            ..Default::default()
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+                paint_surface_quad_node(
+                    2,
+                    0.0,
+                    0.0,
+                    64.0,
+                    64.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    gradient_surface,
+                ),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui gradient source-over"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let center = pixel(&pixels, 64, 32, 32);
+        assert!(
+            center[0] > 200 && center[1] < 180 && center[2] < 180,
+            "white→transparent gradient must source-over red (pink), not replace with black {center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn mask_linear_fade_scales_rgb_with_alpha() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let masked_surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 0.0,
+                    stops: vec![nana_ui_core::GradientStop {
+                        position: 0.0,
+                        color: [1.0, 0.0, 0.0, 1.0],
+                    }],
+                }),
+            )),
+            mask: Some(nana_ui_core::CssGradient::Linear(
+                nana_ui_core::LinearGradient {
+                    angle_deg: 90.0,
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [1.0, 1.0, 1.0, 0.0],
+                        },
+                    ],
+                },
+            )),
+            ..Default::default()
+        };
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [1.0, 0.0, 0.0, 1.0],
+                masked_surface,
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitive(nana_ui_scene::PrimitiveId {
+                node: StableNodeId::new(1).unwrap(),
+                slot: 0,
+            })
+            .expect("masked quad primitive");
+        match &primitive.kind {
+            nana_ui_scene::ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(
+                    surface.mask.is_some(),
+                    "mask must travel on quad surface {surface:?}"
+                );
+            }
+            other => panic!("expected quad primitive, got {other:?}"),
+        }
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui mask fade"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let left = pixel(&pixels, 64, 4, 32);
+        let right = pixel(&pixels, 64, 56, 32);
+        assert!(
+            left[0] > 200 && left[1] < 40 && left[2] < 40,
+            "masked quad left must stay red {left:?}"
+        );
+        assert!(
+            right[2] > 180 && right[0] < 80,
+            "mask fade must reveal clear blue, not opaque red {right:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn mask_linear_six_stops_uses_stop_five_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let masked_surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 0.0,
+                    stops: vec![nana_ui_core::GradientStop {
+                        position: 0.0,
+                        color: [1.0, 0.0, 0.0, 1.0],
+                    }],
+                }),
+            )),
+            mask: Some(nana_ui_core::CssGradient::Linear(
+                nana_ui_core::LinearGradient {
+                    angle_deg: 180.0,
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.2,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.4,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.6,
+                            color: [1.0, 1.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.8,
+                            color: [1.0, 1.0, 1.0, 0.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [1.0, 1.0, 1.0, 0.0],
+                        },
+                    ],
+                },
+            )),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [1.0, 0.0, 0.0, 1.0],
+                masked_surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui six-stop mask"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let upper = pixel(&pixels, 64, 32, 8);
+        let lower = pixel(&pixels, 64, 32, 56);
+        assert!(
+            upper[0] > 200 && upper[1] < 40 && upper[2] < 40,
+            "top must stay unmasked red before stop 5, got {upper:?}"
+        );
+        assert!(
+            lower[2] > 180 && lower[0] < 80,
+            "bottom must hide via stop 5+ mask alpha, not stay red {lower:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn radial_gradient_center_differs_from_linear_edge() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let radial = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Radial(nana_ui_core::RadialGradient {
+                    circle: true,
+                    center: [0.5, 0.5],
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [0.0, 0.0, 1.0, 1.0],
+                        },
+                    ],
+                }),
+            )),
+            ..Default::default()
+        };
+        let linear = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 90.0,
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [0.0, 0.0, 1.0, 1.0],
+                        },
+                    ],
+                }),
+            )),
+            ..Default::default()
+        };
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [0.0, 0.0, 0.0, 0.0],
+                radial,
+            )],
+            [],
+        );
+        let (radial_tex, radial_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui radial gradient"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &radial_view, viewport, None, None)
+            .unwrap();
+        let radial_pixels = readback_rgba(&device, &queue, encoder, &radial_tex, 64, 64);
+        let radial_center = pixel(&radial_pixels, 64, 32, 32);
+        let radial_corner = pixel(&radial_pixels, 64, 4, 4);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                2,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [0.0, 0.0, 0.0, 0.0],
+                linear,
+            )],
+            [],
+        );
+        let (linear_tex, linear_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui linear gradient"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &linear_view, viewport, None, None)
+            .unwrap();
+        let linear_pixels = readback_rgba(&device, &queue, encoder, &linear_tex, 64, 64);
+        let linear_left = pixel(&linear_pixels, 64, 4, 32);
+        let linear_right = pixel(&linear_pixels, 64, 60, 32);
+
+        assert!(
+            radial_center[0] > 200 && radial_center[2] < 80,
+            "radial center must be red, got {radial_center:?}"
+        );
+        assert!(
+            radial_corner[2] > 200 && radial_corner[0] < 80,
+            "radial corner must be blue, got {radial_corner:?}"
+        );
+        assert!(
+            linear_left[0] > 200 && linear_left[2] < 80,
+            "linear left must be red, got {linear_left:?}"
+        );
+        assert!(
+            linear_right[2] > 200 && linear_right[0] < 80,
+            "linear right must be blue, got {linear_right:?}"
+        );
+        drop(radial_tex);
+        drop(linear_tex);
+    }
+
+    #[test]
+    fn linear_gradient_five_stops_uses_stop_five_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 180.0,
+                    stops: vec![
+                        nana_ui_core::GradientStop {
+                            position: 0.0,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.2,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.4,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.6,
+                            color: [1.0, 0.0, 0.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 0.8,
+                            color: [0.0, 0.0, 1.0, 1.0],
+                        },
+                        nana_ui_core::GradientStop {
+                            position: 1.0,
+                            color: [0.0, 0.0, 1.0, 1.0],
+                        },
+                    ],
+                }),
+            )),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [0.0, 0.0, 0.0, 0.0],
+                surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui five-stop gradient"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let upper = pixel(&pixels, 64, 32, 8);
+        let lower = pixel(&pixels, 64, 32, 56);
+        assert!(
+            upper[0] > 200 && upper[2] < 80,
+            "top must stay red before stop 5, got {upper:?}"
+        );
+        assert!(
+            lower[2] > 200 && lower[0] < 80,
+            "bottom must reach blue from stop 5+, got {lower:?}"
+        );
+        drop(texture);
+    }
+
+    fn blue_tile_fixture_png() -> (std::path::PathBuf, std::path::PathBuf) {
+        let fixture_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::create_dir_all(&fixture_dir).expect("fixture dir");
+        let png_path = fixture_dir.join("blue-tile.png");
+        if !png_path.exists() {
+            let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 255, 255]));
+            img.save(&png_path).expect("write fixture png");
+        }
+        (fixture_dir, png_path)
+    }
+
+    fn paint_url_quad_and_sample_center(url: String) -> [u8; 4] {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Url {
+                url,
+                fit: nana_ui_core::BackgroundImageFit::Stretch,
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [0.0, 0.0, 0.0, 0.0],
+                surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui url png"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let sample = pixel(&pixels, 64, 32, 32);
+        drop(texture);
+        sample
+    }
+
+    struct LocalPngServer {
+        url: String,
+        shutdown: std::sync::mpsc::Sender<()>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl LocalPngServer {
+        fn serve(png: Vec<u8>) -> Self {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .expect("bind 127.0.0.1");
+            let addr = listener.local_addr().expect("local addr");
+            listener.set_nonblocking(true).expect("nonblocking");
+            let (shutdown, rx) = std::sync::mpsc::channel::<()>();
+            let handle = std::thread::spawn(move || {
+                loop {
+                    if rx.try_recv().is_ok() {
+                        break;
+                    }
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            use std::io::{Read, Write};
+                            let mut buf = [0u8; 1024];
+                            let _ = stream.read(&mut buf);
+                            let header = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                png.len()
+                            );
+                            let _ = stream.write_all(header.as_bytes());
+                            let _ = stream.write_all(&png);
+                            let _ = stream.flush();
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{addr}/blue-tile.png"),
+                shutdown,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for LocalPngServer {
+        fn drop(&mut self) {
+            let _ = self.shutdown.send(());
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    #[test]
+    fn background_image_file_url_paints_fixture_png() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let file_url = format!("file://{}", png_path.display());
+        let sample = paint_url_quad_and_sample_center(file_url);
+        super::image_url::reset_test_url_base();
+        assert!(
+            sample[2] > 200 && sample[0] < 80,
+            "file url png must paint blue tile, got {sample:?}"
+        );
+    }
+
+    #[test]
+    fn background_image_http_url_paints_fixture_png() {
+        let (_fixture_dir, png_path) = blue_tile_fixture_png();
+        let png = std::fs::read(&png_path).expect("read fixture png");
+        let server = LocalPngServer::serve(png);
+        let sample = paint_url_quad_and_sample_center(server.url.clone());
+        assert!(
+            sample[2] > 200 && sample[0] < 80,
+            "http url png must paint blue tile, got {sample:?}"
+        );
     }
 }

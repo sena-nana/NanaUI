@@ -34,7 +34,7 @@ struct VsIn {
     @location(2) color: vec4<f32>,
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
-    @location(5) clip_inv_ef: vec2<f32>,
+    @location(5) clip_inv_ef: vec3<f32>,
 }
 
 struct VsOut {
@@ -44,7 +44,7 @@ struct VsOut {
     @location(2) world_pos: vec2<f32>,
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
-    @location(5) clip_inv_ef: vec2<f32>,
+    @location(5) clip_inv_ef: vec3<f32>,
 }
 
 @vertex
@@ -62,11 +62,17 @@ fn vs_main(input: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    if !inside_transformed_rect(
+    if !inside_fragment_clip(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
-        input.clip_inv_ef
+        input.clip_inv_ef.xy,
+        input.clip_inv_ef.z,
+        0u,
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     ) {
         discard;
     }
@@ -90,7 +96,7 @@ struct IconVertex {
     color: [f32; 4],
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
-    clip_inv_ef: [f32; 2],
+    clip_inv_ef: [f32; 3],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,7 +216,7 @@ impl IconPipeline {
                         2 => Float32x4,
                         3 => Float32x4,
                         4 => Float32x4,
-                        5 => Float32x2,
+                        5 => Float32x3,
                     ),
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -309,7 +315,7 @@ impl IconPipeline {
                 color,
                 clip_rect: clip.rect,
                 clip_inv_abcd: clip.inv_abcd,
-                clip_inv_ef: clip.inv_ef,
+                clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius],
             });
         }
         let index = self.frame_slots.len();
@@ -455,17 +461,17 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4]
     let y = bounds.y + (bounds.height - extent) * 0.5;
     if clip::is_translation(affine) {
         let [cx, cy] = clip::transform_point(affine, x + extent * 0.5, y + extent * 0.5);
-        let px = (extent * scale).round().max(1.0);
-        let x0 = (cx * scale - px * 0.5).round();
-        let y0 = (cy * scale - px * 0.5).round();
-        [
-            [x0, y0],
-            [x0 + px, y0],
-            [x0, y0 + px],
-            [x0 + px, y0 + px],
-        ]
+        let (x0, px) = clip::snap_centered_origin(cx, extent, scale);
+        let (y0, _) = clip::snap_centered_origin(cy, extent, scale);
+        [[x0, y0], [x0 + px, y0], [x0, y0 + px], [x0 + px, y0 + px]]
     } else {
-        [[x, y], [x + extent, y], [x, y + extent], [x + extent, y + extent]].map(|[px, py]| {
+        [
+            [x, y],
+            [x + extent, y],
+            [x, y + extent],
+            [x + extent, y + extent],
+        ]
+        .map(|[px, py]| {
             let [tx, ty] = clip::transform_point(affine, px, py);
             [tx * scale, ty * scale]
         })

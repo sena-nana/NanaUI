@@ -70,6 +70,20 @@ pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
     a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
 }
 
+/// Pixel origin of a span of `logical_extent` centered on `logical_center`.
+///
+/// Icons and vertically centered text share this so a 12px glyph and a 12px
+/// line box snap to the same physical top.
+pub(super) fn snap_centered_origin(
+    logical_center: f32,
+    logical_extent: f32,
+    scale: f32,
+) -> (f32, f32) {
+    let px = (logical_extent * scale).round().max(1.0);
+    let origin = (logical_center * scale - px * 0.5).round();
+    (origin, px)
+}
+
 fn near_zero(value: f32) -> bool {
     value.abs() <= 1e-6
 }
@@ -100,6 +114,11 @@ pub(super) struct FragmentClip {
     pub rect: [f32; 4],
     pub inv_abcd: [f32; 4],
     pub inv_ef: [f32; 2],
+    /// Uniform inset-round radius in logical px; zero keeps axis-aligned rect clip.
+    pub corner_radius: f32,
+    /// `clip-path: polygon(...)` vertex count (≤ 8) in [`Self::rect`] local space.
+    pub polygon_count: u8,
+    pub polygon: [[f32; 2]; 8],
 }
 
 impl FragmentClip {
@@ -108,6 +127,9 @@ impl FragmentClip {
         rect: [-1.0e7, -1.0e7, 2.0e7, 2.0e7],
         inv_abcd: [1.0, 0.0, 0.0, 1.0],
         inv_ef: [0.0, 0.0],
+        corner_radius: 0.0,
+        polygon_count: 0,
+        polygon: [[0.0; 2]; 8],
     };
 
     /// Degenerate clip: no fragment is inside.
@@ -115,49 +137,138 @@ impl FragmentClip {
         rect: [0.0, 0.0, -1.0, -1.0],
         inv_abcd: [1.0, 0.0, 0.0, 1.0],
         inv_ef: [0.0, 0.0],
+        corner_radius: 0.0,
+        polygon_count: 0,
+        polygon: [[0.0; 2]; 8],
     };
 
     /// Exact bit pattern of the clip, for use as a resource-cache key.
-    pub(super) fn to_bits(self) -> [u32; 12] {
-        let mut bits = [0u32; 12];
+    pub(super) fn to_bits(self) -> [u32; 30] {
+        let mut bits = [0u32; 30];
         for (slot, value) in bits.iter_mut().zip(
             self.rect
                 .iter()
                 .chain(self.inv_abcd.iter())
-                .chain(self.inv_ef.iter()),
+                .chain(self.inv_ef.iter())
+                .chain(std::iter::once(&self.corner_radius))
+                .chain(std::iter::once(&(self.polygon_count as f32))),
         ) {
             *slot = value.to_bits();
+        }
+        let mut index = 14;
+        for point in self.polygon {
+            for coord in point {
+                bits[index] = coord.to_bits();
+                index += 1;
+            }
         }
         bits
     }
 
-    fn from_local(bounds: SceneRect, inverse: [f32; 6]) -> Self {
-        Self {
+    fn from_local(
+        bounds: SceneRect,
+        inverse: [f32; 6],
+        corner_radius: f32,
+        polygon: Option<&[[f32; 2]]>,
+    ) -> Self {
+        let mut clip = Self {
             rect: [bounds.x, bounds.y, bounds.width, bounds.height],
             inv_abcd: [inverse[0], inverse[1], inverse[2], inverse[3]],
             inv_ef: [inverse[4], inverse[5]],
+            corner_radius,
+            polygon_count: 0,
+            polygon: [[0.0; 2]; 8],
+        };
+        if let Some(points) = polygon.filter(|points| points.len() >= 3) {
+            let count = points.len().min(8);
+            clip.polygon_count = count as u8;
+            for (slot, point) in clip.polygon.iter_mut().zip(points.iter().take(8)) {
+                *slot = *point;
+            }
         }
+        clip
     }
 
-    /// Affine-glyph vertices are physical pixels; divide the linear inverse by
-    /// scale so `point_in_fragment_clip` still tests logical paint space.
+    /// Dest-group composites sample physical pixels; scale rect/radius/polygon and
+    /// divide the linear inverse so [`point_in_fragment_clip`] stays consistent.
     pub(super) fn for_physical_pixels(self, scale: f32) -> Self {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
         } else {
             1.0
         };
+        let mut polygon = self.polygon;
+        if self.polygon_count > 0 {
+            for point in polygon.iter_mut().take(self.polygon_count as usize) {
+                point[0] *= scale;
+                point[1] *= scale;
+            }
+        }
         Self {
-            rect: self.rect,
+            rect: [
+                self.rect[0] * scale,
+                self.rect[1] * scale,
+                self.rect[2] * scale,
+                self.rect[3] * scale,
+            ],
             inv_abcd: [
                 self.inv_abcd[0] / scale,
                 self.inv_abcd[1] / scale,
                 self.inv_abcd[2] / scale,
                 self.inv_abcd[3] / scale,
             ],
-            inv_ef: self.inv_ef,
+            inv_ef: [self.inv_ef[0] / scale, self.inv_ef[1] / scale],
+            corner_radius: self.corner_radius * scale,
+            polygon_count: self.polygon_count,
+            polygon,
         }
     }
+}
+
+fn axis_aligned_rounded_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
+    clips
+        .iter()
+        .filter_map(|clip| {
+            let affine = paint_affine(clip.transform.0, origin);
+            if !is_axis_aligned(affine) || clip.corner_radius <= 0.0 {
+                return None;
+            }
+            let inverse = invert_affine(affine)?;
+            Some(FragmentClip::from_local(
+                clip.bounds,
+                inverse,
+                clip.corner_radius,
+                None,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn polygon_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
+    clips
+        .iter()
+        .filter_map(|clip| {
+            let points = clip.polygon_clip.as_ref()?;
+            if points.len() < 3 {
+                return None;
+            }
+            let affine = paint_affine(clip.transform.0, origin);
+            let inverse = invert_affine(affine)?;
+            let local: Vec<[f32; 2]> = points.iter().copied().collect();
+            Some(FragmentClip::from_local(
+                clip.bounds,
+                inverse,
+                clip.corner_radius,
+                Some(&local),
+            ))
+        })
+        .collect()
 }
 
 /// Outer-to-inner non-axis-aligned clips. Empty when every clip is axis-aligned
@@ -174,7 +285,12 @@ pub(super) fn rotated_fragment_clips(
                 return None;
             }
             Some(match invert_affine(affine) {
-                Some(inverse) => FragmentClip::from_local(clip.bounds, inverse),
+                Some(inverse) => FragmentClip::from_local(
+                    clip.bounds,
+                    inverse,
+                    clip.corner_radius,
+                    clip.polygon_clip.as_deref(),
+                ),
                 None => FragmentClip::REJECT,
             })
         })
@@ -184,20 +300,38 @@ pub(super) fn rotated_fragment_clips(
 /// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
 /// Extra outers are [`extra_fragment_clips`] and dest-composited.
 pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
-    rotated_fragment_clips(clips, origin)
+    if let Some(rotated) = rotated_fragment_clips(clips, origin)
+        .into_iter()
+        .next_back()
+    {
+        return rotated;
+    }
+    if let Some(polygon) = polygon_fragment_clips(clips, origin)
+        .into_iter()
+        .next_back()
+    {
+        return polygon;
+    }
+    axis_aligned_rounded_fragment_clips(clips, origin)
         .into_iter()
         .next_back()
         .unwrap_or(FragmentClip::PASS)
 }
 
-/// Outer rotated clips (innermost already in vertex attrs).
+/// Outer rotated / polygon clips (innermost already in vertex attrs).
 pub(super) fn extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
-    let mut rotated = rotated_fragment_clips(clips, origin);
-    let _innermost = rotated.pop();
-    rotated
+    let mut extras = rotated_fragment_clips(clips, origin);
+    extras.pop();
+    let rounded = axis_aligned_rounded_fragment_clips(clips, origin);
+    if rounded.len() > 1 {
+        extras.extend(rounded[..rounded.len() - 1].iter().rev().copied());
+    }
+    let polygons = polygon_fragment_clips(clips, origin);
+    extras.extend(polygons);
+    extras
 }
 
 #[cfg(test)]
@@ -214,10 +348,62 @@ pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool
         x,
         y,
     );
-    local_x >= clip.rect[0]
-        && local_y >= clip.rect[1]
-        && local_x <= clip.rect[0] + clip.rect[2]
-        && local_y <= clip.rect[1] + clip.rect[3]
+    if local_x < clip.rect[0]
+        || local_y < clip.rect[1]
+        || local_x > clip.rect[0] + clip.rect[2]
+        || local_y > clip.rect[1] + clip.rect[3]
+    {
+        return false;
+    }
+    if clip.polygon_count >= 3 {
+        let rel_x = local_x - clip.rect[0];
+        let rel_y = local_y - clip.rect[1];
+        if !point_in_polygon(rel_x, rel_y, clip.polygon_count, &clip.polygon) {
+            return false;
+        }
+    }
+    if clip.corner_radius <= 0.0 {
+        return true;
+    }
+    let rel_x = local_x - clip.rect[0];
+    let rel_y = local_y - clip.rect[1];
+    let half_w = clip.rect[2] * 0.5;
+    let half_h = clip.rect[3] * 0.5;
+    let center_x = rel_x - half_w;
+    let center_y = rel_y - half_h;
+    let radius = clip.corner_radius.min(half_w).min(half_h);
+    let q_x = center_x.abs() - half_w + radius;
+    let q_y = center_y.abs() - half_h + radius;
+    let outside = q_x.max(0.0).hypot(q_y.max(0.0)) - radius;
+    let inside = q_x.max(q_y).min(0.0);
+    inside + outside <= 0.0
+}
+
+#[cfg(test)]
+fn point_in_polygon(x: f32, y: f32, count: u8, polygon: &[[f32; 2]; 8]) -> bool {
+    if count < 3 {
+        return true;
+    }
+    let mut winding = 0i32;
+    for i in 0..count {
+        let j = (i + 1) % count;
+        let [x0, y0] = polygon[i as usize];
+        let [x1, y1] = polygon[j as usize];
+        if y0 <= y {
+            if y1 > y {
+                let cross = (x1 - x0) * (y - y0) - (x - x0) * (y1 - y0);
+                if cross > 0.0 {
+                    winding += 1;
+                }
+            }
+        } else if y1 <= y {
+            let cross = (x1 - x0) * (y - y0) - (x - x0) * (y1 - y0);
+            if cross < 0.0 {
+                winding -= 1;
+            }
+        }
+    }
+    winding != 0
 }
 
 /// Intersection of every rotated parallelogram. Axis-aligned clips are not in
@@ -408,6 +594,8 @@ mod tests {
                 height: 50.0,
             },
             transform: AffineTransform([1.0, 0.0, 0.0, 1.0, 5.0, 8.0]),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let visible =
             intersect_clips(viewport, &clips, paint_origin([0.0, 0.0], [0.0, 0.0])).unwrap();
@@ -428,6 +616,8 @@ mod tests {
                 height: 20.0,
             },
             transform: AffineTransform([1.0, 0.0, 0.0, 1.0, 200.0, 0.0]),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         assert!(intersect_clips(viewport, &clips, paint_origin([0.0, 0.0], [0.0, 0.0])).is_none());
     }
@@ -444,6 +634,8 @@ mod tests {
                     height: 40.0,
                 },
                 transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: None,
             },
             ClipRegion {
                 bounds: SceneRect {
@@ -453,6 +645,8 @@ mod tests {
                     height: 10.0,
                 },
                 transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: None,
             },
         ];
         let visible =
@@ -541,6 +735,8 @@ mod tests {
                 }
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
         let aabb = intersect_clips(viewport, &clips, origin).unwrap();
@@ -572,6 +768,8 @@ mod tests {
                 height: 20.0,
             },
             transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         assert_eq!(
             fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0])),
@@ -600,6 +798,8 @@ mod tests {
                 }
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
         let clip = fragment_clip(&clips, origin);
@@ -608,6 +808,135 @@ mod tests {
         assert!(point_in_fragment_clip(64.0, 64.0, physical));
         assert!(!point_in_fragment_clip(1.0, 1.0, clip));
         assert!(!point_in_fragment_clip(2.0, 2.0, physical));
+    }
+
+    #[test]
+    fn axis_aligned_rect_clip_rejects_outside() {
+        let clip = FragmentClip::from_local(
+            SceneRect {
+                x: 16.0,
+                y: 16.0,
+                width: 32.0,
+                height: 32.0,
+            },
+            IDENTITY_AFFINE,
+            0.0,
+            None,
+        );
+        assert!(point_in_fragment_clip(32.0, 32.0, clip));
+        assert!(
+            !point_in_fragment_clip(8.0, 8.0, clip),
+            "single AABB reject must drop points outside the rect"
+        );
+        assert!(!point_in_fragment_clip(56.0, 32.0, clip));
+    }
+
+    #[test]
+    fn fragment_clip_uses_axis_aligned_polygon() {
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+        }];
+        let clip = fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0]));
+        assert!(
+            clip.polygon_count >= 3,
+            "ancestor polygon must reach FragmentClip, not PASS AABB"
+        );
+        assert!(point_in_fragment_clip(32.0, 24.0, clip));
+        assert!(!point_in_fragment_clip(4.0, 60.0, clip));
+    }
+
+    #[test]
+    fn polygon_fragment_clip_accepts_triangle_interior() {
+        let clip = polygon_fragment_clips(
+            &[ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+            }],
+            paint_origin([0.0, 0.0], [0.0, 0.0]),
+        )
+        .pop()
+        .expect("triangle clip");
+        assert!(point_in_fragment_clip(32.0, 24.0, clip));
+        assert!(!point_in_fragment_clip(4.0, 60.0, clip));
+    }
+
+    #[test]
+    fn rotated_inset_round_rejects_local_corner_inside_sharp() {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let clips = [ClipRegion {
+            bounds: SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            transform: AffineTransform(
+                nana_ui_core::PaintTransform {
+                    a: k,
+                    b: k,
+                    c: -k,
+                    d: k,
+                    ..Default::default()
+                }
+                .around_center(0.0, 0.0, 64.0, 64.0),
+            ),
+            corner_radius: 24.0,
+            polygon_clip: None,
+        }];
+        let origin = paint_origin([0.0, 0.0], [-16.0, -16.0]);
+        let rounded = fragment_clip(&clips, origin);
+        let mut sharp = rounded;
+        sharp.corner_radius = 0.0;
+        // Dest (48.5, 8.5) matches the GPU pixel center.
+        let px = 48.5;
+        let py = 8.5;
+        assert!(
+            point_in_fragment_clip(px, py, sharp),
+            "probe must sit inside the sharp rotated rect; clip={sharp:?}"
+        );
+        assert!(
+            !point_in_fragment_clip(px, py, rounded),
+            "r=24 SDF must reject the local corner; radius=0 would keep it"
+        );
+    }
+
+    #[test]
+    fn polygon_fragment_clip_physical_pixels_match_logical() {
+        let clip = polygon_fragment_clips(
+            &[ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+            }],
+            paint_origin([0.0, 0.0], [0.0, 0.0]),
+        )
+        .pop()
+        .expect("triangle clip");
+        let physical = clip.for_physical_pixels(1.0);
+        assert!(point_in_fragment_clip(32.0, 24.0, clip));
+        assert!(point_in_fragment_clip(32.0, 24.0, physical));
+        assert!(!point_in_fragment_clip(4.0, 60.0, physical));
     }
 
     fn nested_rotated_45_clips() -> ([ClipRegion; 2], [f32; 2]) {
@@ -632,6 +961,8 @@ mod tests {
                 }
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         };
         let inner = ClipRegion {
             bounds: SceneRect {
@@ -651,6 +982,8 @@ mod tests {
                 }
                 .around_center(0.0, 0.0, 64.0, 64.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         };
         ([outer, inner], paint_origin([0.0, 0.0], [0.0, 0.0]))
     }

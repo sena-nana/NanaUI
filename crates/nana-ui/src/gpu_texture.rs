@@ -94,12 +94,26 @@ fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
     );
 }
 
+fn inside_overflow_clip(world: vec2<f32>) -> bool {
+    let local = overflow_clip_local(world);
+    if (any(local < layer.clip_rect.xy)) || (any(local > layer.clip_rect.xy + layer.clip_rect.zw)) {
+        return false;
+    }
+    let radius = layer.clip_inv_ef.z;
+    if (radius <= 0.0) {
+        return true;
+    }
+    let rel = local - layer.clip_rect.xy;
+    let half = layer.clip_rect.zw * 0.5;
+    let center = rel - half;
+    let corner = min(radius, min(half.x, half.y));
+    let q = abs(center) - half + corner;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner <= 0.0;
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let overflow = overflow_clip_local(input.world);
-    if any(overflow < layer.clip_rect.xy)
-        || any(overflow > layer.clip_rect.xy + layer.clip_rect.zw)
-    {
+    if !inside_overflow_clip(input.world) {
         discard;
     }
     let sampled = textureSample(source, source_sampler, input.uv);
@@ -434,6 +448,7 @@ pub struct HostTextureLayer {
     fragment_clip_rect: [f32; 4],
     fragment_clip_inv_abcd: [f32; 4],
     fragment_clip_inv_ef: [f32; 2],
+    fragment_clip_corner_radius: f32,
     alpha_mode: Option<HostTextureAlphaMode>,
 }
 
@@ -451,6 +466,7 @@ impl HostTextureLayer {
             fragment_clip_rect: Self::PASS_CLIP_RECT,
             fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
             fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
+            fragment_clip_corner_radius: 0.0,
             alpha_mode: None,
         }
     }
@@ -464,6 +480,7 @@ impl HostTextureLayer {
             fragment_clip_rect: Self::PASS_CLIP_RECT,
             fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
             fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
+            fragment_clip_corner_radius: 0.0,
             alpha_mode: Some(binding.alpha_mode),
         }
     }
@@ -497,10 +514,16 @@ impl HostTextureLayer {
         rect: [f32; 4],
         inv_abcd: [f32; 4],
         inv_ef: [f32; 2],
+        corner_radius: f32,
     ) -> Self {
         self.fragment_clip_rect = rect;
         self.fragment_clip_inv_abcd = inv_abcd;
         self.fragment_clip_inv_ef = inv_ef;
+        self.fragment_clip_corner_radius = if corner_radius.is_finite() {
+            corner_radius.max(0.0)
+        } else {
+            0.0
+        };
         self
     }
 
@@ -890,7 +913,7 @@ fn make_layer_uniform(
         clip_inv_ef: [
             layer.fragment_clip_inv_ef[0],
             layer.fragment_clip_inv_ef[1],
-            0.0,
+            layer.fragment_clip_corner_radius,
             0.0,
         ],
     }

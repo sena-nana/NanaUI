@@ -58,6 +58,7 @@ impl HostTexturePipeline {
                     fragment_clip.rect,
                     fragment_clip.inv_abcd,
                     fragment_clip.inv_ef,
+                    fragment_clip.corner_radius,
                 ),
         );
         primitive.prepare(

@@ -22,7 +22,7 @@ struct MeshVertex {
     color: [f32; 4],
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
-    clip_inv_ef: [f32; 2],
+    clip_inv_ef: [f32; 3],
     stroke: [f32; 3],
 }
 
@@ -33,7 +33,11 @@ impl MeshVertex {
             color,
             clip_rect: FragmentClip::PASS.rect,
             clip_inv_abcd: FragmentClip::PASS.inv_abcd,
-            clip_inv_ef: FragmentClip::PASS.inv_ef,
+            clip_inv_ef: [
+                FragmentClip::PASS.inv_ef[0],
+                FragmentClip::PASS.inv_ef[1],
+                FragmentClip::PASS.corner_radius,
+            ],
             stroke,
         }
     }
@@ -343,7 +347,7 @@ fn mesh_pipeline(
                     1 => Float32x4,
                     2 => Float32x4,
                     3 => Float32x4,
-                    4 => Float32x2,
+                    4 => Float32x3,
                     5 => Float32x3,
                 ),
             })],
@@ -427,6 +431,6 @@ fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: Fragment
     for vertex in &mut vertices[start..] {
         vertex.clip_rect = clip.rect;
         vertex.clip_inv_abcd = clip.inv_abcd;
-        vertex.clip_inv_ef = clip.inv_ef;
+        vertex.clip_inv_ef = [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius];
     }
 }

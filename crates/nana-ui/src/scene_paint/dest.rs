@@ -6,12 +6,13 @@ use super::clip::FragmentClip;
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 64;
+const GROUP_UNIFORM_SIZE: u64 = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct GroupSlot {
     pub opacity: f32,
     pub clip: FragmentClip,
+    pub filter: [f32; 3],
 }
 
 impl GroupSlot {
@@ -19,18 +20,37 @@ impl GroupSlot {
         Self {
             opacity,
             clip: FragmentClip::PASS,
+            filter: [1.0, 1.0, 1.0],
         }
     }
 
     pub fn clip(clip: FragmentClip) -> Self {
-        Self { opacity: 1.0, clip }
+        Self {
+            opacity: 1.0,
+            clip,
+            filter: [1.0, 1.0, 1.0],
+        }
     }
+}
+
+fn pack_polygon(polygon: &[[f32; 2]; 8], count: u8) -> [[f32; 4]; 4] {
+    let mut packed = [[0.0; 4]; 4];
+    for index in 0..count.min(8) as usize {
+        let slot = index / 2;
+        let component = (index % 2) * 2;
+        packed[slot][component] = polygon[index][0];
+        packed[slot][component + 1] = polygon[index][1];
+    }
+    packed
 }
 
 fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
     let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
     let fields = [
         (0, slot.opacity),
+        (4, slot.filter[0]),
+        (8, slot.filter[1]),
+        (12, slot.filter[2]),
         (16, slot.clip.rect[0]),
         (20, slot.clip.rect[1]),
         (24, slot.clip.rect[2]),
@@ -41,9 +61,19 @@ fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
         (44, slot.clip.inv_abcd[3]),
         (48, slot.clip.inv_ef[0]),
         (52, slot.clip.inv_ef[1]),
+        (56, slot.clip.corner_radius),
     ];
     for (offset, value) in fields {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[60..64].copy_from_slice(&(slot.clip.polygon_count as u32).to_le_bytes());
+    let polys = pack_polygon(&slot.clip.polygon, slot.clip.polygon_count);
+    for (index, poly) in polys.iter().enumerate() {
+        let base = 64 + index * 16;
+        for (component, value) in poly.iter().enumerate() {
+            let offset = base + component * 4;
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
     }
     bytes
 }
@@ -54,6 +84,7 @@ pub(super) struct DestPassCounts {
     pub msaa: u32,
     pub blit: u32,
     pub group: u32,
+    pub backdrop: u32,
     pub msaa_allocated: bool,
 }
 
