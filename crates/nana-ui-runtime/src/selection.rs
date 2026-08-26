@@ -449,16 +449,9 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
                 background: Some(SemanticColorRole::Active),
                 ..SemanticPaint::default()
             },
-            // Radio focus reads from the outset ring in geometry, so the row
-            // border stays clear of the indicator colour.
-            focused: if radio {
-                SemanticPaint::default()
-            } else {
-                SemanticPaint {
-                    border: Some(SemanticColorRole::Accent),
-                    ..SemanticPaint::default()
-                }
-            },
+            // Selected pill (or the radio indicator) is the only focus cue.
+            // Segmented and Tabs must not paint an accent border or outset ring.
+            focused: SemanticPaint::default(),
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()
@@ -499,7 +492,7 @@ impl ComponentView for SegmentedOption {
             selected: self.selected,
             disabled: self.disabled,
             size: self.size,
-            show_focus_ring: !matches!(self.chrome, SelectionChrome::Tabs),
+            show_focus_ring: matches!(self.chrome, SelectionChrome::Radio),
             indicator: matches!(self.chrome, SelectionChrome::Radio),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -659,7 +652,7 @@ mod tests {
         assert!(matches!(
             context.world().standard_visual(segmented.stable_id()),
             Some(StandardVisual::SelectionOption {
-                show_focus_ring: true,
+                show_focus_ring: false,
                 ..
             })
         ));
