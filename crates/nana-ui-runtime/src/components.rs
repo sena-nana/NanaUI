@@ -678,7 +678,6 @@ pub enum ComponentGeometry {
         grid: Vec<LayoutBox>,
         area: Vec<LayoutBox>,
         line: Vec<[f32; 2]>,
-        line_width: f32,
         grid_color: [f32; 4],
         area_color: [f32; 4],
         line_color: [f32; 4],

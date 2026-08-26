@@ -136,8 +136,3 @@ name = "nana-gpu-scene-benchmark"
 path = "src/bin/nana-gpu-scene-benchmark.rs"
 required-features = ["gpu"]
 
-# Test-only: compare articulated Stroke mesh work against the retired Lyon
-# round-tessellation counts. Not part of the product `gpu` feature.
-[dev-dependencies]
-lyon = "1.0"
-

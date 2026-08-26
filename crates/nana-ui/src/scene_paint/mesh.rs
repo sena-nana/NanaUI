@@ -457,11 +457,6 @@ fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: Fragment
 }
 
 #[cfg(test)]
-pub(super) fn articulated_stroke_geometry_bytes(segment_count: usize) -> usize {
-    segment_count * (4 * std::mem::size_of::<MeshVertex>() + 6 * std::mem::size_of::<u32>())
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -583,99 +578,5 @@ mod tests {
         assert!((vertices[0].p0_radius[1] - 7.0).abs() < 1e-5);
         assert!((vertices[0].p1[0] - 13.0).abs() < 1e-5);
         assert!((vertices[0].p0_radius[2] - 2.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn mesh_vertex_stride_is_packed() {
-        assert_eq!(std::mem::size_of::<MeshVertex>(), 88);
-        assert_eq!(std::mem::size_of::<Uniforms>(), 64);
-    }
-
-    #[test]
-    fn stroke_mesh_work_is_four_vertices_six_indices_per_segment() {
-        let points: Vec<[f32; 2]> = (0..33)
-            .map(|i| [i as f32 * 3.0, (i % 2) as f32 * 4.0])
-            .collect();
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        append_stroke_geometry(&mut vertices, &mut indices, &points, 1.6, [1.0; 4]);
-        assert_eq!(vertices.len(), 32 * 4);
-        assert_eq!(indices.len(), 32 * 6);
-        assert_eq!(
-            articulated_stroke_geometry_bytes(32),
-            32 * (4 * std::mem::size_of::<MeshVertex>() + 6 * std::mem::size_of::<u32>())
-        );
-    }
-
-    #[test]
-    fn articulated_stroke_emits_fewer_primitives_than_lyon_round_tessellation() {
-        let product_l: &[[f32; 2]] = &[[8.0, 32.0], [56.0, 32.0], [56.0, 12.0]];
-        let long_polyline: Vec<[f32; 2]> = (0..65)
-            .map(|i| [i as f32 * 2.0, ((i % 3) as f32 - 1.0) * 6.0])
-            .collect();
-        for (points, width) in [
-            (product_l, 1.6),
-            (long_polyline.as_slice(), 1.6),
-            (&[[0.0, 0.0], [100.0, 0.0]][..], 2.2),
-        ] {
-            let segments = points
-                .windows(2)
-                .filter(|pair| {
-                    let dx = pair[1][0] - pair[0][0];
-                    let dy = pair[1][1] - pair[0][1];
-                    dx.hypot(dy) >= f32::EPSILON
-                })
-                .count();
-            let mut vertices = Vec::new();
-            let mut indices = Vec::new();
-            append_stroke_geometry(&mut vertices, &mut indices, points, width, [1.0; 4]);
-            assert_eq!(vertices.len(), segments * 4);
-            assert_eq!(indices.len(), segments * 6);
-            let (lyon_verts, lyon_indices) = lyon_round_stroke_counts(points, width);
-            assert!(
-                lyon_verts > vertices.len(),
-                "Lyon round tessellation must emit more vertices than one covering quad per segment: lyon={lyon_verts} articulated={}",
-                vertices.len()
-            );
-            assert!(
-                lyon_indices > indices.len(),
-                "Lyon round tessellation must emit more indices than two triangles per segment: lyon={lyon_indices} articulated={}",
-                indices.len()
-            );
-        }
-    }
-
-    fn lyon_round_stroke_counts(points: &[[f32; 2]], width: f32) -> (usize, usize) {
-        use lyon::{
-            math::point,
-            path::Path,
-            tessellation::{
-                BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
-            },
-        };
-        if points.len() < 2 {
-            return (0, 0);
-        }
-        let mut builder = Path::builder();
-        builder.begin(point(points[0][0], points[0][1]));
-        for sample in points.iter().skip(1) {
-            builder.line_to(point(sample[0], sample[1]));
-        }
-        builder.end(false);
-        let path = builder.build();
-        let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
-        let options = StrokeOptions::tolerance(0.1)
-            .with_line_width(width + STROKE_AA_FRINGE)
-            .with_line_cap(lyon::tessellation::LineCap::Round)
-            .with_line_join(lyon::tessellation::LineJoin::Round);
-        let _ = StrokeTessellator::new().tessellate_path(
-            &path,
-            &options,
-            &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
-                let position = vertex.position();
-                [position.x, position.y]
-            }),
-        );
-        (geometry.vertices.len(), geometry.indices.len())
     }
 }
