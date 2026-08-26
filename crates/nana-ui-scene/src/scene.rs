@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ControlSize, DrawerSide, Icon, LineHeightSpec, SwitchControlPosition, UI_METRICS,
+    BackgroundImage, ClipPath, ColorFilter, ControlSize, DrawerSide, Icon, LineHeightSpec,
+    SwitchControlPosition, UI_METRICS, icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
@@ -14,6 +15,20 @@ use crate::{
     AccessMode, CompiledRenderGraph, GraphError, PassId, RenderGraph, RenderOperation, RenderPass,
     RenderResource, ResourceAccess, ResourceId,
 };
+
+const fn corner_radii(r: f32) -> [f32; 4] {
+    [r; 4]
+}
+
+fn focus_ring_corner_radius(
+    style: &nana_ui_core::LayoutStyle,
+    bounds: SceneRect,
+    outset: f32,
+) -> [f32; 4] {
+    let radii = style.resolved_border_radii(bounds.width, bounds.height);
+    let max_r = radii.into_iter().fold(0.0f32, f32::max);
+    corner_radii(max_r + outset)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SceneRect {
@@ -53,6 +68,21 @@ impl Default for AffineTransform {
 pub struct ClipRegion {
     pub bounds: SceneRect,
     pub transform: AffineTransform,
+    /// Rounded inset clip radius (px in border-box space). Zero = axis-aligned rect.
+    pub corner_radius: f32,
+    /// `clip-path: polygon(...)` vertices in [`Self::bounds`] local space (px).
+    pub polygon_clip: Option<Vec<[f32; 2]>>,
+}
+
+impl ClipRegion {
+    pub fn axis_aligned(bounds: SceneRect, transform: AffineTransform) -> Self {
+        Self {
+            bounds,
+            transform,
+            corner_radius: 0.0,
+            polygon_clip: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -61,22 +91,34 @@ pub struct PrimitiveId {
     pub slot: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QuadSurfacePaint {
+    pub background_image: Option<BackgroundImage>,
+    pub mask: Option<nana_ui_core::CssGradient>,
+    /// Resolved polygon vertices in border-box coordinates (px).
+    pub polygon_clip: Option<Vec<[f32; 2]>>,
+    pub filter: Option<ColorFilter>,
+    pub backdrop_filter: Option<nana_ui_core::BackdropFilter>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScenePrimitiveKind {
     Quad {
         background: Option<[f32; 4]>,
         border_color: Option<[f32; 4]>,
         border_width: f32,
-        corner_radius: f32,
+        corner_radius: [f32; 4],
         shadow: Option<ComponentElevation>,
+        surface: QuadSurfacePaint,
     },
     QuadBatch {
         bounds: Vec<SceneRect>,
         background: Option<[f32; 4]>,
         border_color: Option<[f32; 4]>,
         border_width: f32,
-        corner_radius: f32,
+        corner_radius: [f32; 4],
         shadow: Option<ComponentElevation>,
+        surface: QuadSurfacePaint,
     },
     Text {
         content: String,
@@ -93,6 +135,7 @@ pub enum ScenePrimitiveKind {
         vertical_alignment: TextVerticalAlignment,
         /// Theme-resolved committed-text spans. Empty means solid `color`.
         spans: Vec<SceneTextSpan>,
+        text_shadow: Option<nana_ui_core::TextShadowSpec>,
     },
     Icon {
         icon: Icon,
@@ -139,6 +182,13 @@ pub struct ScenePrimitive {
 pub struct OpacityGroup {
     pub node: StableNodeId,
     pub opacity: f32,
+}
+
+/// Isolating ancestor with a non-identity CSS `filter`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilterGroup {
+    pub node: StableNodeId,
+    pub filter: ColorFilter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -245,6 +295,11 @@ impl UiScene {
     /// Isolating opacity groups from outermost to innermost that contain `node`.
     pub fn opacity_groups(&self, node: StableNodeId) -> Vec<OpacityGroup> {
         opacity_groups_from(&self.nodes, node)
+    }
+
+    /// Isolating filter groups from outermost to innermost that contain `node`.
+    pub fn filter_groups(&self, node: StableNodeId) -> Vec<FilterGroup> {
+        filter_groups_from(&self.nodes, node)
     }
 
     pub fn is_node_in_subtree(&self, root: StableNodeId, candidate: StableNodeId) -> bool {
@@ -521,6 +576,63 @@ impl UiScene {
                 .is_some_and(|text| !text.value.is_empty())
     }
 
+    /// Compact leading glyphs share the parent (or own) text glyph-box center.
+    /// IconButton hit targets are larger than the glyph and stay geometrically
+    /// centered in their own box.
+    fn icon_y_aligned_to_adjacent_text(
+        &self,
+        node: &ExtractedNode,
+        icon_bounds: SceneRect,
+        extent: f32,
+    ) -> f32 {
+        let geometric = icon_bounds.y + (icon_bounds.height - extent) / 2.0;
+        if node.layout.height > extent + 0.5 || node.layout.width > extent + 0.5 {
+            return geometric;
+        }
+        let host = if node
+            .text
+            .as_ref()
+            .is_some_and(|text| !text.value.is_empty())
+        {
+            node
+        } else {
+            match node.parent.and_then(|id| self.nodes.get(&id)) {
+                Some(parent)
+                    if parent
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| !text.value.is_empty())
+                        || matches!(
+                            parent.standard_visual.as_ref(),
+                            Some(StandardVisual::ListItem { .. })
+                        ) =>
+                {
+                    parent
+                }
+                _ => return geometric,
+            }
+        };
+        let text_box = match &host.component_geometry {
+            Some(ComponentGeometry::ListItem {
+                content: Some(content),
+                ..
+            }) => *content,
+            _ => host.layout,
+        };
+        let centered = matches!(
+            host.source_style.text_vertical_alignment,
+            TextVerticalAlignment::Center
+        );
+        icon_y_on_text_glyph_center(
+            text_box.y,
+            text_box.height,
+            host.style.font_size,
+            host.style.line_height,
+            centered,
+            extent,
+        )
+    }
+
     fn sort_primitives(&mut self) {
         // The group prefix is a per-node parent walk; a node usually owns
         // several primitives, so walk once and reuse it.
@@ -580,13 +692,21 @@ impl UiScene {
         } else {
             parent_opacity * local_opacity
         };
-        let clips: Arc<[ClipRegion]> = if node.source_style.layout.clips_overflow() {
-            let mut own = parent_clips.to_vec();
-            own.push(ClipRegion { bounds, transform });
-            own.into()
-        } else {
-            Arc::clone(&parent_clips)
+        let style = node.source_style.layout.as_ref();
+        let clips: Arc<[ClipRegion]> = {
+            let mut chain = if node.source_style.layout.clips_overflow() {
+                let mut own = parent_clips.to_vec();
+                own.push(ClipRegion::axis_aligned(bounds, transform));
+                own
+            } else {
+                parent_clips.to_vec()
+            };
+            if let Some(region) = clip_path_region(style, bounds, transform) {
+                chain.push(region);
+            }
+            chain.into()
         };
+        let surface_clips: Arc<[ClipRegion]> = Arc::clone(&clips);
         let empty_state_content_clips: Arc<[ClipRegion]> =
             if let Some(ComponentGeometry::EmptyState { content_clip, .. }) =
                 node.component_geometry.as_ref()
@@ -595,6 +715,8 @@ impl UiScene {
                 content_clips.push(ClipRegion {
                     bounds: scene_rect(*content_clip),
                     transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
                 });
                 content_clips.into()
             } else {
@@ -618,6 +740,8 @@ impl UiScene {
                             .max(0.0),
                     },
                     transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
                 });
                 text_input_clips.into()
             } else {
@@ -625,7 +749,6 @@ impl UiScene {
             };
         let node_order = self.node_order.get(&id).copied().unwrap_or_default();
         if node.style.visible && opacity > 0.0 {
-            let style = node.source_style.layout.as_ref();
             let standard_visual_uses_root_surface = matches!(
                 node.standard_visual,
                 Some(
@@ -691,7 +814,7 @@ impl UiScene {
                     node: id,
                     bounds,
                     transform,
-                    clips: Arc::clone(&parent_clips),
+                    clips: Arc::clone(&surface_clips),
                     opacity,
                     z_index: node.z_index,
                     document_order: node_order,
@@ -699,10 +822,22 @@ impl UiScene {
                         background: surface_background,
                         border_color: surface_border_color,
                         border_width: surface_border_width,
-                        corner_radius: style.border_radius.unwrap_or(0.0).max(0.0),
-                        shadow: match node.component_geometry.as_ref() {
-                            Some(ComponentGeometry::Card { elevation, .. }) => *elevation,
-                            _ => None,
+                        corner_radius: surface_corner_radii(style, bounds.width, bounds.height),
+                        shadow: style
+                            .paint
+                            .box_shadow
+                            .map(ComponentElevation::from_box_shadow)
+                            .or(match node.component_geometry.as_ref() {
+                                Some(ComponentGeometry::Card { elevation, .. }) => *elevation,
+                                _ => None,
+                            }),
+                        surface: {
+                            let mut surface =
+                                quad_surface_from_style(style, bounds.width, bounds.height);
+                            if is_filter_group(&self.nodes, &node) {
+                                surface.filter = None;
+                            }
+                            surface
                         },
                     },
                 });
@@ -792,6 +927,7 @@ impl UiScene {
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
                         spans: scene_text_spans(&node, &text.value),
+                        text_shadow: style.paint.text_shadow,
                     },
                 });
             }
@@ -822,7 +958,7 @@ impl UiScene {
                             background: Some([0.0, 0.0, 0.0, 0.45]),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     let radius = UI_METRICS.radius_md;
@@ -839,6 +975,8 @@ impl UiScene {
                         surface_clips.push(ClipRegion {
                             bounds: scene_rect(*scrim),
                             transform,
+                            corner_radius: 0.0,
+                            polygon_clip: None,
                         });
                         match side {
                             DrawerSide::Right => surface_bounds.width += radius,
@@ -862,8 +1000,9 @@ impl UiScene {
                             background: Some(*background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: radius,
+                            corner_radius: corner_radii(radius),
                             shadow: Some(*elevation),
+                            surface: QuadSurfacePaint::default(),
                         },
                     });
                     self.insert_primitive(component_text_primitive(
@@ -985,7 +1124,7 @@ impl UiScene {
                                 background: Some(*selection_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -1123,7 +1262,7 @@ impl UiScene {
                             background: Some(*foreground),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 999.0,
+                            corner_radius: corner_radii(999.0),
                         },
                     ));
                 }
@@ -1159,7 +1298,7 @@ impl UiScene {
                             background: None,
                             border_color: Some(*foreground),
                             border_width: 1.0,
-                            corner_radius: 999.0,
+                            corner_radius: corner_radii(999.0),
                         },
                     ));
                 }
@@ -1277,7 +1416,7 @@ impl UiScene {
                                 background: None,
                                 border_color: Some(indicator.ring_color),
                                 border_width: if indicator.dot.is_some() { 2.0 } else { 1.0 },
-                                corner_radius: indicator.ring.height / 2.0,
+                                corner_radius: corner_radii(indicator.ring.height / 2.0),
                             },
                         ));
                         if let Some((dot, color)) = indicator.dot {
@@ -1289,7 +1428,7 @@ impl UiScene {
                                     background: Some(color),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: dot.height / 2.0,
+                                    corner_radius: corner_radii(dot.height / 2.0),
                                 },
                             ));
                         }
@@ -1331,7 +1470,16 @@ impl UiScene {
                                 background: None,
                                 border_color: Some(*color),
                                 border_width: 2.0,
-                                corner_radius: style.border_radius.unwrap_or(0.0) + 4.0,
+                                corner_radius: focus_ring_corner_radius(
+                                    style,
+                                    SceneRect {
+                                        x: bounds.x - 4.0,
+                                        y: bounds.y - 4.0,
+                                        width: bounds.width + 8.0,
+                                        height: bounds.height + 8.0,
+                                    },
+                                    4.0,
+                                ),
                             },
                         ));
                     }
@@ -1372,7 +1520,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: *corner_radius,
+                                corner_radius: corner_radii(*corner_radius),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -1390,7 +1538,7 @@ impl UiScene {
                             background: node.standard_visual_foreground,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: *corner_radius,
+                                corner_radius: corner_radii(*corner_radius),
                         },
                     ));
                     if let Some(cancel) = cancel {
@@ -1462,7 +1610,7 @@ impl UiScene {
                                 background: None,
                                 border_color: Some(*color),
                                 border_width: 1.0,
-                                corner_radius: 999.0,
+                                corner_radius: corner_radii(999.0),
                             },
                         ));
                     }
@@ -1488,7 +1636,7 @@ impl UiScene {
                             background: node.standard_visual_foreground,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 999.0,
+                            corner_radius: corner_radii(999.0),
                         },
                     ));
                     self.insert_primitive(component_text_primitive(
@@ -1562,7 +1710,7 @@ impl UiScene {
                             background: Some(*axis_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -1580,7 +1728,7 @@ impl UiScene {
                             background: Some(*axis_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -1598,7 +1746,7 @@ impl UiScene {
                             background: Some(*thumb_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 999.0,
+                            corner_radius: corner_radii(999.0),
                         },
                     ));
                 }
@@ -1618,7 +1766,7 @@ impl UiScene {
                             background: Some([1.0, 1.0, 1.0, 1.0]),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: UI_METRICS.radius_md,
+                            corner_radius: corner_radii(UI_METRICS.radius_md),
                         },
                     ));
                     if !dark.is_empty() {
@@ -1637,7 +1785,7 @@ impl UiScene {
                                 background: Some([0.0, 0.0, 0.0, 1.0]),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -1687,8 +1835,9 @@ impl UiScene {
                                 background: Some(menu.background),
                                 border_color: Some(menu.border),
                                 border_width: 1.0,
-                                corner_radius: UI_METRICS.radius_md,
+                                corner_radius: corner_radii(UI_METRICS.radius_md),
                                 shadow: Some(menu.elevation),
+                                surface: QuadSurfacePaint::default(),
                             },
                         });
                         for (index, option) in menu.options.iter().enumerate() {
@@ -1738,7 +1887,7 @@ impl UiScene {
                                         background: Some(background),
                                         border_color: None,
                                         border_width: 0.0,
-                                        corner_radius: UI_METRICS.radius_sm,
+                                        corner_radius: corner_radii(UI_METRICS.radius_sm),
                                     },
                                 ));
                             }
@@ -1824,7 +1973,7 @@ impl UiScene {
                                     background: Some(background),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: UI_METRICS.radius_sm,
+                                    corner_radius: corner_radii(UI_METRICS.radius_sm),
                                 },
                             ));
                         }
@@ -1909,7 +2058,7 @@ impl UiScene {
                             background: Some([0.0, 0.0, 0.0, 0.45]),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     self.insert_primitive(ScenePrimitive {
@@ -1925,8 +2074,9 @@ impl UiScene {
                             background: Some(*background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: UI_METRICS.radius_md,
+                            corner_radius: corner_radii(UI_METRICS.radius_md),
                             shadow: Some(*elevation),
+                            surface: QuadSurfacePaint::default(),
                         },
                     });
                     let mut title_text = component_text_primitive(
@@ -1958,7 +2108,7 @@ impl UiScene {
                             background: Some(*input_background),
                             border_color: Some(*input_border),
                             border_width: 1.0,
-                            corner_radius: UI_METRICS.radius_sm,
+                            corner_radius: corner_radii(UI_METRICS.radius_sm),
                         },
                     ));
                     let mut input_text = component_text_primitive(
@@ -2009,7 +2159,7 @@ impl UiScene {
                                     background: Some(background),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: UI_METRICS.radius_sm,
+                                    corner_radius: corner_radii(UI_METRICS.radius_sm),
                                 },
                             ));
                         }
@@ -2088,8 +2238,9 @@ impl UiScene {
                                 background: chrome.background,
                                 border_color: chrome.border,
                                 border_width: 1.0,
-                                corner_radius: UI_METRICS.radius_sm,
+                                corner_radius: corner_radii(UI_METRICS.radius_sm),
                                 shadow: None,
+                                surface: QuadSurfacePaint::default(),
                             },
                         });
                     }
@@ -2121,8 +2272,9 @@ impl UiScene {
                                 background: Some(*background),
                                 border_color: Some(*border),
                                 border_width: 1.0,
-                                corner_radius: UI_METRICS.radius_md,
+                                corner_radius: corner_radii(UI_METRICS.radius_md),
                                 shadow: Some(*elevation),
+                                surface: QuadSurfacePaint::default(),
                             },
                         });
                     }
@@ -2142,7 +2294,7 @@ impl UiScene {
                                 background: Some(*background),
                                 border_color: Some(*border),
                                 border_width: 1.0,
-                                corner_radius: UI_METRICS.radius_sm,
+                                corner_radius: corner_radii(UI_METRICS.radius_sm),
                             },
                         ));
                     }
@@ -2177,7 +2329,7 @@ impl UiScene {
                                     background: Some(background),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: UI_METRICS.radius_sm,
+                                    corner_radius: corner_radii(UI_METRICS.radius_sm),
                                 },
                             ));
                         }
@@ -2245,7 +2397,7 @@ impl UiScene {
                                 background: Some(color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: UI_METRICS.radius_xs,
+                                corner_radius: corner_radii(UI_METRICS.radius_xs),
                             },
                         ));
                     }
@@ -2280,7 +2432,7 @@ impl UiScene {
                                 background: None,
                                 border_color: Some(hover.ring_color),
                                 border_width: 1.5,
-                                corner_radius: UI_METRICS.radius_xs + 1.0,
+                                corner_radius: corner_radii(UI_METRICS.radius_xs + 1.0),
                             },
                         ));
                         self.insert_primitive(visual_quad(
@@ -2291,7 +2443,7 @@ impl UiScene {
                                 background: Some(hover.tooltip_fill),
                                 border_color: Some(hover.tooltip_border),
                                 border_width: 1.0,
-                                corner_radius: nana_ui_core::TooltipConfig::RADIUS,
+                                corner_radius: corner_radii(nana_ui_core::TooltipConfig::RADIUS),
                             },
                         ));
                         self.insert_primitive(component_text_primitive(
@@ -2333,7 +2485,7 @@ impl UiScene {
                                 background: Some(*grid_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2346,7 +2498,7 @@ impl UiScene {
                                 background: Some(*area_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2359,7 +2511,7 @@ impl UiScene {
                                 background: Some(*line_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2386,7 +2538,7 @@ impl UiScene {
                                 background: Some(color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: UI_METRICS.radius_sm,
+                                corner_radius: corner_radii(UI_METRICS.radius_sm),
                             },
                         ));
                     }
@@ -2406,7 +2558,7 @@ impl UiScene {
                                 background: Some(*color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2451,7 +2603,7 @@ impl UiScene {
                                 background: Some(*selection_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2496,7 +2648,7 @@ impl UiScene {
                             background: Some(*background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     if !grid.is_empty() {
@@ -2508,7 +2660,7 @@ impl UiScene {
                                 background: Some(*grid_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2537,7 +2689,7 @@ impl UiScene {
                                 background: Some(*fill),
                                 border_color: *border,
                                 border_width: 1.0,
-                                corner_radius: UI_METRICS.radius_sm,
+                                corner_radius: corner_radii(UI_METRICS.radius_sm),
                             },
                         ));
                         self.insert_primitive(component_text_primitive(
@@ -2562,7 +2714,7 @@ impl UiScene {
                                 background: Some(*separator_color),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: 0.0,
+                                corner_radius: corner_radii(0.0),
                             },
                         ));
                     }
@@ -2576,7 +2728,7 @@ impl UiScene {
                                 background: Some(*fill),
                                 border_color: Some(*border),
                                 border_width: *border_width,
-                                corner_radius: 999.0,
+                                corner_radius: corner_radii(999.0),
                             },
                         ));
                     }
@@ -2639,7 +2791,7 @@ impl UiScene {
                             background: Some(*scrim_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -2650,7 +2802,7 @@ impl UiScene {
                             background: Some(*surface_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: UI_METRICS.radius_md,
+                            corner_radius: corner_radii(UI_METRICS.radius_md),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -2661,7 +2813,7 @@ impl UiScene {
                             background: Some(*stage_color),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 0.0,
+                            corner_radius: corner_radii(0.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -2672,7 +2824,7 @@ impl UiScene {
                             background: None,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: UI_METRICS.radius_sm,
+                            corner_radius: corner_radii(UI_METRICS.radius_sm),
                         },
                     ));
                     self.insert_primitive(component_text_primitive(
@@ -2739,7 +2891,7 @@ impl UiScene {
                                 background: Some(*background),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: UI_METRICS.radius_sm,
+                                corner_radius: corner_radii(UI_METRICS.radius_sm),
                             },
                         ));
                     }
@@ -2774,7 +2926,7 @@ impl UiScene {
                                 .map(|color| [color[0], color[1], color[2], 0.12])),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: UI_METRICS.radius_sm,
+                            corner_radius: corner_radii(UI_METRICS.radius_sm),
                         },
                     ));
                     self.insert_primitive(component_text_primitive(
@@ -2854,8 +3006,16 @@ impl UiScene {
                                     background: None,
                                     border_color: Some(*color),
                                     border_width: 2.0,
-                                    corner_radius: style.border_radius.unwrap_or(0.0).max(0.0)
-                                        + 3.0,
+                                    corner_radius: focus_ring_corner_radius(
+                                        style,
+                                        SceneRect {
+                                            x: bounds.x - 3.0,
+                                            y: bounds.y - 3.0,
+                                            width: bounds.width + 6.0,
+                                            height: bounds.height + 6.0,
+                                        },
+                                        3.0,
+                                    ),
                                 },
                             ));
                         }
@@ -2880,7 +3040,7 @@ impl UiScene {
                                     background: Some(*caret_color),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: 0.0,
+                                    corner_radius: corner_radii(0.0),
                                 },
                             ));
                         }
@@ -2893,7 +3053,7 @@ impl UiScene {
                                     background: Some(*preedit_color),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: 0.0,
+                                    corner_radius: corner_radii(0.0),
                                 },
                             ));
                         }
@@ -2918,8 +3078,16 @@ impl UiScene {
                                     background: None,
                                     border_color: Some(*color),
                                     border_width: 2.0,
-                                    corner_radius: style.border_radius.unwrap_or(0.0).max(0.0)
-                                        + 3.0,
+                                    corner_radius: focus_ring_corner_radius(
+                                        style,
+                                        SceneRect {
+                                            x: bounds.x - 3.0,
+                                            y: bounds.y - 3.0,
+                                            width: bounds.width + 6.0,
+                                            height: bounds.height + 6.0,
+                                        },
+                                        3.0,
+                                    ),
                                 },
                             ));
                         }
@@ -2945,7 +3113,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: node.style.border_color,
                             border_width: 1.0,
-                            corner_radius: 4.0,
+                            corner_radius: corner_radii(4.0),
                         },
                     ));
                     if indeterminate {
@@ -2964,7 +3132,7 @@ impl UiScene {
                                 background: node.standard_visual_foreground,
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: dash_height / 2.0,
+                                corner_radius: corner_radii(dash_height / 2.0),
                             },
                         ));
                     } else if checked {
@@ -2991,18 +3159,21 @@ impl UiScene {
                                 horizontal_alignment: TextHorizontalAlignment::Center,
                                 vertical_alignment: TextVerticalAlignment::Center,
                                 spans: Vec::new(),
+                                text_shadow: None,
                             },
                         });
                     }
                 }
                 Some(StandardVisual::Icon { icon, size, .. }) => {
                     let extent = size.max(0.0).min(bounds.width).min(bounds.height);
+                    let x = bounds.x + (bounds.width - extent) / 2.0;
+                    let y = self.icon_y_aligned_to_adjacent_text(&node, bounds, extent);
                     self.insert_primitive(ScenePrimitive {
                         id: PrimitiveId { node: id, slot: 3 },
                         node: id,
                         bounds: SceneRect {
-                            x: bounds.x + (bounds.width - extent) / 2.0,
-                            y: bounds.y + (bounds.height - extent) / 2.0,
+                            x,
+                            y,
                             width: extent,
                             height: extent,
                         },
@@ -3057,7 +3228,7 @@ impl UiScene {
                             background: track_background,
                             border_color: track_border,
                             border_width: 1.0,
-                            corner_radius: 8.0,
+                            corner_radius: corner_radii(8.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -3073,7 +3244,7 @@ impl UiScene {
                             background: thumb_background,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 5.0,
+                            corner_radius: corner_radii(5.0),
                         },
                     ));
                     if loading {
@@ -3111,7 +3282,7 @@ impl UiScene {
                                 background: None,
                                 border_color: node.style.border_color,
                                 border_width: 2.0,
-                                corner_radius: 12.0,
+                                corner_radius: corner_radii(12.0),
                             },
                         ));
                     }
@@ -3148,7 +3319,7 @@ impl UiScene {
                             background: node.style.border_color,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 2.0,
+                            corner_radius: corner_radii(2.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -3162,7 +3333,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: 2.0,
+                            corner_radius: corner_radii(2.0),
                         },
                     ));
                     self.insert_primitive(visual_quad(
@@ -3178,7 +3349,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: node.style.border_color,
                             border_width: 1.0,
-                            corner_radius: thumb_extent / 2.0,
+                            corner_radius: corner_radii(thumb_extent / 2.0),
                         },
                     ));
                 }
@@ -3201,7 +3372,7 @@ impl UiScene {
                                         background: Some(background),
                                         border_color: None,
                                         border_width: 0.0,
-                                        corner_radius: 0.0,
+                                        corner_radius: corner_radii(0.0),
                                     },
                                 ));
                             }
@@ -3213,7 +3384,7 @@ impl UiScene {
                                     background: Some(bar.thumb_background),
                                     border_color: None,
                                     border_width: 0.0,
-                                    corner_radius: bar.thumb_radius,
+                                    corner_radius: corner_radii(bar.thumb_radius),
                                 },
                             ));
                         }
@@ -3361,6 +3532,8 @@ impl UiScene {
                         height: layout.height,
                     },
                     transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
                 });
             }
             if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
@@ -3369,6 +3542,8 @@ impl UiScene {
                 clips.push(ClipRegion {
                     bounds: scene_rect(*root_clip),
                     transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
                 });
             }
             if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
@@ -3383,6 +3558,8 @@ impl UiScene {
                         height: surface.height + focus_inset * 2.0,
                     },
                     transform,
+                    corner_radius: 0.0,
+                    polygon_clip: None,
                 });
                 if let Some(StandardVisual::ModalFrame { slots, .. }) =
                     ancestor.standard_visual.as_ref()
@@ -3393,8 +3570,23 @@ impl UiScene {
                     clips.push(ClipRegion {
                         bounds: scene_rect(*body),
                         transform,
+                        corner_radius: 0.0,
+                        polygon_clip: None,
                     });
                 }
+            }
+            let ancestor_bounds = SceneRect {
+                x: layout.x,
+                y: layout.y,
+                width: layout.width,
+                height: layout.height,
+            };
+            if let Some(region) = clip_path_region(
+                ancestor.source_style.layout.as_ref(),
+                ancestor_bounds,
+                transform,
+            ) {
+                clips.push(region);
             }
             transform = transform.then(AffineTransform([
                 1.0,
@@ -3490,6 +3682,20 @@ fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &Extract
     opacity > 0.0 && opacity < 1.0 && node.children.iter().any(|child| nodes.contains_key(child))
 }
 
+fn is_filter_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    node.source_style
+        .layout
+        .paint
+        .filter
+        .is_some_and(|filter| !filter.is_identity())
+        && (node.children.iter().any(|child| nodes.contains_key(child))
+            || node
+                .text
+                .as_ref()
+                .is_some_and(|text| !text.value.is_empty())
+            || node.custom_render.is_some())
+}
+
 fn opacity_groups_from(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: StableNodeId,
@@ -3505,6 +3711,92 @@ fn opacity_groups_from(
             groups.push(OpacityGroup {
                 node: id,
                 opacity: local_opacity(candidate),
+            });
+        }
+        current = candidate.parent;
+    }
+    groups.reverse();
+    groups
+}
+
+fn clip_path_region(
+    style: &nana_ui_core::LayoutStyle,
+    bounds: SceneRect,
+    transform: AffineTransform,
+) -> Option<ClipRegion> {
+    let clip_path = style.paint.clip_path.as_ref()?;
+    match clip_path {
+        ClipPath::Inset(inset) => {
+            let [top, right, bottom, left] = inset.resolve_offsets(bounds.width, bounds.height);
+            Some(ClipRegion {
+                bounds: SceneRect {
+                    x: bounds.x + left,
+                    y: bounds.y + top,
+                    width: (bounds.width - left - right).max(0.0),
+                    height: (bounds.height - top - bottom).max(0.0),
+                },
+                transform,
+                corner_radius: inset.resolve_round(bounds.width, bounds.height),
+                polygon_clip: None,
+            })
+        }
+        ClipPath::Polygon(_) => {
+            let points = clip_path.resolve_polygon_points(bounds.width, bounds.height)?;
+            let min_x = points
+                .iter()
+                .map(|point| point[0])
+                .fold(f32::INFINITY, f32::min);
+            let min_y = points
+                .iter()
+                .map(|point| point[1])
+                .fold(f32::INFINITY, f32::min);
+            let max_x = points
+                .iter()
+                .map(|point| point[0])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let max_y = points
+                .iter()
+                .map(|point| point[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            let local_points = points
+                .iter()
+                .map(|point| [point[0] - min_x, point[1] - min_y])
+                .collect();
+            Some(ClipRegion {
+                bounds: SceneRect {
+                    x: bounds.x + min_x,
+                    y: bounds.y + min_y,
+                    width: (max_x - min_x).max(0.0),
+                    height: (max_y - min_y).max(0.0),
+                },
+                transform,
+                corner_radius: 0.0,
+                polygon_clip: Some(local_points),
+            })
+        }
+    }
+}
+
+fn filter_groups_from(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: StableNodeId,
+) -> Vec<FilterGroup> {
+    let mut groups = Vec::new();
+    let mut current = Some(node);
+    let mut visited = HashSet::new();
+    while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        let Some(candidate) = nodes.get(&id) else {
+            break;
+        };
+        if is_filter_group(nodes, candidate) {
+            groups.push(FilterGroup {
+                node: id,
+                filter: candidate
+                    .source_style
+                    .layout
+                    .paint
+                    .filter
+                    .unwrap_or_default(),
             });
         }
         current = candidate.parent;
@@ -3590,7 +3882,7 @@ fn paint_select_handle(
                 background: Some(color),
                 border_color: None,
                 border_width: 0.0,
-                corner_radius: 0.0,
+                corner_radius: corner_radii(0.0),
             },
         ));
     }
@@ -3695,8 +3987,20 @@ fn component_text_primitive(
                 TextVerticalAlignment::Center
             },
             spans: scene_text_spans(node, region.content.as_ref()),
+            text_shadow: node.source_style.layout.paint.text_shadow,
         },
     }
+}
+
+fn surface_corner_radii(style: &nana_ui_core::LayoutStyle, width: f32, height: f32) -> [f32; 4] {
+    let mut radii = style.resolved_border_radii(width, height);
+    if let Some(ClipPath::Inset(inset)) = style.paint.clip_path.as_ref() {
+        let round = inset.resolve_round(width, height);
+        if round > 0.0 {
+            radii = radii.map(|radius| radius.max(round));
+        }
+    }
+    radii
 }
 
 fn scene_text_spans(node: &ExtractedNode, content: &str) -> Vec<SceneTextSpan> {
@@ -3738,7 +4042,7 @@ struct VisualQuadStyle {
     background: Option<[f32; 4]>,
     border_color: Option<[f32; 4]>,
     border_width: f32,
-    corner_radius: f32,
+    corner_radius: [f32; 4],
 }
 
 fn visual_quad(
@@ -3765,7 +4069,29 @@ fn visual_quad(
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
+            surface: QuadSurfacePaint::default(),
         },
+    }
+}
+
+fn quad_surface_from_style(
+    style: &nana_ui_core::LayoutStyle,
+    width: f32,
+    height: f32,
+) -> QuadSurfacePaint {
+    QuadSurfacePaint {
+        background_image: style.paint.background_image.clone(),
+        mask: style.paint.mask.clone(),
+        polygon_clip: style
+            .paint
+            .clip_path
+            .as_ref()
+            .and_then(|path| path.resolve_polygon_points(width, height)),
+        filter: style.paint.filter.filter(|filter| !filter.is_identity()),
+        backdrop_filter: style
+            .paint
+            .backdrop_filter
+            .filter(|filter| filter.is_active()),
     }
 }
 
@@ -3840,6 +4166,7 @@ fn visual_quad_batch(
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
+            surface: QuadSurfacePaint::default(),
         },
     }
 }
@@ -3896,6 +4223,17 @@ mod tests {
             standard_visual_foreground: None,
             custom_render: None,
         }
+    }
+
+    #[test]
+    fn hidden_nodes_skip_scene_primitives() {
+        let mut hidden = node(1, None, &[]);
+        style_mut(&mut hidden).visible = false;
+        style_mut(&mut hidden).background = Some([1.0, 0.0, 0.0, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([hidden], []);
+        assert!(scene.primitives().all(|primitive| primitive.node != id(1)));
     }
 
     #[test]
@@ -4280,9 +4618,9 @@ mod tests {
             focus.kind,
             ScenePrimitiveKind::Quad {
                 border_width: 2.0,
-                corner_radius: 11.0,
+                corner_radius,
                 ..
-            }
+            } if corner_radius.iter().all(|r| (*r - 11.0).abs() < f32::EPSILON)
         ));
         assert!(matches!(
             scene.primitive(PrimitiveId { node: id(7), slot: 2 }).unwrap().kind,
@@ -4409,6 +4747,7 @@ mod tests {
             ],
             elevation: ComponentElevation {
                 color: [0.0, 0.0, 0.0, 0.55],
+                offset_x: 0.0,
                 offset_y: 4.0,
                 blur_radius: 18.0,
                 spread_radius: 0.0,
@@ -5139,6 +5478,7 @@ mod tests {
             border: [0.3, 0.3, 0.3, 1.0],
             elevation: ComponentElevation {
                 color: [0.0, 0.0, 0.0, 0.24],
+                offset_x: 0.0,
                 offset_y: 8.0,
                 blur_radius: 24.0,
                 spread_radius: 0.0,
@@ -5173,7 +5513,9 @@ mod tests {
                 corner_radius,
                 shadow: Some(_),
                 ..
-            } if (corner_radius - UI_METRICS.radius_md).abs() < f32::EPSILON
+            } if corner_radius
+                .iter()
+                .all(|r| (*r - UI_METRICS.radius_md).abs() < f32::EPSILON)
         ));
         assert!(matches!(
             scene
@@ -5243,6 +5585,7 @@ mod tests {
             input_border: [0.3, 0.3, 0.3, 1.0],
             elevation: ComponentElevation {
                 color: [0.0, 0.0, 0.0, 0.4],
+                offset_x: 0.0,
                 offset_y: 12.0,
                 blur_radius: 24.0,
                 spread_radius: 0.0,
@@ -5349,6 +5692,7 @@ mod tests {
             border: [0.0; 4],
             elevation: ComponentElevation {
                 color: [0.0, 0.0, 0.0, 0.45],
+                offset_x: 0.0,
                 offset_y: 14.0,
                 blur_radius: 30.0,
                 spread_radius: 0.0,
@@ -5555,6 +5899,8 @@ mod tests {
         let content = ClipRegion {
             bounds: scene_rect(content_clip),
             transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: None,
         };
         for primitive in [
             PrimitiveId {
@@ -5580,6 +5926,8 @@ mod tests {
                 height: 80.0,
             },
             transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: None,
         };
         for primitive in [
             PrimitiveId {
@@ -5730,9 +6078,9 @@ mod tests {
             thumb.kind,
             ScenePrimitiveKind::Quad {
                 background: Some([0.6, 0.6, 0.6, 1.0]),
-                corner_radius: 3.0,
+                corner_radius,
                 ..
-            }
+            } if corner_radius.iter().all(|r| (*r - 3.0).abs() < f32::EPSILON)
         ));
         assert_eq!(thumb.bounds.x, 191.0);
         assert_eq!(thumb.bounds.height, 72.0);
@@ -5748,6 +6096,8 @@ mod tests {
                     height: 120.0,
                 },
                 transform: AffineTransform::default(),
+                corner_radius: 0.0,
+                polygon_clip: None,
             }]
         );
         assert!(
@@ -5795,6 +6145,66 @@ mod tests {
                     slot: 7
                 })
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn compact_leading_icon_centers_on_the_parent_text_line() {
+        let mut row = node(1, None, &[2]);
+        row.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 28.0,
+        };
+        row.text = Some(TextContent {
+            value: "舞台".into(),
+        });
+        row.standard_visual = Some(StandardVisual::ListItem {
+            leading: Some(id(2)),
+            content: None,
+            trailing: None,
+        });
+        row.source_style.text_vertical_alignment = TextVerticalAlignment::Center;
+        style_mut(&mut row).font_size = 12.0;
+        style_mut(&mut row).line_height = Some(LineHeightSpec::Absolute(12.0));
+
+        let mut icon = node(2, Some(1), &[]);
+        icon.layout = LayoutBox {
+            x: 8.0,
+            y: 0.0,
+            width: 12.0,
+            height: 12.0,
+        };
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Workspace,
+            size: 12.0,
+            tooltip: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([row, icon], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 3,
+            })
+            .expect("leading icon");
+        assert_eq!(
+            primitive.bounds,
+            SceneRect {
+                x: 8.0,
+                y: icon_y_on_text_glyph_center(
+                    0.0,
+                    28.0,
+                    12.0,
+                    Some(LineHeightSpec::Absolute(12.0)),
+                    true,
+                    12.0,
+                ),
+                width: 12.0,
+                height: 12.0,
+            }
         );
     }
 
@@ -5955,6 +6365,7 @@ mod tests {
             },
             elevation: Some(ComponentElevation {
                 color: [0.0, 0.0, 0.0, 0.25],
+                offset_x: 0.0,
                 offset_y: 3.0,
                 blur_radius: 8.0,
                 spread_radius: 0.0,
@@ -6136,6 +6547,7 @@ mod tests {
                 .kind,
             ScenePrimitiveKind::Quad {
                 shadow: Some(ComponentElevation {
+                    offset_x: 0.0,
                     offset_y: 3.0,
                     blur_radius: 8.0,
                     ..
@@ -6631,5 +7043,308 @@ mod tests {
                 .map(|primitive| &primitive.kind),
             Some(ScenePrimitiveKind::Text { content, .. }) if content == "Window"
         ));
+    }
+
+    #[test]
+    fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 1.0, 1.0, 0.5]),
+                paint: nana_ui_core::PaintStyle {
+                    background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                            angle_deg: 180.0,
+                            stops: vec![
+                                nana_ui_core::GradientStop {
+                                    position: 0.0,
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                },
+                                nana_ui_core::GradientStop {
+                                    position: 1.0,
+                                    color: [1.0, 1.0, 1.0, 0.0],
+                                },
+                            ],
+                        }),
+                    )),
+                    clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
+                        top: nana_ui_core::LengthSpec::Percent(50.0),
+                        right: nana_ui_core::LengthSpec::Percent(50.0),
+                        bottom: nana_ui_core::LengthSpec::Percent(50.0),
+                        left: nana_ui_core::LengthSpec::Percent(50.0),
+                        round: None,
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 0.5]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        assert_eq!(
+            primitive.clips.len(),
+            1,
+            "inset clip-path adds a clip region"
+        );
+        let clip = &primitive.clips[0];
+        assert!((clip.bounds.width - 0.0).abs() < 0.01);
+        assert!((clip.bounds.height - 0.0).abs() < 0.01);
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(surface.background_image.is_some());
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_clip_path_inset_round_applies_surface_corner_radius() {
+        let mut painted = node(1, None, &[]);
+        painted.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
+                        top: nana_ui_core::LengthSpec::Px(10.0),
+                        right: nana_ui_core::LengthSpec::Px(10.0),
+                        bottom: nana_ui_core::LengthSpec::Px(10.0),
+                        left: nana_ui_core::LengthSpec::Px(10.0),
+                        round: Some(nana_ui_core::LengthSpec::Px(8.0)),
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        assert!(
+            (primitive.clips[0].corner_radius - 8.0).abs() < f32::EPSILON,
+            "inset round travels on clip region"
+        );
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { corner_radius, .. } => {
+                assert!(
+                    corner_radius
+                        .iter()
+                        .all(|r| (*r - 8.0).abs() < f32::EPSILON),
+                    "inset round applies to owning quad radii, got {corner_radius:?}"
+                );
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_clip_path_inset_clips_text_child() {
+        let mut parent = node(1, None, &[2]);
+        parent.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
+                        top: nana_ui_core::LengthSpec::Px(10.0),
+                        right: nana_ui_core::LengthSpec::Px(10.0),
+                        bottom: nana_ui_core::LengthSpec::Px(10.0),
+                        left: nana_ui_core::LengthSpec::Px(10.0),
+                        round: None,
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        child.text = Some(TextContent {
+            value: "child".into(),
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let text = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 2,
+            })
+            .expect("text child");
+        assert_eq!(text.clips.len(), 1);
+        let clip = &text.clips[0];
+        assert!((clip.bounds.x - 10.0).abs() < 0.01);
+        assert!((clip.bounds.y - 10.0).abs() < 0.01);
+        assert!((clip.bounds.width - 80.0).abs() < 0.01);
+        assert!((clip.bounds.height - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn css_filter_group_omits_leaf_shader_on_parent_quad() {
+        let mut parent = node(1, None, &[2]);
+        parent.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+        };
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    filter: Some(nana_ui_core::ColorFilter {
+                        brightness: 0.5,
+                        saturate: 1.0,
+                        contrast: 1.0,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut parent).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut child = node(2, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: 40.0,
+            width: 100.0,
+            height: 20.0,
+        };
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("parent quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(surface.filter.is_none(), "filter group owns parent filter");
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+        assert_eq!(scene.filter_groups(id(2)).len(), 1);
+    }
+
+    #[test]
+    fn css_mask_and_gradient_both_travel_on_quad() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.2, 0.2, 0.2, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                            angle_deg: 90.0,
+                            stops: vec![nana_ui_core::GradientStop {
+                                position: 0.0,
+                                color: [1.0, 0.0, 0.0, 1.0],
+                            }],
+                        }),
+                    )),
+                    mask: Some(nana_ui_core::CssGradient::Linear(
+                        nana_ui_core::LinearGradient {
+                            angle_deg: 180.0,
+                            stops: vec![nana_ui_core::GradientStop {
+                                position: 0.0,
+                                color: [0.0, 0.0, 0.0, 1.0],
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([0.2, 0.2, 0.2, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(surface.background_image.is_some());
+                assert!(surface.mask.is_some());
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_backdrop_filter_travels_on_quad_surface() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 1.0, 1.0, 0.4]),
+                paint: nana_ui_core::PaintStyle {
+                    backdrop_filter: Some(nana_ui_core::BackdropFilter {
+                        blur_radius: 16.0,
+                        saturate: 1.2,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 0.4]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                let backdrop = surface
+                    .backdrop_filter
+                    .expect("backdrop-filter must travel to scene quad");
+                assert!((backdrop.blur_radius - 16.0).abs() < 0.01);
+                assert!((backdrop.saturate - 1.2).abs() < 0.01);
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
     }
 }

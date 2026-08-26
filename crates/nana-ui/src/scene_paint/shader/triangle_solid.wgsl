@@ -4,7 +4,7 @@ struct SolidVertexInput {
     @location(1) color: vec4<f32>,
     @location(2) clip_rect: vec4<f32>,
     @location(3) clip_inv_abcd: vec4<f32>,
-    @location(4) clip_inv_ef: vec2<f32>,
+    @location(4) clip_inv_ef: vec3<f32>,
     @location(5) stroke: vec3<f32>,
 }
 
@@ -14,7 +14,7 @@ struct SolidVertexOutput {
     @location(1) world_pos: vec2<f32>,
     @location(2) clip_rect: vec4<f32>,
     @location(3) clip_inv_abcd: vec4<f32>,
-    @location(4) clip_inv_ef: vec2<f32>,
+    @location(4) clip_inv_ef: vec3<f32>,
     @location(5) stroke: vec3<f32>,
 }
 
@@ -35,11 +35,17 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 
 @fragment
 fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
-    if !inside_transformed_rect(
+    if !inside_fragment_clip(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
-        input.clip_inv_ef
+        input.clip_inv_ef.xy,
+        input.clip_inv_ef.z,
+        0u,
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     ) {
         discard;
     }

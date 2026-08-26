@@ -37,7 +37,7 @@ struct VsIn {
     @location(2) color: vec4<f32>,
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
-    @location(5) clip_inv_ef: vec2<f32>,
+    @location(5) clip_inv_ef: vec3<f32>,
 }
 
 struct VsOut {
@@ -47,7 +47,7 @@ struct VsOut {
     @location(2) world_pos: vec2<f32>,
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
-    @location(5) clip_inv_ef: vec2<f32>,
+    @location(5) clip_inv_ef: vec3<f32>,
 }
 
 @vertex
@@ -65,11 +65,17 @@ fn vs_main(input: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    if !inside_transformed_rect(
+    if !inside_fragment_clip(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
-        input.clip_inv_ef
+        input.clip_inv_ef.xy,
+        input.clip_inv_ef.z,
+        0u,
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     ) {
         discard;
     }
@@ -135,7 +141,7 @@ struct AffineKey {
     origin_bits: [u32; 2],
     scale_bits: u32,
     affine_bits: [u32; 6],
-    clip_bits: [u32; 12],
+    clip_bits: [u32; 30],
     color_bits: [u32; 4],
 }
 
@@ -232,7 +238,7 @@ struct GlyphVertex {
     color: [f32; 4],
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
-    clip_inv_ef: [f32; 2],
+    clip_inv_ef: [f32; 3],
 }
 
 struct PackedGlyph {
@@ -546,6 +552,7 @@ impl TextPipeline {
         affine: [f32; 6],
         fragment_clip: clip::FragmentClip,
         opacity: f32,
+        paint_offset: [f32; 2],
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
@@ -635,7 +642,9 @@ impl TextPipeline {
             let buffer = self.shape_cache.buffer(hash).expect("shaped above");
             measure(buffer).1
         };
-        let aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
+        let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
+        aligned[0] += paint_offset[0];
+        aligned[1] += paint_offset[1];
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
         }
@@ -1017,7 +1026,7 @@ impl AffineGlyphPipeline {
                         2 => Float32x4,
                         3 => Float32x4,
                         4 => Float32x4,
-                        5 => Float32x2,
+                        5 => Float32x3,
                     ),
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -1263,7 +1272,7 @@ fn affine_glyph_vertices(
                 color,
                 clip_rect: clip.rect,
                 clip_inv_abcd: clip.inv_abcd,
-                clip_inv_ef: clip.inv_ef,
+                clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius],
             });
         }
     }
@@ -1420,6 +1429,8 @@ mod tests {
                 }
                 .around_center(16.0, 16.0, 32.0, 32.0),
             ),
+            corner_radius: 0.0,
+            polygon_clip: None,
         }];
         let origin = clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
         let aabb = clip::intersect_clips(
@@ -1528,6 +1539,7 @@ mod tests {
                 affine,
                 fragment_clip,
                 1.0,
+                [0.0, 0.0],
             )
             .expect("text must prepare");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1614,6 +1626,7 @@ mod tests {
                 affine,
                 fragment_clip,
                 1.0,
+                [0.0, 0.0],
             )
             .expect("block text must prepare");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
