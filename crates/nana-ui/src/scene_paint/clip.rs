@@ -70,6 +70,20 @@ pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
     a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
 }
 
+/// Pixel origin of a span of `logical_extent` centered on `logical_center`.
+///
+/// Icons and vertically centered text share this so a 12px glyph and a 12px
+/// line box snap to the same physical top.
+pub(super) fn snap_centered_origin(
+    logical_center: f32,
+    logical_extent: f32,
+    scale: f32,
+) -> (f32, f32) {
+    let px = (logical_extent * scale).round().max(1.0);
+    let origin = (logical_center * scale - px * 0.5).round();
+    (origin, px)
+}
+
 fn near_zero(value: f32) -> bool {
     value.abs() <= 1e-6
 }
@@ -370,6 +384,13 @@ mod tests {
     use nana_ui_scene::{AffineTransform, ClipRegion, SceneRect};
 
     use super::*;
+
+    #[test]
+    fn snap_centered_origin_rounds_the_span_then_the_top() {
+        let (origin, px) = snap_centered_origin(14.0, 12.0, 2.0);
+        assert_eq!(px, 24.0);
+        assert_eq!(origin, 16.0);
+    }
 
     #[test]
     fn paint_origin_is_target_minus_scene() {
