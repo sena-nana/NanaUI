@@ -14,9 +14,9 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    GraphCanvasId, GraphEndpoint, GraphModel, GraphNodeId, GraphPoint, GraphPortId, GraphPortKind,
-    GraphPortSide, GraphSelection, GraphSize, GraphTargetDescriptor, GraphViewport, LengthSpec,
-    OverflowSpec, SemanticColorRole, port_tangent,
+    GRAPH_NODE_TITLE_HEIGHT, GraphCanvasId, GraphEndpoint, GraphModel, GraphNodeId, GraphPoint,
+    GraphPortId, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphTargetDescriptor,
+    GraphViewport, LengthSpec, OverflowSpec, SemanticColorRole, port_tangent,
 };
 
 #[cfg(test)]
@@ -120,7 +120,6 @@ impl GraphInteraction {
 const PORT_RADIUS: f32 = 4.0;
 const PORT_RADIUS_ACTIVE: f32 = 5.0;
 const PORT_GRAB_RADIUS: f32 = 12.0;
-const TITLE_HEIGHT: f32 = 28.0;
 const PAN_THRESHOLD: f32 = 4.0;
 
 /// View-space node rectangle for Scene quads.
@@ -227,7 +226,7 @@ impl GraphCanvas {
 
     pub fn paint_nodes(&self) -> Arc<[GraphNodePaint]> {
         let model = self.displayed_model();
-        let title_height = (TITLE_HEIGHT * self.viewport.zoom).clamp(18.0, 34.0);
+        let title_height = (GRAPH_NODE_TITLE_HEIGHT * self.viewport.zoom).clamp(18.0, 34.0);
         model
             .nodes()
             .iter()

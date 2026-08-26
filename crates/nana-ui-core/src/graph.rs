@@ -13,6 +13,9 @@ pub const GRAPH_MIN_ZOOM: f32 = 0.1;
 pub const GRAPH_MAX_ZOOM: f32 = 4.0;
 pub const GRAPH_PORT_HIT_RADIUS: f32 = 8.0;
 pub const GRAPH_EDGE_HIT_TOLERANCE: f32 = 6.0;
+pub const GRAPH_NODE_TITLE_HEIGHT: f32 = 28.0;
+pub const GRAPH_PORT_PITCH: f32 = 22.0;
+pub const GRAPH_PORT_INSET: f32 = 10.0;
 
 macro_rules! graph_id {
     ($name:ident) => {
@@ -336,9 +339,32 @@ impl GraphNode {
         self
     }
 
+    pub fn fit_height_to_ports(mut self) -> Self {
+        self.size.height = graph_node_fitted_height(&self.ports);
+        self
+    }
+
     pub fn bounds(&self) -> GraphRect {
         GraphRect::new(self.position, self.size)
     }
+}
+
+pub fn graph_node_fitted_height(ports: &[GraphPort]) -> f32 {
+    let mut left = 0;
+    let mut right = 0;
+    for port in ports {
+        match port.side {
+            GraphPortSide::Left => left += 1,
+            GraphPortSide::Right => right += 1,
+            GraphPortSide::Top | GraphPortSide::Bottom => {}
+        }
+    }
+    let rows = left.max(right).max(1);
+    GRAPH_NODE_TITLE_HEIGHT + GRAPH_PORT_INSET * 2.0 + rows as f32 * GRAPH_PORT_PITCH
+}
+
+fn stacked_port_offset(side_index: usize) -> f32 {
+    GRAPH_NODE_TITLE_HEIGHT + GRAPH_PORT_INSET + (side_index as f32 + 0.5) * GRAPH_PORT_PITCH
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,23 +529,28 @@ impl GraphModel {
             .iter()
             .filter(|candidate| candidate.side == port.side)
             .position(|candidate| candidate.id == port.id)?;
-        let fraction = (side_index + 1) as f32 / (side_count + 1) as f32;
         Some(match port.side {
-            GraphPortSide::Top => GraphPoint::new(
-                node.position.x + node.size.width * fraction,
-                node.position.y,
-            ),
+            GraphPortSide::Top => {
+                let fraction = (side_index + 1) as f32 / (side_count + 1) as f32;
+                GraphPoint::new(
+                    node.position.x + node.size.width * fraction,
+                    node.position.y,
+                )
+            }
             GraphPortSide::Right => GraphPoint::new(
                 node.position.x + node.size.width,
-                node.position.y + node.size.height * fraction,
+                node.position.y + stacked_port_offset(side_index),
             ),
-            GraphPortSide::Bottom => GraphPoint::new(
-                node.position.x + node.size.width * fraction,
-                node.position.y + node.size.height,
-            ),
+            GraphPortSide::Bottom => {
+                let fraction = (side_index + 1) as f32 / (side_count + 1) as f32;
+                GraphPoint::new(
+                    node.position.x + node.size.width * fraction,
+                    node.position.y + node.size.height,
+                )
+            }
             GraphPortSide::Left => GraphPoint::new(
                 node.position.x,
-                node.position.y + node.size.height * fraction,
+                node.position.y + stacked_port_offset(side_index),
             ),
         })
     }
@@ -1035,43 +1066,43 @@ mod tests {
     }
 
     #[test]
-    fn ports_are_distributed_by_side_and_take_hit_priority() {
+    fn left_ports_stack_from_the_title_and_take_hit_priority() {
+        let origin = GraphPoint::new(20.0, 20.0);
         let model = GraphModel::new(
             vec![
-                GraphNode::new(
-                    "node",
-                    "Node",
-                    GraphPoint::new(20.0, 20.0),
-                    GraphSize::new(100.0, 60.0),
-                )
-                .with_port(GraphPort::new(
-                    "first",
-                    "First",
-                    GraphPortKind::Input,
-                    GraphPortSide::Left,
-                ))
-                .with_port(GraphPort::new(
-                    "second",
-                    "Second",
-                    GraphPortKind::Input,
-                    GraphPortSide::Left,
-                )),
+                GraphNode::new("node", "Node", origin, GraphSize::new(100.0, 60.0))
+                    .with_port(GraphPort::new(
+                        "first",
+                        "First",
+                        GraphPortKind::Input,
+                        GraphPortSide::Left,
+                    ))
+                    .with_port(GraphPort::new(
+                        "second",
+                        "Second",
+                        GraphPortKind::Input,
+                        GraphPortSide::Left,
+                    ))
+                    .fit_height_to_ports(),
             ],
             Vec::new(),
         )
         .expect("valid graph");
         let first = GraphEndpoint::new("node", "first");
         let second = GraphEndpoint::new("node", "second");
+        let first_y = origin.y + stacked_port_offset(0);
+        let second_y = origin.y + stacked_port_offset(1);
         assert_eq!(
             model.port_position(&first),
-            Some(GraphPoint::new(20.0, 40.0))
+            Some(GraphPoint::new(origin.x, first_y))
         );
         assert_eq!(
             model.port_position(&second),
-            Some(GraphPoint::new(20.0, 60.0))
+            Some(GraphPoint::new(origin.x, second_y))
         );
+        assert!(second_y > first_y);
         assert_eq!(
-            model.hit_test(GraphViewport::default(), GraphPoint::new(20.0, 40.0)),
+            model.hit_test(GraphViewport::default(), GraphPoint::new(origin.x, first_y)),
             Some(GraphSelection::Port {
                 node: "node".into(),
                 port: "first".into(),
@@ -1080,15 +1111,120 @@ mod tests {
     }
 
     #[test]
+    fn shorter_side_aligns_from_the_title_not_the_node_center() {
+        let origin = GraphPoint::new(20.0, 20.0);
+        let node = GraphNode::new("node", "Node", origin, GraphSize::new(100.0, 60.0))
+            .with_port(GraphPort::new(
+                "in",
+                "In",
+                GraphPortKind::Input,
+                GraphPortSide::Left,
+            ))
+            .with_port(GraphPort::new(
+                "out-a",
+                "A",
+                GraphPortKind::Output,
+                GraphPortSide::Right,
+            ))
+            .with_port(GraphPort::new(
+                "out-b",
+                "B",
+                GraphPortKind::Output,
+                GraphPortSide::Right,
+            ))
+            .with_port(GraphPort::new(
+                "out-c",
+                "C",
+                GraphPortKind::Output,
+                GraphPortSide::Right,
+            ))
+            .fit_height_to_ports();
+        let height = node.size.height;
+        let model = GraphModel::new(vec![node], Vec::new()).expect("valid graph");
+        let input = model
+            .port_position(&GraphEndpoint::new("node", "in"))
+            .expect("input");
+        let first_out = model
+            .port_position(&GraphEndpoint::new("node", "out-a"))
+            .expect("first output");
+        let last_out = model
+            .port_position(&GraphEndpoint::new("node", "out-c"))
+            .expect("last output");
+        assert_eq!(input.y, first_out.y);
+        assert_eq!(input.y, origin.y + stacked_port_offset(0));
+        let center_y = origin.y + height * 0.5;
+        assert!((input.y - center_y).abs() > 1.0);
+        assert!(last_out.y > first_out.y);
+    }
+
+    #[test]
+    fn fitted_height_follows_the_side_with_more_ports() {
+        let one = GraphNode::new("one", "One", GraphPoint::ZERO, GraphSize::new(100.0, 60.0))
+            .with_port(GraphPort::new(
+                "in",
+                "In",
+                GraphPortKind::Input,
+                GraphPortSide::Left,
+            ))
+            .with_port(GraphPort::new(
+                "out",
+                "Out",
+                GraphPortKind::Output,
+                GraphPortSide::Right,
+            ))
+            .fit_height_to_ports();
+        let three = GraphNode::new(
+            "three",
+            "Three",
+            GraphPoint::ZERO,
+            GraphSize::new(100.0, 60.0),
+        )
+        .with_port(GraphPort::new(
+            "in",
+            "In",
+            GraphPortKind::Input,
+            GraphPortSide::Left,
+        ))
+        .with_port(GraphPort::new(
+            "out-a",
+            "A",
+            GraphPortKind::Output,
+            GraphPortSide::Right,
+        ))
+        .with_port(GraphPort::new(
+            "out-b",
+            "B",
+            GraphPortKind::Output,
+            GraphPortSide::Right,
+        ))
+        .with_port(GraphPort::new(
+            "out-c",
+            "C",
+            GraphPortKind::Output,
+            GraphPortSide::Right,
+        ))
+        .fit_height_to_ports();
+        assert_eq!(one.size.height, graph_node_fitted_height(&one.ports));
+        assert!(three.size.height > one.size.height);
+        assert_eq!(
+            three.size.height,
+            GRAPH_NODE_TITLE_HEIGHT + GRAPH_PORT_INSET * 2.0 + 3.0 * GRAPH_PORT_PITCH
+        );
+    }
+
+    #[test]
     fn hit_test_distinguishes_node_port_and_empty() {
         let model = graph();
         let viewport = GraphViewport::default();
+        let port = model
+            .port_position(&GraphEndpoint::new("source", "out"))
+            .expect("source port");
         assert_eq!(
             model.hit_test(viewport, GraphPoint::new(70.0, 60.0)),
             Some(GraphSelection::Node("source".into()))
         );
         assert_eq!(
-            model.hit_test(viewport, GraphPoint::new(130.0, 60.0)),
+            model.hit_test(viewport, port),
             Some(GraphSelection::Port {
                 node: "source".into(),
                 port: "out".into(),
