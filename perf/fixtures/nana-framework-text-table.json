@@ -54,7 +54,8 @@
         "text_wrap_layouts": 1728,
         "glyph_cache_hits": 17775,
         "glyph_cache_misses": 17,
-        "cache_eviction": 0
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 0
       }
     }
   ]

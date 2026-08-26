@@ -1053,13 +1053,16 @@ def judge_runner_invariants(
         judged["decision"] = "failed"
         judged["note"] = "work-counter invariant failed: " + ", ".join(failed)
         return judged
-    if scenario_id in SECTION_8_1_STATIC_UI_IDS and any(
-        item.get("status") == "not-evaluable" for item in evaluated
-    ):
+    unevaluable = [
+        str(item.get("path") or item.get("name") or "unknown")
+        for item in evaluated
+        if item.get("status") == "not-evaluable"
+    ]
+    if scenario_id in SECTION_8_1_STATIC_UI_IDS and unevaluable:
         judged["decision"] = "skipped"
         judged["note"] = (
-            "frames_after_idle missing; vacuous ok is forbidden until runners "
-            "export the idle-frame count"
+            f"{', '.join(unevaluable)} missing; vacuous ok is forbidden until runners "
+            "export the measured value"
         )
         return judged
     if scenario_id == "gpu-scene-ui" and any(
@@ -3225,42 +3228,58 @@ def _named_invariant_ok_measured(report: Mapping[str, Any], name: str, measured:
 
 
 def self_test(root: Path | None = None) -> list[str]:
-    """Validate schema and extractors against checked-in historical reports."""
+    """Validate schema and extractors against checked-in fixtures."""
     root = root or REPO_ROOT
     errors = validate_all_scenarios(root)
-    runtime_path = (
-        root / "docs" / "performance" / "2026-08-14-issue7-phase3-runtime.json"
-    )
-    if not runtime_path.is_file():
-        runtime_path = root / "docs" / "performance" / "2026-08-14-issue7-phase2-runtime.json"
-    framework_path = root / "docs" / "performance" / "2026-08-14-issue7-phase4-framework.json"
-    scene_path = root / "docs" / "performance" / "2026-08-14-issue7-phase6-scene.json"
-    iced_path = root / "docs" / "performance" / "2026-08-14-issue7-phase0-iced.json"
+    runtime_path = root / "perf" / "fixtures" / "nana-runtime-static-tree.json"
+    framework_scales_path = root / "perf" / "fixtures" / "virtual-scales-only.json"
+    iced_path = root / "perf" / "fixtures" / "iced-scenario-static-tree-100.json"
+    gallery_list_100 = {
+        "cases": [
+            {
+                "scenario": "list-100",
+                "cpu_total_ms": {"p50": 1.0, "p95": 1.1, "p99": 1.2},
+                "total_ms": {"p50": 1.0, "p95": 1.1, "p99": 1.2},
+                "view_construction_ms": {"p50": 0.1, "p95": 0.2, "p99": 0.3},
+                "layout_diff_ms": {"p50": 0.1, "p95": 0.2, "p99": 0.3},
+            }
+        ]
+    }
 
     static_tree = load_scenario("static-tree-100", root)
     try:
-        nana_historical = extract_nana(
+        nana_static_fixture = extract_nana(
             static_tree,
-            {
-                "runtime": load_json(runtime_path),
-                "scene": load_json(scene_path),
-            },
-            source_paths={"runtime": runtime_path, "scene": scene_path},
+            {"runtime": load_json(runtime_path)},
+            source_paths={"runtime": runtime_path},
         )
-        if "frames_after_idle" in (nana_historical.get("metrics") or {}):
+        if nana_static_fixture.get("status") != "ok":
+            errors.append("nana static-tree-100 fixture extract did not return ok")
+        if (nana_static_fixture.get("metrics") or {}).get("frames_after_idle") != 0:
+            errors.append("nana-runtime-static-tree fixture must export frames_after_idle=0")
+        runtime_missing_idle = copy.deepcopy(load_json(runtime_path))
+        for case in runtime_missing_idle.get("cases") or []:
+            if isinstance(case, dict):
+                case.pop("frames_after_idle", None)
+        nana_missing_idle = extract_nana(
+            static_tree,
+            {"runtime": runtime_missing_idle},
+            source_paths={"runtime": Path("synthetic-runtime-without-idle")},
+        )
+        if "frames_after_idle" in (nana_missing_idle.get("metrics") or {}):
             errors.append(
-                "historical nana-runtime-benchmark JSON must not invent frames_after_idle"
+                "extractor must not invent frames_after_idle when the dump omits it"
             )
-        historical_judge = judge_runner_invariants(nana_historical, root=root)
-        if historical_judge.get("decision") != "skipped":
+        missing_idle_judge = judge_runner_invariants(nana_missing_idle, root=root)
+        if missing_idle_judge.get("decision") != "skipped":
             errors.append(
-                "historical StaticTree without frames_after_idle must stay skipped, not vacuous ok"
+                "StaticTree without frames_after_idle must stay skipped, not vacuous ok"
             )
     except Exception as exc:  # noqa: BLE001 — self-test must surface mapper failures
         errors.append(f"nana static-tree-100 extract failed: {exc}")
 
     iced_static = extract_iced(
-        static_tree, load_json(iced_path), source_path=iced_path
+        static_tree, gallery_list_100, source_path=Path("synthetic-gallery-list-100")
     )
     if iced_static.get("status") != "ok":
         errors.append("iced static-tree-100 extract did not return ok")
@@ -3271,15 +3290,14 @@ def self_test(root: Path | None = None) -> list[str]:
     try:
         nana_virtual = extract_nana(
             virtual,
-            {"framework": load_json(framework_path)},
-            source_paths={"framework": framework_path},
+            {"framework": load_json(framework_scales_path)},
+            source_paths={"framework": framework_scales_path},
         )
         if nana_virtual.get("status") != "ok":
             errors.append("nana virtual-list-10k extract did not return ok")
-        if nana_virtual.get("equivalence") != "closest-legacy-reference":
+        if nana_virtual.get("equivalence") != "same-scenario":
             errors.append(
-                "historical nana virtual-list-10k without list_overscan_px must stay "
-                "closest-legacy-reference"
+                "nana virtual-list-10k with catalog window must be same-scenario"
             )
     except Exception as exc:  # noqa: BLE001
         errors.append(f"nana virtual-list-10k extract failed: {exc}")
@@ -3370,12 +3388,28 @@ def self_test(root: Path | None = None) -> list[str]:
         if painted.get("status") != "ok":
             errors.append("nana mutation-paint-only extract did not return ok")
         counters = painted.get("work_counters") or {}
-        if "layout_nodes" in counters:
+        if counters.get("layout_nodes") != 0:
+            errors.append("nana-runtime-static-tree paint drain must measure layout_nodes=0")
+        paint_ok_fixture = _named_invariant(painted, "paint_only_does_not_layout_full_tree")
+        if paint_ok_fixture is None or paint_ok_fixture.get("status") != "ok":
+            errors.append("fixture paint extract must evaluate layout_nodes=0")
+        runtime_unmeasured_paint = copy.deepcopy(load_json(runtime_path))
+        for case in runtime_unmeasured_paint.get("cases") or []:
+            work = case.get("local_paint_work") if isinstance(case, dict) else None
+            if isinstance(work, dict):
+                work.pop("layout_nodes", None)
+        painted_missing = extract_nana(
+            paint,
+            {"runtime": runtime_unmeasured_paint},
+            source_paths={"runtime": Path("synthetic-runtime-paint-unmeasured")},
+        )
+        counters_missing = painted_missing.get("work_counters") or {}
+        if "layout_nodes" in counters_missing:
             errors.append("ok envelope must not serialize unmeasured layout_nodes")
-        paint_inv = _named_invariant(painted, "paint_only_does_not_layout_full_tree")
+        paint_inv = _named_invariant(painted_missing, "paint_only_does_not_layout_full_tree")
         if paint_inv is None or paint_inv.get("status") != "not-evaluable":
             errors.append(
-                "historical paint extract must leave layout_nodes invariant not-evaluable"
+                "paint extract without layout_nodes must leave the invariant not-evaluable"
             )
         if paint_inv and "measured" in paint_inv:
             errors.append("not-evaluable paint invariant must omit measured")
@@ -3946,18 +3980,31 @@ def self_test(root: Path | None = None) -> list[str]:
     try:
         nana_table_legacy = extract_nana(
             text_table,
-            {"framework": load_json(framework_path)},
-            source_paths={"framework": framework_path},
+            {
+                "framework": {
+                    "virtual_table_10k_x_100_materialize_ms": {
+                        "p50": 1.0,
+                        "p95": 2.0,
+                        "p99": 3.0,
+                    },
+                    "virtual_table_10k_x_100_window_ms": {
+                        "p50": 0.1,
+                        "p95": 0.2,
+                        "p99": 0.3,
+                    },
+                }
+            },
+            source_paths={"framework": Path("synthetic-legacy-table-fields")},
         )
         if nana_table_legacy.get("status") != "ok":
-            errors.append("nana text-table extract from historical framework report must be ok")
+            errors.append("nana text-table extract from legacy framework fields must be ok")
         if (nana_table_legacy.get("work_counters") or {}).get("text_shaped") is not None:
             errors.append("legacy text-table extract must omit unmeasured text_shaped")
         for gap in TEXT_TABLE_CACHE_GAPS:
             if gap in (nana_table_legacy.get("work_counters") or {}):
                 errors.append(f"legacy text-table extract must omit {gap}")
     except Exception as exc:  # noqa: BLE001
-        errors.append(f"nana text-table historical extract failed: {exc}")
+        errors.append(f"nana text-table legacy extract failed: {exc}")
 
     try:
         extract_nana(
@@ -4226,12 +4273,19 @@ def self_test(root: Path | None = None) -> list[str]:
         pass
 
     try:
+        runtime_without_10k = {
+            "cases": [
+                case
+                for case in load_json(runtime_path).get("cases") or []
+                if isinstance(case, dict) and case.get("nodes") != 10000
+            ]
+        }
         extract_nana(
             hover,
-            {"runtime": load_json(runtime_path)},
-            source_paths={"runtime": runtime_path},
+            {"runtime": runtime_without_10k},
+            source_paths={"runtime": Path("synthetic-runtime-without-10k")},
         )
-        errors.append("nana hover on phase3 report must be unsupported (no 10k case)")
+        errors.append("nana hover without a 10k case must KeyError")
     except KeyError as exc:
         if "nodes=10000" not in key_error_reason(exc):
             errors.append(f"nana hover KeyError should name nodes=10000: {exc}")
@@ -5019,9 +5073,32 @@ def _self_test_section_8_1_runner_invariants(root: Path) -> list[str]:
     missing_metrics.pop("frames_after_idle", None)
     missing_idle["metrics"] = missing_metrics
     missing_idle.pop("frames_after_idle", None)
-    if judge_runner_invariants(missing_idle, root=root).get("decision") != "skipped":
+    missing_idle_judge = judge_runner_invariants(missing_idle, root=root)
+    if missing_idle_judge.get("decision") != "skipped":
         errors.append(
             "StaticTree missing frames_after_idle must stay skipped, not vacuous ok"
+        )
+    if "frames_after_idle" not in str(missing_idle_judge.get("note") or ""):
+        errors.append(
+            "STATIC_UI skip note must name frames_after_idle when that field is not-evaluable"
+        )
+    missing_validation = copy.deepcopy(nana_live["static-tree-10k"])
+    missing_validation_counters = dict(missing_validation.get("work_counters") or {})
+    missing_validation_counters.pop("validation_nodes_scanned", None)
+    missing_validation["work_counters"] = missing_validation_counters
+    skipped_validation = judge_runner_invariants(missing_validation, root=root)
+    if skipped_validation.get("decision") != "skipped":
+        errors.append(
+            "static-tree-10k without validation_nodes_scanned must stay skipped, not vacuous ok"
+        )
+    skipped_validation_note = str(skipped_validation.get("note") or "")
+    if "validation_nodes_scanned" not in skipped_validation_note:
+        errors.append(
+            "STATIC_UI skip note must name validation_nodes_scanned when that field is not-evaluable"
+        )
+    if skipped_validation_note.startswith("frames_after_idle missing"):
+        errors.append(
+            "STATIC_UI skip note must not always say frames_after_idle missing"
         )
 
     paint_judge = judge_runner_invariants(paint_iced, root=root)
@@ -5584,14 +5661,16 @@ def _self_test_catalog_workloads(
 
     animation = load_scenario("animation", root)
     try:
+        runtime_without_catalog = copy.deepcopy(load_json(runtime_path))
+        if isinstance(runtime_without_catalog, dict):
+            runtime_without_catalog.pop("catalog_animation", None)
         extract_nana(
             animation,
-            {"runtime": load_json(runtime_path)},
-            source_paths={"runtime": runtime_path},
+            {"runtime": runtime_without_catalog},
+            source_paths={"runtime": Path("synthetic-runtime-without-catalog-animation")},
         )
         errors.append(
-            "nana animation extract from historical runtime report must KeyError "
-            "without catalog_animation"
+            "nana animation extract without catalog_animation must KeyError"
         )
     except KeyError as exc:
         if "catalog_animation" not in key_error_reason(exc):
@@ -5971,6 +6050,9 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
     hover_case = live_cases.get(10000)
     if not isinstance(hover_case, Mapping) or "pointer_hover_transition_ms" not in hover_case:
         errors.append("live nana dump must include 10k pointer_hover_transition_ms")
+    tenk_initial = hover_case.get("initial_work") if isinstance(hover_case, Mapping) else None
+    if not isinstance(tenk_initial, Mapping) or "validation_nodes_scanned" not in tenk_initial:
+        errors.append("live nana 10k initial_work must export validation_nodes_scanned")
     mut_case = live_cases.get(5000)
     if not isinstance(mut_case, Mapping) or "local_paint_systems_ms" not in mut_case:
         errors.append("live nana dump must include 5k local_paint_systems_ms")
@@ -6000,6 +6082,10 @@ def _self_test_from_report_cli(root: Path) -> list[str]:
                     f"live nana dump single_node_mutations.{kind} must measure layout_nodes"
                 )
                 continue
+            if kind == "LayoutStyle" and "hit_test_nodes_rebuilt" not in work:
+                errors.append(
+                    "live nana LayoutStyle must measure hit_test_nodes_rebuilt"
+                )
             check = layout_honesty.get(kind)
             if check is not None and not check[0](work.get("layout_nodes")):
                 errors.append(check[1])
