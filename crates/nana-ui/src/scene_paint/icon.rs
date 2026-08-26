@@ -455,17 +455,17 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4]
     let y = bounds.y + (bounds.height - extent) * 0.5;
     if clip::is_translation(affine) {
         let [cx, cy] = clip::transform_point(affine, x + extent * 0.5, y + extent * 0.5);
-        let px = (extent * scale).round().max(1.0);
-        let x0 = (cx * scale - px * 0.5).round();
-        let y0 = (cy * scale - px * 0.5).round();
-        [
-            [x0, y0],
-            [x0 + px, y0],
-            [x0, y0 + px],
-            [x0 + px, y0 + px],
-        ]
+        let (x0, px) = clip::snap_centered_origin(cx, extent, scale);
+        let (y0, _) = clip::snap_centered_origin(cy, extent, scale);
+        [[x0, y0], [x0 + px, y0], [x0, y0 + px], [x0 + px, y0 + px]]
     } else {
-        [[x, y], [x + extent, y], [x, y + extent], [x + extent, y + extent]].map(|[px, py]| {
+        [
+            [x, y],
+            [x + extent, y],
+            [x, y + extent],
+            [x + extent, y + extent],
+        ]
+        .map(|[px, py]| {
             let [tx, ty] = clip::transform_point(affine, px, py);
             [tx * scale, ty * scale]
         })
@@ -482,11 +482,15 @@ fn rasterize_lucide(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
         ..resvg::usvg::Options::default()
     };
     let tree = resvg::usvg::Tree::from_str(&markup, &options).ok()?;
-    let scale = pixel_size as f32 / 24.0;
+    let size = tree.size();
+    let fit = size.width().max(size.height()).max(f32::EPSILON);
+    let svg_scale = pixel_size as f32 / fit;
+    let dx = (pixel_size as f32 - size.width() * svg_scale) * 0.5;
+    let dy = (pixel_size as f32 - size.height() * svg_scale) * 0.5;
     let mut pixmap = tiny_skia::Pixmap::new(pixel_size, pixel_size)?;
     resvg::render(
         &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
+        tiny_skia::Transform::from_row(svg_scale, 0.0, 0.0, svg_scale, dx, dy),
         &mut pixmap.as_mut(),
     );
     let mut rgba = pixmap.data().to_vec();
@@ -515,5 +519,44 @@ mod tests {
             rgba.chunks(4).any(|pixel| pixel[3] < 16),
             "search icon should keep transparent padding"
         );
+    }
+
+    fn ink_bbox(rgba: &[u8], px: u32) -> (u32, u32, u32, u32) {
+        let px = px as usize;
+        let mut min_x = px;
+        let mut min_y = px;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        for y in 0..px {
+            for x in 0..px {
+                if rgba[(y * px + x) * 4 + 3] > 16 {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        (min_x as u32, min_y as u32, max_x as u32, max_y as u32)
+    }
+
+    #[test]
+    fn lucide_symmetric_icons_are_centered_in_the_atlas() {
+        let px = 48;
+        for icon in [Icon::Add, Icon::Settings, Icon::Close] {
+            let rgba = rasterize_lucide(icon.svg(), px).expect("svg");
+            let (min_x, min_y, max_x, max_y) = ink_bbox(&rgba, px);
+            let cx = (min_x + max_x) as f32 / 2.0;
+            let cy = (min_y + max_y) as f32 / 2.0;
+            let mid = (px - 1) as f32 / 2.0;
+            assert!(
+                (cx - mid).abs() < 1.5,
+                "{icon:?} horizontal center {cx} vs {mid}"
+            );
+            assert!(
+                (cy - mid).abs() < 1.5,
+                "{icon:?} vertical center {cy} vs {mid}"
+            );
+        }
     }
 }

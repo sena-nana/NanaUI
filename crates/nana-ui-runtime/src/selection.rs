@@ -382,7 +382,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
         padding_right: Some(LengthSpec::Px(padding_right)),
         font_size: Some(size.text_size()),
         font_weight: Some(if radio { 400 } else { 500 }),
-        line_height: Some(LineHeightSpec::Absolute(size.line_height())),
+        line_height: Some(LineHeightSpec::Absolute(size.text_size())),
         white_space_nowrap: true,
         align_self: Some(if radio {
             AlignSpec::Stretch

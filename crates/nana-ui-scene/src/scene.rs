@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     ControlSize, DrawerSide, Icon, LineHeightSpec, SwitchControlPosition, UI_METRICS,
+    icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
@@ -519,6 +520,63 @@ impl UiScene {
                 .text
                 .as_ref()
                 .is_some_and(|text| !text.value.is_empty())
+    }
+
+    /// Compact leading glyphs share the parent (or own) text glyph-box center.
+    /// IconButton hit targets are larger than the glyph and stay geometrically
+    /// centered in their own box.
+    fn icon_y_aligned_to_adjacent_text(
+        &self,
+        node: &ExtractedNode,
+        icon_bounds: SceneRect,
+        extent: f32,
+    ) -> f32 {
+        let geometric = icon_bounds.y + (icon_bounds.height - extent) / 2.0;
+        if node.layout.height > extent + 0.5 || node.layout.width > extent + 0.5 {
+            return geometric;
+        }
+        let host = if node
+            .text
+            .as_ref()
+            .is_some_and(|text| !text.value.is_empty())
+        {
+            node
+        } else {
+            match node.parent.and_then(|id| self.nodes.get(&id)) {
+                Some(parent)
+                    if parent
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| !text.value.is_empty())
+                        || matches!(
+                            parent.standard_visual.as_ref(),
+                            Some(StandardVisual::ListItem { .. })
+                        ) =>
+                {
+                    parent
+                }
+                _ => return geometric,
+            }
+        };
+        let text_box = match &host.component_geometry {
+            Some(ComponentGeometry::ListItem {
+                content: Some(content),
+                ..
+            }) => *content,
+            _ => host.layout,
+        };
+        let centered = matches!(
+            host.source_style.text_vertical_alignment,
+            TextVerticalAlignment::Center
+        );
+        icon_y_on_text_glyph_center(
+            text_box.y,
+            text_box.height,
+            host.style.font_size,
+            host.style.line_height,
+            centered,
+            extent,
+        )
     }
 
     fn sort_primitives(&mut self) {
@@ -2997,12 +3055,14 @@ impl UiScene {
                 }
                 Some(StandardVisual::Icon { icon, size, .. }) => {
                     let extent = size.max(0.0).min(bounds.width).min(bounds.height);
+                    let x = bounds.x + (bounds.width - extent) / 2.0;
+                    let y = self.icon_y_aligned_to_adjacent_text(&node, bounds, extent);
                     self.insert_primitive(ScenePrimitive {
                         id: PrimitiveId { node: id, slot: 3 },
                         node: id,
                         bounds: SceneRect {
-                            x: bounds.x + (bounds.width - extent) / 2.0,
-                            y: bounds.y + (bounds.height - extent) / 2.0,
+                            x,
+                            y,
                             width: extent,
                             height: extent,
                         },
@@ -5795,6 +5855,66 @@ mod tests {
                     slot: 7
                 })
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn compact_leading_icon_centers_on_the_parent_text_line() {
+        let mut row = node(1, None, &[2]);
+        row.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 28.0,
+        };
+        row.text = Some(TextContent {
+            value: "舞台".into(),
+        });
+        row.standard_visual = Some(StandardVisual::ListItem {
+            leading: Some(id(2)),
+            content: None,
+            trailing: None,
+        });
+        row.source_style.text_vertical_alignment = TextVerticalAlignment::Center;
+        style_mut(&mut row).font_size = 12.0;
+        style_mut(&mut row).line_height = Some(LineHeightSpec::Absolute(12.0));
+
+        let mut icon = node(2, Some(1), &[]);
+        icon.layout = LayoutBox {
+            x: 8.0,
+            y: 0.0,
+            width: 12.0,
+            height: 12.0,
+        };
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Workspace,
+            size: 12.0,
+            tooltip: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([row, icon], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 3,
+            })
+            .expect("leading icon");
+        assert_eq!(
+            primitive.bounds,
+            SceneRect {
+                x: 8.0,
+                y: icon_y_on_text_glyph_center(
+                    0.0,
+                    28.0,
+                    12.0,
+                    Some(LineHeightSpec::Absolute(12.0)),
+                    true,
+                    12.0,
+                ),
+                width: 12.0,
+                height: 12.0,
+            }
         );
     }
 

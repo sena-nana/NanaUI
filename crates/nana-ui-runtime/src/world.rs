@@ -11,6 +11,7 @@ use bevy_ecs::world::World;
 use nana_ui_core::{
     ControlSize, GraphPoint, GraphPortKind, GraphPortSide, SemanticColorRole, SemanticPalette,
     StyleModelRef, SwitchControlPosition, ThemeMode, TooltipConfig, cubic_point,
+    icon_y_on_text_glyph_center,
 };
 
 use crate::animation::ActiveAnimation;
@@ -23,7 +24,7 @@ use crate::{
     InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
     OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
     TextContent, TextInputPresentation, TextInputState, TextMetrics, TextPresentation,
-    TextPresenter, TextShaper, UiMutation, WorkCounters,
+    TextPresenter, TextShaper, TextVerticalAlignment, UiMutation, WorkCounters,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -4511,7 +4512,17 @@ impl UiWorld {
                         icon,
                         LayoutBox {
                             x: bounds.x + base_padding,
-                            y: content.y + (content.height - icon_extent) / 2.0,
+                            y: icon_y_on_text_glyph_center(
+                                content.y,
+                                content.height,
+                                style.font_size,
+                                style.line_height,
+                                matches!(
+                                    source.text_vertical_alignment,
+                                    TextVerticalAlignment::Center
+                                ),
+                                icon_extent,
+                            ),
                             width: icon_extent,
                             height: icon_extent,
                         },
