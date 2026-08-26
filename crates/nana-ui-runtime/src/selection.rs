@@ -449,13 +449,11 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
                 background: Some(SemanticColorRole::Active),
                 ..SemanticPaint::default()
             },
-            // Selected pill (or the radio indicator) is the only focus cue.
-            // Segmented and Tabs must not paint an accent border or outset ring.
-            focused: SemanticPaint::default(),
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()
             },
+            ..Default::default()
         },
         text_horizontal_alignment: if radio {
             TextHorizontalAlignment::Start
