@@ -56,12 +56,12 @@
 //!（feature `scene-view`）。
 
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
-    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
-    LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    TextAlignSpec, ViewportAxis, WhiteSpaceSpec, resolve_grid_column_widths,
-    resolve_grid_track_sizes,
+    AlignSpec, BoxShadowSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap,
+    FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
+    GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
+    LengthSpec, LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
+    TextAlignSpec, TextShadowSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -896,15 +896,18 @@ impl LayoutStyleCss for LayoutStyle {
             "box-sizing" if val.eq_ignore_ascii_case("content-box") => {
                 self.box_sizing = BoxSizing::ContentBox;
             }
-            "background" | "background-color" | "fill" => {
-                let v = val.trim();
-                if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("transparent") {
-                    // SVG `fill: none` — clear any inherited paint so stroke rings
-                    // do not get a solid fill from cascade leftovers.
-                    self.background = None;
-                } else if let Some(c) = resolve_paint_color(val) {
-                    self.background = Some(c);
-                }
+            "background"
+            | "background-color"
+            | "background-image"
+            | "background-size"
+            | "fill"
+            | "mask-image"
+            | "-webkit-mask-image"
+            | "clip-path"
+            | "filter"
+            | "backdrop-filter"
+            | "-webkit-backdrop-filter" => {
+                crate::css_paint::apply_css_paint_property(self, &key, val);
             }
             "stroke" => {
                 if let Some(c) = resolve_paint_color(val) {
@@ -920,9 +923,15 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "border-radius" => {
-                if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_radius = Some(v.max(0.0));
+                if let Some(corners) = parse_border_radius_shorthand(val) {
+                    self.paint.border_radii = Some(corners);
                 }
+            }
+            "box-shadow" => {
+                self.paint.box_shadow = parse_box_shadow(val);
+            }
+            "text-shadow" => {
+                self.paint.text_shadow = parse_text_shadow(val);
             }
             "border-width" | "border-top-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
@@ -1162,12 +1171,11 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "grid-area" => apply_grid_area(&mut self.grid_placement, val),
-            "visibility" if val.eq_ignore_ascii_case("hidden") => self.hidden = true,
+            "visibility" if val.eq_ignore_ascii_case("hidden") => {
+                self.paint.visibility = Some(VisibilitySpec::Hidden);
+            }
             "visibility" if val.eq_ignore_ascii_case("visible") => {
-                // do not unhide if display:none
-                if self.display != Some(DisplaySpec::None) {
-                    self.hidden = false;
-                }
+                self.paint.visibility = Some(VisibilitySpec::Visible);
             }
             "opacity" => {
                 if let Ok(v) = val.trim().parse::<f32>() {
@@ -3259,6 +3267,202 @@ fn parse_box_edge_length_inner(input: &str, clamp_px_non_negative: bool) -> Opti
     })
 }
 
+/// Parse CSS `border-radius` shorthand (1–4 values, px or `%`).
+fn parse_border_radius_shorthand(input: &str) -> Option<[LengthSpec; 4]> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let parsed: Vec<LengthSpec> = parts
+        .iter()
+        .filter_map(|part| parse_inset_length(part))
+        .collect();
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(match parsed.len() {
+        1 => [parsed[0], parsed[0], parsed[0], parsed[0]],
+        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
+        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
+        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    })
+}
+
+/// Parse single-layer outset `box-shadow` (`offset-x offset-y blur spread color`).
+fn parse_box_shadow(input: &str) -> Option<BoxShadowSpec> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if trimmed.to_ascii_lowercase().contains("inset") {
+        return None;
+    }
+    let (length_tokens, color_token) = split_box_shadow_tokens(trimmed)?;
+    if length_tokens.is_empty() {
+        return None;
+    }
+    let offset_x = parse_shadow_length_px(&length_tokens[0])?;
+    let offset_y = length_tokens
+        .get(1)
+        .and_then(|t| parse_shadow_length_px(t))
+        .unwrap_or(0.0);
+    let blur_radius = length_tokens
+        .get(2)
+        .and_then(|t| parse_shadow_blur_length_px(t))
+        .unwrap_or(0.0);
+    let spread_radius = length_tokens
+        .get(3)
+        .and_then(|t| parse_shadow_length_px(t))
+        .unwrap_or(0.0);
+    let color = color_token
+        .as_deref()
+        .and_then(crate::style::parse_css_color)
+        .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    Some(BoxShadowSpec {
+        offset_x,
+        offset_y,
+        blur_radius,
+        spread_radius,
+        color,
+    })
+}
+
+/// Parse single-layer `text-shadow` (`offset-x offset-y [blur-radius] color`).
+pub(crate) fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if trimmed.to_ascii_lowercase().contains("inset") {
+        return None;
+    }
+    let (length_tokens, color_token) = split_box_shadow_tokens(trimmed)?;
+    if length_tokens.is_empty() {
+        return None;
+    }
+    let offset_x = parse_shadow_length_px(&length_tokens[0])?;
+    let offset_y = length_tokens
+        .get(1)
+        .and_then(|t| parse_shadow_length_px(t))
+        .unwrap_or(0.0);
+    let blur_radius = length_tokens
+        .get(2)
+        .and_then(|t| parse_shadow_blur_length_px(t))
+        .unwrap_or(0.0);
+    let color = color_token
+        .as_deref()
+        .and_then(crate::style::parse_css_color)
+        .unwrap_or([0.0, 0.0, 0.0, 0.5]);
+    Some(TextShadowSpec {
+        offset_x,
+        offset_y,
+        blur_radius,
+        color,
+    })
+}
+
+/// Signed physical length for shadow offsets and spread (`px`, `%`, `em`, …).
+fn parse_shadow_length_px(input: &str) -> Option<f32> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(spec) = parse_inset_length(s) {
+        let vp = ACTIVE_VIEWPORT.with(|cell| *cell.borrow());
+        let fonts = ACTIVE_FONT_SIZES.with(|cell| *cell.borrow());
+        return spec.resolve_with_fonts(None, vp, fonts);
+    }
+    if let Some(spec) = LengthSpec::parse(s) {
+        let vp = ACTIVE_VIEWPORT.with(|cell| *cell.borrow());
+        let fonts = ACTIVE_FONT_SIZES.with(|cell| *cell.borrow());
+        return spec.resolve_with_fonts(None, vp, fonts);
+    }
+    None
+}
+
+/// Blur radius must be non-negative; negative values reject the shadow.
+fn parse_shadow_blur_length_px(input: &str) -> Option<f32> {
+    let px = parse_shadow_length_px(input)?;
+    (px >= 0.0).then_some(px)
+}
+
+fn split_box_shadow_tokens(input: &str) -> Option<(Vec<String>, Option<String>)> {
+    let mut length_tokens = Vec::new();
+    let mut color_token = None;
+    let mut paren_depth = 0i32;
+    let mut token_start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            ' ' | '\t' if paren_depth == 0 => {
+                if token_start < idx {
+                    classify_box_shadow_token(
+                        input[token_start..idx].trim(),
+                        &mut length_tokens,
+                        &mut color_token,
+                    )?;
+                }
+                token_start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if token_start < input.len() {
+        classify_box_shadow_token(
+            input[token_start..].trim(),
+            &mut length_tokens,
+            &mut color_token,
+        )?;
+    }
+    Some((length_tokens, color_token))
+}
+
+fn classify_box_shadow_token(
+    token: &str,
+    length_tokens: &mut Vec<String>,
+    color_token: &mut Option<String>,
+) -> Option<()> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Some(());
+    }
+    if is_css_color_token(token) {
+        if color_token.is_some() {
+            return None;
+        }
+        *color_token = Some(token.to_string());
+        return Some(());
+    }
+    if parse_shadow_length_px(token).is_some() {
+        length_tokens.push(token.to_string());
+        return Some(());
+    }
+    None
+}
+
+fn is_css_color_token(token: &str) -> bool {
+    token.starts_with('#')
+        || token.starts_with("rgb")
+        || token.starts_with("hsl")
+        || is_css_named_color(token)
+}
+
+fn is_css_named_color(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "black"
+            | "white"
+            | "transparent"
+            | "currentcolor"
+            | "red"
+            | "green"
+            | "blue"
+            | "gray"
+            | "grey"
+    )
+}
+
 /// 解析 `12px` / `12` / `50%` / `em` / `vh` / `min()`（相对 base + 活跃 viewport）为逻辑像素。
 pub fn parse_css_length_px(input: &str, percent_base: Option<f32>) -> Option<f32> {
     let s = input.trim();
@@ -4333,7 +4537,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
                 None,
                 None,
             );
-            assert_eq!(layout.border_radius, Some(12.0));
+            let radii = layout.paint.border_radii.expect("corners");
+            assert_eq!(radii[0], LengthSpec::Px(12.0));
             assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
         });
     }
@@ -4346,6 +4551,143 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(!layout.hidden);
         assert!(!layout.omits_box());
         assert!(!layout.generates_box());
+    }
+
+    #[test]
+    fn border_radius_four_value_shorthand() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-radius: 4px 8px 12px 16px", None, None);
+        let radii = layout.paint.border_radii.expect("four corners");
+        assert_eq!(radii[0], LengthSpec::Px(4.0));
+        assert_eq!(radii[1], LengthSpec::Px(8.0));
+        assert_eq!(radii[2], LengthSpec::Px(12.0));
+        assert_eq!(radii[3], LengthSpec::Px(16.0));
+        assert!(layout.border_radius.is_none());
+    }
+
+    #[test]
+    fn border_radius_100_percent_resolves_to_circle_on_square() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-radius: 100%", None, None);
+        let radii = layout.paint.border_radii.expect("corners");
+        assert_eq!(radii[0], LengthSpec::Percent(100.0));
+        let resolved = layout.resolved_border_radii(100.0, 100.0);
+        assert!((resolved[0] - 50.0).abs() < 0.01);
+        assert!(layout.border_radius.is_none());
+    }
+
+    #[test]
+    fn border_radius_percent_resolves_against_box_size() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-radius: 50%", None, None);
+        let radii = layout.resolved_border_radii(100.0, 100.0);
+        assert!((radii[0] - 50.0).abs() < 0.01);
+        let rect = layout.resolved_border_radii(200.0, 100.0);
+        assert!((rect[0] - 50.0).abs() < 0.01, "min(50% w, 50% h)");
+    }
+
+    #[test]
+    fn box_shadow_parses_single_outset_layer() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "box-shadow: 4px 6px 8px 2px rgba(0, 0, 0, 0.25)",
+            None,
+            None,
+        );
+        let shadow = layout.paint.box_shadow.expect("shadow");
+        assert!((shadow.offset_x - 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.blur_radius - 8.0).abs() < 0.01);
+        assert!((shadow.spread_radius - 2.0).abs() < 0.01);
+        assert!((shadow.color[3] - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn visibility_hidden_is_paint_only() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("visibility:hidden", None, None);
+        assert_eq!(layout.paint.visibility, Some(VisibilitySpec::Hidden));
+        assert!(!layout.hidden);
+        assert!(!layout.omits_box());
+        assert!(!layout.is_paint_visible());
+
+        layout.apply_css_text("visibility:visible", None, None);
+        assert_eq!(layout.paint.visibility, Some(VisibilitySpec::Visible));
+        assert!(layout.is_paint_visible());
+    }
+
+    #[test]
+    fn visibility_visible_inside_display_none_is_stored() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:none;visibility:visible", None, None);
+        assert_eq!(layout.paint.visibility, Some(VisibilitySpec::Visible));
+        assert!(layout.omits_box());
+    }
+
+    #[test]
+    fn box_shadow_parses_negative_offsets_and_spread() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: -4px 6px 8px -24px", None, None);
+        let shadow = layout.paint.box_shadow.expect("shadow");
+        assert!((shadow.offset_x + 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.blur_radius - 8.0).abs() < 0.01);
+        assert!((shadow.spread_radius + 24.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn box_shadow_lilia_like_negative_spread() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: 0 10px 30px -24px rgba(0,0,0,0.12)", None, None);
+        let shadow = layout.paint.box_shadow.expect("shadow");
+        assert!((shadow.offset_y - 10.0).abs() < 0.01);
+        assert!((shadow.blur_radius - 30.0).abs() < 0.01);
+        assert!((shadow.spread_radius + 24.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn box_shadow_rejects_inset() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: inset 2px 2px 4px black", None, None);
+        assert!(layout.paint.box_shadow.is_none());
+    }
+
+    #[test]
+    fn box_shadow_color_before_lengths() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: red 4px 6px", None, None);
+        let shadow = layout.paint.box_shadow.expect("shadow");
+        assert!((shadow.offset_x - 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.color[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn box_shadow_color_after_lengths() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: 4px 6px red", None, None);
+        let shadow = layout.paint.box_shadow.expect("shadow");
+        assert!((shadow.offset_x - 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.color[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn box_shadow_css_beats_card_elevation_when_set() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("box-shadow: 0 4px 8px rgba(0,0,0,0.5)", None, None);
+        assert!(layout.paint.box_shadow.is_some());
+        assert!(layout.has_surface_paint());
+    }
+
+    #[test]
+    fn text_shadow_parses_offset_and_color() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("text-shadow: 2px 3px rgba(0, 0, 0, 0.5)", None, None);
+        let shadow = layout.paint.text_shadow.expect("text-shadow");
+        assert_eq!(shadow.offset_x, 2.0);
+        assert_eq!(shadow.offset_y, 3.0);
+        assert!((shadow.color[3] - 0.5).abs() < 0.01);
     }
 
     #[test]
@@ -4997,7 +5339,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(actions.padding, Some(LengthSpec::Px(4.0)));
         assert_eq!(actions.border_width, Some(1.0));
         assert!(actions.background.is_some());
-        assert_eq!(actions.border_radius, Some(10.0));
+        let actions_radii = actions.paint.border_radii.expect("actions corners");
+        assert_eq!(actions_radii[0], LengthSpec::Px(10.0));
 
         let mut btn = LayoutStyle::default();
         btn.apply_css_text(
@@ -5007,7 +5350,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert_eq!(btn.width, Some(LengthSpec::Px(32.0)));
         assert_eq!(btn.height, Some(LengthSpec::Px(32.0)));
-        assert_eq!(btn.border_radius, Some(6.0));
+        let btn_radii = btn.paint.border_radii.expect("btn corners");
+        assert_eq!(btn_radii[0], LengthSpec::Px(6.0));
 
         let mut primary = LayoutStyle::default();
         primary.apply_css_text(

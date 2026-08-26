@@ -821,6 +821,45 @@ pub fn text_line_box_height_px(font_px: f32, line_height: Option<LineHeightSpec>
     }
 }
 
+/// Ascent ratio used by [`LayoutStyle::approximate_baseline`] (0.8em).
+pub const TEXT_APPROX_ASCENT_EM: f32 = 0.8;
+
+/// Center of a CJK-oriented em square inside a line, measured from the line top.
+///
+/// cosmic-text 0.19 splits extra leading above and below the (ascent+descent)
+/// box, then places the baseline at `ascent` into that box. Nana approximates
+/// ascent as 0.8em; the em square sits on the baseline, so its center is above
+/// the line-box midpoint by half the descent.
+pub fn glyph_box_center_from_line_top(line_height: f32, font_px: f32) -> f32 {
+    let font_px = font_px.max(0.0);
+    let ascent = font_px * TEXT_APPROX_ASCENT_EM;
+    let descent = (font_px - ascent).max(0.0);
+    let glyph_height = ascent + descent;
+    let centering = (line_height - glyph_height) * 0.5;
+    centering + ascent - glyph_height * 0.5
+}
+
+/// Top of a square `extent` whose center matches the glyph box of a text block.
+///
+/// `vertical_center` follows [`crate`] text alignment: the line box is centered
+/// in `text_bounds_height` when true, otherwise it starts at `text_bounds_y`.
+pub fn icon_y_on_text_glyph_center(
+    text_bounds_y: f32,
+    text_bounds_height: f32,
+    font_px: f32,
+    line_height: Option<LineHeightSpec>,
+    vertical_center: bool,
+    extent: f32,
+) -> f32 {
+    let line_h = text_line_box_height_px(font_px, line_height);
+    let line_top = if vertical_center {
+        text_bounds_y + (text_bounds_height - line_h) * 0.5
+    } else {
+        text_bounds_y
+    };
+    line_top + glyph_box_center_from_line_top(line_h, font_px) - extent * 0.5
+}
+
 /// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；非完整 calc AST）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthAtom {
@@ -1112,6 +1151,297 @@ pub struct ParentBox {
     pub height: Option<f32>,
 }
 
+/// CSS `visibility` (layout placeholder vs paint/hit-test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VisibilitySpec {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+/// Single-layer outset `box-shadow` (physical px after parse).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoxShadowSpec {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub spread_radius: f32,
+    pub color: [f32; 4],
+}
+
+/// Single-layer `text-shadow` (physical px after parse; blur is paint-hint only).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TextShadowSpec {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: [f32; 4],
+}
+
+/// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GradientStop {
+    pub position: f32,
+    pub color: [f32; 4],
+}
+
+/// CSS `linear-gradient` background / mask (2..=8 stops, angle in degrees).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinearGradient {
+    /// CSS angle: `0deg` = to top, `90deg` = to right.
+    pub angle_deg: f32,
+    pub stops: Vec<GradientStop>,
+}
+
+impl LinearGradient {
+    pub fn stop_count(&self) -> usize {
+        self.stops.len().min(8)
+    }
+}
+
+/// CSS `radial-gradient` background / mask (2..=8 stops).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadialGradient {
+    /// `true` = `circle`, `false` = `ellipse`.
+    pub circle: bool,
+    /// Center in border-box normalized coordinates (0..1).
+    pub center: [f32; 2],
+    pub stops: Vec<GradientStop>,
+}
+
+impl RadialGradient {
+    pub fn stop_count(&self) -> usize {
+        self.stops.len().min(8)
+    }
+}
+
+/// Parsed CSS gradient fill (`linear-gradient` or `radial-gradient`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CssGradient {
+    Linear(LinearGradient),
+    Radial(RadialGradient),
+}
+
+impl CssGradient {
+    pub fn stops(&self) -> &[GradientStop] {
+        match self {
+            Self::Linear(g) => &g.stops,
+            Self::Radial(g) => &g.stops,
+        }
+    }
+
+    pub fn stop_count(&self) -> usize {
+        match self {
+            Self::Linear(g) => g.stop_count(),
+            Self::Radial(g) => g.stop_count(),
+        }
+    }
+}
+
+/// `background-size` subset for `url()` fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BackgroundImageFit {
+    #[default]
+    Cover,
+    Contain,
+    Stretch,
+}
+
+/// Parsed `background-image` (`linear-gradient`, `radial-gradient`, or `url()`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BackgroundImage {
+    Gradient(CssGradient),
+    Url {
+        url: String,
+        fit: BackgroundImageFit,
+    },
+}
+
+/// `clip-path: inset(...)` components (lengths resolve against the border box).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClipInset {
+    pub top: LengthSpec,
+    pub right: LengthSpec,
+    pub bottom: LengthSpec,
+    pub left: LengthSpec,
+    pub round: Option<LengthSpec>,
+}
+
+impl ClipInset {
+    /// Resolve inset offsets to physical px `[top, right, bottom, left]`.
+    pub fn resolve_offsets(&self, width: f32, height: f32) -> [f32; 4] {
+        [
+            resolve_inset_edge(self.top, width, height, true),
+            resolve_inset_edge(self.right, width, height, false),
+            resolve_inset_edge(self.bottom, width, height, true),
+            resolve_inset_edge(self.left, width, height, false),
+        ]
+    }
+
+    pub fn resolve_round(&self, width: f32, height: f32) -> f32 {
+        self.round
+            .map(|spec| {
+                resolve_inset_edge(spec, width, height, false)
+                    .min(resolve_inset_edge(spec, width, height, true))
+            })
+            .unwrap_or(0.0)
+            .max(0.0)
+    }
+}
+
+fn resolve_inset_edge(spec: LengthSpec, width: f32, height: f32, vertical: bool) -> f32 {
+    let percent_base = if vertical { height } else { width };
+    match spec {
+        LengthSpec::Percent(p) => percent_base.max(0.0) * p / 100.0,
+        LengthSpec::Px(v) => v.max(0.0),
+        other => other
+            .resolve_px(Some(percent_base.max(0.0)))
+            .unwrap_or(0.0)
+            .max(0.0),
+    }
+}
+
+/// One vertex in `clip-path: polygon(...)` (percent or px against the border box).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClipPoint {
+    pub x: LengthSpec,
+    pub y: LengthSpec,
+}
+
+/// Parsed `clip-path` (`inset` or `polygon`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClipPath {
+    Inset(ClipInset),
+    Polygon(Vec<ClipPoint>),
+}
+
+impl ClipPath {
+    pub fn resolve_polygon_points(&self, width: f32, height: f32) -> Option<Vec<[f32; 2]>> {
+        let ClipPath::Polygon(points) = self else {
+            return None;
+        };
+        if points.len() < 3 {
+            return None;
+        }
+        Some(
+            points
+                .iter()
+                .map(|point| {
+                    [
+                        resolve_clip_axis(point.x, width),
+                        resolve_clip_axis(point.y, height),
+                    ]
+                })
+                .collect(),
+        )
+    }
+}
+
+fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
+    match spec {
+        LengthSpec::Percent(p) => axis.max(0.0) * p / 100.0,
+        LengthSpec::Px(v) => v,
+        other => other.resolve_px(Some(axis.max(0.0))).unwrap_or(0.0),
+    }
+}
+
+/// CSS `filter` brightness / saturate / contrast multipliers (default 1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColorFilter {
+    pub brightness: f32,
+    pub saturate: f32,
+    pub contrast: f32,
+}
+
+impl Default for ColorFilter {
+    fn default() -> Self {
+        Self {
+            brightness: 1.0,
+            saturate: 1.0,
+            contrast: 1.0,
+        }
+    }
+}
+
+impl ColorFilter {
+    pub fn is_identity(self) -> bool {
+        (self.brightness - 1.0).abs() < 1e-5
+            && (self.saturate - 1.0).abs() < 1e-5
+            && (self.contrast - 1.0).abs() < 1e-5
+    }
+}
+
+/// Per-node CSS `backdrop-filter` (dest sampling, not window material).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BackdropFilter {
+    /// Gaussian blur radius in logical px (`blur(Npx)`), clamped at parse time.
+    pub blur_radius: f32,
+    /// `saturate()` multiplier (default 1).
+    pub saturate: f32,
+}
+
+impl Default for BackdropFilter {
+    fn default() -> Self {
+        Self {
+            blur_radius: 0.0,
+            saturate: 1.0,
+        }
+    }
+}
+
+impl BackdropFilter {
+    /// Product cap for frosted-glass cost control.
+    pub const MAX_BLUR_RADIUS: f32 = 64.0;
+
+    pub fn is_active(self) -> bool {
+        self.blur_radius > 0.0 || (self.saturate - 1.0).abs() > 1e-5
+    }
+}
+
+/// Paint-only surface properties (radii, shadow, visibility).
+///
+/// Layout measurement ignores this bucket except [`VisibilitySpec::Hidden`],
+/// which keeps the border box but suppresses paint and hit-testing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PaintStyle {
+    /// `None` inherits computed visibility from the parent.
+    #[serde(default)]
+    pub visibility: Option<VisibilitySpec>,
+    /// Per-corner radii (TL, TR, BR, BL). Overrides uniform
+    /// [`LayoutStyle::border_radius`] when set.
+    #[serde(default)]
+    pub border_radii: Option<[LengthSpec; 4]>,
+    #[serde(default)]
+    pub box_shadow: Option<BoxShadowSpec>,
+    #[serde(default)]
+    pub text_shadow: Option<TextShadowSpec>,
+    #[serde(default)]
+    pub background_image: Option<BackgroundImage>,
+    /// `mask-image` / `-webkit-mask-image` as linear or radial gradient alpha.
+    #[serde(default)]
+    pub mask: Option<CssGradient>,
+    #[serde(default)]
+    pub clip_path: Option<ClipPath>,
+    #[serde(default)]
+    pub filter: Option<ColorFilter>,
+    #[serde(default)]
+    pub backdrop_filter: Option<BackdropFilter>,
+}
+
+impl PaintStyle {
+    pub fn is_visible(&self) -> bool {
+        self.visibility != Some(VisibilitySpec::Hidden)
+    }
+
+    pub fn has_advanced_paint(&self) -> bool {
+        self.background_image.is_some()
+            || self.mask.is_some()
+            || self.clip_path.is_some()
+            || self.filter.is_some_and(|filter| !filter.is_identity())
+            || self.backdrop_filter.is_some_and(BackdropFilter::is_active)
+    }
+}
+
 /// CSS 2D affine paint transform applied without changing layout.
 ///
 /// The six fields use the Canvas/CSS `matrix(a, b, c, d, e, f)` convention.
@@ -1353,6 +1683,9 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub grid_row_line_names: Option<Vec<Vec<String>>>,
     pub hidden: bool,
+    /// Paint-only surface: corner radii, box-shadow, CSS visibility.
+    #[serde(default)]
+    pub paint: PaintStyle,
     /// CSS `opacity` (0..=1). `None` = unset / inherit (treated as 1.0 at paint).
     /// Parsed with other declarations so L1 adapters need not re-scan the style
     /// string.
@@ -1444,6 +1777,7 @@ impl Default for LayoutStyle {
             grid_column_line_names: None,
             grid_row_line_names: None,
             hidden: false,
+            paint: PaintStyle::default(),
             opacity: None,
             background: None,
             border_radius: None,
@@ -1456,8 +1790,33 @@ impl Default for LayoutStyle {
 impl LayoutStyle {
     pub fn has_surface_paint(&self) -> bool {
         self.background.is_some()
-            || self.border_radius.unwrap_or(0.0) > 0.0
+            || self
+                .resolved_border_radii(0.0, 0.0)
+                .iter()
+                .any(|r| *r > 0.0)
             || self.border_width.unwrap_or(0.0) > 0.0
+            || self.paint.box_shadow.is_some()
+            || self.paint.has_advanced_paint()
+    }
+
+    /// CSS `visibility: hidden` keeps layout but suppresses paint / hit-test.
+    pub fn is_paint_visible(&self) -> bool {
+        self.paint.is_visible()
+    }
+
+    /// Resolve corner radii (TL, TR, BR, BL) to physical px for a border box.
+    pub fn resolved_border_radii(&self, width: f32, height: f32) -> [f32; 4] {
+        if let Some(specs) = self.paint.border_radii {
+            [
+                resolve_corner_radius(specs[0], width, height),
+                resolve_corner_radius(specs[1], width, height),
+                resolve_corner_radius(specs[2], width, height),
+                resolve_corner_radius(specs[3], width, height),
+            ]
+        } else {
+            let uniform = self.border_radius.unwrap_or(0.0).max(0.0);
+            [uniform; 4]
+        }
     }
 
     /// `align-self: auto` → 容器 `align-items`；否则用自身值。
@@ -1870,7 +2229,10 @@ impl LayoutStyle {
         .any(LengthSpec::depends_on_viewport)
     }
 
-    /// `hidden` or `display: none` — skip layout flow and paint.
+    /// Internal `hidden` or `display: none` — skip layout flow.
+    ///
+    /// CSS `visibility: hidden` does **not** omit the box; see
+    /// [`Self::is_paint_visible`].
     pub fn omits_box(&self) -> bool {
         self.hidden || matches!(self.display, Some(DisplaySpec::None))
     }
@@ -2148,6 +2510,23 @@ fn definite_length(v: Option<f32>) -> Option<f32> {
     v.filter(|n| *n > 0.0)
 }
 
+fn resolve_corner_radius(spec: LengthSpec, width: f32, height: f32) -> f32 {
+    match spec {
+        LengthSpec::Px(v) => v.max(0.0),
+        LengthSpec::Percent(p) => {
+            let horizontal = width.max(0.0) * p / 100.0;
+            let vertical = height.max(0.0) * p / 100.0;
+            let raw = horizontal.min(vertical).max(0.0);
+            let max_corner = width.min(height).max(0.0) / 2.0;
+            raw.min(max_corner)
+        }
+        other => other
+            .resolve_px(Some(width.max(0.0)))
+            .unwrap_or(0.0)
+            .max(0.0),
+    }
+}
+
 fn edge_is_auto(longhand: Option<LengthSpec>, uniform: Option<LengthSpec>) -> bool {
     matches!(longhand.or(uniform), Some(LengthSpec::Auto))
 }
@@ -2337,8 +2716,9 @@ fn resolve_box_edge_specs_signed(
 #[cfg(test)]
 mod tests {
     use super::{
-        BoxSizing, FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle, LengthSpec,
-        OverflowSpec, ParentBox,
+        BoxSizing, DisplaySpec, FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle,
+        LengthSpec, LineHeightSpec, OverflowSpec, ParentBox, TEXT_APPROX_ASCENT_EM, VisibilitySpec,
+        glyph_box_center_from_line_top, icon_y_on_text_glyph_center, text_line_box_height_px,
     };
 
     #[test]
@@ -2709,6 +3089,18 @@ mod tests {
     }
 
     #[test]
+    fn omits_box_skips_display_none_not_visibility_hidden() {
+        let mut none = LayoutStyle::default();
+        none.display = Some(DisplaySpec::None);
+        assert!(none.omits_box());
+
+        let mut hidden = LayoutStyle::default();
+        hidden.paint.visibility = Some(VisibilitySpec::Hidden);
+        assert!(!hidden.omits_box());
+        assert!(!hidden.is_paint_visible());
+    }
+
+    #[test]
     fn merge_line_name_pattern_copies_per_repetition() {
         let pattern = vec![vec!["mid".to_string()], vec!["end".to_string()]];
         let once = GridRepeatAuto::merge_line_name_pattern(&pattern, 1);
@@ -2729,5 +3121,34 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn glyph_box_center_sits_on_the_em_square_midline() {
+        let font = 12.0;
+        let line = text_line_box_height_px(font, Some(LineHeightSpec::Absolute(font)));
+        assert!((line - font).abs() < f32::EPSILON);
+        let center = glyph_box_center_from_line_top(line, font);
+        let expected = font * TEXT_APPROX_ASCENT_EM - font * 0.5;
+        assert!((center - expected).abs() < 1e-5);
+        assert!((center - 3.6).abs() < 1e-5);
+    }
+
+    #[test]
+    fn icon_y_on_centered_text_shares_the_glyph_box_midline() {
+        let font = 12.0;
+        let extent = 12.0;
+        let y = icon_y_on_text_glyph_center(
+            10.0,
+            28.0,
+            font,
+            Some(LineHeightSpec::Absolute(font)),
+            true,
+            extent,
+        );
+        let line_top = 10.0 + (28.0 - font) * 0.5;
+        let expected = line_top + glyph_box_center_from_line_top(font, font) - extent * 0.5;
+        assert!((y - expected).abs() < 1e-5);
+        assert!((y - 15.6).abs() < 1e-5);
     }
 }
