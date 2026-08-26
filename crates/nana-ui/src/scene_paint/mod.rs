@@ -2299,6 +2299,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn graph_canvas_stroke_skips_identical_instance_upload() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let scene = graph_canvas_scene(l_stroke_edges(16));
+        let first = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
+        let second = encode_scene_gpu_work(&device, &queue, &mut painter, &scene.clone());
+        assert!(
+            second.gpu_upload_bytes < first.gpu_upload_bytes,
+            "rebuilding the same stroke instances must skip the mesh upload, first {} second {}",
+            first.gpu_upload_bytes,
+            second.gpu_upload_bytes
+        );
+    }
+
     fn graph_canvas_scene(edges: Vec<(Vec<[f32; 2]>, [f32; 4])>) -> UiScene {
         let mut scene = UiScene::new();
         scene.apply_delta(

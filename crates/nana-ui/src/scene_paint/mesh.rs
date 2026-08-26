@@ -18,7 +18,7 @@ pub(super) struct StrokeStyle<'a> {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct MeshInstance {
     color: [f32; 4],
     clip_rect: [f32; 4],
@@ -37,7 +37,8 @@ impl MeshInstance {
         p1: [f32; 2],
         r0: f32,
         r1: f32,
-        cap: StrokeCap,
+        start_cap: StrokeCap,
+        end_cap: StrokeCap,
     ) -> Self {
         Self {
             color,
@@ -47,7 +48,7 @@ impl MeshInstance {
                 FragmentClip::PASS.inv_ef[0],
                 FragmentClip::PASS.inv_ef[1],
                 FragmentClip::PASS.corner_radius,
-                cap_code(cap),
+                pack_caps(start_cap, end_cap),
             ],
             p0,
             p1,
@@ -61,6 +62,10 @@ fn cap_code(cap: StrokeCap) -> f32 {
         StrokeCap::Round => ROUND_CAP,
         StrokeCap::Butt => BUTT_CAP,
     }
+}
+
+fn pack_caps(start: StrokeCap, end: StrokeCap) -> f32 {
+    cap_code(start) + 2.0 * cap_code(end)
 }
 
 #[repr(C)]
@@ -82,6 +87,7 @@ pub(super) struct MeshPipeline {
     instances: wgpu::Buffer,
     instance_capacity: usize,
     pending_instances: Vec<MeshInstance>,
+    uploaded_instances: Vec<MeshInstance>,
 }
 
 impl MeshPipeline {
@@ -143,6 +149,7 @@ impl MeshPipeline {
             }),
             instance_capacity: INITIAL_INSTANCES,
             pending_instances: Vec::new(),
+            uploaded_instances: Vec::new(),
         }
     }
 
@@ -221,6 +228,7 @@ impl MeshPipeline {
                 radius,
                 radius,
                 StrokeCap::Round,
+                StrokeCap::Round,
                 pack_linear(tick_color),
             );
         }
@@ -250,6 +258,10 @@ impl MeshPipeline {
             work.record_upload(uniform_bytes.len());
         }
         if self.pending_instances.is_empty() {
+            self.uploaded_instances.clear();
+            return;
+        }
+        if self.pending_instances == self.uploaded_instances {
             return;
         }
         if self.pending_instances.len() > self.instance_capacity {
@@ -266,6 +278,7 @@ impl MeshPipeline {
         }
         let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
         queue.write_buffer(&self.instances, 0, instance_bytes);
+        self.uploaded_instances.clone_from(&self.pending_instances);
         if let Some(work) = gpu_work {
             work.record_upload(instance_bytes.len());
             work.record_batch_rebuild();
@@ -365,6 +378,7 @@ fn append_stroke_instances(
     color: [f32; 4],
 ) {
     let per_point = widths.len() == points.len();
+    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
     for (index, pair) in points.windows(2).enumerate() {
         let r0 = if per_point {
             widths[index] * 0.5
@@ -376,31 +390,39 @@ fn append_stroke_instances(
         } else {
             width * 0.5
         };
-        push_segment(instances, pair[0], pair[1], r0, r1, cap, color);
+        if segment_is_drawable(pair[0], pair[1], r0, r1) {
+            segments.push((pair[0], pair[1], r0.max(0.0), r1.max(0.0)));
+        }
+    }
+    let last = segments.len().saturating_sub(1);
+    for (index, (p0, p1, r0, r1)) in segments.into_iter().enumerate() {
+        let start_cap = if index == 0 { cap } else { StrokeCap::Butt };
+        let end_cap = if index == last || cap == StrokeCap::Butt {
+            cap
+        } else {
+            StrokeCap::Round
+        };
+        push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
     }
 }
 
-/// One articulated-line segment. Adjacent segments share an endpoint disc when
-/// the cap is round, so joins fill without extra miters.
+/// One articulated-line segment. Interior joins keep a single endpoint disc:
+/// the previous segment draws it, this segment uses a butt start.
 fn push_segment(
     instances: &mut Vec<MeshInstance>,
     p0: [f32; 2],
     p1: [f32; 2],
     r0: f32,
     r1: f32,
-    cap: StrokeCap,
+    start_cap: StrokeCap,
+    end_cap: StrokeCap,
     color: [f32; 4],
 ) {
     if !segment_is_drawable(p0, p1, r0, r1) {
         return;
     }
     instances.push(MeshInstance::segment(
-        color,
-        p0,
-        p1,
-        r0.max(0.0),
-        r1.max(0.0),
-        cap,
+        color, p0, p1, r0, r1, start_cap, end_cap,
     ));
 }
 
@@ -473,20 +495,29 @@ mod tests {
         }
     }
 
-    fn sd_butt(point: [f32; 2], a: [f32; 2], b: [f32; 2], r0: f32, r1: f32) -> f32 {
-        let pa = [point[0] - a[0], point[1] - a[1]];
-        let ba = [b[0] - a[0], b[1] - a[1]];
-        let seg_len = ba[0].hypot(ba[1]).max(1e-8);
-        let tx = ba[0] / seg_len;
-        let ty = ba[1] / seg_len;
-        let local_x = pa[0] * tx + pa[1] * ty;
-        let local_y = pa[0] * (-ty) + pa[1] * tx;
-        let t = (local_x / seg_len).clamp(0.0, 1.0);
-        let radius = r0 + (r1 - r0) * t;
-        let dx = (local_x - seg_len).max(-local_x);
-        let dy = local_y.abs() - radius;
-        let outside = dx.max(0.0).hypot(dy.max(0.0));
-        outside + dx.max(dy).min(0.0)
+    fn sd_stroke(
+        point: [f32; 2],
+        a: [f32; 2],
+        b: [f32; 2],
+        r0: f32,
+        r1: f32,
+        start: StrokeCap,
+        end: StrokeCap,
+    ) -> f32 {
+        let mut distance = sd_variable_capsule(point, a, b, r0, r1);
+        if start == StrokeCap::Butt || end == StrokeCap::Butt {
+            let ba = [b[0] - a[0], b[1] - a[1]];
+            let seg_len = ba[0].hypot(ba[1]).max(1e-8);
+            let local_x =
+                (point[0] - a[0]) * (ba[0] / seg_len) + (point[1] - a[1]) * (ba[1] / seg_len);
+            if start == StrokeCap::Butt {
+                distance = distance.max(-local_x);
+            }
+            if end == StrokeCap::Butt {
+                distance = distance.max(local_x - seg_len);
+            }
+        }
+        distance
     }
 
     fn covering_corner(
@@ -494,7 +525,8 @@ mod tests {
         p1: [f32; 2],
         r0: f32,
         r1: f32,
-        cap: StrokeCap,
+        start: StrokeCap,
+        end: StrokeCap,
         corner: [f32; 2],
     ) -> Option<[f32; 2]> {
         let dx = p1[0] - p0[0];
@@ -507,15 +539,19 @@ mod tests {
         let ty = dy / seg_len;
         let nx = -ty;
         let ny = tx;
-        let end0 = match cap {
+        let end0 = match start {
             StrokeCap::Round => r0 + STROKE_AA_FRINGE,
             StrokeCap::Butt => STROKE_AA_FRINGE,
         };
-        let end1 = match cap {
+        let end1 = match end {
             StrokeCap::Round => r1 + STROKE_AA_FRINGE,
             StrokeCap::Butt => STROKE_AA_FRINGE,
         };
-        let side = r0.max(r1) + STROKE_AA_FRINGE;
+        let side = if corner[0] < 0.0 {
+            r0 + STROKE_AA_FRINGE
+        } else {
+            r1 + STROKE_AA_FRINGE
+        };
         let along = if corner[0] < 0.0 {
             -end0
         } else {
@@ -542,13 +578,17 @@ mod tests {
         assert_eq!(instances[0].p0, [0.0, 0.0]);
         assert_eq!(instances[0].p1, [10.0, 0.0]);
         assert_eq!(instances[0].radii, [2.0, 2.0]);
-        assert_eq!(instances[0].clip_inv_ef_cap[3], ROUND_CAP);
+        assert_eq!(
+            instances[0].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Round, StrokeCap::Round)
+        );
         let pad = 2.0 + STROKE_AA_FRINGE;
         let corner = covering_corner(
             instances[0].p0,
             instances[0].p1,
             2.0,
             2.0,
+            StrokeCap::Round,
             StrokeCap::Round,
             [-1.0, -1.0],
         )
@@ -592,11 +632,29 @@ mod tests {
             [0.0, 0.0, 1.0, 1.0],
         );
         assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Round, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[1].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
         let join = [8.0, 0.0];
         let first = capsule_distance(join, instances[0].p0, instances[0].p1);
-        let second = capsule_distance(join, instances[1].p0, instances[1].p1);
         assert!(first <= instances[0].radii[1] + 1e-5);
-        assert!(second <= instances[1].radii[0] + 1e-5);
+        assert!(
+            sd_stroke(
+                join,
+                instances[1].p0,
+                instances[1].p1,
+                instances[1].radii[0],
+                instances[1].radii[1],
+                StrokeCap::Butt,
+                StrokeCap::Round,
+            ) <= 1e-5,
+            "join stays on the first segment's end disc, not a second start disc"
+        );
     }
 
     #[test]
@@ -608,8 +666,16 @@ mod tests {
         assert!(capsule_distance([0.0, 0.0], p0, p1) < radius);
         assert!(capsule_distance([-0.5, 0.0], p0, p1) < radius);
         assert!(capsule_distance([10.0, 4.0], p0, p1) > radius);
-        let outside_corner =
-            covering_corner(p0, p1, radius, radius, StrokeCap::Round, [-1.0, -1.0]).expect("quad");
+        let outside_corner = covering_corner(
+            p0,
+            p1,
+            radius,
+            radius,
+            StrokeCap::Round,
+            StrokeCap::Round,
+            [-1.0, -1.0],
+        )
+        .expect("quad");
         assert!(
             capsule_distance(outside_corner, p0, p1) > radius,
             "covering-quad corner must be discarded by the capsule, got {}",
@@ -696,15 +762,51 @@ mod tests {
         let p0 = [0.0, 0.0];
         let p1 = [20.0, 0.0];
         let radius = 2.0;
-        assert!(sd_butt([10.0, 0.0], p0, p1, radius, radius) < 0.0);
-        assert!(sd_butt([0.0, 0.0], p0, p1, radius, radius) <= 1e-5);
         assert!(
-            sd_butt([-0.5, 0.0], p0, p1, radius, radius) > 0.0,
+            sd_stroke(
+                [10.0, 0.0],
+                p0,
+                p1,
+                radius,
+                radius,
+                StrokeCap::Butt,
+                StrokeCap::Butt
+            ) < 0.0
+        );
+        assert!(
+            sd_stroke(
+                [0.0, 0.0],
+                p0,
+                p1,
+                radius,
+                radius,
+                StrokeCap::Butt,
+                StrokeCap::Butt
+            ) <= 1e-5
+        );
+        assert!(
+            sd_stroke(
+                [-0.5, 0.0],
+                p0,
+                p1,
+                radius,
+                radius,
+                StrokeCap::Butt,
+                StrokeCap::Butt
+            ) > 0.0,
             "butt must reject the round-cap disc past the start"
         );
         assert!(capsule_distance([-0.5, 0.0], p0, p1) < radius);
-        let butt_corner =
-            covering_corner(p0, p1, radius, radius, StrokeCap::Butt, [-1.0, 0.0]).expect("quad");
+        let butt_corner = covering_corner(
+            p0,
+            p1,
+            radius,
+            radius,
+            StrokeCap::Butt,
+            StrokeCap::Butt,
+            [-1.0, 0.0],
+        )
+        .expect("quad");
         assert!(
             butt_corner[0] > -radius,
             "butt covering quad must not extend a full radius past the start, got {}",
@@ -713,20 +815,62 @@ mod tests {
     }
 
     #[test]
-    fn tapered_covering_quad_uses_the_larger_radius() {
-        let corner = covering_corner(
+    fn tapered_covering_quad_is_a_trapezoid() {
+        let thick = covering_corner(
             [0.0, 0.0],
             [10.0, 0.0],
             4.0,
             1.0,
             StrokeCap::Round,
+            StrokeCap::Round,
             [-1.0, 1.0],
         )
         .expect("quad");
+        let thin = covering_corner(
+            [0.0, 0.0],
+            [10.0, 0.0],
+            4.0,
+            1.0,
+            StrokeCap::Round,
+            StrokeCap::Round,
+            [1.0, 1.0],
+        )
+        .expect("quad");
         assert!(
-            corner[1] >= 4.0 + STROKE_AA_FRINGE - 1e-4,
-            "side pad must follow max(r0, r1), got {}",
-            corner[1]
+            thick[1] >= 4.0 + STROKE_AA_FRINGE - 1e-4,
+            "start side pad follows r0, got {}",
+            thick[1]
+        );
+        assert!(
+            (thin[1] - (1.0 + STROKE_AA_FRINGE)).abs() < 1e-4,
+            "end side pad follows r1, got {}",
+            thin[1]
+        );
+    }
+
+    #[test]
+    fn interior_round_join_omits_the_second_start_disc() {
+        let mut instances = Vec::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 3);
+        assert_eq!(
+            instances[0].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Round, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[1].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[2].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
         );
     }
 }
