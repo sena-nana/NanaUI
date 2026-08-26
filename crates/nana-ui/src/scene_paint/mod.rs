@@ -545,23 +545,27 @@ impl SceneWgpuPainter {
                         primitive.opacity,
                         frag_clip,
                     ) {
-                        commands.push(DrawCommand::Mesh { range, scissor });
+                        push_mesh_draw(&mut commands, range, scissor);
                     }
                 }
                 ScenePrimitiveKind::Stroke {
                     points,
                     width,
                     color,
+                    widths,
+                    cap,
                 } => {
                     if let Some(range) = self.meshes.push_stroke(
                         points,
+                        widths,
+                        *cap,
                         affine,
                         *width,
                         *color,
                         primitive.opacity,
                         frag_clip,
                     ) {
-                        commands.push(DrawCommand::Mesh { range, scissor });
+                        push_mesh_draw(&mut commands, range, scissor);
                     }
                 }
                 ScenePrimitiveKind::Custom(custom) => {
@@ -838,6 +842,20 @@ impl SceneWgpuPainter {
             .then_some(painted);
         Ok(())
     }
+}
+
+fn push_mesh_draw(commands: &mut Vec<DrawCommand>, range: MeshRange, scissor: PhysicalRect) {
+    if let Some(DrawCommand::Mesh {
+        range: previous,
+        scissor: previous_scissor,
+    }) = commands.last_mut()
+        && *previous_scissor == scissor
+        && previous.first_instance + previous.instance_count == range.first_instance
+    {
+        previous.instance_count += range.instance_count;
+        return;
+    }
+    commands.push(DrawCommand::Mesh { range, scissor });
 }
 
 fn clip_dests_for(
@@ -1233,7 +1251,9 @@ mod tests {
         DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
         StableNodeId, StandardVisual, TextContent,
     };
-    use nana_ui_scene::{AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, UiScene};
+    use nana_ui_scene::{
+        AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, StrokeCap, UiScene,
+    };
 
     use super::*;
     use crate::HostTextureRegistry;
@@ -1883,6 +1903,119 @@ mod tests {
     }
 
     #[test]
+    fn tapered_stroke_paints_uneven_capsule_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[8.0, 32.0], [56.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        assert!(scene.replace_primitive_kind(
+            primitive.id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[8.0, 32.0], [56.0, 32.0]],
+                width: 2.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: vec![10.0, 2.0],
+                cap: StrokeCap::Round,
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let thick_end = pixel(&pixels, 64, 8, 32);
+        assert!(
+            is_red_slot(thick_end),
+            "5px radius at the start must ink, got {thick_end:?}"
+        );
+        let thick_side = pixel(&pixels, 64, 8, 28);
+        assert!(
+            thick_side[0] > 120,
+            "4px off the start must stay inside the 5px disc, got {thick_side:?}"
+        );
+        let thin_side = pixel(&pixels, 64, 56, 28);
+        assert!(
+            is_blue_slot(thin_side),
+            "4px off the 1px end must stay fill, got {thin_side:?}"
+        );
+        let thin_mid = pixel(&pixels, 64, 56, 32);
+        assert!(
+            is_red_slot(thin_mid),
+            "1px radius end midline must ink, got {thin_mid:?}"
+        );
+    }
+
+    #[test]
+    fn butt_stroke_cuts_round_end_caps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[16.0, 32.0], [48.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        assert!(scene.replace_primitive_kind(
+            primitive.id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[16.0, 32.0], [48.0, 32.0]],
+                width: 8.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: Vec::new(),
+                cap: StrokeCap::Butt,
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [256, 256],
+            4.0,
+        );
+        let midline = pixel(&pixels, 256, 128, 128);
+        assert!(
+            is_red_slot(midline),
+            "butt midline must ink the 8px stroke, got {midline:?}"
+        );
+        let past_start = pixel(&pixels, 256, 58, 128);
+        assert!(
+            is_blue_slot(past_start),
+            "1.5 logical px before a butt start must stay fill, got {past_start:?}"
+        );
+        let start_edge = pixel(&pixels, 256, 64, 128);
+        assert!(
+            start_edge[0] > 80,
+            "the butt start cut must still ink on the endpoint, got {start_edge:?}"
+        );
+    }
+
+    #[test]
     fn graph_canvas_diagonal_stroke_paints_capsule_on_gpu() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2154,10 +2287,14 @@ mod tests {
         );
         assert_eq!(
             work_32.draw_calls.saturating_sub(fill.draw_calls),
-            32,
-            "each Stroke primitive issues one mesh draw"
+            1,
+            "consecutive same-scissor Stroke primitives batch into one mesh draw"
         );
-        assert_eq!(work_64.draw_calls.saturating_sub(fill.draw_calls), 64);
+        assert_eq!(
+            work_64.draw_calls.saturating_sub(fill.draw_calls),
+            1,
+            "64 batched GraphCanvas edges still issue one mesh draw"
+        );
     }
 
     fn graph_canvas_scene(edges: Vec<(Vec<[f32; 2]>, [f32; 4])>) -> UiScene {

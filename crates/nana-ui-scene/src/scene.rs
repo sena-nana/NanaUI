@@ -149,8 +149,21 @@ pub enum ScenePrimitiveKind {
         points: Vec<[f32; 2]>,
         width: f32,
         color: [f32; 4],
+        /// Per-point stroke widths. Empty means every vertex uses [`Self::Stroke::width`].
+        widths: Vec<f32>,
+        cap: StrokeCap,
     },
     Custom(CustomRenderNode),
+}
+
+/// End-cap of an articulated stroke segment.
+///
+/// Round is the Ciallo vanilla disc; Butt is a flat cut at the endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeCap {
+    #[default]
+    Round,
+    Butt,
 }
 
 /// One paint-ready span inside a [`ScenePrimitiveKind::Text`] primitive.
@@ -512,6 +525,19 @@ impl UiScene {
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
         self.primitives.get(&id)
+    }
+
+    /// Rewrite one primitive kind and bump instance identity.
+    ///
+    /// Painter tests use this to probe stroke variants without a second
+    /// Runtime extraction ABI.
+    pub fn replace_primitive_kind(&mut self, id: PrimitiveId, kind: ScenePrimitiveKind) -> bool {
+        let Some(primitive) = self.primitives.get_mut(&id) else {
+            return false;
+        };
+        primitive.kind = kind;
+        self.instance = next_scene_instance();
+        true
     }
 
     fn rebuild_document_order(&mut self) {
@@ -4116,6 +4142,8 @@ fn visual_stroke(
             points,
             width,
             color,
+            widths: Vec::new(),
+            cap: StrokeCap::Round,
         },
     }
 }
@@ -6847,8 +6875,12 @@ mod tests {
             Some(ScenePrimitiveKind::Stroke {
                 width,
                 points,
+                widths,
+                cap: StrokeCap::Round,
                 ..
-            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON && points.len() == 2
+            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON
+                && points.len() == 2
+                && widths.is_empty()
         ));
         assert!(
             scene
