@@ -874,7 +874,8 @@
             "text_shaped_runs": 0,
             "text_layout_cache_hits": 0,
             "text_layout_cache_misses": 0,
-            "text_wrap_layouts": 0
+            "text_wrap_layouts": 0,
+            "hit_test_nodes_rebuilt": 1
           }
         },
         "Text": {
@@ -1169,7 +1170,8 @@
         "text_shaped_runs": 0,
         "text_layout_cache_hits": 0,
         "text_layout_cache_misses": 0,
-        "text_wrap_layouts": 0
+        "text_wrap_layouts": 0,
+        "validation_nodes_scanned": 0
       },
       "local_paint_work": {
         "entities_total": 10000,

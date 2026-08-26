@@ -143,8 +143,9 @@ struct Identity {
 #[derive(Component)]
 struct Kind(Arc<NodeKind>);
 
+/// `.1` is the palette epoch (`0` = never resolved).
 #[derive(Component, Clone)]
-struct ResolvedStyle(Arc<ComputedStyle>);
+struct ResolvedStyle(Arc<ComputedStyle>, u64);
 
 fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
     match visual {
@@ -217,6 +218,8 @@ struct HitEntry {
 struct AncestorMemo {
     live: HashMap<StableNodeId, bool>,
     stacking: HashMap<StableNodeId, i32>,
+    /// Paint color filled this extract pass after a palette epoch change.
+    color: HashMap<StableNodeId, [f32; 4]>,
     chain: Vec<StableNodeId>,
 }
 
@@ -489,6 +492,8 @@ pub struct UiWorld {
     /// every commit the next frame will consume. Validation must scale with the
     /// batch, not the retained world; this is the sentinel for that invariant.
     validation_nodes_scanned: usize,
+    /// Bumped on `SetTheme`; extract skips a second palette walk when it matches.
+    palette_epoch: u64,
 }
 
 impl Default for UiWorld {
@@ -538,6 +543,7 @@ impl UiWorld {
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
             validation_nodes_scanned: 0,
+            palette_epoch: 1,
         }
     }
 
@@ -1857,10 +1863,10 @@ impl UiWorld {
 
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
         let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
-        if !self.presence_live(id)
+        if style.omits_box()
+            || !self.presence_live(id)
             || !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
-            || style.omits_box()
         {
             Arc::make_mut(&mut style).hidden = true;
         }
@@ -2412,7 +2418,7 @@ impl UiWorld {
                         Hierarchy::default(),
                         MountState::default(),
                         NodeStyle::default(),
-                        ResolvedStyle(Arc::clone(&INTERNED_DEFAULT_STYLE)),
+                        ResolvedStyle(Arc::clone(&INTERNED_DEFAULT_STYLE), 0),
                         TextContent::default(),
                         TextMetrics::default(),
                         LayoutBox::default(),
@@ -2649,6 +2655,7 @@ impl UiWorld {
                 if self.style_model.theme_mode != *mode {
                     let previous_metrics = self.style_model.metrics;
                     self.style_model = StyleModelRef::new(*mode);
+                    self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
                     // Palette roles are resolved at extract from SemanticColorRole;
                     // skip STYLE so a theme swap does not restyle the live tree.
                     let mut bits = DirtyMask::RENDER;
@@ -3130,6 +3137,12 @@ impl UiWorld {
     }
 
     pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
+        if !self.is_mounted(id) {
+            return false;
+        }
+        if self.detached.is_empty() {
+            return true;
+        }
         self.presence_live_memo(id, &mut AncestorMemo::default())
     }
 
@@ -3246,18 +3259,34 @@ impl UiWorld {
         }
         let entity = *self.entities.get(&id)?;
         let identity = self.world.get::<Identity>(entity)?;
-        let mut style = Arc::clone(&self.world.get::<ResolvedStyle>(entity)?.0);
-        let (foreground, color, background, border_color) = self.palette_paint_colors(id);
-        if style.foreground != foreground
-            || style.color != color
-            || style.background != background
-            || style.border_color != border_color
-        {
-            let style = Arc::make_mut(&mut style);
-            style.foreground = foreground;
-            style.color = color;
-            style.background = background;
-            style.border_color = border_color;
+        let (mut style, resolved_epoch) = {
+            let resolved = self.world.get::<ResolvedStyle>(entity)?;
+            (Arc::clone(&resolved.0), resolved.1)
+        };
+        if resolved_epoch != self.palette_epoch {
+            let parent = self.world.get::<Hierarchy>(entity)?.parent;
+            let inherited_color = parent.and_then(|parent| {
+                memo.color
+                    .get(&parent)
+                    .copied()
+                    .or_else(|| self.inherited_palette_color(Some(parent)))
+            });
+            let (foreground, color, background, border_color) =
+                self.palette_paint_colors(id, inherited_color);
+            if let Some(color) = color {
+                memo.color.insert(id, color);
+            }
+            if style.foreground != foreground
+                || style.color != color
+                || style.background != background
+                || style.border_color != border_color
+            {
+                let style = Arc::make_mut(&mut style);
+                style.foreground = foreground;
+                style.color = color;
+                style.background = background;
+                style.border_color = border_color;
+            }
         }
         let kind = Arc::clone(&self.world.get::<Kind>(entity)?.0);
         let has_text = matches!(kind.as_ref(), NodeKind::Text)
@@ -5276,6 +5305,7 @@ impl UiWorld {
     fn palette_paint_colors(
         &self,
         id: StableNodeId,
+        inherited_color: Option<[f32; 4]>,
     ) -> (
         SemanticColorRole,
         Option<[f32; 4]>,
@@ -5295,7 +5325,7 @@ impl UiWorld {
             paint
                 .foreground
                 .map(|role| palette.get(role).as_rgba_array())
-                .or_else(|| self.inherited_palette_color(parent))
+                .or(inherited_color)
                 .or_else(|| Some(palette.get(foreground).as_rgba_array()))
         });
         let background = layout.background.or_else(|| {
@@ -5324,12 +5354,14 @@ impl UiWorld {
         if let Some(parent) = parent {
             self.resolve_style(parent, resolved)?;
         }
-        let local = self.component::<NodeStyle>(id).clone();
+        let layout = Arc::clone(&self.component::<NodeStyle>(id).layout);
         let inherited = parent
             .map(|parent| self.component::<ResolvedStyle>(parent).0.as_ref().clone())
             .unwrap_or_default();
-        let layout = local.layout.as_ref();
-        let (foreground, color, background, border_color) = self.palette_paint_colors(id);
+        let inherited_color =
+            parent.and_then(|parent| self.component::<ResolvedStyle>(parent).0.color);
+        let (foreground, color, background, border_color) =
+            self.palette_paint_colors(id, inherited_color);
         let next = ComputedStyle {
             foreground,
             color,
@@ -5350,13 +5382,21 @@ impl UiWorld {
             line_height: layout.line_height.or(inherited.line_height),
             letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
         };
-        if self.component::<ResolvedStyle>(id).0.as_ref() != &next {
-            *self.component_mut::<ResolvedStyle>(id) = ResolvedStyle(Arc::new(next));
+        {
+            let resolved = self.component::<ResolvedStyle>(id);
+            if resolved.0.as_ref() == &next && resolved.1 == self.palette_epoch {
+                return Ok(());
+            }
         }
+        *self.component_mut::<ResolvedStyle>(id) =
+            ResolvedStyle(Arc::new(next), self.palette_epoch);
         Ok(())
     }
 
     fn overlay_branch_active(&self, id: StableNodeId) -> bool {
+        if self.overlay_host_nodes.is_empty() {
+            return true;
+        }
         let Some(parent) = self.component::<Hierarchy>(id).parent else {
             return true;
         };
@@ -5371,7 +5411,10 @@ impl UiWorld {
         let Some(parent) = self.component::<Hierarchy>(id).parent else {
             return true;
         };
-        menu_surface_open(self.standard_visual(parent).as_ref()) != Some(false)
+        let Some(&entity) = self.entities.get(&parent) else {
+            return true;
+        };
+        menu_surface_open(self.world.get::<StandardVisual>(entity)) != Some(false)
     }
 
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -10995,6 +11038,87 @@ mod tests {
             world.extract_nodes(&work.render_extraction)[0]
                 .style
                 .background,
+            Some(
+                nana_ui_core::SemanticPalette::light()
+                    .accent
+                    .as_rgba_array()
+            )
+        );
+    }
+
+    #[test]
+    fn grandchild_extract_inherits_ancestor_layout_color_without_restyling() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    color: Some([0.2, 0.4, 0.8, 1.0]),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            world.extract_nodes(&[node(3)])[0].style.color,
+            Some([0.2, 0.4, 0.8, 1.0])
+        );
+        assert_eq!(
+            world.extract_nodes(&[node(1), node(2), node(3)])[2]
+                .style
+                .color,
+            Some([0.2, 0.4, 0.8, 1.0])
+        );
+    }
+
+    #[test]
+    fn theme_change_refreshes_inherited_foreground_on_extract_only() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            queue.create(
+                node(id),
+                document(1),
+                NodeKind::Element { tag: "div".into() },
+            );
+        }
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                foreground: Some(SemanticColorRole::Accent),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            world.extract_nodes(&[node(3)])[0].style.color,
+            Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
+        );
+
+        let mut theme = MutationQueue::new();
+        theme.set_theme(ThemeMode::Light);
+        world.commit(theme).unwrap();
+        let work = world.take_system_work();
+        assert!(work.style.is_empty());
+        assert_eq!(
+            world.extract_nodes(&[node(3)])[0].style.color,
             Some(
                 nana_ui_core::SemanticPalette::light()
                     .accent
