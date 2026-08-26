@@ -152,18 +152,39 @@ pub enum ScenePrimitiveKind {
         /// Per-point stroke widths. Empty means every vertex uses [`Self::Stroke::width`].
         widths: Vec<f32>,
         cap: StrokeCap,
+        /// Dash and per-point colors. `None` is the Graph / TimeSeries path:
+        /// no extra heap and the painter keeps the solid uniform emit.
+        pattern: Option<Box<StrokePattern>>,
     },
     Custom(CustomRenderNode),
 }
 
+/// Optional dash and per-point colors for [`ScenePrimitiveKind::Stroke`].
+///
+/// Empty `dash` is solid. Empty `colors` uses the stroke's uniform `color`.
+/// The painter only walks these slices when they are non-empty, so unused
+/// decorations do not add GPU instance fields or shader work.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StrokePattern {
+    /// SVG-style on/off lengths. Negative or non-finite values disable dash
+    /// (treated as solid). A single-cycle odd list is repeated to even length.
+    pub dash: Vec<f32>,
+    pub dash_offset: f32,
+    /// Per-point colors. Used only when `len` matches the stroke point count.
+    pub colors: Vec<[f32; 4]>,
+}
+
 /// End-cap of an articulated stroke segment.
 ///
-/// Round is the Ciallo vanilla disc; Butt is a flat cut at the endpoint.
+/// Round is the Ciallo vanilla disc. Butt is a flat cut at the endpoint.
+/// Square extends half-width past the endpoint, then cuts flat. The painter
+/// expands Square on the CPU and reuses the Butt GPU path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StrokeCap {
     #[default]
     Round,
     Butt,
+    Square,
 }
 
 /// One paint-ready span inside a [`ScenePrimitiveKind::Text`] primitive.
@@ -4144,6 +4165,7 @@ fn visual_stroke(
             color,
             widths: Vec::new(),
             cap: StrokeCap::Round,
+            pattern: None,
         },
     }
 }
@@ -6877,6 +6899,7 @@ mod tests {
                 points,
                 widths,
                 cap: StrokeCap::Round,
+                pattern: None,
                 ..
             }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON
                 && points.len() == 2
