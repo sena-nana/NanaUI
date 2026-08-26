@@ -72,11 +72,7 @@ impl ControlSize {
     }
 
     pub const fn icon_size(self) -> f32 {
-        match self {
-            Self::Small => 13.0,
-            Self::Medium => 14.0,
-            Self::Large => 16.0,
-        }
+        self.text_size()
     }
 
     /// Square extent of a checkbox box or radio ring.
