@@ -1095,9 +1095,10 @@ mod tests {
             panic!("context menu geometry");
         };
         assert_eq!(options.len(), 2);
-        let Some((Icon::Add, icon_box, _)) = options[0].icon else {
+        let Some((kind, icon_box, _)) = options[0].icon else {
             panic!("expected Add icon geometry");
         };
+        assert_eq!(kind, Icon::Add);
         assert!(icon_box.width > 0.0 && icon_box.height > 0.0);
         assert!(options[0].label.bounds.x >= icon_box.x + icon_box.width);
         assert!(options[0].label.bounds.width > 0.0);

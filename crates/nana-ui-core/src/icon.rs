@@ -1,94 +1,146 @@
-/// Compact line icons used by NanaUI navigation surfaces.
-///
-/// This is the semantic identity only. Backend crates own glyph rendering.
-/// Vue / Lucide icons should render as SVG subtree geometry, not by
-/// stretching this enum with incorrect Lucide→glyph aliases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Icon {
-    About,
-    Add,
-    Appearance,
-    ArrowLeft,
-    ArrowRight,
-    ArrowUp,
-    Bot,
-    ChevronDown,
-    ChevronRight,
-    ChevronUp,
-    Chart,
-    Close,
-    Eye,
-    File,
-    Folder,
-    GitBranch,
-    Maximize,
-    MessageSquarePlus,
-    Minimize,
-    Moon,
-    Nodes,
-    Paperclip,
-    Restore,
-    Search,
-    Settings,
-    ShieldCheck,
-    Sidebar,
-    Sparkles,
-    Workspace,
+//! Compact line icons used by NanaUI navigation surfaces.
+//!
+//! [`Icon`] is a `Copy` identity that holds a pointer to static Lucide geometry.
+//! Unused catalog constants are not referenced by a central match table, so fat
+//! LTO can drop them. [`parse_name`] only resolves shell chrome names.
+
+use std::fmt;
+use std::hash::{Hash, Hasher};
+
+/// Backend-neutral 24×24 stroke geometry. Painters tessellate these shapes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconGeometry {
+    pub shapes: &'static [IconShape],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IconShape {
+    Path(&'static [IconPathCommand]),
+    Circle {
+        center: [f32; 2],
+        radius: f32,
+    },
+    Rect {
+        origin: [f32; 2],
+        size: [f32; 2],
+        filled: bool,
+    },
+    RoundedRect {
+        origin: [f32; 2],
+        size: [f32; 2],
+        radius: f32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IconPathCommand {
+    MoveTo([f32; 2]),
+    LineTo([f32; 2]),
+    CubicTo {
+        control_a: [f32; 2],
+        control_b: [f32; 2],
+        to: [f32; 2],
+    },
+    Close,
+}
+
+#[derive(Debug)]
+pub struct IconData {
+    pub name: &'static str,
+    pub shapes: &'static [IconShape],
+}
+
+/// Semantic icon identity. Compare by geometry pointer, not by display name.
+#[derive(Clone, Copy)]
+pub struct Icon(pub(crate) &'static IconData);
+
 impl Icon {
+    pub fn name(self) -> &'static str {
+        self.0.name
+    }
+
+    pub fn shapes(self) -> &'static [IconShape] {
+        self.0.shapes
+    }
+
+    pub fn geometry(self) -> IconGeometry {
+        IconGeometry {
+            shapes: self.0.shapes,
+        }
+    }
+
+    pub fn as_ptr(self) -> *const IconData {
+        self.0
+    }
+
     /// Parse a stable shell icon name (`search`, `settings`, …).
     ///
-    /// Only accepts names that genuinely match this enum. Lucide business icons
-    /// (`trash-2`, `pin`, `pencil`, …) return `None` — Vue renders those as SVG.
+    /// Catalog icons (`puzzle`, `palette`, `atom`, …) are typed constants and
+    /// return `None` here so a name table cannot keep unused geometry live.
     pub fn parse_name(raw: &str) -> Option<Self> {
         let s = raw.trim().to_ascii_lowercase();
         let s = s
             .strip_prefix("icon-")
             .or_else(|| s.strip_prefix("nana-"))
             .unwrap_or(s.as_str());
-        // Strip common Lucide / SVG prefixes.
         let s = s
             .strip_prefix("lucide-")
             .or_else(|| s.strip_prefix("icon:"))
             .unwrap_or(s);
-        // Lucide Vue emits both `lucide-search` and `lucide-search-icon`.
         let s = s.strip_suffix("-icon").unwrap_or(s);
         Some(match s {
             "about" | "info" | "circle-info" | "info-circle" => Self::About,
-            "add" | "plus" | "plus-circle" => Self::Add,
-            "appearance" | "palette" | "sun" | "sun-medium" | "paintbrush" => Self::Appearance,
-            "arrow-left" | "arrowleft" | "back" | "chevron-left" => Self::ArrowLeft,
+            "add" | "plus" => Self::Add,
+            "appearance" | "sun" => Self::Appearance,
+            "arrow-left" | "arrowleft" | "back" => Self::ArrowLeft,
             "arrow-right" | "arrowright" => Self::ArrowRight,
             "arrow-up" | "arrowup" => Self::ArrowUp,
-            "bot" | "bot-message-square" | "robot" => Self::Bot,
+            "bot" | "robot" => Self::Bot,
             "chevron-right" => Self::ChevronRight,
             "chevron-up" => Self::ChevronUp,
-            "chevron-down" | "arrow-down" => Self::ChevronDown,
-            "chart" | "line-chart" | "linechart" => Self::Chart,
-            "close" | "x" | "x-mark" | "x-circle" | "circle-x" | "xcircle" => Self::Close,
-            "eye" | "visibility" | "eye-off" | "eyeoff" => Self::Eye,
+            "chevron-down" => Self::ChevronDown,
+            "chart" | "line-chart" | "linechart" | "chart-line" => Self::Chart,
+            "close" | "x" | "x-mark" => Self::Close,
+            "eye" | "visibility" => Self::Eye,
             "file" | "document" => Self::File,
-            "folder" | "directory" | "folder-open" | "folderopen" => Self::Folder,
+            "folder" | "directory" => Self::Folder,
             "git-branch" | "gitbranch" | "branch" => Self::GitBranch,
             "maximize" | "square" => Self::Maximize,
             "message-square-plus" | "messagesquareplus" | "square-plus" => Self::MessageSquarePlus,
             "minimize" | "minus" => Self::Minimize,
             "moon" | "dark" => Self::Moon,
-            "nodes" | "graph" | "network" | "layout-grid" | "grid" => Self::Nodes,
+            "nodes" | "graph" | "network" => Self::Nodes,
             "paperclip" | "attachment" | "paper-clip" => Self::Paperclip,
-            "restore" | "refresh-cw" | "refreshcw" | "rotate-cw" | "reload" | "sync" => {
-                Self::Restore
-            }
+            "restore" => Self::Restore,
             "search" | "magnifier" | "magnifying-glass" => Self::Search,
-            "settings" | "gear" | "cog" | "sliders" | "sliders-horizontal" => Self::Settings,
+            "settings" | "gear" | "cog" => Self::Settings,
             "shield-check" | "shieldcheck" | "shield" => Self::ShieldCheck,
             "sidebar" | "panel-left" | "layout-panel-left" | "panel-left-open"
             | "panelleftopen" | "panel-left-close" | "panelleftclose" => Self::Sidebar,
-            "sparkles" | "sparkle" | "wand-sparkles" => Self::Sparkles,
-            "workspace" | "layout-dashboard" | "home" | "house" => Self::Workspace,
+            "sparkles" | "sparkle" => Self::Sparkles,
+            "workspace" | "layout-dashboard" => Self::Workspace,
             _ => return None,
         })
+    }
+}
+
+impl PartialEq for Icon {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for Icon {}
+
+impl Hash for Icon {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ptr().hash(state);
+    }
+}
+
+impl fmt::Debug for Icon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Icon").field(&self.0.name).finish()
     }
 }
 
@@ -103,7 +155,7 @@ mod tests {
         assert_eq!(Icon::parse_name("nana-close"), Some(Icon::Close));
         assert_eq!(Icon::parse_name("plus"), Some(Icon::Add));
         assert_eq!(Icon::parse_name("lucide-search-icon"), Some(Icon::Search));
-        assert_eq!(Icon::parse_name("lucide-folder-open"), Some(Icon::Folder));
+        assert_eq!(Icon::parse_name("lucide-folder"), Some(Icon::Folder));
         assert_eq!(
             Icon::parse_name("lucide-panel-left-open"),
             Some(Icon::Sidebar)
@@ -115,14 +167,12 @@ mod tests {
         assert_eq!(Icon::parse_name("chevron-right"), Some(Icon::ChevronRight));
         assert_eq!(Icon::parse_name("arrow-right"), Some(Icon::ArrowRight));
         assert_eq!(Icon::parse_name("chevron-down"), Some(Icon::ChevronDown));
-        assert_eq!(Icon::parse_name("arrow-down"), Some(Icon::ChevronDown));
         assert_eq!(
             Icon::parse_name("lucide-chevron-down"),
             Some(Icon::ChevronDown)
         );
         assert_eq!(Icon::parse_name("lucide-minus"), Some(Icon::Minimize));
         assert_eq!(Icon::parse_name("lucide-square"), Some(Icon::Maximize));
-        assert_eq!(Icon::parse_name("lucide-refresh-cw"), Some(Icon::Restore));
         assert_eq!(Icon::parse_name("lucide-arrow-up"), Some(Icon::ArrowUp));
         assert_eq!(Icon::parse_name("lucide-bot"), Some(Icon::Bot));
         assert_eq!(Icon::parse_name("lucide-git-branch"), Some(Icon::GitBranch));
@@ -136,21 +186,62 @@ mod tests {
             Some(Icon::ShieldCheck)
         );
         assert_eq!(Icon::parse_name("lucide-sparkles"), Some(Icon::Sparkles));
+        assert_eq!(Icon::parse_name("sun"), Some(Icon::Appearance));
+        assert_eq!(Icon::Sun, Icon::Appearance);
     }
 
     #[test]
-    fn parse_name_rejects_lucide_business_aliases() {
-        // These used to map to wrong shell glyphs; Vue must use SVG instead.
+    fn parse_name_rejects_catalog_and_wrong_aliases() {
+        assert_eq!(Icon::parse_name("palette"), None);
+        assert_eq!(Icon::parse_name("paintbrush"), None);
+        assert_eq!(Icon::parse_name("puzzle"), None);
+        assert_eq!(Icon::parse_name("lucide-puzzle"), None);
+        assert_eq!(Icon::parse_name("atom"), None);
+        assert_eq!(Icon::parse_name("package"), None);
+        assert_eq!(Icon::parse_name("lucide-refresh-cw"), None);
+        assert_eq!(Icon::parse_name("lucide-folder-open"), None);
         assert_eq!(Icon::parse_name("lucide-trash-2"), None);
         assert_eq!(Icon::parse_name("lucide-pin"), None);
         assert_eq!(Icon::parse_name("lucide-pencil"), None);
-        assert_eq!(Icon::parse_name("lucide-user-round"), None);
-        assert_eq!(Icon::parse_name("lucide-map-pin"), None);
-        assert_eq!(Icon::parse_name("lucide-copy"), None);
-        assert_eq!(Icon::parse_name("lucide-share-2"), None);
-        assert_eq!(Icon::parse_name("lucide-filter"), None);
-        assert_eq!(Icon::parse_name("lucide-list-checks"), None);
         assert_eq!(Icon::parse_name("lucide-unknown"), None);
-        assert_eq!(Icon::parse_name("lucide-send"), None);
+        assert_eq!(Icon::parse_name("sliders"), None);
+        assert_eq!(Icon::parse_name("home"), None);
+    }
+
+    #[test]
+    fn shell_icons_have_geometry() {
+        for icon in [
+            Icon::About,
+            Icon::Add,
+            Icon::Appearance,
+            Icon::ArrowLeft,
+            Icon::ArrowRight,
+            Icon::ArrowUp,
+            Icon::Bot,
+            Icon::ChevronDown,
+            Icon::ChevronRight,
+            Icon::ChevronUp,
+            Icon::Chart,
+            Icon::Close,
+            Icon::Eye,
+            Icon::File,
+            Icon::Folder,
+            Icon::GitBranch,
+            Icon::Maximize,
+            Icon::MessageSquarePlus,
+            Icon::Minimize,
+            Icon::Moon,
+            Icon::Nodes,
+            Icon::Paperclip,
+            Icon::Restore,
+            Icon::Search,
+            Icon::Settings,
+            Icon::ShieldCheck,
+            Icon::Sidebar,
+            Icon::Sparkles,
+            Icon::Workspace,
+        ] {
+            assert!(!icon.shapes().is_empty(), "{icon:?}");
+        }
     }
 }

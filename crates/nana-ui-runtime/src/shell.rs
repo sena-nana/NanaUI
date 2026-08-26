@@ -1971,7 +1971,7 @@ mod tests {
     use super::*;
     use crate::{
         AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, MountState, SidebarFrame,
-        StableNodeId, Text, TextHorizontalAlignment, UiWorld,
+        StableNodeId, StandardVisual, Text, TextHorizontalAlignment, UiWorld,
     };
     use nana_ui_core::{
         RegionId, RegionPlacement, RegionRole, RegionScope, RegionState, WorkspaceLayout,
@@ -1991,6 +1991,13 @@ mod tests {
             current = world.node(id).and_then(|node| node.parent);
         }
         false
+    }
+
+    fn icon_of(visual: Option<StandardVisual>) -> Option<Icon> {
+        match visual {
+            Some(StandardVisual::Icon { icon, .. }) => Some(icon),
+            _ => None,
+        }
     }
 
     #[test]
@@ -2376,27 +2383,18 @@ mod tests {
                 tag: "app-title-bar-controls".into(),
             }
         );
-        assert!(matches!(
-            context.world().standard_visual(minimize.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Minimize,
-                ..
-            })
-        ));
-        assert!(matches!(
-            context.world().standard_visual(maximize.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Maximize,
-                ..
-            })
-        ));
-        assert!(matches!(
-            context.world().standard_visual(close.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Close,
-                ..
-            })
-        ));
+        assert_eq!(
+            icon_of(context.world().standard_visual(minimize.stable_id())),
+            Some(Icon::Minimize)
+        );
+        assert_eq!(
+            icon_of(context.world().standard_visual(maximize.stable_id())),
+            Some(Icon::Maximize)
+        );
+        assert_eq!(
+            icon_of(context.world().standard_visual(close.stable_id())),
+            Some(Icon::Close)
+        );
         assert_eq!(
             context
                 .world()
@@ -2421,13 +2419,10 @@ mod tests {
                 controls.maximized = true;
             })
             .unwrap();
-        assert!(matches!(
-            context.world().standard_visual(maximize.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Restore,
-                ..
-            })
-        ));
+        assert_eq!(
+            icon_of(context.world().standard_visual(maximize.stable_id())),
+            Some(Icon::Restore)
+        );
         assert_eq!(
             context
                 .world()
@@ -2437,13 +2432,10 @@ mod tests {
                 .as_deref(),
             Some("Restore")
         );
-        assert!(matches!(
-            context.world().standard_visual(minimize.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Minimize,
-                ..
-            })
-        ));
+        assert_eq!(
+            icon_of(context.world().standard_visual(minimize.stable_id())),
+            Some(Icon::Minimize)
+        );
         assert_eq!(
             context
                 .world()
@@ -2529,13 +2521,10 @@ mod tests {
                 .layout
                 .hidden
         );
-        assert!(matches!(
-            context.world().standard_visual(maximize.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Restore,
-                ..
-            })
-        ));
+        assert_eq!(
+            icon_of(context.world().standard_visual(maximize.stable_id())),
+            Some(Icon::Restore)
+        );
     }
 
     #[test]

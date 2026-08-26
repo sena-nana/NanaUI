@@ -15,6 +15,7 @@ pub mod expansion;
 pub mod geometry;
 pub mod graph;
 pub mod icon;
+mod icon_data;
 pub mod layout;
 pub mod menu;
 pub mod number_field;
@@ -59,7 +60,7 @@ pub use graph::{
     GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
     cubic_point, port_tangent,
 };
-pub use icon::Icon;
+pub use icon::{Icon, IconGeometry, IconPathCommand, IconShape};
 pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,

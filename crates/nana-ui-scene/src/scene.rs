@@ -3858,6 +3858,13 @@ mod tests {
         StableNodeId::new(value).unwrap()
     }
 
+    fn primitive_icon(kind: &ScenePrimitiveKind) -> Option<nana_ui_core::Icon> {
+        match kind {
+            ScenePrimitiveKind::Icon { icon, .. } => Some(*icon),
+            _ => None,
+        }
+    }
+
     fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
         Arc::make_mut(&mut node.style)
     }
@@ -4281,19 +4288,18 @@ mod tests {
             scene.primitive(PrimitiveId { node: id(7), slot: 2 }).unwrap().kind,
             ScenePrimitiveKind::Text { ref content, wrap: false, .. } if content == "Preview"
         ));
-        assert!(matches!(
-            scene
-                .primitive(PrimitiveId {
-                    node: id(7),
-                    slot: 3
-                })
-                .unwrap()
-                .kind,
-            ScenePrimitiveKind::Icon {
-                icon: nana_ui_core::Icon::Search,
-                ..
-            }
-        ));
+        assert_eq!(
+            primitive_icon(
+                &scene
+                    .primitive(PrimitiveId {
+                        node: id(7),
+                        slot: 3
+                    })
+                    .unwrap()
+                    .kind
+            ),
+            Some(nana_ui_core::Icon::Search)
+        );
     }
 
     #[test]
@@ -4412,19 +4418,18 @@ mod tests {
         });
         let mut scene = UiScene::new();
         scene.apply_delta([menu], []);
-        assert!(matches!(
-            scene
-                .primitive(PrimitiveId {
-                    node: id(3),
-                    slot: 80
-                })
-                .unwrap()
-                .kind,
-            ScenePrimitiveKind::Icon {
-                icon: nana_ui_core::Icon::Add,
-                ..
-            }
-        ));
+        assert_eq!(
+            primitive_icon(
+                &scene
+                    .primitive(PrimitiveId {
+                        node: id(3),
+                        slot: 80
+                    })
+                    .unwrap()
+                    .kind
+            ),
+            Some(nana_ui_core::Icon::Add)
+        );
         assert!(matches!(
             scene
                 .primitive(PrimitiveId {
@@ -5002,19 +5007,18 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(
-            scene
-                .primitive(PrimitiveId {
-                    node: id(3),
-                    slot: 3
-                })
-                .unwrap()
-                .kind,
-            ScenePrimitiveKind::Icon {
-                icon: nana_ui_core::Icon::Folder,
-                ..
-            }
-        ));
+        assert_eq!(
+            primitive_icon(
+                &scene
+                    .primitive(PrimitiveId {
+                        node: id(3),
+                        slot: 3
+                    })
+                    .unwrap()
+                    .kind
+            ),
+            Some(nana_ui_core::Icon::Folder)
+        );
         assert!(matches!(
             scene
                 .primitive(PrimitiveId {
@@ -6002,13 +6006,13 @@ mod tests {
                 height: 16.0,
             }
         );
-        assert!(matches!(
-            icon.kind,
+        assert_eq!(primitive_icon(&icon.kind), Some(nana_ui_core::Icon::Search));
+        match &icon.kind {
             ScenePrimitiveKind::Icon {
-                icon: nana_ui_core::Icon::Search,
-                color: Some([0.1, 0.6, 0.9, 1.0]),
-            }
-        ));
+                color: Some(color), ..
+            } => assert_eq!(*color, [0.1, 0.6, 0.9, 1.0]),
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(
             scene
                 .primitive(PrimitiveId {
