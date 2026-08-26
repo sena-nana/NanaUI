@@ -8,7 +8,7 @@ use nana_ui_core::{
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
     LayoutBox, NodeKind, StableNodeId, StandardVisual, TextHorizontalAlignment, TextShaping,
-    TextVerticalAlignment,
+    TextVerticalAlignment, TimeSeriesChart,
 };
 
 use crate::{
@@ -2464,7 +2464,6 @@ impl UiScene {
                     grid,
                     area,
                     line,
-                    line_width,
                     grid_color,
                     area_color,
                     line_color,
@@ -2503,13 +2502,13 @@ impl UiScene {
                             },
                         ));
                     }
-                    if line.len() >= 2 && *line_width > 0.0 {
+                    if line.len() >= 2 {
                         self.insert_primitive(visual_stroke(
                             &context,
                             12,
                             bounds,
                             line.clone(),
-                            *line_width,
+                            TimeSeriesChart::LINE_WIDTH,
                             *line_color,
                         ));
                     }
@@ -6776,7 +6775,6 @@ mod tests {
                 height: 70.0,
             }],
             line: vec![[8.0, 40.0], [54.0, 40.0]],
-            line_width: 2.0,
             grid_color: [0.2, 0.2, 0.2, 0.55],
             area_color: [0.3, 0.5, 0.8, 0.16],
             line_color: [0.3, 0.5, 0.9, 1.0],
@@ -6850,7 +6848,7 @@ mod tests {
                 width,
                 points,
                 ..
-            }) if (*width - 2.0).abs() < f32::EPSILON && points.len() == 2
+            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON && points.len() == 2
         ));
         assert!(
             scene

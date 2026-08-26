@@ -32,7 +32,6 @@ impl TimeSeriesChart {
     pub const INSET_X: f32 = 8.0;
     pub const INSET_Y: f32 = 10.0;
     pub const GRID_LINE_COUNT: usize = 4;
-    /// Iced `Stroke::with_width(2.0)` — Scene paints this as articulated-line.
     pub const LINE_WIDTH: f32 = 2.0;
 
     pub fn new(values: impl IntoIterator<Item = f64>) -> Self {

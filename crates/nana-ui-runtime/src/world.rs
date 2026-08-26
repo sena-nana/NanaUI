@@ -7593,15 +7593,14 @@ fn time_series_geometry(
     let points = chart
         .points(local)
         .into_iter()
-        .map(|(x, y)| (bounds.x + x, bounds.y + y))
+        .map(|(x, y)| [bounds.x + x, bounds.y + y])
         .collect::<Vec<_>>();
     let baseline = bounds.y
         + (bounds.height - crate::TimeSeriesChart::INSET_Y).max(crate::TimeSeriesChart::INSET_Y);
     crate::ComponentGeometry::TimeSeriesChart {
         grid,
         area: area_under_polyline(&points, baseline),
-        line: points.iter().map(|(x, y)| [*x, *y]).collect(),
-        line_width: crate::TimeSeriesChart::LINE_WIDTH,
+        line: points,
         grid_color: paint.grid.as_rgba_array(),
         area_color: paint.area.as_rgba_array(),
         line_color: paint.line.as_rgba_array(),
@@ -8116,12 +8115,12 @@ fn estimated_text_width(text: &str, font_size: f32) -> f32 {
         .max(font_size)
 }
 
-fn area_under_polyline(points: &[(f32, f32)], baseline: f32) -> Vec<LayoutBox> {
+fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
     const STRIP: f32 = 2.0;
     let mut strips = Vec::new();
     for pair in points.windows(2) {
-        let (x0, y0) = pair[0];
-        let (x1, y1) = pair[1];
+        let [x0, y0] = pair[0];
+        let [x1, y1] = pair[1];
         let span = x1 - x0;
         if !span.is_finite() || span.abs() < f32::EPSILON {
             continue;
@@ -12380,11 +12379,7 @@ mod tests {
         assert!(hover.tooltip.width < 176.0);
 
         let crate::ComponentGeometry::TimeSeriesChart {
-            grid,
-            area,
-            line,
-            line_width,
-            ..
+            grid, area, line, ..
         } = world.component_geometry(node(2)).expect("chart geometry")
         else {
             panic!("expected time series geometry");
@@ -12405,7 +12400,6 @@ mod tests {
             .map(|(x, y)| [x, y])
             .collect::<Vec<_>>();
         assert_eq!(line, expected_line);
-        assert_eq!(line_width, crate::TimeSeriesChart::LINE_WIDTH);
     }
 
     #[test]
