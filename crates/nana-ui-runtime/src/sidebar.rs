@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    LineHeightSpec, OverflowSpec, SemanticColorRole, SemanticPalette, TooltipConfig, UI_METRICS,
+    OverflowSpec, SemanticColorRole, SemanticPalette, TooltipConfig, UI_METRICS,
 };
 
 use crate::view_components::{
@@ -23,7 +23,6 @@ const FRAME_GAP: f32 = 14.0;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_PADDING_RIGHT: f32 = 8.0;
 const ROW_ICON_SIZE: f32 = ControlSize::Small.icon_size();
-const ROW_ICON_SLOT_WIDTH: f32 = 16.0;
 const ROW_TEXT_ALPHA: f32 = 0.68;
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
@@ -390,7 +389,6 @@ impl SidebarRow {
         layout.padding_left = Some(LengthSpec::Px(sidebar_row_depth_inset(self.depth)));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.font_size = Some(self.size.text_size());
-        layout.line_height = Some(LineHeightSpec::Absolute(self.size.line_height()));
         layout.font_weight = Some(if self.state == SidebarRowState::AncestorActive {
             600
         } else {
@@ -530,7 +528,7 @@ impl ComponentView for SidebarRow {
     }
 }
 
-/// Square leading glyph matching the row line box. Not an IconButton (those force a ~28px target).
+/// Leading glyph sized to the row text. Not an IconButton (those force a ~28px target).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarRowIcon {
     pub icon: Icon,
@@ -545,9 +543,9 @@ impl SidebarRowIcon {
         let mut style = NodeStyle::default();
         style.foreground = Some(SemanticColorRole::Muted);
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH));
+        layout.width = Some(LengthSpec::Px(ROW_ICON_SIZE));
         layout.height = Some(LengthSpec::Px(ROW_ICON_SIZE));
-        layout.min_width = Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH));
+        layout.min_width = Some(LengthSpec::Px(ROW_ICON_SIZE));
         layout.min_height = Some(LengthSpec::Px(ROW_ICON_SIZE));
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
@@ -1696,7 +1694,7 @@ mod tests {
             .node_style(leading.stable_id())
             .unwrap()
             .layout;
-        assert_eq!(icon_layout.width, Some(LengthSpec::Px(ROW_ICON_SLOT_WIDTH)));
+        assert_eq!(icon_layout.width, Some(LengthSpec::Px(ROW_ICON_SIZE)));
         assert_eq!(icon_layout.height, Some(LengthSpec::Px(ROW_ICON_SIZE)));
         assert!(context.world().interaction(id).unwrap().focusable);
         assert_eq!(
