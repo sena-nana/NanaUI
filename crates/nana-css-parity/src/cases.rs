@@ -85,7 +85,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-B12", true, None), // logical margin-* → LTR physical
         ("T-B13", true, None), // margin:0 auto block center
         ("T-V01", true, None),
-        ("T-V02", true, None),  // visibility:hidden → Nana 跳过（非 CSS 占位）
+        ("T-V02", true, None),  // visibility:hidden → CSS 占位（仍测量）
         ("T-D01", true, None),  // display:contents hoist into flex row
         ("T-W01", true, None),  // flex-wrap measure；Wrap 多行拆分
         ("T-W02", true, None),  // wrap-reverse 行序；borrowed+owned 路径

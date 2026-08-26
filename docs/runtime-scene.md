@@ -32,6 +32,19 @@ flush 将变更抽成 `ExtractedNode` 增量，`UiScene::apply_delta` 更新绘�
 
 无障碍增量带同一 generation 的更新节点与稳定 ID 删除。平台 adapter 不维护另一棵权威语义树。默认程序不声明无障碍动作；只有显式接通的 `RuntimeProgram::accessibility_action` 才暴露。
 
+### CSS clip-path
+
+祖先 `clip-path` 进入 `UiScene::ClipRegion` 链并投影为 `FragmentClip`：
+
+- **GPU scissor** 仍只用轴对齐包围盒；精确 clip 走顶点 `FragmentClip`（Quad / Mesh / Text / HostTexture）或 **dest opacity-group 合成**（外层旋转 clip、**`clip-path: polygon(...)`**、以及需要与 MSAA 交错的多层 rounded overflow）。
+- **`clip-path: inset(... round R)`**：圆角半径写入 `FragmentClip.corner_radius`；非平移 transform 下仍保留 SDF 圆角（不再在旋转时清零 radius）。
+- **`clip-path: polygon(...)`**：Scene 存 AABB + 局部顶点；**自身 quad** 在 fragment 做点内多边形测试；**子项 / 文本 / HostTexture** 通过 dest-group 在合成 pass 做 winding 多边形测试（非 AABB-only）。
+- **HostTexture**：祖先 inset-round overflow clip 的 `corner_radius` 经 `clip_inv_ef.z` 传入 host-texture shader，与 quad 共用 rounded-box SDF。
+
+### CSS backdrop-filter
+
+`backdrop-filter: blur(Npx)` 是**逐节点**效果：在绘制该节点填充之前，从当前 dest 纹理（`sample_count = 1` 的 `dest.color` 或 opacity-group 层）采样其 bounds（按 blur 核扩展）背后的**已绘制**内容（document order 中排在该节点之前的 Quad / HostTexture / 自定义 GPU 槽等），经 separable Gaussian 模糊后再合成回节点区域（圆角 / clip-path / mask-image 仍生效），最后才画半透明 fill / gradient。这与 Windows `nana-window` 整窗 Mica/Acrylic 或 Appearance `backdrop_*` **无关**。含 HostTexture / 自定义 GPU 节点 / dest 组 / backdrop-filter 的帧走 interleaved dest（`sample_count = 1`）；仅含 CSS `url()` 的 quad 仍走 4× MSAA。**任意 affine transform**（含旋转）的节点：copy/blur 区域用变换后 AABB，composite 顶点在逻辑 quad UV 上应用 `quad_abcd`/`quad_ef` 映射到 dest 像素再采样模糊纹理。opacity group 内 backdrop 从该 group 层采样，而非 dest 根纹理。composite pass 的 ancestor `FragmentClip`（含 inset-round 与 polygon）与 quad 共用同一套 `inside_fragment_clip`。
+
 ## 文本呈现
 
 `HighlightRequest` / `TextPresentation` 是 intent；算法是按名注册的 `TextPresenter`。扩展经 `ExtensionRegistrar::register_presenter` 安装。Presenter 只读已提交 UTF-8；IME preedit 保持单色。未知语言或未注册 presenter 时 Scene 退回单色文本。

@@ -1,6 +1,6 @@
 {
   "id": "T-V02",
-  "title": "visibility:hidden Nana 语义：等同跳过（非 CSS 占位）",
+  "title": "visibility:hidden 占位：仍参与 flex 测量，不绘制",
   "status": "pass",
   "viewport": [400, 100],
   "tolerance_px": 2,
@@ -16,6 +16,7 @@
   "expected": [
     { "id": "root", "x": 0, "y": 0, "w": 400, "h": 80 },
     { "id": "a", "x": 0, "y": 0, "w": 50, "h": 40 },
-    { "id": "b", "x": 60, "y": 0, "w": 50, "h": 40 }
+    { "id": "gone", "x": 60, "y": 0, "w": 50, "h": 40 },
+    { "id": "b", "x": 120, "y": 0, "w": 50, "h": 40 }
   ]
 }
