@@ -26,9 +26,9 @@ Runtime 按脏组件产生确定性工作：样式、文字、布局、命中、
 
 ## 抽取与绘制
 
-flush 将变更抽成 `ExtractedNode` 增量，`UiScene::apply_delta` 更新绘制图。`CustomRenderNode` 是一等抽取字段：`GpuTextureView` / `GpuView` 与 Button 一样进入 document order。
+flush 将变更抽成 `ExtractedNode` 增量，`UiScene::apply_delta` 更新绘制图。`CustomRenderNode` 是一等抽取字段：`GpuTextureView`（默认）与 `GpuView` 都和 Button 一样进入 document order。
 
-`SceneWgpuPainter` 注入宿主 Device / Queue，在当前 dest pass 按节点顺序编码。HostTexture 不攒到帧尾，不为每个 GPU 槽单独开 pass。含 HostTexture / 自定义 GPU 节点的帧使用 `sample_count = 1`；没有 GPU 节点的帧可以用 4x MSAA 画方块和网格，文字在 resolve 之后画。不要在自定义节点两侧反复 resolve。外部 `SceneResourceProducer` 在采样前用同一 Queue 提交。冲突 revision 拒绝整帧。
+`SceneWgpuPainter` 注入宿主 Device / Queue，在当前 dest pass 按节点顺序编码。HostTexture 不攒到帧尾，不为每个 GPU 槽单独开 pass。含 HostTexture / 自定义 GPU 节点的帧使用 `sample_count = 1`；没有 GPU 节点的帧可以用 4x MSAA 画方块和网格，文字在 resolve 之后画。不要在自定义节点两侧反复 resolve。高级的 `SceneResourceProducer` 在采样前用同一 Queue 提交。冲突 revision 拒绝整帧。
 
 无障碍增量带同一 generation 的更新节点与稳定 ID 删除。平台 adapter 不维护另一棵权威语义树。默认程序不声明无障碍动作；只有显式接通的 `RuntimeProgram::accessibility_action` 才暴露。
 

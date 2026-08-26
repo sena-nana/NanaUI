@@ -43,11 +43,11 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | `update` | 宿主级消息；保持便宜 |
 | `theme_mode` | 深色 / 浅色 |
 | `window_material_mode` | 可选；默认实色 |
-| `host_textures` | 可选；slot → `HostTexture` |
-| `scene_gpu_renderers` | 可选；`None` = 默认 `gpu-view` painter；空表 = 不画 |
-| `scene_resource_producers` | 可选；Scene 采样前的离屏生产 |
+| `host_textures` | 默认；slot → `HostTexture` |
 | `prepare_window_frame` | flush 前准备纹理 |
 | `window_frame_presented` | present 后释放旧资源 |
+| `scene_gpu_renderers` | 高级。`None` = 演示 `"gpu-view"`；空表 = 不画 |
+| `scene_resource_producers` | 高级。按图离屏；第一次可忽略 |
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
 | `window_event` / `input_event` | 窗口生命周期与原始输入 |
@@ -76,7 +76,7 @@ update_component(entity, |view, _| { … })
 | --- | --- |
 | 进入布局、命中、Scene | `UiExtension` + `register_component`；Vue 再加 `nana-*` |
 | 仅 JS 命令 / props 白名单 | `NativeComponentRegistry` + `Nana.components.call` |
-| GPU 内容 | `GpuTextureView` / `GpuView` + 宿主纹理或 `SceneGpuRenderer` |
+| GPU 内容 | `GpuTextureView` + 宿主纹理；直写见 `GpuView` |
 
 不支持动态 dylib。
 

@@ -21,11 +21,11 @@ NanaUI 是一套 **保留式原生桌面 UI 运行时**。应用打开窗口、�
 
 **相对 Electron / Tauri。** 它们优化的是「用 Web 技术出桌面窗口」。NanaUI 的 Vue 路径是兼容输入：Vue 3 的一个子集经 Custom Renderer 落到 `UiWorld`，不是把 `@vue/runtime-dom` 产物丢进 WebView。没有 Tauri 的窗口 / 插件 / invoke 协议，也没有浏览器 CORS、Cookie、Service Worker。
 
-**相对游戏引擎。** 引擎优化的是场景和相机。产品壳（标题栏、侧栏、设置、Dock、系统材质）是后加层。NanaUI 相反：壳是一等界面；实时画面由应用画到纹理或写入当前 pass，再作为普通节点挂上树。不要绕过界面树去直写窗口 Surface。
+**相对游戏引擎。** 引擎优化的是场景和相机。产品壳（标题栏、侧栏、设置、Dock、系统材质）是后加层。NanaUI 相反：壳是一等界面；实时画面由应用画到纹理，再作为普通节点挂上树。不要绕过界面树去直写窗口 Surface。
 
 **相对即时模式 UI。** NanaUI 是保留式：`RuntimeDocument` 上的控件投影到 `UiWorld`，布局由运行时计算。控件事件走 `on` / `observe`；`RuntimeProgram::update` 只处理跨窗口、GPU、持久化这类宿主级消息，不是每一下点击的总线。
 
-**相对框架自管 GPU 的保留式 UI。** 关键差别是所有权：NanaUI **不**再申请第二套 Device / Queue，也不把实时画面读回 CPU 再贴回去。`SceneWgpuPainter` 注入宿主已有的 GPU 上下文，在主 pass 里按节点顺序采样 `HostTexture` 或执行 `GpuView`。
+**相对框架自管 GPU 的保留式 UI。** 关键差别是所有权：NanaUI **不**再申请第二套 Device / Queue，也不把实时画面读回 CPU 再贴回去。`SceneWgpuPainter` 注入宿主已有的 GPU 上下文，在主 pass 里按节点顺序采样 `HostTexture`。现场直写用 `GpuView`。
 
 ## 运行模型
 
@@ -67,10 +67,10 @@ Vue 可以迁已有界面，但新应用从 Rust 的 `nana_ui::runtime` 写起�
 cargo run -p component-gallery
 
 # 界面与实时画面同一窗口
-cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
-
-# 宿主纹理（应用先画到纹理，再作为节点采样）
 cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts
+
+# GpuView 演示（非默认）
+cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
 `nana-ui` 默认 feature 为空。要出窗口至少启用 `hosted`（含 gpu 与 winit）和 `bundled-fonts`。

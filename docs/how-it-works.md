@@ -38,10 +38,10 @@ initialize     建 RuntimeDocument，create_component，on(...)
 document()     按 WindowId 交出那棵树
 update         只处理宿主级消息（开窗、换 GPU、持久化）
                按钮点击不要走这里，用 on / observe
-host_textures / scene_gpu_renderers / scene_resource_producers
-               可选：把实时画面接到树上
-prepare_window_frame / window_frame_presented
-               可选：在 flush 前画好纹理，present 后再释放旧资源
+host_textures / prepare_window_frame / window_frame_presented
+               默认：把已有纹理挂上树，flush 前更新，present 后再释放
+scene_gpu_renderers / scene_resource_producers
+               高级：第一次接入可忽略，见 gpu.md
 ```
 
 控件交互：`AppContext::on(button, |_, Activate, cx| { ... })`。需要开窗或换纹理时，在闭包里 `cx.dispatch_program(Message)`，下一帧进入 `update`。`update` 保持便宜；把页面内容填进树放在 `bind_window`（present 之后）。
@@ -71,18 +71,9 @@ prepare_window_frame / window_frame_presented
 
 ## 实时画面怎么成为节点
 
-两条常用接入，都落在 `CustomRenderNode` 上，和 Button 一样被布局、裁剪、命中：
+默认：画面画到可采样纹理，树上挂 `GpuTextureView`，登记同一 slot。和 Button 一样被布局、裁剪、命中。
 
-| 你有什么 | 挂什么 | 宿主做什么 |
-| --- | --- | --- |
-| 已经画到一张可采样纹理（离屏场景、多层合成） | `GpuTextureView`（slot 字符串） | `HostTextureRegistry::register`；painter 在节点位置采样 `"nana.host-texture"` |
-| 可以写进当前 UI 的 render pass | `GpuView` | 默认有一个演示用 painter；产品里实现 `SceneGpuRenderer`，用宿主 Device 编码进当前 encoder |
-
-多层实时内容就是相邻的几张 `GpuTextureView`。不要为某一种业务画面发明直写 Surface 的控件。
-
-必须先画到纹理、再被 UI 采样的内容，用 `SceneResourceProducer`：编码发生在 Scene 采样之前，仍是同一对 Device / Queue。同一资源在一帧里出现冲突的 revision，这一帧会被拒绝，不会偷偷选其中一个。
-
-换纹理时升 generation / revision，不要拆掉布局节点。细则见 [实时画面](gpu.md)。
+多层就是相邻的几张 `GpuTextureView`。没有中间纹理才用 `GpuView`，按图离屏见 [gpu.md](gpu.md#按图离屏)。换纹理升 generation，不要拆节点。细则见 [实时画面](gpu.md)。
 
 ## Vue 是输入，不是另一套窗口
 
