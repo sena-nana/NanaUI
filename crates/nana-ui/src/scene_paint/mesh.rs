@@ -15,6 +15,9 @@ pub(super) struct StrokeStyle<'a> {
     pub width: f32,
     pub widths: &'a [f32],
     pub cap: StrokeCap,
+    pub dash: &'a [f32],
+    pub dash_offset: f32,
+    pub colors: &'a [[f32; 4]],
 }
 
 #[repr(C)]
@@ -60,7 +63,7 @@ impl MeshInstance {
 fn cap_code(cap: StrokeCap) -> f32 {
     match cap {
         StrokeCap::Round => ROUND_CAP,
-        StrokeCap::Butt => BUTT_CAP,
+        StrokeCap::Butt | StrokeCap::Square => BUTT_CAP,
     }
 }
 
@@ -170,13 +173,24 @@ impl MeshPipeline {
             return None;
         }
         let start = self.pending_instances.len() as u32;
-        append_stroke_instances(
+        let packed_color = pack_linear(with_opacity(color, opacity));
+        let packed_colors: Vec<[f32; 4]> = if style.colors.len() == points.len() {
+            style
+                .colors
+                .iter()
+                .map(|item| pack_linear(with_opacity(*item, opacity)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        emit_stroke_instances(
             &mut self.pending_instances,
             points,
-            style.width,
-            style.widths,
-            style.cap,
-            pack_linear(with_opacity(color, opacity)),
+            StrokeStyle {
+                colors: &packed_colors,
+                ..style
+            },
+            packed_color,
         );
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
         stamp_fragment_clip(&mut self.pending_instances, start as usize, fragment_clip);
@@ -369,6 +383,56 @@ fn mesh_pipeline(
     })
 }
 
+/// Solid uniform-color Round/Butt path used by GraphCanvas and TimeSeries.
+/// Decorations (dash, per-point colors, Square) take a separate walk so this
+/// loop stays the unused-attribute fast path.
+fn emit_stroke_instances(
+    instances: &mut Vec<MeshInstance>,
+    points: &[[f32; 2]],
+    style: StrokeStyle<'_>,
+    color: [f32; 4],
+) {
+    let colors = if style.colors.len() == points.len() {
+        style.colors
+    } else {
+        &[]
+    };
+    if style.dash.is_empty() && colors.is_empty() && style.cap != StrokeCap::Square {
+        append_stroke_instances(
+            instances,
+            points,
+            style.width,
+            style.widths,
+            style.cap,
+            color,
+        );
+        return;
+    }
+    match normalize_dash(style.dash) {
+        DashPattern::Empty => {}
+        DashPattern::Solid => append_styled_stroke_instances(
+            instances,
+            points,
+            style.width,
+            style.widths,
+            style.cap,
+            color,
+            colors,
+        ),
+        DashPattern::Cycle(pattern) => append_dashed_stroke_instances(
+            instances,
+            points,
+            style.width,
+            style.widths,
+            style.cap,
+            color,
+            colors,
+            &pattern,
+            style.dash_offset,
+        ),
+    }
+}
+
 fn append_stroke_instances(
     instances: &mut Vec<MeshInstance>,
     points: &[[f32; 2]],
@@ -403,6 +467,231 @@ fn append_stroke_instances(
             StrokeCap::Round
         };
         push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
+    }
+}
+
+fn append_styled_stroke_instances(
+    instances: &mut Vec<MeshInstance>,
+    points: &[[f32; 2]],
+    width: f32,
+    widths: &[f32],
+    cap: StrokeCap,
+    color: [f32; 4],
+    colors: &[[f32; 4]],
+) {
+    let per_point = widths.len() == points.len();
+    let per_color = colors.len() == points.len();
+    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
+    for (index, pair) in points.windows(2).enumerate() {
+        let r0 = if per_point {
+            widths[index] * 0.5
+        } else {
+            width * 0.5
+        };
+        let r1 = if per_point {
+            widths[index + 1] * 0.5
+        } else {
+            width * 0.5
+        };
+        if !segment_is_drawable(pair[0], pair[1], r0, r1) {
+            continue;
+        }
+        let segment_color = if per_color { colors[index] } else { color };
+        segments.push((pair[0], pair[1], r0.max(0.0), r1.max(0.0), segment_color));
+    }
+    let last = segments.len().saturating_sub(1);
+    for (index, (p0, p1, r0, r1, segment_color)) in segments.into_iter().enumerate() {
+        let start_cap = if index == 0 { cap } else { StrokeCap::Butt };
+        let end_cap = if index == last || cap == StrokeCap::Butt {
+            cap
+        } else {
+            StrokeCap::Round
+        };
+        push_capped_segment(instances, p0, p1, r0, r1, start_cap, end_cap, segment_color);
+    }
+}
+
+fn append_dashed_stroke_instances(
+    instances: &mut Vec<MeshInstance>,
+    points: &[[f32; 2]],
+    width: f32,
+    widths: &[f32],
+    cap: StrokeCap,
+    color: [f32; 4],
+    colors: &[[f32; 4]],
+    pattern: &[f32],
+    dash_offset: f32,
+) {
+    let cycle: f32 = pattern.iter().copied().sum();
+    if cycle <= f32::EPSILON {
+        return;
+    }
+    let per_point = widths.len() == points.len();
+    let per_color = colors.len() == points.len();
+    let last_point = points.len().saturating_sub(2);
+    let mut path_s = 0.0;
+    let mut prev_ended_on_at_vertex = false;
+    for (index, pair) in points.windows(2).enumerate() {
+        let r0 = if per_point {
+            widths[index] * 0.5
+        } else {
+            width * 0.5
+        };
+        let r1 = if per_point {
+            widths[index + 1] * 0.5
+        } else {
+            width * 0.5
+        };
+        if !segment_is_drawable(pair[0], pair[1], r0, r1) {
+            prev_ended_on_at_vertex = false;
+            continue;
+        }
+        let dx = pair[1][0] - pair[0][0];
+        let dy = pair[1][1] - pair[0][1];
+        let len = dx.hypot(dy);
+        let c0 = if per_color { colors[index] } else { color };
+        let c1 = if per_color { colors[index + 1] } else { color };
+        let mut local = 0.0;
+        while local < len {
+            let (on, remaining) = dash_phase(path_s + local + dash_offset, pattern, cycle);
+            if remaining <= 1e-5 {
+                local += 1e-4;
+                continue;
+            }
+            let take = remaining.min(len - local);
+            if on && take > f32::EPSILON {
+                let t0 = local / len;
+                let t1 = (local + take) / len;
+                let q0 = lerp2(pair[0], pair[1], t0);
+                let q1 = lerp2(pair[0], pair[1], t1);
+                let rr0 = r0 + (r1 - r0) * t0;
+                let rr1 = r0 + (r1 - r0) * t1;
+                let starts_at_vertex = local <= 1e-5;
+                let ends_at_vertex = (local + take) >= len - 1e-5;
+                let next_on = if !ends_at_vertex || index == last_point {
+                    false
+                } else {
+                    dash_phase(path_s + len + dash_offset + 1e-4, pattern, cycle).0
+                };
+                let start_cap = if starts_at_vertex && prev_ended_on_at_vertex {
+                    StrokeCap::Butt
+                } else {
+                    cap
+                };
+                let end_cap = if ends_at_vertex && next_on {
+                    StrokeCap::Butt
+                } else {
+                    cap
+                };
+                push_capped_segment(
+                    instances,
+                    q0,
+                    q1,
+                    rr0.max(0.0),
+                    rr1.max(0.0),
+                    start_cap,
+                    end_cap,
+                    lerp4(c0, c1, t0),
+                );
+                prev_ended_on_at_vertex = ends_at_vertex;
+            } else {
+                prev_ended_on_at_vertex = false;
+            }
+            local += take;
+        }
+        path_s += len;
+    }
+}
+
+enum DashPattern {
+    Solid,
+    Empty,
+    Cycle(Vec<f32>),
+}
+
+fn normalize_dash(dash: &[f32]) -> DashPattern {
+    if dash.is_empty() {
+        return DashPattern::Solid;
+    }
+    if dash.iter().any(|value| !value.is_finite() || *value < 0.0) {
+        return DashPattern::Solid;
+    }
+    if dash.iter().all(|value| *value == 0.0) {
+        return DashPattern::Empty;
+    }
+    let mut pattern = dash.to_vec();
+    if pattern.len() % 2 == 1 {
+        pattern.extend_from_slice(dash);
+    }
+    DashPattern::Cycle(pattern)
+}
+
+fn dash_phase(distance: f32, pattern: &[f32], cycle: f32) -> (bool, f32) {
+    let mut d = distance % cycle;
+    if d < 0.0 {
+        d += cycle;
+    }
+    let mut on = true;
+    for &len in pattern {
+        if d < len {
+            return (on, (len - d).max(0.0));
+        }
+        d -= len;
+        on = !on;
+    }
+    (false, 0.0)
+}
+
+fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+fn push_capped_segment(
+    instances: &mut Vec<MeshInstance>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    r0: f32,
+    r1: f32,
+    start_cap: StrokeCap,
+    end_cap: StrokeCap,
+    color: [f32; 4],
+) {
+    let (p0, start_cap) = square_end(p0, p1, r0, start_cap, true);
+    let (p1, end_cap) = square_end(p0, p1, r1, end_cap, false);
+    push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
+}
+
+fn square_end(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    radius: f32,
+    cap: StrokeCap,
+    start: bool,
+) -> ([f32; 2], StrokeCap) {
+    if cap != StrokeCap::Square {
+        return (if start { p0 } else { p1 }, cap);
+    }
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let len = dx.hypot(dy);
+    if !len.is_finite() || len < f32::EPSILON {
+        return (if start { p0 } else { p1 }, StrokeCap::Butt);
+    }
+    let tx = dx / len * radius;
+    let ty = dy / len * radius;
+    if start {
+        ([p0[0] - tx, p0[1] - ty], StrokeCap::Butt)
+    } else {
+        ([p1[0] + tx, p1[1] + ty], StrokeCap::Butt)
     }
 }
 
@@ -504,6 +793,8 @@ mod tests {
         start: StrokeCap,
         end: StrokeCap,
     ) -> f32 {
+        let (a, start) = square_end(a, b, r0, start, true);
+        let (b, end) = square_end(a, b, r1, end, false);
         let mut distance = sd_variable_capsule(point, a, b, r0, r1);
         if start == StrokeCap::Butt || end == StrokeCap::Butt {
             let ba = [b[0] - a[0], b[1] - a[1]];
@@ -540,11 +831,11 @@ mod tests {
         let nx = -ty;
         let ny = tx;
         let end0 = match start {
-            StrokeCap::Round => r0 + STROKE_AA_FRINGE,
+            StrokeCap::Round | StrokeCap::Square => r0 + STROKE_AA_FRINGE,
             StrokeCap::Butt => STROKE_AA_FRINGE,
         };
         let end1 = match end {
-            StrokeCap::Round => r1 + STROKE_AA_FRINGE,
+            StrokeCap::Round | StrokeCap::Square => r1 + STROKE_AA_FRINGE,
             StrokeCap::Butt => STROKE_AA_FRINGE,
         };
         let side = if corner[0] < 0.0 {
@@ -872,5 +1163,213 @@ mod tests {
             instances[2].clip_inv_ef_cap[3],
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
         );
+    }
+
+    fn solid_style<'a>(width: f32, widths: &'a [f32], cap: StrokeCap) -> StrokeStyle<'a> {
+        StrokeStyle {
+            width,
+            widths,
+            cap,
+            dash: &[],
+            dash_offset: 0.0,
+            colors: &[],
+        }
+    }
+
+    #[test]
+    fn unused_attributes_match_legacy_solid_emit() {
+        let points = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0]];
+        let color = [1.0, 0.0, 0.0, 1.0];
+        let mut legacy = Vec::new();
+        append_stroke_instances(&mut legacy, &points, 2.0, &[], StrokeCap::Round, color);
+        let mut via_style = Vec::new();
+        emit_stroke_instances(
+            &mut via_style,
+            &points,
+            solid_style(2.0, &[], StrokeCap::Round),
+            color,
+        );
+        assert_eq!(
+            via_style, legacy,
+            "empty dash/colors and Round must reuse the solid instance loop"
+        );
+        emit_stroke_instances(
+            &mut via_style,
+            &points,
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[-4.0, 2.0],
+                dash_offset: 3.0,
+                colors: &[[0.0, 1.0, 0.0, 1.0]],
+            },
+            color,
+        );
+        assert_eq!(
+            via_style[legacy.len()..],
+            legacy,
+            "invalid dash and mismatched colors must stay on the solid emit"
+        );
+    }
+
+    #[test]
+    fn square_cap_expands_endpoints_onto_the_butt_gpu_path() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [10.0, 0.0]],
+            solid_style(4.0, &[], StrokeCap::Square),
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 1);
+        assert!((instances[0].p0[0] + 2.0).abs() < 1e-5);
+        assert!((instances[0].p1[0] - 12.0).abs() < 1e-5);
+        assert_eq!(
+            instances[0].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Butt, StrokeCap::Butt)
+        );
+        assert!(
+            sd_stroke(
+                [-1.5, 1.5],
+                [0.0, 0.0],
+                [10.0, 0.0],
+                2.0,
+                2.0,
+                StrokeCap::Square,
+                StrokeCap::Square,
+            ) < 0.0
+        );
+        assert!(
+            sd_stroke(
+                [-1.5, 1.5],
+                [0.0, 0.0],
+                [10.0, 0.0],
+                2.0,
+                2.0,
+                StrokeCap::Round,
+                StrokeCap::Round,
+            ) > 0.0
+        );
+        assert!(
+            sd_stroke(
+                [-2.5, 0.0],
+                [0.0, 0.0],
+                [10.0, 0.0],
+                2.0,
+                2.0,
+                StrokeCap::Square,
+                StrokeCap::Square,
+            ) > 0.0
+        );
+    }
+
+    #[test]
+    fn dash_emits_only_on_segments() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [40.0, 0.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Butt,
+                dash: &[10.0, 10.0],
+                dash_offset: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 2);
+        assert_eq!(instances[0].p0, [0.0, 0.0]);
+        assert!((instances[0].p1[0] - 10.0).abs() < 1e-4);
+        assert!((instances[1].p0[0] - 20.0).abs() < 1e-4);
+        assert!((instances[1].p1[0] - 30.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn odd_dash_repeats_and_zero_pattern_emits_nothing() {
+        let mut odd = Vec::new();
+        emit_stroke_instances(
+            &mut odd,
+            &[[0.0, 0.0], [40.0, 0.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Butt,
+                dash: &[10.0],
+                dash_offset: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(odd.len(), 2);
+        let mut empty = Vec::new();
+        emit_stroke_instances(
+            &mut empty,
+            &[[0.0, 0.0], [40.0, 0.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[0.0, 0.0],
+                dash_offset: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn continuous_dash_keeps_join_once_across_vertices() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[100.0, 4.0],
+                dash_offset: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Round, StrokeCap::Butt)
+        );
+        assert_eq!(
+            instances[1].clip_inv_ef_cap[3],
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+    }
+
+    #[test]
+    fn per_point_colors_use_the_segment_start() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [10.0, 0.0], [10.0, 8.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[],
+                dash_offset: 0.0,
+                colors: &[
+                    [1.0, 0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                ],
+            },
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        assert_eq!(instances.len(), 2);
+        assert_eq!(instances[0].color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(instances[1].color, [0.0, 1.0, 0.0, 1.0]);
     }
 }

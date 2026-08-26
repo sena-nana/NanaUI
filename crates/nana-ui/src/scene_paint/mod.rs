@@ -554,13 +554,25 @@ impl SceneWgpuPainter {
                     color,
                     widths,
                     cap,
+                    pattern,
                 } => {
+                    let (dash, dash_offset, colors) = match pattern.as_deref() {
+                        Some(pattern) => (
+                            pattern.dash.as_slice(),
+                            pattern.dash_offset,
+                            pattern.colors.as_slice(),
+                        ),
+                        None => ([].as_slice(), 0.0, [].as_slice()),
+                    };
                     if let Some(range) = self.meshes.push_stroke(
                         points,
                         StrokeStyle {
                             width: *width,
                             widths,
                             cap: *cap,
+                            dash,
+                            dash_offset,
+                            colors,
                         },
                         affine,
                         *color,
@@ -1254,7 +1266,8 @@ mod tests {
         StableNodeId, StandardVisual, TextContent,
     };
     use nana_ui_scene::{
-        AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, StrokeCap, UiScene,
+        AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, StrokeCap, StrokePattern,
+        UiScene,
     };
 
     use super::*;
@@ -1930,6 +1943,7 @@ mod tests {
                 color: [1.0, 0.0, 0.0, 1.0],
                 widths: vec![12.0, 4.0],
                 cap: StrokeCap::Round,
+                pattern: None,
             },
         ));
         let pixels = paint_scene_rgba(
@@ -1989,6 +2003,7 @@ mod tests {
                 color: [1.0, 0.0, 0.0, 1.0],
                 widths: Vec::new(),
                 cap: StrokeCap::Butt,
+                pattern: None,
             },
         ));
         let pixels = paint_scene_rgba(
@@ -2014,6 +2029,173 @@ mod tests {
         assert!(
             start_edge[0] > 80,
             "the butt start cut must still ink on the endpoint, got {start_edge:?}"
+        );
+    }
+
+    #[test]
+    fn square_stroke_extends_flat_caps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[16.0, 32.0], [48.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        assert!(scene.replace_primitive_kind(
+            primitive.id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[16.0, 32.0], [48.0, 32.0]],
+                width: 8.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: Vec::new(),
+                cap: StrokeCap::Square,
+                pattern: None,
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [256, 256],
+            4.0,
+        );
+        let outside_round = pixel(&pixels, 256, 52, 116);
+        assert!(
+            is_red_slot(outside_round),
+            "square cap must ink the half-width box past the start, got {outside_round:?}"
+        );
+        let past_square = pixel(&pixels, 256, 44, 128);
+        assert!(
+            is_blue_slot(past_square),
+            "beyond the square extension must stay fill, got {past_square:?}"
+        );
+    }
+
+    #[test]
+    fn dashed_stroke_skips_gaps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[8.0, 32.0], [56.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        assert!(scene.replace_primitive_kind(
+            primitive.id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[8.0, 32.0], [56.0, 32.0]],
+                width: 8.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: Vec::new(),
+                cap: StrokeCap::Butt,
+                pattern: Some(Box::new(StrokePattern {
+                    dash: vec![8.0, 8.0],
+                    dash_offset: 0.0,
+                    colors: Vec::new(),
+                })),
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let dash = pixel(&pixels, 64, 12, 32);
+        assert!(
+            is_red_slot(dash),
+            "first 8px on-dash must ink, got {dash:?}"
+        );
+        let gap = pixel(&pixels, 64, 20, 32);
+        assert!(
+            is_blue_slot(gap),
+            "8px off-dash gap must stay fill, got {gap:?}"
+        );
+        let next = pixel(&pixels, 64, 28, 32);
+        assert!(is_red_slot(next), "second on-dash must ink, got {next:?}");
+    }
+
+    #[test]
+    fn per_point_stroke_colors_paint_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(
+                    vec![[8.0, 32.0], [32.0, 32.0], [56.0, 32.0]],
+                    [1.0, 0.0, 0.0, 1.0],
+                )],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        assert!(scene.replace_primitive_kind(
+            primitive.id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[8.0, 32.0], [32.0, 32.0], [56.0, 32.0]],
+                width: 8.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: Vec::new(),
+                cap: StrokeCap::Butt,
+                pattern: Some(Box::new(StrokePattern {
+                    dash: Vec::new(),
+                    dash_offset: 0.0,
+                    colors: vec![
+                        [1.0, 0.0, 0.0, 1.0],
+                        [0.0, 1.0, 0.0, 1.0],
+                        [0.0, 1.0, 0.0, 1.0],
+                    ],
+                })),
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let red = pixel(&pixels, 64, 16, 32);
+        assert!(
+            is_red_slot(red),
+            "first segment midpoint color must stay red, got {red:?}"
+        );
+        let green = pixel(&pixels, 64, 48, 32);
+        assert!(
+            is_green_slot(green),
+            "second segment must use the green start color, got {green:?}"
         );
     }
 
