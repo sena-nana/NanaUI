@@ -47,7 +47,8 @@ pub struct SceneGpuPassContext<'a> {
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
-/// Advanced WGPU compatibility extension for direct Scene graph passes.
+/// Advanced in-pass Scene encode. Prefer [`crate::HostTexture`] /
+/// [`crate::GpuTextureView`] for first-time hosts.
 ///
 /// Implementations receive NanaUI's existing Device/Queue during prepare and
 /// the current frame encoder/target during render. They must not create a
@@ -78,9 +79,8 @@ pub struct SceneResourceEncodeContext<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
 }
 
-/// Produces an external Scene resource before the compatibility painter reads
-/// it. Each graph preparation pass receives a host-owned command encoder;
-/// NanaUI submits successful passes before UI sampling on the same queue.
+/// Advanced graph-scheduled offscreen on the HostTexture path.
+/// Prefer `prepare_window_frame`. NanaUI submits each pass before UI sampling.
 pub trait SceneResourceProducer: fmt::Debug + Send + Sync + 'static {
     /// Encode one preparation pass. Returning an error drops this pass without
     /// submission; implementations must not retain a pending submission token

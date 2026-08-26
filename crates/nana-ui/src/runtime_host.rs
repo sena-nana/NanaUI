@@ -290,15 +290,17 @@ pub trait RuntimeProgram: Sized + 'static {
         crate::MaterialEffect::Solid
     }
 
+    /// Product default: attach an existing sampleable texture to the tree.
+    ///
+    /// Pair with [`crate::GpuTextureView`] on the same slot, then update the
+    /// view in [`Self::prepare_window_frame`].
     fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {
         None
     }
 
-    /// Advanced direct Scene renderers executed with NanaUI's current frame
-    /// encoder and render target. HostTexture remains available as a simpler
-    /// compatibility resource path.
+    /// Advanced: encode into the current UI pass. Prefer [`Self::host_textures`].
     ///
-    /// Returning `None` lets the hosted runtime attach a default `"gpu-view"`
+    /// Returning `None` lets the hosted runtime attach a demo `"gpu-view"`
     /// painter that uses stored host Device/Queue clones. `Some(registry)` is
     /// used unchanged. [`crate::SceneWgpuPainter`] consumes the resolved
     /// registry; an explicit empty registry leaves `"gpu-view"` unpaintable.
@@ -306,9 +308,9 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
-    /// External texture producers encoded by the host before UiScene samples
-    /// their resources. The queue submission remains ordered ahead of Scene
-    /// presentation. The host submits the same Device/Queue pair.
+    /// Advanced: graph-scheduled offscreen on the HostTexture path.
+    /// Prefer [`Self::prepare_window_frame`]. Same Device/Queue; submit before
+    /// Scene samples.
     fn scene_resource_producers(
         &self,
         _id: WindowId,

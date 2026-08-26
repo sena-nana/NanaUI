@@ -4,28 +4,19 @@
 
 先把一扇普通窗口跑通，见 [开始](start.md)，再把画面挂上去。心智模型见 [框架如何运行](how-it-works.md)。
 
+第一次接入：把画面画到可采样纹理，树上挂 `GpuTextureView`。Vue `<nana-gpu>`、Live2D 多层、预览视口都是这条。
+
 ```bash
-cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts
 ```
 
-`gpu-view-demo` 把 `GpuView` 当节点，用默认 painter 画进当前 pass。`hosted-gpu-demo` 和 `examples/runtime-host-fixture` 是应用先画到纹理、再作为 `GpuTextureView` 被 UI 采样。
+`examples/runtime-host-fixture` 同结构。现场直写见 [GpuView](#gpuview)。
 
-## 选哪条接入
-
-| 内容怎么来 | 树上挂 | 宿主职责 |
-| --- | --- | --- |
-| 已经（或每帧都会）画到一张可采样纹理 | `GpuTextureView::new("preview")` | `HostTextureRegistry::register`；在 `prepare_window_frame` 里用**同一** Device/Queue 更新纹理 |
-| 可以直接写进 UI 当前的 render pass | `GpuView` | 默认有演示 painter。产品实现 `SceneGpuRenderer`，经 `scene_gpu_renderers()` 交给这一窗 |
-| 必须先离屏画完，UI 再采样（多层内容） | 纹理节点 + `SceneResourceProducer` | producer 在 Scene 采样**之前**编码；仍是同一对 Device/Queue |
-
-多层实时画面就是相邻的几张 `GpuTextureView`，由应用映射。不要绕过界面树去直写窗口 Surface。
-
-## 宿主纹理
+## 挂上去
 
 `run_runtime` 创建**一份** Adapter / Device / Queue（`HostedGpuContext`）。附加窗口只新建 Surface，共享同一份设备。已经有外部事件循环时，用更低层的 `HostedGpuContext`；不要再 `request_device`。
 
-最小闭环（结构同 `runtime-host-fixture`）：
+树上挂 `GpuTextureView::new("preview")`，`host_textures()` 登记同一 slot，`prepare_window_frame` 用**同一** Device / Queue 更新。
 
 ```rust
 // 树上：和 Button 一样占布局
@@ -60,9 +51,11 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 
 `HostTexture` 用稳定 slot 和 generation 包住可采样纹理。宿主替换或改尺寸时加 generation，NanaUI 只重建绑定，不拆布局。`revision` 的高 32 位是 generation、低 32 位是内容 version（`pack_gpu_revision`）。
 
-合成顺序就是文档顺序：`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样，不攒到帧尾。
+合成顺序就是文档顺序：`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样，不攒到帧尾。多层就是相邻的几张 `GpuTextureView`。不要绕过界面树去直写窗口 Surface。
 
 ## GpuView
+
+没有中间纹理、必须写进当前 UI pass 时才用。`gpu-view-demo` 是演示。
 
 `GpuView::new(slot_id)` 投影 `CustomRenderNode`，renderer 键是 `"gpu-view"`。
 
@@ -72,6 +65,14 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 `GpuViewMode::Inline` 复用当前 dest pass；`Standalone` 在同一 encoder / 目标上另开 pass。Renderer 不得 `request_device`，也不得 submit 宿主正在用的 encoder。
 
 节点上的 `palette` 和 `seed` 走 `CustomRenderNode::params`，槽位见 `gpu_view_params`。Runtime 只搬运这串数，语义由 renderer 键定义；换 renderer 就换一套自己的槽位约定。
+
+```bash
+cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
+```
+
+## 按图离屏
+
+离屏必须按 Scene 图、在采样**之前**编码时，仍挂 `GpuTextureView`，再实现 `SceneResourceProducer`。第一次接入用 `prepare_window_frame` 即可。
 
 ## 不要做的
 

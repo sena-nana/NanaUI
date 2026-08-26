@@ -1,10 +1,8 @@
 //! Backend-neutral GPU content slots.
 //!
-//! [`GpuTextureView`] projects a [`CustomRenderNode`] that the Scene painter
-//! can bind as `"nana.host-texture"`. [`GpuView`] projects [`GPU_VIEW_RENDERER`];
-//! hosts that leave scene GPU renderers unset receive a default `"gpu-view"`
-//! painter. Device, Queue, Surface, and any WGPU objects stay host-owned;
-//! Runtime never constructs a second renderer.
+//! [`GpuTextureView`] is the product default (`"nana.host-texture"`).
+//! [`GpuView`] encodes in-pass when there is no intermediate texture.
+//! Device, Queue, Surface, and WGPU objects stay host-owned.
 
 use std::sync::Arc;
 
@@ -85,10 +83,10 @@ pub mod gpu_view_params {
     pub const LEN: usize = 9;
 }
 
-/// A reusable GPU content slot identified by a stable host `slot_id`.
+/// In-pass GPU content identified by a stable host `slot_id`.
 ///
-/// Layout, interaction, and [`Self::custom_render`] are projected. Paint
-/// requires a host-registered Scene GPU renderer for [`GPU_VIEW_RENDERER`].
+/// Prefer [`GpuTextureView`] when the host already has a sampleable texture.
+/// Paint requires a host-registered Scene GPU renderer for [`GPU_VIEW_RENDERER`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuView {
     pub slot_id: u64,
@@ -182,9 +180,9 @@ impl GpuView {
 
 /// Displays a host-owned texture inside a layout region.
 ///
-/// `resource` is the host texture registry slot identity (the same string the
-/// host registers for `"nana.host-texture"`). Decimal IDs such as `"42"` are
-/// valid if the host registers that key. `generation` changes only when the
+/// Product default. `resource` is the host texture registry slot (the same
+/// string registered for `"nana.host-texture"`). Decimal IDs such as `"42"`
+/// are valid if the host registers that key. `generation` changes only when the
 /// sampled view is replaced. `version` changes for every content invalidation.
 /// Presentation fields stay on this view so CustomRenderNode can keep a
 /// backend-neutral id/revision contract. Pointer events default to off;
