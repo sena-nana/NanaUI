@@ -450,6 +450,7 @@ impl ScrollbarBar {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComponentElevation {
     pub color: [f32; 4],
+    pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
     pub spread_radius: f32,
@@ -461,16 +462,28 @@ impl ComponentElevation {
         match theme_mode {
             nana_ui_core::ThemeMode::Dark => Self {
                 color: [0.0, 0.0, 0.0, 0.62],
+                offset_x: 0.0,
                 offset_y: 10.0,
                 blur_radius: 30.0,
                 spread_radius: -24.0,
             },
             nana_ui_core::ThemeMode::Light => Self {
                 color: [17.0 / 255.0, 24.0 / 255.0, 39.0 / 255.0, 0.24],
+                offset_x: 0.0,
                 offset_y: 10.0,
                 blur_radius: 26.0,
                 spread_radius: -24.0,
             },
+        }
+    }
+
+    pub fn from_box_shadow(shadow: nana_ui_core::BoxShadowSpec) -> Self {
+        Self {
+            color: shadow.color,
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            blur_radius: shadow.blur_radius,
+            spread_radius: shadow.spread_radius,
         }
     }
 }
@@ -796,6 +809,8 @@ pub struct ComputedStyle {
     pub background: Option<[f32; 4]>,
     pub border_color: Option<[f32; 4]>,
     pub opacity: f32,
+    /// CSS `visibility` after inheritance (`visible` / `hidden`).
+    pub visibility: nana_ui_core::VisibilitySpec,
     pub visible: bool,
     pub font_size: f32,
     pub font_weight: Option<u16>,
@@ -812,6 +827,7 @@ impl Default for ComputedStyle {
             background: None,
             border_color: None,
             opacity: 1.0,
+            visibility: nana_ui_core::VisibilitySpec::Visible,
             visible: true,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,

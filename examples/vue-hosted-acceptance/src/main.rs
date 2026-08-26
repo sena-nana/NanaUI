@@ -299,6 +299,19 @@ impl RuntimeProgram for AcceptanceProgram {
         self.inner.wake(now, context)
     }
 
+    fn sync_animation_clock(&mut self, epoch: std::time::Instant) {
+        self.inner.sync_animation_clock(epoch);
+    }
+
+    fn animation_frame(
+        &mut self,
+        id: WindowId,
+        frame: nana_ui_runtime::AnimationFrame,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.inner.animation_frame(id, frame, context)
+    }
+
     fn accessibility_action(
         &mut self,
         id: WindowId,

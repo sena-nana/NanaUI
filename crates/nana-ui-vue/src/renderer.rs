@@ -326,7 +326,9 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 host.layout_boxes.remove(NodeHandle(id));
             }
             let mut bridge = lock_bridge(&host.bridge)?;
+            let mut doc = lock_doc(&host.document)?;
             if bridge.contains(widget_id(child)) {
+                bridge.purge_generated_pseudo_runtime(widget_id(child), &mut doc);
                 bridge.unregister(widget_id(child));
             }
             Ok(HostValue::Null)
@@ -805,6 +807,45 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     }
     {
         let host = host.clone();
+        api.register("computedStyle", move |args| {
+            let el = arg_handle(args, 0)?;
+            let bridge = lock_bridge(&host.bridge)?;
+            let id = widget_id(el);
+            let motion = bridge.computed_motion_for(id).cloned().unwrap_or_default();
+            Ok(HostValue::Object(
+                [
+                    (
+                        "transitionDelay".into(),
+                        HostValue::string(motion.transition_delay),
+                    ),
+                    (
+                        "transitionDuration".into(),
+                        HostValue::string(motion.transition_duration),
+                    ),
+                    (
+                        "transitionProperty".into(),
+                        HostValue::string(motion.transition_property),
+                    ),
+                    (
+                        "animationDelay".into(),
+                        HostValue::string(motion.animation_delay),
+                    ),
+                    (
+                        "animationDuration".into(),
+                        HostValue::string(motion.animation_duration),
+                    ),
+                    (
+                        "animationName".into(),
+                        HostValue::string(motion.animation_name),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        });
+    }
+    {
+        let host = host.clone();
         api.register("layoutBox", move |args| {
             let el = arg_handle(args, 0)?;
             let guard = lock_doc(&host.document)?;
@@ -968,16 +1009,38 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("setFocus", move |args| {
             let el = arg_handle(args, 0)?;
-            let mut guard = lock_doc(&host.document)?;
-            guard.set_focus(el);
+            {
+                let mut guard = lock_doc(&host.document)?;
+                guard.set_focus(el);
+            }
+            {
+                let mut bridge = lock_bridge(&host.bridge)?;
+                if bridge.has_interactive_css() {
+                    let mut doc = lock_doc(&host.document)?;
+                    bridge.reapply_interactive_cascade(&mut doc);
+                    bridge.sync_cascaded_layout_into_runtime(&mut doc);
+                    doc.flush_host_frame();
+                }
+            }
             Ok(HostValue::Null)
         });
     }
     {
         let host = host.clone();
         api.register("clearFocus", move |_args| {
-            let mut guard = lock_doc(&host.document)?;
-            guard.clear_focus();
+            {
+                let mut guard = lock_doc(&host.document)?;
+                guard.clear_focus();
+            }
+            {
+                let mut bridge = lock_bridge(&host.bridge)?;
+                if bridge.has_interactive_css() {
+                    let mut doc = lock_doc(&host.document)?;
+                    bridge.reapply_interactive_cascade(&mut doc);
+                    bridge.sync_cascaded_layout_into_runtime(&mut doc);
+                    doc.flush_host_frame();
+                }
+            }
             Ok(HostValue::Null)
         });
     }

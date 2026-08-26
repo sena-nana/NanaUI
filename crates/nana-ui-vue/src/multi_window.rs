@@ -233,6 +233,8 @@ struct VueRuntimeState {
     events: Option<HostEventSender>,
     diagnostic_sink: Option<JsDiagnosticSink>,
     host_call_observer: Option<HostCallObserver>,
+    /// Scene [`RuntimeAnimationClock`] epoch applied to every attached document.
+    host_animation_epoch: Option<std::time::Instant>,
 }
 
 impl VueRuntimeState {
@@ -279,6 +281,9 @@ impl VueRuntimeState {
         );
         for stylesheet in &self.stylesheets {
             host.inject_stylesheet(stylesheet);
+        }
+        if let Some(epoch) = self.host_animation_epoch {
+            host.set_host_animation_epoch(epoch);
         }
         let mount_root = host.mount_root();
         let api = host.host_api_registry();
@@ -407,7 +412,18 @@ impl VueRuntime {
                 events: None,
                 diagnostic_sink: None,
                 host_call_observer: None,
+                host_animation_epoch: None,
             })),
+        }
+    }
+
+    pub fn sync_animation_clock(&self, epoch: std::time::Instant) {
+        let mut state = self.state.lock().expect("Vue runtime state");
+        state.host_animation_epoch = Some(epoch);
+        for entry in state.windows.values() {
+            if let Ok(host) = entry.host.lock() {
+                host.set_host_animation_epoch(epoch);
+            }
         }
     }
 

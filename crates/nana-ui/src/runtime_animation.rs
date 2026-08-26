@@ -21,6 +21,10 @@ impl RuntimeAnimationClock {
         Self::new(Instant::now())
     }
 
+    pub const fn epoch(self) -> Instant {
+        self.epoch
+    }
+
     pub fn runtime_time(self, now: Instant) -> Duration {
         now.saturating_duration_since(self.epoch)
     }

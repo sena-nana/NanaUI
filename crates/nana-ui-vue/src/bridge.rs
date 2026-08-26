@@ -26,8 +26,19 @@ use nana_ui_core::{
 
 use crate::css_cascade::{
     MatchContext, MatchNode, StyleRule, StylesheetParseReport,
-    collect_document_custom_properties_from_rules, parse_stylesheet_with_report,
-    rebuild_layout_style, stylesheet_matches, stylesheet_may_match_subject,
+    collect_document_custom_properties_from_rules, parse_stylesheet_full, rebuild_layout_style,
+    stylesheet_matches, stylesheet_may_match_subject,
+};
+use crate::css_interactive::{
+    GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
+    KeyframesRule, MotionStyleRule,
+};
+use crate::css_interactive_apply::{
+    ActiveCssTransition, CssComputedMotion, CssPaintSnapshot, InteractiveRuntimeSnapshot,
+    apply_generated_pseudo_entries, apply_interactive_layers, build_keyframes_spec,
+    build_transition_spec, css_keyframes_animation_id, generated_pseudo_has_content,
+    keyframe_paint_at, lerp_paint_for_properties, parse_content_text, parse_transition_properties,
+    resolve_computed_motion,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
@@ -1867,6 +1878,13 @@ pub struct SemanticWidget {
 /// L1/L2 semantic props + stylesheet cascade working set.
 ///
 /// Not the product retained world: identity and hierarchy live in `UiWorld`.
+/// Attribute marking bridge-owned `::before` / `::after` boxes.
+pub const GENERATED_PSEUDO_ATTR: &str = "data-nana-generated-pseudo";
+/// Originating element id for generated pseudo widgets.
+pub const GENERATED_PSEUDO_ORIGIN_ATTR: &str = "data-nana-generated-origin";
+
+const GENERATED_PSEUDO_ID_BASE: u64 = 0xA000_0000_0000_0000;
+
 /// Pending [`BridgeEvent`]s are Runtime-bound input, not a second event tree.
 #[derive(Debug)]
 pub struct MessageBridge {
@@ -1881,7 +1899,28 @@ pub struct MessageBridge {
     /// Parsed author stylesheet rules (source order across inject calls).
     /// Declaration entries are cached on each [`StyleRule`] at parse time.
     stylesheet_rules: Vec<StyleRule>,
+    /// Deferred interactive (`:hover` / `:focus` / `:active`) rules.
+    interactive_rules: Vec<InteractiveStyleRule>,
+    /// Deferred generated pseudo rules (`::before` / `::after`).
+    generated_pseudo_rules: Vec<GeneratedPseudoRule>,
+    /// Parsed `@keyframes` blocks keyed by animation name.
+    keyframes: BTreeMap<String, KeyframesRule>,
+    /// Static selector motion rules (`transition` / `animation` longhands).
+    motion_rules: Vec<MotionStyleRule>,
     next_rule_order: u32,
+    next_generated_pseudo_id: u64,
+    /// Originating widget → generated pseudo child ids.
+    generated_pseudo_children: HashMap<WidgetId, GeneratedPseudoChildren>,
+    /// Resolved motion longhands for `getComputedStyle` / Vue `<Transition>`.
+    computed_motion: HashMap<WidgetId, CssComputedMotion>,
+    /// Active CSS transition timelines keyed by widget id.
+    css_transitions: HashMap<WidgetId, ActiveCssTransition>,
+    /// Base layout paint captured before a CSS transition starts.
+    css_transition_base: HashMap<WidgetId, CssPaintSnapshot>,
+    /// Latest eased progress for in-flight CSS transitions (0..=1).
+    css_transition_progress: HashMap<WidgetId, f32>,
+    /// Runtime pointer/focus snapshot used during the current interactive cascade.
+    interactive_runtime: Option<InteractiveRuntimeSnapshot>,
     /// Document-level custom properties (`:root` / `html` / `body` …) as inheritance base.
     /// Rebuilt from [`stylesheet_rules`] (no raw CSS re-scrape).
     stylesheet_vars: BTreeMap<String, String>,
@@ -1889,6 +1928,12 @@ pub struct MessageBridge {
     layout_viewport: Option<(f32, f32)>,
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     stylesheet_skips: StylesheetParseReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct GeneratedPseudoChildren {
+    before: Option<WidgetId>,
+    after: Option<WidgetId>,
 }
 
 impl Default for MessageBridge {
@@ -1908,11 +1953,54 @@ impl MessageBridge {
             appearance: AppearanceSettings::default(),
             scaffolded: false,
             stylesheet_rules: Vec::new(),
+            interactive_rules: Vec::new(),
+            generated_pseudo_rules: Vec::new(),
+            keyframes: BTreeMap::new(),
+            motion_rules: Vec::new(),
             next_rule_order: 0,
+            next_generated_pseudo_id: 1,
+            generated_pseudo_children: HashMap::new(),
+            computed_motion: HashMap::new(),
+            css_transitions: HashMap::new(),
+            css_transition_base: HashMap::new(),
+            css_transition_progress: HashMap::new(),
+            interactive_runtime: None,
             stylesheet_vars: BTreeMap::new(),
             layout_viewport: None,
             stylesheet_skips: StylesheetParseReport::default(),
         }
+    }
+
+    pub fn has_interactive_css(&self) -> bool {
+        !self.interactive_rules.is_empty()
+            || !self.generated_pseudo_rules.is_empty()
+            || !self.motion_rules.is_empty()
+            || !self.keyframes.is_empty()
+    }
+
+    pub fn computed_motion_for(&self, id: WidgetId) -> Option<&CssComputedMotion> {
+        self.computed_motion.get(&id)
+    }
+
+    pub(crate) fn interactive_ancestor_flags(
+        &self,
+        id: WidgetId,
+    ) -> Vec<crate::css_interactive::InteractivePseudoFlags> {
+        use crate::css_interactive::InteractivePseudoFlags;
+        let Some(runtime) = &self.interactive_runtime else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut cur = self.widgets.get(&id).and_then(|w| w.parent);
+        while let Some(pid) = cur {
+            out.push(InteractivePseudoFlags {
+                hover: runtime.hovered.contains_key(&pid),
+                focus: runtime.focused == Some(pid),
+                active: runtime.pressed.contains_key(&pid),
+            });
+            cur = self.widgets.get(&pid).and_then(|w| w.parent);
+        }
+        out
     }
 
     /// Parse and retain stylesheet rules, then recascade matching subtrees.
@@ -1923,17 +2011,43 @@ impl MessageBridge {
         if css.trim().is_empty() {
             return;
         }
-        let (parsed, report) = parse_stylesheet_with_report(css, self.next_rule_order);
+        let (sheet, report) = parse_stylesheet_full(css, self.next_rule_order);
         self.stylesheet_skips = self.stylesheet_skips.combine(report);
-        if parsed.is_empty() {
+        if sheet.static_rules.is_empty()
+            && sheet.interactive_rules.is_empty()
+            && sheet.generated_pseudo_rules.is_empty()
+            && sheet.motion_rules.is_empty()
+            && sheet.keyframes.is_empty()
+        {
             return;
         }
-        if let Some(last) = parsed.last() {
-            self.next_rule_order = last.source_order.saturating_add(1);
+        let next_order = [
+            sheet.static_rules.last().map(|r| r.source_order),
+            sheet.interactive_rules.last().map(|r| r.source_order),
+            sheet.generated_pseudo_rules.last().map(|r| r.source_order),
+            sheet.motion_rules.last().map(|r| r.source_order),
+            sheet.keyframes.values().map(|r| r.source_order).max(),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        if let Some(last) = next_order {
+            self.next_rule_order = last.saturating_add(1);
         }
-        self.stylesheet_rules.extend(parsed.iter().cloned());
+        let new_static = sheet.static_rules.clone();
+        self.stylesheet_rules.extend(sheet.static_rules);
+        self.interactive_rules.extend(sheet.interactive_rules);
+        self.generated_pseudo_rules
+            .extend(sheet.generated_pseudo_rules);
+        self.motion_rules.extend(sheet.motion_rules);
+        for (name, rule) in sheet.keyframes {
+            self.keyframes.insert(name, rule);
+        }
         self.rebuild_stylesheet_vars();
-        self.reapply_layout_cascade_matching(&parsed);
+        self.reapply_layout_cascade_matching(&new_static);
+        if self.has_interactive_css() {
+            self.reapply_layout_cascade_all();
+        }
     }
 
     /// Accumulated stylesheet skipped-content counters, so hosts can surface
@@ -1951,6 +2065,14 @@ impl MessageBridge {
 
     pub fn stylesheet_rule_count(&self) -> usize {
         self.stylesheet_rules.len()
+    }
+
+    pub fn interactive_rule_count(&self) -> usize {
+        self.interactive_rules.len()
+    }
+
+    pub fn generated_pseudo_rule_count(&self) -> usize {
+        self.generated_pseudo_rules.len()
     }
 
     /// Record Vue `setScopeId` attribute for scoped selector matching.
@@ -2234,6 +2356,9 @@ impl MessageBridge {
     }
 
     fn reapply_layout_for_inner(&mut self, id: WidgetId) {
+        if self.is_generated_pseudo_widget(id) {
+            return;
+        }
         let Some(ancestry) = self.match_ancestry(id) else {
             return;
         };
@@ -2354,6 +2479,53 @@ impl MessageBridge {
             cb_w,
             cb_h,
         );
+
+        if let Some(runtime) = &self.interactive_runtime {
+            let subject = runtime.subject_flags(id);
+            let ancestors = runtime.ancestor_flags(self, id);
+            let istate = InteractiveMatchState {
+                subject,
+                ancestors: &ancestors,
+            };
+            if !self.interactive_rules.is_empty() {
+                apply_interactive_layers(
+                    &mut layout,
+                    &ctx,
+                    &self.interactive_rules,
+                    &istate,
+                    cb_w,
+                    cb_h,
+                );
+            }
+            let interactive_motion = self.interactive_motion_for(&ctx, runtime, id);
+            let computed =
+                resolve_computed_motion(&self.motion_rules, interactive_motion, None, &ctx);
+            self.computed_motion.insert(id, computed);
+        } else if !self.motion_rules.is_empty() {
+            let computed = resolve_computed_motion(&self.motion_rules, None, None, &ctx);
+            self.computed_motion.insert(id, computed);
+        } else {
+            self.computed_motion.remove(&id);
+        }
+
+        if let Some(transition) = self.css_transitions.get(&id) {
+            let progress = self
+                .css_transition_progress
+                .get(&id)
+                .copied()
+                .unwrap_or(0.0);
+            let base = self
+                .css_transition_base
+                .get(&id)
+                .unwrap_or(&transition.from);
+            let properties = self
+                .computed_motion
+                .get(&id)
+                .map(|motion| parse_transition_properties(&motion.transition_property))
+                .unwrap_or_default();
+            let paint = lerp_paint_for_properties(base, &transition.to, progress, &properties);
+            paint.apply_to_layout(&mut layout);
+        }
         // Custom-element contract: tag `nana-sidebar-frame` / `nana-sidebar-row`
         // mirrors the public class hints when Vue omitted `class` (host CEs often
         // only set the tag). This is the element-name contract — not a WidgetKind
@@ -2398,6 +2570,457 @@ impl MessageBridge {
             pin_svg_chart_min_height(&mut widget.props);
             widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
+    }
+
+    /// Re-collect Runtime pointer/focus activation and recascade interactive CSS.
+    pub(crate) fn reapply_interactive_cascade(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
+        if !self.has_interactive_css() {
+            self.interactive_runtime = None;
+            return;
+        }
+        let snapshot = Self::collect_interactive_runtime_snapshot(doc);
+        let from_snapshots: HashMap<WidgetId, CssPaintSnapshot> = self
+            .widgets
+            .iter()
+            .filter(|(id, _)| !self.is_generated_pseudo_widget(**id))
+            .map(|(id, widget)| (*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
+            .collect();
+        self.interactive_runtime = Some(snapshot);
+        let ids: Vec<WidgetId> = self
+            .widgets
+            .keys()
+            .copied()
+            .filter(|id| !self.is_generated_pseudo_widget(*id))
+            .collect();
+        for id in &ids {
+            self.reapply_layout_for(*id);
+        }
+        let now = doc.runtime_now();
+        for id in ids {
+            self.sync_generated_pseudo_for(id, doc);
+            let Some(motion) = self.computed_motion.get(&id).cloned() else {
+                continue;
+            };
+            if !motion.animation_name.eq_ignore_ascii_case("none")
+                && self.keyframes.contains_key(&motion.animation_name)
+                && !self.css_transitions.contains_key(&id)
+                && let Some(spec) = build_keyframes_spec(id, &motion, now)
+            {
+                doc.start_css_animation(spec);
+            }
+            let Some(from) = from_snapshots.get(&id) else {
+                continue;
+            };
+            if !self.widgets.contains_key(&id) {
+                continue;
+            }
+            let to = self.cascaded_target_paint(id);
+            if let Some(existing) = self.css_transitions.get(&id) {
+                if existing.to == to {
+                    continue;
+                }
+                let current = CssPaintSnapshot::from_layout(
+                    &self.widgets.get(&id).expect("widget").props.layout,
+                );
+                if let Some(spec) = build_transition_spec(id, &motion, now) {
+                    self.css_transition_base.insert(id, current.clone());
+                    self.css_transition_progress.insert(id, 0.0);
+                    self.css_transitions.insert(
+                        id,
+                        ActiveCssTransition {
+                            from: current.clone(),
+                            to,
+                            spec,
+                        },
+                    );
+                    doc.start_css_animation(spec);
+                    self.pin_host_driven_transition_paint(doc, id, &current);
+                }
+                continue;
+            }
+            if from == &to {
+                continue;
+            }
+            if let Some(spec) = build_transition_spec(id, &motion, now) {
+                self.css_transition_base.insert(id, from.clone());
+                self.css_transition_progress.insert(id, 0.0);
+                self.css_transitions.insert(
+                    id,
+                    ActiveCssTransition {
+                        from: from.clone(),
+                        to,
+                        spec,
+                    },
+                );
+                doc.start_css_animation(spec);
+                self.pin_host_driven_transition_paint(doc, id, from);
+            }
+        }
+        if doc.host_animation_epoch().is_none() {
+            self.tick_css_animations(doc);
+        }
+        self.bump();
+    }
+
+    fn pin_host_driven_transition_paint(
+        &mut self,
+        doc: &crate::tree::NanaTreeDocument,
+        id: WidgetId,
+        from: &CssPaintSnapshot,
+    ) {
+        if doc.host_animation_epoch().is_some()
+            && let Some(widget) = self.widgets.get_mut(&id)
+        {
+            from.apply_to_layout(&mut widget.props.layout);
+        }
+    }
+
+    fn cascaded_target_paint(&mut self, id: WidgetId) -> CssPaintSnapshot {
+        let saved_layout = self
+            .widgets
+            .get(&id)
+            .map(|widget| widget.props.layout.clone());
+        let transition = self.css_transitions.remove(&id);
+        let progress = self.css_transition_progress.remove(&id);
+        let base = self.css_transition_base.remove(&id);
+        self.reapply_layout_for(id);
+        let paint =
+            CssPaintSnapshot::from_layout(&self.widgets.get(&id).expect("widget").props.layout);
+        if let Some(layout) = saved_layout
+            && let Some(widget) = self.widgets.get_mut(&id)
+        {
+            widget.props.layout = layout;
+        }
+        if let Some(transition) = transition {
+            self.css_transitions.insert(id, transition);
+        }
+        if let Some(progress) = progress {
+            self.css_transition_progress.insert(id, progress);
+        }
+        if let Some(base) = base {
+            self.css_transition_base.insert(id, base);
+        }
+        paint
+    }
+
+    #[cfg(test)]
+    fn css_transition_target(&self, id: WidgetId) -> Option<CssPaintSnapshot> {
+        self.css_transitions
+            .get(&id)
+            .map(|transition| transition.to.clone())
+    }
+
+    /// Advance CSS transition / keyframe samples for the current host frame.
+    pub(crate) fn tick_css_animations(&mut self, doc: &mut crate::tree::NanaTreeDocument) -> bool {
+        let now = doc.runtime_now();
+        let frame = doc.advance_css_animations(now);
+        self.apply_css_animation_samples(doc, frame)
+    }
+
+    /// Apply Runtime animation samples without advancing the shared clock.
+    pub(crate) fn apply_css_animation_samples(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        frame: nana_ui_runtime::AnimationFrame,
+    ) -> bool {
+        let changed = self.apply_css_animation_samples_inner(frame);
+        if changed {
+            self.sync_cascaded_layout_into_runtime(doc);
+        }
+        changed
+    }
+
+    fn collect_interactive_runtime_snapshot(
+        doc: &crate::tree::NanaTreeDocument,
+    ) -> InteractiveRuntimeSnapshot {
+        let document =
+            nana_ui_runtime::DocumentId::try_from(doc.id()).expect("vue document IDs are nonzero");
+        let world = doc.world();
+        let mut hovered = BTreeMap::new();
+        let mut pressed = BTreeMap::new();
+        for pointer_id in 0u64..16 {
+            if let Some(target) = world.pointer_hover(document, pointer_id) {
+                hovered.insert(target.get(), ());
+            }
+            if let Some(target) = world.pointer_press(document, pointer_id) {
+                pressed.insert(target.get(), ());
+            }
+        }
+        InteractiveRuntimeSnapshot {
+            hovered,
+            pressed,
+            focused: doc.focused().map(|h| h.0),
+        }
+    }
+
+    fn is_generated_pseudo_widget(&self, id: WidgetId) -> bool {
+        self.widgets
+            .get(&id)
+            .is_some_and(|w| w.props.attrs.contains_key(GENERATED_PSEUDO_ATTR))
+    }
+
+    fn sync_generated_pseudo_for(
+        &mut self,
+        origin: WidgetId,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        if self.generated_pseudo_rules.is_empty() {
+            return;
+        }
+        let matched = {
+            let Some(ancestry) = self.match_ancestry(origin) else {
+                return;
+            };
+            let Some(widget) = self.widgets.get(&origin) else {
+                return;
+            };
+            let leaf_classes = widget.props.class_names.clone();
+            let leaf_attrs = widget.props.attrs.clone();
+            let leaf_tag = if widget.props.element_tag.is_empty() {
+                widget.kind.element_tag().to_string()
+            } else {
+                widget.props.element_tag.clone()
+            };
+            let leaf_id = widget.props.element_id.clone();
+            let (sibling_index, sibling_count) = self.sibling_position(origin);
+            let (of_type_index, of_type_count) = self.of_type_position(origin);
+            let prev_snaps = self.prev_sibling_snaps(origin);
+            let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
+                .iter()
+                .skip(1)
+                .map(|n| MatchNode {
+                    tag: n.tag.as_str(),
+                    id: n.id.as_str(),
+                    classes: n.classes.as_slice(),
+                    attrs: &n.attrs,
+                })
+                .collect();
+            let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
+                .iter()
+                .map(|n| MatchNode {
+                    tag: n.tag.as_str(),
+                    id: n.id.as_str(),
+                    classes: n.classes.as_slice(),
+                    attrs: &n.attrs,
+                })
+                .collect();
+            let ctx = MatchContext {
+                tag: leaf_tag.as_str(),
+                id: leaf_id.as_str(),
+                classes: leaf_classes.as_slice(),
+                attrs: &leaf_attrs,
+                ancestors: ancestor_nodes.as_slice(),
+                preceding_siblings: prev_nodes.as_slice(),
+                sibling_index,
+                sibling_count,
+                of_type_index,
+                of_type_count,
+            };
+            crate::css_interactive::matched_generated_pseudo(&self.generated_pseudo_rules, &ctx)
+        };
+        let slots = *self.generated_pseudo_children.entry(origin).or_default();
+        let mut next = slots;
+        for (pseudo, blocks, slot) in [
+            (
+                GeneratedPseudo::Before,
+                matched.before.clone(),
+                &mut next.before,
+            ),
+            (
+                GeneratedPseudo::After,
+                matched.after.clone(),
+                &mut next.after,
+            ),
+        ] {
+            if blocks.is_empty()
+                || !blocks
+                    .iter()
+                    .any(|entries| generated_pseudo_has_content(entries))
+            {
+                if let Some(child) = slot.take() {
+                    self.remove_generated_pseudo_widget(child, doc);
+                }
+                continue;
+            }
+            let child = slot.get_or_insert_with(|| self.alloc_generated_pseudo_id());
+            self.ensure_generated_pseudo_widget(origin, *child, pseudo, &blocks);
+            doc.ensure_css_pseudo_element(
+                *child,
+                crate::tree::NodeHandle(origin),
+                pseudo,
+                pseudo == GeneratedPseudo::Before,
+            );
+            self.insert_generated_pseudo_child(origin, *child, pseudo);
+        }
+        if next.before.is_none() && next.after.is_none() {
+            self.generated_pseudo_children.remove(&origin);
+        } else {
+            self.generated_pseudo_children.insert(origin, next);
+        }
+    }
+
+    fn alloc_generated_pseudo_id(&mut self) -> WidgetId {
+        let id = GENERATED_PSEUDO_ID_BASE | self.next_generated_pseudo_id;
+        self.next_generated_pseudo_id = self.next_generated_pseudo_id.saturating_add(1);
+        id
+    }
+
+    fn ensure_generated_pseudo_widget(
+        &mut self,
+        origin: WidgetId,
+        child: WidgetId,
+        _pseudo: GeneratedPseudo,
+        blocks: &[Vec<crate::css_cascade::DeclarationEntry>],
+    ) {
+        let pseudo_name = match _pseudo {
+            GeneratedPseudo::Before => "before",
+            GeneratedPseudo::After => "after",
+        };
+        let text = blocks
+            .iter()
+            .find_map(|entries| parse_content_text(entries))
+            .filter(|text| !text.is_empty());
+        if !self.widgets.contains_key(&child) {
+            let mut attrs = BTreeMap::new();
+            attrs.insert(GENERATED_PSEUDO_ATTR.into(), pseudo_name.into());
+            attrs.insert(GENERATED_PSEUDO_ORIGIN_ATTR.into(), origin.to_string());
+            let props = WidgetProps {
+                element_tag: if text.is_some() {
+                    "span".into()
+                } else {
+                    "div".into()
+                },
+                attrs,
+                ..WidgetProps::default()
+            };
+            self.register(child, WidgetKind::Box, props);
+        } else if let Some(widget) = self.widgets.get_mut(&child) {
+            widget
+                .props
+                .attrs
+                .insert(GENERATED_PSEUDO_ATTR.into(), pseudo_name.into());
+            widget
+                .props
+                .attrs
+                .insert(GENERATED_PSEUDO_ORIGIN_ATTR.into(), origin.to_string());
+        }
+        let (cb_w, cb_h) = self
+            .widgets
+            .get(&origin)
+            .map(|w| {
+                (
+                    w.props.containing_block_width,
+                    w.props.containing_block_height,
+                )
+            })
+            .unwrap_or((None, None));
+        if let Some(widget) = self.widgets.get_mut(&child) {
+            let mut layout = LayoutStyle::default();
+            apply_generated_pseudo_entries(&mut layout, blocks, cb_w, cb_h);
+            if let Some(label) = text {
+                widget.kind = WidgetKind::Text;
+                widget.props.label = label;
+            }
+            widget.props.layout = layout;
+        }
+    }
+
+    fn insert_generated_pseudo_child(
+        &mut self,
+        origin: WidgetId,
+        child: WidgetId,
+        pseudo: GeneratedPseudo,
+    ) {
+        let anchor = match pseudo {
+            GeneratedPseudo::Before => self
+                .widgets
+                .get(&origin)
+                .and_then(|w| w.children.first().copied())
+                .filter(|id| *id != child),
+            GeneratedPseudo::After => None,
+        };
+        self.insert_child(child, origin, anchor);
+    }
+
+    fn remove_generated_pseudo_widget(
+        &mut self,
+        child: WidgetId,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        doc.remove_generated_pseudo(crate::tree::NodeHandle(child));
+        self.unregister(child);
+        self.computed_motion.remove(&child);
+        self.css_transitions.remove(&child);
+        self.css_transition_base.remove(&child);
+        self.css_transition_progress.remove(&child);
+    }
+
+    fn interactive_motion_for<'a>(
+        &'a self,
+        ctx: &MatchContext<'_>,
+        runtime: &InteractiveRuntimeSnapshot,
+        id: WidgetId,
+    ) -> Option<&'a crate::css_interactive::MotionDeclarations> {
+        let subject = runtime.subject_flags(id);
+        let ancestors = runtime.ancestor_flags(self, id);
+        let istate = InteractiveMatchState {
+            subject,
+            ancestors: &ancestors,
+        };
+        self.interactive_rules
+            .iter()
+            .filter(|rule| {
+                crate::css_interactive::interactive_selector_matches(&rule.selector, ctx, &istate)
+            })
+            .map(|rule| &rule.motion)
+            .find(|motion| !motion.is_empty())
+    }
+
+    fn apply_css_animation_samples_inner(
+        &mut self,
+        frame: nana_ui_runtime::AnimationFrame,
+    ) -> bool {
+        let mut changed = false;
+        for sample in frame.samples {
+            let id = sample.target.get();
+            if let Some(transition) = self.css_transitions.get(&id)
+                && sample.id == transition.spec.id
+            {
+                let base = self
+                    .css_transition_base
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| transition.from.clone());
+                let properties = self
+                    .computed_motion
+                    .get(&id)
+                    .map(|motion| parse_transition_properties(&motion.transition_property))
+                    .unwrap_or_default();
+                let paint =
+                    lerp_paint_for_properties(&base, &transition.to, sample.progress, &properties);
+                if let Some(widget) = self.widgets.get_mut(&id) {
+                    paint.apply_to_layout(&mut widget.props.layout);
+                    changed = true;
+                }
+                self.css_transition_progress.insert(id, sample.progress);
+                if sample.finished {
+                    self.css_transitions.remove(&id);
+                    self.css_transition_base.remove(&id);
+                    self.css_transition_progress.remove(&id);
+                }
+                continue;
+            }
+            if sample.id == css_keyframes_animation_id(id)
+                && let Some(motion) = self.computed_motion.get(&id)
+                && let Some(rule) = self.keyframes.get(&motion.animation_name)
+                && let Some(paint) = keyframe_paint_at(rule, sample.progress)
+                && let Some(widget) = self.widgets.get_mut(&id)
+            {
+                paint.apply_to_layout(&mut widget.props.layout);
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn match_ancestry(&self, id: WidgetId) -> Option<Vec<MatchNodeSnap>> {
@@ -2844,6 +3467,28 @@ impl MessageBridge {
     }
 
     pub fn unregister(&mut self, id: WidgetId) {
+        if let Some(slots) = self.generated_pseudo_children.remove(&id) {
+            for child in [slots.before, slots.after].into_iter().flatten() {
+                self.teardown_generated_pseudo_sidecar(child);
+            }
+        }
+        if let Some(origin) = self
+            .widgets
+            .get(&id)
+            .and_then(|w| w.props.attrs.get(GENERATED_PSEUDO_ORIGIN_ATTR))
+            .and_then(|raw| raw.parse::<u64>().ok())
+            && let Some(slots) = self.generated_pseudo_children.get_mut(&origin)
+        {
+            if slots.before == Some(id) {
+                slots.before = None;
+            }
+            if slots.after == Some(id) {
+                slots.after = None;
+            }
+            if slots.before.is_none() && slots.after.is_none() {
+                self.generated_pseudo_children.remove(&origin);
+            }
+        }
         if let Some(widget) = self.widgets.remove(&id) {
             if let Some(parent) = widget.parent
                 && let Some(p) = self.widgets.get_mut(&parent)
@@ -2855,7 +3500,37 @@ impl MessageBridge {
             }
         }
         self.roots.retain(|&r| r != id);
+        self.computed_motion.remove(&id);
+        self.css_transitions.remove(&id);
+        self.css_transition_base.remove(&id);
+        self.css_transition_progress.remove(&id);
         self.bump();
+    }
+
+    pub fn purge_generated_pseudo_runtime(
+        &mut self,
+        origin: WidgetId,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        let Some(slots) = self.generated_pseudo_children.get(&origin) else {
+            return;
+        };
+        for child in [slots.before, slots.after].into_iter().flatten() {
+            doc.remove_generated_pseudo(crate::tree::NodeHandle(child));
+        }
+    }
+
+    fn teardown_generated_pseudo_sidecar(&mut self, child: WidgetId) {
+        self.computed_motion.remove(&child);
+        self.css_transitions.remove(&child);
+        self.css_transition_base.remove(&child);
+        self.css_transition_progress.remove(&child);
+        if let Some(widget) = self.widgets.remove(&child)
+            && let Some(parent) = widget.parent
+            && let Some(p) = self.widgets.get_mut(&parent)
+        {
+            p.children.retain(|&c| c != child);
+        }
     }
 
     pub fn insert_child(&mut self, child: WidgetId, parent: WidgetId, anchor: Option<WidgetId>) {
@@ -2957,11 +3632,17 @@ impl MessageBridge {
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        if self.has_interactive_css() {
+            self.reapply_interactive_cascade(doc);
+        }
         self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
     }
 
-    fn sync_cascaded_layout_into_runtime(&self, doc: &mut crate::tree::NanaTreeDocument) {
+    pub(crate) fn sync_cascaded_layout_into_runtime(
+        &self,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
         // Compare in place; clone LayoutStyle only for nodes whose cascade
         // actually changed. Never writes Runtime LayoutBox.
         doc.sync_widget_layouts(
@@ -6966,5 +7647,365 @@ mod tests {
         assert!(props.read_only);
         assert!(props.secure);
         assert_eq!(props.step, 0.25);
+    }
+
+    #[test]
+    fn hover_stylesheet_restyle_applies_only_while_hovered() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["ok".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".ok { background: rgb(0, 0, 255); } .ok:hover { background: red; }",
+        );
+        let idle = bridge.get(1).expect("widget").props.layout.background;
+        {
+            bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+                hovered: BTreeMap::from([(1, ())]),
+                ..Default::default()
+            });
+            bridge.reapply_layout_for(1);
+        }
+        let hovered = bridge.get(1).expect("widget").props.layout.background;
+        assert_ne!(idle, hovered);
+        assert_eq!(hovered, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn card_hover_restyles_descendant_icon() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            10,
+            WidgetKind::Card,
+            WidgetProps {
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            11,
+            WidgetKind::Icon,
+            WidgetProps {
+                class_names: vec!["icon".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(11, 10, None);
+        bridge.inject_stylesheet(".icon { color: blue; } .card:hover .icon { color: red; }");
+        let idle = {
+            bridge.interactive_runtime = None;
+            bridge.reapply_layout_for(11);
+            bridge.get(11).expect("icon").props.layout.color
+        };
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            hovered: BTreeMap::from([(10, ())]),
+            ..Default::default()
+        });
+        bridge.reapply_layout_for(11);
+        assert_eq!(
+            bridge.get(11).expect("icon").props.layout.color,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        bridge.interactive_runtime = None;
+        bridge.reapply_layout_for(11);
+        assert_eq!(bridge.get(11).expect("icon").props.layout.color, idle);
+    }
+
+    #[test]
+    fn inject_stylesheet_keeps_interactive_and_generated_buckets() {
+        let mut bridge = MessageBridge::new();
+        bridge.inject_stylesheet(
+            ".chip::before { content: \"\"; width: 4px; } .chip:hover { color: red; }",
+        );
+        assert_eq!(bridge.generated_pseudo_rule_count(), 1);
+        assert_eq!(bridge.interactive_rule_count(), 1);
+    }
+
+    #[test]
+    fn transition_duration_from_stylesheet_is_nonzero() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(".btn { transition: opacity 0.2s; }");
+        let motion = bridge.computed_motion_for(1).expect("motion");
+        assert_eq!(motion.transition_duration, "0.2s");
+        assert!(motion.has_transition());
+    }
+
+    #[test]
+    fn focus_recascade_updates_runtime_node_style() {
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let field = doc.create_element("input");
+        doc.insert(field, root, None);
+        bridge.register(
+            field.0,
+            WidgetKind::Input,
+            WidgetProps {
+                class_names: vec!["field".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".field { background: rgb(0, 0, 255); } .field:focus { background: rgb(0, 255, 0); }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.set_focus(field);
+        bridge.reapply_interactive_cascade(&mut doc);
+        bridge.sync_cascaded_layout_into_runtime(&mut doc);
+        doc.flush_host_frame();
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(field.0).unwrap())
+            .expect("field runtime style");
+        assert_eq!(style.layout.background, Some([0.0, 1.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn transition_samples_mid_timeline_into_runtime_paint() {
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let btn = doc.create_element("button");
+        doc.insert(btn, root, None);
+        bridge.register(
+            btn.0,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+             .btn:hover { background: red; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+        doc.set_pointer_hover(0, Some(btn));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(std::time::Duration::from_millis(100));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(btn.0).unwrap())
+            .expect("btn runtime style");
+        let bg = style.layout.background.expect("interpolated background");
+        assert!(
+            (bg[0] - 0.5).abs() < 0.05 && (bg[2] - 0.5).abs() < 0.05,
+            "expected mid-transition purple-ish background, got {bg:?}"
+        );
+        doc.set_runtime_clock_for_test(std::time::Duration::from_millis(220));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let finished = doc
+            .world()
+            .node_style(StableNodeId::new(btn.0).unwrap())
+            .expect("btn runtime style");
+        assert_eq!(finished.layout.background, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn transition_property_limits_lerp_to_listed_longhands() {
+        use crate::css_interactive_apply::{
+            CssPaintSnapshot, lerp_paint_for_properties, parse_transition_properties,
+        };
+
+        let from = CssPaintSnapshot {
+            opacity: Some(0.2),
+            background: Some([0.0, 0.0, 1.0, 1.0]),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            opacity: Some(1.0),
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mid =
+            lerp_paint_for_properties(&from, &to, 0.5, &parse_transition_properties("opacity"));
+        assert_eq!(mid.opacity, Some(0.6));
+        assert_eq!(mid.background, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn keyframes_animation_updates_runtime_node_opacity() {
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["spin".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
+             .spin { animation: spin 1s linear; width: 40px; height: 40px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let frame = doc.advance_css_animations(Duration::from_millis(500));
+        assert!(bridge.apply_css_animation_samples(&mut doc, frame));
+        doc.flush_host_frame();
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("host runtime style");
+        let opacity = style.layout.opacity.expect("animated opacity");
+        assert!(
+            (opacity - 0.5).abs() < 0.08,
+            "mid keyframe opacity expected ~0.5, got {opacity}"
+        );
+    }
+
+    #[test]
+    fn host_clock_dual_advance_applies_samples_once() {
+        use nana_ui_runtime::StableNodeId;
+        use std::time::{Duration, Instant};
+
+        let host_epoch = Instant::now();
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        doc.set_host_animation_epoch(host_epoch);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let btn = doc.create_element("button");
+        doc.insert(btn, root, None);
+        bridge.register(
+            btn.0,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+             .btn:hover { background: red; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.set_pointer_hover(0, Some(btn));
+        bridge.reapply_interactive_cascade(&mut doc);
+        let transition_start = doc.runtime_now();
+
+        let first_now = transition_start + Duration::from_millis(100);
+        let vue_frame = doc.advance_css_animations(first_now);
+        assert!(bridge.apply_css_animation_samples(&mut doc, vue_frame));
+        doc.flush_host_frame();
+        let mid_style = doc
+            .world()
+            .node_style(StableNodeId::new(btn.0).unwrap())
+            .expect("btn runtime style");
+        let mid_bg = mid_style
+            .layout
+            .background
+            .expect("interpolated background");
+        assert!(
+            (mid_bg[0] - 0.5).abs() < 0.05 && (mid_bg[2] - 0.5).abs() < 0.05,
+            "expected mid-transition paint after first advance, got {mid_bg:?}"
+        );
+
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.flush_host_frame();
+        let after_reapply = doc
+            .world()
+            .node_style(StableNodeId::new(btn.0).unwrap())
+            .expect("btn runtime style");
+        let after_reapply_bg = after_reapply
+            .layout
+            .background
+            .expect("background after reapply");
+        assert_eq!(
+            after_reapply_bg, mid_bg,
+            "reapply_interactive_cascade must not tick CSS animations when host epoch is set"
+        );
+
+        let second_now = transition_start + Duration::from_millis(150);
+        let host_frame = doc.advance_css_animations(second_now);
+        assert!(bridge.apply_css_animation_samples(&mut doc, host_frame));
+        doc.flush_host_frame();
+        let host_style = doc
+            .world()
+            .node_style(StableNodeId::new(btn.0).unwrap())
+            .expect("btn runtime style");
+        let host_bg = host_style
+            .layout
+            .background
+            .expect("host-advanced background");
+        assert!(
+            host_bg[0] > mid_bg[0] && host_bg[0] < 1.0,
+            "host clock must continue the timeline, got {host_bg:?} after mid {mid_bg:?}"
+        );
+    }
+
+    #[test]
+    fn hover_retarget_mid_transition_uses_unhovered_target() {
+        use crate::css_interactive_apply::CssPaintSnapshot;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let btn = doc.create_element("button");
+        doc.insert(btn, root, None);
+        bridge.register(
+            btn.0,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+             .btn:hover { background: red; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+        doc.set_pointer_hover(0, Some(btn));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(std::time::Duration::from_millis(100));
+        assert!(bridge.tick_css_animations(&mut doc));
+
+        doc.set_pointer_hover(0, None);
+        bridge.reapply_interactive_cascade(&mut doc);
+        let transition_to = bridge
+            .css_transition_target(btn.0)
+            .expect("hover-out should retarget the running transition");
+        assert_eq!(
+            transition_to.background,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "retarget destination must be the unhovered paint"
+        );
+        let current =
+            CssPaintSnapshot::from_layout(&bridge.get(btn.0).expect("widget").props.layout);
+        assert!(
+            current
+                .background
+                .is_some_and(|bg| bg[0] > 0.0 && bg[0] < 1.0),
+            "mid-transition paint should still reflect hover-in progress before retarget catches up, got {current:?}"
+        );
     }
 }

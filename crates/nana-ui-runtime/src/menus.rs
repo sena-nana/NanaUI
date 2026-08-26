@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AnchoredMenuPlacement, ControlSize, Icon, LengthSpec, PositionSpec, SemanticColorRole,
-    SemanticPalette, UI_METRICS,
+    AnchoredMenuPlacement, ControlSize, Icon, LengthSpec, LineHeightSpec, PositionSpec,
+    SemanticColorRole, SemanticPalette, UI_METRICS, icon_y_on_text_glyph_center,
 };
 
 use crate::popover::{menu_surface_style, project_anchored_menu};
@@ -771,6 +771,7 @@ pub(crate) fn context_menu_geometry(
         options,
         elevation: ComponentElevation {
             color: [0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }],
+            offset_x: 0.0,
             offset_y: 4.0,
             blur_radius: if is_light { 14.0 } else { 18.0 },
             spread_radius: 0.0,
@@ -804,7 +805,14 @@ fn menu_option_icon(
     let icon = icon.map(|icon| {
         let bounds = LayoutBox {
             x: cursor,
-            y: row.y + (row.height - icon_size) / 2.0,
+            y: icon_y_on_text_glyph_center(
+                row.y,
+                row.height,
+                size.text_size(),
+                Some(LineHeightSpec::Absolute(size.text_size())),
+                true,
+                icon_size,
+            ),
             width: icon_size,
             height: icon_size,
         };
@@ -842,6 +850,8 @@ fn item_style(size: ControlSize) -> NodeStyle {
             height: Some(LengthSpec::Px(size.height())),
             padding_left: Some(LengthSpec::Px(size.padding_x())),
             padding_right: Some(LengthSpec::Px(size.padding_x())),
+            font_size: Some(size.text_size()),
+            line_height: Some(LineHeightSpec::Absolute(size.text_size())),
             border_radius: Some(UI_METRICS.radius_sm),
             ..nana_ui_core::LayoutStyle::default()
         }),

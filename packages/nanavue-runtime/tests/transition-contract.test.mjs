@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   NANA_TRANSITION_COMPUTED_DEFAULTS,
+  resolveTransitionComputedStyles,
   transitionInfoLooksImmediate,
 } from "../src/transitionContract.js";
 
@@ -25,10 +26,19 @@ test("transition defaults are immediate (0s)", () => {
   assert.ok(!transitionInfoLooksImmediate({ transitionDuration: "0.14s" }));
 });
 
+test("cascade motion resolves non-zero transition duration", () => {
+  const styles = resolveTransitionComputedStyles({
+    transitionDuration: "0.2s",
+    transitionProperty: "opacity",
+  });
+  assert.equal(styles.transitionDuration, "0.2s");
+  assert.ok(!transitionInfoLooksImmediate(styles));
+});
+
 test("shim getComputedStyle exposes camelCase transition keys", () => {
-  assert.match(shim, /transitionDuration:\s*"0s"/);
-  assert.match(shim, /animationDuration:\s*"0s"/);
-  assert.match(shim, /no CSS transition\/animation engine/i);
+  assert.match(shim, /transitionDuration/);
+  assert.match(shim, /animationDuration/);
+  assert.match(shim, /computedStyle/);
 });
 
 test("document.body uses wrapHostNode for Teleport stability", () => {

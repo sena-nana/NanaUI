@@ -11,6 +11,7 @@ use bevy_ecs::world::World;
 use nana_ui_core::{
     ControlSize, GraphPoint, GraphPortKind, GraphPortSide, SemanticColorRole, SemanticPalette,
     StyleModelRef, SwitchControlPosition, ThemeMode, TooltipConfig, cubic_point,
+    icon_y_on_text_glyph_center,
 };
 
 use crate::animation::ActiveAnimation;
@@ -23,7 +24,7 @@ use crate::{
     InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
     OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
     TextContent, TextInputPresentation, TextInputState, TextMetrics, TextPresentation,
-    TextPresenter, TextShaper, UiMutation, WorkCounters,
+    TextPresenter, TextShaper, TextVerticalAlignment, UiMutation, WorkCounters,
 };
 
 /// Stable external node identity. Zero is reserved so missing/default IDs
@@ -2089,9 +2090,6 @@ impl UiWorld {
         let mut memo = AncestorMemo::default();
         while let Some((id, parent_transform, parent, position)) = stack.pop() {
             let style = self.component::<ResolvedStyle>(id).0.as_ref();
-            if !style.visible {
-                continue;
-            }
             let layout = *self.component::<LayoutBox>(id);
             let node_style = self.component::<NodeStyle>(id).layout.as_ref();
             let local = node_style
@@ -2101,6 +2099,22 @@ impl UiWorld {
                 })
                 .unwrap_or(IDENTITY_AFFINE);
             let transform = then_affine(parent_transform, local);
+            let scroll = *self.component::<ScrollOffset>(id);
+            let child_transform =
+                then_affine(transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
+            let children = Arc::clone(&self.component::<Hierarchy>(id).children);
+            if !style.visible {
+                // `visibility:hidden` skips this entry but descendants may be
+                // `visibility:visible` and still need the accumulated transform.
+                stack.extend(
+                    children
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .map(|(position, child)| (*child, child_transform, parent, position)),
+                );
+                continue;
+            }
             let mut self_clips = Vec::new();
             let mut child_clips = Vec::new();
             if node_style.clips_overflow() {
@@ -2128,9 +2142,6 @@ impl UiWorld {
                     self_clips.push((body, parent_transform));
                 }
             }
-            let scroll = *self.component::<ScrollOffset>(id);
-            let child_transform =
-                then_affine(transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
             let interaction = self.component::<InteractionState>(id);
             let confirm_busy = self
                 .confirm_action_effect(id)
@@ -2146,7 +2157,6 @@ impl UiWorld {
                     _ => None,
                 });
             let index = built.len();
-            let children = Arc::clone(&self.component::<Hierarchy>(id).children);
             built.push(Built {
                 entry: HitEntry {
                     id,
@@ -2587,7 +2597,9 @@ impl UiWorld {
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.opacity != style.layout.opacity;
-                let visibility_changed = previous.layout.omits_box() != style.layout.omits_box();
+                let paint_visibility_changed =
+                    previous.layout.paint.visibility != style.layout.paint.visibility;
+                let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
                 let transform_changed = previous.layout.transform != style.layout.transform
                     || previous.layout.unsupported_transform != style.layout.unsupported_transform;
                 let stacking_changed = previous.layout.z_index != style.layout.z_index;
@@ -2612,11 +2624,23 @@ impl UiWorld {
                             | DirtyMask::RENDER,
                     );
                 }
-                if visibility_changed {
+                if omits_box_changed {
                     self.mark_subtree(
                         *id,
                         DirtyMask::STYLE
                             | DirtyMask::LAYOUT
+                            | DirtyMask::INPUT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::ACCESSIBILITY
+                            | DirtyMask::RENDER,
+                    );
+                    if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
+                        self.mark(parent, DirtyMask::ACCESSIBILITY);
+                    }
+                } else if paint_visibility_changed {
+                    self.mark_subtree(
+                        *id,
+                        DirtyMask::STYLE
                             | DirtyMask::INPUT
                             | DirtyMask::FOCUS_IME
                             | DirtyMask::ACCESSIBILITY
@@ -2645,7 +2669,7 @@ impl UiWorld {
                             | DirtyMask::RENDER,
                     );
                 }
-                if (layout_changed || inherited_text_changed || visibility_changed)
+                if (layout_changed || inherited_text_changed || omits_box_changed)
                     && let Some(parent) = self.node(*id).and_then(|node| node.parent)
                 {
                     self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
@@ -3598,6 +3622,7 @@ impl UiWorld {
                     border: [0.0; 4],
                     elevation: crate::ComponentElevation {
                         color: [0.0, 0.0, 0.0, shadow_alpha],
+                        offset_x: 0.0,
                         offset_y: 14.0,
                         blur_radius: 30.0,
                         spread_radius: 0.0,
@@ -4511,7 +4536,17 @@ impl UiWorld {
                         icon,
                         LayoutBox {
                             x: bounds.x + base_padding,
-                            y: content.y + (content.height - icon_extent) / 2.0,
+                            y: icon_y_on_text_glyph_center(
+                                content.y,
+                                content.height,
+                                style.font_size,
+                                style.line_height,
+                                matches!(
+                                    source.text_vertical_alignment,
+                                    TextVerticalAlignment::Center
+                                ),
+                                icon_extent,
+                            ),
                             width: icon_extent,
                             height: icon_extent,
                         },
@@ -5362,14 +5397,16 @@ impl UiWorld {
             parent.and_then(|parent| self.component::<ResolvedStyle>(parent).0.color);
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
+        let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
         let next = ComputedStyle {
             foreground,
             color,
             background,
             border_color,
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
+            visibility,
             visible: !layout.omits_box()
-                && inherited.visible
+                && visibility != nana_ui_core::VisibilitySpec::Hidden
                 && self.overlay_branch_active(id)
                 && self.menu_branch_open(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
@@ -9136,6 +9173,142 @@ mod tests {
         let incremental = world.extract_nodes(&[node(2)]);
         assert_eq!(incremental.len(), 1);
         assert!(!incremental[0].style.visible);
+    }
+
+    #[test]
+    fn visibility_hidden_skips_extract_paint_and_hit_test() {
+        use nana_ui_core::VisibilitySpec;
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        create.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.write_layout(node(2), box_at(10.0, 10.0, 50.0, 50.0));
+        create.write_layout(node(3), box_at(5.0, 5.0, 30.0, 30.0));
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.rebuild_hit_test(document(1));
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .any(|extracted| extracted.id == node(2))
+        );
+        assert!(
+            world
+                .hit_test_candidates(document(1), 20.0, 20.0)
+                .contains(&node(2))
+        );
+
+        let mut hidden = NodeStyle::default();
+        Arc::make_mut(&mut hidden.layout).paint.visibility = Some(VisibilitySpec::Hidden);
+        let mut hide = MutationQueue::new();
+        hide.set_style(node(2), hidden);
+        world.commit(hide).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let mut dirty = work.input_hit_test.clone();
+        dirty.extend(work.style.iter().copied());
+        dirty.sort_unstable();
+        dirty.dedup();
+        assert!(world.rebuild_hit_test_scoped(document(1), &dirty));
+
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .all(|extracted| extracted.id != node(2) && extracted.id != node(3))
+        );
+        let extracted = world.extract_nodes(&[node(2), node(3)]);
+        assert_eq!(extracted.len(), 2);
+        assert!(extracted.iter().all(|node| !node.style.visible));
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 20.0, 20.0)
+                .contains(&node(2))
+        );
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 15.0, 15.0)
+                .contains(&node(3))
+        );
+    }
+
+    #[test]
+    fn visibility_visible_child_unhides_inside_hidden_parent() {
+        use nana_ui_core::VisibilitySpec;
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        create.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.write_layout(node(2), box_at(10.0, 10.0, 50.0, 50.0));
+        create.write_layout(node(3), box_at(5.0, 5.0, 30.0, 30.0));
+        let mut parent = NodeStyle::default();
+        Arc::make_mut(&mut parent.layout).paint.visibility = Some(VisibilitySpec::Hidden);
+        create.set_style(node(2), parent);
+        let mut child = NodeStyle::default();
+        Arc::make_mut(&mut child.layout).paint.visibility = Some(VisibilitySpec::Visible);
+        create.set_style(node(3), child);
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.rebuild_hit_test(document(1));
+
+        let parent_extracted = world.extract_nodes(&[node(2)]);
+        assert_eq!(parent_extracted.len(), 1);
+        assert!(!parent_extracted[0].style.visible);
+
+        let child_extracted = world.extract_nodes(&[node(3)]);
+        assert_eq!(child_extracted.len(), 1);
+        assert!(child_extracted[0].style.visible);
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .any(|extracted| extracted.id == node(3))
+        );
+        assert!(
+            world
+                .hit_test_candidates(document(1), 15.0, 15.0)
+                .contains(&node(3))
+        );
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 20.0, 20.0)
+                .contains(&node(2))
+        );
     }
 
     #[test]

@@ -81,7 +81,10 @@ mod bridge;
 #[cfg(feature = "hosted")]
 mod canvas_gpu;
 mod css_cascade;
+mod css_interactive;
+mod css_interactive_apply;
 mod css_map;
+mod css_paint;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
 mod input;
@@ -158,7 +161,15 @@ pub use css_cascade::{
     MatchContext, MatchNode, Selector, SimpleCompound, Specificity, StyleRule,
     StylesheetParseReport, apply_stylesheet_to_layout,
     collect_document_custom_properties_from_rules, matched_declaration_entries,
-    matched_declarations, parse_stylesheet, parse_stylesheet_with_report, rebuild_layout_style,
+    matched_declarations, parse_stylesheet, parse_stylesheet_full, parse_stylesheet_with_report,
+    rebuild_layout_style, selector_matches,
+};
+pub use css_interactive::{
+    GeneratedPseudo, GeneratedPseudoMatch, GeneratedPseudoRule, InteractiveMatchState,
+    InteractivePseudo, InteractivePseudoFlags, InteractiveSelector, InteractiveStyleRule,
+    KeyframeBlock, KeyframeSelector, KeyframesRule, MotionDeclarations, MotionStyleRule,
+    ParsedStylesheet, keyframes_by_name, matched_generated_pseudo, matched_interactive_rules,
+    matched_motion_rules, partition_motion_entries,
 };
 /// Adapter internals: CSS subset → LayoutStyle. Prefer [`prelude`] for hosts.
 pub use css_map::{
@@ -1415,6 +1426,13 @@ impl VueHost {
                 .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
             guard.end_host_frame(Instant::now());
         }
+        {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
+            let mut doc = self.document.lock().expect("vue doc");
+            if doc.host_animation_epoch().is_none() {
+                bridge.tick_css_animations(&mut doc);
+            }
+        }
         self.resolve_layout();
         if let Some(notify) = self.notify_layout {
             engine.invoke(notify, &[])?;
@@ -1426,6 +1444,11 @@ impl VueHost {
     /// Earliest timer/rAF/fetch wake requested by the Web API state.
     /// Returns `None` when the runtime is idle.
     pub fn next_wakeup(&self) -> Option<Instant> {
+        let animation_wakeup = self
+            .document
+            .lock()
+            .ok()
+            .and_then(|doc| doc.next_animation_wakeup());
         let web_wakeup = self
             .web_api
             .lock()
@@ -1435,7 +1458,17 @@ impl VueHost {
         let gpu_wakeup = self.webgpu.as_ref().and_then(JsWebGpuRuntime::next_wakeup);
         #[cfg(not(feature = "hosted"))]
         let gpu_wakeup: Option<Instant> = None;
-        web_wakeup.into_iter().chain(gpu_wakeup).min()
+        animation_wakeup
+            .into_iter()
+            .chain(web_wakeup)
+            .chain(gpu_wakeup)
+            .min()
+    }
+
+    pub fn set_host_animation_epoch(&self, epoch: Instant) {
+        if let Ok(mut doc) = self.document.lock() {
+            doc.set_host_animation_epoch(epoch);
+        }
     }
 
     /// Pump a host window lifecycle event into the shim EventTarget surface.
@@ -1684,6 +1717,17 @@ impl VueHost {
             }
         }
         (previous, next)
+    }
+
+    fn flush_interactive_css_if_needed(&self) {
+        let mut bridge = self.bridge.lock().expect("vue bridge");
+        if !bridge.has_interactive_css() {
+            return;
+        }
+        let mut doc = self.document.lock().expect("vue doc");
+        bridge.reapply_interactive_cascade(&mut doc);
+        bridge.sync_cascaded_layout_into_runtime(&mut doc);
+        doc.flush_host_frame();
     }
 
     fn pointer_detail(
@@ -1967,6 +2011,7 @@ impl VueHost {
                         .lock()
                         .expect("vue doc")
                         .set_pointer_hover(input.pointer_id, physical_hit);
+                    self.flush_interactive_css_if_needed();
                 }
                 self.js_pointer_hover.insert(input.pointer_id, physical_hit);
             }
@@ -1994,6 +2039,7 @@ impl VueHost {
                         .lock()
                         .expect("vue doc")
                         .press_pointer(input.pointer_id, target);
+                    self.flush_interactive_css_if_needed();
                 }
                 let (previous, next) = if commit_runtime {
                     self.focus_target_at(input.client_x, input.client_y)
@@ -2009,6 +2055,9 @@ impl VueHost {
                     if let Some(next) = next {
                         self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
                     }
+                    if commit_runtime {
+                        self.flush_interactive_css_if_needed();
+                    }
                 }
                 self.js_focus = next;
             }
@@ -2021,6 +2070,9 @@ impl VueHost {
                 } else {
                     target.or(physical_hit)
                 };
+                if commit_runtime && pressed.is_some() {
+                    self.flush_interactive_css_if_needed();
+                }
                 if !default_prevented
                     && let Some(click_target) = pressed
                     && physical_hit == Some(click_target)
@@ -2054,6 +2106,7 @@ impl VueHost {
                         .lock()
                         .expect("vue doc")
                         .release_pointer_press(input.pointer_id);
+                    self.flush_interactive_css_if_needed();
                 }
             }
             PointerEventKind::Move => {}
@@ -2333,6 +2386,9 @@ impl VueHost {
                 }
             }
             self.js_focus = next;
+            if commit_runtime {
+                self.flush_interactive_css_if_needed();
+            }
         } else if !commit_runtime {
             self.js_focus = self.document.lock().expect("vue doc").focused();
         }
@@ -2364,6 +2420,7 @@ impl VueHost {
         }
         self.fire_dom_event(engine, target, "focus", BTreeMap::new())?;
         self.js_focus = Some(target);
+        self.flush_interactive_css_if_needed();
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)

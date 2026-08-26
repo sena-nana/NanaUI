@@ -205,7 +205,7 @@ pub fn node_from_css(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_map::DisplaySpec;
+    use crate::css_map::{DisplaySpec, VisibilitySpec};
     use std::collections::BTreeMap;
 
     fn map_of(root: &LayoutNode, w: f32, h: f32) -> BTreeMap<String, MeasuredBox> {
@@ -828,11 +828,14 @@ mod tests {
     }
 
     #[test]
-    fn visibility_hidden_skips_like_display_none() {
-        // T-V02: Nana treats visibility:hidden as layout skip (not CSS placeholder).
+    fn visibility_hidden_occupies_layout_placeholder() {
+        // T-V02: visibility:hidden keeps flex gap slot (CSS placeholder).
         let mut gone = LayoutStyle::default();
         gone.apply_css_text("visibility:hidden;width:50px;height:40px", None, None);
-        assert!(gone.hidden);
+        assert_eq!(gone.paint.visibility, Some(VisibilitySpec::Hidden));
+        assert!(!gone.hidden);
+        assert!(!gone.omits_box());
+        assert!(!gone.is_paint_visible());
         let mut a = LayoutStyle::default();
         a.apply_css_text("width:50px;height:40px", None, None);
         let mut b = LayoutStyle::default();
@@ -853,8 +856,9 @@ mod tests {
             ],
         );
         let map = map_of(&root, 400.0, 100.0);
-        assert!(!map.contains_key("gone"));
-        assert!((map["b"].x - 60.0).abs() < 0.01);
+        assert!(map.contains_key("gone"));
+        assert!((map["gone"].x - 60.0).abs() < 0.01);
+        assert!((map["b"].x - 120.0).abs() < 0.01);
     }
 
     #[test]

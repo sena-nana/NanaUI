@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    OverflowSpec, SemanticColorRole, TooltipConfig, UI_METRICS,
+    LineHeightSpec, OverflowSpec, SemanticColorRole, TooltipConfig, UI_METRICS,
 };
 
 use crate::view_components::{
@@ -388,6 +388,7 @@ impl SidebarRow {
         layout.padding_left = Some(LengthSpec::Px(sidebar_row_depth_inset(self.depth)));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.font_size = Some(self.size.text_size());
+        layout.line_height = Some(LineHeightSpec::Absolute(self.size.text_size()));
         layout.font_weight = Some(if self.state == SidebarRowState::AncestorActive {
             600
         } else {
@@ -806,6 +807,7 @@ impl SidebarSection {
         layout.padding_left = Some(LengthSpec::Px(ROW_PADDING_LEFT));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_LEFT));
         layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
+        layout.line_height = Some(LineHeightSpec::Absolute(SECTION_HEADER_TITLE_SIZE));
         layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
         layout.white_space_nowrap = true;
         layout.text_overflow_ellipsis = true;
@@ -1050,6 +1052,7 @@ fn title_slot_style() -> NodeStyle {
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
     layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
+    layout.line_height = Some(LineHeightSpec::Absolute(SECTION_HEADER_TITLE_SIZE));
     layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
@@ -1663,6 +1666,11 @@ mod tests {
         assert_eq!(
             style.layout.padding_left,
             Some(LengthSpec::Px(sidebar_row_depth_inset(1)))
+        );
+        assert_eq!(style.layout.font_size, Some(ControlSize::Small.text_size()));
+        assert_eq!(
+            style.layout.line_height,
+            Some(LineHeightSpec::Absolute(ControlSize::Small.text_size()))
         );
         assert_eq!(
             context.world().standard_visual(leading.stable_id()),

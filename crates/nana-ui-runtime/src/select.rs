@@ -441,6 +441,7 @@ fn select_menu_geometry(
         surface,
         elevation: ComponentElevation {
             color: [0.0, 0.0, 0.0, if is_light { 0.24 } else { 0.48 }],
+            offset_x: 0.0,
             offset_y: 8.0,
             blur_radius: 16.0,
             spread_radius: 0.0,
