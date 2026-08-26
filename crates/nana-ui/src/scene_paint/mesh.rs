@@ -1,9 +1,4 @@
 use bytemuck::{Pod, Zeroable};
-use lyon::{
-    math::point,
-    path::Path,
-    tessellation::{BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers},
-};
 
 use super::{
     clip::{FragmentClip, LogicalRect},
@@ -13,6 +8,7 @@ use crate::PhysicalRect;
 
 const INITIAL_VERTICES: usize = 1_024;
 const INITIAL_INDICES: usize = 2_048;
+/// Extra logical pixels so the covering quad has room for `fwidth` AA.
 const STROKE_AA_FRINGE: f32 = 1.0;
 
 #[repr(C)]
@@ -23,11 +19,19 @@ struct MeshVertex {
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 3],
-    stroke: [f32; 3],
+    /// Segment start and constant radius (`r0 = r1 = width / 2`).
+    p0_radius: [f32; 3],
+    p1: [f32; 2],
 }
 
 impl MeshVertex {
-    fn new(position: [f32; 2], color: [f32; 4], stroke: [f32; 3]) -> Self {
+    fn capsule(
+        position: [f32; 2],
+        color: [f32; 4],
+        p0: [f32; 2],
+        p1: [f32; 2],
+        radius: f32,
+    ) -> Self {
         Self {
             position,
             color,
@@ -38,7 +42,8 @@ impl MeshVertex {
                 FragmentClip::PASS.inv_ef[1],
                 FragmentClip::PASS.corner_radius,
             ],
-            stroke,
+            p0_radius: [p0[0], p0[1], radius],
+            p1,
         }
     }
 }
@@ -65,7 +70,6 @@ pub(super) struct MeshPipeline {
     index_capacity: usize,
     pending_vertices: Vec<MeshVertex>,
     pending_indices: Vec<u32>,
-    stroke: StrokeTessellator,
 }
 
 impl MeshPipeline {
@@ -135,7 +139,6 @@ impl MeshPipeline {
             index_capacity: INITIAL_INDICES,
             pending_vertices: Vec::new(),
             pending_indices: Vec::new(),
-            stroke: StrokeTessellator::new(),
         }
     }
 
@@ -156,19 +159,12 @@ impl MeshPipeline {
         if points.len() < 2 || width <= 0.0 {
             return None;
         }
-        let mut builder = Path::builder();
-        builder.begin(point(points[0][0], points[0][1]));
-        for sample in points.iter().skip(1) {
-            builder.line_to(point(sample[0], sample[1]));
-        }
-        builder.end(false);
         let start = self.pending_indices.len() as u32;
         let vertex_base = self.pending_vertices.len();
-        stroke_path(
-            &mut self.stroke,
+        append_stroke_geometry(
             &mut self.pending_vertices,
             &mut self.pending_indices,
-            &builder.build(),
+            points,
             width,
             pack_linear(with_opacity(color, opacity)),
         );
@@ -201,30 +197,27 @@ impl MeshPipeline {
         ];
         let start = self.pending_indices.len() as u32;
         let vertex_base = self.pending_vertices.len();
+        let radius = 2.2 * scale * 0.5;
         for index in 0..8_u8 {
             let angle = f32::from(index) * std::f32::consts::FRAC_PI_4;
-            let from = point(
+            let from = [
                 center[0] + angle.cos() * 6.0 * scale,
                 center[1] + angle.sin() * 6.0 * scale,
-            );
-            let to = point(
+            ];
+            let to = [
                 center[0] + angle.cos() * 10.0 * scale,
                 center[1] + angle.sin() * 10.0 * scale,
-            );
+            ];
             let distance = (index + 8 - phase % 8) % 8;
             let alpha = 1.0 - f32::from(distance) * 0.105;
             let mut tick_color = color;
             tick_color[3] *= alpha;
-            let mut path = Path::builder();
-            path.begin(from);
-            path.line_to(to);
-            path.end(false);
-            stroke_path(
-                &mut self.stroke,
+            push_capsule_segment(
                 &mut self.pending_vertices,
                 &mut self.pending_indices,
-                &path.build(),
-                2.2 * scale,
+                from,
+                to,
+                radius,
                 pack_linear(tick_color),
             );
         }
@@ -349,6 +342,7 @@ fn mesh_pipeline(
                     3 => Float32x4,
                     4 => Float32x3,
                     5 => Float32x3,
+                    6 => Float32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -379,36 +373,75 @@ fn mesh_pipeline(
     })
 }
 
-fn stroke_path(
-    tessellator: &mut StrokeTessellator,
+fn append_stroke_geometry(
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
-    path: &Path,
+    points: &[[f32; 2]],
     width: f32,
     color: [f32; 4],
 ) {
-    let half_width = width * 0.5;
-    let mut geometry: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
-    let options = StrokeOptions::tolerance(0.1)
-        .with_line_width(width + STROKE_AA_FRINGE)
-        .with_line_cap(lyon::tessellation::LineCap::Round)
-        .with_line_join(lyon::tessellation::LineJoin::Round);
-    let _ = tessellator.tessellate_path(
-        path,
-        &options,
-        &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
-            let position = vertex.position();
-            let path_position = vertex.position_on_path();
-            MeshVertex::new(
-                [position.x, position.y],
-                color,
-                [path_position.x, path_position.y, half_width],
-            )
-        }),
-    );
+    let radius = width * 0.5;
+    for pair in points.windows(2) {
+        push_capsule_segment(vertices, indices, pair[0], pair[1], radius, color);
+    }
+}
+
+/// One articulated-line segment: a rectangle covering the constant-radius capsule.
+///
+/// Adjacent segments share an endpoint disc, so joins fill without extra miters.
+fn push_capsule_segment(
+    vertices: &mut Vec<MeshVertex>,
+    indices: &mut Vec<u32>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    radius: f32,
+    color: [f32; 4],
+) {
+    let Some(corners) = covering_quad(p0, p1, radius) else {
+        return;
+    };
     let base = vertices.len() as u32;
-    vertices.append(&mut geometry.vertices);
-    indices.extend(geometry.indices.iter().map(|index| base + *index));
+    for corner in corners {
+        vertices.push(MeshVertex::capsule(corner, color, p0, p1, radius));
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+fn covering_quad(p0: [f32; 2], p1: [f32; 2], radius: f32) -> Option<[[f32; 2]; 4]> {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let length = dx.hypot(dy);
+    if !length.is_finite() || length < f32::EPSILON || !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
+    let tx = dx / length;
+    let ty = dy / length;
+    let nx = -ty;
+    let ny = tx;
+    let pad = radius + STROKE_AA_FRINGE;
+    let ax = p0[0] - tx * pad;
+    let ay = p0[1] - ty * pad;
+    let bx = p1[0] + tx * pad;
+    let by = p1[1] + ty * pad;
+    Some([
+        [ax - nx * pad, ay - ny * pad],
+        [ax + nx * pad, ay + ny * pad],
+        [bx + nx * pad, by + ny * pad],
+        [bx - nx * pad, by - ny * pad],
+    ])
+}
+
+fn capsule_distance(point: [f32; 2], p0: [f32; 2], p1: [f32; 2]) -> f32 {
+    let pa = [point[0] - p0[0], point[1] - p0[1]];
+    let ba = [p1[0] - p0[0], p1[1] - p0[1]];
+    let denom = ba[0] * ba[0] + ba[1] * ba[1];
+    let t = if denom <= f32::EPSILON {
+        0.0
+    } else {
+        ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
+    };
+    let closest = [p0[0] + ba[0] * t, p0[1] + ba[1] * t];
+    (point[0] - closest[0]).hypot(point[1] - closest[1])
 }
 
 fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [f32; 6]) {
@@ -420,10 +453,11 @@ fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [
     for vertex in &mut vertices[start..] {
         vertex.position =
             super::clip::transform_point(affine, vertex.position[0], vertex.position[1]);
-        let path = super::clip::transform_point(affine, vertex.stroke[0], vertex.stroke[1]);
-        vertex.stroke[0] = path[0];
-        vertex.stroke[1] = path[1];
-        vertex.stroke[2] *= scale;
+        let p0 = super::clip::transform_point(affine, vertex.p0_radius[0], vertex.p0_radius[1]);
+        vertex.p0_radius[0] = p0[0];
+        vertex.p0_radius[1] = p0[1];
+        vertex.p0_radius[2] *= scale;
+        vertex.p1 = super::clip::transform_point(affine, vertex.p1[0], vertex.p1[1]);
     }
 }
 
@@ -432,5 +466,117 @@ fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: Fragment
         vertex.clip_rect = clip.rect;
         vertex.clip_inv_abcd = clip.inv_abcd;
         vertex.clip_inv_ef = [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_segment_emits_four_covering_vertices() {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_stroke_geometry(
+            &mut vertices,
+            &mut indices,
+            &[[0.0, 0.0], [10.0, 0.0]],
+            4.0,
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(indices, [0, 1, 2, 0, 2, 3]);
+        for vertex in &vertices {
+            assert_eq!(vertex.p0_radius, [0.0, 0.0, 2.0]);
+            assert_eq!(vertex.p1, [10.0, 0.0]);
+        }
+        let xs: Vec<f32> = vertices.iter().map(|vertex| vertex.position[0]).collect();
+        let ys: Vec<f32> = vertices.iter().map(|vertex| vertex.position[1]).collect();
+        let pad = 2.0 + STROKE_AA_FRINGE;
+        assert!(xs.iter().copied().fold(f32::MAX, f32::min) <= -pad + 1e-4);
+        assert!(xs.iter().copied().fold(f32::MIN, f32::max) >= 10.0 + pad - 1e-4);
+        assert!(ys.iter().copied().fold(f32::MAX, f32::min) <= -pad + 1e-4);
+        assert!(ys.iter().copied().fold(f32::MIN, f32::max) >= pad - 1e-4);
+    }
+
+    #[test]
+    fn zero_length_and_empty_strokes_emit_nothing() {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_stroke_geometry(
+            &mut vertices,
+            &mut indices,
+            &[[3.0, 3.0], [3.0, 3.0]],
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        assert!(vertices.is_empty());
+        assert!(indices.is_empty());
+        append_stroke_geometry(&mut vertices, &mut indices, &[[1.0, 1.0]], 2.0, [1.0; 4]);
+        assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn two_segments_share_an_endpoint_disc() {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_stroke_geometry(
+            &mut vertices,
+            &mut indices,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0]],
+            2.0,
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        assert_eq!(vertices.len(), 8);
+        assert_eq!(indices.len(), 12);
+        let join = [8.0, 0.0];
+        let first = capsule_distance(
+            join,
+            vertices[0].p0_radius[..2].try_into().unwrap(),
+            vertices[0].p1,
+        );
+        let second = capsule_distance(
+            join,
+            vertices[4].p0_radius[..2].try_into().unwrap(),
+            vertices[4].p1,
+        );
+        assert!(first <= vertices[0].p0_radius[2] + 1e-5);
+        assert!(second <= vertices[4].p0_radius[2] + 1e-5);
+    }
+
+    #[test]
+    fn capsule_covers_midline_and_rejects_far_normal() {
+        let p0 = [0.0, 0.0];
+        let p1 = [20.0, 0.0];
+        let radius = 1.5;
+        assert!(capsule_distance([10.0, 0.0], p0, p1) < radius);
+        assert!(capsule_distance([0.0, 0.0], p0, p1) < radius);
+        assert!(capsule_distance([-0.5, 0.0], p0, p1) < radius);
+        assert!(capsule_distance([10.0, 4.0], p0, p1) > radius);
+        let corners = covering_quad(p0, p1, radius).expect("quad");
+        let outside_corner = corners[0];
+        assert!(
+            capsule_distance(outside_corner, p0, p1) > radius,
+            "covering-quad corner must be discarded by the capsule, got {}",
+            capsule_distance(outside_corner, p0, p1)
+        );
+    }
+
+    #[test]
+    fn affine_scales_radius_and_moves_endpoints() {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_stroke_geometry(
+            &mut vertices,
+            &mut indices,
+            &[[0.0, 0.0], [4.0, 0.0]],
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        apply_affine_to_vertices(&mut vertices, 0, [2.0, 0.0, 0.0, 2.0, 5.0, 7.0]);
+        assert!((vertices[0].p0_radius[0] - 5.0).abs() < 1e-5);
+        assert!((vertices[0].p0_radius[1] - 7.0).abs() < 1e-5);
+        assert!((vertices[0].p1[0] - 13.0).abs() < 1e-5);
+        assert!((vertices[0].p0_radius[2] - 2.0).abs() < 1e-5);
     }
 }
