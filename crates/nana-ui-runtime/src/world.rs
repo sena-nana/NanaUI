@@ -211,16 +211,13 @@ struct HitEntry {
     children: Vec<HitEntry>,
 }
 
-/// Ancestor-chain answers memoized for the length of one pass.
-///
-/// Presence and stacking are properties of a node's whole ancestor chain, and
-/// a pass (extraction, hit-index rebuild) visits sets of nodes that share most
-/// of that chain. Filling this while walking turns per-node chain walks into
-/// one walk per chain.
+/// Per-pass cache of ancestor-chain answers. Extraction and hit-index share
+/// most of each chain, so one walk fills every node on it.
 #[derive(Default)]
 struct AncestorMemo {
     live: HashMap<StableNodeId, bool>,
     stacking: HashMap<StableNodeId, i32>,
+    chain: Vec<StableNodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3136,8 +3133,6 @@ impl UiWorld {
         self.presence_live_memo(id, &mut AncestorMemo::default())
     }
 
-    /// [`Self::presence_live`] that records every chain it walks. A pass over
-    /// many nodes of one subtree answers the shared ancestors once.
     fn presence_live_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> bool {
         if !self.is_mounted(id) {
             return false;
@@ -3145,7 +3140,7 @@ impl UiWorld {
         if self.detached.is_empty() {
             return true;
         }
-        let mut chain = Vec::new();
+        memo.chain.clear();
         let mut current = Some(id);
         let mut live = true;
         while let Some(node) = current {
@@ -3153,31 +3148,27 @@ impl UiWorld {
                 live = known;
                 break;
             }
-            chain.push(node);
+            memo.chain.push(node);
             if self.detached.contains(&node) {
                 live = false;
                 break;
             }
             current = self.parent_id(node);
         }
-        for node in chain {
+        for node in memo.chain.drain(..) {
             memo.live.insert(node, live);
         }
         live
     }
 
     fn presence_flags_of(&self, entity: Entity) -> PresenceFlags {
+        let visual = self.world.get::<StandardVisual>(entity);
+        let style = self.world.get::<NodeStyle>(entity);
         PresenceFlags {
-            confirm: is_confirm_modal(self.world.get::<StandardVisual>(entity)),
-            clip: is_clip_visual(self.world.get::<StandardVisual>(entity)),
-            z_index: self
-                .world
-                .get::<NodeStyle>(entity)
-                .is_some_and(|style| style.layout.z_index.is_some()),
-            viewport: self
-                .world
-                .get::<NodeStyle>(entity)
-                .is_some_and(|style| style.layout.depends_on_viewport()),
+            confirm: is_confirm_modal(visual),
+            clip: is_clip_visual(visual),
+            z_index: style.is_some_and(|style| style.layout.z_index.is_some()),
+            viewport: style.is_some_and(|style| style.layout.depends_on_viewport()),
         }
     }
 
@@ -3222,10 +3213,6 @@ impl UiWorld {
         }
     }
 
-    /// `true` while some live node's box resolves against the viewport
-    /// (`position: fixed`, `vw` / `vh`). Such a box moves on a viewport change
-    /// even when its containing block is unchanged, so incremental relayout
-    /// cannot reuse retained boxes across a resize.
     pub fn uses_viewport_basis(&self) -> bool {
         self.viewport_basis_nodes != 0
     }
@@ -3408,13 +3395,11 @@ impl UiWorld {
         })
     }
 
-    /// Nearest authored `z-index` at or above `id`, recording the chain so a
-    /// pass over a subtree pays for each ancestor once.
     fn stacking_z_index_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> i32 {
         if self.z_index_nodes == 0 {
             return 0;
         }
-        let mut chain = Vec::new();
+        memo.chain.clear();
         let mut current = Some(id);
         let mut z_index = 0;
         while let Some(node) = current {
@@ -3434,13 +3419,13 @@ impl UiWorld {
                 memo.stacking.insert(node, authored);
                 break;
             }
-            chain.push(node);
+            memo.chain.push(node);
             current = self
                 .world
                 .get::<Hierarchy>(entity)
                 .and_then(|hierarchy| hierarchy.parent);
         }
-        for node in chain {
+        for node in memo.chain.drain(..) {
             memo.stacking.insert(node, z_index);
         }
         z_index

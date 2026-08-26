@@ -68,12 +68,9 @@ impl RuntimeDocument {
         Arc::clone(&self.scene)
     }
 
-    /// Drain one canonical Runtime frame with host-owned text shaping and
-    /// framework-owned layout. Applications do not write widget geometry.
-    ///
-    /// A viewport change forces one drain pass so layout still runs. That pass
-    /// is the only relayout for the resize, and it reuses every subtree the new
-    /// viewport did not move.
+    /// Drain one Runtime frame: host shaping, framework layout. A viewport
+    /// change relayouts from the roots and reuses every subtree the new size
+    /// did not move.
     pub fn flush(
         &mut self,
         viewport: LayoutViewport,

@@ -968,19 +968,7 @@ impl LengthSpec {
             Self::Clamp3(a, b, c) => {
                 a.depends_on_viewport() || b.depends_on_viewport() || c.depends_on_viewport()
             }
-            Self::Px(_)
-            | Self::Percent(_)
-            | Self::Em(_)
-            | Self::Rem(_)
-            | Self::CalcPercentOffset { .. }
-            | Self::CalcEmOffset { .. }
-            | Self::CalcRemOffset { .. }
-            | Self::Fill
-            | Self::Shrink
-            | Self::Auto
-            | Self::MinContent
-            | Self::MaxContent
-            | Self::FitContent => false,
+            _ => false,
         }
     }
 
