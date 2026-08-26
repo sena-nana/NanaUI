@@ -44,9 +44,8 @@ pub use box_layout::{
     FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
     GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
     LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    TEXT_APPROX_ASCENT_EM, TextAlignSpec, ViewportAxis, WhiteSpaceSpec,
-    glyph_box_center_from_line_top, icon_y_on_text_glyph_center, resolve_grid_column_widths,
-    resolve_grid_track_sizes, text_line_box_height_px,
+    TextAlignSpec, ViewportAxis, WhiteSpaceSpec, resolve_grid_column_widths,
+    resolve_grid_track_sizes,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;

@@ -821,45 +821,6 @@ pub fn text_line_box_height_px(font_px: f32, line_height: Option<LineHeightSpec>
     }
 }
 
-/// Ascent ratio used by [`LayoutStyle::approximate_baseline`] (0.8em).
-pub const TEXT_APPROX_ASCENT_EM: f32 = 0.8;
-
-/// Center of a CJK-oriented em square inside a line, measured from the line top.
-///
-/// cosmic-text 0.19 splits extra leading above and below the (ascent+descent)
-/// box, then places the baseline at `ascent` into that box. Nana approximates
-/// ascent as 0.8em; the em square sits on the baseline, so its center is above
-/// the line-box midpoint by half the descent.
-pub fn glyph_box_center_from_line_top(line_height: f32, font_px: f32) -> f32 {
-    let font_px = font_px.max(0.0);
-    let ascent = font_px * TEXT_APPROX_ASCENT_EM;
-    let descent = (font_px - ascent).max(0.0);
-    let glyph_height = ascent + descent;
-    let centering = (line_height - glyph_height) * 0.5;
-    centering + ascent - glyph_height * 0.5
-}
-
-/// Top of a square `extent` whose center matches the glyph box of a text block.
-///
-/// `vertical_center` follows text vertical alignment: the line box is centered
-/// in `text_bounds_height` when true, otherwise it starts at `text_bounds_y`.
-pub fn icon_y_on_text_glyph_center(
-    text_bounds_y: f32,
-    text_bounds_height: f32,
-    font_px: f32,
-    line_height: Option<LineHeightSpec>,
-    vertical_center: bool,
-    extent: f32,
-) -> f32 {
-    let line_h = text_line_box_height_px(font_px, line_height);
-    let line_top = if vertical_center {
-        text_bounds_y + (text_bounds_height - line_h) * 0.5
-    } else {
-        text_bounds_y
-    };
-    line_top + glyph_box_center_from_line_top(line_h, font_px) - extent * 0.5
-}
-
 /// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；非完整 calc AST）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthAtom {
@@ -2377,8 +2338,7 @@ fn resolve_box_edge_specs_signed(
 mod tests {
     use super::{
         BoxSizing, FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle, LengthSpec,
-        LineHeightSpec, OverflowSpec, ParentBox, TEXT_APPROX_ASCENT_EM,
-        glyph_box_center_from_line_top, icon_y_on_text_glyph_center, text_line_box_height_px,
+        OverflowSpec, ParentBox,
     };
 
     #[test]
@@ -2769,34 +2729,5 @@ mod tests {
                 .count(),
             2
         );
-    }
-
-    #[test]
-    fn glyph_box_center_sits_on_the_em_square_midline() {
-        let font = 12.0;
-        let line = text_line_box_height_px(font, Some(LineHeightSpec::Absolute(font)));
-        assert!((line - font).abs() < f32::EPSILON);
-        let center = glyph_box_center_from_line_top(line, font);
-        let expected = font * TEXT_APPROX_ASCENT_EM - font * 0.5;
-        assert!((center - expected).abs() < 1e-5);
-        assert!((center - 3.6).abs() < 1e-5);
-    }
-
-    #[test]
-    fn icon_y_on_centered_text_shares_the_glyph_box_midline() {
-        let font = 12.0;
-        let extent = 12.0;
-        let y = icon_y_on_text_glyph_center(
-            10.0,
-            28.0,
-            font,
-            Some(LineHeightSpec::Absolute(font)),
-            true,
-            extent,
-        );
-        let line_top = 10.0 + (28.0 - font) * 0.5;
-        let expected = line_top + glyph_box_center_from_line_top(font, font) - extent * 0.5;
-        assert!((y - expected).abs() < 1e-5);
-        assert!((y - 15.6).abs() < 1e-5);
     }
 }

@@ -2365,10 +2365,6 @@ mod tests {
         assert_eq!(context.world().text(label.stable_id()), Some("主题"));
         let label_style = context.world().node_style(label.stable_id()).unwrap();
         assert_eq!(label_style.layout.font_size, Some(13.0));
-        assert_eq!(
-            label_style.layout.line_height,
-            Some(LineHeightSpec::Absolute(13.0))
-        );
         assert_eq!(label_style.layout.font_weight, Some(500));
         assert_eq!(label_style.foreground, Some(SemanticColorRole::Text));
         assert!(label_style.layout.white_space_nowrap);

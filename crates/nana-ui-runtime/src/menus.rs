@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AnchoredMenuPlacement, ControlSize, Icon, LengthSpec, LineHeightSpec, PositionSpec,
-    SemanticColorRole, SemanticPalette, UI_METRICS, icon_y_on_text_glyph_center,
+    SemanticColorRole, SemanticPalette, UI_METRICS,
 };
 
 use crate::popover::{menu_surface_style, project_anchored_menu};
@@ -804,14 +804,7 @@ fn menu_option_icon(
     let icon = icon.map(|icon| {
         let bounds = LayoutBox {
             x: cursor,
-            y: icon_y_on_text_glyph_center(
-                row.y,
-                row.height,
-                size.text_size(),
-                Some(LineHeightSpec::Absolute(size.text_size())),
-                true,
-                icon_size,
-            ),
+            y: row.y + (row.height - icon_size) / 2.0,
             width: icon_size,
             height: icon_size,
         };
