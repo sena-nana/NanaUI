@@ -170,7 +170,8 @@ pub struct StrokePattern {
     /// (treated as solid). A single-cycle odd list is repeated to even length.
     pub dash: Vec<f32>,
     pub dash_offset: f32,
-    /// Per-point colors. Used only when `len` matches the stroke point count.
+    /// Per-point colors. Used only when `len` matches the stroke point count;
+    /// each segment takes the color of its start vertex.
     pub colors: Vec<[f32; 4]>,
 }
 
