@@ -14,6 +14,7 @@ use std::{
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 #[cfg(any(test, feature = "hosted"))]
@@ -701,6 +702,12 @@ pub struct NanaTreeDocument {
     /// Test stand-in for a registered HostTexture generation/version pair.
     #[cfg(test)]
     host_texture_revision_overrides: HashMap<String, u64>,
+    /// Monotonic origin for CSS transition / keyframe deadlines (same epoch as
+    /// [`UiWorld::advance_animations`]).
+    animation_epoch: Instant,
+    /// Scene host epoch when wired through [`RuntimeAnimationClock`]; isolated
+    /// tests leave this unset and fall back to [`Self::animation_epoch`].
+    host_animation_epoch: Option<Instant>,
 }
 
 const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
@@ -806,6 +813,8 @@ impl NanaTreeDocument {
             host_textures: None,
             #[cfg(test)]
             host_texture_revision_overrides: HashMap::new(),
+            animation_epoch: Instant::now(),
+            host_animation_epoch: None,
         };
         doc.reset_layout_roots();
         doc
@@ -1456,7 +1465,12 @@ impl NanaTreeDocument {
                 mutations.set_style(id, style);
             }
             let interaction = InteractionState {
-                pointer_events: !widget.props.disabled && !widget.props.layout.hidden,
+                pointer_events: !widget.props.disabled
+                    && !widget.props.layout.hidden
+                    && !widget
+                        .props
+                        .attrs
+                        .contains_key(crate::bridge::GENERATED_PSEUDO_ATTR),
                 focusable: !widget.props.disabled
                     && (widget.kind.is_choice_field()
                         || matches!(
@@ -2607,6 +2621,108 @@ impl NanaTreeDocument {
         self.runtime
             .focused(nana_ui_runtime::DocumentId::try_from(self.id).ok()?)
             .map(NodeHandle::from)
+    }
+
+    pub fn runtime_now(&self) -> std::time::Duration {
+        let epoch = self.host_animation_epoch.unwrap_or(self.animation_epoch);
+        Instant::now().saturating_duration_since(epoch)
+    }
+
+    pub fn host_animation_epoch(&self) -> Option<Instant> {
+        self.host_animation_epoch
+    }
+
+    pub fn set_host_animation_epoch(&mut self, epoch: Instant) {
+        self.host_animation_epoch = Some(epoch);
+    }
+
+    pub fn next_animation_wakeup(&self) -> Option<Instant> {
+        let epoch = self.host_animation_epoch.unwrap_or(self.animation_epoch);
+        self.context()
+            .next_animation_deadline()
+            .and_then(|deadline| epoch.checked_add(deadline))
+    }
+
+    /// Test hook: advance the monotonic CSS animation clock.
+    #[cfg(test)]
+    pub fn set_runtime_clock_for_test(&mut self, elapsed: std::time::Duration) {
+        self.host_animation_epoch = None;
+        self.animation_epoch = Instant::now()
+            .checked_sub(elapsed)
+            .unwrap_or_else(Instant::now);
+    }
+
+    pub fn start_css_animation(&mut self, spec: nana_ui_runtime::AnimationSpec) {
+        if spec.duration.is_zero() || spec.frame_interval.is_zero() {
+            return;
+        }
+        self.commit_pending_with(|mutations| mutations.start_animation(spec))
+            .ok();
+    }
+
+    pub fn advance_css_animations(
+        &mut self,
+        now: std::time::Duration,
+    ) -> nana_ui_runtime::AnimationFrame {
+        self.runtime.context_mut().advance_animations(now)
+    }
+
+    /// Ensure a bridge-owned generated pseudo element exists in the Runtime tree.
+    pub fn ensure_css_pseudo_element(
+        &mut self,
+        id: u64,
+        parent: NodeHandle,
+        pseudo: crate::css_interactive::GeneratedPseudo,
+        insert_first: bool,
+    ) {
+        let handle = NodeHandle(id);
+        if !self.nodes.contains_key(&id) {
+            self.nodes.insert(
+                id,
+                Node {
+                    data: NodeData::Element {
+                        namespace: ElementNamespace::Html,
+                        attrs: HashMap::from([(
+                            crate::bridge::GENERATED_PSEUDO_ATTR.into(),
+                            match pseudo {
+                                crate::css_interactive::GeneratedPseudo::Before => "before",
+                                crate::css_interactive::GeneratedPseudo::After => "after",
+                            }
+                            .into(),
+                        )]),
+                    },
+                    scope_id: None,
+                },
+            );
+            let stable = StableNodeId::new(id).expect("generated pseudo id is nonzero");
+            self.pending
+                .kinds
+                .insert(id, NodeKind::Element { tag: "span".into() });
+            self.pending.mutations.create(
+                stable,
+                nana_ui_runtime::DocumentId::try_from(self.id).expect("document ID is nonzero"),
+                NodeKind::Element { tag: "span".into() },
+            );
+            self.pending.mutations.set_interaction(
+                stable,
+                InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                },
+            );
+        }
+        let anchor = if insert_first {
+            self.children_of(parent).first().copied()
+        } else {
+            None
+        };
+        self.insert(handle, parent, anchor);
+    }
+
+    pub fn remove_generated_pseudo(&mut self, node: NodeHandle) {
+        if self.nodes.contains_key(&node.0) {
+            self.dispose_subtree(node);
+        }
     }
 
     fn alloc(&mut self) -> u64 {
@@ -9680,5 +9796,205 @@ mod tests {
             400.0,
             "paint snapshot writeback must not copy scrolled coordinates"
         );
+    }
+
+    #[test]
+    fn generated_before_pseudo_appears_in_runtime_tree() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                class_names: vec!["chip".into()],
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(".chip::before { content: \"\"; width: 4px; height: 4px; }");
+        bridge.resolve_document_layout(&mut doc);
+        let snap = bridge.snapshot();
+        let has_before = snap.widgets.iter().any(|w| {
+            w.props
+                .attrs
+                .get(crate::bridge::GENERATED_PSEUDO_ATTR)
+                .map(String::as_str)
+                == Some("before")
+        });
+        assert!(
+            has_before,
+            "chip::before must materialize a generated child widget"
+        );
+        doc.flush_host_frame();
+        let document = nana_ui_runtime::DocumentId::try_from(doc.id()).unwrap();
+        let order = doc.world().document_order(document);
+        assert!(
+            order.iter().any(|id| snap.widgets.iter().any(|w| {
+                w.props
+                    .attrs
+                    .contains_key(crate::bridge::GENERATED_PSEUDO_ATTR)
+                    && w.id == id.get()
+            })),
+            "generated ::before node must exist in Runtime document order"
+        );
+    }
+
+    #[test]
+    fn generated_before_keeps_size_with_static_parent_rule() {
+        use nana_ui_core::LengthSpec;
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                class_names: vec!["chip".into()],
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".chip { display: flex; } .chip::before { content: \"\"; width: 4px; height: 4px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let before_id = bridge
+            .snapshot()
+            .widgets
+            .iter()
+            .find(|w| {
+                w.props
+                    .attrs
+                    .get(crate::bridge::GENERATED_PSEUDO_ATTR)
+                    .map(String::as_str)
+                    == Some("before")
+            })
+            .map(|w| w.id)
+            .expect("generated ::before widget");
+        let style = doc
+            .runtime
+            .node_style(StableNodeId::new(before_id).unwrap())
+            .expect("before runtime style");
+        assert_eq!(style.layout.width, Some(LengthSpec::Px(4.0)));
+        assert_eq!(style.layout.height, Some(LengthSpec::Px(4.0)));
+    }
+
+    #[test]
+    fn generated_before_inserts_before_origin_children() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        let child = doc.create_element("span");
+        doc.insert(child, host, None);
+        bridge.register(
+            host.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                class_names: vec!["chip".into()],
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.register(
+            child.0,
+            crate::WidgetKind::Text,
+            crate::WidgetProps {
+                label: "x".into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.insert_child(child.0, host.0, None);
+        bridge.inject_stylesheet(".chip::before { content: \"\"; width: 4px; height: 4px; }");
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let before_id = bridge
+            .snapshot()
+            .widgets
+            .iter()
+            .find(|w| {
+                w.props
+                    .attrs
+                    .get(crate::bridge::GENERATED_PSEUDO_ATTR)
+                    .map(String::as_str)
+                    == Some("before")
+            })
+            .map(|w| w.id)
+            .expect("generated ::before widget");
+        let document = nana_ui_runtime::DocumentId::try_from(doc.id()).unwrap();
+        let order = doc
+            .world()
+            .document_order(document)
+            .into_iter()
+            .map(|id| id.get())
+            .collect::<Vec<_>>();
+        let host_idx = order.iter().position(|id| *id == host.0).expect("host");
+        let before_idx = order
+            .iter()
+            .position(|id| *id == before_id)
+            .expect("before");
+        let child_idx = order.iter().position(|id| *id == child.0).expect("child");
+        assert!(host_idx < before_idx && before_idx < child_idx);
+    }
+
+    #[test]
+    fn generated_after_inserts_after_origin_children() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = crate::MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        let child = doc.create_element("span");
+        doc.insert(child, host, None);
+        bridge.register(
+            host.0,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                class_names: vec!["chip".into()],
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.register(
+            child.0,
+            crate::WidgetKind::Text,
+            crate::WidgetProps {
+                label: "x".into(),
+                ..crate::WidgetProps::default()
+            },
+        );
+        bridge.insert_child(child.0, host.0, None);
+        bridge.inject_stylesheet(".chip::after { content: \"\"; width: 4px; height: 4px; }");
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let after_id = bridge
+            .snapshot()
+            .widgets
+            .iter()
+            .find(|w| {
+                w.props
+                    .attrs
+                    .get(crate::bridge::GENERATED_PSEUDO_ATTR)
+                    .map(String::as_str)
+                    == Some("after")
+            })
+            .map(|w| w.id)
+            .expect("generated ::after widget");
+        let document = nana_ui_runtime::DocumentId::try_from(doc.id()).unwrap();
+        let order = doc
+            .world()
+            .document_order(document)
+            .into_iter()
+            .map(|id| id.get())
+            .collect::<Vec<_>>();
+        let host_idx = order.iter().position(|id| *id == host.0).expect("host");
+        let child_idx = order.iter().position(|id| *id == child.0).expect("child");
+        let after_idx = order.iter().position(|id| *id == after_id).expect("after");
+        assert!(host_idx < child_idx && child_idx < after_idx);
     }
 }

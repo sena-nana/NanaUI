@@ -2120,9 +2120,8 @@
      * Vue runtime-dom Transition reads camelCase keys on the returned object
      * (`transitionDuration`, …), not only getPropertyValue.
      *
-     * Nana has no CSS transition/animation engine — report 0s/none so
-     * `whenTransitionEnds` resolves immediately after nextFrame (honest
-     * minimal completion). Real timed CSS Transition: defer.
+     * When the host exposes cascade-resolved motion (`computedStyle` host op),
+     * prefer that over inline defaults so real CSS transitions are honored.
      */
     this.getComputedStyle = function (el) {
       const style = (el && el.style) || {};
@@ -2135,32 +2134,50 @@
         if (camel && style[camel] != null && style[camel] !== "") return String(style[camel]);
         return fallback;
       };
+      let hostMotion = null;
+      const nid = el && el.__nid;
+      if (nid != null && Number.isFinite(Number(nid))) {
+        try {
+          hostMotion = hostCall("computedStyle", [Number(nid)]);
+        } catch (_err) {
+          hostMotion = null;
+        }
+      }
+      const fromHost = function (key, camel, fallback) {
+        if (hostMotion && hostMotion[key] != null && hostMotion[key] !== "") {
+          return String(hostMotion[key]);
+        }
+        if (hostMotion && camel && hostMotion[camel] != null && hostMotion[camel] !== "") {
+          return String(hostMotion[camel]);
+        }
+        return fallback;
+      };
       const computed = {
         getPropertyValue: function (name) {
           const key = String(name || "").toLowerCase();
           if (key === "transition-delay" || key === "transitiondelay")
-            return read("transition-delay", "transitionDelay", "0s");
+            return fromHost("transitionDelay", "transitionDelay", read("transition-delay", "transitionDelay", "0s"));
           if (key === "transition-duration" || key === "transitionduration")
-            return read("transition-duration", "transitionDuration", "0s");
+            return fromHost("transitionDuration", "transitionDuration", read("transition-duration", "transitionDuration", "0s"));
           if (key === "transition-property" || key === "transitionproperty")
-            return read("transition-property", "transitionProperty", "none");
+            return fromHost("transitionProperty", "transitionProperty", read("transition-property", "transitionProperty", "none"));
           if (key === "animation-delay" || key === "animationdelay")
-            return read("animation-delay", "animationDelay", "0s");
+            return fromHost("animationDelay", "animationDelay", read("animation-delay", "animationDelay", "0s"));
           if (key === "animation-duration" || key === "animationduration")
-            return read("animation-duration", "animationDuration", "0s");
+            return fromHost("animationDuration", "animationDuration", read("animation-duration", "animationDuration", "0s"));
           if (key === "animation-name" || key === "animationname")
-            return read("animation-name", "animationName", "none");
+            return fromHost("animationName", "animationName", read("animation-name", "animationName", "none"));
           if (style.getPropertyValue) return style.getPropertyValue(name) || "";
           return style[name] || "";
         },
-        transitionDelay: "0s",
-        transitionDuration: "0s",
-        transitionProperty: "none",
-        animationDelay: "0s",
-        animationDuration: "0s",
-        animationName: "none",
+        transitionDelay: fromHost("transitionDelay", "transitionDelay", "0s"),
+        transitionDuration: fromHost("transitionDuration", "transitionDuration", "0s"),
+        transitionProperty: fromHost("transitionProperty", "transitionProperty", "none"),
+        animationDelay: fromHost("animationDelay", "animationDelay", "0s"),
+        animationDuration: fromHost("animationDuration", "animationDuration", "0s"),
+        animationName: fromHost("animationName", "animationName", "none"),
       };
-      // Prefer explicit inline style when present (still usually 0s on Nana).
+      // Prefer explicit inline style when present.
       const td = read("transition-duration", "transitionDuration", null);
       if (td != null) computed.transitionDuration = td;
       const tdelay = read("transition-delay", "transitionDelay", null);

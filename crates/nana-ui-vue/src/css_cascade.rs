@@ -16,12 +16,20 @@
 //! After cascade, documented shell / utility classes are applied via
 //! [`crate::shell_contract`]（非中立；不在此模块扩展 class 特判）.
 //!
-//! Deferred (skipped at parse — never silently matched): interactive
-//! pseudo-classes (`:hover`…), pseudo-elements, `@media`/`@keyframes`,
-//! `:has()`, `:nth-child(… of …)`, nested / complex `:not()` args, cascade `@layer`.
+//! Parsed into separate buckets (not static cascade): `:hover`/`:focus`/`:active`,
+//! `::before`/`::after`, `@keyframes`, and transition/animation longhands — see
+//! [`crate::css_interactive::ParsedStylesheet`].
+//!
+//! Still deferred (skipped at parse): `:has()`, `:nth-child(… of …)`, nested /
+//! complex `:not()` args, `@media` / `@supports` / `@layer`, and other at-rules.
 
 use std::collections::BTreeMap;
 
+use crate::css_interactive::{
+    GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractiveSelector,
+    InteractiveStyleRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet,
+    parse_keyframes_at_rule, partition_motion_entries,
+};
 use crate::css_map::{LayoutStyle, LayoutStyleCss, split_important_flag};
 
 /// One parsed declaration from a rule block (`property: value`, `!important` stripped).
@@ -109,6 +117,8 @@ pub struct CompoundSelector {
     pub nth_child: Option<AnPlusB>,
     /// `:nth-of-type(An+B)` — 1-based index among same-tag siblings.
     pub nth_of_type: Option<AnPlusB>,
+    /// `:hover` / `:focus` / `:active` when parsed for interactive buckets.
+    pub interactive: Option<InteractivePseudo>,
 }
 
 /// CSS An+B microsyntax (`odd`/`even`/`2n+1`/…) for `:nth-child` / `:nth-of-type`.
@@ -258,7 +268,7 @@ pub struct StylesheetParseReport {
     pub skipped_declarations: usize,
     /// Selectors that failed to parse (deferred/unsupported syntax).
     pub skipped_selectors: usize,
-    /// At-rule blocks skipped entirely (@media, @keyframes, ...).
+    /// At-rule blocks skipped entirely (@media, @supports, @layer, …).
     pub skipped_at_rules: usize,
 }
 
@@ -275,19 +285,19 @@ impl StylesheetParseReport {
     }
 }
 
-/// Parse stylesheet text into rules (skips at-rules / unsupported selectors).
+/// Parse stylesheet text into static cascade rules (interactive/pseudo/keyframes omitted).
 pub fn parse_stylesheet(css: &str, order_base: u32) -> Vec<StyleRule> {
     parse_stylesheet_with_report(css, order_base).0
 }
 
-/// [`parse_stylesheet`] plus skipped-content diagnostics.
-pub fn parse_stylesheet_with_report(
+/// Full parse: static rules plus interactive, generated-pseudo, keyframes, and motion buckets.
+pub fn parse_stylesheet_full(
     css: &str,
     order_base: u32,
-) -> (Vec<StyleRule>, StylesheetParseReport) {
+) -> (ParsedStylesheet, StylesheetParseReport) {
     let stripped = strip_css_comments(css);
     let mut report = StylesheetParseReport::default();
-    let mut rules = Vec::new();
+    let mut sheet = ParsedStylesheet::default();
     let mut order = order_base;
     let mut rest = stripped.as_str();
     while !rest.is_empty() {
@@ -296,14 +306,17 @@ pub fn parse_stylesheet_with_report(
             break;
         }
         if rest.starts_with('@') {
+            if let Some((keyframes, next)) = parse_keyframes_at_rule(rest, order) {
+                sheet.keyframes.insert(keyframes.name.clone(), keyframes);
+                order = order.saturating_add(1);
+                rest = next;
+                continue;
+            }
             rest = skip_at_rule(rest);
             report.skipped_at_rules += 1;
             continue;
         }
         let Some((selector_text, body, next)) = split_rule(rest) else {
-            // Malformed block (e.g. an unclosed `{`): recover like a browser
-            // and keep parsing after the next `}` instead of truncating
-            // every rule that follows.
             report.skipped_rules += 1;
             rest = match rest.find('}') {
                 Some(end) => &rest[end + 1..],
@@ -322,27 +335,112 @@ pub fn parse_stylesheet_with_report(
             report.skipped_declarations += 1;
             continue;
         }
-        let mut selectors = Vec::new();
+        let (layout_entries, motion) = partition_motion_entries(&declaration_entries);
+        if layout_entries.is_empty() && motion.is_empty() {
+            report.skipped_declarations += 1;
+            continue;
+        }
+        let layout_declarations = entries_to_declaration_text(&layout_entries);
+
+        let mut static_selectors = Vec::new();
+        let mut interactive_selectors = Vec::new();
+        let mut generated = Vec::new();
         for part in split_selector_list(selector_text) {
-            if let Some(sel) = parse_selector(part) {
-                selectors.push(sel);
+            if let Some((originating, pseudo)) = parse_generated_pseudo_selector(part) {
+                generated.push((originating, pseudo));
+            } else if let Some(sel) = parse_interactive_selector(part) {
+                interactive_selectors.push(sel);
+            } else if let Some(sel) = parse_selector(part) {
+                static_selectors.push(sel);
             } else {
                 report.skipped_selectors += 1;
             }
         }
-        if selectors.is_empty() {
+
+        if static_selectors.is_empty() && interactive_selectors.is_empty() && generated.is_empty() {
             continue;
         }
-        report.rules += 1;
-        rules.push(StyleRule {
-            selectors,
-            declarations,
-            declaration_entries,
-            source_order: order,
-        });
-        order = order.saturating_add(1);
+
+        let has_layout = !layout_entries.is_empty();
+        let has_motion = !motion.is_empty();
+        let motion_for_rules = if has_motion {
+            motion.clone()
+        } else {
+            MotionDeclarations::default()
+        };
+
+        let mut consumed = false;
+        if !static_selectors.is_empty() && has_layout {
+            report.rules += 1;
+            consumed = true;
+            sheet.static_rules.push(StyleRule {
+                selectors: static_selectors.clone(),
+                declarations: layout_declarations.clone(),
+                declaration_entries: layout_entries.clone(),
+                source_order: order,
+            });
+        }
+        if !interactive_selectors.is_empty() && (has_layout || has_motion) {
+            consumed = true;
+            for sel in interactive_selectors {
+                sheet.interactive_rules.push(InteractiveStyleRule {
+                    selector: sel,
+                    declarations: layout_declarations.clone(),
+                    declaration_entries: layout_entries.clone(),
+                    motion: motion_for_rules.clone(),
+                    source_order: order,
+                });
+            }
+        }
+        if !generated.is_empty() && (has_layout || has_motion) {
+            consumed = true;
+            for (originating_selector, pseudo) in generated {
+                sheet.generated_pseudo_rules.push(GeneratedPseudoRule {
+                    originating_selector,
+                    pseudo,
+                    declarations: layout_declarations.clone(),
+                    declaration_entries: layout_entries.clone(),
+                    motion: motion_for_rules.clone(),
+                    source_order: order,
+                });
+            }
+        }
+        if !static_selectors.is_empty() && has_motion {
+            consumed = true;
+            sheet.motion_rules.push(MotionStyleRule {
+                selectors: static_selectors,
+                motion,
+                source_order: order,
+            });
+        }
+        if consumed {
+            order = order.saturating_add(1);
+        }
     }
-    (rules, report)
+    (sheet, report)
+}
+
+fn entries_to_declaration_text(entries: &[DeclarationEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            if entry.important {
+                format!("{}: {} !important", entry.property, entry.value)
+            } else {
+                entry.text()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// [`parse_stylesheet`] plus skipped-content diagnostics.
+pub fn parse_stylesheet_with_report(
+    css: &str,
+    order_base: u32,
+) -> (Vec<StyleRule>, StylesheetParseReport) {
+    let (sheet, report) = parse_stylesheet_full(css, order_base);
+    (sheet.static_rules, report)
 }
 
 /// Apply matched stylesheet declarations onto a fresh layout (author layer).
@@ -412,7 +510,7 @@ pub fn matched_declaration_entries(
 }
 
 /// Split a declaration block into structured entries (once per rule at parse).
-fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
+pub(crate) fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
     let mut out = Vec::new();
     for (i, decl) in block.split(';').enumerate() {
         let decl = decl.trim();
@@ -665,7 +763,7 @@ fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
     true
 }
 
-fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
+pub(crate) fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
     if let Some(tag) = &compound.type_name
         && !node.tag.eq_ignore_ascii_case(tag)
         && tag != "*"
@@ -780,7 +878,7 @@ fn compound_subject_may_match(
     true
 }
 
-fn selector_matches(sel: &Selector, ctx: &MatchContext<'_>) -> bool {
+pub fn selector_matches(sel: &Selector, ctx: &MatchContext<'_>) -> bool {
     if !compound_matches_ctx(&sel.subject, ctx) {
         return false;
     }
@@ -852,6 +950,17 @@ fn parse_selector(raw: &str) -> Option<Selector> {
     if s.is_empty() {
         return None;
     }
+    if selector_has_deferred_pseudo(s) || selector_has_interactive_pseudo(s) {
+        return None;
+    }
+    parse_selector_chain(s)
+}
+
+fn parse_interactive_selector(raw: &str) -> Option<InteractiveSelector> {
+    let s = raw.trim();
+    if s.is_empty() || !selector_has_interactive_pseudo(s) {
+        return None;
+    }
     if selector_has_deferred_pseudo(s) {
         return None;
     }
@@ -862,12 +971,89 @@ fn parse_selector(raw: &str) -> Option<Selector> {
     let mut ancestors = Vec::new();
     let mut i = 0;
     while i + 1 < tokens.len() {
-        let compound = parse_compound(&tokens[i].0)?;
+        let compound = parse_compound(&tokens[i].0, ParseCompoundMode::Interactive)?;
         let comb = tokens[i].1.unwrap_or(Combinator::Descendant);
         ancestors.push((comb, compound));
         i += 1;
     }
-    let subject = parse_compound(&tokens[i].0)?;
+    let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Interactive)?;
+    let mut interactive_count = 0usize;
+    let mut interactive_at = None::<usize>;
+    let mut interactive_pseudo = None::<InteractivePseudo>;
+    for (idx, (_, compound)) in ancestors.iter().enumerate() {
+        if let Some(pseudo) = compound.interactive {
+            interactive_count += 1;
+            interactive_at = Some(idx);
+            interactive_pseudo = Some(pseudo);
+        }
+    }
+    if let Some(pseudo) = subject.interactive {
+        interactive_count += 1;
+        interactive_at = Some(ancestors.len());
+        interactive_pseudo = Some(pseudo);
+    }
+    if interactive_count != 1 {
+        return None;
+    }
+    let interactive_at = interactive_at?;
+    let pseudo = interactive_pseudo?;
+    if interactive_at == ancestors.len() {
+        for (comb, _) in &ancestors {
+            if *comb != Combinator::Descendant {
+                return None;
+            }
+        }
+    } else {
+        let (_, compound) = &ancestors[interactive_at];
+        if compound.interactive != Some(pseudo) {
+            return None;
+        }
+        if interactive_at + 1 != ancestors.len() {
+            return None;
+        }
+        let (comb, _) = &ancestors[interactive_at];
+        if *comb != Combinator::Descendant {
+            return None;
+        }
+    }
+    let mut specificity = Specificity::default();
+    for (_, c) in &ancestors {
+        add_specificity(&mut specificity, c);
+    }
+    add_specificity(&mut specificity, &subject);
+    Some(InteractiveSelector {
+        subject,
+        ancestors,
+        interactive_at,
+        pseudo,
+        specificity,
+    })
+}
+
+fn parse_generated_pseudo_selector(raw: &str) -> Option<(Selector, GeneratedPseudo)> {
+    let s = raw.trim();
+    let (base, pseudo) = strip_subject_generated_pseudo(s)?;
+    if selector_has_interactive_pseudo(s) || selector_has_deferred_pseudo(&base) {
+        return None;
+    }
+    let originating_selector = parse_selector_chain(&base)?;
+    Some((originating_selector, pseudo))
+}
+
+fn parse_selector_chain(s: &str) -> Option<Selector> {
+    let tokens = tokenize_selector_chain(s)?;
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut ancestors = Vec::new();
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        let compound = parse_compound(&tokens[i].0, ParseCompoundMode::Static)?;
+        let comb = tokens[i].1.unwrap_or(Combinator::Descendant);
+        ancestors.push((comb, compound));
+        i += 1;
+    }
+    let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Static)?;
     let mut specificity = Specificity::default();
     for (_, c) in &ancestors {
         add_specificity(&mut specificity, c);
@@ -880,13 +1066,62 @@ fn parse_selector(raw: &str) -> Option<Selector> {
     })
 }
 
+fn strip_subject_generated_pseudo(s: &str) -> Option<(String, GeneratedPseudo)> {
+    let lower = s.to_ascii_lowercase();
+    for (suffix, pseudo) in [
+        ("::before", GeneratedPseudo::Before),
+        ("::after", GeneratedPseudo::After),
+        (":before", GeneratedPseudo::Before),
+        (":after", GeneratedPseudo::After),
+    ] {
+        if lower.ends_with(suffix) {
+            let base = s[..s.len().wrapping_sub(suffix.len())].trim();
+            if !base.is_empty() {
+                return Some((base.to_string(), pseudo));
+            }
+        }
+    }
+    None
+}
+
+fn selector_has_interactive_pseudo(s: &str) -> bool {
+    scan_selector_pseudos(s, |name| InteractivePseudo::from_ident(name).is_some())
+}
+
 fn selector_has_deferred_pseudo(s: &str) -> bool {
+    scan_selector_pseudos(s, |name| {
+        if InteractivePseudo::from_ident(name).is_some() {
+            return false;
+        }
+        if GeneratedPseudo::from_ident(name).is_some() {
+            return true;
+        }
+        match name {
+            "where" | "is" | "not" | "nth-child" | "nth-of-type" => false,
+            "root" | "first-child" | "last-child" => false,
+            _ => true,
+        }
+    }) || s.to_ascii_lowercase().contains("::")
+        || has_legacy_pseudo_element(s)
+}
+
+fn has_legacy_pseudo_element(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    [":before", ":after"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+        && !lower.ends_with("::before")
+        && !lower.ends_with("::after")
+}
+
+fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> bool {
     let lower = s.to_ascii_lowercase();
     let mut rest = lower.as_str();
     while let Some(idx) = rest.find(':') {
         let after = &rest[idx + 1..];
         if after.starts_with(':') {
-            return true; // pseudo-element
+            rest = &after[1..];
+            continue;
         }
         if let Some(end) = skip_ident(after) {
             let name = &after[..end];
@@ -899,7 +1134,6 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
                     let Some(close) = balanced_paren_end(rem) else {
                         return true;
                     };
-                    // `:nth-child(… of …)` is deferred (complex selector list).
                     if matches!(name, "nth-child" | "nth-of-type") {
                         let inner = &rem[1..close];
                         if nth_arg_has_of_clause(inner) {
@@ -913,8 +1147,11 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
                     rest = rem;
                     continue;
                 }
-                // :hover / :focus / :active / :has / nth-last-… — defer whole selector
-                _ => return true,
+                _ if classify(name) => return true,
+                _ => {
+                    rest = rem;
+                    continue;
+                }
             }
         }
         return true;
@@ -1050,7 +1287,13 @@ fn tokenize_selector_chain(s: &str) -> Option<Vec<(String, Option<Combinator>)>>
     Some(parts)
 }
 
-fn parse_compound(raw: &str) -> Option<CompoundSelector> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseCompoundMode {
+    Static,
+    Interactive,
+}
+
+fn parse_compound(raw: &str, mode: ParseCompoundMode) -> Option<CompoundSelector> {
     let s = raw.trim();
     if s.is_empty() {
         return None;
@@ -1111,6 +1354,9 @@ fn parse_compound(raw: &str) -> Option<CompoundSelector> {
                 out.attrs.push(parse_attr_inner(inner.trim())?);
             }
             ':' => {
+                if i + 1 < chars.len() && chars[i + 1] == ':' {
+                    return None;
+                }
                 i += 1;
                 let start = i;
                 while i < chars.len()
@@ -1125,6 +1371,15 @@ fn parse_compound(raw: &str) -> Option<CompoundSelector> {
                     .iter()
                     .collect::<String>()
                     .to_ascii_lowercase();
+                if mode == ParseCompoundMode::Interactive
+                    && let Some(pseudo) = InteractivePseudo::from_ident(&name)
+                {
+                    if out.interactive.is_some() {
+                        return None;
+                    }
+                    out.interactive = Some(pseudo);
+                    continue;
+                }
                 match name.as_str() {
                     "first-child" => out.first_child = true,
                     "last-child" => out.last_child = true,
@@ -1439,7 +1694,8 @@ fn add_specificity(spec: &mut Specificity, compound: &CompoundSelector) {
         + u16::from(compound.last_child)
         + u16::from(compound.root)
         + u16::from(compound.nth_child.is_some())
-        + u16::from(compound.nth_of_type.is_some());
+        + u16::from(compound.nth_of_type.is_some())
+        + u16::from(compound.interactive.is_some());
     spec.classes_attrs = spec
         .classes_attrs
         .saturating_add(compound.classes.len() as u16)
@@ -1846,7 +2102,9 @@ mod tests {
         assert_eq!(layout.direction, Some(FlexDirection::Row));
         assert_eq!(layout.height, Some(LengthSpec::Px(40.0)));
         assert_eq!(layout.padding, Some(LengthSpec::Px(4.0)));
-        assert_eq!(layout.border_radius, Some(10.0));
+        let radii = layout.paint.border_radii.expect("corners");
+        assert_eq!(radii[0], LengthSpec::Px(10.0));
+        assert!(layout.border_radius.is_none());
     }
 
     #[test]
@@ -2084,8 +2342,8 @@ mod tests {
     }
 
     #[test]
-    fn skips_hover_and_keyframes() {
-        let rules = parse_stylesheet(
+    fn parses_hover_pseudo_and_keyframes_into_buckets() {
+        let (sheet, report) = parse_stylesheet_full(
             r#"
             .ok { height: 100%; }
             .ok:hover { height: 50%; }
@@ -2094,13 +2352,234 @@ mod tests {
             "#,
             0,
         );
-        assert_eq!(rules.len(), 1);
+        assert_eq!(sheet.static_rules.len(), 1);
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        assert_eq!(sheet.generated_pseudo_rules.len(), 1);
+        assert!(sheet.keyframes.contains_key("spin"));
+        assert_eq!(report.skipped_at_rules, 0);
+
         let classes = vec!["ok".into()];
         let attrs = BTreeMap::new();
         let m = ctx("div", "", &classes, &attrs, &[]);
         let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
+        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
         assert_eq!(layout.height, Some(LengthSpec::Fill));
+
+        let hover = crate::css_interactive::matched_interactive_rules(
+            &sheet.interactive_rules,
+            &m,
+            &crate::css_interactive::InteractiveMatchState {
+                subject: crate::css_interactive::InteractivePseudoFlags {
+                    hover: true,
+                    ..Default::default()
+                },
+                ancestors: &[],
+            },
+            crate::css_interactive::InteractivePseudo::Hover,
+        );
+        assert_eq!(hover.len(), 1);
+        assert!(
+            hover[0]
+                .2
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "height" && e.value == "50%")
+        );
+
+        let pseudo =
+            crate::css_interactive::matched_generated_pseudo(&sheet.generated_pseudo_rules, &m);
+        assert_eq!(pseudo.before.len(), 1);
+    }
+
+    #[test]
+    fn interactive_descendant_and_motion_parse_only() {
+        let (sheet, _) = parse_stylesheet_full(
+            r#"
+            .card { color: blue; }
+            .card:hover .icon { width: 24px; }
+            .card:focus .icon { width: 32px; }
+            .card { transition: opacity 0.2s ease; animation-name: fade; }
+            "#,
+            0,
+        );
+        assert_eq!(sheet.static_rules.len(), 1);
+        assert_eq!(sheet.interactive_rules.len(), 2);
+        assert_eq!(sheet.motion_rules.len(), 1);
+        assert_eq!(
+            sheet.motion_rules[0].motion.transition.as_deref(),
+            Some("opacity 0.2s ease")
+        );
+        assert_eq!(
+            sheet.motion_rules[0].motion.animation_name.as_deref(),
+            Some("fade")
+        );
+
+        let card = vec!["card".into()];
+        let icon = vec!["icon".into()];
+        let empty = BTreeMap::new();
+        let ancestors = [node("div", "", &card, &empty)];
+        let icon_ctx = ctx("span", "", &icon, &empty, &ancestors);
+
+        let card_hover = [crate::css_interactive::InteractivePseudoFlags {
+            hover: true,
+            ..Default::default()
+        }];
+        let hover = crate::css_interactive::matched_interactive_rules(
+            &sheet.interactive_rules,
+            &icon_ctx,
+            &crate::css_interactive::InteractiveMatchState {
+                subject: Default::default(),
+                ancestors: &card_hover,
+            },
+            crate::css_interactive::InteractivePseudo::Hover,
+        );
+        assert_eq!(hover.len(), 1);
+        assert!(
+            hover[0]
+                .2
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "width" && e.value == "24px")
+        );
+
+        // Icon hovered without card hovered must not match `.card:hover .icon`.
+        let icon_only_hover = crate::css_interactive::matched_interactive_rules(
+            &sheet.interactive_rules,
+            &icon_ctx,
+            &crate::css_interactive::InteractiveMatchState {
+                subject: crate::css_interactive::InteractivePseudoFlags {
+                    hover: true,
+                    ..Default::default()
+                },
+                ancestors: &[Default::default()],
+            },
+            crate::css_interactive::InteractivePseudo::Hover,
+        );
+        assert!(icon_only_hover.is_empty());
+
+        let card_ctx = ctx("div", "", &card, &empty, &[]);
+        let motion = crate::css_interactive::matched_motion_rules(&sheet.motion_rules, &card_ctx);
+        assert_eq!(motion.len(), 1);
+    }
+
+    #[test]
+    fn legacy_single_colon_before_pseudo_parses() {
+        let (sheet, _) = parse_stylesheet_full(".chip:before { content: \"*\"; width: 2px; }", 0);
+        assert_eq!(sheet.generated_pseudo_rules.len(), 1);
+        let rule = &sheet.generated_pseudo_rules[0];
+        assert_eq!(rule.pseudo, crate::css_interactive::GeneratedPseudo::Before);
+        assert!(
+            rule.declaration_entries
+                .iter()
+                .any(|e| e.property == "content" && e.value == "\"*\"")
+        );
+        assert!(
+            rule.originating_selector
+                .subject
+                .classes
+                .contains(&"chip".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_subject_rejects_child_and_sibling_combinators() {
+        let (sheet, report) = parse_stylesheet_full(
+            r#"
+            .card > .btn:hover { color: red; }
+            .card + .btn:hover { color: red; }
+            .card ~ .btn:hover { color: red; }
+            .btn:hover { color: green; }
+            "#,
+            0,
+        );
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        assert_eq!(report.skipped_selectors, 3);
+        assert_eq!(sheet.interactive_rules[0].selector.subject.classes, ["btn"]);
+    }
+
+    #[test]
+    fn motion_on_hover_rule_is_stored_on_interactive_rule() {
+        let (sheet, _) = parse_stylesheet_full(
+            ".btn:hover { transition: opacity 0.2s ease; color: red; }",
+            0,
+        );
+        assert!(sheet.static_rules.is_empty());
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        let rule = &sheet.interactive_rules[0];
+        assert_eq!(rule.motion.transition.as_deref(), Some("opacity 0.2s ease"));
+        assert!(
+            rule.declaration_entries
+                .iter()
+                .any(|e| e.property == "color")
+        );
+    }
+
+    #[test]
+    fn motion_on_generated_pseudo_is_stored() {
+        let (sheet, _) =
+            parse_stylesheet_full(".ok::before { animation: spin 1s; content: \"\"; }", 0);
+        assert_eq!(sheet.generated_pseudo_rules.len(), 1);
+        assert_eq!(
+            sheet.generated_pseudo_rules[0].motion.animation.as_deref(),
+            Some("spin 1s")
+        );
+    }
+
+    #[test]
+    fn parse_stylesheet_omits_interactive_buckets() {
+        let rules = parse_stylesheet(".ok:hover { height: 50%; } .ok { height: 100%; }", 0);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].declaration_entries[0].value, "100%");
+
+        let (rules2, report) = parse_stylesheet_with_report(
+            ".card:hover .icon { width: 1px; } .card { width: 2px; }",
+            0,
+        );
+        assert_eq!(rules2.len(), 1);
+        assert_eq!(rules2[0].declaration_entries[0].value, "2px");
+        assert_eq!(report.skipped_selectors, 0);
+    }
+
+    #[test]
+    fn interactive_important_preserved_in_entries() {
+        let (sheet, _) = parse_stylesheet_full(".btn:hover { color: red !important; }", 0);
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        let entry = &sheet.interactive_rules[0].declaration_entries[0];
+        assert!(entry.important);
+        assert_eq!(
+            sheet.interactive_rules[0].declarations,
+            "color: red !important"
+        );
+    }
+
+    #[test]
+    fn webkit_keyframes_and_bad_stop_skipped() {
+        let css =
+            "@-webkit-keyframes fade { from { opacity: 0 } bad { color: red } 50% { opacity: 1 } }";
+        let (rule, _) = crate::css_interactive::parse_keyframes_at_rule(css, 0).expect("keyframes");
+        assert_eq!(rule.name, "fade");
+        assert_eq!(rule.blocks.len(), 2);
+    }
+
+    #[test]
+    fn keyframe_bare_number_without_percent_rejected() {
+        assert!(
+            crate::css_interactive::parse_keyframes_at_rule(
+                "@keyframes x { 50 { opacity: 1 } }",
+                0
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn multiple_interactive_pseudos_skipped() {
+        let (sheet, report) = parse_stylesheet_full(
+            ".btn:hover:focus { color: red; } .btn:hover { color: blue; }",
+            0,
+        );
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        assert_eq!(report.skipped_selectors, 1);
     }
 
     #[test]
@@ -2659,6 +3138,7 @@ mod tests {
         assert_eq!(layout.padding, Some(LengthSpec::Px(8.0)));
         assert_eq!(layout.margin, Some(LengthSpec::Px(4.0)));
         // `$=".org"` default is case-sensitive — `.ORG` must not match.
+        assert!(layout.paint.border_radii.is_none());
         assert!(layout.border_radius.is_none());
         assert_eq!(layout.min_width, Some(LengthSpec::Px(40.0)));
         // `i` makes lowercase `org` match `.ORG`.

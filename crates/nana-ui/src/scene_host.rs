@@ -305,6 +305,7 @@ fn initialize<Program: RuntimeProgram>(
     };
     let mut window_ids = HashMap::new();
     window_ids.insert(window.id(), WindowId::PRIMARY);
+    let animation_clock = RuntimeAnimationClock::now();
     let mut ready = SceneReady {
         program,
         graphics,
@@ -313,7 +314,7 @@ fn initialize<Program: RuntimeProgram>(
         proxy,
         tasks,
         geometry,
-        animation_clock: RuntimeAnimationClock::now(),
+        animation_clock,
         default_scene_gpu_renderers,
         #[cfg(not(target_os = "android"))]
         accessibility,
@@ -335,6 +336,9 @@ fn initialize<Program: RuntimeProgram>(
         #[cfg(target_os = "macos")]
         live_frame_resize: None,
     };
+    ready
+        .program
+        .sync_animation_clock(ready.animation_clock.epoch());
     ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
         WindowEvent::Ready {
@@ -858,6 +862,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 };
                 if let Ok(event) = self.open_window(event_loop, id, settings) {
                     let update = self.program.window_event(event, &self.context_for(id));
+                    self.program
+                        .sync_animation_clock(self.animation_clock.epoch());
                     self.apply_update(event_loop, update, None);
                 }
             }

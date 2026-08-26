@@ -968,6 +968,10 @@ impl ListItem {
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(
             nana_ui_core::UI_METRICS.selection_height,
         ));
+        layout.font_size = Some(nana_ui_core::ControlSize::Small.text_size());
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+            nana_ui_core::ControlSize::Small.text_size(),
+        ));
         Self {
             label: label.into(),
             selected: false,
@@ -1042,8 +1046,10 @@ impl ListItem {
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
-        Arc::make_mut(&mut self.style.layout).min_height =
-            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
+        layout.font_size = Some(size.text_size());
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.text_size()));
         self
     }
     pub fn auto_height(mut self, auto_height: bool) -> Self {

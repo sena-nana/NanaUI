@@ -353,6 +353,7 @@ pub(crate) fn command_palette_geometry(
         input_border: palette.border.as_rgba_array(),
         elevation: ComponentElevation {
             color: [0.0, 0.0, 0.0, 0.4],
+            offset_x: 0.0,
             offset_y: 12.0,
             blur_radius: 24.0,
             spread_radius: 0.0,

@@ -386,6 +386,9 @@ pub trait RuntimeProgram: Sized + 'static {
         RuntimeProgramUpdate::default()
     }
 
+    /// Align hosted program CSS animation sampling with the Scene host epoch.
+    fn sync_animation_clock(&mut self, _epoch: Instant) {}
+
     fn animation_frame(
         &mut self,
         _id: WindowId,

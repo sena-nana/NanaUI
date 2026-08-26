@@ -482,6 +482,30 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
+    pub fn apply_css_animation_frame(
+        &mut self,
+        id: WindowId,
+        frame: nana_ui_runtime::AnimationFrame,
+    ) -> bool {
+        let Ok(host) = self.require_host(VueWindowId(id.0)) else {
+            return false;
+        };
+        let Ok(host) = host.lock() else {
+            return false;
+        };
+        let Ok(mut bridge) = host.bridge().lock() else {
+            return false;
+        };
+        let Ok(mut doc) = host.document().lock() else {
+            return false;
+        };
+        bridge.apply_css_animation_samples(&mut doc, frame)
+    }
+
+    pub fn sync_animation_clock(&self, epoch: std::time::Instant) {
+        self.vue.sync_animation_clock(epoch);
+    }
+
     pub fn prepare_runtime_window(&self, id: WindowId) {
         let Some(host) = self.vue.host(VueWindowId(id.0)) else {
             return;
@@ -821,6 +845,26 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         let update = self.runtime.runtime_wake();
         self.sync_documents();
         update
+    }
+
+    fn sync_animation_clock(&mut self, epoch: Instant) {
+        self.runtime.sync_animation_clock(epoch);
+    }
+
+    fn animation_frame(
+        &mut self,
+        id: WindowId,
+        frame: nana_ui_runtime::AnimationFrame,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.sync_documents();
+        let changed = self.runtime.apply_css_animation_frame(id, frame);
+        self.sync_documents();
+        Ok(if changed {
+            RuntimeProgramUpdate::redraw(id)
+        } else {
+            RuntimeProgramUpdate::default()
+        })
     }
 
     fn accessibility_action(
