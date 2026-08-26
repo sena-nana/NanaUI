@@ -7593,14 +7593,14 @@ fn time_series_geometry(
     let points = chart
         .points(local)
         .into_iter()
-        .map(|(x, y)| (bounds.x + x, bounds.y + y))
+        .map(|(x, y)| [bounds.x + x, bounds.y + y])
         .collect::<Vec<_>>();
     let baseline = bounds.y
         + (bounds.height - crate::TimeSeriesChart::INSET_Y).max(crate::TimeSeriesChart::INSET_Y);
     crate::ComponentGeometry::TimeSeriesChart {
         grid,
         area: area_under_polyline(&points, baseline),
-        line: stroke_polyline(&points, 2.0),
+        line: points,
         grid_color: paint.grid.as_rgba_array(),
         area_color: paint.area.as_rgba_array(),
         line_color: paint.line.as_rgba_array(),
@@ -8115,12 +8115,12 @@ fn estimated_text_width(text: &str, font_size: f32) -> f32 {
         .max(font_size)
 }
 
-fn area_under_polyline(points: &[(f32, f32)], baseline: f32) -> Vec<LayoutBox> {
+fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
     const STRIP: f32 = 2.0;
     let mut strips = Vec::new();
     for pair in points.windows(2) {
-        let (x0, y0) = pair[0];
-        let (x1, y1) = pair[1];
+        let [x0, y0] = pair[0];
+        let [x1, y1] = pair[1];
         let span = x1 - x0;
         if !span.is_finite() || span.abs() < f32::EPSILON {
             continue;
@@ -8147,99 +8147,6 @@ fn area_under_polyline(points: &[(f32, f32)], baseline: f32) -> Vec<LayoutBox> {
         }
     }
     strips
-}
-
-fn stroke_polyline(points: &[(f32, f32)], thickness: f32) -> Vec<LayoutBox> {
-    if !thickness.is_finite() || thickness <= 0.0 {
-        return Vec::new();
-    }
-    if points.len() == 1 {
-        let (x, y) = points[0];
-        return vec![LayoutBox {
-            x: x - thickness * 0.5,
-            y: y - thickness * 0.5,
-            width: thickness,
-            height: thickness,
-        }];
-    }
-    let mut quads = Vec::new();
-    for pair in points.windows(2) {
-        let (x0, y0) = pair[0];
-        let (x1, y1) = pair[1];
-        if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
-            continue;
-        }
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
-            continue;
-        }
-        if dy.abs() < f32::EPSILON {
-            quads.push(LayoutBox {
-                x: x0.min(x1),
-                y: y0 - thickness * 0.5,
-                width: dx.abs(),
-                height: thickness,
-            });
-        } else if dx.abs() < f32::EPSILON {
-            quads.push(LayoutBox {
-                x: x0 - thickness * 0.5,
-                y: y0.min(y1),
-                width: thickness,
-                height: dy.abs(),
-            });
-        } else {
-            // Scene AA quads, no rotated stroke — tile the diagonal band.
-            push_diagonal_stroke(&mut quads, x0, y0, dx, dy, thickness);
-        }
-    }
-    quads
-}
-
-fn push_diagonal_stroke(
-    quads: &mut Vec<LayoutBox>,
-    x0: f32,
-    y0: f32,
-    dx: f32,
-    dy: f32,
-    thickness: f32,
-) {
-    let length = dx.hypot(dy);
-    if !length.is_finite() || length < f32::EPSILON {
-        return;
-    }
-    let step = (thickness * 0.5).max(f32::EPSILON);
-    let walk_x = dx.abs() >= dy.abs();
-    let (along0, along_d, across0, across_d) = if walk_x {
-        (x0, dx, y0, dy)
-    } else {
-        (y0, dy, x0, dx)
-    };
-    let across = thickness * length / along_d.abs();
-    let start = along0.min(along0 + along_d);
-    let end = along0.max(along0 + along_d);
-    let mut along = start;
-    while along < end {
-        let span = step.min(end - along);
-        let t = (along + span * 0.5 - along0) / along_d;
-        let cross = across0 + across_d * t - across * 0.5;
-        quads.push(if walk_x {
-            LayoutBox {
-                x: along,
-                y: cross,
-                width: span,
-                height: across,
-            }
-        } else {
-            LayoutBox {
-                x: cross,
-                y: along,
-                width: across,
-                height: span,
-            }
-        });
-        along += step;
-    }
 }
 
 #[cfg(test)]
@@ -12481,51 +12388,18 @@ mod tests {
         assert_eq!(grid[0].x, 8.0);
         assert_eq!(grid[0].height, 1.0);
         assert!(!area.is_empty());
-        assert!(!line.is_empty());
         assert!(area.iter().all(|strip| strip.width <= 2.0 + f32::EPSILON));
-        // 2px axis-aligned stroke bands (Iced Stroke::with_width(2.0)).
-        assert!(line.iter().all(|segment| {
-            segment.height <= 2.0 + f32::EPSILON || segment.width <= 2.0 + f32::EPSILON
-        }));
-    }
-
-    #[test]
-    fn stroke_polyline_keeps_axis_aligned_bands_and_thickens_diagonals() {
-        let horizontal = stroke_polyline(&[(8.0, 20.0), (54.0, 20.0)], 2.0);
-        assert_eq!(
-            horizontal,
-            vec![LayoutBox {
-                x: 8.0,
-                y: 19.0,
-                width: 46.0,
-                height: 2.0,
-            }]
-        );
-
-        let vertical = stroke_polyline(&[(8.0, 10.0), (8.0, 60.0)], 2.0);
-        assert_eq!(
-            vertical,
-            vec![LayoutBox {
-                x: 7.0,
-                y: 10.0,
-                width: 2.0,
-                height: 50.0,
-            }]
-        );
-
-        let diagonal = stroke_polyline(&[(0.0, 0.0), (40.0, 40.0)], 2.0);
-        assert!(diagonal.len() > 1, "diagonals tile; they are not one AABB");
-        assert!(diagonal.iter().all(|segment| {
-            segment.height <= 2.0 + f32::EPSILON || segment.width <= 2.0 + f32::EPSILON
-        }));
-        let cross = diagonal
-            .iter()
-            .map(|segment| segment.width.max(segment.height))
-            .fold(0.0_f32, f32::max);
-        assert!(
-            (cross - 2.0 * 2.0_f32.sqrt()).abs() < 0.05,
-            "45° tiles must span ~2/|cos θ| so the painted band is 2px thick, got {cross}"
-        );
+        let expected_line = crate::TimeSeriesChart::new([0.0, 5.0, 10.0])
+            .points(LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 108.0,
+                height: 120.0,
+            })
+            .into_iter()
+            .map(|(x, y)| [x, y])
+            .collect::<Vec<_>>();
+        assert_eq!(line, expected_line);
     }
 
     #[test]
