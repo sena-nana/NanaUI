@@ -431,19 +431,6 @@ fn covering_quad(p0: [f32; 2], p1: [f32; 2], radius: f32) -> Option<[[f32; 2]; 4
     ])
 }
 
-fn capsule_distance(point: [f32; 2], p0: [f32; 2], p1: [f32; 2]) -> f32 {
-    let pa = [point[0] - p0[0], point[1] - p0[1]];
-    let ba = [p1[0] - p0[0], p1[1] - p0[1]];
-    let denom = ba[0] * ba[0] + ba[1] * ba[1];
-    let t = if denom <= f32::EPSILON {
-        0.0
-    } else {
-        ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
-    };
-    let closest = [p0[0] + ba[0] * t, p0[1] + ba[1] * t];
-    (point[0] - closest[0]).hypot(point[1] - closest[1])
-}
-
 fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [f32; 6]) {
     if affine == super::clip::IDENTITY_AFFINE {
         return;
@@ -472,6 +459,19 @@ fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: Fragment
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn capsule_distance(point: [f32; 2], p0: [f32; 2], p1: [f32; 2]) -> f32 {
+        let pa = [point[0] - p0[0], point[1] - p0[1]];
+        let ba = [p1[0] - p0[0], p1[1] - p0[1]];
+        let denom = ba[0] * ba[0] + ba[1] * ba[1];
+        let t = if denom <= f32::EPSILON {
+            0.0
+        } else {
+            ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
+        };
+        let closest = [p0[0] + ba[0] * t, p0[1] + ba[1] * t];
+        (point[0] - closest[0]).hypot(point[1] - closest[1])
+    }
 
     #[test]
     fn one_segment_emits_four_covering_vertices() {
