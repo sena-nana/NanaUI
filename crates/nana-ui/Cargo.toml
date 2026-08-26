@@ -54,7 +54,7 @@ selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
-gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:lyon", "dep:pollster", "dep:resvg", "dep:tiny-skia", "dep:ureq", "dep:url", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:resvg", "dep:tiny-skia", "dep:ureq", "dep:url", "dep:wgpu"]
 hosted = [
     "gpu",
     "dep:accesskit",
@@ -76,7 +76,6 @@ base64 = { workspace = true, optional = true }
 cosmic-text = "0.19"
 cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
 image = { workspace = true, optional = true }
-lyon = { version = "1.0", optional = true }
 pollster = { version = "0.4", optional = true }
 resvg = { workspace = true, optional = true }
 tiny-skia = { workspace = true, optional = true }
