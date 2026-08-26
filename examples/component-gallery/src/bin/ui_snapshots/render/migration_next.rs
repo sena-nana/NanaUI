@@ -4849,7 +4849,7 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::SegmentedControl, _) => (
             "pass",
-            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment and disabled fade; selected surface is the only focus cue",
+            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment and disabled fade",
         ),
         (Component::Text, _) => (
             "pass",
@@ -4921,11 +4921,8 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
         (Component::RangeField, _) => {
             "intentional: Runtime reserves dedicated label, value and track regions instead of copying the Iced inline geometry"
         }
-        (Component::SegmentedControl, "focused") => {
-            "intentional: Segmented keeps selected surface only; it does not paint a 2px focus ring"
-        }
-        (Component::Tabs, "focused") => {
-            "intentional: Tabs keep selected surface only; they do not paint the segmented 2px focus ring"
+        (Component::SegmentedControl | Component::Tabs, "focused") => {
+            "intentional: selected surface only; no 2px focus ring"
         }
         (Component::SegmentedControl, "no-selection" | "all-disabled") => {
             "intentional: the compatibility widget requires a value while Runtime supports controlled no-selection and derives tab stops only from enabled options"
