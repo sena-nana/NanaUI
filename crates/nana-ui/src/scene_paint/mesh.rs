@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    mem,
-};
+use std::collections::{HashMap, VecDeque};
 
 use bytemuck::{Pod, Zeroable};
 use lyon::{
@@ -35,7 +32,7 @@ struct IconCache {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct IconKey {
-    icon: mem::Discriminant<Icon>,
+    icon: usize,
     scale_bits: u32,
     offset_bits: [u32; 2],
     color_bits: [u32; 4],
@@ -208,7 +205,7 @@ impl MeshPipeline {
         ];
         let color = pack_linear(with_opacity(color, opacity));
         let key = IconKey {
-            icon: mem::discriminant(&icon),
+            icon: icon.as_ptr() as usize,
             scale_bits: scale.to_bits(),
             offset_bits: [offset[0].to_bits(), offset[1].to_bits()],
             color_bits: color.map(f32::to_bits),
@@ -230,7 +227,7 @@ impl MeshPipeline {
                 scale,
                 offset,
                 color,
-                1.7,
+                2.0,
             );
             self.icon_cache.insert(
                 key,
@@ -500,12 +497,12 @@ fn tessellate_icon(
 ) {
     let map = |x: f32, y: f32| point(offset[0] + x * scale, offset[1] + y * scale);
     for shape in icon_geometry(icon).shapes {
-        match shape {
+        match *shape {
             IconShape::Path(commands) => {
                 let mut builder = Path::builder();
                 let mut open = false;
                 for command in commands {
-                    match command {
+                    match *command {
                         IconPathCommand::MoveTo([x, y]) => {
                             if open {
                                 builder.end(false);

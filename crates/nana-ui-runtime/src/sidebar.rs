@@ -1416,6 +1416,13 @@ mod tests {
         DocumentId::new(1).unwrap()
     }
 
+    fn icon_of(visual: Option<StandardVisual>) -> Option<Icon> {
+        match visual {
+            Some(StandardVisual::Icon { icon, .. }) => Some(icon),
+            _ => None,
+        }
+    }
+
     #[test]
     fn section_state_animates_from_a_host_sample() {
         let started = Duration::from_millis(100);
@@ -2348,20 +2355,14 @@ mod tests {
             context.world().node(footer.stable_id()).unwrap().children,
             vec![settings.stable_id(), search.stable_id()]
         );
-        assert!(matches!(
-            context.world().standard_visual(settings.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Settings,
-                ..
-            })
-        ));
-        assert!(matches!(
-            context.world().standard_visual(search.stable_id()),
-            Some(StandardVisual::Icon {
-                icon: Icon::Search,
-                ..
-            })
-        ));
+        assert_eq!(
+            icon_of(context.world().standard_visual(settings.stable_id())),
+            Some(Icon::Settings)
+        );
+        assert_eq!(
+            icon_of(context.world().standard_visual(search.stable_id())),
+            Some(Icon::Search)
+        );
         assert_eq!(
             context
                 .world()

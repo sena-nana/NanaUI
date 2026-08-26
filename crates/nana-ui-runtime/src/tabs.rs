@@ -693,16 +693,17 @@ mod tests {
         );
         assert!(!context.read(split, SegmentedOption::selected).unwrap());
 
-        assert!(matches!(
-            context.world().standard_visual(children[0]),
-            Some(StandardVisual::SelectionOption {
-                icon: Some(nana_ui_core::Icon::File),
-                selected: false,
-                disabled: false,
-                show_focus_ring: false,
-                ..
-            })
-        ));
+        let Some(StandardVisual::SelectionOption {
+            icon,
+            selected: false,
+            disabled: false,
+            show_focus_ring: false,
+            ..
+        }) = context.world().standard_visual(children[0])
+        else {
+            panic!("code option visual");
+        };
+        assert_eq!(icon, Some(nana_ui_core::Icon::File));
         assert!(matches!(
             context.world().standard_visual(children[1]),
             Some(StandardVisual::SelectionOption {

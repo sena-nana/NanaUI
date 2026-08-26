@@ -1282,15 +1282,17 @@ mod tests {
                 focusable: false,
             })
         );
-        assert!(matches!(
-            context.world().standard_visual(empty.stable_id()),
-            Some(StandardVisual::EmptyState {
-                icon: Some(Icon::Folder),
-                message: Some(message),
-                action: None,
-                ..
-            }) if message.as_ref() == "Create the first project"
-        ));
+        let Some(StandardVisual::EmptyState {
+            icon,
+            message,
+            action: None,
+            ..
+        }) = context.world().standard_visual(empty.stable_id())
+        else {
+            panic!("empty state visual");
+        };
+        assert_eq!(icon, Some(Icon::Folder));
+        assert_eq!(message.as_deref(), Some("Create the first project"));
         assert!(
             context
                 .set_empty_state_action(empty, Some(action.stable_id()))
@@ -1376,7 +1378,10 @@ mod tests {
         else {
             panic!("empty state geometry")
         };
-        assert!(matches!(icon, Some((Icon::Folder, _, _))));
+        let Some((kind, _, _)) = icon else {
+            panic!("empty state icon");
+        };
+        assert_eq!(kind, Icon::Folder);
         assert_eq!(title.font_size, 13.0);
         assert_eq!(message.unwrap().font_size, 12.0);
         assert!(action.is_none());
