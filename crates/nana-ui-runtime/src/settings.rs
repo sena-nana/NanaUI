@@ -854,7 +854,7 @@ impl ComponentView for AboutSection {
 
 const SETTINGS_SIDEBAR_GAP: f32 = 12.0;
 const SETTINGS_SIDEBAR_TAB_GAP: f32 = 1.0;
-const SETTINGS_SIDEBAR_ICON_SIZE: f32 = 15.0;
+const SETTINGS_SIDEBAR_ICON_SIZE: f32 = ControlSize::Small.line_height();
 const SETTINGS_PAGE_GAP: f32 = 16.0;
 const SETTINGS_PAGE_PADDING_TOP: f32 = 20.0;
 const SETTINGS_PAGE_PADDING_RIGHT: f32 = 24.0;
