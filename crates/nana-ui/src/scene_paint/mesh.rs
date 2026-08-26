@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use lyon::{
-    math::{Point, point},
+    math::point,
     path::Path,
     tessellation::{BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers},
 };
@@ -13,6 +13,7 @@ use crate::PhysicalRect;
 
 const INITIAL_VERTICES: usize = 1_024;
 const INITIAL_INDICES: usize = 2_048;
+const STROKE_AA_FRINGE: f32 = 1.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -22,16 +23,18 @@ struct MeshVertex {
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 2],
+    stroke: [f32; 3],
 }
 
 impl MeshVertex {
-    fn new(position: [f32; 2], color: [f32; 4]) -> Self {
+    fn new(position: [f32; 2], color: [f32; 4], stroke: [f32; 3]) -> Self {
         Self {
             position,
             color,
             clip_rect: FragmentClip::PASS.rect,
             clip_inv_abcd: FragmentClip::PASS.inv_abcd,
             clip_inv_ef: FragmentClip::PASS.inv_ef,
+            stroke,
         }
     }
 }
@@ -341,6 +344,7 @@ fn mesh_pipeline(
                     2 => Float32x4,
                     3 => Float32x4,
                     4 => Float32x2,
+                    5 => Float32x3,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -379,26 +383,43 @@ fn stroke_path(
     width: f32,
     color: [f32; 4],
 ) {
-    let mut geometry: VertexBuffers<Point, u32> = VertexBuffers::new();
+    let half_width = width * 0.5;
+    let mut geometry: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let options = StrokeOptions::tolerance(0.1)
-        .with_line_width(width)
+        .with_line_width(width + STROKE_AA_FRINGE)
         .with_line_cap(lyon::tessellation::LineCap::Round)
         .with_line_join(lyon::tessellation::LineJoin::Round);
     let _ = tessellator.tessellate_path(
         path,
         &options,
-        &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| vertex.position()),
+        &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
+            let position = vertex.position();
+            let path_position = vertex.position_on_path();
+            MeshVertex::new(
+                [position.x, position.y],
+                color,
+                [path_position.x, path_position.y, half_width],
+            )
+        }),
     );
-    append_geometry(vertices, indices, &geometry, color);
+    let base = vertices.len() as u32;
+    vertices.append(&mut geometry.vertices);
+    indices.extend(geometry.indices.iter().map(|index| base + *index));
 }
 
 fn apply_affine_to_vertices(vertices: &mut [MeshVertex], start: usize, affine: [f32; 6]) {
     if affine == super::clip::IDENTITY_AFFINE {
         return;
     }
+    let [a, b, c, d, _, _] = affine;
+    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) * 0.5;
     for vertex in &mut vertices[start..] {
         vertex.position =
             super::clip::transform_point(affine, vertex.position[0], vertex.position[1]);
+        let path = super::clip::transform_point(affine, vertex.stroke[0], vertex.stroke[1]);
+        vertex.stroke[0] = path[0];
+        vertex.stroke[1] = path[1];
+        vertex.stroke[2] *= scale;
     }
 }
 
@@ -408,20 +429,4 @@ fn stamp_fragment_clip(vertices: &mut [MeshVertex], start: usize, clip: Fragment
         vertex.clip_inv_abcd = clip.inv_abcd;
         vertex.clip_inv_ef = clip.inv_ef;
     }
-}
-
-fn append_geometry(
-    vertices: &mut Vec<MeshVertex>,
-    indices: &mut Vec<u32>,
-    geometry: &VertexBuffers<Point, u32>,
-    color: [f32; 4],
-) {
-    let base = vertices.len() as u32;
-    vertices.extend(
-        geometry
-            .vertices
-            .iter()
-            .map(|position| MeshVertex::new([position.x, position.y], color)),
-    );
-    indices.extend(geometry.indices.iter().map(|index| base + *index));
 }

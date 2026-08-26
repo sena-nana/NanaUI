@@ -5,6 +5,7 @@ struct SolidVertexInput {
     @location(2) clip_rect: vec4<f32>,
     @location(3) clip_inv_abcd: vec4<f32>,
     @location(4) clip_inv_ef: vec2<f32>,
+    @location(5) stroke: vec3<f32>,
 }
 
 struct SolidVertexOutput {
@@ -14,6 +15,7 @@ struct SolidVertexOutput {
     @location(2) clip_rect: vec4<f32>,
     @location(3) clip_inv_abcd: vec4<f32>,
     @location(4) clip_inv_ef: vec2<f32>,
+    @location(5) stroke: vec3<f32>,
 }
 
 @vertex
@@ -26,6 +28,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.clip_rect = input.clip_rect;
     out.clip_inv_abcd = input.clip_inv_abcd;
     out.clip_inv_ef = input.clip_inv_ef;
+    out.stroke = input.stroke;
 
     return out;
 }
@@ -40,5 +43,13 @@ fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
     ) {
         discard;
     }
-    return input.color;
+    let distance_to_path = distance(input.world_pos, input.stroke.xy);
+    let half_width = input.stroke.z;
+    let pixel = max(fwidth(distance_to_path), 1e-5);
+    let alpha = 1.0 - smoothstep(
+        half_width - pixel * 0.5,
+        half_width + pixel * 0.5,
+        distance_to_path
+    );
+    return input.color * alpha;
 }

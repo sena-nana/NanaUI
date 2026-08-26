@@ -7815,21 +7815,47 @@ fn graph_edge_stroke_color(palette: &SemanticPalette, edge: &crate::GraphEdgePai
     }
 }
 
+const CURVE_FLATNESS: f32 = 0.75;
+const CURVE_MAX_SEGMENT: f32 = 8.0;
+
 fn sample_curve(bounds: LayoutBox, curve: [GraphPoint; 4]) -> Vec<[f32; 2]> {
-    let mut length = 0.0;
-    let mut previous = curve[0];
-    for index in 1..=16 {
-        let next = cubic_point(curve, index as f32 / 16.0);
-        length += (next.x - previous.x).hypot(next.y - previous.y);
-        previous = next;
-    }
-    let samples = ((length / 4.0).ceil() as u32).clamp(24, 96);
-    let mut points = Vec::with_capacity(samples as usize + 1);
-    for index in 0..=samples {
-        let point = cubic_point(curve, index as f32 / samples as f32);
-        points.push([bounds.x + point.x, bounds.y + point.y]);
-    }
+    let origin = [bounds.x, bounds.y];
+    let mut points = vec![[origin[0] + curve[0].x, origin[1] + curve[0].y]];
+    flatten_cubic(&mut points, curve, origin, 0);
     points
+}
+
+fn flatten_cubic(
+    points: &mut Vec<[f32; 2]>,
+    [p0, p1, p2, p3]: [GraphPoint; 4],
+    origin: [f32; 2],
+    depth: u32,
+) {
+    let chord = p0.distance_squared(p3).sqrt();
+    let deviation = line_offset(p1, p0, p3).max(line_offset(p2, p0, p3));
+    if depth >= 16 || (deviation <= CURVE_FLATNESS && chord <= CURVE_MAX_SEGMENT) {
+        points.push([origin[0] + p3.x, origin[1] + p3.y]);
+        return;
+    }
+    let mid = |a: GraphPoint, b: GraphPoint| GraphPoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+    let p01 = mid(p0, p1);
+    let p12 = mid(p1, p2);
+    let p23 = mid(p2, p3);
+    let p012 = mid(p01, p12);
+    let p123 = mid(p12, p23);
+    let split = mid(p012, p123);
+    flatten_cubic(points, [p0, p01, p012, split], origin, depth + 1);
+    flatten_cubic(points, [split, p123, p23, p3], origin, depth + 1);
+}
+
+fn line_offset(point: GraphPoint, start: GraphPoint, end: GraphPoint) -> f32 {
+    let abx = end.x - start.x;
+    let aby = end.y - start.y;
+    let length_sq = abx * abx + aby * aby;
+    if length_sq <= f32::EPSILON {
+        return point.distance_squared(start).sqrt();
+    }
+    ((point.x - start.x) * aby - (point.y - start.y) * abx).abs() / length_sq.sqrt()
 }
 
 fn graph_grid_lines(
@@ -12345,15 +12371,34 @@ mod tests {
                 GraphPoint::new(190.0, 80.0),
             ],
         );
-        assert!(points.len() > 1);
-        assert!(
-            points.windows(2).all(|pair| {
-                let dx = pair[1][0] - pair[0][0];
-                let dy = pair[1][1] - pair[0][1];
-                dx.hypot(dy) <= 8.0
-            }),
-            "sampled stroke points must stay close enough to form a continuous curve"
+        assert_curve_spacing(&points);
+    }
+
+    #[test]
+    fn long_zoomed_curves_keep_segment_spacing() {
+        let points = sample_curve(
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 4000.0,
+                height: 800.0,
+            },
+            [
+                GraphPoint::new(0.0, 40.0),
+                GraphPoint::new(800.0, 40.0),
+                GraphPoint::new(1600.0, 760.0),
+                GraphPoint::new(2400.0, 760.0),
+            ],
         );
+        assert!(points.len() > 96);
+        assert_curve_spacing(&points);
+    }
+
+    fn assert_curve_spacing(points: &[[f32; 2]]) {
+        assert!(points.len() > 1);
+        assert!(points.windows(2).all(|pair| {
+            (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) <= CURVE_MAX_SEGMENT
+        }));
     }
 
     #[test]
