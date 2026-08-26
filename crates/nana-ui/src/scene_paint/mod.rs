@@ -1231,7 +1231,7 @@ mod tests {
     use nana_ui_runtime::{
         AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
         DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
-        StableNodeId, TextContent,
+        StableNodeId, StandardVisual, TextContent,
     };
     use nana_ui_scene::{AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, UiScene};
 
@@ -1726,6 +1726,530 @@ mod tests {
             is_green_slot(right),
             "new primitive must be encoded after in-place apply_delta, got {right:?}"
         );
+    }
+
+    fn graph_canvas_stroke_node(
+        value: u64,
+        edges: Vec<(Vec<[f32; 2]>, [f32; 4])>,
+        background: [f32; 4],
+    ) -> ExtractedNode {
+        let mut node = extracted_div(
+            value,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle::default(),
+            Some(background),
+        );
+        node.standard_visual = Some(StandardVisual::GraphCanvas {
+            nodes: Arc::from([]),
+            ports: Arc::from([]),
+            edges: Arc::from([]),
+            connecting: None,
+            grid_spacing: 24.0,
+            viewport_offset_x: 0.0,
+            viewport_offset_y: 0.0,
+            viewport_zoom: 1.0,
+        });
+        node.component_geometry = Some(ComponentGeometry::GraphCanvas {
+            nodes: Vec::new(),
+            separators: Vec::new(),
+            ports: Vec::new(),
+            port_labels: Vec::new(),
+            edges,
+            edge_labels: Vec::new(),
+            grid: Vec::new(),
+            background,
+            grid_color: [0.0, 0.0, 0.0, 0.0],
+            separator_color: [0.0, 0.0, 0.0, 0.0],
+        });
+        node
+    }
+
+    #[test]
+    fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let background = [0.0, 0.0, 1.0, 1.0];
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(
+                    vec![[8.0, 32.0], [56.0, 32.0], [56.0, 12.0]],
+                    [1.0, 0.0, 0.0, 1.0],
+                )],
+                background,
+            )],
+            [],
+        );
+        assert!(
+            scene
+                .primitives()
+                .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. })),
+            "GraphCanvas edges must extract as Stroke, not TimeSeriesChart quads"
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui articulated stroke"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let midline = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_red_slot(midline),
+            "horizontal capsule midline must ink, got {midline:?}"
+        );
+        let join = pixel(&pixels, 64, 56, 32);
+        assert!(
+            join[0] > 120,
+            "articulated join must keep the shared endpoint disc, got {join:?}"
+        );
+        let far = pixel(&pixels, 64, 32, 8);
+        assert!(
+            is_blue_slot(far),
+            "pixels outside the 1.6px capsule must stay GraphCanvas fill, got {far:?}"
+        );
+        let covering_corner = pixel(&pixels, 64, 32, 28);
+        assert!(
+            covering_corner[2] > 120 && covering_corner[0] < 80,
+            "covering-quad corners 4px off the 0.8px radius must be discarded, got {covering_corner:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn graph_canvas_stroke_paints_round_end_caps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[16.0, 32.0], [48.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [256, 256],
+            4.0,
+        );
+        let midline = pixel(&pixels, 256, 128, 128);
+        assert!(
+            is_red_slot(midline),
+            "4× physical midline must ink the 1.6px capsule, got {midline:?}"
+        );
+        let start_cap = pixel(&pixels, 256, 62, 128);
+        assert!(
+            start_cap[0] > 120,
+            "round cap 0.5 logical px before the start must stay inside the disc, got {start_cap:?}"
+        );
+        let end_cap = pixel(&pixels, 256, 194, 128);
+        assert!(
+            end_cap[0] > 120,
+            "round cap 0.5 logical px past the end must stay inside the disc, got {end_cap:?}"
+        );
+        let beyond_cap = pixel(&pixels, 256, 48, 128);
+        assert!(
+            is_blue_slot(beyond_cap),
+            "4 logical px before the start must stay GraphCanvas fill, got {beyond_cap:?}"
+        );
+        let far_normal = pixel(&pixels, 256, 128, 112);
+        assert!(
+            is_blue_slot(far_normal),
+            "4 logical px off the 0.8px radius must stay fill, got {far_normal:?}"
+        );
+    }
+
+    #[test]
+    fn graph_canvas_diagonal_stroke_paints_capsule_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[8.0, 8.0], [56.0, 56.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let midline = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_red_slot(midline),
+            "diagonal capsule midline must ink, got {midline:?}"
+        );
+        let far = pixel(&pixels, 64, 8, 56);
+        assert!(
+            is_blue_slot(far),
+            "pixels far from the diagonal must stay GraphCanvas fill, got {far:?}"
+        );
+        let off_normal = pixel(&pixels, 64, 32, 28);
+        assert!(
+            off_normal[2] > 120 && off_normal[0] < 80,
+            "4px off the diagonal must discard covering-quad corners, got {off_normal:?}"
+        );
+    }
+
+    #[test]
+    fn graph_canvas_stroke_respects_ancestor_overflow_clip_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let mut canvas = graph_canvas_stroke_node(
+            3,
+            vec![(vec![[8.0, 32.0], [56.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+            [0.0, 1.0, 0.0, 1.0],
+        );
+        canvas.parent = Some(StableNodeId::new(2).unwrap());
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
+                overflow_parent(2, &[3], 20.0, 20.0, 24.0, 24.0, None),
+                canvas,
+            ],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let inside_stroke = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_red_slot(inside_stroke),
+            "stroke inside the overflow clip must ink, got {inside_stroke:?}"
+        );
+        let inside_fill = pixel(&pixels, 64, 32, 26);
+        assert!(
+            is_green_slot(inside_fill),
+            "GraphCanvas fill inside the clip and off the 1.6px stroke must stay green, got {inside_fill:?}"
+        );
+        let leaked_start = pixel(&pixels, 64, 8, 32);
+        assert!(
+            is_blue_slot(leaked_start),
+            "stroke past the ancestor clip must not ink, got {leaked_start:?}"
+        );
+        let leaked_end = pixel(&pixels, 64, 56, 32);
+        assert!(
+            is_blue_slot(leaked_end),
+            "stroke past the far clip edge must not ink, got {leaked_end:?}"
+        );
+    }
+
+    #[test]
+    fn spinner_ticks_paint_capsule_coverage_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let mut spinner = extracted_div(
+            2,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle::default(),
+            None,
+        );
+        spinner.standard_visual = Some(StandardVisual::Spinner {
+            label: Arc::from(""),
+            size: 24.0,
+            phase: 0.0,
+        });
+        spinner.standard_visual_foreground = Some([1.0, 0.0, 0.0, 1.0]);
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
+                spinner,
+            ],
+            [],
+        );
+        assert!(
+            scene
+                .primitives()
+                .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Spinner { .. })),
+            "Spinner visual must extract as Spinner capsules"
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let tick = pixel(&pixels, 64, 20, 32);
+        assert!(
+            tick[0] > 120,
+            "phase-0 east tick midline (20,32) must ink, got {tick:?}"
+        );
+        let hub = pixel(&pixels, 64, 12, 32);
+        assert!(
+            is_blue_slot(hub),
+            "spinner hub is inside the ring, not a tick, got {hub:?}"
+        );
+        let far = pixel(&pixels, 64, 48, 16);
+        assert!(
+            is_blue_slot(far),
+            "pixels outside the 24px spinner must stay the sibling fill, got {far:?}"
+        );
+    }
+
+    #[test]
+    fn time_series_line_paints_capsule_coverage_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
+                time_series_stroke_node(
+                    2,
+                    vec![[8.0, 32.0], [56.0, 32.0], [56.0, 12.0]],
+                    [1.0, 0.0, 0.0, 1.0],
+                ),
+            ],
+            [],
+        );
+        assert!(
+            scene
+                .primitives()
+                .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. })),
+            "TimeSeriesChart line must extract as Stroke, not tiled QuadBatch"
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let midline = pixel(&pixels, 64, 32, 32);
+        assert!(
+            is_red_slot(midline),
+            "chart line midline must ink the 2px capsule, got {midline:?}"
+        );
+        let join = pixel(&pixels, 64, 56, 32);
+        assert!(
+            join[0] > 120,
+            "articulated join must keep the shared endpoint disc, got {join:?}"
+        );
+        let far = pixel(&pixels, 64, 32, 8);
+        assert!(
+            is_blue_slot(far),
+            "pixels outside the 2px capsule must stay the sibling fill, got {far:?}"
+        );
+        let covering_corner = pixel(&pixels, 64, 32, 28);
+        assert!(
+            covering_corner[2] > 120 && covering_corner[0] < 80,
+            "covering-quad corners 4px off the 1px radius must be discarded, got {covering_corner:?}"
+        );
+    }
+
+    fn time_series_stroke_node(
+        value: u64,
+        points: Vec<[f32; 2]>,
+        color: [f32; 4],
+    ) -> ExtractedNode {
+        let mut node = extracted_div(
+            value,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle::default(),
+            None,
+        );
+        node.standard_visual = Some(StandardVisual::TimeSeriesChart {
+            values: Arc::from([0.0, 1.0]),
+        });
+        node.component_geometry = Some(ComponentGeometry::TimeSeriesChart {
+            grid: Vec::new(),
+            area: Vec::new(),
+            line: points,
+            grid_color: [0.0, 0.0, 0.0, 0.0],
+            area_color: [0.0, 0.0, 0.0, 0.0],
+            line_color: color,
+        });
+        node
+    }
+
+    #[test]
+    fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let fill = encode_scene_gpu_work(
+            &device,
+            &queue,
+            &mut painter,
+            &graph_canvas_scene(Vec::new()),
+        );
+        let work_32 = encode_scene_gpu_work(
+            &device,
+            &queue,
+            &mut painter,
+            &graph_canvas_scene(l_stroke_edges(32)),
+        );
+        let work_64 = encode_scene_gpu_work(
+            &device,
+            &queue,
+            &mut painter,
+            &graph_canvas_scene(l_stroke_edges(64)),
+        );
+        let mesh_32 = work_32
+            .gpu_upload_bytes
+            .saturating_sub(fill.gpu_upload_bytes);
+        let mesh_64 = work_64
+            .gpu_upload_bytes
+            .saturating_sub(fill.gpu_upload_bytes);
+        assert!(mesh_32 > 0, "strokes must add mesh upload bytes");
+        assert_eq!(
+            mesh_64,
+            mesh_32 * 2,
+            "doubling GraphCanvas edges must double isolated mesh upload bytes"
+        );
+        assert_eq!(
+            work_32.draw_calls.saturating_sub(fill.draw_calls),
+            32,
+            "each Stroke primitive issues one mesh draw"
+        );
+        assert_eq!(work_64.draw_calls.saturating_sub(fill.draw_calls), 64);
+    }
+
+    fn graph_canvas_scene(edges: Vec<(Vec<[f32; 2]>, [f32; 4])>) -> UiScene {
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(1, edges, [0.0, 0.0, 1.0, 1.0])],
+            [],
+        );
+        scene
+    }
+
+    fn l_stroke_edges(count: usize) -> Vec<(Vec<[f32; 2]>, [f32; 4])> {
+        (0..count)
+            .map(|index| {
+                let x = 8.0 + (index % 8) as f32 * 6.0;
+                let y = 8.0 + (index / 8) as f32 * 6.0;
+                (
+                    vec![[x, y], [x + 4.0, y], [x + 4.0, y + 4.0]],
+                    [1.0, 0.0, 0.0, 1.0],
+                )
+            })
+            .collect()
+    }
+
+    fn paint_scene_rgba(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        painter: &mut SceneWgpuPainter,
+        scene: &UiScene,
+        logical_size: [f32; 2],
+        physical_size: [u32; 2],
+        scale_factor: f32,
+    ) -> Vec<u8> {
+        let viewport = ScenePaintViewport {
+            logical_size,
+            physical_size,
+            scale_factor,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(
+            device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            physical_size[0],
+            physical_size[1],
+        );
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui articulated stroke probe"),
+        });
+        painter
+            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(
+            device,
+            queue,
+            encoder,
+            &texture,
+            physical_size[0],
+            physical_size[1],
+        );
+        drop(texture);
+        pixels
+    }
+
+    fn encode_scene_gpu_work(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        painter: &mut SceneWgpuPainter,
+        scene: &UiScene,
+    ) -> nana_ui_core::GpuWorkObservation {
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let target = test_target(device, wgpu::TextureFormat::Rgba8Unorm, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui articulated stroke work"),
+        });
+        painter
+            .paint(scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter
+            .last_gpu_work()
+            .expect("encoded GraphCanvas frame records GPU work")
     }
 
     #[test]

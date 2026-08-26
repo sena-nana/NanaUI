@@ -8,7 +8,7 @@ use nana_ui_core::{
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
     LayoutBox, NodeKind, StableNodeId, StandardVisual, TextHorizontalAlignment, TextShaping,
-    TextVerticalAlignment,
+    TextVerticalAlignment, TimeSeriesChart,
 };
 
 use crate::{
@@ -2502,17 +2502,14 @@ impl UiScene {
                             },
                         ));
                     }
-                    if !line.is_empty() {
-                        self.insert_primitive(visual_quad_batch(
+                    if line.len() >= 2 {
+                        self.insert_primitive(visual_stroke(
                             &context,
                             12,
-                            line.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*line_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            bounds,
+                            line.clone(),
+                            TimeSeriesChart::LINE_WIDTH,
+                            *line_color,
                         ));
                     }
                 }
@@ -6777,12 +6774,7 @@ mod tests {
                 width: 2.0,
                 height: 70.0,
             }],
-            line: vec![LayoutBox {
-                x: 8.0,
-                y: 39.0,
-                width: 46.0,
-                height: 2.0,
-            }],
+            line: vec![[8.0, 40.0], [54.0, 40.0]],
             grid_color: [0.2, 0.2, 0.2, 0.55],
             area_color: [0.3, 0.5, 0.8, 0.16],
             line_color: [0.3, 0.5, 0.9, 1.0],
@@ -6852,7 +6844,11 @@ mod tests {
                     slot: 12
                 })
                 .map(|primitive| &primitive.kind),
-            Some(ScenePrimitiveKind::QuadBatch { .. })
+            Some(ScenePrimitiveKind::Stroke {
+                width,
+                points,
+                ..
+            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON && points.len() == 2
         ));
         assert!(
             scene
