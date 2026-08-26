@@ -570,7 +570,7 @@ fn t_v01_display_none() {
     assert_pass_case("T-V01");
 }
 #[test]
-fn t_v02_visibility_hidden_skips_like_display_none() {
+fn t_v02_visibility_hidden_skips_paint_and_hit() {
     assert_pass_case("T-V02");
 }
 #[test]

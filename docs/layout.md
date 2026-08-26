@@ -26,9 +26,11 @@ Rust 第一路径用控件自己的布局，不写 CSS。这篇只描述 Vue 兼
 
 **文字。** 字号、字重、字体、行高、字距、颜色。字距是近似。
 
-**隐藏。** `display: none` 和 `visibility: hidden` 都不占位、不参与点击。这是 Nana 语义，不是 CSS 的「hidden 仍占位」。
+**隐藏。** `display: none` 不占位、不参与点击。`visibility: hidden` **仍占位**（参与 flex/grid 测量），但不绘制、不命中。内部 `layout.hidden`（侧栏、菜单等）与 `display: none` 一样跳过布局。
 
 **`transform`。** 只影响绘制，不算进布局。这是 CSS 的正确行为，不是缺口。
+
+**绘制。** `background` / `background-color` / `background-image: linear-gradient(...) | radial-gradient(...)`、`background-size: cover | contain | stretch`、`mask-image` / `-webkit-mask-image`（线性或径向渐变 alpha；GPU 最多 8 个 mask 色标）、`clip-path: inset(...) | polygon(...)`（inset 的 `round` 写入 rounded-box SDF，非平移 transform 下仍保留半径；polygon 对自身与子项做点内多边形测试，子项经 dest-group 合成，不是包围盒 clip）、`filter: brightness() saturate() contrast()`（有子节点或同节点文本时用 dest 合成组，叶子 quad 走 shader）。`background-image: url(...)` 支持 `data:image/png|jpeg;base64,...`、`http://` / `https://`、`file://` 与相对路径；相对 URL 优先相对文档/宿主设置的 base（[`set_background_image_url_base`](../../crates/nana-ui/src/scene_paint/image_url.rs)），否则相对进程 cwd。同 URL 纹理按 URL 缓存并按 URL 分批 rebind。GPU 侧每 quad 最多 8 个 gradient 色标。CSS `url()` 帧仍走 4× MSAA（与 HostTexture / backdrop 的 interleaved 路径分开）。`backdrop-filter: blur()` 是逐节点 dest 采样模糊（旋转映射 + 祖先 inset/polygon clip），不是整窗 Mica/Acrylic。
 
 **层叠。** 同属 author。样式表内部先 normal 再 `!important`（再比特异度和源序）。prop / inline **普通**声明覆盖样式表普通声明（inline 覆盖 prop）。样式表 `!important` 覆盖 prop / inline 普通声明。prop / inline 上的 `!important` 会去掉标志并作为 author-important 再写：覆盖样式表 `!important`，且 inline important 覆盖 prop important。`:hover` / `:focus` 等交互伪类仍跳过，不会当布局条件。
 
