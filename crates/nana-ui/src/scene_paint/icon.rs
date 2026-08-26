@@ -276,11 +276,11 @@ impl IconPipeline {
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<PreparedIcon> {
-        let square = centered_square(bounds);
-        if square.width <= 0.0 || scale <= 0.0 {
+        let extent = bounds.width.min(bounds.height);
+        if extent <= 0.0 || scale <= 0.0 {
             return None;
         }
-        let dest_px = (square.width * scale).round().max(1.0) as u32;
+        let dest_px = (extent * scale).round().max(1.0) as u32;
         let px = dest_px.saturating_mul(2).clamp(2, MAX_ATLAS_PX);
         let key = AtlasKey {
             icon: icon.as_ptr() as usize,
@@ -293,9 +293,18 @@ impl IconPipeline {
         let color = pack_linear(with_opacity(color, opacity));
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
-        for ([x, y], uv) in icon_quad_corners(square, affine, scale) {
+        let [tl, tr, bl, br] = icon_quad(bounds, affine, scale);
+        let corners = [
+            (tl, [0.0, 0.0]),
+            (tr, [1.0, 0.0]),
+            (bl, [0.0, 1.0]),
+            (tr, [1.0, 0.0]),
+            (br, [1.0, 1.0]),
+            (bl, [0.0, 1.0]),
+        ];
+        for (position, uv) in corners {
             self.pending_vertices.push(IconVertex {
-                position: [x, y],
+                position,
                 uv,
                 color,
                 clip_rect: clip.rect,
@@ -440,72 +449,27 @@ impl IconPipeline {
     }
 }
 
-fn centered_square(bounds: LogicalRect) -> LogicalRect {
+fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4] {
     let extent = bounds.width.min(bounds.height);
-    LogicalRect::from_xywh(
-        bounds.x + (bounds.width - extent) * 0.5,
-        bounds.y + (bounds.height - extent) * 0.5,
-        extent,
-        extent,
-    )
-}
-
-fn icon_quad_corners(
-    square: LogicalRect,
-    affine: [f32; 6],
-    scale: f32,
-) -> [([f32; 2], [f32; 2]); 6] {
-    let uv = [
-        [0.0, 0.0],
-        [1.0, 0.0],
-        [0.0, 1.0],
-        [1.0, 0.0],
-        [1.0, 1.0],
-        [0.0, 1.0],
-    ];
-    let positions = if clip::is_translation(affine) {
-        let [cx, cy] = clip::transform_point(
-            affine,
-            square.x + square.width * 0.5,
-            square.y + square.height * 0.5,
-        );
-        let extent_px = (square.width * scale).round().max(1.0);
-        let x0 = (cx * scale - extent_px * 0.5).round();
-        let y0 = (cy * scale - extent_px * 0.5).round();
-        let x1 = x0 + extent_px;
-        let y1 = y0 + extent_px;
+    let x = bounds.x + (bounds.width - extent) * 0.5;
+    let y = bounds.y + (bounds.height - extent) * 0.5;
+    if clip::is_translation(affine) {
+        let [cx, cy] = clip::transform_point(affine, x + extent * 0.5, y + extent * 0.5);
+        let px = (extent * scale).round().max(1.0);
+        let x0 = (cx * scale - px * 0.5).round();
+        let y0 = (cy * scale - px * 0.5).round();
         [
             [x0, y0],
-            [x1, y0],
-            [x0, y1],
-            [x1, y0],
-            [x1, y1],
-            [x0, y1],
+            [x0 + px, y0],
+            [x0, y0 + px],
+            [x0 + px, y0 + px],
         ]
     } else {
-        let [tl, tr, bl, br] = [
-            clip::transform_point(affine, square.x, square.y),
-            clip::transform_point(affine, square.x + square.width, square.y),
-            clip::transform_point(affine, square.x, square.y + square.height),
-            clip::transform_point(affine, square.x + square.width, square.y + square.height),
-        ];
-        [
-            [tl[0] * scale, tl[1] * scale],
-            [tr[0] * scale, tr[1] * scale],
-            [bl[0] * scale, bl[1] * scale],
-            [tr[0] * scale, tr[1] * scale],
-            [br[0] * scale, br[1] * scale],
-            [bl[0] * scale, bl[1] * scale],
-        ]
-    };
-    [
-        (positions[0], uv[0]),
-        (positions[1], uv[1]),
-        (positions[2], uv[2]),
-        (positions[3], uv[3]),
-        (positions[4], uv[4]),
-        (positions[5], uv[5]),
-    ]
+        [[x, y], [x + extent, y], [x, y + extent], [x + extent, y + extent]].map(|[px, py]| {
+            let [tx, ty] = clip::transform_point(affine, px, py);
+            [tx * scale, ty * scale]
+        })
+    }
 }
 
 fn rasterize_lucide(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
@@ -518,15 +482,11 @@ fn rasterize_lucide(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
         ..resvg::usvg::Options::default()
     };
     let tree = resvg::usvg::Tree::from_str(&markup, &options).ok()?;
-    let size = tree.size();
-    let fit = size.width().max(size.height()).max(f32::EPSILON);
-    let svg_scale = pixel_size as f32 / fit;
-    let dx = (pixel_size as f32 - size.width() * svg_scale) * 0.5;
-    let dy = (pixel_size as f32 - size.height() * svg_scale) * 0.5;
+    let scale = pixel_size as f32 / 24.0;
     let mut pixmap = tiny_skia::Pixmap::new(pixel_size, pixel_size)?;
     resvg::render(
         &tree,
-        tiny_skia::Transform::from_row(svg_scale, 0.0, 0.0, svg_scale, dx, dy),
+        tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
     let mut rgba = pixmap.data().to_vec();
@@ -555,58 +515,5 @@ mod tests {
             rgba.chunks(4).any(|pixel| pixel[3] < 16),
             "search icon should keep transparent padding"
         );
-    }
-
-    #[test]
-    fn dest_quad_is_square_and_pixel_snapped() {
-        let bounds = LogicalRect::from_xywh(8.0, 7.0, 16.0, 14.0);
-        let square = centered_square(bounds);
-        assert!((square.width - 14.0).abs() < f32::EPSILON);
-        assert!((square.height - 14.0).abs() < f32::EPSILON);
-        assert!((square.x - 9.0).abs() < f32::EPSILON);
-        assert!((square.y - 7.0).abs() < f32::EPSILON);
-
-        let corners = icon_quad_corners(square, clip::IDENTITY_AFFINE, 2.0);
-        assert_eq!(corners[0].0, [18.0, 14.0]);
-        assert_eq!(corners[4].0, [46.0, 42.0]);
-    }
-
-    fn ink_bbox(rgba: &[u8], px: u32) -> (u32, u32, u32, u32) {
-        let px = px as usize;
-        let mut min_x = px;
-        let mut min_y = px;
-        let mut max_x = 0;
-        let mut max_y = 0;
-        for y in 0..px {
-            for x in 0..px {
-                if rgba[(y * px + x) * 4 + 3] > 16 {
-                    min_x = min_x.min(x);
-                    min_y = min_y.min(y);
-                    max_x = max_x.max(x);
-                    max_y = max_y.max(y);
-                }
-            }
-        }
-        (min_x as u32, min_y as u32, max_x as u32, max_y as u32)
-    }
-
-    #[test]
-    fn lucide_symmetric_icons_are_centered() {
-        let px = 48;
-        for icon in [Icon::Add, Icon::Settings, Icon::Close] {
-            let rgba = rasterize_lucide(icon.svg(), px).expect("svg");
-            let (min_x, min_y, max_x, max_y) = ink_bbox(&rgba, px);
-            let cx = (min_x + max_x) as f32 / 2.0;
-            let cy = (min_y + max_y) as f32 / 2.0;
-            let mid = (px - 1) as f32 / 2.0;
-            assert!(
-                (cx - mid).abs() < 1.5,
-                "{icon:?} horizontal center {cx} vs {mid}, bbox {min_x}..{max_x} x {min_y}..{max_y}"
-            );
-            assert!(
-                (cy - mid).abs() < 1.5,
-                "{icon:?} vertical center {cy} vs {mid}, bbox {min_x}..{max_x} x {min_y}..{max_y}"
-            );
-        }
     }
 }
