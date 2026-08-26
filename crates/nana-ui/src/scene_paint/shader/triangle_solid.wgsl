@@ -79,37 +79,11 @@ fn solid_vs_main(
     return out;
 }
 
-fn capsule_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+fn sd_variable_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r0: f32, r1: f32) -> f32 {
     let pa = p - a;
     let ba = b - a;
     let h = saturate(dot(pa, ba) / max(dot(ba, ba), 1e-8));
-    return length(pa - ba * h);
-}
-
-fn sd_uneven_capsule(p: vec2<f32>, pa: vec2<f32>, pb: vec2<f32>, ra: f32, rb: f32) -> f32 {
-    var point = p - pa;
-    let span = pb - pa;
-    let h = dot(span, span);
-    if h < 1e-8 {
-        return length(point) - max(ra, rb);
-    }
-    let b = ra - rb;
-    if b * b >= h {
-        return min(length(point) - ra, length(p - pb) - rb);
-    }
-    let q = vec2<f32>(dot(point, vec2<f32>(span.y, -span.x)), dot(point, span)) / h;
-    let qx = abs(q.x);
-    let qy = q.y;
-    let c = vec2<f32>(sqrt(h - b * b), b);
-    let k = c.x * qy - c.y * qx;
-    let n = qx * qx + qy * qy;
-    if k < 0.0 {
-        return sqrt(h) * n - ra;
-    }
-    if k > c.x {
-        return sqrt(h) * (n + 1.0 - 2.0 * qy) - rb;
-    }
-    return dot(c, vec2<f32>(qx, qy)) - ra;
+    return length(pa - ba * h) - mix(r0, r1, h);
 }
 
 fn sd_butt(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r0: f32, r1: f32) -> f32 {
@@ -134,10 +108,7 @@ fn stroke_signed_distance(
     if cap > 0.5 {
         return sd_butt(p, p0, p1, r0, r1);
     }
-    if abs(r0 - r1) < 1e-5 {
-        return capsule_distance(p, p0, p1) - r0;
-    }
-    return sd_uneven_capsule(p, p0, p1, r0, r1);
+    return sd_variable_capsule(p, p0, p1, r0, r1);
 }
 
 @fragment
