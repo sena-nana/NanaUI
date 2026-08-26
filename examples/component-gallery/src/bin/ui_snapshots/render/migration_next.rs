@@ -4849,7 +4849,7 @@ fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (Component::SegmentedControl, _) => (
             "pass",
-            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment, disabled fade and the 2px external focus ring",
+            "2026-08-15 side-by-side review preferred Runtime (right) over Iced (left) for density, selected pill, icon alignment and disabled fade; selected surface is the only focus cue",
         ),
         (Component::Text, _) => (
             "pass",
@@ -4922,7 +4922,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Runtime reserves dedicated label, value and track regions instead of copying the Iced inline geometry"
         }
         (Component::SegmentedControl, "focused") => {
-            "intentional: Runtime keeps the 2px external focus ring; Iced focus is nearly invisible"
+            "intentional: Segmented keeps selected surface only; it does not paint a 2px focus ring"
         }
         (Component::Tabs, "focused") => {
             "intentional: Tabs keep selected surface only; they do not paint the segmented 2px focus ring"
