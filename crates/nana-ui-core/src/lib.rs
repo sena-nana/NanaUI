@@ -40,12 +40,15 @@ pub use action::{
     KeyContext,
 };
 pub use box_layout::{
-    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
-    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec,
-    LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    TextAlignSpec, ViewportAxis, WhiteSpaceSpec, resolve_grid_column_widths,
-    resolve_grid_track_sizes,
+    AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BoxShadowSpec, BoxSizing,
+    ClearSpec, ClipInset, ClipPath, ClipPoint, ColorFilter, CssGradient, DisplaySpec,
+    FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GradientStop, GridAutoFlow, GridLine,
+    GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+    JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LinearGradient, OverflowSpec,
+    PaddingSpec, PaintStyle, PaintTransform, ParentBox, PositionSpec, RadialGradient,
+    TEXT_APPROX_ASCENT_EM, TextAlignSpec, TextShadowSpec, ViewportAxis, VisibilitySpec,
+    WhiteSpaceSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;
