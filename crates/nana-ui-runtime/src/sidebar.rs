@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    OverflowSpec, SemanticColorRole, SemanticPalette, TooltipConfig, UI_METRICS,
+    OverflowSpec, SemanticColorRole, TooltipConfig, UI_METRICS,
 };
 
 use crate::view_components::{
@@ -23,7 +23,6 @@ const FRAME_GAP: f32 = 14.0;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_PADDING_RIGHT: f32 = 8.0;
 const ROW_ICON_SIZE: f32 = ControlSize::Small.icon_size();
-const ROW_TEXT_ALPHA: f32 = 0.68;
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
 const SECTION_ANIMATION_DURATION: Duration = Duration::from_millis(160);
@@ -368,7 +367,7 @@ impl SidebarRow {
         self.state == SidebarRowState::Disabled
     }
 
-    fn effective_style(&self, world: &UiWorld) -> NodeStyle {
+    fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
@@ -395,14 +394,12 @@ impl SidebarRow {
             500
         });
         layout.border_radius = Some(layout.border_radius.unwrap_or(UI_METRICS.radius_sm));
+        // Default rows share Text; the Selected plate marks the current route.
         style.foreground = Some(match (self.tone, self.state) {
             (SidebarRowTone::Warning, _) => SemanticColorRole::Warning,
             (SidebarRowTone::Error, _) => SemanticColorRole::Danger,
-            // The selected row carries the accent; an ancestor of the selection
-            // only gets the heavier weight, so one row reads as current.
-            (_, SidebarRowState::Active) => SemanticColorRole::Accent,
-            (_, SidebarRowState::AncestorActive) => SemanticColorRole::Text,
-            (_, SidebarRowState::Idle | SidebarRowState::Disabled) => SemanticColorRole::Faint,
+            (_, SidebarRowState::Disabled) => SemanticColorRole::Faint,
+            _ => SemanticColorRole::Text,
         });
         style.background = None;
         style.interaction = InteractionStyle {
@@ -444,19 +441,6 @@ impl SidebarRow {
             },
         };
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
-        if matches!(self.tone, SidebarRowTone::Default)
-            && let Some(role) = style.foreground
-        {
-            let mut rgba = SemanticPalette::for_mode(world.theme_mode())
-                .get(role)
-                .as_rgba_array();
-            // The accent on the selected row has to stay saturated; everything
-            // else sits back so the current row reads first.
-            if self.state != SidebarRowState::Active {
-                rgba[3] *= ROW_TEXT_ALPHA;
-            }
-            Arc::make_mut(&mut style.layout).color = Some(rgba);
-        }
         style
     }
 
@@ -522,7 +506,7 @@ impl ComponentView for SidebarRow {
             .size(self.size)
             .selected(self.selected())
             .disabled(self.disabled());
-        item.style = self.effective_style(world);
+        item.style = self.effective_style();
         item.project(id, world, mutations);
         self.project_tools_layout(world, mutations);
     }
@@ -541,7 +525,6 @@ impl SidebarRowIcon {
 
     fn style() -> NodeStyle {
         let mut style = NodeStyle::default();
-        style.foreground = Some(SemanticColorRole::Muted);
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Px(ROW_ICON_SIZE));
         layout.height = Some(LengthSpec::Px(ROW_ICON_SIZE));
@@ -1689,11 +1672,9 @@ mod tests {
                 tooltip: None,
             })
         );
-        let icon_layout = &context
-            .world()
-            .node_style(leading.stable_id())
-            .unwrap()
-            .layout;
+        let icon_style = context.world().node_style(leading.stable_id()).unwrap();
+        let icon_layout = &icon_style.layout;
+        assert_eq!(icon_style.foreground, None);
         assert_eq!(icon_layout.width, Some(LengthSpec::Px(ROW_ICON_SIZE)));
         assert_eq!(icon_layout.height, Some(LengthSpec::Px(ROW_ICON_SIZE)));
         assert!(context.world().interaction(id).unwrap().focusable);
@@ -1819,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn row_default_text_matches_unarmed_alpha() {
+    fn row_default_text_uses_text_role() {
         let mut context = AppContext::new();
         let idle = context
             .create_component(document(), SidebarRow::new("外观"))
@@ -1836,29 +1817,27 @@ mod tests {
                 SidebarRow::new("项目").state(SidebarRowState::AncestorActive),
             )
             .unwrap();
+        let disabled = context
+            .create_component(
+                document(),
+                SidebarRow::new("停用").state(SidebarRowState::Disabled),
+            )
+            .unwrap();
         let idle_style = context.world().node_style(idle.stable_id()).unwrap();
         let active_style = context.world().node_style(active.stable_id()).unwrap();
         let ancestor_style = context.world().node_style(ancestor.stable_id()).unwrap();
-        assert_eq!(idle_style.foreground, Some(SemanticColorRole::Faint));
-        assert_eq!(active_style.foreground, Some(SemanticColorRole::Accent));
+        let disabled_style = context.world().node_style(disabled.stable_id()).unwrap();
+        assert_eq!(idle_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(active_style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(ancestor_style.foreground, Some(SemanticColorRole::Text));
+        assert_eq!(disabled_style.foreground, Some(SemanticColorRole::Faint));
+        assert_eq!(idle_style.layout.color, None);
+        assert_eq!(active_style.layout.color, None);
+        assert_eq!(ancestor_style.layout.color, None);
         assert_eq!(
             active_style.interaction.selected.background,
             Some(SemanticColorRole::Selected)
         );
-        let idle_color = idle_style.layout.color.expect("idle text color");
-        let active_color = active_style.layout.color.expect("active text color");
-        let ancestor_color = ancestor_style.layout.color.expect("ancestor text color");
-        assert!((idle_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
-        assert!((ancestor_color[3] - ROW_TEXT_ALPHA).abs() < f32::EPSILON);
-        let palette = SemanticPalette::for_mode(context.world().theme_mode());
-        assert_eq!(
-            active_color,
-            palette.accent.as_rgba_array(),
-            "the selected row keeps the accent at full strength"
-        );
-        assert_eq!(&idle_color[..3], &palette.faint.as_rgba_array()[..3]);
-        assert_eq!(&ancestor_color[..3], &palette.text.as_rgba_array()[..3]);
     }
 
     fn mount_section(
