@@ -649,8 +649,10 @@ pub(super) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32)
 }
 
 pub(super) fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
-    left.chunks_exact(4)
-        .zip(right.chunks_exact(4))
+    left.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(right.as_chunks::<4>().0)
         .flat_map(|(left, right)| {
             let red = left[0].abs_diff(right[0]);
             let green = left[1].abs_diff(right[1]);

@@ -1318,7 +1318,7 @@ fn copy_rgba_region(
 }
 
 fn premultiply_rgba_in_place(bytes: &mut [u8]) {
-    for pixel in bytes.chunks_exact_mut(4) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         pixel[0] = ((u16::from(pixel[0]) * alpha + 127) / 255) as u8;
         pixel[1] = ((u16::from(pixel[1]) * alpha + 127) / 255) as u8;
@@ -2008,7 +2008,7 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
 }
 
 fn premultiply_rgba(mut rgba: Vec<u8>) -> Vec<u8> {
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         let a = pixel[3] as u16;
         for channel in &mut pixel[..3] {
             *channel = ((*channel as u16 * a + 127) / 255) as u8;
@@ -2019,7 +2019,7 @@ fn premultiply_rgba(mut rgba: Vec<u8>) -> Vec<u8> {
 
 fn unpremultiply_rgba(rgba: &[u8]) -> Vec<u8> {
     let mut output = rgba.to_vec();
-    for pixel in output.chunks_exact_mut(4) {
+    for pixel in output.as_chunks_mut::<4>().0 {
         let a = pixel[3] as u16;
         if a > 0 {
             for channel in &mut pixel[..3] {

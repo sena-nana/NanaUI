@@ -124,7 +124,9 @@ pub struct ScenePrimitive {
     pub node: StableNodeId,
     pub bounds: SceneRect,
     pub transform: AffineTransform,
-    pub clips: Vec<ClipRegion>,
+    /// Ancestor clip chain, shared: every primitive of a node, and every node
+    /// under the same clipping ancestors, points at one allocation.
+    pub clips: Arc<[ClipRegion]>,
     /// Paint opacity excluding ancestor opacity groups.
     pub opacity: f32,
     pub z_index: i32,
@@ -277,19 +279,28 @@ impl UiScene {
         }
         let mut updated_nodes = 0;
         let mut scroll_rebuild = Vec::new();
+        let mut stacking_changed = false;
         for node in extracted {
-            hierarchy_changed |= self
-                .nodes
-                .get(&node.id)
+            let previous = self.nodes.get(&node.id);
+            hierarchy_changed |= previous
                 .is_none_or(|old| old.parent != node.parent || old.children != node.children);
-            let scroll_changed = self
-                .nodes
-                .get(&node.id)
-                .is_some_and(|old| old.scroll_offset != node.scroll_offset);
+            let scroll_changed =
+                previous.is_some_and(|old| old.scroll_offset != node.scroll_offset);
+            // A node's z_index and group opacity are part of every descendant's
+            // paint-order key, and descendants do not have to be re-extracted
+            // with it, so such a change costs a full reorder.
+            stacking_changed |= previous.is_some_and(|old| {
+                old.z_index != node.z_index
+                    || local_opacity(old).to_bits() != local_opacity(&node).to_bits()
+            });
             changed.push(node.id);
             if scroll_changed {
                 scroll_rebuild.push(node.id);
             }
+            // Drop the retained primitives while the old node is still in
+            // place: their order keys are derived from it, and a key computed
+            // against the new node would leave stale entries in `ordered`.
+            self.remove_node_primitives(node.id);
             self.nodes.insert(node.id, node);
             updated_nodes += 1;
         }
@@ -315,7 +326,11 @@ impl UiScene {
             for &id in &rebuild {
                 rebuilt_primitives += self.rebuild_node_primitives(id);
             }
-            self.sort_primitives();
+            // Rebuilt nodes re-enter `ordered` at their own key, so a reorder is
+            // only needed when keys the delta did not touch also moved.
+            if order_rebuilt || stacking_changed {
+                self.sort_primitives();
+            }
             self.instance = next_scene_instance();
         }
         SceneDelta {
@@ -507,10 +522,25 @@ impl UiScene {
     }
 
     fn sort_primitives(&mut self) {
+        // The group prefix is a per-node parent walk; a node usually owns
+        // several primitives, so walk once and reuse it.
+        let mut prefixes: HashMap<StableNodeId, Vec<(i32, usize)>> = HashMap::new();
         let keys: Vec<SceneOrderKey> = self
             .primitives
             .values()
-            .map(|primitive| order_key(&self.nodes, &self.node_order, primitive))
+            .map(|primitive| {
+                let prefix = prefixes
+                    .entry(primitive.node)
+                    .or_insert_with(|| group_prefix(&self.nodes, &self.node_order, primitive.node));
+                let mut stack = Vec::with_capacity(prefix.len() + 1);
+                stack.extend_from_slice(prefix);
+                stack.push((primitive.z_index, primitive.document_order));
+                SceneOrderKey {
+                    stack,
+                    slot: primitive.id.slot,
+                    node: primitive.node,
+                }
+            })
             .collect();
         self.ordered.clear();
         self.ordered.extend(keys);
@@ -550,31 +580,34 @@ impl UiScene {
         } else {
             parent_opacity * local_opacity
         };
-        let mut clips = parent_clips.to_vec();
-        if node.source_style.layout.clips_overflow() {
-            clips.push(ClipRegion { bounds, transform });
-        }
-        let empty_state_content_clips =
+        let clips: Arc<[ClipRegion]> = if node.source_style.layout.clips_overflow() {
+            let mut own = parent_clips.to_vec();
+            own.push(ClipRegion { bounds, transform });
+            own.into()
+        } else {
+            Arc::clone(&parent_clips)
+        };
+        let empty_state_content_clips: Arc<[ClipRegion]> =
             if let Some(ComponentGeometry::EmptyState { content_clip, .. }) =
                 node.component_geometry.as_ref()
             {
-                let mut content_clips = clips.clone();
+                let mut content_clips = clips.to_vec();
                 content_clips.push(ClipRegion {
                     bounds: scene_rect(*content_clip),
                     transform,
                 });
-                content_clips
+                content_clips.into()
             } else {
-                clips.clone()
+                Arc::clone(&clips)
             };
-        let text_input_clips =
+        let text_input_clips: Arc<[ClipRegion]> =
             if matches!(node.standard_visual, Some(StandardVisual::TextInput { .. })) {
                 let padding = node
                     .source_style
                     .layout
                     .resolved_padding_against(Some(bounds.width));
                 let border = node.source_style.layout.resolved_border_width();
-                let mut text_input_clips = clips.clone();
+                let mut text_input_clips = clips.to_vec();
                 text_input_clips.push(ClipRegion {
                     bounds: SceneRect {
                         x: bounds.x + border + padding.left,
@@ -586,9 +619,9 @@ impl UiScene {
                     },
                     transform,
                 });
-                text_input_clips
+                text_input_clips.into()
             } else {
-                clips.clone()
+                Arc::clone(&clips)
             };
         let node_order = self.node_order.get(&id).copied().unwrap_or_default();
         if node.style.visible && opacity > 0.0 {
@@ -658,7 +691,7 @@ impl UiScene {
                     node: id,
                     bounds,
                     transform,
-                    clips: parent_clips.to_vec(),
+                    clips: Arc::clone(&parent_clips),
                     opacity,
                     z_index: node.z_index,
                     document_order: node_order,
@@ -697,7 +730,9 @@ impl UiScene {
                 let padding = style.resolved_padding_against(Some(bounds.width));
                 let border = style.resolved_border_width();
                 let leading_visual = match node.standard_visual {
-                    Some(StandardVisual::Checkbox { .. }) => 24.0,
+                    Some(StandardVisual::Checkbox { size, .. }) => {
+                        size.indicator_size() + size.indicator_gap()
+                    }
                     Some(StandardVisual::Switch {
                         control_position: SwitchControlPosition::Start,
                         ..
@@ -799,7 +834,7 @@ impl UiScene {
                         _ => None,
                     };
                     let mut surface_bounds = scene_rect(*surface);
-                    let mut surface_clips = clips.clone();
+                    let mut surface_clips = clips.to_vec();
                     if let Some(side) = docked {
                         surface_clips.push(ClipRegion {
                             bounds: scene_rect(*scrim),
@@ -819,7 +854,7 @@ impl UiScene {
                         node: id,
                         bounds: surface_bounds,
                         transform,
-                        clips: surface_clips,
+                        clips: surface_clips.into(),
                         opacity,
                         z_index: node.z_index,
                         document_order: node_order,
@@ -890,8 +925,50 @@ impl UiScene {
                     text,
                     selection,
                     selection_color,
+                    steppers,
                     ..
                 }) => {
+                    if let Some(steppers) = steppers {
+                        for (slot, icon, bounds, color) in [
+                            (
+                                8,
+                                nana_ui_core::Icon::ChevronUp,
+                                steppers.increment,
+                                steppers.increment_color,
+                            ),
+                            (
+                                9,
+                                nana_ui_core::Icon::ChevronDown,
+                                steppers.decrement,
+                                steppers.decrement_color,
+                            ),
+                        ] {
+                            let extent = steppers
+                                .glyph_size
+                                .min(bounds.width)
+                                .min(bounds.height)
+                                .max(0.0);
+                            self.insert_primitive(ScenePrimitive {
+                                id: PrimitiveId { node: id, slot },
+                                node: id,
+                                bounds: SceneRect {
+                                    x: bounds.x + (bounds.width - extent) / 2.0,
+                                    y: bounds.y + (bounds.height - extent) / 2.0,
+                                    width: extent,
+                                    height: extent,
+                                },
+                                transform,
+                                clips: clips.clone(),
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                                kind: ScenePrimitiveKind::Icon {
+                                    icon,
+                                    color: Some(color),
+                                },
+                            });
+                        }
+                    }
                     if !selection.is_empty() {
                         self.insert_primitive(visual_quad_batch(
                             &VisualPrimitiveContext {
@@ -1165,12 +1242,17 @@ impl UiScene {
                     icon,
                     label,
                     focus_ring,
+                    indicator,
                 }) => {
                     self.insert_primitive(component_text_primitive(
                         id,
                         2,
                         label,
-                        TextHorizontalAlignment::Center,
+                        if indicator.is_some() {
+                            TextHorizontalAlignment::Start
+                        } else {
+                            TextHorizontalAlignment::Center
+                        },
                         false,
                         &node,
                         transform,
@@ -1178,6 +1260,40 @@ impl UiScene {
                         opacity,
                         node_order,
                     ));
+                    if let Some(indicator) = indicator {
+                        let indicator_context = VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        };
+                        self.insert_primitive(visual_quad(
+                            &indicator_context,
+                            8,
+                            scene_rect(indicator.ring),
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: Some(indicator.ring_color),
+                                border_width: if indicator.dot.is_some() { 2.0 } else { 1.0 },
+                                corner_radius: indicator.ring.height / 2.0,
+                            },
+                        ));
+                        if let Some((dot, color)) = indicator.dot {
+                            self.insert_primitive(visual_quad(
+                                &indicator_context,
+                                9,
+                                scene_rect(dot),
+                                VisualQuadStyle {
+                                    background: Some(color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: dot.height / 2.0,
+                                },
+                            ));
+                        }
+                    }
                     if let Some((icon, icon_bounds, color)) = icon {
                         self.insert_primitive(ScenePrimitive {
                             id: PrimitiveId { node: id, slot: 3 },
@@ -1563,7 +1679,7 @@ impl UiScene {
                             node: id,
                             bounds: scene_rect(menu.surface),
                             transform,
-                            clips: parent_clips.to_vec(),
+                            clips: Arc::clone(&parent_clips),
                             opacity,
                             z_index: menu_z,
                             document_order: node_order,
@@ -1599,7 +1715,7 @@ impl UiScene {
                                     false,
                                     &node,
                                     transform,
-                                    parent_clips.to_vec(),
+                                    Arc::clone(&parent_clips),
                                     opacity,
                                     node_order,
                                 );
@@ -1634,7 +1750,7 @@ impl UiScene {
                                 false,
                                 &node,
                                 transform,
-                                parent_clips.to_vec(),
+                                Arc::clone(&parent_clips),
                                 opacity,
                                 node_order,
                             );
@@ -1801,7 +1917,7 @@ impl UiScene {
                         node: id,
                         bounds: scene_rect(*surface),
                         transform,
-                        clips: parent_clips.to_vec(),
+                        clips: Arc::clone(&parent_clips),
                         opacity,
                         z_index: overlay_z,
                         document_order: node_order,
@@ -1821,7 +1937,7 @@ impl UiScene {
                         false,
                         &node,
                         transform,
-                        parent_clips.to_vec(),
+                        Arc::clone(&parent_clips),
                         opacity,
                         node_order,
                     );
@@ -1853,7 +1969,7 @@ impl UiScene {
                         true,
                         &node,
                         transform,
-                        parent_clips.to_vec(),
+                        Arc::clone(&parent_clips),
                         opacity,
                         node_order,
                     );
@@ -1868,7 +1984,7 @@ impl UiScene {
                             false,
                             &node,
                             transform,
-                            parent_clips.to_vec(),
+                            Arc::clone(&parent_clips),
                             opacity,
                             node_order,
                         );
@@ -1905,7 +2021,7 @@ impl UiScene {
                             true,
                             &node,
                             transform,
-                            parent_clips.to_vec(),
+                            Arc::clone(&parent_clips),
                             opacity,
                             node_order,
                         );
@@ -1920,7 +2036,7 @@ impl UiScene {
                                 true,
                                 &node,
                                 transform,
-                                parent_clips.to_vec(),
+                                Arc::clone(&parent_clips),
                                 opacity,
                                 node_order,
                             );
@@ -1936,7 +2052,7 @@ impl UiScene {
                                 true,
                                 &node,
                                 transform,
-                                parent_clips.to_vec(),
+                                Arc::clone(&parent_clips),
                                 opacity,
                                 node_order,
                             );
@@ -1997,7 +2113,7 @@ impl UiScene {
                             node: id,
                             bounds: scene_rect(*surface),
                             transform,
-                            clips: parent_clips.to_vec(),
+                            clips: Arc::clone(&parent_clips),
                             opacity,
                             z_index: node.z_index,
                             document_order: node_order,
@@ -2676,6 +2792,9 @@ impl UiScene {
                 }
                 Some(ComponentGeometry::Card { title: None, .. })
                 | Some(ComponentGeometry::ListItem { .. })
+                // Scrollbar chrome is emitted with the StandardVisual slots
+                // below so it draws over the node's own content.
+                | Some(ComponentGeometry::Scrollbar { .. })
                 | None => {}
             }
             let visual_context = VisualPrimitiveContext {
@@ -2806,8 +2925,12 @@ impl UiScene {
                         }
                     }
                 }
-                Some(StandardVisual::Checkbox { checked }) => {
-                    let extent = 16.0_f32.min(bounds.height);
+                Some(StandardVisual::Checkbox {
+                    checked,
+                    indeterminate,
+                    size,
+                }) => {
+                    let extent = size.indicator_size().min(bounds.height);
                     let indicator = SceneRect {
                         x: bounds.x,
                         y: bounds.y + (bounds.height - extent) / 2.0,
@@ -2825,7 +2948,26 @@ impl UiScene {
                             corner_radius: 4.0,
                         },
                     ));
-                    if checked {
+                    if indeterminate {
+                        let dash_height = (extent / 8.0).max(1.5);
+                        let dash_inset = extent / 4.0;
+                        self.insert_primitive(visual_quad(
+                            &visual_context,
+                            4,
+                            SceneRect {
+                                x: indicator.x + dash_inset,
+                                y: indicator.y + (extent - dash_height) / 2.0,
+                                width: (extent - dash_inset * 2.0).max(0.0),
+                                height: dash_height,
+                            },
+                            VisualQuadStyle {
+                                background: node.standard_visual_foreground,
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: dash_height / 2.0,
+                            },
+                        ));
+                    } else if checked {
                         self.insert_primitive(ScenePrimitive {
                             id: PrimitiveId { node: id, slot: 4 },
                             node: id,
@@ -2838,7 +2980,7 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Text {
                                 content: "✓".into(),
                                 color: node.standard_visual_foreground,
-                                size: 12.0,
+                                size: extent * 0.75,
                                 weight: Some(700),
                                 family: None,
                                 line_height: None,
@@ -3040,6 +3182,43 @@ impl UiScene {
                         },
                     ));
                 }
+                Some(StandardVisual::Scrollbar { .. }) => {
+                    if let Some(ComponentGeometry::Scrollbar {
+                        horizontal,
+                        vertical,
+                    }) = node.component_geometry.as_ref()
+                    {
+                        for (slot, bar) in [(3, vertical), (5, horizontal)] {
+                            let Some(bar) = bar else {
+                                continue;
+                            };
+                            if let Some(background) = bar.track_background {
+                                self.insert_primitive(visual_quad(
+                                    &visual_context,
+                                    slot,
+                                    scene_rect(bar.track),
+                                    VisualQuadStyle {
+                                        background: Some(background),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: 0.0,
+                                    },
+                                ));
+                            }
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                slot + 1,
+                                scene_rect(bar.thumb),
+                                VisualQuadStyle {
+                                    background: Some(bar.thumb_background),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: bar.thumb_radius,
+                                },
+                            ));
+                        }
+                    }
+                }
                 Some(StandardVisual::Card {
                     loading,
                     loading_phase,
@@ -3137,7 +3316,7 @@ impl UiScene {
         self.primitives.len() - before
     }
 
-    fn ancestor_state(&self, node: &ExtractedNode) -> (AffineTransform, f32, Vec<ClipRegion>) {
+    fn ancestor_state(&self, node: &ExtractedNode) -> (AffineTransform, f32, Arc<[ClipRegion]>) {
         let mut ancestors = Vec::new();
         let mut parent = node.parent;
         let mut visited = HashSet::new();
@@ -3226,7 +3405,7 @@ impl UiScene {
                 -ancestor.scroll_offset.y,
             ]));
         }
-        (transform, opacity, clips)
+        (transform, opacity, clips.into())
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
@@ -3334,19 +3513,29 @@ fn opacity_groups_from(
     groups
 }
 
-fn order_key(
+/// `(z_index, document_order)` of every isolating opacity group above (and
+/// including) `node`, outermost first.
+fn group_prefix(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node_order: &HashMap<StableNodeId, usize>,
-    primitive: &ScenePrimitive,
-) -> SceneOrderKey {
-    let mut stack = opacity_groups_from(nodes, primitive.node)
+    node: StableNodeId,
+) -> Vec<(i32, usize)> {
+    opacity_groups_from(nodes, node)
         .into_iter()
         .map(|group| {
             let z_index = nodes.get(&group.node).map(|node| node.z_index).unwrap_or(0);
             let order = node_order.get(&group.node).copied().unwrap_or(0);
             (z_index, order)
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn order_key(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node_order: &HashMap<StableNodeId, usize>,
+    primitive: &ScenePrimitive,
+) -> SceneOrderKey {
+    let mut stack = group_prefix(nodes, node_order, primitive.node);
     stack.push((primitive.z_index, primitive.document_order));
     SceneOrderKey {
         stack,
@@ -3372,7 +3561,7 @@ fn paint_select_handle(
     handle: &LayoutBox,
     color: [f32; 4],
     transform: AffineTransform,
-    clips: &[ClipRegion],
+    clips: &Arc<[ClipRegion]>,
     opacity: f32,
     z_index: i32,
     document_order: usize,
@@ -3450,7 +3639,7 @@ fn component_text_primitive(
     ellipsis: bool,
     node: &ExtractedNode,
     transform: AffineTransform,
-    clips: Vec<ClipRegion>,
+    clips: Arc<[ClipRegion]>,
     opacity: f32,
     document_order: usize,
 ) -> ScenePrimitive {
@@ -3539,7 +3728,7 @@ fn scene_text_spans(node: &ExtractedNode, content: &str) -> Vec<SceneTextSpan> {
 struct VisualPrimitiveContext<'a> {
     node: StableNodeId,
     transform: AffineTransform,
-    clips: &'a [ClipRegion],
+    clips: &'a Arc<[ClipRegion]>,
     opacity: f32,
     z_index: i32,
     document_order: usize,
@@ -3566,7 +3755,7 @@ fn visual_quad(
         node: context.node,
         bounds,
         transform: context.transform,
-        clips: context.clips.to_vec(),
+        clips: Arc::clone(context.clips),
         opacity: context.opacity,
         z_index: context.z_index,
         document_order: context.document_order,
@@ -3596,7 +3785,7 @@ fn visual_stroke(
         node: context.node,
         bounds,
         transform: context.transform,
-        clips: context.clips.to_vec(),
+        clips: Arc::clone(context.clips),
         opacity: context.opacity,
         z_index: context.z_index,
         document_order: context.document_order,
@@ -3640,7 +3829,7 @@ fn visual_quad_batch(
         node: context.node,
         bounds,
         transform: context.transform,
-        clips: context.clips.to_vec(),
+        clips: Arc::clone(context.clips),
         opacity: context.opacity,
         z_index: context.z_index,
         document_order: context.document_order,
@@ -3882,6 +4071,7 @@ mod tests {
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
             invalid: false,
+            steppers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -3907,6 +4097,7 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            steppers: None,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
@@ -4030,6 +4221,7 @@ mod tests {
             disabled: false,
             size: ControlSize::Medium,
             show_focus_ring: true,
+            indicator: false,
         });
         option.component_geometry = Some(ComponentGeometry::SelectionOption {
             icon: Some((
@@ -4055,6 +4247,7 @@ mod tests {
                 font_weight: Some(500),
             },
             focus_ring: Some([0.2, 0.6, 1.0, 1.0]),
+            indicator: None,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([option], []);
@@ -4384,6 +4577,53 @@ mod tests {
     }
 
     #[test]
+    fn losing_group_isolation_reorders_descendants_that_were_not_reextracted() {
+        let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some(color),
+                opacity,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.5));
+        let mut child = node(2, Some(1), &[]);
+        child.z_index = 10;
+        child.source_style = solid([1.0, 0.0, 0.0, 1.0], None);
+        let mut sibling = node(3, None, &[]);
+        sibling.source_style = solid([0.0, 1.0, 0.0, 1.0], None);
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent.clone(), child, sibling.clone()], []);
+        let order = |scene: &UiScene| {
+            scene
+                .primitives()
+                .map(|primitive| primitive.node.get())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&scene), vec![1, 2, 3]);
+
+        // Paint-only update: the child keeps its place without being extracted.
+        sibling.source_style = solid([0.0, 1.0, 1.0, 1.0], None);
+        scene.apply_delta([sibling], []);
+        assert_eq!(
+            order(&scene),
+            vec![1, 2, 3],
+            "a color-only update must not disturb paint order"
+        );
+
+        // The parent stops isolating, so the high-z child escapes the group and
+        // sorts after the later sibling even though it was not re-extracted.
+        parent.source_style = solid([0.0, 0.0, 1.0, 1.0], None);
+        scene.apply_delta([parent], []);
+        assert_eq!(
+            order(&scene),
+            vec![1, 3, 2],
+            "losing group isolation must reorder the retained descendant"
+        );
+    }
+
+    #[test]
     fn text_primitive_preserves_content_box_and_paint_semantics() {
         let mut text = node(1, None, &[]);
         text.text = Some(TextContent {
@@ -4461,6 +4701,7 @@ mod tests {
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
             invalid: false,
+            steppers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -4511,6 +4752,7 @@ mod tests {
             selection_color: [0.2, 0.4, 0.7, 0.4],
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
+            steppers: None,
         });
 
         let mut scene = UiScene::new();
@@ -4547,6 +4789,7 @@ mod tests {
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
             invalid: false,
+            steppers: false,
         });
         single_line.component_geometry = input_component_geometry(false);
         scene.apply_delta([single_line], []);
@@ -4591,6 +4834,7 @@ mod tests {
             selection_color: [0.2, 0.4, 0.7, 0.4],
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
+            steppers: None,
         })
     }
 
@@ -5362,7 +5606,11 @@ mod tests {
         checkbox.text = Some(TextContent {
             value: "Notifications".into(),
         });
-        checkbox.standard_visual = Some(StandardVisual::Checkbox { checked: true });
+        checkbox.standard_visual = Some(StandardVisual::Checkbox {
+            checked: true,
+            indeterminate: false,
+            size: nana_ui_core::ControlSize::Medium,
+        });
         style_mut(&mut checkbox).background = Some([0.2, 0.5, 0.9, 1.0]);
         style_mut(&mut checkbox).border_color = Some([0.1, 0.2, 0.3, 1.0]);
 
@@ -5409,6 +5657,103 @@ mod tests {
                 .bounds
                 .width,
             21.5
+        );
+    }
+
+    #[test]
+    fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
+        let mut scroller = node(1, None, &[]);
+        scroller.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 120.0,
+        };
+        {
+            let layout = Arc::make_mut(&mut scroller.source_style.layout);
+            layout.overflow_y = nana_ui_core::OverflowSpec::Scroll;
+        }
+        scroller.standard_visual = Some(StandardVisual::Scrollbar {
+            axes: nana_ui_runtime::ScrollAxes::Vertical,
+            visibility: nana_ui_core::ScrollbarVisibility::Always,
+            revealed: true,
+            dragging: None,
+        });
+        scroller.component_geometry = Some(ComponentGeometry::Scrollbar {
+            horizontal: None,
+            vertical: Some(nana_ui_runtime::ScrollbarBar {
+                track: LayoutBox {
+                    x: 188.0,
+                    y: 0.0,
+                    width: 12.0,
+                    height: 120.0,
+                },
+                thumb: LayoutBox {
+                    x: 191.0,
+                    y: 0.0,
+                    width: 6.0,
+                    height: 72.0,
+                },
+                track_background: Some([0.1, 0.1, 0.1, 1.0]),
+                thumb_background: [0.6, 0.6, 0.6, 1.0],
+                thumb_radius: 3.0,
+                max_offset: 80.0,
+            }),
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([scroller], []);
+        let track = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 3,
+            })
+            .expect("resident track");
+        let thumb = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 4,
+            })
+            .expect("thumb");
+        assert!(matches!(
+            track.kind,
+            ScenePrimitiveKind::Quad {
+                background: Some([0.1, 0.1, 0.1, 1.0]),
+                ..
+            }
+        ));
+        assert!(matches!(
+            thumb.kind,
+            ScenePrimitiveKind::Quad {
+                background: Some([0.6, 0.6, 0.6, 1.0]),
+                corner_radius: 3.0,
+                ..
+            }
+        ));
+        assert_eq!(thumb.bounds.x, 191.0);
+        assert_eq!(thumb.bounds.height, 72.0);
+        // Chrome is clipped only by the scrollport box it already sits inside,
+        // so the edge is never cut.
+        assert_eq!(
+            track.clips.as_ref(),
+            [ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 120.0,
+                },
+                transform: AffineTransform::default(),
+            }]
+        );
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 5,
+                })
+                .is_none(),
+            "a vertical-only container emits no horizontal bar"
         );
     }
 

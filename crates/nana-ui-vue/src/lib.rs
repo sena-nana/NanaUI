@@ -475,6 +475,7 @@ impl VueHost {
         canvas: SharedCanvasRuntime,
     ) -> Self {
         let theme = ThemeMode::Light;
+        #[cfg_attr(not(feature = "scene-view"), allow(unused_mut))]
         let mut document =
             NanaTreeDocument::with_id(document_id, physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();
@@ -2559,13 +2560,11 @@ impl VueHost {
                 .expect("vue bridge")
                 .get(target.0)
                 .is_some_and(|widget| {
-                    matches!(
-                        widget.kind,
-                        WidgetKind::Input
-                            | WidgetKind::Textarea
-                            | WidgetKind::ContextMenu
-                            | WidgetKind::Select
-                    )
+                    widget.kind.is_choice_field()
+                        || matches!(
+                            widget.kind,
+                            WidgetKind::Input | WidgetKind::Textarea | WidgetKind::ContextMenu
+                        )
                 });
             let document = self.document.lock().expect("vue doc");
             (

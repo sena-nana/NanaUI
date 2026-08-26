@@ -4981,7 +4981,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Iced GpuTextureView samples the same host texture as Runtime nana.host-texture; layout chrome may differ"
         }
         (Component::GpuView, _) => {
-            "intentional: Iced GpuView shader is inline; Runtime paints via DefaultGpuViewRenderer using the same WGSL. CustomRenderNode does not encode palette; the snapshot registry supplies the fixture theme"
+            "intentional: Iced GpuView shader is inline; Runtime paints via DefaultGpuViewRenderer using the same WGSL, taking palette and seed from CustomRenderNode params"
         }
         (Component::Thumbnail, _) => {
             "intentional: Runtime Thumbnail is a compact HostTexture slot with empty/loading/unavailable chrome; Iced has no list-row thumbnail primitive"

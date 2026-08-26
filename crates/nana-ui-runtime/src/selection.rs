@@ -12,24 +12,38 @@ use crate::{
     TextHorizontalAlignment, TextVerticalAlignment, UiWorld,
 };
 
-/// Backend-neutral selection orientation. SegmentedControl currently supports
-/// only its design-language horizontal form.
+/// Backend-neutral selection orientation. `Segmented` and `Tabs` are
+/// horizontal by design; `Radio` stacks vertically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionOrientation {
     #[default]
     Horizontal,
+    Vertical,
 }
 
-/// Shared selection contract with two product surfaces.
+/// Shared selection contract with three product surfaces.
 ///
 /// `Segmented` keeps the bordered pill. `Tabs` is the same RadioGroup/roving
-/// behavior on an independent tab strip (no outer chrome). Professional
-/// reorder, close, and drag/lease behavior lives on [`crate::Tabs`].
+/// behavior on an independent tab strip (no outer chrome). `Radio` is the same
+/// behavior again as a stacked list of ring indicators, so a radio group costs
+/// no second selection engine. Professional reorder, close, and drag/lease
+/// behavior lives on [`crate::Tabs`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionChrome {
     #[default]
     Segmented,
     Tabs,
+    Radio,
+}
+
+impl SelectionChrome {
+    /// Orientation this chrome lays its options out in.
+    pub const fn orientation(self) -> SelectionOrientation {
+        match self {
+            Self::Segmented | Self::Tabs => SelectionOrientation::Horizontal,
+            Self::Radio => SelectionOrientation::Vertical,
+        }
+    }
 }
 
 /// Selection-independent intent consumed by roving-focus components.
@@ -122,6 +136,22 @@ impl SegmentedControl {
         }
     }
 
+    /// Same selection engine, radio chrome: a vertical stack of ring options.
+    pub fn radio_group() -> Self {
+        Self::new().chrome(SelectionChrome::Radio)
+    }
+
+    pub fn chrome(mut self, chrome: SelectionChrome) -> Self {
+        self.chrome = chrome;
+        self.orientation = chrome.orientation();
+        self.style = selection_chrome_style(chrome, self.size, self.fill);
+        self
+    }
+
+    pub const fn chrome_value(&self) -> SelectionChrome {
+        self.chrome
+    }
+
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
         self
@@ -193,6 +223,7 @@ impl ComponentView for SegmentedControl {
             AccessibilityState {
                 role: AccessibilityRole::RadioGroup,
                 label: self.label.clone(),
+                orientation: Some(self.orientation),
                 ..AccessibilityState::default()
             },
         );
@@ -288,9 +319,15 @@ pub(crate) fn selection_chrome_style(
             Some(SemanticColorRole::Border),
         ),
         SelectionChrome::Tabs => (4.0, 0.0, 0.0, None, None),
+        SelectionChrome::Radio => (2.0, 0.0, 0.0, None, None),
     };
+    let vertical = matches!(chrome.orientation(), SelectionOrientation::Vertical);
     let layout = LayoutStyle {
-        direction: Some(FlexDirection::Row),
+        direction: Some(if vertical {
+            FlexDirection::Column
+        } else {
+            FlexDirection::Row
+        }),
         gap: Some(LengthSpec::Px(gap)),
         padding: Some(LengthSpec::Px(padding)),
         width: Some(if fill {
@@ -298,8 +335,16 @@ pub(crate) fn selection_chrome_style(
         } else {
             LengthSpec::Shrink
         }),
-        height: Some(LengthSpec::Px(size.height())),
-        align_items: AlignSpec::Center,
+        height: Some(if vertical {
+            LengthSpec::Shrink
+        } else {
+            LengthSpec::Px(size.height())
+        }),
+        align_items: if vertical {
+            AlignSpec::Stretch
+        } else {
+            AlignSpec::Center
+        },
         border_width: Some(border_width),
         border_radius: Some(if matches!(chrome, SelectionChrome::Segmented) {
             10.0
@@ -319,46 +364,80 @@ pub(crate) fn selection_chrome_style(
 fn option_height(size: ControlSize, chrome: SelectionChrome) -> f32 {
     match chrome {
         SelectionChrome::Segmented => (size.height() - 6.0).max(0.0),
-        SelectionChrome::Tabs => size.height(),
+        SelectionChrome::Tabs | SelectionChrome::Radio => size.height(),
     }
 }
 
 fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool) -> NodeStyle {
-    let padding = size.padding_x() + 2.0;
+    let radio = matches!(chrome, SelectionChrome::Radio);
+    let (padding_left, padding_right) = if radio {
+        (size.radio_lead(), nana_ui_core::RADIO_ROW_INSET)
+    } else {
+        let padding = size.padding_x() + 2.0;
+        (padding, padding)
+    };
     let layout = LayoutStyle {
         height: Some(LengthSpec::Px(option_height(size, chrome))),
-        padding_left: Some(LengthSpec::Px(padding)),
-        padding_right: Some(LengthSpec::Px(padding)),
+        padding_left: Some(LengthSpec::Px(padding_left)),
+        padding_right: Some(LengthSpec::Px(padding_right)),
         font_size: Some(size.text_size()),
-        font_weight: Some(500),
+        font_weight: Some(if radio { 400 } else { 500 }),
         line_height: Some(LineHeightSpec::Absolute(size.line_height())),
         white_space_nowrap: true,
-        align_self: Some(AlignSpec::Center),
-        justify_content: JustifySpec::Center,
+        align_self: Some(if radio {
+            AlignSpec::Stretch
+        } else {
+            AlignSpec::Center
+        }),
+        justify_content: if radio {
+            JustifySpec::Start
+        } else {
+            JustifySpec::Center
+        },
         border_radius: Some(match chrome {
             SelectionChrome::Segmented => 7.0,
             SelectionChrome::Tabs => 6.0,
+            SelectionChrome::Radio => 6.0,
         }),
         flex_grow: fill.then_some(1.0),
         flex_shrink: fill.then_some(1.0),
         width: fill.then_some(LengthSpec::Fill),
         ..LayoutStyle::default()
     };
+    // A radio row keeps its label at rest colour and never fills: selection
+    // reads from the ring, not from a highlighted row.
+    let selected = if radio {
+        SemanticPaint::default()
+    } else {
+        SemanticPaint {
+            foreground: Some(SemanticColorRole::Text),
+            background: Some(SemanticColorRole::Selected),
+            ..SemanticPaint::default()
+        }
+    };
     NodeStyle {
         layout: Arc::new(layout),
-        foreground: Some(SemanticColorRole::Muted),
+        foreground: Some(if radio {
+            SemanticColorRole::Text
+        } else {
+            SemanticColorRole::Muted
+        }),
         interaction: InteractionStyle {
-            selected: SemanticPaint {
-                foreground: Some(SemanticColorRole::Text),
-                background: Some(SemanticColorRole::Selected),
-                ..SemanticPaint::default()
-            },
+            selected,
             selected_hovered: SemanticPaint {
-                background: Some(SemanticColorRole::SelectedHover),
+                background: Some(if radio {
+                    SemanticColorRole::Hover
+                } else {
+                    SemanticColorRole::SelectedHover
+                }),
                 ..SemanticPaint::default()
             },
             selected_pressed: SemanticPaint {
-                background: Some(SemanticColorRole::SelectedPressed),
+                background: Some(if radio {
+                    SemanticColorRole::Active
+                } else {
+                    SemanticColorRole::SelectedPressed
+                }),
                 ..SemanticPaint::default()
             },
             hovered: SemanticPaint {
@@ -370,16 +449,26 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
                 background: Some(SemanticColorRole::Active),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(SemanticColorRole::Accent),
-                ..SemanticPaint::default()
+            // Radio focus reads from the outset ring in geometry, so the row
+            // border stays clear of the indicator colour.
+            focused: if radio {
+                SemanticPaint::default()
+            } else {
+                SemanticPaint {
+                    border: Some(SemanticColorRole::Accent),
+                    ..SemanticPaint::default()
+                }
             },
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()
             },
         },
-        text_horizontal_alignment: TextHorizontalAlignment::Center,
+        text_horizontal_alignment: if radio {
+            TextHorizontalAlignment::Start
+        } else {
+            TextHorizontalAlignment::Center
+        },
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
     }
@@ -391,6 +480,7 @@ impl ComponentView for SegmentedOption {
             tag: match self.chrome {
                 SelectionChrome::Segmented => "segmented-option".into(),
                 SelectionChrome::Tabs => "tab".into(),
+                SelectionChrome::Radio => "radio".into(),
             },
         }
     }
@@ -409,7 +499,8 @@ impl ComponentView for SegmentedOption {
             selected: self.selected,
             disabled: self.disabled,
             size: self.size,
-            show_focus_ring: matches!(self.chrome, SelectionChrome::Segmented),
+            show_focus_ring: !matches!(self.chrome, SelectionChrome::Tabs),
+            indicator: matches!(self.chrome, SelectionChrome::Radio),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -417,14 +508,16 @@ impl ComponentView for SegmentedOption {
         let mut effective_style = self.style.clone();
         let radius = match self.chrome {
             SelectionChrome::Segmented => (world.theme_metrics().radius_md - 3.0).max(0.0),
-            SelectionChrome::Tabs => world.theme_metrics().radius_sm,
+            SelectionChrome::Tabs | SelectionChrome::Radio => world.theme_metrics().radius_sm,
         };
         Arc::make_mut(&mut effective_style.layout).border_radius = Some(radius);
         if self.icon.is_some() {
             let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.padding_left = Some(LengthSpec::Px(
-                self.size.padding_x() + 2.0 + self.size.icon_size() + 5.0,
-            ));
+            let lead = match self.chrome {
+                SelectionChrome::Radio => self.size.radio_lead(),
+                _ => self.size.padding_x() + 2.0,
+            };
+            layout.padding_left = Some(LengthSpec::Px(lead + self.size.icon_size() + 5.0));
         }
         project_common(
             id,
@@ -437,13 +530,13 @@ impl ComponentView for SegmentedOption {
             },
             AccessibilityState {
                 role: match self.chrome {
-                    SelectionChrome::Segmented => AccessibilityRole::Radio,
+                    SelectionChrome::Segmented | SelectionChrome::Radio => AccessibilityRole::Radio,
                     SelectionChrome::Tabs => AccessibilityRole::Tab,
                 },
                 label: Some(Arc::clone(&self.label)),
                 disabled: self.disabled,
                 selected: matches!(self.chrome, SelectionChrome::Tabs).then_some(self.selected),
-                checked: matches!(self.chrome, SelectionChrome::Segmented).then_some(self.selected),
+                checked: (!matches!(self.chrome, SelectionChrome::Tabs)).then_some(self.selected),
                 ..AccessibilityState::default()
             },
         );
@@ -570,5 +663,137 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn radio_chrome_stacks_vertically_and_leaves_room_for_the_ring() {
+        let group = SegmentedControl::radio_group();
+        assert_eq!(group.chrome_value(), SelectionChrome::Radio);
+        assert_eq!(group.orientation, SelectionOrientation::Vertical);
+        assert_eq!(group.style.layout.direction, Some(FlexDirection::Column));
+        assert_eq!(group.style.layout.height, Some(LengthSpec::Shrink));
+        assert_eq!(group.style.layout.border_width, Some(0.0));
+        assert!(group.style.background.is_none());
+
+        for size in [ControlSize::Small, ControlSize::Medium, ControlSize::Large] {
+            let option =
+                SegmentedOption::new("Manual").surface(size, SelectionChrome::Radio, false);
+            assert_eq!(
+                option.style.layout.padding_left,
+                Some(LengthSpec::Px(size.radio_lead()))
+            );
+            assert_eq!(
+                option.style.layout.height,
+                Some(LengthSpec::Px(size.height()))
+            );
+            assert_eq!(option.style.layout.justify_content, JustifySpec::Start);
+            // Selection reads from the ring, so the row is never filled.
+            assert!(option.style.interaction.selected.background.is_none());
+            assert_eq!(
+                option.node_kind(),
+                NodeKind::Element {
+                    tag: "radio".into()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_radio_group_selects_one_option_and_publishes_ring_geometry() {
+        let mut context = crate::AppContext::new();
+        let document = crate::DocumentId::new(1).unwrap();
+        let group = context
+            .create_component(document, SegmentedControl::radio_group().label("Mode"))
+            .unwrap();
+        let manual = context
+            .create_component(document, SegmentedOption::new("Manual"))
+            .unwrap();
+        let automatic = context
+            .create_component(document, SegmentedOption::new("Automatic"))
+            .unwrap();
+        context.append_child(group, manual).unwrap();
+        context.append_child(group, automatic).unwrap();
+        assert!(
+            context
+                .set_segmented_options(group, vec![manual, automatic], Some(automatic))
+                .unwrap()
+        );
+
+        // Both options inherit radio chrome from the group, not from their own
+        // construction, so the group stays the single source of surface truth.
+        for option in [manual, automatic] {
+            assert!(matches!(
+                context.world().standard_visual(option.stable_id()),
+                Some(StandardVisual::SelectionOption {
+                    indicator: true,
+                    show_focus_ring: true,
+                    ..
+                })
+            ));
+            assert_eq!(
+                context
+                    .world()
+                    .accessibility(option.stable_id())
+                    .map(|state| state.role),
+                Some(AccessibilityRole::Radio)
+            );
+        }
+        assert_eq!(
+            context
+                .world()
+                .accessibility(manual.stable_id())
+                .and_then(|state| state.checked),
+            Some(false)
+        );
+        assert_eq!(
+            context
+                .world()
+                .accessibility(automatic.stable_id())
+                .and_then(|state| state.checked),
+            Some(true)
+        );
+        assert_eq!(
+            context
+                .world()
+                .accessibility(group.stable_id())
+                .and_then(|state| state.orientation),
+            Some(SelectionOrientation::Vertical)
+        );
+
+        let mut mutations = crate::MutationQueue::new();
+        for (index, option) in [manual, automatic].iter().enumerate() {
+            mutations.write_layout(
+                option.stable_id(),
+                crate::LayoutBox {
+                    x: 0.0,
+                    y: index as f32 * 30.0,
+                    width: 160.0,
+                    height: 28.0,
+                },
+            );
+        }
+        context.commit_mutations(mutations).unwrap();
+
+        let ring = |option: crate::Entity<SegmentedOption>| match context
+            .world()
+            .component_geometry(option.stable_id())
+        {
+            Some(crate::ComponentGeometry::SelectionOption { indicator, .. }) => indicator,
+            other => panic!("expected selection option geometry, got {other:?}"),
+        };
+        let unselected = ring(manual).expect("radio ring");
+        let selected = ring(automatic).expect("radio ring");
+        assert!(unselected.dot.is_none());
+        let (dot, _) = selected.dot.expect("selected radio dot");
+        // The dot sits concentric inside the ring.
+        assert!(
+            (dot.x + dot.width / 2.0 - (selected.ring.x + selected.ring.width / 2.0)).abs() < 0.001
+        );
+        assert!(dot.width < selected.ring.width);
+        assert_eq!(
+            unselected.ring.x,
+            nana_ui_core::RADIO_ROW_INSET,
+            "ring hugs the row inset"
+        );
     }
 }
