@@ -7,7 +7,8 @@
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-/// Backend-neutral 24×24 stroke geometry. Painters tessellate these shapes.
+/// Backend-neutral 24×24 stroke geometry. Tests and hit-testing use these shapes;
+/// painters rasterize [`IconData::svg`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconGeometry {
     pub shapes: &'static [IconShape],
@@ -48,6 +49,7 @@ pub enum IconPathCommand {
 pub struct IconData {
     pub name: &'static str,
     pub shapes: &'static [IconShape],
+    pub svg: &'static str,
 }
 
 /// Semantic icon identity. Compare by geometry pointer, not by display name.
@@ -67,6 +69,11 @@ impl Icon {
         IconGeometry {
             shapes: self.0.shapes,
         }
+    }
+
+    /// Lucide 24×24 source. Painters rasterize this with `currentColor`.
+    pub fn svg(self) -> &'static str {
+        self.0.svg
     }
 
     pub fn as_ptr(self) -> *const IconData {
@@ -242,6 +249,14 @@ mod tests {
             Icon::Workspace,
         ] {
             assert!(!icon.shapes().is_empty(), "{icon:?}");
+            assert!(
+                icon.svg().contains("viewBox=\"0 0 24 24\""),
+                "{icon:?} svg missing viewBox"
+            );
+            assert!(
+                icon.svg().contains("currentColor"),
+                "{icon:?} svg missing currentColor stroke"
+            );
         }
     }
 }

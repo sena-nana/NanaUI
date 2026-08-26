@@ -9,6 +9,7 @@ mod clip;
 mod color;
 mod dest;
 mod host_texture;
+mod icon;
 mod mesh;
 mod quad;
 mod text;
@@ -45,6 +46,7 @@ use clip::{
 };
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
+use icon::{IconPipeline, PreparedIcon};
 use mesh::{MeshPipeline, MeshRange};
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
@@ -70,6 +72,7 @@ pub struct SceneWgpuPainter {
     format: wgpu::TextureFormat,
     quads: QuadPipeline,
     meshes: MeshPipeline,
+    icons: IconPipeline,
     text: TextPipeline,
     host_textures: HostTexturePipeline,
     dest: Option<DestTarget>,
@@ -111,6 +114,10 @@ enum DrawCommand {
         prepared: PreparedText,
         scissor: PhysicalRect,
     },
+    Icon {
+        prepared: PreparedIcon,
+        scissor: PhysicalRect,
+    },
     HostTexture(PreparedHostTexture),
     Custom {
         node: SceneGpuNode,
@@ -133,6 +140,7 @@ impl SceneWgpuPainter {
             format,
             quads: QuadPipeline::new(device, format),
             meshes: MeshPipeline::new(device, format),
+            icons: IconPipeline::new(device, format),
             text: TextPipeline::new(device, queue, format),
             host_textures: HostTexturePipeline::new(device, queue, format),
             dest: None,
@@ -292,6 +300,7 @@ impl SceneWgpuPainter {
         let batch_started = Instant::now();
         self.quads.begin_frame();
         self.meshes.begin_frame();
+        self.icons.begin_frame(&self.queue, dest_physical);
         self.text.begin_frame(&self.queue, dest_physical);
 
         let mut commands = Vec::new();
@@ -419,15 +428,18 @@ impl SceneWgpuPainter {
                     }
                 }
                 ScenePrimitiveKind::Icon { icon, color } => {
-                    if let Some(range) = self.meshes.push_icon(
+                    if let Some(prepared) = self.icons.prepare(
+                        &self.device,
+                        &self.queue,
                         bounds,
                         affine,
+                        scale,
                         *icon,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
                         frag_clip,
                     ) {
-                        commands.push(DrawCommand::Mesh { range, scissor });
+                        commands.push(DrawCommand::Icon { prepared, scissor });
                     }
                 }
                 ScenePrimitiveKind::Spinner { phase, color } => {
@@ -580,6 +592,7 @@ impl SceneWgpuPainter {
             scale,
             Some(&gpu_work),
         );
+        self.icons.upload(&self.device, &self.queue);
         let gpu_upload = upload_started.elapsed();
 
         let encode_started = Instant::now();
@@ -625,6 +638,7 @@ impl SceneWgpuPainter {
                 &EncodeOrdered {
                     quads: &self.quads,
                     meshes: &self.meshes,
+                    icons: &self.icons,
                     text: &self.text,
                     host_textures: &self.host_textures,
                     device: &self.device,
@@ -657,6 +671,7 @@ impl SceneWgpuPainter {
                             .draw(&mut pass, range, *scissor, sample_count, Some(&gpu_work));
                     }
                     DrawCommand::Text { .. }
+                    | DrawCommand::Icon { .. }
                     | DrawCommand::HostTexture(_)
                     | DrawCommand::Custom { .. }
                     | DrawCommand::PushGroup { .. }
@@ -664,16 +679,22 @@ impl SceneWgpuPainter {
                 }
             }
             drop(pass);
-            if commands
-                .iter()
-                .any(|command| matches!(command, DrawCommand::Text { .. }))
-            {
+            if commands.iter().any(|command| {
+                matches!(command, DrawCommand::Text { .. } | DrawCommand::Icon { .. })
+            }) {
                 let mut pass = dest.begin_color_pass(encoder, wgpu::LoadOp::Load, &mut dest_passes);
                 restore_dest_viewport(&mut pass, dest_physical);
                 for command in &commands {
-                    if let DrawCommand::Text { prepared, scissor } = command {
-                        self.text
-                            .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
+                    match command {
+                        DrawCommand::Text { prepared, scissor } => {
+                            self.text
+                                .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
+                        }
+                        DrawCommand::Icon { prepared, scissor } => {
+                            self.icons
+                                .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
+                        }
+                        _ => {}
                     }
                 }
                 drop(pass);
@@ -833,6 +854,7 @@ fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect)
 struct EncodeOrdered<'a> {
     quads: &'a QuadPipeline,
     meshes: &'a MeshPipeline,
+    icons: &'a IconPipeline,
     text: &'a TextPipeline,
     host_textures: &'a HostTexturePipeline,
     device: &'a wgpu::Device,
@@ -929,6 +951,14 @@ fn encode_ordered(
                         }
                         DrawCommand::Text { prepared, scissor } => {
                             pipelines.text.draw(
+                                &mut pass,
+                                prepared,
+                                *scissor,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::Icon { prepared, scissor } => {
+                            pipelines.icons.draw(
                                 &mut pass,
                                 prepared,
                                 *scissor,
