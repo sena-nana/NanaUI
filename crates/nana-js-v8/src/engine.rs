@@ -370,7 +370,7 @@ impl V8Engine {
             return Err(JsEngineError::new("V8 snapshot blob is empty"));
         }
         // Copy out before releasing the gate — StartupData may alias V8-owned memory.
-        let bytes = blob.as_ref().to_vec();
+        let bytes = blob.to_vec();
         drop(blob);
         drop(live);
         Ok(RuntimeArtifact::from_v8_snapshot(name, bytes))

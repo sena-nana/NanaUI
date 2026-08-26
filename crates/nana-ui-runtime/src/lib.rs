@@ -78,11 +78,12 @@ pub use components::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
     ComputedStyle, CustomRenderNode, EventListeners, EventRoute, ExtractedNode, ExtractedTextSpan,
     ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput, MeasureTextShaper,
-    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, OverlayHostState,
-    PointerCaptureChange, ScrollMetrics, ScrollOffset, SelectMenuGeometry, SelectOptionData,
-    SelectOptionGeometry, SemanticPaint, StandardVisual, TextContent, TextHorizontalAlignment,
-    TextInputPresentation, TextInputState, TextMetrics, TextSelection, TextShapeConstraints,
-    TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
+    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
+    PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset, ScrollbarBar,
+    SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
+    TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics,
+    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
+    TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -105,7 +106,7 @@ pub use framework::{
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
-    GpuViewPalette, RenderSlot, pack_gpu_revision, unpack_gpu_revision,
+    GpuViewPalette, RenderSlot, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
 };
 pub use graph_canvas::{
     GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
@@ -194,11 +195,12 @@ pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, Thumb
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, ComponentView, Dialog, HostedTextarea, IconButton,
-    IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, OverlayChanged, OverlayHost,
-    RangeAdjustment, RangeChanged, RangeDragState, RangeField, ScrollAxes, ScrollChanged,
-    ScrollView, SliderError, Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea,
-    TextChanged, TextInput, ToggleChanged, Tooltip,
+    Activate, Button, Card, Checkbox, ComponentView, Dialog, Divider, HostedTextarea, IconButton,
+    IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged, NumberInput,
+    OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged, RangeDragState, RangeField,
+    ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState, SecondaryPress, SliderError, Switch,
+    Table, TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput,
+    ToggleChanged, Tooltip,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

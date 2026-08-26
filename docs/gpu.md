@@ -71,6 +71,8 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 
 `GpuViewMode::Inline` 复用当前 dest pass；`Standalone` 在同一 encoder / 目标上另开 pass。Renderer 不得 `request_device`，也不得 submit 宿主正在用的 encoder。
 
+节点上的 `palette` 和 `seed` 走 `CustomRenderNode::params`，槽位见 `gpu_view_params`。Runtime 只搬运这串数，语义由 renderer 键定义；换 renderer 就换一套自己的槽位约定。
+
 ## 不要做的
 
 - 为界面另开一套 Device / Queue

@@ -84,6 +84,7 @@ fn primary_window_settings(chrome_probe: bool, hybrid: bool) -> RuntimeWindowSet
     .system_caption(!chrome_probe)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_runtime(
     gpu: nana_ui::HostedGpuResources,
     hybrid: bool,

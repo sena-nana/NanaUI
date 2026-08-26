@@ -546,6 +546,7 @@ impl GpuTexturePrimitive {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &self,
         pipeline: &mut GpuTexturePipeline,

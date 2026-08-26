@@ -2,11 +2,14 @@
 //!
 //! Applications own [`GraphModel`], viewport, selection, and persistence.
 //! This component owns transient pointer state and emits [`GraphCanvasEvent`].
-//! Default paint is fill layout and accessibility only. [`CustomRenderNode`]
-//! (`renderer = "graph-canvas"`) is not projected here because the default
-//! Scene painter rejects unregistered custom renderers. Hosts that register a
-//! Scene GPU painter for [`GRAPH_CANVAS_RENDERER`] may attach
-//! [`GraphCanvas::custom_render`]. No host Device or Queue is created here.
+//! Default paint is [`StandardVisual::GraphCanvas`]: grid lines, node frames,
+//! ports, and sampled edge curves. Node *contents* are ordinary child nodes the
+//! application mounts; this component does not render them.
+//!
+//! [`CustomRenderNode`] (`renderer = "graph-canvas"`) is not projected here
+//! because the default Scene painter rejects unregistered custom renderers.
+//! Hosts that register a Scene GPU painter for [`GRAPH_CANVAS_RENDERER`] may
+//! attach [`GraphCanvas::custom_render`]. No host Device or Queue is created here.
 
 use std::sync::Arc;
 

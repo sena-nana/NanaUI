@@ -5,7 +5,8 @@ use accesskit::{
     TextSelection as AccessKitTextSelection, Toggled, Tree, TreeId, TreeUpdate,
 };
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityUpdate, StableNodeId,
+    AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
+    SelectionOrientation, StableNodeId,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -579,15 +580,20 @@ fn project_node(
     if node.selected == Some(true) {
         projected.set_selected(true);
     }
-    if let Some(checked) = node.checked {
+    if node.mixed {
+        projected.set_toggled(Toggled::Mixed);
+    } else if let Some(checked) = node.checked {
         projected.set_toggled(if checked {
             Toggled::True
         } else {
             Toggled::False
         });
     }
-    if node.role == AccessibilityRole::RadioGroup {
-        projected.set_orientation(Orientation::Horizontal);
+    if let Some(orientation) = node.orientation {
+        projected.set_orientation(match orientation {
+            SelectionOrientation::Horizontal => Orientation::Horizontal,
+            SelectionOrientation::Vertical => Orientation::Vertical,
+        });
     }
     if interactive && !node.disabled && supports_click(node.role) {
         projected.add_action(Action::Click);
@@ -714,6 +720,7 @@ const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
         AccessibilityRole::Tab => Role::Tab,
         AccessibilityRole::RadioGroup => Role::RadioGroup,
         AccessibilityRole::Radio => Role::RadioButton,
+        AccessibilityRole::Separator => Role::Splitter,
         AccessibilityRole::Dialog => Role::Dialog,
         AccessibilityRole::AlertDialog => Role::AlertDialog,
         AccessibilityRole::Menu => Role::Menu,
@@ -745,6 +752,8 @@ mod tests {
             value: None,
             disabled: false,
             checked: None,
+            mixed: false,
+            orientation: None,
             selected: None,
             multiline: false,
             editable: false,
@@ -1165,6 +1174,7 @@ mod tests {
 
         let mut group = node(8, Some(1), &[9]);
         group.role = AccessibilityRole::RadioGroup;
+        group.orientation = Some(SelectionOrientation::Horizontal);
         let (_, group) = project_node(&group, None, true, 1.0)
             .into_iter()
             .next()

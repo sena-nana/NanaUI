@@ -259,8 +259,8 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-app-shell" | "app-shell" => WidgetKind::AppShell,
         "nana-settings-page" | "settings-page" => WidgetKind::SettingsPage,
         "nana-select" => WidgetKind::Select,
-        "nana-dropdown" | "ui-dropdown" | "dropdown" => WidgetKind::Select,
-        "nana-search" | "nana-search-dropdown" | "search-dropdown" => WidgetKind::Select,
+        "nana-dropdown" | "ui-dropdown" | "dropdown" => WidgetKind::Dropdown,
+        "nana-search" | "nana-search-dropdown" | "search-dropdown" => WidgetKind::SearchDropdown,
         _ if t == "lucide" || t.starts_with("lucide-") => WidgetKind::Icon,
         _ if t.contains("sidebar") && t.contains("row") => WidgetKind::SidebarRow,
         // Do NOT match arbitrary "*card*" substrings — that promotes layout
@@ -281,15 +281,15 @@ pub(crate) fn first_button_child_id(
 }
 
 fn is_input_like_kind(kind: WidgetKind) -> bool {
-    matches!(
-        kind,
-        WidgetKind::Input
-            | WidgetKind::Textarea
-            | WidgetKind::Select
-            | WidgetKind::Checkbox
-            | WidgetKind::Switch
-            | WidgetKind::Range
-    )
+    kind.is_choice_field()
+        || matches!(
+            kind,
+            WidgetKind::Input
+                | WidgetKind::Textarea
+                | WidgetKind::Checkbox
+                | WidgetKind::Switch
+                | WidgetKind::Range
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -936,7 +936,7 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-dropdown"), None, None),
-            Some(WidgetKind::Select)
+            Some(WidgetKind::Dropdown)
         );
         assert_eq!(
             resolve_kind_from_hints("div", None, Some("listbox"), None),
@@ -1008,7 +1008,7 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-search", None, None, None),
-            Some(WidgetKind::Select)
+            Some(WidgetKind::SearchDropdown)
         );
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-interactive-card"), None, None),

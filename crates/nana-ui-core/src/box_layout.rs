@@ -865,6 +865,11 @@ impl LengthAtom {
         self.resolve_with_fonts(percent_base, viewport, FontSizeContext::default())
     }
 
+    /// `true` when resolution reads the viewport.
+    pub fn depends_on_viewport(self) -> bool {
+        matches!(self, Self::Viewport { .. } | Self::CalcViewport { .. })
+    }
+
     pub fn resolve_with_fonts(
         self,
         percent_base: Option<f32>,
@@ -950,6 +955,21 @@ impl LengthSpec {
     /// 解析为逻辑像素；无 viewport 时视口单位返回 `None`。
     pub fn resolve_px(self, percent_base: Option<f32>) -> Option<f32> {
         self.resolve_with(percent_base, None)
+    }
+
+    /// `true` when resolution reads the viewport, so this length moves on a
+    /// viewport change even when its containing block does not.
+    pub fn depends_on_viewport(self) -> bool {
+        match self {
+            Self::Viewport { .. } | Self::CalcViewportOffset { .. } => true,
+            Self::Min2(a, b) | Self::Max2(a, b) => {
+                a.depends_on_viewport() || b.depends_on_viewport()
+            }
+            Self::Clamp3(a, b, c) => {
+                a.depends_on_viewport() || b.depends_on_viewport() || c.depends_on_viewport()
+            }
+            _ => false,
+        }
     }
 
     /// 解析为逻辑像素；`Fill`/`Shrink`/`Auto` 返回 `None`。
@@ -1808,6 +1828,46 @@ impl LayoutStyle {
     /// Either axis is `overflow: hidden` / `clip` — paint must clip children.
     pub fn clips_overflow(&self) -> bool {
         self.overflow_x.clips() || self.overflow_y.clips()
+    }
+
+    /// This box resolves against the viewport, not only against its containing
+    /// block: `position: fixed`, or any `vw` / `vh` / `vmin` / `vmax` length.
+    ///
+    /// A viewport change moves such a box even when its containing block keeps
+    /// the exact same size, so incremental relayout cannot reuse it.
+    pub fn depends_on_viewport(&self) -> bool {
+        if self.position == PositionSpec::Fixed {
+            return true;
+        }
+        [
+            self.gap,
+            self.row_gap,
+            self.column_gap,
+            self.padding,
+            self.padding_top,
+            self.padding_right,
+            self.padding_bottom,
+            self.padding_left,
+            self.margin,
+            self.margin_top,
+            self.margin_right,
+            self.margin_bottom,
+            self.margin_left,
+            self.offset_top,
+            self.offset_right,
+            self.offset_bottom,
+            self.offset_left,
+            self.width,
+            self.height,
+            self.min_width,
+            self.max_width,
+            self.min_height,
+            self.max_height,
+            self.flex_basis,
+        ]
+        .into_iter()
+        .flatten()
+        .any(LengthSpec::depends_on_viewport)
     }
 
     /// `hidden` or `display: none` — skip layout flow and paint.

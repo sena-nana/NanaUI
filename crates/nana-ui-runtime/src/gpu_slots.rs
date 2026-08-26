@@ -70,6 +70,21 @@ impl Default for GpuViewPalette {
     }
 }
 
+/// Layout of [`CustomRenderNode::params`] for [`GPU_VIEW_RENDERER`].
+///
+/// Runtime writes these slots and never reads them back; the `"gpu-view"`
+/// painter is the only consumer. Any other renderer defines its own layout.
+pub mod gpu_view_params {
+    /// `background` RGBA occupies `0..4`.
+    pub const BACKGROUND: usize = 0;
+    /// `accent` RGBA occupies `4..8`.
+    pub const ACCENT: usize = 4;
+    /// Host-painter seed.
+    pub const SEED: usize = 8;
+    /// Total slot count written by [`super::GpuView::custom_render`].
+    pub const LEN: usize = 9;
+}
+
 /// A reusable GPU content slot identified by a stable host `slot_id`.
 ///
 /// Layout, interaction, and [`Self::custom_render`] are projected. Paint
@@ -141,13 +156,23 @@ impl GpuView {
     /// renderer for [`GPU_VIEW_RENDERER`]. [`ComponentView::project`] attaches
     /// this node, so the Scene painter fails until that renderer is registered.
     ///
-    /// `resource` is the decimal [`Self::slot_id`].
+    /// `resource` is the decimal [`Self::slot_id`]. [`Self::palette`] and
+    /// [`Self::seed`] travel in `params` under [`gpu_view_params`], and
+    /// [`GpuViewMode::Standalone`] becomes `dedicated_pass`.
     pub fn custom_render(&self) -> CustomRenderNode {
         CustomRenderNode::new(
             GPU_VIEW_RENDERER,
             resource_key(self.slot_id),
             self.revision(),
         )
+        .with_params(
+            self.palette
+                .background
+                .into_iter()
+                .chain(self.palette.accent)
+                .chain([self.seed]),
+        )
+        .with_dedicated_pass(self.mode == GpuViewMode::Standalone)
     }
 
     fn effective_style(&self) -> NodeStyle {
@@ -635,6 +660,81 @@ mod tests {
         assert_eq!(node.resource.as_ref(), "9");
         assert_eq!(node.revision, pack_gpu_revision(5, 1));
         assert_eq!(unpack_gpu_revision(node.revision), (5, 1));
+    }
+
+    #[test]
+    fn palette_and_seed_reach_the_custom_render_params() {
+        let view = GpuView::new(3)
+            .palette(GpuViewPalette {
+                background: [0.1, 0.2, 0.3, 1.0],
+                accent: [0.9, 0.8, 0.7, 0.6],
+            })
+            .seed(0.34);
+        let node = view.custom_render();
+        let params = node.params.as_ref().expect("gpu-view encodes params");
+        assert_eq!(params.len(), gpu_view_params::LEN);
+        assert_eq!(
+            &params[gpu_view_params::BACKGROUND..gpu_view_params::BACKGROUND + 4],
+            &[0.1, 0.2, 0.3, 1.0]
+        );
+        assert_eq!(
+            &params[gpu_view_params::ACCENT..gpu_view_params::ACCENT + 4],
+            &[0.9, 0.8, 0.7, 0.6]
+        );
+        assert_eq!(node.param(gpu_view_params::SEED), Some(0.34));
+
+        // A directly assigned non-finite seed must not reach a uniform.
+        let mut unsanitized = GpuView::new(3);
+        unsanitized.seed = f32::NAN;
+        assert_eq!(
+            unsanitized.custom_render().param(gpu_view_params::SEED),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn standalone_mode_requests_a_dedicated_pass() {
+        assert!(!GpuView::new(1).custom_render().dedicated_pass);
+        assert!(
+            !GpuView::new(1)
+                .mode(GpuViewMode::Inline)
+                .custom_render()
+                .dedicated_pass
+        );
+        assert!(
+            GpuView::new(1)
+                .mode(GpuViewMode::Standalone)
+                .custom_render()
+                .dedicated_pass
+        );
+
+        let (world, id) = mount(GpuView::new(4).mode(GpuViewMode::Standalone));
+        assert!(
+            world
+                .custom_render(id)
+                .expect("projected node")
+                .dedicated_pass
+        );
+    }
+
+    #[test]
+    fn palette_changes_reproject_the_custom_render_node() {
+        let view = GpuView::new(5);
+        let (world, id) = mount(view.clone());
+        let mut idle = MutationQueue::new();
+        view.project(id, &world, &mut idle);
+        assert!(idle.is_empty(), "unchanged palette must not remutate");
+
+        let recolored = GpuView::new(5).palette(GpuViewPalette {
+            background: [1.0, 0.0, 0.0, 1.0],
+            accent: [0.0, 1.0, 0.0, 1.0],
+        });
+        let mut changed = MutationQueue::new();
+        recolored.project(id, &world, &mut changed);
+        assert!(
+            !changed.is_empty(),
+            "a palette change must reach the retained node"
+        );
     }
 
     #[test]

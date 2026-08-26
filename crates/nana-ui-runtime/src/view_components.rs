@@ -160,6 +160,8 @@ struct TextFieldProjection<'a> {
     multiline: bool,
     style: &'a NodeStyle,
     highlight: Option<&'a HighlightRequest>,
+    /// Committed numeric value and its rules, for a spinner field.
+    numeric: Option<(f64, nana_ui_core::NumberFieldSpec)>,
 }
 
 fn project_text_field(
@@ -194,6 +196,10 @@ fn project_text_field(
             invalid: field.invalid,
             multiline: field.multiline,
             editable: field.editable,
+            numeric_minimum: field.numeric.and_then(|(_, spec)| spec.minimum),
+            numeric_maximum: field.numeric.and_then(|(_, spec)| spec.maximum),
+            numeric_step: field.numeric.map(|(_, spec)| spec.effective_step()),
+            numeric_value: field.numeric.map(|(value, _)| value),
             ..AccessibilityState::default()
         },
     );
@@ -1106,6 +1112,19 @@ impl ComponentView for ListItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activate;
 
+/// Secondary (right) pointer press, delivered to the nearest handler at or
+/// above the hit node.
+///
+/// The framework opens nothing: whether a menu appears, and what is in it, is
+/// the application's call. `target` is the node actually hit, which may be a
+/// descendant of the handler's own node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SecondaryPress {
+    pub target: StableNodeId,
+    pub x: f32,
+    pub y: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChanged {
     pub value: String,
@@ -1129,6 +1148,23 @@ pub enum ScrollAxes {
     Horizontal,
     Vertical,
     Both,
+}
+
+impl ScrollAxes {
+    pub fn horizontal(self) -> bool {
+        matches!(self, Self::Horizontal | Self::Both)
+    }
+
+    pub fn vertical(self) -> bool {
+        matches!(self, Self::Vertical | Self::Both)
+    }
+
+    pub fn covers(self, axis: nana_ui_core::ScrollbarAxis) -> bool {
+        match axis {
+            nana_ui_core::ScrollbarAxis::Horizontal => self.horizontal(),
+            nana_ui_core::ScrollbarAxis::Vertical => self.vertical(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1277,6 +1313,7 @@ impl ComponentView for TextInput {
             size: self.size,
             secure: self.secure,
             invalid: self.invalid,
+            steppers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1303,9 +1340,223 @@ impl ComponentView for TextInput {
                 multiline: false,
                 style: &effective_style,
                 highlight: self.highlight.as_ref(),
+                numeric: None,
             },
         );
     }
+}
+
+/// Numeric spinner: a text field that also steps.
+///
+/// `value` is the committed authority; `state` carries the in-progress draft
+/// while the user types. Typing never rewrites `value` — the draft is parsed on
+/// commit (Enter or blur), and an unparseable draft restores the last committed
+/// value instead of inventing one. Stepping and arrow keys work on `value`
+/// directly, so a half-typed draft cannot leak into a stepped result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NumberInput {
+    pub state: TextInputState,
+    pub label: Option<Arc<str>>,
+    pub placeholder: Arc<str>,
+    pub spec: nana_ui_core::NumberFieldSpec,
+    pub size: nana_ui_core::ControlSize,
+    pub disabled: bool,
+    pub read_only: bool,
+    pub invalid: bool,
+    pub style: NodeStyle,
+    pub(crate) value: f64,
+    pub(crate) style_override: bool,
+}
+
+impl NumberInput {
+    pub fn new(value: f64) -> Self {
+        let spec = nana_ui_core::NumberFieldSpec::default();
+        let value = spec.snap(value);
+        Self {
+            state: TextInputState::new(spec.format(value)),
+            label: None,
+            placeholder: Arc::from(""),
+            spec,
+            size: nana_ui_core::ControlSize::Medium,
+            disabled: false,
+            read_only: false,
+            invalid: false,
+            style: text_field_style(false),
+            value,
+            style_override: false,
+        }
+    }
+
+    pub fn range(mut self, minimum: f64, maximum: f64) -> Self {
+        self.spec.minimum = Some(minimum);
+        self.spec.maximum = Some(maximum);
+        self.resync();
+        self
+    }
+
+    pub fn minimum(mut self, minimum: f64) -> Self {
+        self.spec.minimum = Some(minimum);
+        self.resync();
+        self
+    }
+
+    pub fn maximum(mut self, maximum: f64) -> Self {
+        self.spec.maximum = Some(maximum);
+        self.resync();
+        self
+    }
+
+    pub fn step(mut self, step: f64) -> Self {
+        self.spec.step = step;
+        self.resync();
+        self
+    }
+
+    pub fn precision(mut self, precision: u8) -> Self {
+        self.spec.precision = precision;
+        self.resync();
+        self
+    }
+
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
+        layout.padding_right = layout.padding_left;
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
+        layout.font_size = Some(size.text_size());
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self.style_override = true;
+        self
+    }
+
+    /// Last committed value.
+    pub const fn value(&self) -> f64 {
+        self.value
+    }
+
+    pub(crate) fn accepts_input(&self) -> bool {
+        !self.disabled && !self.read_only
+    }
+
+    /// Publish a value from the application. Rejects nothing: the value is
+    /// snapped and clamped into the field's own rules.
+    pub(crate) fn assign(&mut self, value: f64) -> bool {
+        let next = self.spec.snap(value);
+        if next == self.value && self.state.value == self.spec.format(next) {
+            return false;
+        }
+        self.value = next;
+        self.state.replace_value(self.spec.format(next));
+        true
+    }
+
+    /// Move by grid positions from the committed value.
+    pub(crate) fn step_value(&mut self, steps: i32) -> bool {
+        self.assign(self.spec.step_by(self.value, steps))
+    }
+
+    /// Parse the draft. An unparseable draft restores the committed value.
+    pub(crate) fn commit_draft(&mut self) -> bool {
+        match self.spec.parse(&self.state.value) {
+            Some(parsed) => self.assign(parsed),
+            None => {
+                let restored = self.spec.format(self.value);
+                if self.state.value == restored {
+                    return false;
+                }
+                self.state.replace_value(restored);
+                true
+            }
+        }
+    }
+
+    fn resync(&mut self) {
+        self.value = self.spec.snap(self.value);
+        self.state.replace_value(self.spec.format(self.value));
+    }
+}
+
+impl ComponentView for NumberInput {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "number-input".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = StandardVisual::TextInput {
+            placeholder: Arc::clone(&self.placeholder),
+            size: self.size,
+            secure: false,
+            invalid: self.invalid,
+            steppers: true,
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut effective_style = self.style.clone();
+        if self.invalid && !self.style_override {
+            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.hovered.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+            effective_style.interaction.focused.border =
+                Some(nana_ui_core::SemanticColorRole::Danger);
+        }
+        project_text_field(
+            id,
+            world,
+            mutations,
+            TextFieldProjection {
+                state: &self.state,
+                label: &self.label,
+                disabled: self.disabled,
+                busy: false,
+                editable: self.accepts_input(),
+                invalid: self.invalid,
+                multiline: false,
+                style: &effective_style,
+                highlight: None,
+                numeric: Some((self.value, self.spec)),
+            },
+        );
+    }
+}
+
+/// Reported after the committed numeric value changes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberChanged {
+    pub value: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1405,6 +1656,7 @@ impl ComponentView for TextArea {
             size: nana_ui_core::ControlSize::Medium,
             secure: false,
             invalid: self.invalid,
+            steppers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1434,6 +1686,7 @@ impl ComponentView for TextArea {
                 multiline: true,
                 style: &effective_style,
                 highlight: self.highlight.as_ref(),
+                numeric: None,
             },
         );
         // Clear composition while this node is still focused, then release focus.
@@ -1784,11 +2037,13 @@ fn tooltip_surface_style(max_width: f32) -> NodeStyle {
 }
 
 fn checkbox_style() -> NodeStyle {
+    checkbox_style_for(nana_ui_core::ControlSize::Medium)
+}
+
+fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            min_height: Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::ControlSize::Medium.height(),
-            )),
+            min_height: Some(nana_ui_core::LengthSpec::Px(size.height())),
             ..nana_ui_core::LayoutStyle::default()
         }),
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
@@ -1870,6 +2125,10 @@ fn switch_style() -> NodeStyle {
 pub struct Checkbox {
     pub label: String,
     pub checked: bool,
+    /// Mixed state, for a parent checkbox over partially checked children.
+    /// Wins over `checked` when painting and in accessibility.
+    pub indeterminate: bool,
+    pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
     pub invalid: bool,
     pub style: NodeStyle,
@@ -1880,10 +2139,23 @@ impl Checkbox {
         Self {
             label: label.into(),
             checked,
+            indeterminate: false,
+            size: nana_ui_core::ControlSize::Medium,
             disabled: false,
             invalid: false,
             style: checkbox_style(),
         }
+    }
+
+    pub fn indeterminate(mut self, indeterminate: bool) -> Self {
+        self.indeterminate = indeterminate;
+        self
+    }
+
+    pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
+        self.size = size;
+        self.style = checkbox_style_for(size);
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -1920,6 +2192,8 @@ impl ComponentView for Checkbox {
         }
         let visual = StandardVisual::Checkbox {
             checked: self.checked,
+            indeterminate: self.indeterminate,
+            size: self.size,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1954,7 +2228,134 @@ impl ComponentView for Checkbox {
                 label: Some(Arc::from(self.label.as_str())),
                 disabled: self.disabled,
                 checked: Some(self.checked),
+                mixed: self.indeterminate,
                 invalid: self.invalid,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+/// Hairline rule between sibling content.
+///
+/// A divider carries no label and no interaction: it is one themed line that
+/// stretches along the cross axis of its parent. Grouping headings stay
+/// ordinary `Text` siblings, so a section title never has to be a divider prop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Divider {
+    pub orientation: crate::SelectionOrientation,
+    /// Line thickness in logical pixels.
+    pub thickness: f32,
+    /// Inset applied at both ends along the divider's own direction.
+    pub inset: f32,
+    pub style: NodeStyle,
+}
+
+impl Divider {
+    /// Horizontal rule: stretches across its parent's width.
+    pub fn horizontal() -> Self {
+        Self::new(crate::SelectionOrientation::Horizontal)
+    }
+
+    /// Vertical rule: stretches down its parent's height.
+    pub fn vertical() -> Self {
+        Self::new(crate::SelectionOrientation::Vertical)
+    }
+
+    fn new(orientation: crate::SelectionOrientation) -> Self {
+        let mut divider = Self {
+            orientation,
+            thickness: 1.0,
+            inset: 0.0,
+            style: NodeStyle::default(),
+        };
+        divider.style = divider.resolved_style();
+        divider
+    }
+
+    pub fn thickness(mut self, thickness: f32) -> Self {
+        self.thickness = thickness;
+        self.style = self.resolved_style();
+        self
+    }
+
+    pub fn inset(mut self, inset: f32) -> Self {
+        self.inset = inset;
+        self.style = self.resolved_style();
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    fn resolved_style(&self) -> NodeStyle {
+        let thickness = if self.thickness.is_finite() && self.thickness > 0.0 {
+            self.thickness
+        } else {
+            1.0
+        };
+        let inset = if self.inset.is_finite() && self.inset > 0.0 {
+            self.inset
+        } else {
+            0.0
+        };
+        let mut style = NodeStyle {
+            background: Some(nana_ui_core::SemanticColorRole::BorderSoft),
+            ..NodeStyle::default()
+        };
+        let layout = Arc::new(match self.orientation {
+            crate::SelectionOrientation::Horizontal => nana_ui_core::LayoutStyle {
+                width: Some(nana_ui_core::LengthSpec::Fill),
+                height: Some(nana_ui_core::LengthSpec::Px(thickness)),
+                min_height: Some(nana_ui_core::LengthSpec::Px(thickness)),
+                flex_shrink: Some(0.0),
+                margin_left: Some(nana_ui_core::LengthSpec::Px(inset)),
+                margin_right: Some(nana_ui_core::LengthSpec::Px(inset)),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+            crate::SelectionOrientation::Vertical => nana_ui_core::LayoutStyle {
+                width: Some(nana_ui_core::LengthSpec::Px(thickness)),
+                min_width: Some(nana_ui_core::LengthSpec::Px(thickness)),
+                height: Some(nana_ui_core::LengthSpec::Fill),
+                flex_shrink: Some(0.0),
+                margin_top: Some(nana_ui_core::LengthSpec::Px(inset)),
+                margin_bottom: Some(nana_ui_core::LengthSpec::Px(inset)),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+        });
+        style.layout = layout;
+        style
+    }
+}
+
+impl Default for Divider {
+    fn default() -> Self {
+        Self::horizontal()
+    }
+}
+
+impl ComponentView for Divider {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "divider".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Separator,
+                orientation: Some(self.orientation),
                 ..AccessibilityState::default()
             },
         );
@@ -2274,7 +2675,22 @@ impl ComponentView for RangeField {
 pub struct ScrollView {
     pub axes: ScrollAxes,
     pub label: Option<Arc<str>>,
+    pub scrollbars: nana_ui_core::ScrollbarVisibility,
+    /// Pointer is inside the container, so auto-hiding bars show.
+    pub hovered: bool,
+    pub dragging: Option<ScrollbarDragState>,
     pub style: NodeStyle,
+}
+
+/// Transient thumb drag. The scroll offset stays authoritative in the world;
+/// only the grab anchor lives here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarDragState {
+    pub pointer_id: u64,
+    pub axis: nana_ui_core::ScrollbarAxis,
+    /// Distance from the thumb's leading edge to the grab point.
+    pub grab_offset: f32,
+    pub initial_offset: ScrollOffset,
 }
 
 impl ScrollView {
@@ -2282,6 +2698,9 @@ impl ScrollView {
         Self {
             axes,
             label: None,
+            scrollbars: nana_ui_core::ScrollbarVisibility::default(),
+            hovered: false,
+            dragging: None,
             style: NodeStyle::default(),
         }
     }
@@ -2291,9 +2710,24 @@ impl ScrollView {
         self
     }
 
+    /// Choose overlay auto-hide, resident, or no bars at all.
+    pub fn scrollbars(mut self, visibility: nana_ui_core::ScrollbarVisibility) -> Self {
+        self.scrollbars = visibility;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Bars are drawn when resident, or while hovered or dragged.
+    pub fn scrollbars_revealed(&self) -> bool {
+        match self.scrollbars {
+            nana_ui_core::ScrollbarVisibility::Always => true,
+            nana_ui_core::ScrollbarVisibility::AutoHide => self.hovered || self.dragging.is_some(),
+            nana_ui_core::ScrollbarVisibility::Hidden => false,
+        }
     }
 
     fn projected_style(&self) -> NodeStyle {
@@ -2307,16 +2741,21 @@ impl ScrollView {
         }
         style
     }
-}
 
-impl ComponentView for ScrollView {
-    fn node_kind(&self) -> NodeKind {
-        NodeKind::Element {
-            tag: "scroll".into(),
-        }
-    }
-
-    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+    /// Project scrollport style, interaction, and accessibility without the
+    /// scrollbar visual.
+    ///
+    /// Containers that lend their own node to a scrollport — [`SidebarFrame`]'s
+    /// body, for one — use this so they do not stamp a scrollbar over whatever
+    /// visual the node's real component owns.
+    ///
+    /// [`SidebarFrame`]: crate::SidebarFrame
+    pub fn project_scrollport(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
         project_common(
             id,
             world,
@@ -2332,6 +2771,27 @@ impl ComponentView for ScrollView {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+impl ComponentView for ScrollView {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "scroll".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = crate::StandardVisual::Scrollbar {
+            axes: self.axes,
+            visibility: self.scrollbars,
+            revealed: self.scrollbars_revealed(),
+            dragging: self.dragging.map(|drag| drag.axis),
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        self.project_scrollport(id, world, mutations);
     }
 }
 

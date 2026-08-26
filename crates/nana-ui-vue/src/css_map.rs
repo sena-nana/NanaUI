@@ -1889,9 +1889,7 @@ fn parse_grid_template_areas(raw: &str) -> Option<GridTemplateAreas> {
         }
         let quote = rest.as_bytes()[0] as char;
         rest = &rest[1..];
-        let Some(end) = rest.find(quote) else {
-            return None;
-        };
+        let end = rest.find(quote)?;
         let row: Vec<String> = rest[..end]
             .split_whitespace()
             .map(|s| s.to_string())
@@ -1899,10 +1897,10 @@ fn parse_grid_template_areas(raw: &str) -> Option<GridTemplateAreas> {
         if row.is_empty() {
             return None;
         }
-        if let Some(width) = cells.first().map(|r: &Vec<String>| r.len()) {
-            if row.len() != width {
-                return None;
-            }
+        if let Some(width) = cells.first().map(|r: &Vec<String>| r.len())
+            && row.len() != width
+        {
+            return None;
         }
         cells.push(row);
         rest = rest[end + 1..].trim_start();
@@ -1982,9 +1980,7 @@ fn parse_grid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
             break;
         }
         if rest.starts_with('[') {
-            let Some(end) = rest.find(']') else {
-                return None;
-            };
+            let end = rest.find(']')?;
             let group: Vec<String> = rest[1..end]
                 .split_whitespace()
                 .filter(|s| is_css_ident(s))

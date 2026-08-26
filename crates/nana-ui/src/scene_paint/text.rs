@@ -4,6 +4,7 @@ use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::SceneTextSpan;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 
 use super::clip::{self, LogicalRect};
 use super::color::{orthographic, pack_linear, to_rgba8, with_opacity};
@@ -127,9 +128,10 @@ struct AffineSlot {
 /// Rotated or scaled text takes the affine path on every repaint, so without
 /// this key a spinning label allocated a texture, a bind group and a vertex
 /// buffer every frame.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct AffineKey {
-    shape: ShapeKey,
+    /// Shaped-output identity, as [`ShapeKeyRef::hash64`].
+    shape: u64,
     origin_bits: [u32; 2],
     scale_bits: u32,
     affine_bits: [u32; 6],
@@ -171,11 +173,7 @@ impl AffineCache {
     }
 
     fn insert(&mut self, key: AffineKey, slot: AffineSlot, frame: u64) -> usize {
-        let entry = AffineEntry {
-            key: key.clone(),
-            slot,
-            frame,
-        };
+        let entry = AffineEntry { key, slot, frame };
         let index = match self.reclaim(frame) {
             Some(index) => {
                 self.slots[index] = Some(entry);
@@ -205,7 +203,7 @@ impl AffineCache {
             .filter_map(|(index, entry)| entry.as_ref().map(|entry| (index, entry)))
             .filter(|(_, entry)| entry.frame != frame)
             .min_by_key(|(_, entry)| entry.frame)
-            .map(|(index, entry)| (index, entry.key.clone()))?;
+            .map(|(index, entry)| (index, entry.key))?;
         self.index.remove(&key);
         self.slots[index] = None;
         self.evictions += 1;
@@ -247,39 +245,60 @@ struct PackedGlyph {
     rgba: Vec<u8>,
 }
 
+struct ShapeEntry {
+    key: ShapeKey,
+    buffer: Buffer,
+}
+
+/// Shaped buffers keyed by [`ShapeKeyRef::hash64`].
+///
+/// The map is keyed by the hash rather than by an owned key so a repaint of
+/// unchanged text looks up without copying the string, the family name, or the
+/// rich-span list. The stored key still decides the hit, so a hash collision
+/// between two different texts reshapes instead of painting the wrong glyphs.
 #[derive(Default)]
 struct ShapeCache {
-    entries: HashMap<ShapeKey, Buffer>,
-    order: VecDeque<ShapeKey>,
+    entries: HashMap<u64, ShapeEntry>,
+    order: VecDeque<u64>,
     hits: usize,
     misses: usize,
     evictions: usize,
 }
 
 impl ShapeCache {
-    fn get(&mut self, key: &ShapeKey) -> Option<&Buffer> {
-        if self.entries.contains_key(key) {
-            self.hits += 1;
-            self.entries.get(key)
-        } else {
-            self.misses += 1;
-            None
+    fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Buffer> {
+        match self.entries.get(&hash) {
+            Some(entry) if entry.key.matches(key) => {
+                self.hits += 1;
+                Some(&entry.buffer)
+            }
+            _ => {
+                self.misses += 1;
+                None
+            }
         }
     }
 
-    fn insert(&mut self, key: ShapeKey, buffer: Buffer) {
-        if self.entries.contains_key(&key) {
-            return;
-        }
+    fn buffer(&self, hash: u64) -> Option<&Buffer> {
+        self.entries.get(&hash).map(|entry| &entry.buffer)
+    }
+
+    fn insert(&mut self, hash: u64, key: ShapeKey, buffer: Buffer) {
         while self.entries.len() >= SHAPE_CACHE_CAP {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
-            self.entries.remove(&oldest);
-            self.evictions += 1;
+            if self.entries.remove(&oldest).is_some() {
+                self.evictions += 1;
+            }
         }
-        self.order.push_back(key.clone());
-        self.entries.insert(key, buffer);
+        if self
+            .entries
+            .insert(hash, ShapeEntry { key, buffer })
+            .is_none()
+        {
+            self.order.push_back(hash);
+        }
     }
 }
 
@@ -287,7 +306,6 @@ impl ShapeCache {
 /// time via `TextArea` and plain-text color via `default_color`, so neither
 /// is part of the key; rich spans bake their colors into shaping attrs and
 /// therefore belong to it.
-#[derive(Clone, PartialEq, Eq, Hash)]
 struct ShapeKey {
     content: String,
     family: Option<String>,
@@ -301,13 +319,111 @@ struct ShapeKey {
     width_bits: u32,
     height_bits: u32,
     align: u8,
-    color: ColorKey,
+    spans: Option<Vec<(String, [u32; 4])>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum ColorKey {
-    Plain,
-    Rich { spans: Vec<(String, [u32; 4])> },
+/// Borrowed form of [`ShapeKey`] built straight from the scene primitive.
+///
+/// Hashing and comparison live here so a frame can answer "already shaped?"
+/// without owning any of it.
+struct ShapeKeyRef<'a> {
+    content: &'a str,
+    family: Option<&'a str>,
+    weight: Option<u16>,
+    font_size_bits: u32,
+    line_height_bits: u32,
+    wrap: bool,
+    ellipsis: bool,
+    shaping: u8,
+    letter_spacing_bits: u32,
+    width_bits: u32,
+    height_bits: u32,
+    align: u8,
+    /// `Some` only for rich text, whose span colors change the shaped attrs.
+    spans: Option<&'a [(&'a str, [f32; 4])]>,
+}
+
+impl ShapeKeyRef<'_> {
+    fn hash64(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.content.hash(&mut hasher);
+        self.family.hash(&mut hasher);
+        self.weight.hash(&mut hasher);
+        self.font_size_bits.hash(&mut hasher);
+        self.line_height_bits.hash(&mut hasher);
+        self.wrap.hash(&mut hasher);
+        self.ellipsis.hash(&mut hasher);
+        self.shaping.hash(&mut hasher);
+        self.letter_spacing_bits.hash(&mut hasher);
+        self.width_bits.hash(&mut hasher);
+        self.height_bits.hash(&mut hasher);
+        self.align.hash(&mut hasher);
+        match self.spans {
+            None => 0u8.hash(&mut hasher),
+            Some(spans) => {
+                1u8.hash(&mut hasher);
+                spans.len().hash(&mut hasher);
+                for (text, color) in spans {
+                    text.hash(&mut hasher);
+                    color.map(f32::to_bits).hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
+
+    fn to_owned_key(&self) -> ShapeKey {
+        ShapeKey {
+            content: self.content.to_owned(),
+            family: self.family.map(str::to_owned),
+            weight: self.weight,
+            font_size_bits: self.font_size_bits,
+            line_height_bits: self.line_height_bits,
+            wrap: self.wrap,
+            ellipsis: self.ellipsis,
+            shaping: self.shaping,
+            letter_spacing_bits: self.letter_spacing_bits,
+            width_bits: self.width_bits,
+            height_bits: self.height_bits,
+            align: self.align,
+            spans: self.spans.map(|spans| {
+                spans
+                    .iter()
+                    .map(|(text, color)| ((*text).to_owned(), color.map(f32::to_bits)))
+                    .collect()
+            }),
+        }
+    }
+}
+
+impl ShapeKey {
+    fn matches(&self, other: &ShapeKeyRef<'_>) -> bool {
+        self.content == other.content
+            && self.family.as_deref() == other.family
+            && self.weight == other.weight
+            && self.font_size_bits == other.font_size_bits
+            && self.line_height_bits == other.line_height_bits
+            && self.wrap == other.wrap
+            && self.ellipsis == other.ellipsis
+            && self.shaping == other.shaping
+            && self.letter_spacing_bits == other.letter_spacing_bits
+            && self.width_bits == other.width_bits
+            && self.height_bits == other.height_bits
+            && self.align == other.align
+            && match (&self.spans, other.spans) {
+                (None, None) => true,
+                (Some(mine), Some(theirs)) => {
+                    mine.len() == theirs.len()
+                        && mine
+                            .iter()
+                            .zip(theirs)
+                            .all(|((text, color), (other, hue))| {
+                                text == other && *color == hue.map(f32::to_bits)
+                            })
+                }
+                _ => false,
+            }
+    }
 }
 
 pub(super) struct PreparedText {
@@ -464,9 +580,9 @@ impl TextPipeline {
         };
         let painted = presentation_spans(content, spans, default_color, opacity);
         let rich = painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color);
-        let key = ShapeKey {
-            content: content.to_owned(),
-            family: family.map(str::to_owned),
+        let key = ShapeKeyRef {
+            content,
+            family,
             weight,
             font_size_bits: physical_size.to_bits(),
             line_height_bits: physical_line_height.to_bits(),
@@ -484,18 +600,10 @@ impl TextPipeline {
                 TextHorizontalAlignment::Center => 1,
                 TextHorizontalAlignment::End => 2,
             },
-            color: if rich {
-                ColorKey::Rich {
-                    spans: painted
-                        .iter()
-                        .map(|(text, color)| ((*text).to_owned(), color.map(f32::to_bits)))
-                        .collect(),
-                }
-            } else {
-                ColorKey::Plain
-            },
+            spans: rich.then_some(painted.as_slice()),
         };
-        if self.shape_cache.get(&key).is_none() {
+        let hash = key.hash64();
+        if self.shape_cache.get(hash, &key).is_none() {
             let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
             let mut buffer = Buffer::new(
                 &mut fonts,
@@ -521,10 +629,10 @@ impl TextPipeline {
             }
             buffer.shape_until_scroll(&mut fonts, false);
             drop(fonts);
-            self.shape_cache.insert(key.clone(), buffer);
+            self.shape_cache.insert(hash, key.to_owned_key(), buffer);
         }
         let laid_out_height = {
-            let buffer = self.shape_cache.entries.get(&key).expect("shaped above");
+            let buffer = self.shape_cache.buffer(hash).expect("shaped above");
             measure(buffer).1
         };
         let aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
@@ -539,7 +647,7 @@ impl TextPipeline {
                 device,
                 queue,
                 encoder,
-                &key,
+                hash,
                 aligned,
                 clip,
                 scale,
@@ -550,7 +658,7 @@ impl TextPipeline {
             self.prepare_affine_glyphs(
                 device,
                 queue,
-                &key,
+                hash,
                 aligned,
                 scale,
                 affine,
@@ -566,14 +674,14 @@ impl TextPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        key: &ShapeKey,
+        shape: u64,
         aligned: [f32; 2],
         clip: LogicalRect,
         scale: f32,
         affine: [f32; 6],
         default_color: [f32; 4],
     ) -> Option<PreparedText> {
-        let buffer = self.shape_cache.entries.get(key).expect("shaped above");
+        let buffer = self.shape_cache.buffer(shape).expect("shaped above");
         let [world_x, world_y] = clip::transform_point(affine, aligned[0], aligned[1]);
         let left = world_x * scale;
         let top = world_y * scale;
@@ -645,7 +753,7 @@ impl TextPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: &ShapeKey,
+        shape: u64,
         aligned: [f32; 2],
         scale: f32,
         affine: [f32; 6],
@@ -653,7 +761,7 @@ impl TextPipeline {
         default_color: [f32; 4],
     ) -> Option<PreparedText> {
         let cache_key = AffineKey {
-            shape: key.clone(),
+            shape,
             origin_bits: [aligned[0].to_bits(), aligned[1].to_bits()],
             scale_bits: scale.to_bits(),
             affine_bits: affine.map(f32::to_bits),
@@ -668,7 +776,7 @@ impl TextPipeline {
             });
         }
 
-        let buffer = self.shape_cache.entries.get(key).expect("shaped above");
+        let buffer = self.shape_cache.buffer(shape).expect("shaped above");
         let origin_physical = [aligned[0] * scale, aligned[1] * scale];
         let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
         let mut packed = Vec::new();

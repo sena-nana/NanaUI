@@ -180,7 +180,7 @@ impl SidebarFrame {
         apply_body_scroll_layout(Arc::make_mut(&mut style.layout));
         ScrollView::new(ScrollAxes::Vertical)
             .style(style)
-            .project(body, world, mutations);
+            .project_scrollport(body, world, mutations);
     }
 
     pub fn top(mut self, top: StableNodeId) -> Self {
