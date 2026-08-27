@@ -584,28 +584,19 @@ impl CanvasRuntime {
         bytes: Vec<u8>,
         kind: CanvasResourceKind,
     ) -> Result<CanvasId, CanvasError> {
-        let options = resvg::usvg::Options::default();
-        let tree = resvg::usvg::Tree::from_data(&bytes, &options)
-            .map_err(|error| CanvasError::new(format!("SVG decode failed: {error}")))?;
-        let size = tree.size().to_int_size();
-        let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())
-            .ok_or_else(|| CanvasError::new("SVG dimensions exceed the raster surface limit"))?;
-        resvg::render(
-            &tree,
-            tiny_skia::Transform::identity(),
-            &mut pixmap.as_mut(),
-        );
+        let raster = nana_svg_raster::rasterize_document(&bytes)
+            .ok_or_else(|| CanvasError::new("SVG decode failed"))?;
         let id = self.allocate_id();
-        let width = pixmap.width();
-        let height = pixmap.height();
+        let width = raster.width;
+        let height = raster.height;
         let bitmap = CanvasBitmap {
             id,
             kind,
             width,
             height,
-            // tiny-skia stores premultiplied RGBA; CanvasBitmap is straight
-            // alpha and is premultiplied once when uploaded to WGPU.
-            rgba: unpremultiply_rgba(pixmap.data()),
+            // Document raster is straight alpha; CanvasBitmap is premultiplied
+            // once when uploaded to WGPU.
+            rgba: raster.rgba.to_vec(),
             version: 1,
             dirty: Some((0, 0, width, height)),
         };

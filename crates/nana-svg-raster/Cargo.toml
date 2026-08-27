@@ -1,0 +1,15 @@
+[package]
+name = "nana-svg-raster"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "CPU SVG raster helper for NanaUI icons, Vue charts, and Canvas Image"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_svg_raster"
+path = "src/lib.rs"
+
+[dependencies]
+resvg.workspace = true
+tiny-skia.workspace = true

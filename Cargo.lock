@@ -2985,6 +2985,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-svg-raster"
+version = "0.1.0"
+dependencies = [
+ "resvg",
+ "tiny-skia",
+]
+
+[[package]]
 name = "nana-ui"
 version = "0.1.0"
 dependencies = [
@@ -2997,6 +3005,7 @@ dependencies = [
  "cryoglyph",
  "image",
  "nana-app-icon",
+ "nana-svg-raster",
  "nana-ui-core",
  "nana-ui-platform",
  "nana-ui-runtime",
@@ -3004,10 +3013,8 @@ dependencies = [
  "nana-window",
  "pollster",
  "raw-window-handle",
- "resvg",
  "serde",
  "serde_json",
- "tiny-skia",
  "unicode-segmentation",
  "ureq",
  "url",
@@ -3085,6 +3092,7 @@ dependencies = [
  "base64 0.22.1",
  "nana-app-icon",
  "nana-js-engine",
+ "nana-svg-raster",
  "nana-ui",
  "nana-ui-core",
  "nana-ui-platform",
@@ -3105,8 +3113,8 @@ dependencies = [
  "fontdue",
  "image",
  "nana-js-engine",
+ "nana-svg-raster",
  "nana-ui-platform",
- "resvg",
  "tiny-skia",
 ]
 
