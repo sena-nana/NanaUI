@@ -840,11 +840,6 @@ pub fn glyph_box_center_from_line_top(line_height: f32, font_px: f32) -> f32 {
 }
 
 /// Top of a square `extent` whose center matches the text line box.
-///
-/// `vertical_center` follows text alignment: the line box is centered in
-/// `text_bounds_height` when true, otherwise it starts at `text_bounds_y`.
-/// Icon center uses the line-box midpoint so it matches geometric text
-/// vertical centering rather than the Latin em-square midline.
 pub fn icon_y_on_text_glyph_center(
     text_bounds_y: f32,
     text_bounds_height: f32,
@@ -3137,18 +3132,14 @@ mod tests {
 
     #[test]
     fn icon_y_on_centered_text_shares_the_line_box_midline() {
-        let font = 12.0;
-        let extent = 12.0;
         let y = icon_y_on_text_glyph_center(
             10.0,
             28.0,
-            font,
-            Some(LineHeightSpec::Absolute(font)),
+            12.0,
+            Some(LineHeightSpec::Absolute(12.0)),
             true,
-            extent,
+            12.0,
         );
-        let expected = 10.0 + (28.0 - extent) * 0.5;
-        assert!((y - expected).abs() < 1e-5);
         assert!((y - 18.0).abs() < 1e-5);
     }
 }

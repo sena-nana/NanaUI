@@ -625,8 +625,6 @@ impl UiScene {
     }
 
     /// Compact leading glyphs share the parent (or own) text line-box center.
-    /// IconButton hit targets are larger than the glyph and stay geometrically
-    /// centered in their own box.
     fn icon_y_aligned_to_adjacent_text(
         &self,
         node: &ExtractedNode,
