@@ -839,10 +839,12 @@ pub fn glyph_box_center_from_line_top(line_height: f32, font_px: f32) -> f32 {
     centering + ascent - glyph_height * 0.5
 }
 
-/// Top of a square `extent` whose center matches the glyph box of a text block.
+/// Top of a square `extent` whose center matches the text line box.
 ///
-/// `vertical_center` follows [`crate`] text alignment: the line box is centered
-/// in `text_bounds_height` when true, otherwise it starts at `text_bounds_y`.
+/// `vertical_center` follows text alignment: the line box is centered in
+/// `text_bounds_height` when true, otherwise it starts at `text_bounds_y`.
+/// Icon center uses the line-box midpoint so it matches geometric text
+/// vertical centering rather than the Latin em-square midline.
 pub fn icon_y_on_text_glyph_center(
     text_bounds_y: f32,
     text_bounds_height: f32,
@@ -851,13 +853,12 @@ pub fn icon_y_on_text_glyph_center(
     vertical_center: bool,
     extent: f32,
 ) -> f32 {
-    let line_h = text_line_box_height_px(font_px, line_height);
-    let line_top = if vertical_center {
-        text_bounds_y + (text_bounds_height - line_h) * 0.5
+    if vertical_center {
+        text_bounds_y + (text_bounds_height - extent) * 0.5
     } else {
-        text_bounds_y
-    };
-    line_top + glyph_box_center_from_line_top(line_h, font_px) - extent * 0.5
+        let line_h = text_line_box_height_px(font_px, line_height);
+        text_bounds_y + line_h * 0.5 - extent * 0.5
+    }
 }
 
 /// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；非完整 calc AST）。
@@ -3135,7 +3136,7 @@ mod tests {
     }
 
     #[test]
-    fn icon_y_on_centered_text_shares_the_glyph_box_midline() {
+    fn icon_y_on_centered_text_shares_the_line_box_midline() {
         let font = 12.0;
         let extent = 12.0;
         let y = icon_y_on_text_glyph_center(
@@ -3146,9 +3147,8 @@ mod tests {
             true,
             extent,
         );
-        let line_top = 10.0 + (28.0 - font) * 0.5;
-        let expected = line_top + glyph_box_center_from_line_top(font, font) - extent * 0.5;
+        let expected = 10.0 + (28.0 - extent) * 0.5;
         assert!((y - expected).abs() < 1e-5);
-        assert!((y - 15.6).abs() < 1e-5);
+        assert!((y - 18.0).abs() < 1e-5);
     }
 }
