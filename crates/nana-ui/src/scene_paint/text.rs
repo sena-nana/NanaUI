@@ -645,6 +645,13 @@ impl TextPipeline {
         let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];
+        if clip::is_translation(affine) {
+            let line_logical = laid_out_height / scale;
+            let [_, wy] = clip::transform_point(affine, aligned[0], aligned[1]);
+            let (top_px, _) =
+                clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
+            aligned[1] += top_px / scale - wy;
+        }
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
         }
