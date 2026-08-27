@@ -16,7 +16,8 @@ use nana_ui_platform::{
     window_resize_edge,
 };
 use nana_ui_runtime::{
-    AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
+    AccessibilityUpdate, AppContext, AppTitleBar, DocumentId, Entity, FrameworkError,
+    LayoutViewport, Task,
 };
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
@@ -430,20 +431,28 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
             self.input_mut(id).modifiers = modifiers.state();
         }
+        let cursor_moved = matches!(&event, WinitWindowEvent::CursorMoved { .. });
         if let WinitWindowEvent::CursorMoved { position, .. } = &event {
             let scale = self.scale_factor(id);
             let point = position.to_logical::<f32>(f64::from(scale));
             self.input_mut(id).cursor = (point.x, point.y);
-            self.sync_window_cursor(id);
         }
         if let Some(input) = self.normalized_input(id, &event) {
             if self.consume_frame_resize(id, &input) {
+                if cursor_moved {
+                    self.sync_window_cursor(id);
+                }
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
+            if cursor_moved {
+                self.sync_window_cursor(id);
+            }
             if disposition.prevent_default || event_loop.exiting() {
                 return;
             }
+        } else if cursor_moved {
+            self.sync_window_cursor(id);
         }
         match &event {
             WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
@@ -1309,18 +1318,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     fn sync_window_cursor(&self, id: WindowId) {
         let cursor = self.input_of(id).cursor;
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
-        let handle = self.program.document(id).and_then(|document| {
+        let (handle, text_field) = self.program.document(id).map_or((None, false), |document| {
             let context = document.context();
             let document_id = document.document();
-            context
+            let handle = context
                 .split_handle_near(document_id, cursor.0, cursor.1)
                 .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
                 .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
                 .and_then(|handle| context.world().layout_box(handle))
-                .map(|bounds| (bounds.width, bounds.height))
+                .map(|bounds| (bounds.width, bounds.height));
+            let text_field = text_field_under_pointer(context, document_id, cursor.0, cursor.1);
+            (handle, text_field)
         });
         if let Some(window) = self.window(id) {
-            window.set_cursor(scene_cursor_icon(frame_edge, handle));
+            window.set_cursor(scene_cursor_icon(frame_edge, handle, text_field));
         }
     }
 
@@ -2046,9 +2057,33 @@ fn frame_resize_edge_for(
     window_resize_edge(geometry.logical_size, x, y, RESIZE_HANDLE_SIZE)
 }
 
+fn text_field_under_pointer(context: &AppContext, document: DocumentId, x: f32, y: f32) -> bool {
+    let Some(mut node) = context
+        .world()
+        .pointer_hover(document, 1)
+        .or_else(|| context.pointer_target(document, x, y))
+    else {
+        return false;
+    };
+    loop {
+        if context.world().text_input(node).is_some() {
+            return true;
+        }
+        match context
+            .world()
+            .node(node)
+            .and_then(|snapshot| snapshot.parent)
+        {
+            Some(parent) => node = parent,
+            None => return false,
+        }
+    }
+}
+
 fn scene_cursor_icon(
     frame_edge: Option<WindowResizeEdge>,
     handle: Option<(f32, f32)>,
+    text_field: bool,
 ) -> winit::window::CursorIcon {
     use winit::window::CursorIcon;
     match frame_edge {
@@ -2056,15 +2091,17 @@ fn scene_cursor_icon(
         Some(WindowResizeEdge::North | WindowResizeEdge::South) => CursorIcon::NsResize,
         Some(WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest) => CursorIcon::NeswResize,
         Some(WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast) => CursorIcon::NwseResize,
-        None => handle
-            .map(|(width, height)| {
+        None => match handle {
+            Some((width, height)) => {
                 if width <= height {
                     CursorIcon::EwResize
                 } else {
                     CursorIcon::NsResize
                 }
-            })
-            .unwrap_or(CursorIcon::Default),
+            }
+            None if text_field => CursorIcon::Text,
+            None => CursorIcon::Default,
+        },
     }
 }
 
@@ -3507,17 +3544,19 @@ mod tests {
         geometry.maximized = false;
         assert!(frame_resize_edge_for(&settings, &geometry, true, 2.0, 300.0).is_none());
         assert_eq!(
-            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0))),
+            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0)), true),
             CursorIcon::EwResize
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((8.0, 200.0))),
+            scene_cursor_icon(None, Some((8.0, 200.0)), true),
             CursorIcon::EwResize
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((200.0, 8.0))),
+            scene_cursor_icon(None, Some((200.0, 8.0)), false),
             CursorIcon::NsResize
         );
+        assert_eq!(scene_cursor_icon(None, None, true), CursorIcon::Text);
+        assert_eq!(scene_cursor_icon(None, None, false), CursorIcon::Default);
     }
 
     #[test]
