@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bytemuck::{Pod, Zeroable};
 use nana_ui_scene::StrokeCap;
 
@@ -8,8 +10,12 @@ use super::{
 use crate::PhysicalRect;
 
 const INITIAL_INSTANCES: usize = 256;
+/// Unique `FragmentClip` slots interned per frame. The storage buffer grows
+/// to the next power of two past this; strokes are never dropped.
+const INITIAL_CLIPS: usize = 16;
 const ROUND_CAP: f32 = 0.0;
 const BUTT_CAP: f32 = 1.0;
+const MIN_SEGMENT_LEN_SQ: f32 = f32::EPSILON * f32::EPSILON;
 
 pub(super) struct StrokeStyle<'a> {
     pub width: f32,
@@ -18,19 +24,77 @@ pub(super) struct StrokeStyle<'a> {
     pub dash: &'a [f32],
     pub dash_offset: f32,
     pub colors: &'a [[f32; 4]],
+    /// SVG `pathLength`. Zero / negative / non-finite = geometric length.
+    pub path_length: f32,
 }
 
+/// Per-segment instance. Clip is a palette index, not an inline 88-byte clip.
+/// Color stays on the instance so per-point strokes can differ in one draw.
+/// Endpoints/radii stay pre-affine; `affine` maps the covering quad and inverts
+/// in the fragment SDF so a vanilla disc becomes an ellipse under non-uniform scale.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct MeshInstance {
     color: [f32; 4],
-    clip_rect: [f32; 4],
-    clip_inv_abcd: [f32; 4],
-    /// `xyz` = clip inverse e/f + corner radius; `w` is 0 for round, 1 for butt.
-    clip_inv_ef_cap: [f32; 4],
     p0: [f32; 2],
     p1: [f32; 2],
     radii: [f32; 2],
+    clip_index: u32,
+    packed_caps: f32,
+    affine: [f32; 6],
+}
+
+const _: () = assert!(std::mem::size_of::<MeshInstance>() == 72);
+
+/// GPU clip record. Matches `GpuClip` in `triangle_solid.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct GpuClip {
+    rect: [f32; 4],
+    inv_abcd: [f32; 4],
+    /// `xyz` = clip inverse e/f + corner radius; `w` = polygon vertex count.
+    inv_ef_radius: [f32; 4],
+    poly0: [f32; 4],
+    poly1: [f32; 4],
+    poly2: [f32; 4],
+    poly3: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<GpuClip>() == 112);
+
+/// Bit-exact intern key: every `GpuClip` float as native `to_bits` (112 bytes).
+/// `PartialEq` would collapse `-0.0` with `0.0` and treat NaNs as never-equal.
+type ClipInternKey = [u32; 28];
+
+fn pack_clip_polygon(polygon: &[[f32; 2]; 8]) -> [[f32; 4]; 4] {
+    let mut packed = [[0.0; 4]; 4];
+    for (index, point) in polygon.iter().enumerate() {
+        let slot = index / 2;
+        let component = (index % 2) * 2;
+        packed[slot][component] = point[0];
+        packed[slot][component + 1] = point[1];
+    }
+    packed
+}
+
+impl GpuClip {
+    fn from_fragment(clip: FragmentClip) -> Self {
+        let polys = pack_clip_polygon(&clip.polygon);
+        Self {
+            rect: clip.rect,
+            inv_abcd: clip.inv_abcd,
+            inv_ef_radius: [
+                clip.inv_ef[0],
+                clip.inv_ef[1],
+                clip.corner_radius,
+                f32::from(clip.polygon_count),
+            ],
+            poly0: polys[0],
+            poly1: polys[1],
+            poly2: polys[2],
+            poly3: polys[3],
+        }
+    }
 }
 
 impl MeshInstance {
@@ -45,17 +109,12 @@ impl MeshInstance {
     ) -> Self {
         Self {
             color,
-            clip_rect: FragmentClip::PASS.rect,
-            clip_inv_abcd: FragmentClip::PASS.inv_abcd,
-            clip_inv_ef_cap: [
-                FragmentClip::PASS.inv_ef[0],
-                FragmentClip::PASS.inv_ef[1],
-                FragmentClip::PASS.corner_radius,
-                pack_caps(start_cap, end_cap),
-            ],
             p0,
             p1,
             radii: [r0, r1],
+            clip_index: 0,
+            packed_caps: pack_caps(start_cap, end_cap),
+            affine: super::clip::IDENTITY_AFFINE,
         }
     }
 }
@@ -75,6 +134,8 @@ fn pack_caps(start: StrokeCap, end: StrokeCap) -> f32 {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Uniforms {
     transform: [f32; 16],
+    viewport_scale: f32,
+    _pad: [f32; 3],
 }
 
 pub(super) struct MeshRange {
@@ -85,12 +146,18 @@ pub(super) struct MeshRange {
 pub(super) struct MeshPipeline {
     pipeline: wgpu::RenderPipeline,
     pipeline_msaa: wgpu::RenderPipeline,
+    bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
+    clips: wgpu::Buffer,
+    clip_capacity: usize,
     instances: wgpu::Buffer,
     instance_capacity: usize,
     pending_instances: Vec<MeshInstance>,
     uploaded_instances: Vec<MeshInstance>,
+    pending_clips: Vec<GpuClip>,
+    clip_intern: HashMap<ClipInternKey, u32>,
+    uploaded_clips: Vec<GpuClip>,
 }
 
 impl MeshPipeline {
@@ -107,16 +174,30 @@ impl MeshPipeline {
         });
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<Uniforms>() as u64
+                        ),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.triangle.uniforms"),
@@ -124,14 +205,13 @@ impl MeshPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.triangle.uniforms.bind_group"),
-            layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
+        let clips = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.triangle.clips"),
+            size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        let bind_group = mesh_bind_group(device, &bind_layout, &uniforms, &clips);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.solid.pipeline"),
             bind_group_layouts: &[Some(&bind_layout)],
@@ -142,8 +222,11 @@ impl MeshPipeline {
         Self {
             pipeline,
             pipeline_msaa,
+            bind_layout,
             bind_group,
             uniforms,
+            clips,
+            clip_capacity: INITIAL_CLIPS,
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.triangle.instances"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
@@ -153,11 +236,16 @@ impl MeshPipeline {
             instance_capacity: INITIAL_INSTANCES,
             pending_instances: Vec::new(),
             uploaded_instances: Vec::new(),
+            pending_clips: Vec::new(),
+            clip_intern: HashMap::new(),
+            uploaded_clips: Vec::new(),
         }
     }
 
     pub(super) fn begin_frame(&mut self) {
         self.pending_instances.clear();
+        self.pending_clips.clear();
+        self.clip_intern.clear();
     }
 
     pub(super) fn push_stroke(
@@ -193,7 +281,13 @@ impl MeshPipeline {
             packed_color,
         );
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
-        stamp_fragment_clip(&mut self.pending_instances, start as usize, fragment_clip);
+        stamp_fragment_clip(
+            &mut self.pending_instances,
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            start as usize,
+            fragment_clip,
+        );
         let instance_count = self.pending_instances.len() as u32 - start;
         (instance_count > 0).then_some(MeshRange {
             first_instance: start,
@@ -247,7 +341,13 @@ impl MeshPipeline {
             );
         }
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
-        stamp_fragment_clip(&mut self.pending_instances, start as usize, fragment_clip);
+        stamp_fragment_clip(
+            &mut self.pending_instances,
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            start as usize,
+            fragment_clip,
+        );
         let instance_count = self.pending_instances.len() as u32 - start;
         (instance_count > 0).then_some(MeshRange {
             first_instance: start,
@@ -263,8 +363,15 @@ impl MeshPipeline {
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
+        let viewport_scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
         let uniforms = Uniforms {
-            transform: orthographic_scaled(physical_size[0], physical_size[1], scale_factor),
+            transform: orthographic_scaled(physical_size[0], physical_size[1], viewport_scale),
+            viewport_scale,
+            _pad: [0.0; 3],
         };
         let uniform_bytes = bytemuck::bytes_of(&uniforms);
         queue.write_buffer(&self.uniforms, 0, uniform_bytes);
@@ -273,9 +380,12 @@ impl MeshPipeline {
         }
         if self.pending_instances.is_empty() {
             self.uploaded_instances.clear();
+            self.uploaded_clips.clear();
             return;
         }
-        if self.pending_instances == self.uploaded_instances {
+        if self.pending_instances == self.uploaded_instances
+            && clips_bit_eq(&self.pending_clips, &self.uploaded_clips)
+        {
             return;
         }
         if self.pending_instances.len() > self.instance_capacity {
@@ -290,11 +400,28 @@ impl MeshPipeline {
                 work.record_realloc();
             }
         }
+        if self.pending_clips.len() > self.clip_capacity {
+            self.clip_capacity = self.pending_clips.len().next_power_of_two();
+            self.clips = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.triangle.clips"),
+                size: (self.clip_capacity * std::mem::size_of::<GpuClip>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.bind_group =
+                mesh_bind_group(device, &self.bind_layout, &self.uniforms, &self.clips);
+            if let Some(work) = gpu_work {
+                work.record_realloc();
+            }
+        }
         let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
         queue.write_buffer(&self.instances, 0, instance_bytes);
+        let clip_bytes = bytemuck::cast_slice(&self.pending_clips);
+        queue.write_buffer(&self.clips, 0, clip_bytes);
         self.uploaded_instances.clone_from(&self.pending_instances);
+        self.uploaded_clips.clone_from(&self.pending_clips);
         if let Some(work) = gpu_work {
-            work.record_upload(instance_bytes.len());
+            work.record_upload(instance_bytes.len() + clip_bytes.len());
             work.record_batch_rebuild();
         }
     }
@@ -329,6 +456,28 @@ impl MeshPipeline {
     }
 }
 
+fn mesh_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    clips: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.triangle.uniforms.bind_group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: clips.as_entire_binding(),
+            },
+        ],
+    })
+}
+
 fn mesh_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -347,21 +496,28 @@ fn mesh_pipeline(
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &wgpu::vertex_attr_array!(
                     0 => Float32x4,
-                    1 => Float32x4,
-                    2 => Float32x4,
-                    3 => Float32x4,
-                    4 => Float32x2,
-                    5 => Float32x2,
-                    6 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32x2,
+                    3 => Float32x2,
+                    4 => Uint32,
+                    5 => Float32,
+                    6 => Float32x4,
+                    7 => Float32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("solid_fs_main"),
+            entry_point: Some(if sample_count > 1 {
+                "solid_fs_msaa"
+            } else {
+                "solid_fs_main"
+            }),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
+                // Premultiplied alpha, not BlendState::MAX (MAX would also
+                // combine against dest quads in this pass).
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -383,9 +539,8 @@ fn mesh_pipeline(
     })
 }
 
-/// Solid uniform-color Round/Butt path used by GraphCanvas and TimeSeries.
-/// Decorations (dash, per-point colors, Square) take a separate walk so this
-/// loop stays the unused-attribute fast path.
+/// Graph / TimeSeries (`pattern: None`: empty dash, empty colors, cap != Square)
+/// skip dash and Square expansion. Other attributes share the solid drawable walk.
 fn emit_stroke_instances(
     instances: &mut Vec<MeshInstance>,
     points: &[[f32; 2]],
@@ -410,7 +565,7 @@ fn emit_stroke_instances(
     }
     match normalize_dash(style.dash) {
         DashPattern::Empty => {}
-        DashPattern::Solid => append_styled_stroke_instances(
+        DashPattern::Solid => append_solid_polyline(
             instances,
             points,
             style.width,
@@ -429,6 +584,7 @@ fn emit_stroke_instances(
             colors,
             &pattern,
             style.dash_offset,
+            style.path_length,
         ),
     }
 }
@@ -441,36 +597,13 @@ fn append_stroke_instances(
     cap: StrokeCap,
     color: [f32; 4],
 ) {
-    let per_point = widths.len() == points.len();
-    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
-    for (index, pair) in points.windows(2).enumerate() {
-        let r0 = if per_point {
-            widths[index] * 0.5
-        } else {
-            width * 0.5
-        };
-        let r1 = if per_point {
-            widths[index + 1] * 0.5
-        } else {
-            width * 0.5
-        };
-        if segment_is_drawable(pair[0], pair[1], r0, r1) {
-            segments.push((pair[0], pair[1], r0.max(0.0), r1.max(0.0)));
-        }
-    }
-    let last = segments.len().saturating_sub(1);
-    for (index, (p0, p1, r0, r1)) in segments.into_iter().enumerate() {
-        let start_cap = if index == 0 { cap } else { StrokeCap::Butt };
-        let end_cap = if index == last || cap == StrokeCap::Butt {
-            cap
-        } else {
-            StrokeCap::Round
-        };
-        push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
-    }
+    append_solid_polyline(instances, points, width, widths, cap, color, &[]);
 }
 
-fn append_styled_stroke_instances(
+/// One pass over drawable segments. Interior Round joins share a disc (Butt
+/// start on the next segment). A closed polyline (first==last, ≥2 drawable
+/// segments) is an interior join at the close. Dash reuses this walk.
+fn append_solid_polyline(
     instances: &mut Vec<MeshInstance>,
     points: &[[f32; 2]],
     width: f32,
@@ -481,36 +614,109 @@ fn append_styled_stroke_instances(
 ) {
     let per_point = widths.len() == points.len();
     let per_color = colors.len() == points.len();
-    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
-    for (index, pair) in points.windows(2).enumerate() {
-        let r0 = if per_point {
-            widths[index] * 0.5
+    let expand_square = cap == StrokeCap::Square;
+    let closed = polyline_is_closed(points, width, widths, per_point);
+    let mut current = next_drawable_segment(points, width, widths, per_point, 0);
+    let mut first = true;
+    while let Some((index, r0, r1)) = current {
+        let next = next_drawable_segment(points, width, widths, per_point, index + 1);
+        let start_cap = if first && !closed {
+            cap
         } else {
-            width * 0.5
+            StrokeCap::Butt
         };
-        let r1 = if per_point {
-            widths[index + 1] * 0.5
-        } else {
-            width * 0.5
-        };
-        if !segment_is_drawable(pair[0], pair[1], r0, r1) {
-            continue;
-        }
-        let segment_color = if per_color { colors[index] } else { color };
-        segments.push((pair[0], pair[1], r0.max(0.0), r1.max(0.0), segment_color));
-    }
-    let last = segments.len().saturating_sub(1);
-    for (index, (p0, p1, r0, r1, segment_color)) in segments.into_iter().enumerate() {
-        let start_cap = if index == 0 { cap } else { StrokeCap::Butt };
-        let end_cap = if index == last || cap == StrokeCap::Butt {
+        let end_cap = if next.is_none() {
+            if closed && cap == StrokeCap::Square {
+                StrokeCap::Butt
+            } else {
+                cap
+            }
+        } else if cap == StrokeCap::Butt {
             cap
         } else {
             StrokeCap::Round
         };
-        push_capped_segment(instances, p0, p1, r0, r1, start_cap, end_cap, segment_color);
+        let segment_color = if per_color { colors[index] } else { color };
+        push_polyline_segment(
+            instances,
+            points[index],
+            points[index + 1],
+            r0.max(0.0),
+            r1.max(0.0),
+            start_cap,
+            end_cap,
+            segment_color,
+            expand_square,
+        );
+        first = false;
+        current = next;
     }
 }
 
+fn next_drawable_segment(
+    points: &[[f32; 2]],
+    width: f32,
+    widths: &[f32],
+    per_point: bool,
+    start: usize,
+) -> Option<(usize, f32, f32)> {
+    let last = points.len().saturating_sub(1);
+    for index in start..last {
+        let (r0, r1) = if per_point {
+            (widths[index] * 0.5, widths[index + 1] * 0.5)
+        } else {
+            let radius = width * 0.5;
+            (radius, radius)
+        };
+        if segment_is_drawable(points[index], points[index + 1], r0, r1) {
+            return Some((index, r0, r1));
+        }
+    }
+    None
+}
+
+fn points_coincide(a: [f32; 2], b: [f32; 2]) -> bool {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let length_sq = dx * dx + dy * dy;
+    length_sq.is_finite() && length_sq < MIN_SEGMENT_LEN_SQ
+}
+
+/// SVG/CSS close: `points[0]` coincides with `points[last]` and the loop still
+/// has two drawable segments after skipping zero-length windows.
+fn polyline_is_closed(points: &[[f32; 2]], width: f32, widths: &[f32], per_point: bool) -> bool {
+    match (points.first(), points.last()) {
+        (Some(&first), Some(&last)) if points_coincide(first, last) => {
+            let Some((index, _, _)) = next_drawable_segment(points, width, widths, per_point, 0)
+            else {
+                return false;
+            };
+            next_drawable_segment(points, width, widths, per_point, index + 1).is_some()
+        }
+        _ => false,
+    }
+}
+
+fn drawable_polyline_length(
+    points: &[[f32; 2]],
+    width: f32,
+    widths: &[f32],
+    per_point: bool,
+) -> f32 {
+    let mut total = 0.0;
+    let mut start = 0;
+    while let Some((index, _, _)) = next_drawable_segment(points, width, widths, per_point, start) {
+        let p0 = points[index];
+        let p1 = points[index + 1];
+        total += (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        start = index + 1;
+    }
+    total
+}
+
+/// Same drawable walk as `append_solid_polyline`. Closed paths wrap phase
+/// (`s = 0 ≡ s = L`); `wrap_join` butts both ends when dash is ON on each side.
+/// `path_length` scales geometric `s` into pathLength units before phase.
 fn append_dashed_stroke_instances(
     instances: &mut Vec<MeshInstance>,
     points: &[[f32; 2]],
@@ -521,6 +727,7 @@ fn append_dashed_stroke_instances(
     colors: &[[f32; 4]],
     pattern: &[f32],
     dash_offset: f32,
+    path_length: f32,
 ) {
     let cycle: f32 = pattern.iter().copied().sum();
     if cycle <= f32::EPSILON {
@@ -528,70 +735,78 @@ fn append_dashed_stroke_instances(
     }
     let per_point = widths.len() == points.len();
     let per_color = colors.len() == points.len();
-    let last_point = points.len().saturating_sub(2);
+    let expand_square = cap == StrokeCap::Square;
+    let closed = polyline_is_closed(points, width, widths, per_point);
+    let geometric_length = drawable_polyline_length(points, width, widths, per_point);
+    let scale = dash_path_scale(path_length, geometric_length);
+    let wrap_join = closed && {
+        geometric_length > 1e-4
+            && dash_phase(dash_offset + 1e-4, pattern, cycle).0
+            && dash_phase(
+                geometric_length * scale + dash_offset - 1e-4,
+                pattern,
+                cycle,
+            )
+            .0
+    };
     let mut path_s = 0.0;
-    let mut prev_ended_on_at_vertex = false;
-    for (index, pair) in points.windows(2).enumerate() {
-        let r0 = if per_point {
-            widths[index] * 0.5
-        } else {
-            width * 0.5
-        };
-        let r1 = if per_point {
-            widths[index + 1] * 0.5
-        } else {
-            width * 0.5
-        };
-        if !segment_is_drawable(pair[0], pair[1], r0, r1) {
-            prev_ended_on_at_vertex = false;
-            continue;
-        }
-        let dx = pair[1][0] - pair[0][0];
-        let dy = pair[1][1] - pair[0][1];
+    let mut prev_ended_on_at_vertex = wrap_join;
+    let mut current = next_drawable_segment(points, width, widths, per_point, 0);
+    while let Some((index, r0, r1)) = current {
+        let next = next_drawable_segment(points, width, widths, per_point, index + 1);
+        let p0 = points[index];
+        let p1 = points[index + 1];
+        let r0 = r0.max(0.0);
+        let r1 = r1.max(0.0);
+        let dx = p1[0] - p0[0];
+        let dy = p1[1] - p0[1];
         let len = dx.hypot(dy);
         let c0 = if per_color { colors[index] } else { color };
         let c1 = if per_color { colors[index + 1] } else { color };
         let mut local = 0.0;
         while local < len {
-            let (on, remaining) = dash_phase(path_s + local + dash_offset, pattern, cycle);
-            if remaining <= 1e-5 {
+            let (on, remaining) =
+                dash_phase((path_s + local) * scale + dash_offset, pattern, cycle);
+            let remaining_geo = remaining / scale;
+            if remaining_geo <= 1e-5 {
                 local += 1e-4;
                 continue;
             }
-            let take = remaining.min(len - local);
+            let take = remaining_geo.min(len - local);
             if on && take > f32::EPSILON {
                 let t0 = local / len;
                 let t1 = (local + take) / len;
-                let q0 = lerp2(pair[0], pair[1], t0);
-                let q1 = lerp2(pair[0], pair[1], t1);
-                let rr0 = r0 + (r1 - r0) * t0;
-                let rr1 = r0 + (r1 - r0) * t1;
                 let starts_at_vertex = local <= 1e-5;
                 let ends_at_vertex = (local + take) >= len - 1e-5;
-                let next_on = if !ends_at_vertex || index == last_point {
+                let at_path_start = path_s + local <= 1e-4;
+                let next_on = if !ends_at_vertex {
                     false
+                } else if next.is_some() {
+                    dash_phase((path_s + len) * scale + dash_offset + 1e-4, pattern, cycle).0
                 } else {
-                    dash_phase(path_s + len + dash_offset + 1e-4, pattern, cycle).0
+                    wrap_join
                 };
-                let start_cap = if starts_at_vertex && prev_ended_on_at_vertex {
-                    StrokeCap::Butt
-                } else {
-                    cap
-                };
+                let start_cap =
+                    if wrap_join && at_path_start || starts_at_vertex && prev_ended_on_at_vertex {
+                        StrokeCap::Butt
+                    } else {
+                        cap
+                    };
                 let end_cap = if ends_at_vertex && next_on {
                     StrokeCap::Butt
                 } else {
                     cap
                 };
-                push_capped_segment(
+                push_polyline_segment(
                     instances,
-                    q0,
-                    q1,
-                    rr0.max(0.0),
-                    rr1.max(0.0),
+                    lerp2(p0, p1, t0),
+                    lerp2(p0, p1, t1),
+                    (r0 + (r1 - r0) * t0).max(0.0),
+                    (r0 + (r1 - r0) * t1).max(0.0),
                     start_cap,
                     end_cap,
                     lerp4(c0, c1, t0),
+                    expand_square,
                 );
                 prev_ended_on_at_vertex = ends_at_vertex;
             } else {
@@ -600,6 +815,19 @@ fn append_dashed_stroke_instances(
             local += take;
         }
         path_s += len;
+        current = next;
+    }
+}
+
+fn dash_path_scale(path_length: f32, geometric_length: f32) -> f32 {
+    if path_length > 0.0
+        && path_length.is_finite()
+        && geometric_length > 0.0
+        && geometric_length.is_finite()
+    {
+        path_length / geometric_length
+    } else {
+        1.0
     }
 }
 
@@ -655,6 +883,24 @@ fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     ]
 }
 
+fn push_polyline_segment(
+    instances: &mut Vec<MeshInstance>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    r0: f32,
+    r1: f32,
+    start_cap: StrokeCap,
+    end_cap: StrokeCap,
+    color: [f32; 4],
+    expand_square: bool,
+) {
+    if expand_square {
+        push_capped_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
+    } else {
+        push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
+    }
+}
+
 fn push_capped_segment(
     instances: &mut Vec<MeshInstance>,
     p0: [f32; 2],
@@ -665,8 +911,9 @@ fn push_capped_segment(
     end_cap: StrokeCap,
     color: [f32; 4],
 ) {
+    let origin = p0;
     let (p0, start_cap) = square_end(p0, p1, r0, start_cap, true);
-    let (p1, end_cap) = square_end(p0, p1, r1, end_cap, false);
+    let (p1, end_cap) = square_end(origin, p1, r1, end_cap, false);
     push_segment(instances, p0, p1, r0, r1, start_cap, end_cap, color);
 }
 
@@ -682,12 +929,13 @@ fn square_end(
     }
     let dx = p1[0] - p0[0];
     let dy = p1[1] - p0[1];
-    let len = dx.hypot(dy);
-    if !len.is_finite() || len < f32::EPSILON {
+    let len_sq = dx * dx + dy * dy;
+    if !len_sq.is_finite() || len_sq < MIN_SEGMENT_LEN_SQ {
         return (if start { p0 } else { p1 }, StrokeCap::Butt);
     }
-    let tx = dx / len * radius;
-    let ty = dy / len * radius;
+    let inv_len = len_sq.sqrt().recip();
+    let tx = dx * inv_len * radius;
+    let ty = dy * inv_len * radius;
     if start {
         ([p0[0] - tx, p0[1] - ty], StrokeCap::Butt)
     } else {
@@ -718,44 +966,221 @@ fn push_segment(
 fn segment_is_drawable(p0: [f32; 2], p1: [f32; 2], r0: f32, r1: f32) -> bool {
     let dx = p1[0] - p0[0];
     let dy = p1[1] - p0[1];
-    let length = dx.hypot(dy);
-    length.is_finite()
-        && length >= f32::EPSILON
+    let length_sq = dx * dx + dy * dy;
+    length_sq.is_finite()
+        && length_sq >= MIN_SEGMENT_LEN_SQ
         && r0.is_finite()
         && r1.is_finite()
         && (r0 > 0.0 || r1 > 0.0)
 }
 
+/// Stamp the CSS/Canvas 2×3. Endpoints stay pre-affine; identity is already the
+/// instance default.
 fn apply_affine_to_instances(instances: &mut [MeshInstance], start: usize, affine: [f32; 6]) {
     if affine == super::clip::IDENTITY_AFFINE {
         return;
     }
-    let [a, b, c, d, _, _] = affine;
-    let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) * 0.5;
     for instance in &mut instances[start..] {
-        instance.p0 = super::clip::transform_point(affine, instance.p0[0], instance.p0[1]);
-        instance.p1 = super::clip::transform_point(affine, instance.p1[0], instance.p1[1]);
-        instance.radii[0] *= scale;
-        instance.radii[1] *= scale;
+        instance.affine = affine;
     }
 }
 
-fn stamp_fragment_clip(instances: &mut [MeshInstance], start: usize, clip: FragmentClip) {
-    for instance in &mut instances[start..] {
-        instance.clip_rect = clip.rect;
-        instance.clip_inv_abcd = clip.inv_abcd;
-        instance.clip_inv_ef_cap[0] = clip.inv_ef[0];
-        instance.clip_inv_ef_cap[1] = clip.inv_ef[1];
-        instance.clip_inv_ef_cap[2] = clip.corner_radius;
+fn clips_bit_eq(a: &[GpuClip], b: &[GpuClip]) -> bool {
+    a.len() == b.len()
+        && bytemuck::cast_slice::<GpuClip, u8>(a) == bytemuck::cast_slice::<GpuClip, u8>(b)
+}
+
+fn intern_clip(
+    clips: &mut Vec<GpuClip>,
+    intern: &mut HashMap<ClipInternKey, u32>,
+    clip: FragmentClip,
+) -> u32 {
+    let packed = GpuClip::from_fragment(clip);
+    match intern.entry(bytemuck::cast(packed)) {
+        std::collections::hash_map::Entry::Occupied(slot) => *slot.get(),
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            let index = clips.len() as u32;
+            clips.push(packed);
+            *slot.insert(index)
+        }
     }
+}
+
+fn stamp_fragment_clip(
+    instances: &mut [MeshInstance],
+    clips: &mut Vec<GpuClip>,
+    intern: &mut HashMap<ClipInternKey, u32>,
+    start: usize,
+    clip: FragmentClip,
+) {
+    if start >= instances.len() {
+        return;
+    }
+    let index = intern_clip(clips, intern, clip);
+    for instance in &mut instances[start..] {
+        instance.clip_index = index;
+    }
+}
+
+/// CPU covering-fringe / SDF. Same formulas as `triangle_solid.wgsl`
+/// (`STROKE_AA_FRINGE`, `hull_half_width`, `covering_corner`, `local_aa_fringe`,
+/// `sd_variable_capsule`).
+#[cfg(test)]
+const STROKE_AA_FRINGE: f32 = 1.0;
+
+#[cfg(test)]
+fn hull_half_width(along: f32, pad0: f32, pad1: f32, seg_len: f32) -> f32 {
+    let dr = pad0 - pad1;
+    if dr.abs() >= seg_len {
+        return pad0.max(pad1);
+    }
+    let sin_a = dr / seg_len;
+    let cos_a = (1.0 - sin_a * sin_a).max(0.0).sqrt();
+    (pad0 - sin_a * along) / cos_a.max(1e-8)
+}
+
+#[cfg(test)]
+fn covering_with_fringe(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    r0: f32,
+    r1: f32,
+    start: StrokeCap,
+    end: StrokeCap,
+    fringe: f32,
+    corner: [f32; 2],
+) -> Option<[f32; 2]> {
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let seg_len = dx.hypot(dy);
+    if !seg_len.is_finite() || seg_len < f32::EPSILON {
+        return None;
+    }
+    let tx = dx / seg_len;
+    let ty = dy / seg_len;
+    let nx = -ty;
+    let ny = tx;
+    let pad0 = r0 + fringe;
+    let pad1 = r1 + fringe;
+    let mut end0 = match start {
+        StrokeCap::Round | StrokeCap::Square => pad0,
+        StrokeCap::Butt => fringe,
+    };
+    let mut end1 = match end {
+        StrokeCap::Round | StrokeCap::Square => pad1,
+        StrokeCap::Butt => fringe,
+    };
+    if pad0 >= pad1 + seg_len && end != StrokeCap::Butt {
+        end1 = end1.max(pad0 - seg_len);
+    }
+    if pad1 >= pad0 + seg_len && start != StrokeCap::Butt {
+        end0 = end0.max(pad1 - seg_len);
+    }
+    let along = if corner[0] > 0.0 {
+        seg_len + end1
+    } else {
+        -end0
+    };
+    let side = hull_half_width(along, pad0, pad1, seg_len);
+    Some([
+        p0[0] + tx * along + nx * (corner[1] * side),
+        p0[1] + ty * along + ny * (corner[1] * side),
+    ])
+}
+
+#[cfg(test)]
+fn covering_corner(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    r0: f32,
+    r1: f32,
+    start: StrokeCap,
+    end: StrokeCap,
+    corner: [f32; 2],
+) -> Option<[f32; 2]> {
+    covering_with_fringe(p0, p1, r0, r1, start, end, STROKE_AA_FRINGE, corner)
+}
+
+#[cfg(test)]
+fn local_aa_fringe(abcd: [f32; 4], viewport_scale: f32) -> f32 {
+    let sigma = if abcd == [1.0, 0.0, 0.0, 1.0] {
+        1.0
+    } else {
+        let [a, b, c, d] = abcd;
+        let det = a * d - b * c;
+        let fro2 = a * a + b * b + c * c + d * d;
+        let disc = (fro2 * fro2 - 4.0 * det * det).max(0.0);
+        ((fro2 - disc.sqrt()) * 0.5).max(0.0).sqrt()
+    };
+    STROKE_AA_FRINGE / (sigma * viewport_scale.max(1e-4)).max(1e-4)
+}
+
+#[cfg(test)]
+fn sd_variable_capsule(point: [f32; 2], a: [f32; 2], b: [f32; 2], r0: f32, r1: f32) -> f32 {
+    let ba = [b[0] - a[0], b[1] - a[1]];
+    let l = ba[0].hypot(ba[1]);
+    if l <= 1e-8 {
+        return (point[0] - a[0]).hypot(point[1] - a[1]) - r0.max(r1);
+    }
+    let tx = ba[0] / l;
+    let ty = ba[1] / l;
+    let nx = -ty;
+    let ny = tx;
+    let pa0 = point[0] - a[0];
+    let pa1 = point[1] - a[1];
+    let along = pa0 * tx + pa1 * ty;
+    let perp = (pa0 * nx + pa1 * ny).abs();
+    let dr = r0 - r1;
+    if dr.abs() >= l {
+        return if r0 > r1 {
+            (point[0] - a[0]).hypot(point[1] - a[1]) - r0
+        } else {
+            (point[0] - b[0]).hypot(point[1] - b[1]) - r1
+        };
+    }
+    let sin_a = dr / l;
+    let cos_a = (1.0 - sin_a * sin_a).max(0.0).sqrt();
+    let k = along * cos_a - perp * sin_a;
+    if k < 0.0 {
+        return (point[0] - a[0]).hypot(point[1] - a[1]) - r0;
+    }
+    if k > cos_a * l {
+        return (point[0] - b[0]).hypot(point[1] - b[1]) - r1;
+    }
+    along * sin_a + perp * cos_a - r0
+}
+
+#[cfg(test)]
+fn sd_stroke(
+    point: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
+    r0: f32,
+    r1: f32,
+    start: StrokeCap,
+    end: StrokeCap,
+) -> f32 {
+    let (a, start) = square_end(a, b, r0, start, true);
+    let (b, end) = square_end(a, b, r1, end, false);
+    let mut distance = sd_variable_capsule(point, a, b, r0, r1);
+    if start == StrokeCap::Butt || end == StrokeCap::Butt {
+        let ba = [b[0] - a[0], b[1] - a[1]];
+        let seg_len = ba[0].hypot(ba[1]).max(1e-8);
+        let local_x = (point[0] - a[0]) * (ba[0] / seg_len) + (point[1] - a[1]) * (ba[1] / seg_len);
+        if start == StrokeCap::Butt {
+            distance = distance.max(-local_x);
+        }
+        if end == StrokeCap::Butt {
+            distance = distance.max(local_x - seg_len);
+        }
+    }
+    distance
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::clip::{IDENTITY_AFFINE, invert_affine, transform_point};
     use super::*;
-
-    /// Extra logical pixels so the covering quad has room for `fwidth` AA.
-    const STROKE_AA_FRINGE: f32 = 1.0;
 
     fn capsule_distance(point: [f32; 2], p0: [f32; 2], p1: [f32; 2]) -> f32 {
         let pa = [point[0] - p0[0], point[1] - p0[1]];
@@ -768,90 +1193,6 @@ mod tests {
         };
         let closest = [p0[0] + ba[0] * t, p0[1] + ba[1] * t];
         (point[0] - closest[0]).hypot(point[1] - closest[1])
-    }
-
-    fn sd_variable_capsule(point: [f32; 2], a: [f32; 2], b: [f32; 2], r0: f32, r1: f32) -> f32 {
-        capsule_distance(point, a, b) - {
-            let pa = [point[0] - a[0], point[1] - a[1]];
-            let ba = [b[0] - a[0], b[1] - a[1]];
-            let denom = ba[0] * ba[0] + ba[1] * ba[1];
-            let t = if denom <= f32::EPSILON {
-                0.0
-            } else {
-                ((pa[0] * ba[0] + pa[1] * ba[1]) / denom).clamp(0.0, 1.0)
-            };
-            r0 + (r1 - r0) * t
-        }
-    }
-
-    fn sd_stroke(
-        point: [f32; 2],
-        a: [f32; 2],
-        b: [f32; 2],
-        r0: f32,
-        r1: f32,
-        start: StrokeCap,
-        end: StrokeCap,
-    ) -> f32 {
-        let (a, start) = square_end(a, b, r0, start, true);
-        let (b, end) = square_end(a, b, r1, end, false);
-        let mut distance = sd_variable_capsule(point, a, b, r0, r1);
-        if start == StrokeCap::Butt || end == StrokeCap::Butt {
-            let ba = [b[0] - a[0], b[1] - a[1]];
-            let seg_len = ba[0].hypot(ba[1]).max(1e-8);
-            let local_x =
-                (point[0] - a[0]) * (ba[0] / seg_len) + (point[1] - a[1]) * (ba[1] / seg_len);
-            if start == StrokeCap::Butt {
-                distance = distance.max(-local_x);
-            }
-            if end == StrokeCap::Butt {
-                distance = distance.max(local_x - seg_len);
-            }
-        }
-        distance
-    }
-
-    fn covering_corner(
-        p0: [f32; 2],
-        p1: [f32; 2],
-        r0: f32,
-        r1: f32,
-        start: StrokeCap,
-        end: StrokeCap,
-        corner: [f32; 2],
-    ) -> Option<[f32; 2]> {
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let seg_len = dx.hypot(dy);
-        if !seg_len.is_finite() || seg_len < f32::EPSILON {
-            return None;
-        }
-        let tx = dx / seg_len;
-        let ty = dy / seg_len;
-        let nx = -ty;
-        let ny = tx;
-        let end0 = match start {
-            StrokeCap::Round | StrokeCap::Square => r0 + STROKE_AA_FRINGE,
-            StrokeCap::Butt => STROKE_AA_FRINGE,
-        };
-        let end1 = match end {
-            StrokeCap::Round | StrokeCap::Square => r1 + STROKE_AA_FRINGE,
-            StrokeCap::Butt => STROKE_AA_FRINGE,
-        };
-        let side = if corner[0] < 0.0 {
-            r0 + STROKE_AA_FRINGE
-        } else {
-            r1 + STROKE_AA_FRINGE
-        };
-        let along = if corner[0] < 0.0 {
-            -end0
-        } else {
-            seg_len + end1
-        };
-        Some([
-            p0[0] + tx * along + nx * (corner[1] * side),
-            p0[1] + ty * along + ny * (corner[1] * side),
-        ])
     }
 
     #[test]
@@ -870,9 +1211,11 @@ mod tests {
         assert_eq!(instances[0].p1, [10.0, 0.0]);
         assert_eq!(instances[0].radii, [2.0, 2.0]);
         assert_eq!(
-            instances[0].clip_inv_ef_cap[3],
+            instances[0].packed_caps,
             pack_caps(StrokeCap::Round, StrokeCap::Round)
         );
+        assert_eq!(instances[0].affine, IDENTITY_AFFINE);
+        assert_eq!(std::mem::size_of::<MeshInstance>(), 72);
         let pad = 2.0 + STROKE_AA_FRINGE;
         let corner = covering_corner(
             instances[0].p0,
@@ -924,11 +1267,11 @@ mod tests {
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(
-            instances[0].clip_inv_ef_cap[3],
+            instances[0].packed_caps,
             pack_caps(StrokeCap::Round, StrokeCap::Round)
         );
         assert_eq!(
-            instances[1].clip_inv_ef_cap[3],
+            instances[1].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
         );
         let join = [8.0, 0.0];
@@ -985,12 +1328,117 @@ mod tests {
             StrokeCap::Round,
             [1.0, 1.0, 1.0, 1.0],
         );
-        apply_affine_to_instances(&mut instances, 0, [2.0, 0.0, 0.0, 2.0, 5.0, 7.0]);
-        assert!((instances[0].p0[0] - 5.0).abs() < 1e-5);
-        assert!((instances[0].p0[1] - 7.0).abs() < 1e-5);
-        assert!((instances[0].p1[0] - 13.0).abs() < 1e-5);
-        assert!((instances[0].radii[0] - 2.0).abs() < 1e-5);
-        assert!((instances[0].radii[1] - 2.0).abs() < 1e-5);
+        let affine = [2.0, 0.0, 0.0, 2.0, 5.0, 7.0];
+        apply_affine_to_instances(&mut instances, 0, affine);
+        assert_eq!(instances[0].p0, [0.0, 0.0]);
+        assert_eq!(instances[0].p1, [4.0, 0.0]);
+        assert_eq!(instances[0].radii, [1.0, 1.0]);
+        assert_eq!(instances[0].affine, affine);
+        let world0 = transform_point(affine, instances[0].p0[0], instances[0].p0[1]);
+        let world1 = transform_point(affine, instances[0].p1[0], instances[0].p1[1]);
+        assert!((world0[0] - 5.0).abs() < 1e-5);
+        assert!((world0[1] - 7.0).abs() < 1e-5);
+        assert!((world1[0] - 13.0).abs() < 1e-5);
+        let inv = invert_affine(affine).expect("invert");
+        let back = transform_point(inv, world0[0], world0[1]);
+        assert!((back[0]).abs() < 1e-5);
+        assert!((back[1]).abs() < 1e-5);
+        let world_edge = transform_point(affine, 2.0, 1.0);
+        assert!(
+            (world_edge[1] - 9.0).abs() < 1e-5,
+            "uniform scale 2 maps local radius 1 to world radius 2, got {world_edge:?}"
+        );
+    }
+
+    #[test]
+    fn affine_non_uniform_scale_covers_the_stretched_ellipse() {
+        let mut instances = Vec::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [4.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        // Local disc r=1; affine maps it to ellipse 2 × 0.5, not a min-axis disc.
+        let affine = [2.0, 0.0, 0.0, 0.5, 5.0, 7.0];
+        apply_affine_to_instances(&mut instances, 0, affine);
+        assert_eq!(instances[0].p0, [0.0, 0.0]);
+        assert_eq!(instances[0].p1, [4.0, 0.0]);
+        assert_eq!(instances[0].radii, [1.0, 1.0]);
+        assert_eq!(instances[0].affine, affine);
+        let inv = invert_affine(affine).expect("invert");
+        // Local (−0.5, 0) is inside the start disc; world (4, 7) is outside a
+        // baked min-axis disc of 0.5.
+        let world_stretched = transform_point(affine, -0.5, 0.0);
+        assert!((world_stretched[0] - 4.0).abs() < 1e-5);
+        assert!((world_stretched[1] - 7.0).abs() < 1e-5);
+        let local = transform_point(inv, world_stretched[0], world_stretched[1]);
+        assert!(
+            sd_stroke(
+                local,
+                instances[0].p0,
+                instances[0].p1,
+                instances[0].radii[0],
+                instances[0].radii[1],
+                StrokeCap::Round,
+                StrokeCap::Round,
+            ) < 0.0,
+            "stretched-axis sample must stay inside the local disc SDF"
+        );
+        let local_end = covering_with_fringe(
+            instances[0].p0,
+            instances[0].p1,
+            instances[0].radii[0],
+            instances[0].radii[1],
+            StrokeCap::Round,
+            StrokeCap::Round,
+            local_aa_fringe([2.0, 0.0, 0.0, 0.5], 1.0),
+            [-1.0, 0.0],
+        )
+        .expect("quad");
+        let world_cover = transform_point(affine, local_end[0], local_end[1]);
+        let p0_world = transform_point(affine, 0.0, 0.0);
+        let ellipse_along_x = instances[0].radii[0] * 2.0;
+        assert!(
+            world_cover[0] <= p0_world[0] - ellipse_along_x + 1e-4,
+            "covering quad must enclose the stretched ellipse, cover={} p0={} extent={}",
+            world_cover[0],
+            p0_world[0],
+            ellipse_along_x
+        );
+        let fringe = local_aa_fringe([2.0, 0.0, 0.0, 0.5], 1.0);
+        assert!(
+            world_cover[0] <= p0_world[0] - ellipse_along_x - fringe * 2.0 + 1e-3,
+            "1/σ_min local pad must survive the stretch, cover={} expected<={}",
+            world_cover[0],
+            p0_world[0] - ellipse_along_x - fringe * 2.0
+        );
+    }
+
+    #[test]
+    fn affine_rotation_does_not_change_radius() {
+        let mut instances = Vec::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [4.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+        // 90° CCW: (x, y) -> (-y, x). Rotation lives in the affine; local
+        // radii stay 1 so isotropic scale of the disc is unchanged.
+        let affine = [0.0, 1.0, -1.0, 0.0, 0.0, 0.0];
+        apply_affine_to_instances(&mut instances, 0, affine);
+        assert_eq!(instances[0].p0, [0.0, 0.0]);
+        assert_eq!(instances[0].p1, [4.0, 0.0]);
+        assert_eq!(instances[0].radii, [1.0, 1.0]);
+        assert_eq!(instances[0].affine, affine);
+        let world1 = transform_point(affine, instances[0].p1[0], instances[0].p1[1]);
+        assert!((world1[0]).abs() < 1e-5);
+        assert!((world1[1] - 4.0).abs() < 1e-5);
     }
 
     #[test]
@@ -1046,6 +1494,26 @@ mod tests {
         assert!(sd_variable_capsule([20.0, 0.4], p0, p1, 4.0, 1.0) < 0.0);
         assert!(sd_variable_capsule([20.0, 2.0], p0, p1, 4.0, 1.0) > 0.0);
         assert!(sd_variable_capsule([10.0, 0.0], p0, p1, 4.0, 1.0) < 0.0);
+    }
+
+    #[test]
+    fn variable_capsule_uses_external_tangents() {
+        let p0 = [0.0, 0.0];
+        let p1 = [10.0, 0.0];
+        // Naive centerline lerp at x=5 is mix(4,1,0.5)=2.5. The hull's
+        // external tangent sits farther out (~2.62), so this point is inside.
+        assert!(sd_variable_capsule([5.0, 2.55], p0, p1, 4.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([5.0, 3.5], p0, p1, 4.0, 1.0) > 0.0);
+    }
+
+    #[test]
+    fn variable_capsule_larger_disc_contains_smaller() {
+        let p0 = [0.0, 0.0];
+        let p1 = [5.0, 0.0];
+        assert!(sd_variable_capsule([5.0, 6.0], p0, p1, 10.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([0.0, 9.5], p0, p1, 10.0, 1.0) < 0.0);
+        assert!(sd_variable_capsule([0.0, 11.0], p0, p1, 10.0, 1.0) > 0.0);
+        assert!(sd_variable_capsule([8.0, 0.0], p0, p1, 10.0, 1.0) < 0.0);
     }
 
     #[test]
@@ -1106,21 +1574,89 @@ mod tests {
     }
 
     #[test]
-    fn tapered_covering_quad_is_a_trapezoid() {
+    fn tapered_covering_quad_contains_external_tangents() {
+        let p0 = [0.0, 0.0];
+        let p1 = [10.0, 0.0];
+        let r0 = 4.0;
+        let r1 = 1.0;
         let thick = covering_corner(
-            [0.0, 0.0],
-            [10.0, 0.0],
-            4.0,
-            1.0,
+            p0,
+            p1,
+            r0,
+            r1,
             StrokeCap::Round,
             StrokeCap::Round,
             [-1.0, 1.0],
         )
         .expect("quad");
         let thin = covering_corner(
+            p0,
+            p1,
+            r0,
+            r1,
+            StrokeCap::Round,
+            StrokeCap::Round,
+            [1.0, 1.0],
+        )
+        .expect("quad");
+        assert!(
+            thick[1] >= r0 + STROKE_AA_FRINGE - 1e-4,
+            "start corner must cover the large disc, got {}",
+            thick[1]
+        );
+        let span = thin[0] - thick[0];
+        for x in [0.0, 5.0, 10.0] {
+            let t = (x - thick[0]) / span;
+            let cover_y = thick[1] + t * (thin[1] - thick[1]);
+            let distance = sd_variable_capsule([x, cover_y], p0, p1, r0, r1);
+            assert!(
+                distance >= -1e-3,
+                "covering edge at x={x} must not sit inside the hull, sd={distance}"
+            );
+        }
+        let t0 = (0.0 - thick[0]) / span;
+        let cover_at_start = thick[1] + t0 * (thin[1] - thick[1]);
+        assert!(
+            cover_at_start >= r0 + STROKE_AA_FRINGE - 1e-3,
+            "expanded start disc must stay inside the trapezoid, got {cover_at_start}"
+        );
+        let t1 = (10.0 - thick[0]) / span;
+        let cover_at_end = thick[1] + t1 * (thin[1] - thick[1]);
+        assert!(
+            cover_at_end >= r1 + STROKE_AA_FRINGE - 1e-3,
+            "expanded end disc must stay inside the trapezoid, got {cover_at_end}"
+        );
+
+        let uniform0 = covering_corner(
+            p0,
+            p1,
+            2.0,
+            2.0,
+            StrokeCap::Round,
+            StrokeCap::Round,
+            [-1.0, 1.0],
+        )
+        .expect("quad");
+        let uniform1 = covering_corner(
+            p0,
+            p1,
+            2.0,
+            2.0,
+            StrokeCap::Round,
+            StrokeCap::Round,
+            [1.0, 1.0],
+        )
+        .expect("quad");
+        assert!((uniform0[1] - (2.0 + STROKE_AA_FRINGE)).abs() < 1e-4);
+        assert!((uniform1[1] - (2.0 + STROKE_AA_FRINGE)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn covering_quad_contains_larger_disc_when_nested() {
+        let far = covering_corner(
             [0.0, 0.0],
-            [10.0, 0.0],
-            4.0,
+            [5.0, 0.0],
+            10.0,
             1.0,
             StrokeCap::Round,
             StrokeCap::Round,
@@ -1128,14 +1664,14 @@ mod tests {
         )
         .expect("quad");
         assert!(
-            thick[1] >= 4.0 + STROKE_AA_FRINGE - 1e-4,
-            "start side pad follows r0, got {}",
-            thick[1]
+            far[0] >= 10.0 + STROKE_AA_FRINGE - 1e-3,
+            "nested larger disc must cover past the small end, got {}",
+            far[0]
         );
         assert!(
-            (thin[1] - (1.0 + STROKE_AA_FRINGE)).abs() < 1e-4,
-            "end side pad follows r1, got {}",
-            thin[1]
+            far[1] >= 10.0 + STROKE_AA_FRINGE - 1e-3,
+            "nested larger disc must keep its radius, got {}",
+            far[1]
         );
     }
 
@@ -1152,16 +1688,195 @@ mod tests {
         );
         assert_eq!(instances.len(), 3);
         assert_eq!(
-            instances[0].clip_inv_ef_cap[3],
+            instances[0].packed_caps,
             pack_caps(StrokeCap::Round, StrokeCap::Round)
         );
         assert_eq!(
-            instances[1].clip_inv_ef_cap[3],
+            instances[1].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
         );
         assert_eq!(
-            instances[2].clip_inv_ef_cap[3],
+            instances[2].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+    }
+
+    #[test]
+    fn closed_round_polyline_shares_one_disc_at_the_close() {
+        let mut instances = Vec::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 3);
+        assert_eq!(
+            instances[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[1].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[2].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        let close = [0.0, 0.0];
+        assert!(
+            sd_stroke(
+                close,
+                instances[2].p0,
+                instances[2].p1,
+                instances[2].radii[0],
+                instances[2].radii[1],
+                StrokeCap::Butt,
+                StrokeCap::Round,
+            ) <= 1e-5,
+            "last end disc covers the close vertex"
+        );
+        assert!(
+            sd_stroke(
+                [-0.5, 0.0],
+                instances[0].p0,
+                instances[0].p1,
+                instances[0].radii[0],
+                instances[0].radii[1],
+                StrokeCap::Butt,
+                StrokeCap::Round,
+            ) > 0.0,
+            "first start is Butt: no second disc past the close"
+        );
+    }
+
+    #[test]
+    fn closed_butt_polyline_keeps_both_close_ends_butt() {
+        let mut instances = Vec::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Butt,
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 3);
+        let butt = pack_caps(StrokeCap::Butt, StrokeCap::Butt);
+        assert!(
+            instances
+                .iter()
+                .all(|instance| instance.packed_caps == butt)
+        );
+        assert!(
+            sd_stroke(
+                [-0.5, 0.0],
+                instances[0].p0,
+                instances[0].p1,
+                1.0,
+                1.0,
+                StrokeCap::Butt,
+                StrokeCap::Butt,
+            ) > 0.0
+        );
+        assert!(
+            sd_stroke(
+                [-0.5, 0.0],
+                instances[2].p0,
+                instances[2].p1,
+                1.0,
+                1.0,
+                StrokeCap::Butt,
+                StrokeCap::Butt,
+            ) > 0.0
+        );
+    }
+
+    #[test]
+    fn open_polyline_keeps_two_end_caps() {
+        let mut closed = Vec::new();
+        append_stroke_instances(
+            &mut closed,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        let mut open = Vec::new();
+        append_stroke_instances(
+            &mut open,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        assert_eq!(open.len(), 2);
+        assert_eq!(
+            open[0].packed_caps,
+            pack_caps(StrokeCap::Round, StrokeCap::Round)
+        );
+        assert_eq!(
+            open[1].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_ne!(open[0].packed_caps, closed[0].packed_caps);
+    }
+
+    #[test]
+    fn duplicate_close_vertex_is_skipped_and_still_closed() {
+        let mut closed = Vec::new();
+        append_stroke_instances(
+            &mut closed,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        let mut duplicate = Vec::new();
+        append_stroke_instances(
+            &mut duplicate,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0], [0.0, 0.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        assert_eq!(duplicate, closed);
+        assert_eq!(duplicate.len(), 3);
+        assert_eq!(
+            duplicate[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_eq!(
+            duplicate[2].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+    }
+
+    #[test]
+    fn closed_square_polyline_butts_the_close_instead_of_double_expand() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]],
+            solid_style(4.0, &[], StrokeCap::Square),
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 3);
+        assert_eq!(instances[0].p0, [0.0, 0.0]);
+        assert_eq!(instances[2].p1, [0.0, 0.0]);
+        assert_eq!(
+            instances[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        assert_eq!(
+            instances[2].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Butt)
         );
     }
 
@@ -1172,6 +1887,7 @@ mod tests {
             cap,
             dash: &[],
             dash_offset: 0.0,
+            path_length: 0.0,
             colors: &[],
         }
     }
@@ -1202,6 +1918,7 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[-4.0, 2.0],
                 dash_offset: 3.0,
+                path_length: 0.0,
                 colors: &[[0.0, 1.0, 0.0, 1.0]],
             },
             color,
@@ -1226,7 +1943,7 @@ mod tests {
         assert!((instances[0].p0[0] + 2.0).abs() < 1e-5);
         assert!((instances[0].p1[0] - 12.0).abs() < 1e-5);
         assert_eq!(
-            instances[0].clip_inv_ef_cap[3],
+            instances[0].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Butt)
         );
         assert!(
@@ -1276,6 +1993,7 @@ mod tests {
                 cap: StrokeCap::Butt,
                 dash: &[10.0, 10.0],
                 dash_offset: 0.0,
+                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
@@ -1285,6 +2003,84 @@ mod tests {
         assert!((instances[0].p1[0] - 10.0).abs() < 1e-4);
         assert!((instances[1].p0[0] - 20.0).abs() < 1e-4);
         assert!((instances[1].p1[0] - 30.0).abs() < 1e-4);
+    }
+
+    fn dashed_line_style(path_length: f32) -> StrokeStyle<'static> {
+        StrokeStyle {
+            width: 2.0,
+            widths: &[],
+            cap: StrokeCap::Butt,
+            dash: &[10.0, 10.0],
+            dash_offset: 0.0,
+            path_length,
+            colors: &[],
+        }
+    }
+
+    #[test]
+    fn path_length_twice_geometry_halves_dash_period() {
+        // 40px line, dash 10,10 → two on-segments. path_length = 80 maps
+        // geometric s → 2s (dashes in pathLength units), so on-dashes are
+        // 5px and four on-segments cover the line.
+        let points = [[0.0, 0.0], [40.0, 0.0]];
+        let mut geometric = Vec::new();
+        emit_stroke_instances(&mut geometric, &points, dashed_line_style(0.0), [1.0; 4]);
+        assert_eq!(geometric.len(), 2);
+        let mut scaled = Vec::new();
+        emit_stroke_instances(&mut scaled, &points, dashed_line_style(80.0), [1.0; 4]);
+        assert_eq!(scaled.len(), 4);
+        assert_eq!(scaled[0].p0, [0.0, 0.0]);
+        assert!((scaled[0].p1[0] - 5.0).abs() < 1e-4);
+        assert!((scaled[1].p0[0] - 10.0).abs() < 1e-4);
+        assert!((scaled[1].p1[0] - 15.0).abs() < 1e-4);
+        assert!((scaled[2].p0[0] - 20.0).abs() < 1e-4);
+        assert!((scaled[2].p1[0] - 25.0).abs() < 1e-4);
+        assert!((scaled[3].p0[0] - 30.0).abs() < 1e-4);
+        assert!((scaled[3].p1[0] - 35.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn unset_path_length_keeps_geometric_dash() {
+        let points = [[0.0, 0.0], [40.0, 0.0]];
+        let mut baseline = Vec::new();
+        emit_stroke_instances(&mut baseline, &points, dashed_line_style(0.0), [1.0; 4]);
+        for path_length in [0.0, -8.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut instances = Vec::new();
+            emit_stroke_instances(
+                &mut instances,
+                &points,
+                dashed_line_style(path_length),
+                [1.0; 4],
+            );
+            assert_eq!(
+                instances, baseline,
+                "path_length {path_length} must match geometric dash"
+            );
+        }
+    }
+
+    #[test]
+    fn solid_stroke_ignores_path_length() {
+        let points = [[0.0, 0.0], [40.0, 0.0]];
+        let color = [1.0; 4];
+        let mut geometric = Vec::new();
+        emit_stroke_instances(
+            &mut geometric,
+            &points,
+            solid_style(2.0, &[], StrokeCap::Round),
+            color,
+        );
+        let mut scaled = Vec::new();
+        emit_stroke_instances(
+            &mut scaled,
+            &points,
+            StrokeStyle {
+                path_length: 80.0,
+                ..solid_style(2.0, &[], StrokeCap::Round)
+            },
+            color,
+        );
+        assert_eq!(scaled, geometric);
     }
 
     #[test]
@@ -1299,6 +2095,7 @@ mod tests {
                 cap: StrokeCap::Butt,
                 dash: &[10.0],
                 dash_offset: 0.0,
+                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
@@ -1314,6 +2111,7 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[0.0, 0.0],
                 dash_offset: 0.0,
+                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
@@ -1333,18 +2131,289 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[100.0, 4.0],
                 dash_offset: 0.0,
+                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(
-            instances[0].clip_inv_ef_cap[3],
+            instances[0].packed_caps,
             pack_caps(StrokeCap::Round, StrokeCap::Butt)
         );
         assert_eq!(
-            instances[1].clip_inv_ef_cap[3],
+            instances[1].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+    }
+
+    #[test]
+    fn dash_mid_segment_uses_stroke_cap() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [40.0, 0.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[10.0, 10.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 2);
+        let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
+        assert_eq!(instances[0].packed_caps, round);
+        assert_eq!(instances[1].packed_caps, round);
+        assert!((instances[1].p0[0] - 20.0).abs() < 1e-4);
+        assert!((instances[1].p1[0] - 30.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn continuous_dash_skips_zero_length_like_solid() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 0.0], [8.0, 8.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[100.0, 4.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].packed_caps,
+            pack_caps(StrokeCap::Round, StrokeCap::Butt)
+        );
+        assert_eq!(
+            instances[1].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+    }
+
+    #[test]
+    fn dash_square_cap_expands_open_ends_onto_butt() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [40.0, 0.0]],
+            StrokeStyle {
+                width: 4.0,
+                widths: &[],
+                cap: StrokeCap::Square,
+                dash: &[10.0, 10.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 2);
+        assert!((instances[0].p0[0] + 2.0).abs() < 1e-5);
+        assert!((instances[0].p1[0] - 12.0).abs() < 1e-5);
+        assert!((instances[1].p0[0] - 18.0).abs() < 1e-5);
+        assert!((instances[1].p1[0] - 32.0).abs() < 1e-5);
+        assert_eq!(
+            instances[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Butt)
+        );
+    }
+
+    #[test]
+    fn closed_dash_butts_once_when_on_across_the_close() {
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 0.0]],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[100.0, 4.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert_eq!(instances.len(), 3);
+        let butt = pack_caps(StrokeCap::Butt, StrokeCap::Butt);
+        assert!(
+            instances
+                .iter()
+                .all(|instance| instance.packed_caps == butt),
+            "ON dash wrapping the close Butt-joins like other vertices"
+        );
+    }
+
+    #[test]
+    fn closed_dash_first_start_is_butt_when_wrap_on() {
+        // Square length 40. Pattern [9, 7] cycle 16: ON at s=0 and at s=40−
+        // (40 % 16 = 8, still in the 9 ON). First slice is 0..9 on the first
+        // edge, so start Butt is wrap, not an interior vertex join.
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 10.0],
+                [0.0, 10.0],
+                [0.0, 0.0],
+            ],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[9.0, 7.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert!(
+            !instances.is_empty(),
+            "wrap-ON closed dash still emits slices"
+        );
+        assert_eq!(
+            instances[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round),
+            "first drawable start is Butt so the close shares one disc"
+        );
+        assert!((instances[0].p0[0]).abs() < 1e-4 && (instances[0].p0[1]).abs() < 1e-4);
+        assert!((instances[0].p1[0] - 9.0).abs() < 1e-4);
+        let last = instances.last().expect("last slice");
+        assert_eq!(
+            last.packed_caps,
+            pack_caps(StrokeCap::Round, StrokeCap::Butt),
+            "last drawable end is Butt when wrap ON"
+        );
+        assert!((last.p1[0]).abs() < 1e-4 && (last.p1[1]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn closed_dash_gap_at_close_uses_stroke_cap() {
+        // Cycle 10 on length 40: s=0 is ON, s=40− is OFF (last interval).
+        // Open dash ends at the close use Round, same as a mid-segment cut.
+        let mut instances = Vec::new();
+        emit_stroke_instances(
+            &mut instances,
+            &[
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 10.0],
+                [0.0, 10.0],
+                [0.0, 0.0],
+            ],
+            StrokeStyle {
+                width: 2.0,
+                widths: &[],
+                cap: StrokeCap::Round,
+                dash: &[6.0, 4.0],
+                dash_offset: 0.0,
+                path_length: 0.0,
+                colors: &[],
+            },
+            [1.0; 4],
+        );
+        assert!(!instances.is_empty(), "gap at close still emits ON slices");
+        let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
+        assert_eq!(
+            instances[0].packed_caps, round,
+            "first start is the stroke cap when the close is a gap"
+        );
+        assert_eq!(
+            instances.last().expect("last slice").packed_caps,
+            round,
+            "last ON end is the stroke cap when it does not wrap"
+        );
+    }
+
+    #[test]
+    fn closed_dash_offset_shifts_wrap_join() {
+        let points = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
+        let style = |dash_offset: f32| StrokeStyle {
+            width: 2.0,
+            widths: &[],
+            cap: StrokeCap::Round,
+            dash: &[6.0, 4.0],
+            dash_offset,
+            path_length: 0.0,
+            colors: &[],
+        };
+        let mut no_wrap = Vec::new();
+        emit_stroke_instances(&mut no_wrap, &points, style(0.0), [1.0; 4]);
+        assert_eq!(
+            no_wrap[0].packed_caps,
+            pack_caps(StrokeCap::Round, StrokeCap::Round)
+        );
+
+        let mut wrap = Vec::new();
+        emit_stroke_instances(&mut wrap, &points, style(2.0), [1.0; 4]);
+        assert_eq!(
+            wrap[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round),
+            "dash_offset 2 puts both close sides in ON"
+        );
+        assert_eq!(
+            wrap.last().expect("last slice").packed_caps,
+            pack_caps(StrokeCap::Round, StrokeCap::Butt)
+        );
+    }
+
+    #[test]
+    fn path_length_scales_closed_wrap_join() {
+        // Square length 40, dash [9, 7] cycle 16: wrap ON without pathLength.
+        // path_length = 80 samples the close at 80− (OFF), so the close is a gap.
+        let points = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
+        let style = |path_length: f32| StrokeStyle {
+            width: 2.0,
+            widths: &[],
+            cap: StrokeCap::Round,
+            dash: &[9.0, 7.0],
+            dash_offset: 0.0,
+            path_length,
+            colors: &[],
+        };
+        let mut wrap = Vec::new();
+        emit_stroke_instances(&mut wrap, &points, style(0.0), [1.0; 4]);
+        assert_eq!(
+            wrap[0].packed_caps,
+            pack_caps(StrokeCap::Butt, StrokeCap::Round)
+        );
+        let mut scaled = Vec::new();
+        emit_stroke_instances(&mut scaled, &points, style(80.0), [1.0; 4]);
+        let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
+        assert_eq!(
+            scaled[0].packed_caps, round,
+            "scaled close is OFF, so first start uses the stroke cap"
+        );
+        assert_eq!(
+            scaled.last().expect("last slice").packed_caps,
+            round,
+            "scaled close is OFF, so last ON end uses the stroke cap"
         );
     }
 
@@ -1360,6 +2429,7 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[],
                 dash_offset: 0.0,
+                path_length: 0.0,
                 colors: &[
                     [1.0, 0.0, 0.0, 1.0],
                     [0.0, 1.0, 0.0, 1.0],
@@ -1371,5 +2441,117 @@ mod tests {
         assert_eq!(instances.len(), 2);
         assert_eq!(instances[0].color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(instances[1].color, [0.0, 1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn stamp_interns_identical_clips_once() {
+        let mut instances = Vec::new();
+        let mut clips = Vec::new();
+        let mut intern = HashMap::new();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 0.0], [8.0, 0.0], [8.0, 8.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        stamp_fragment_clip(
+            &mut instances,
+            &mut clips,
+            &mut intern,
+            0,
+            FragmentClip::PASS,
+        );
+        assert_eq!(clips.len(), 1);
+        assert!(instances.iter().all(|instance| instance.clip_index == 0));
+        let start = instances.len();
+        append_stroke_instances(
+            &mut instances,
+            &[[0.0, 8.0], [4.0, 8.0]],
+            2.0,
+            &[],
+            StrokeCap::Round,
+            [1.0; 4],
+        );
+        stamp_fragment_clip(
+            &mut instances,
+            &mut clips,
+            &mut intern,
+            start,
+            FragmentClip::PASS,
+        );
+        assert_eq!(clips.len(), 1);
+        stamp_fragment_clip(
+            &mut instances,
+            &mut clips,
+            &mut intern,
+            start,
+            FragmentClip::REJECT,
+        );
+        assert_eq!(clips.len(), 2);
+        assert_eq!(instances[start].clip_index, 1);
+        assert_eq!(instances[0].clip_index, 0);
+    }
+
+    #[test]
+    fn intern_clip_keeps_polygon_vertices() {
+        let mut clip = FragmentClip::PASS;
+        clip.polygon_count = 3;
+        clip.polygon[0] = [0.0, 0.0];
+        clip.polygon[1] = [64.0, 0.0];
+        clip.polygon[2] = [32.0, 64.0];
+        let packed = GpuClip::from_fragment(clip);
+        assert_eq!(packed.inv_ef_radius[3], 3.0);
+        assert_eq!(packed.poly0, [0.0, 0.0, 64.0, 0.0]);
+        assert_eq!(packed.poly1[0], 32.0);
+        assert_eq!(packed.poly1[1], 64.0);
+        assert_eq!(std::mem::size_of::<GpuClip>(), 112);
+    }
+
+    #[test]
+    fn local_aa_fringe_matches_shader_one_over_sigma_min() {
+        assert!((local_aa_fringe([1.0, 0.0, 0.0, 1.0], 1.0) - 1.0).abs() < 1e-5);
+        let squashed = local_aa_fringe([2.0, 0.0, 0.0, 0.5], 1.0);
+        assert!(
+            (squashed - 2.0).abs() < 1e-4,
+            "σ_min of scale(2, 0.5) is 0.5 so fringe is 2, got {squashed}"
+        );
+        let zoomed_out = local_aa_fringe([1.0, 0.0, 0.0, 1.0], 0.5);
+        assert!(
+            (zoomed_out - 2.0).abs() < 1e-5,
+            "viewport 0.5 must lift the 1px physical pad into 2 local px, got {zoomed_out}"
+        );
+        let zoomed_in = local_aa_fringe([1.0, 0.0, 0.0, 1.0], 2.0);
+        assert!(
+            (zoomed_in - 0.5).abs() < 1e-5,
+            "viewport 2 must keep a 1 physical px pad, got {zoomed_in}"
+        );
+        let combined = local_aa_fringe([2.0, 0.0, 0.0, 0.5], 0.5);
+        assert!(
+            (combined - 4.0).abs() < 1e-4,
+            "σ_min 0.5 and viewport 0.5 must compose, got {combined}"
+        );
+    }
+
+    #[test]
+    fn intern_keeps_negative_zero_and_nan_payloads_distinct() {
+        let mut clips = Vec::new();
+        let mut intern = HashMap::new();
+        let mut plus_zero = FragmentClip::PASS;
+        plus_zero.rect[0] = 0.0;
+        let mut minus_zero = FragmentClip::PASS;
+        minus_zero.rect[0] = -0.0;
+        assert_eq!(intern_clip(&mut clips, &mut intern, plus_zero), 0);
+        assert_eq!(intern_clip(&mut clips, &mut intern, minus_zero), 1);
+        assert_eq!(intern_clip(&mut clips, &mut intern, plus_zero), 0);
+        let mut nan_a = FragmentClip::PASS;
+        nan_a.corner_radius = f32::from_bits(0x7fc0_0001);
+        let mut nan_b = FragmentClip::PASS;
+        nan_b.corner_radius = f32::from_bits(0x7fc0_0002);
+        assert_eq!(intern_clip(&mut clips, &mut intern, nan_a), 2);
+        assert_eq!(intern_clip(&mut clips, &mut intern, nan_a), 2);
+        assert_eq!(intern_clip(&mut clips, &mut intern, nan_b), 3);
+        assert_eq!(clips.len(), 4);
     }
 }
