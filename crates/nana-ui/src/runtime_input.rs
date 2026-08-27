@@ -290,12 +290,13 @@ impl RuntimeInputAdapter {
                         let dock_source = target
                             .filter(|id| context.is_dock_item_source(*id))
                             .or_else(|| context.dock_tab_strip_near(document, *x, *y));
-                        if let Some(target) =
-                            dock_handle.or(split_handle).or(workspace_handle).or(target)
-                        {
-                            if let Some(focus) = nearest_focusable(context, target) {
-                                context.focus_node(document, focus)?;
-                            }
+                        let hit = dock_handle.or(split_handle).or(workspace_handle).or(target);
+                        if let Some(focus) = hit.and_then(|id| nearest_focusable(context, id)) {
+                            context.focus_node(document, focus)?;
+                        } else {
+                            context.clear_focus(document)?;
+                        }
+                        if let Some(target) = hit {
                             if context.is_graph_canvas(target) {
                                 context.begin_graph_canvas_pointer(
                                     document,
@@ -808,11 +809,11 @@ mod tests {
         ImeEvent, InputModifiers, MemoryClipboard, PointerType, shared_clipboard,
     };
     use nana_ui_runtime::{
-        ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum,
-        Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, ModalSlots, MutationQueue,
-        OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView,
-        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow,
-        Text, TextArea, TextInput,
+        ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Card,
+        ComponentGeometry, Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, MeasureTextShaper,
+        ModalSlots, MutationQueue, OverlayHost, OverlayHostState, RangeField, ScrollAxes,
+        ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
+        Table, TableCell, TableRow, Text, TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1043,6 +1044,146 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().focused(document), Some(input.stable_id()));
+    }
+
+    fn write_hit_box(
+        context: &mut AppContext,
+        id: nana_ui_runtime::StableNodeId,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) {
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            id,
+            LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+    }
+
+    fn resolve_text_geometry(context: &mut AppContext, document: DocumentId) {
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
+        context.rebuild_hit_test(document);
+    }
+
+    fn text_input_caret(
+        context: &AppContext,
+        id: nana_ui_runtime::StableNodeId,
+    ) -> (Option<LayoutBox>, [f32; 4]) {
+        match context.world().component_geometry(id) {
+            Some(ComponentGeometry::TextInput {
+                caret, caret_color, ..
+            }) => (caret, caret_color),
+            other => panic!("expected text input geometry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn focused_textarea_caret_uses_text_color() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let editor = context
+            .create_component(document, TextArea::new("draft"))
+            .unwrap();
+        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
+        assert!(context.focus_node(document, editor.stable_id()).unwrap());
+        resolve_text_geometry(&mut context, document);
+
+        let (caret, caret_color) = text_input_caret(&context, editor.stable_id());
+        let palette = nana_ui_core::SemanticPalette::dark();
+        assert!(caret.is_some());
+        assert_eq!(caret_color, palette.text.as_rgba_array());
+        assert_ne!(caret_color, palette.accent.as_rgba_array());
+    }
+
+    #[test]
+    fn pointer_down_on_inert_surface_clears_textarea_caret() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let editor = context
+            .create_component(document, TextArea::new("draft"))
+            .unwrap();
+        let surface = context.create_component(document, Card::new()).unwrap();
+        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
+        write_hit_box(&mut context, surface.stable_id(), 0.0, 90.0, 200.0, 80.0);
+        assert!(context.focus_node(document, editor.stable_id()).unwrap());
+        resolve_text_geometry(&mut context, document);
+        assert!(text_input_caret(&context, editor.stable_id()).0.is_some());
+
+        let adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Down, 24.0, 120.0),
+            )
+            .unwrap();
+        assert_eq!(context.world().focused(document), None);
+        assert!(text_input_caret(&context, editor.stable_id()).0.is_none());
+    }
+
+    #[test]
+    fn pointer_down_on_empty_space_clears_textarea_caret() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let editor = context
+            .create_component(document, TextArea::new("draft"))
+            .unwrap();
+        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
+        assert!(context.focus_node(document, editor.stable_id()).unwrap());
+        resolve_text_geometry(&mut context, document);
+
+        let adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Down, 400.0, 400.0),
+            )
+            .unwrap();
+        assert_eq!(context.world().focused(document), None);
+        assert!(text_input_caret(&context, editor.stable_id()).0.is_none());
+    }
+
+    #[test]
+    fn pointer_down_moves_focus_between_text_inputs() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let first = context
+            .create_component(document, TextInput::new("one"))
+            .unwrap();
+        let second = context
+            .create_component(document, TextInput::new("two"))
+            .unwrap();
+        write_hit_box(&mut context, first.stable_id(), 0.0, 0.0, 160.0, 32.0);
+        write_hit_box(&mut context, second.stable_id(), 0.0, 40.0, 160.0, 32.0);
+        assert!(context.focus_node(document, first.stable_id()).unwrap());
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(PointerPhase::Down, 24.0, 52.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().focused(document), Some(second.stable_id()));
     }
 
     #[test]

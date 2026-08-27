@@ -3678,6 +3678,20 @@ impl AppContext {
         Ok(true)
     }
 
+    pub fn clear_focus(&mut self, document: DocumentId) -> Result<bool, FrameworkError> {
+        if self.world.focused(document).is_none() {
+            return Ok(false);
+        }
+        self.commit_focused_number_input(document)?;
+        if self.world.focused(document).is_none() {
+            return Ok(true);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.request_focus(document, None);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
     pub fn set_ime_preedit(
         &mut self,
         document: DocumentId,

@@ -3860,7 +3860,9 @@ impl UiWorld {
                         }
                     }),
                     selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
-                    caret_color: self.style_model.palette.accent.as_rgba_array(),
+                    caret_color: style
+                        .color
+                        .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
                     preedit_color: self.style_model.palette.accent.as_rgba_array(),
                     steppers,
                 })
