@@ -558,6 +558,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snap_centered_origin_rounds_the_span_then_the_top() {
+        let (origin, px) = snap_centered_origin(14.0, 12.0, 2.0);
+        assert_eq!(px, 24.0);
+        assert_eq!(origin, 16.0);
+    }
+
+    #[test]
     fn paint_origin_is_target_minus_scene() {
         assert_eq!(paint_origin([0.0, 0.0], [40.0, 20.0]), [-40.0, -20.0]);
         assert_eq!(paint_origin([200.0, 10.0], [40.0, 20.0]), [160.0, -10.0]);
