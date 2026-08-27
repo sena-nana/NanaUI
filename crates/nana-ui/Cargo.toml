@@ -54,7 +54,7 @@ selects = []
 settings-components = ["controls"]
 surfaces = ["feedback"]
 xy-pad = []
-gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:resvg", "dep:tiny-skia", "dep:ureq", "dep:url", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:ureq", "dep:url", "dep:wgpu"]
 hosted = [
     "gpu",
     "dep:accesskit",
@@ -77,8 +77,7 @@ cosmic-text = "0.19"
 cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
 image = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
-resvg = { workspace = true, optional = true }
-tiny-skia = { workspace = true, optional = true }
+nana-svg-raster = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 nana-ui-core.workspace = true

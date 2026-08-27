@@ -479,29 +479,7 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4]
 }
 
 fn rasterize_lucide(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
-    if pixel_size == 0 {
-        return None;
-    }
-    let markup = svg.replace("currentColor", "#ffffff");
-    let options = resvg::usvg::Options {
-        default_size: resvg::usvg::Size::from_wh(24.0, 24.0)?,
-        ..resvg::usvg::Options::default()
-    };
-    let tree = resvg::usvg::Tree::from_str(&markup, &options).ok()?;
-    let scale = pixel_size as f32 / 24.0;
-    let mut pixmap = tiny_skia::Pixmap::new(pixel_size, pixel_size)?;
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-    let mut rgba = pixmap.data().to_vec();
-    for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel[0] = 255;
-        pixel[1] = 255;
-        pixel[2] = 255;
-    }
-    Some(rgba)
+    nana_svg_raster::rasterize_white_mask(svg, pixel_size, MAX_ATLAS_PX)
 }
 
 #[cfg(test)]
@@ -521,5 +499,44 @@ mod tests {
             rgba.chunks(4).any(|pixel| pixel[3] < 16),
             "search icon should keep transparent padding"
         );
+    }
+
+    fn ink_bbox(rgba: &[u8], px: u32) -> (u32, u32, u32, u32) {
+        let px = px as usize;
+        let mut min_x = px;
+        let mut min_y = px;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        for y in 0..px {
+            for x in 0..px {
+                if rgba[(y * px + x) * 4 + 3] > 16 {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        (min_x as u32, min_y as u32, max_x as u32, max_y as u32)
+    }
+
+    #[test]
+    fn lucide_symmetric_icons_are_centered_in_the_atlas() {
+        let px = 48;
+        for icon in [Icon::Add, Icon::Settings, Icon::Close] {
+            let rgba = rasterize_lucide(icon.svg(), px).expect("svg");
+            let (min_x, min_y, max_x, max_y) = ink_bbox(&rgba, px);
+            let cx = (min_x + max_x) as f32 / 2.0;
+            let cy = (min_y + max_y) as f32 / 2.0;
+            let mid = (px - 1) as f32 / 2.0;
+            assert!(
+                (cx - mid).abs() < 1.5,
+                "{icon:?} horizontal center {cx} vs {mid}"
+            );
+            assert!(
+                (cy - mid).abs() < 1.5,
+                "{icon:?} vertical center {cy} vs {mid}"
+            );
+        }
     }
 }

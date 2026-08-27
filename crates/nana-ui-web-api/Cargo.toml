@@ -16,6 +16,6 @@ crossbeam-channel.workspace = true
 nana-js-engine.workspace = true
 nana-ui-platform = { workspace = true, features = ["clipboard", "fetch"] }
 tiny-skia.workspace = true
-resvg.workspace = true
+nana-svg-raster.workspace = true
 image.workspace = true
 fontdue.workspace = true
