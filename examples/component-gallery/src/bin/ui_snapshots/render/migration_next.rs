@@ -4972,7 +4972,7 @@ fn intentional_divergence(fixture: Fixture) -> &'static str {
             "intentional: Runtime settings and desktop composers are the public default; Iced is a migration-era reference"
         }
         (Component::GraphCanvas, _) => {
-            "intentional: Runtime Scene approximates Bézier edges as quad samples and 1px grid lines; Iced strokes paths. Port discs use the Iced 4/5px radius, not the 8px hit target"
+            "intentional: Runtime flattens Bézier edges to articulated-line Stroke; grid stays 1px QuadBatch. Iced strokes paths. Port discs use the Iced 4/5px radius, not the 8px hit target"
         }
         (Component::GpuTextureView, _) => {
             "intentional: Iced GpuTextureView samples the same host texture as Runtime nana.host-texture; layout chrome may differ"

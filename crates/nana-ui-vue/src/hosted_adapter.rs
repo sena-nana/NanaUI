@@ -493,10 +493,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let Ok(host) = host.lock() else {
             return false;
         };
-        let Ok(mut bridge) = host.bridge().lock() else {
+        let bridge_slot = host.bridge();
+        let Ok(mut bridge) = bridge_slot.lock() else {
             return false;
         };
-        let Ok(mut doc) = host.document().lock() else {
+        let document_slot = host.document();
+        let Ok(mut doc) = document_slot.lock() else {
             return false;
         };
         bridge.apply_css_animation_samples(&mut doc, frame)

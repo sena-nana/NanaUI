@@ -149,8 +149,43 @@ pub enum ScenePrimitiveKind {
         points: Vec<[f32; 2]>,
         width: f32,
         color: [f32; 4],
+        /// Per-point stroke widths. Empty means every vertex uses [`Self::Stroke::width`].
+        widths: Vec<f32>,
+        cap: StrokeCap,
+        /// Dash and per-point colors. `None` is the Graph / TimeSeries path:
+        /// no extra heap and the painter keeps the solid uniform emit.
+        pattern: Option<Box<StrokePattern>>,
     },
     Custom(CustomRenderNode),
+}
+
+/// Optional dash and per-point colors for [`ScenePrimitiveKind::Stroke`].
+///
+/// Empty `dash` is solid. Empty `colors` uses the stroke's uniform `color`.
+/// The painter only walks these slices when they are non-empty, so unused
+/// decorations do not add GPU instance fields or shader work.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StrokePattern {
+    /// SVG-style on/off lengths. Negative or non-finite values disable dash
+    /// (treated as solid). A single-cycle odd list is repeated to even length.
+    pub dash: Vec<f32>,
+    pub dash_offset: f32,
+    /// Per-point colors. Used only when `len` matches the stroke point count;
+    /// each segment takes the color of its start vertex.
+    pub colors: Vec<[f32; 4]>,
+}
+
+/// End-cap of an articulated stroke segment.
+///
+/// Round is the Ciallo vanilla disc. Butt is a flat cut at the endpoint.
+/// Square extends half-width past the endpoint, then cuts flat. The painter
+/// expands Square on the CPU and reuses the Butt GPU path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeCap {
+    #[default]
+    Round,
+    Butt,
+    Square,
 }
 
 /// One paint-ready span inside a [`ScenePrimitiveKind::Text`] primitive.
@@ -512,6 +547,19 @@ impl UiScene {
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
         self.primitives.get(&id)
+    }
+
+    /// Rewrite one primitive kind and bump instance identity.
+    ///
+    /// Painter tests use this to probe stroke variants without a second
+    /// Runtime extraction ABI.
+    pub fn replace_primitive_kind(&mut self, id: PrimitiveId, kind: ScenePrimitiveKind) -> bool {
+        let Some(primitive) = self.primitives.get_mut(&id) else {
+            return false;
+        };
+        primitive.kind = kind;
+        self.instance = next_scene_instance();
+        true
     }
 
     fn rebuild_document_order(&mut self) {
@@ -4116,6 +4164,9 @@ fn visual_stroke(
             points,
             width,
             color,
+            widths: Vec::new(),
+            cap: StrokeCap::Round,
+            pattern: None,
         },
     }
 }
@@ -6847,8 +6898,13 @@ mod tests {
             Some(ScenePrimitiveKind::Stroke {
                 width,
                 points,
+                widths,
+                cap: StrokeCap::Round,
+                pattern: None,
                 ..
-            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON && points.len() == 2
+            }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON
+                && points.len() == 2
+                && widths.is_empty()
         ));
         assert!(
             scene
