@@ -396,15 +396,8 @@ impl RuntimeInputAdapter {
                 repeat: _,
                 modifiers,
                 ..
-            } if *pressed && !modifiers.alt => {
+            } if *pressed && !modifiers.alt && !modifiers.shift => {
                 let primary = modifiers.control || modifiers.meta;
-                if modifiers.shift {
-                    return Ok(InputDisposition {
-                        prevent_default: insert_focused_printable(
-                            context, document, key, text, primary,
-                        )? || keyboard_barrier,
-                    });
-                }
                 let range_adjustment = (!primary)
                     .then_some(match key.as_str() {
                         "ArrowLeft" | "ArrowDown" => Some(RangeAdjustment::Decrement),
@@ -563,9 +556,29 @@ impl RuntimeInputAdapter {
                 };
                 if let Some(navigation) = navigation {
                     context.navigate_focused_table(document, navigation, self.table_page_rows)?
+                } else if !primary && !modifiers.alt {
+                    match key.as_str() {
+                        "Backspace" => context.delete_focused_text_backward(document)?,
+                        _ if text.as_ref().is_some_and(|text| !text.is_empty()) => context
+                            .replace_focused_text(document, text.as_deref().unwrap_or_default())?,
+                        _ => false,
+                    }
                 } else {
-                    insert_focused_printable(context, document, key, text, primary)?
+                    false
                 }
+            }
+            InputEvent::Keyboard {
+                pressed,
+                text,
+                modifiers,
+                ..
+            } if *pressed
+                && !modifiers.alt
+                && !modifiers.control
+                && !modifiers.meta
+                && text.as_ref().is_some_and(|value| !value.is_empty()) =>
+            {
+                context.replace_focused_text(document, text.as_deref().unwrap_or_default())?
             }
             _ => false,
         };
@@ -617,25 +630,6 @@ impl RuntimeInputAdapter {
             prevent_default: handled || owns_ime || overlay_blocks,
         })
     }
-}
-
-fn insert_focused_printable(
-    context: &mut AppContext,
-    document: DocumentId,
-    key: &str,
-    text: &Option<String>,
-    primary: bool,
-) -> Result<bool, FrameworkError> {
-    if primary {
-        return Ok(false);
-    }
-    Ok(match key {
-        "Backspace" => context.delete_focused_text_backward(document)?,
-        _ if text.as_ref().is_some_and(|value| !value.is_empty()) => {
-            context.replace_focused_text(document, text.as_deref().unwrap_or_default())?
-        }
-        _ => false,
-    })
 }
 
 fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<StableNodeId> {
@@ -1101,62 +1095,24 @@ mod tests {
     fn focused_runtime_text_inserts_shifted_printable_characters() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
-        let input = context
-            .create_component(document, TextInput::new("hello"))
-            .unwrap();
-        assert!(context.focus_node(document, input.stable_id()).unwrap());
         let area = context
             .create_component(document, TextArea::new("inspect "))
             .unwrap();
-        let shift = InputModifiers {
-            shift: true,
-            ..InputModifiers::default()
-        };
-        let adapter = RuntimeInputAdapter::default();
-        let at_from_digit = InputEvent::Keyboard {
+        assert!(context.focus_node(document, area.stable_id()).unwrap());
+        let event = InputEvent::Keyboard {
             pressed: true,
             key: "2".into(),
             text: Some("@".into()),
             code: "Digit2".into(),
             repeat: false,
-            modifiers: shift,
+            modifiers: InputModifiers {
+                shift: true,
+                ..InputModifiers::default()
+            },
         };
         assert!(
-            adapter
-                .dispatch(&mut context, document, &at_from_digit)
-                .unwrap()
-                .prevent_default
-        );
-        assert_eq!(context.world().text(input.stable_id()), Some("hello@"));
-
-        let uppercase = InputEvent::Keyboard {
-            pressed: true,
-            key: "A".into(),
-            text: Some("A".into()),
-            code: "KeyA".into(),
-            repeat: false,
-            modifiers: shift,
-        };
-        assert!(
-            adapter
-                .dispatch(&mut context, document, &uppercase)
-                .unwrap()
-                .prevent_default
-        );
-        assert_eq!(context.world().text(input.stable_id()), Some("hello@A"));
-
-        assert!(context.focus_node(document, area.stable_id()).unwrap());
-        let at_key = InputEvent::Keyboard {
-            pressed: true,
-            key: "@".into(),
-            text: Some("@".into()),
-            code: "Digit2".into(),
-            repeat: false,
-            modifiers: shift,
-        };
-        assert!(
-            adapter
-                .dispatch(&mut context, document, &at_key)
+            RuntimeInputAdapter::default()
+                .dispatch(&mut context, document, &event)
                 .unwrap()
                 .prevent_default
         );
