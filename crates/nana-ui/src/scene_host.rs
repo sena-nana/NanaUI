@@ -16,8 +16,7 @@ use nana_ui_platform::{
     window_resize_edge,
 };
 use nana_ui_runtime::{
-    AccessibilityUpdate, AppContext, AppTitleBar, DocumentId, Entity, FrameworkError,
-    LayoutViewport, Task,
+    AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
 };
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
@@ -431,7 +430,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
             self.input_mut(id).modifiers = modifiers.state();
         }
-        let cursor_moved = matches!(&event, WinitWindowEvent::CursorMoved { .. });
         if let WinitWindowEvent::CursorMoved { position, .. } = &event {
             let scale = self.scale_factor(id);
             let point = position.to_logical::<f32>(f64::from(scale));
@@ -439,20 +437,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         if let Some(input) = self.normalized_input(id, &event) {
             if self.consume_frame_resize(id, &input) {
-                if cursor_moved {
-                    self.sync_window_cursor(id);
-                }
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
-            if cursor_moved {
+            if matches!(&event, WinitWindowEvent::CursorMoved { .. }) {
                 self.sync_window_cursor(id);
             }
             if disposition.prevent_default || event_loop.exiting() {
                 return;
             }
-        } else if cursor_moved {
-            self.sync_window_cursor(id);
         }
         match &event {
             WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
@@ -1327,7 +1320,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
                 .and_then(|handle| context.world().layout_box(handle))
                 .map(|bounds| (bounds.width, bounds.height));
-            let text_field = text_field_under_pointer(context, document_id, cursor.0, cursor.1);
+            let text_field = context
+                .pointer_target(document_id, cursor.0, cursor.1)
+                .is_some_and(|node| context.world().text_input(node).is_some());
             (handle, text_field)
         });
         if let Some(window) = self.window(id) {
@@ -2055,29 +2050,6 @@ fn frame_resize_edge_for(
         return None;
     }
     window_resize_edge(geometry.logical_size, x, y, RESIZE_HANDLE_SIZE)
-}
-
-fn text_field_under_pointer(context: &AppContext, document: DocumentId, x: f32, y: f32) -> bool {
-    let Some(mut node) = context
-        .world()
-        .pointer_hover(document, 1)
-        .or_else(|| context.pointer_target(document, x, y))
-    else {
-        return false;
-    };
-    loop {
-        if context.world().text_input(node).is_some() {
-            return true;
-        }
-        match context
-            .world()
-            .node(node)
-            .and_then(|snapshot| snapshot.parent)
-        {
-            Some(parent) => node = parent,
-            None => return false,
-        }
-    }
 }
 
 fn scene_cursor_icon(
