@@ -189,8 +189,8 @@ impl FragmentClip {
         clip
     }
 
-    /// Dest-group composites sample physical pixels; scale rect/radius/polygon and
-    /// divide the linear inverse so [`point_in_fragment_clip`] stays consistent.
+    /// Dest-group / affine text / icons sample physical pixels. Scale
+    /// rect/radius/polygon; only `inv_ef` scales (linear inverse is invariant).
     pub(super) fn for_physical_pixels(self, scale: f32) -> Self {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -211,13 +211,8 @@ impl FragmentClip {
                 self.rect[2] * scale,
                 self.rect[3] * scale,
             ],
-            inv_abcd: [
-                self.inv_abcd[0] / scale,
-                self.inv_abcd[1] / scale,
-                self.inv_abcd[2] / scale,
-                self.inv_abcd[3] / scale,
-            ],
-            inv_ef: [self.inv_ef[0] / scale, self.inv_ef[1] / scale],
+            inv_abcd: self.inv_abcd,
+            inv_ef: [self.inv_ef[0] * scale, self.inv_ef[1] * scale],
             corner_radius: self.corner_radius * scale,
             polygon_count: self.polygon_count,
             polygon,
@@ -318,19 +313,49 @@ pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2
         .unwrap_or(FragmentClip::PASS)
 }
 
-/// Outer rotated / polygon clips (innermost already in vertex attrs).
+/// Dest extras around Quad/Mesh/Text/HostTexture. Innermost rotated/rounded
+/// stays in vertex attrs. Polygons dest-wrap for quads; mesh drops the inner
+/// polygon ([`mesh_extra_fragment_clips`]). Unique by bit pattern.
 pub(super) fn extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
-    let mut extras = rotated_fragment_clips(clips, origin);
-    extras.pop();
-    let rounded = axis_aligned_rounded_fragment_clips(clips, origin);
-    if rounded.len() > 1 {
-        extras.extend(rounded[..rounded.len() - 1].iter().rev().copied());
+    let inner_bits = fragment_clip(clips, origin).to_bits();
+    let mut extras = Vec::new();
+    for clip in rotated_fragment_clips(clips, origin) {
+        if clip.to_bits() != inner_bits {
+            push_unique_clip(&mut extras, clip);
+        }
     }
-    let polygons = polygon_fragment_clips(clips, origin);
-    extras.extend(polygons);
+    for clip in axis_aligned_rounded_fragment_clips(clips, origin) {
+        if clip.to_bits() != inner_bits {
+            push_unique_clip(&mut extras, clip);
+        }
+    }
+    for clip in polygon_fragment_clips(clips, origin) {
+        push_unique_clip(&mut extras, clip);
+    }
+    extras
+}
+
+fn push_unique_clip(extras: &mut Vec<FragmentClip>, clip: FragmentClip) {
+    let bits = clip.to_bits();
+    if extras.iter().any(|existing| existing.to_bits() == bits) {
+        return;
+    }
+    extras.push(clip);
+}
+
+/// Mesh GpuClip owns the innermost polygon; drop it from dest extras.
+pub(super) fn mesh_extra_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: [f32; 2],
+) -> Vec<FragmentClip> {
+    let mut extras = extra_fragment_clips(clips, origin);
+    let inner = fragment_clip(clips, origin);
+    if inner.polygon_count >= 3 {
+        extras.retain(|clip| clip.to_bits() != inner.to_bits());
+    }
     extras
 }
 
@@ -858,6 +883,161 @@ mod tests {
         );
         assert!(point_in_fragment_clip(32.0, 24.0, clip));
         assert!(!point_in_fragment_clip(4.0, 60.0, clip));
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(
+            extra_fragment_clips(&clips, origin).len(),
+            1,
+            "quads dest-wrap the ancestor polygon (vertex locations full)"
+        );
+        assert!(
+            mesh_extra_fragment_clips(&clips, origin).is_empty(),
+            "mesh GpuClip owns the innermost polygon; no dest pass"
+        );
+    }
+
+    #[test]
+    fn overflow_aabb_plus_polygon_stays_scissor_and_gpu_clip() {
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let clips = [
+            ClipRegion::axis_aligned(
+                SceneRect {
+                    x: 20.0,
+                    y: 20.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                AffineTransform::IDENTITY,
+            ),
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+            },
+        ];
+        let inner = fragment_clip(&clips, origin);
+        assert!(
+            inner.polygon_count >= 3,
+            "innermost polygon must stay in GpuClip"
+        );
+        assert_eq!(
+            extra_fragment_clips(&clips, origin).len(),
+            1,
+            "quads dest-wrap only the polygon; overflow AABB is scissor"
+        );
+        assert!(
+            mesh_extra_fragment_clips(&clips, origin).is_empty(),
+            "mesh dest must stay empty: overflow is scissor, polygon is GpuClip"
+        );
+    }
+
+    #[test]
+    fn inset_round_plus_polygon_keeps_round_as_dest() {
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let clips = [
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 16.0,
+                polygon_clip: None,
+            },
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 0.0,
+                polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+            },
+        ];
+        let inner = fragment_clip(&clips, origin);
+        assert!(
+            inner.polygon_count >= 3,
+            "polygon wins fragment_clip over axis-aligned inset(round)"
+        );
+        let extras = extra_fragment_clips(&clips, origin);
+        assert_eq!(
+            extras.len(),
+            2,
+            "quads dest-wrap displaced inset(round) and the polygon, got {extras:?}"
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|clip| clip.corner_radius > 0.0 && clip.polygon_count < 3),
+            "displaced inset(round) must dest-composite, got {extras:?}"
+        );
+        let mesh = mesh_extra_fragment_clips(&clips, origin);
+        assert_eq!(mesh.len(), 1, "mesh dest is only the displaced round");
+        assert!(
+            mesh[0].corner_radius > 0.0 && mesh[0].polygon_count < 3,
+            "mesh GpuClip owns the polygon; dest keeps ancestor inset(round), got {mesh:?}"
+        );
+    }
+
+    #[test]
+    fn rotated_outer_polygon_is_not_dest_wrapped_twice() {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let rotated = AffineTransform(
+            nana_ui_core::PaintTransform {
+                a: k,
+                b: k,
+                c: -k,
+                d: k,
+                ..Default::default()
+            }
+            .around_center(0.0, 0.0, 64.0, 64.0),
+        );
+        let clips = [
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: rotated,
+                corner_radius: 0.0,
+                polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+            },
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 16.0,
+                    y: 16.0,
+                    width: 32.0,
+                    height: 32.0,
+                },
+                transform: rotated,
+                corner_radius: 0.0,
+                polygon_clip: None,
+            },
+        ];
+        let extras = extra_fragment_clips(&clips, origin);
+        let polygon_dests = extras.iter().filter(|clip| clip.polygon_count >= 3).count();
+        assert_eq!(
+            polygon_dests, 1,
+            "rotated outer polygon must dest-wrap once, got {extras:?}"
+        );
+        let mesh = mesh_extra_fragment_clips(&clips, origin);
+        assert_eq!(mesh.len(), 1);
+        assert!(
+            mesh[0].polygon_count >= 3,
+            "innermost is rotated overflow; mesh dest is the outer polygon"
+        );
     }
 
     #[test]
@@ -944,6 +1124,12 @@ mod tests {
         assert!(point_in_fragment_clip(32.0, 24.0, clip));
         assert!(point_in_fragment_clip(32.0, 24.0, physical));
         assert!(!point_in_fragment_clip(4.0, 60.0, physical));
+        let physical_2x = clip.for_physical_pixels(2.0);
+        assert!(
+            point_in_fragment_clip(64.0, 48.0, physical_2x),
+            "2× dest pixels must keep the triangle interior"
+        );
+        assert!(!point_in_fragment_clip(8.0, 120.0, physical_2x));
     }
 
     fn nested_rotated_45_clips() -> ([ClipRegion; 2], [f32; 2]) {
