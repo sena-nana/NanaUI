@@ -15,16 +15,16 @@ use crate::{
     CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card, Checkbox,
     CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
     Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
-    FormField, FrameworkError, GraphCanvas, GraphModel, HostedTextarea, IconButton, ImageViewer,
-    ImageViewerContent, InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots,
-    ModalSurface, NativeMarkdown, NumberInput, PaneChrome, Popover, Progress, QrCode, RangeField,
-    ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl,
-    Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter,
-    SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner,
-    SplitPane, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
-    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip,
-    TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace, WorkspaceRegionSlot, XYPad,
-    XYPadValue,
+    FormField, FrameworkError, GraphCanvas, GraphModel, HostedTextarea, IconButton, IconGlyph,
+    ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue, LevelMeter, List, ListItem,
+    ListItemSlots, ModalSurface, NativeMarkdown, NumberInput, PaneChrome, Popover, Progress,
+    QrCode, RangeField, ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption,
+    SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow,
+    SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
+    Skeleton, Spinner, SplitPane, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text,
+    TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast,
+    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace,
+    WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
@@ -48,6 +48,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Text>()?;
         registrar.register_component::<Button>()?;
         registrar.register_component::<IconButton>()?;
+        registrar.register_component::<IconGlyph>()?;
         registrar.register_component::<Checkbox>()?;
         registrar.register_component::<Divider>()?;
         registrar.register_component::<NumberInput>()?;
@@ -113,7 +114,6 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<PaneChrome>()?;
         registrar.register_component::<SidebarSection>()?;
         registrar.register_component::<SidebarFooter>()?;
-        registrar.register_tags("nana.icon", &["icon", "i"])?;
         Ok(())
     }
 }
@@ -160,6 +160,23 @@ impl RegisterableComponent for IconButton {
             );
         }
         component
+    }
+}
+
+impl RegisterableComponent for IconGlyph {
+    const TYPE_ID: &'static str = "nana.icon";
+    const TAGS: &'static [&'static str] = &["icon", "i"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let Some(icon) = spec.icon else {
+            return IconGlyph::new(Icon::Search).size(0.0);
+        };
+        let size = match (spec.layout.width, spec.layout.height) {
+            (Some(LengthSpec::Px(w)), Some(LengthSpec::Px(h))) if w > 0.0 && h > 0.0 => w.min(h),
+            (Some(LengthSpec::Px(w)), _) if w > 0.0 => w,
+            (_, Some(LengthSpec::Px(h))) if h > 0.0 => h,
+            _ => spec.size.icon_size(),
+        };
+        IconGlyph::new(icon).size(size)
     }
 }
 
@@ -2756,7 +2773,7 @@ fn fallback_settings_model(spec: &SemanticSpec<'_>) -> SettingsModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ComponentTypeId, RegisterableComponent, SemanticSpec, StableNodeId};
+    use crate::{AppContext, ComponentTypeId, RegisterableComponent, SemanticSpec, StableNodeId};
     use nana_ui_core::LayoutStyle;
 
     fn spec_with<'a>(
@@ -2969,5 +2986,46 @@ mod tests {
         assert_eq!(page.content, Some(content));
         assert_eq!(page.model.tabs().len(), 1);
         assert_eq!(page.model.tabs()[0].id().as_str(), "appearance");
+    }
+
+    #[test]
+    fn icon_glyph_from_semantic_uses_catalog_icon_and_css_size() {
+        let type_id = ComponentTypeId::new("nana.icon").unwrap();
+        let layout = Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Px(24.0)),
+            height: Some(LengthSpec::Px(24.0)),
+            ..LayoutStyle::default()
+        });
+        let spec = SemanticSpec {
+            icon: Some(Icon::Search),
+            ..spec_with(&type_id, &layout, &[], &[], &[], "search", "")
+        };
+        let glyph = IconGlyph::from_semantic(&spec);
+        assert_eq!(glyph.icon, Icon::Search);
+        assert_eq!(glyph.size, 24.0);
+    }
+
+    #[test]
+    fn icon_and_icon_button_tags_do_not_collide() {
+        let context = AppContext::new();
+        assert_eq!(
+            context
+                .resolve_component_tag("icon")
+                .map(ComponentTypeId::as_str),
+            Some("nana.icon")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-icon")
+                .map(ComponentTypeId::as_str),
+            Some("nana.icon")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("icon-button")
+                .map(ComponentTypeId::as_str),
+            Some("nana.icon-button")
+        );
+        assert!(context.resolve_component_tag("svg").is_none());
     }
 }

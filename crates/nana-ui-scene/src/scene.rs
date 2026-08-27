@@ -711,6 +711,9 @@ impl UiScene {
         let Some(node) = self.nodes.get(&id).cloned() else {
             return 0;
         };
+        if is_descendant_of_icon_visual(&self.nodes, &node) {
+            return 0;
+        }
         let before = self.primitives.len();
         let (parent_transform, parent_opacity, parent_clips) = self.ancestor_state(&node);
         let layout = node.layout;
@@ -3715,6 +3718,24 @@ fn local_opacity(node: &ExtractedNode) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+fn is_descendant_of_icon_visual(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: &ExtractedNode,
+) -> bool {
+    let mut current = node.parent;
+    let mut visited = HashSet::new();
+    while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        let Some(parent) = nodes.get(&id) else {
+            break;
+        };
+        if matches!(parent.standard_visual, Some(StandardVisual::Icon { .. })) {
+            return true;
+        }
+        current = parent.parent;
+    }
+    false
+}
+
 fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     matches!(
         node.kind.as_ref(),
@@ -6194,6 +6215,29 @@ mod tests {
                 })
                 .is_none()
         );
+    }
+
+    #[test]
+    fn icon_visual_skips_vector_children() {
+        let mut icon = node(1, None, &[2]);
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Search,
+            size: 16.0,
+            tooltip: None,
+        });
+        let mut path = node(2, Some(1), &[]);
+        path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
+        style_mut(&mut path).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([icon, path], []);
+        assert!(scene.primitives().any(|primitive| {
+            primitive.node == id(1)
+                && matches!(
+                    primitive.kind,
+                    ScenePrimitiveKind::Icon { icon, .. } if icon == nana_ui_core::Icon::Search
+                )
+        }));
+        assert!(scene.primitives().all(|primitive| primitive.node != id(2)));
     }
 
     #[test]
