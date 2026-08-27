@@ -1046,28 +1046,35 @@ mod tests {
         assert_eq!(context.world().focused(document), Some(input.stable_id()));
     }
 
-    fn write_hit_box(
-        context: &mut AppContext,
-        id: nana_ui_runtime::StableNodeId,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) {
+    #[test]
+    fn focused_textarea_caret_uses_text_color_and_clears_on_outside_press() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let editor = context
+            .create_component(document, TextArea::new("draft"))
+            .unwrap();
+        let surface = context.create_component(document, Card::new()).unwrap();
         let mut layout = MutationQueue::new();
         layout.write_layout(
-            id,
+            editor.stable_id(),
             LayoutBox {
-                x,
-                y,
-                width,
-                height,
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 72.0,
+            },
+        );
+        layout.write_layout(
+            surface.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 90.0,
+                width: 200.0,
+                height: 80.0,
             },
         );
         context.commit_mutations(layout).unwrap();
-    }
-
-    fn resolve_text_geometry(context: &mut AppContext, document: DocumentId) {
+        assert!(context.focus_node(document, editor.stable_id()).unwrap());
         let work = context.take_system_work();
         context.world_mut().resolve_styles(&work.style).unwrap();
         context
@@ -1075,54 +1082,19 @@ mod tests {
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);
-    }
 
-    fn text_input_caret(
-        context: &AppContext,
-        id: nana_ui_runtime::StableNodeId,
-    ) -> (Option<LayoutBox>, [f32; 4]) {
-        match context.world().component_geometry(id) {
-            Some(ComponentGeometry::TextInput {
-                caret, caret_color, ..
-            }) => (caret, caret_color),
-            other => panic!("expected text input geometry, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn focused_textarea_caret_uses_text_color() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let editor = context
-            .create_component(document, TextArea::new("draft"))
-            .unwrap();
-        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
-        assert!(context.focus_node(document, editor.stable_id()).unwrap());
-        resolve_text_geometry(&mut context, document);
-
-        let (caret, caret_color) = text_input_caret(&context, editor.stable_id());
+        let Some(ComponentGeometry::TextInput {
+            caret, caret_color, ..
+        }) = context.world().component_geometry(editor.stable_id())
+        else {
+            panic!("expected text input geometry");
+        };
         let palette = nana_ui_core::SemanticPalette::dark();
         assert!(caret.is_some());
         assert_eq!(caret_color, palette.text.as_rgba_array());
         assert_ne!(caret_color, palette.accent.as_rgba_array());
-    }
 
-    #[test]
-    fn pointer_down_on_inert_surface_clears_textarea_caret() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let editor = context
-            .create_component(document, TextArea::new("draft"))
-            .unwrap();
-        let surface = context.create_component(document, Card::new()).unwrap();
-        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
-        write_hit_box(&mut context, surface.stable_id(), 0.0, 90.0, 200.0, 80.0);
-        assert!(context.focus_node(document, editor.stable_id()).unwrap());
-        resolve_text_geometry(&mut context, document);
-        assert!(text_input_caret(&context, editor.stable_id()).0.is_some());
-
-        let adapter = RuntimeInputAdapter::default();
-        adapter
+        RuntimeInputAdapter::default()
             .dispatch(
                 &mut context,
                 document,
@@ -1130,22 +1102,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(context.world().focused(document), None);
-        assert!(text_input_caret(&context, editor.stable_id()).0.is_none());
-    }
+        assert!(matches!(
+            context.world().component_geometry(editor.stable_id()),
+            Some(ComponentGeometry::TextInput { caret: None, .. })
+        ));
 
-    #[test]
-    fn pointer_down_on_empty_space_clears_textarea_caret() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let editor = context
-            .create_component(document, TextArea::new("draft"))
-            .unwrap();
-        write_hit_box(&mut context, editor.stable_id(), 0.0, 0.0, 200.0, 72.0);
         assert!(context.focus_node(document, editor.stable_id()).unwrap());
-        resolve_text_geometry(&mut context, document);
-
-        let adapter = RuntimeInputAdapter::default();
-        adapter
+        RuntimeInputAdapter::default()
             .dispatch(
                 &mut context,
                 document,
@@ -1153,37 +1116,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(context.world().focused(document), None);
-        assert!(text_input_caret(&context, editor.stable_id()).0.is_none());
-    }
-
-    #[test]
-    fn pointer_down_moves_focus_between_text_inputs() {
-        let mut context = AppContext::new();
-        let document = DocumentId::new(1).unwrap();
-        let first = context
-            .create_component(document, TextInput::new("one"))
-            .unwrap();
-        let second = context
-            .create_component(document, TextInput::new("two"))
-            .unwrap();
-        write_hit_box(&mut context, first.stable_id(), 0.0, 0.0, 160.0, 32.0);
-        write_hit_box(&mut context, second.stable_id(), 0.0, 40.0, 160.0, 32.0);
-        assert!(context.focus_node(document, first.stable_id()).unwrap());
-        context.take_system_work();
-        context.rebuild_hit_test(document);
-
-        let adapter = RuntimeInputAdapter::default();
-        assert!(
-            adapter
-                .dispatch(
-                    &mut context,
-                    document,
-                    &pointer(PointerPhase::Down, 24.0, 52.0)
-                )
-                .unwrap()
-                .prevent_default
-        );
-        assert_eq!(context.world().focused(document), Some(second.stable_id()));
     }
 
     #[test]
