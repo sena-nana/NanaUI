@@ -2864,11 +2864,34 @@ fn widget_icon(
         .iter()
         .filter_map(|child| snapshot.get(*child))
         .find(|child| child.kind == crate::WidgetKind::Icon)
-        .and_then(|child| {
-            nana_ui_core::Icon::parse_name(child.props.display_label())
-                .or_else(|| nana_ui_core::Icon::parse_name(&child.props.value))
-        })
+        .and_then(glyph_name_icon)
+        .or_else(|| glyph_name_icon(widget))
+}
+
+fn glyph_name_icon(widget: &crate::SemanticWidget) -> Option<nana_ui_core::Icon> {
+    nana_ui_core::Icon::parse_name(widget.props.display_label())
         .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
+        .or_else(|| {
+            widget
+                .props
+                .class_names
+                .iter()
+                .find_map(|class| nana_ui_core::Icon::parse_name(class))
+        })
+}
+
+fn icon_consumed_by_parent(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> bool {
+    let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
+        return false;
+    };
+    match parent.kind {
+        crate::WidgetKind::Button => widget_icon(parent, snapshot).is_some(),
+        crate::WidgetKind::EmptyState => true,
+        _ => false,
+    }
 }
 
 fn resolve_widget_component_type(
@@ -2881,6 +2904,12 @@ fn resolve_widget_component_type(
         && let Some(id) = context.resolve_component_tag("icon-button")
     {
         return Some(id.clone());
+    }
+    if widget.kind == crate::WidgetKind::Icon {
+        if icon_consumed_by_parent(widget, snapshot) || glyph_name_icon(widget).is_none() {
+            return None;
+        }
+        return context.resolve_component_tag("icon").cloned();
     }
     if widget.kind == crate::WidgetKind::Dialog
         && vue_confirm_dialog(&widget.props)
@@ -2969,6 +2998,7 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
                 | crate::WidgetKind::TreeView
                 | crate::WidgetKind::CalendarHeatmap
                 | crate::WidgetKind::NativeMarkdown
+                | crate::WidgetKind::Icon
                 | crate::WidgetKind::GraphCanvas
                 | crate::WidgetKind::Workspace
                 | crate::WidgetKind::Dock
@@ -6094,6 +6124,94 @@ mod tests {
         };
         assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
         assert_eq!(custom.resource.as_ref(), "canvas:42");
+    }
+
+    #[test]
+    fn catalog_icons_bind_iconglyph() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let svg = doc.create_element("svg");
+        let i = doc.create_element("i");
+        doc.insert(svg, doc.mount_root(), None);
+        doc.insert(i, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            svg.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                class_names: vec!["lucide".into(), "lucide-search".into()],
+                element_tag: "svg".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            i.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                value: "settings".into(),
+                element_tag: "i".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let svg_id = StableNodeId::try_from(svg).unwrap();
+        let i_id = StableNodeId::try_from(i).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(svg_id),
+            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                if icon == nana_ui_core::Icon::Search
+        ));
+        assert!(matches!(
+            doc.runtime.standard_visual(i_id),
+            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                if icon == nana_ui_core::Icon::Settings
+        ));
+        assert!(doc.scene().primitives().any(|primitive| {
+            primitive.node.get() == svg.0
+                && matches!(
+                    primitive.kind,
+                    nana_ui_scene::ScenePrimitiveKind::Icon { icon, .. }
+                        if icon == nana_ui_core::Icon::Search
+                )
+        }));
+    }
+
+    #[test]
+    fn icon_button_child_icon_is_not_bound_twice() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let button = doc.create_element("button");
+        let svg = doc.create_element("svg");
+        doc.insert(button, doc.mount_root(), None);
+        doc.insert(svg, button, None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            button.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Search".into(),
+                element_tag: "button".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            svg.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                value: "search".into(),
+                class_names: vec!["lucide".into(), "lucide-search".into()],
+                element_tag: "svg".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(svg.0, button.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let button_id = StableNodeId::try_from(button).unwrap();
+        let svg_id = StableNodeId::try_from(svg).unwrap();
+        assert!(matches!(
+            doc.runtime.standard_visual(button_id),
+            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                if icon == nana_ui_core::Icon::Search
+        ));
+        assert!(doc.runtime.standard_visual(svg_id).is_none());
     }
 
     #[test]
