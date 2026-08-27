@@ -624,7 +624,7 @@ impl UiScene {
                 .is_some_and(|text| !text.value.is_empty())
     }
 
-    /// Compact leading glyphs share the parent (or own) text glyph-box center.
+    /// Compact leading glyphs share the parent (or own) text line-box center.
     /// IconButton hit targets are larger than the glyph and stay geometrically
     /// centered in their own box.
     fn icon_y_aligned_to_adjacent_text(
@@ -6286,14 +6286,7 @@ mod tests {
             primitive.bounds,
             SceneRect {
                 x: 8.0,
-                y: icon_y_on_text_glyph_center(
-                    0.0,
-                    28.0,
-                    12.0,
-                    Some(LineHeightSpec::Absolute(12.0)),
-                    true,
-                    12.0,
-                ),
+                y: 8.0,
                 width: 12.0,
                 height: 12.0,
             }
