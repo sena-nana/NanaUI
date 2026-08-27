@@ -24,8 +24,6 @@ pub(super) struct StrokeStyle<'a> {
     pub dash: &'a [f32],
     pub dash_offset: f32,
     pub colors: &'a [[f32; 4]],
-    /// SVG `pathLength`. Zero / negative / non-finite = geometric length.
-    pub path_length: f32,
 }
 
 /// Per-segment instance. Clip is a palette index, not an inline 88-byte clip.
@@ -257,6 +255,19 @@ impl MeshPipeline {
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
+        self.push_stroke_with_path_length(points, style, affine, color, opacity, fragment_clip, 0.0)
+    }
+
+    pub(super) fn push_stroke_with_path_length(
+        &mut self,
+        points: &[[f32; 2]],
+        style: StrokeStyle<'_>,
+        affine: [f32; 6],
+        color: [f32; 4],
+        opacity: f32,
+        fragment_clip: FragmentClip,
+        path_length: f32,
+    ) -> Option<MeshRange> {
         if points.len() < 2 || style.width <= 0.0 {
             return None;
         }
@@ -279,6 +290,7 @@ impl MeshPipeline {
                 ..style
             },
             packed_color,
+            path_length,
         );
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
         stamp_fragment_clip(
@@ -546,6 +558,7 @@ fn emit_stroke_instances(
     points: &[[f32; 2]],
     style: StrokeStyle<'_>,
     color: [f32; 4],
+    path_length: f32,
 ) {
     let colors = if style.colors.len() == points.len() {
         style.colors
@@ -584,7 +597,7 @@ fn emit_stroke_instances(
             colors,
             &pattern,
             style.dash_offset,
-            style.path_length,
+            path_length,
         ),
     }
 }
@@ -1866,6 +1879,7 @@ mod tests {
             &[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]],
             solid_style(4.0, &[], StrokeCap::Square),
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 3);
         assert_eq!(instances[0].p0, [0.0, 0.0]);
@@ -1887,7 +1901,6 @@ mod tests {
             cap,
             dash: &[],
             dash_offset: 0.0,
-            path_length: 0.0,
             colors: &[],
         }
     }
@@ -1904,6 +1917,7 @@ mod tests {
             &points,
             solid_style(2.0, &[], StrokeCap::Round),
             color,
+            0.0,
         );
         assert_eq!(
             via_style, legacy,
@@ -1918,10 +1932,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[-4.0, 2.0],
                 dash_offset: 3.0,
-                path_length: 0.0,
                 colors: &[[0.0, 1.0, 0.0, 1.0]],
             },
             color,
+            0.0,
         );
         assert_eq!(
             via_style[legacy.len()..],
@@ -1938,6 +1952,7 @@ mod tests {
             &[[0.0, 0.0], [10.0, 0.0]],
             solid_style(4.0, &[], StrokeCap::Square),
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 1);
         assert!((instances[0].p0[0] + 2.0).abs() < 1e-5);
@@ -1993,10 +2008,10 @@ mod tests {
                 cap: StrokeCap::Butt,
                 dash: &[10.0, 10.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(instances[0].p0, [0.0, 0.0]);
@@ -2005,14 +2020,13 @@ mod tests {
         assert!((instances[1].p1[0] - 30.0).abs() < 1e-4);
     }
 
-    fn dashed_line_style(path_length: f32) -> StrokeStyle<'static> {
+    fn dashed_line_style() -> StrokeStyle<'static> {
         StrokeStyle {
             width: 2.0,
             widths: &[],
             cap: StrokeCap::Butt,
             dash: &[10.0, 10.0],
             dash_offset: 0.0,
-            path_length,
             colors: &[],
         }
     }
@@ -2024,10 +2038,10 @@ mod tests {
         // 5px and four on-segments cover the line.
         let points = [[0.0, 0.0], [40.0, 0.0]];
         let mut geometric = Vec::new();
-        emit_stroke_instances(&mut geometric, &points, dashed_line_style(0.0), [1.0; 4]);
+        emit_stroke_instances(&mut geometric, &points, dashed_line_style(), [1.0; 4], 0.0);
         assert_eq!(geometric.len(), 2);
         let mut scaled = Vec::new();
-        emit_stroke_instances(&mut scaled, &points, dashed_line_style(80.0), [1.0; 4]);
+        emit_stroke_instances(&mut scaled, &points, dashed_line_style(), [1.0; 4], 80.0);
         assert_eq!(scaled.len(), 4);
         assert_eq!(scaled[0].p0, [0.0, 0.0]);
         assert!((scaled[0].p1[0] - 5.0).abs() < 1e-4);
@@ -2043,14 +2057,15 @@ mod tests {
     fn unset_path_length_keeps_geometric_dash() {
         let points = [[0.0, 0.0], [40.0, 0.0]];
         let mut baseline = Vec::new();
-        emit_stroke_instances(&mut baseline, &points, dashed_line_style(0.0), [1.0; 4]);
+        emit_stroke_instances(&mut baseline, &points, dashed_line_style(), [1.0; 4], 0.0);
         for path_length in [0.0, -8.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut instances = Vec::new();
             emit_stroke_instances(
                 &mut instances,
                 &points,
-                dashed_line_style(path_length),
+                dashed_line_style(),
                 [1.0; 4],
+                path_length,
             );
             assert_eq!(
                 instances, baseline,
@@ -2069,16 +2084,15 @@ mod tests {
             &points,
             solid_style(2.0, &[], StrokeCap::Round),
             color,
+            0.0,
         );
         let mut scaled = Vec::new();
         emit_stroke_instances(
             &mut scaled,
             &points,
-            StrokeStyle {
-                path_length: 80.0,
-                ..solid_style(2.0, &[], StrokeCap::Round)
-            },
+            solid_style(2.0, &[], StrokeCap::Round),
             color,
+            80.0,
         );
         assert_eq!(scaled, geometric);
     }
@@ -2095,10 +2109,10 @@ mod tests {
                 cap: StrokeCap::Butt,
                 dash: &[10.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(odd.len(), 2);
         let mut empty = Vec::new();
@@ -2111,10 +2125,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[0.0, 0.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert!(empty.is_empty());
     }
@@ -2131,10 +2145,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[100.0, 4.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(
@@ -2159,10 +2173,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[10.0, 10.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
@@ -2184,10 +2198,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[100.0, 4.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(
@@ -2212,10 +2226,10 @@ mod tests {
                 cap: StrokeCap::Square,
                 dash: &[10.0, 10.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         assert!((instances[0].p0[0] + 2.0).abs() < 1e-5);
@@ -2240,10 +2254,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[100.0, 4.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert_eq!(instances.len(), 3);
         let butt = pack_caps(StrokeCap::Butt, StrokeCap::Butt);
@@ -2276,10 +2290,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[9.0, 7.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert!(
             !instances.is_empty(),
@@ -2321,10 +2335,10 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[6.0, 4.0],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[],
             },
             [1.0; 4],
+            0.0,
         );
         assert!(!instances.is_empty(), "gap at close still emits ON slices");
         let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
@@ -2354,18 +2368,17 @@ mod tests {
             cap: StrokeCap::Round,
             dash: &[6.0, 4.0],
             dash_offset,
-            path_length: 0.0,
             colors: &[],
         };
         let mut no_wrap = Vec::new();
-        emit_stroke_instances(&mut no_wrap, &points, style(0.0), [1.0; 4]);
+        emit_stroke_instances(&mut no_wrap, &points, style(0.0), [1.0; 4], 0.0);
         assert_eq!(
             no_wrap[0].packed_caps,
             pack_caps(StrokeCap::Round, StrokeCap::Round)
         );
 
         let mut wrap = Vec::new();
-        emit_stroke_instances(&mut wrap, &points, style(2.0), [1.0; 4]);
+        emit_stroke_instances(&mut wrap, &points, style(2.0), [1.0; 4], 0.0);
         assert_eq!(
             wrap[0].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round),
@@ -2388,23 +2401,22 @@ mod tests {
             [0.0, 10.0],
             [0.0, 0.0],
         ];
-        let style = |path_length: f32| StrokeStyle {
+        let style = || StrokeStyle {
             width: 2.0,
             widths: &[],
             cap: StrokeCap::Round,
             dash: &[9.0, 7.0],
             dash_offset: 0.0,
-            path_length,
             colors: &[],
         };
         let mut wrap = Vec::new();
-        emit_stroke_instances(&mut wrap, &points, style(0.0), [1.0; 4]);
+        emit_stroke_instances(&mut wrap, &points, style(), [1.0; 4], 0.0);
         assert_eq!(
             wrap[0].packed_caps,
             pack_caps(StrokeCap::Butt, StrokeCap::Round)
         );
         let mut scaled = Vec::new();
-        emit_stroke_instances(&mut scaled, &points, style(80.0), [1.0; 4]);
+        emit_stroke_instances(&mut scaled, &points, style(), [1.0; 4], 80.0);
         let round = pack_caps(StrokeCap::Round, StrokeCap::Round);
         assert_eq!(
             scaled[0].packed_caps, round,
@@ -2429,7 +2441,6 @@ mod tests {
                 cap: StrokeCap::Round,
                 dash: &[],
                 dash_offset: 0.0,
-                path_length: 0.0,
                 colors: &[
                     [1.0, 0.0, 0.0, 1.0],
                     [0.0, 1.0, 0.0, 1.0],
@@ -2437,6 +2448,7 @@ mod tests {
                 ],
             },
             [0.0, 0.0, 1.0, 1.0],
+            0.0,
         );
         assert_eq!(instances.len(), 2);
         assert_eq!(instances[0].color, [1.0, 0.0, 0.0, 1.0]);
