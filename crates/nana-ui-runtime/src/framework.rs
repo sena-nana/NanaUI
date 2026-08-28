@@ -6833,9 +6833,9 @@ mod tests {
     use crate::{
         Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
         ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
-        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, StandardVisual, Switch,
-        TabOption, Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text,
-        TextArea, TextChanged, TextContent, TextInput, TextSelection, ToggleChanged,
+        SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Stack, StandardVisual,
+        Switch, TabOption, Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs,
+        Text, TextArea, TextChanged, TextContent, TextInput, TextSelection, ToggleChanged,
     };
 
     #[derive(Debug)]
@@ -11352,6 +11352,85 @@ mod tests {
         assert!(
             live < descendant_count,
             "live List children {live} mounted every expanded descendant ({descendant_count})"
+        );
+    }
+
+    #[test]
+    fn stack_presets_express_row_and_column_layout() {
+        let row = Stack::row(8.0).node_style();
+        let layout = row.layout;
+        assert_eq!(layout.direction, Some(nana_ui_core::FlexDirection::Row));
+        assert_eq!(layout.gap, Some(nana_ui_core::LengthSpec::Px(8.0)));
+        assert_eq!(layout.align_items, nana_ui_core::AlignSpec::Center);
+        assert_eq!(layout.width, Some(nana_ui_core::LengthSpec::Shrink));
+
+        let fill_column = Stack::fill_column(0.0).node_style();
+        assert_eq!(
+            fill_column.layout.direction,
+            Some(nana_ui_core::FlexDirection::Column)
+        );
+        assert_eq!(
+            fill_column.layout.width,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+        assert_eq!(
+            fill_column.layout.height,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+        assert_eq!(fill_column.layout.flex_grow, Some(1.0));
+        assert_eq!(fill_column.layout.flex_shrink, Some(1.0));
+
+        let outlined = Stack::column(4.0)
+            .outline(nana_ui_core::SemanticColorRole::Border, 1.0)
+            .node_style();
+        assert_eq!(
+            outlined.border,
+            Some(nana_ui_core::SemanticColorRole::Border)
+        );
+        assert_eq!(outlined.layout.border_width, Some(1.0));
+    }
+
+    #[test]
+    fn card_kind_defaults_yield_to_explicit_style() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+
+        let surface = context.create_component(document, Card::new()).unwrap();
+        let style = context
+            .world()
+            .node_style(surface.stable_id())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            style.background,
+            Some(nana_ui_core::SemanticColorRole::Surface)
+        );
+        assert_eq!(style.border, None);
+        assert_eq!(style.layout.border_width, Some(0.0));
+
+        let custom = NodeStyle::default().outline(nana_ui_core::SemanticColorRole::Border, 2.0);
+        let outlined = context
+            .create_component(
+                document,
+                Card::new()
+                    .kind(nana_ui_core::CardKind::Outlined)
+                    .style(custom),
+            )
+            .unwrap();
+        let style = context
+            .world()
+            .node_style(outlined.stable_id())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            style.border,
+            Some(nana_ui_core::SemanticColorRole::Border),
+            "用户显式设置的边框不得被 kind 默认值覆盖"
+        );
+        assert_eq!(
+            style.layout.border_width,
+            Some(2.0),
+            "用户显式设置的边框宽度不得被 kind 默认值覆盖"
         );
     }
 }
