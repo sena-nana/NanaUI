@@ -166,16 +166,8 @@ pub fn resolve_kind_from_hints(
         | "h4" | "h5" | "h6" | "output" | "#text" => WidgetKind::Text,
         "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "ul"
         | "ol" | "form" | "search" | "fieldset" | "body" | "template" | "fragment" => {
-            // Direction comes from CSS / documented utilities only — never invent
-            // Row from product `--row` / `*horizontal*` class substrings.
-            if class
-                .split_whitespace()
-                .any(|t| matches!(t, "flex-row" | "hstack" | "nana-row" | "row"))
-            {
-                WidgetKind::Row
-            } else {
-                WidgetKind::Column
-            }
+            // Direction is LayoutStyle only (CSS / class hints). Tag stays Column.
+            WidgetKind::Column
         }
         _ if tag.is_empty() => WidgetKind::Column,
         _ => WidgetKind::Column,
@@ -310,7 +302,8 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-skeleton" => WidgetKind::Skeleton,
         "nana-level-meter" | "nana-level" => WidgetKind::LevelMeter,
         "nana-column" | "vstack" => WidgetKind::Column,
-        "nana-row" | "hstack" | "flex-row" => WidgetKind::Row,
+        "nana-row" | "hstack" => WidgetKind::Row,
+        "nana-stack" | "stack" => WidgetKind::Box,
         // Documented overlay contracts (`nana-*` + generic HTML names).
         "nana-dialog" | "nana-overlay" | "nana-confirm" | "nana-confirm-dialog" => {
             WidgetKind::Dialog
@@ -1049,7 +1042,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("div", Some("flex-row gap-md"), None, None),
-            Some(WidgetKind::Row)
+            Some(WidgetKind::Column),
+            "class hints write LayoutStyle, not WidgetKind"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-column", None, None, None),
