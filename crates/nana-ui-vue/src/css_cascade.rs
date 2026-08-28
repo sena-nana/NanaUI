@@ -6,8 +6,10 @@
 //! Aligns with MDN / CSS Selectors Level 4 + CSS Cascade:
 //! type / class / id / attribute (`[attr]`, `=`, `~=`, `|=`, `^=`, `$=`, `*=`,
 //! optional `i`/`s`); combinators ` ` / `>` / `+` / `~`;
-//! `:root` / `:first-child` / `:last-child` / `:nth-child()` / `:nth-of-type()`
-//! (An+B, `odd`/`even`); simple `:not()` / `:is()` / `:where()`;
+//! `:root` / `:first-child` / `:last-child` / `:only-child` /
+//! `:nth-child()` / `:nth-of-type()` / `:nth-last-child()` /
+//! `:first-of-type` / `:last-of-type` (An+B, `odd`/`even`);
+//! simple `:not()` / `:is()` / `:where()`;
 //! author-layer `!important` (normal then important; specificity + source order
 //! within each); then prop style and inline style; then stylesheet `!important`
 //! (beats prop/inline normals); then prop / inline `!important` so author-important
@@ -20,10 +22,23 @@
 //! `::before`/`::after`, `@keyframes`, and transition/animation longhands — see
 //! [`crate::css_interactive::ParsedStylesheet`].
 //!
-//! Cheap `:not(:disabled)` is the same present-check as `[disabled]` (HTML
-//! `disabled` attr / form-control disabled). Other `:not()` args stay simple
+//! Cheap `:disabled` (subject or `:not(:disabled)`) is the same present-check
+//! as `[disabled]` (HTML `disabled` attr / form-control disabled). Cheap
+//! `:checked` matches only checkable hosts (checkbox / radio / switch)
+//! when `WidgetProps.toggled` is true — leftover `checked` attrs on
+//! dialogs / other nodes do not match. Sibling combinators `+` / `~`
+//! already walk preceding siblings. `:empty` / `:not(:empty)`: no element
+//! children, no host `label`/`value` with a non-whitespace Unicode scalar
+//! (`char::is_whitespace`), and no child text of that kind. Text nodes are
+//! `#text` / `createText` / `nana-text` only — L2 `p` / `span` / `label` /
+//! headings are elements even when their kind is `WidgetKind::Text`.
+//! Generated `::before`/`::after` boxes and whitespace-only text do not count.
+//! `:first-child` / `:last-child` / `:only-child` / `:nth-*` sibling
+//! counts exclude generated boxes and those text nodes. Other `:not()` args stay simple
 //! compounds. Cheap subject `:focus-within` matches when the subject or a
 //! descendant is focused; ancestor `:focus-within` is skipped.
+//! `:focus-visible` is stored as `:focus` (no keyboard-vs-pointer signal);
+//! it never matches without focus.
 //! Still deferred (skipped at parse): combinators inside `:has()`,
 //! `:nth-child(… of …)`, nested / complex `:not()` args, unknown at-rules,
 //! unknown `@supports` predicates, `@import … layer()` / `supports()`,
@@ -115,6 +130,10 @@ pub struct SimpleCompound {
     pub id: Option<String>,
     pub classes: Vec<String>,
     pub attrs: Vec<AttrSelector>,
+    /// `:empty` / `:not(:empty)` — see [`MatchNode::is_empty`].
+    pub empty: bool,
+    /// `:checked` / `:not(:checked)` — see [`MatchNode::checked`].
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -132,12 +151,21 @@ pub struct CompoundSelector {
     /// Structural / document pseudos.
     pub first_child: bool,
     pub last_child: bool,
+    pub only_child: bool,
+    pub first_of_type: bool,
+    pub last_of_type: bool,
+    /// `:empty` — see [`MatchContext::is_empty`].
+    pub empty: bool,
+    /// `:checked` — see [`MatchContext::checked`].
+    pub checked: bool,
     /// `:root` — matches the document root (no parent in [`MatchContext`]).
     pub root: bool,
     /// `:nth-child(An+B)` — 1-based index among all siblings.
     pub nth_child: Option<AnPlusB>,
     /// `:nth-of-type(An+B)` — 1-based index among same-tag siblings.
     pub nth_of_type: Option<AnPlusB>,
+    /// `:nth-last-child(An+B)` — 1-based index counting from the last sibling.
+    pub nth_last_child: Option<AnPlusB>,
     /// `:hover` / `:focus` / `:active` when parsed for interactive buckets.
     pub interactive: Option<InteractivePseudo>,
     /// Cheap `:has()` descendant-present queries (OR inside each list, AND across
@@ -242,6 +270,10 @@ pub struct MatchNode<'a> {
     pub id: &'a str,
     pub classes: &'a [String],
     pub attrs: &'a BTreeMap<String, String>,
+    /// True when the node has no element children and no non-whitespace text.
+    pub is_empty: bool,
+    /// Checkable host with `toggled` (`:checked`).
+    pub checked: bool,
 }
 
 /// Element facts used for selector matching (bridge / tree).
@@ -273,6 +305,10 @@ pub struct MatchContext<'a> {
     pub has_args: &'a [SimpleCompound],
     /// Subject or a descendant is the focused element (`:focus-within`).
     pub focus_within: bool,
+    /// Subject has no element children and no non-whitespace text (`:empty`).
+    pub is_empty: bool,
+    /// Checkable host with `toggled` (`:checked`).
+    pub checked: bool,
 }
 
 impl<'a> MatchContext<'a> {
@@ -282,6 +318,8 @@ impl<'a> MatchContext<'a> {
             id: self.id,
             classes: self.classes,
             attrs: self.attrs,
+            is_empty: self.is_empty,
+            checked: self.checked,
         }
     }
 
@@ -1132,6 +1170,12 @@ pub(crate) fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> b
             return false;
         }
     }
+    if simple.empty && !node.is_empty {
+        return false;
+    }
+    if simple.checked && !node.checked {
+        return false;
+    }
     // Empty simple (shouldn't parse) matches nothing useful — treat as true only
     // when at least one condition exists; callers always push non-empty alts.
     true
@@ -1158,6 +1202,12 @@ pub(crate) fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>
         if !attr_matches(attr, node.attrs) {
             return false;
         }
+    }
+    if compound.empty && !node.is_empty {
+        return false;
+    }
+    if compound.checked && !node.checked {
+        return false;
     }
     for alt in &compound.not_alts {
         if simple_matches(alt, node) {
@@ -1189,6 +1239,17 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
     {
         return false;
     }
+    if compound.only_child && ctx.sibling_count != 1 {
+        return false;
+    }
+    if compound.first_of_type && ctx.of_type_index != 0 {
+        return false;
+    }
+    if compound.last_of_type
+        && (ctx.of_type_count == 0 || ctx.of_type_index + 1 != ctx.of_type_count)
+    {
+        return false;
+    }
     if let Some(anb) = compound.nth_child {
         // CSS indices are 1-based among all siblings.
         if !anb.matches_index(ctx.sibling_index.saturating_add(1)) {
@@ -1199,6 +1260,12 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
         && !anb.matches_index(ctx.of_type_index.saturating_add(1))
     {
         return false;
+    }
+    if let Some(anb) = compound.nth_last_child {
+        let from_end = ctx.sibling_count.saturating_sub(ctx.sibling_index);
+        if !anb.matches_index(from_end) {
+            return false;
+        }
     }
     if !compound.has_queries.is_empty() {
         if ctx.has_args.is_empty() {
@@ -1505,8 +1572,11 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
             return true;
         }
         match name {
-            "where" | "is" | "not" | "nth-child" | "nth-of-type" | "has" => false,
-            "root" | "first-child" | "last-child" | "focus-within" => false,
+            "where" | "is" | "not" | "nth-child" | "nth-of-type" | "nth-last-child" | "has" => {
+                false
+            }
+            "root" | "first-child" | "last-child" | "only-child" | "first-of-type"
+            | "last-of-type" | "empty" | "checked" | "disabled" | "focus-within" => false,
             _ => true,
         }
     }) || s.to_ascii_lowercase().contains("::")
@@ -1535,14 +1605,14 @@ fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> boo
             let name = &after[..end];
             let rem = &after[end..];
             match name {
-                "where" | "is" | "not" | "nth-child" | "nth-of-type" | "has" => {
+                "where" | "is" | "not" | "nth-child" | "nth-of-type" | "nth-last-child" | "has" => {
                     if !rem.starts_with('(') {
                         return true;
                     }
                     let Some(close) = balanced_paren_end(rem) else {
                         return true;
                     };
-                    if matches!(name, "nth-child" | "nth-of-type") {
+                    if matches!(name, "nth-child" | "nth-of-type" | "nth-last-child") {
                         let inner = &rem[1..close];
                         if nth_arg_has_of_clause(inner) {
                             return true;
@@ -1551,7 +1621,8 @@ fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> boo
                     rest = &rem[close + 1..];
                     continue;
                 }
-                "root" | "first-child" | "last-child" | "focus-within" => {
+                "root" | "first-child" | "last-child" | "only-child" | "first-of-type"
+                | "last-of-type" | "empty" | "checked" | "disabled" | "focus-within" => {
                     rest = rem;
                     continue;
                 }
@@ -1791,9 +1862,15 @@ fn parse_compound(raw: &str, mode: ParseCompoundMode) -> Option<CompoundSelector
                 match name.as_str() {
                     "first-child" => out.first_child = true,
                     "last-child" => out.last_child = true,
+                    "only-child" => out.only_child = true,
+                    "first-of-type" => out.first_of_type = true,
+                    "last-of-type" => out.last_of_type = true,
+                    "empty" => out.empty = true,
+                    "checked" => out.checked = true,
+                    "disabled" => out.attrs.push(present_attr("disabled")),
                     "root" => out.root = true,
                     "focus-within" => out.focus_within = true,
-                    "nth-child" | "nth-of-type" => {
+                    "nth-child" | "nth-of-type" | "nth-last-child" => {
                         if i >= chars.len() || chars[i] != '(' {
                             return None;
                         }
@@ -1825,6 +1902,7 @@ fn parse_compound(raw: &str, mode: ParseCompoundMode) -> Option<CompoundSelector
                         match name.as_str() {
                             "nth-child" => out.nth_child = Some(anb),
                             "nth-of-type" => out.nth_of_type = Some(anb),
+                            "nth-last-child" => out.nth_last_child = Some(anb),
                             _ => unreachable!(),
                         }
                     }
@@ -1914,9 +1992,15 @@ fn compound_is_empty(out: &CompoundSelector) -> bool {
         && out.where_alts.is_empty()
         && !out.first_child
         && !out.last_child
+        && !out.only_child
+        && !out.first_of_type
+        && !out.last_of_type
+        && !out.empty
+        && !out.checked
         && !out.root
         && out.nth_child.is_none()
         && out.nth_of_type.is_none()
+        && out.nth_last_child.is_none()
         && out.has_queries.is_empty()
         && !out.focus_within
 }
@@ -2035,7 +2119,10 @@ fn simple_alt_has_combinator_or_pseudo(s: &str) -> bool {
                 let Some(end) = skip_ident(rest) else {
                     return true;
                 };
-                if !rest[..end].eq_ignore_ascii_case("disabled") {
+                if !matches!(
+                    rest[..end].to_ascii_lowercase().as_str(),
+                    "disabled" | "checked" | "empty"
+                ) {
                     return true;
                 }
                 i += 1 + end;
@@ -2124,24 +2211,31 @@ fn parse_simple_compound(raw: &str) -> Option<SimpleCompound> {
                     .iter()
                     .collect::<String>()
                     .to_ascii_lowercase();
-                if name != "disabled" {
-                    return None;
+                match name.as_str() {
+                    "disabled" => out.attrs.push(present_attr("disabled")),
+                    "checked" => out.checked = true,
+                    "empty" => out.empty = true,
+                    _ => return None,
                 }
-                out.attrs.push(disabled_present_attr());
             }
             _ => return None,
         }
     }
-    if out.type_name.is_none() && out.id.is_none() && out.classes.is_empty() && out.attrs.is_empty()
+    if out.type_name.is_none()
+        && out.id.is_none()
+        && out.classes.is_empty()
+        && out.attrs.is_empty()
+        && !out.empty
+        && !out.checked
     {
         return None;
     }
     Some(out)
 }
 
-fn disabled_present_attr() -> AttrSelector {
+fn present_attr(name: &str) -> AttrSelector {
     AttrSelector {
-        name: "disabled".into(),
+        name: name.into(),
         op: AttrOperator::Present,
         value: None,
         case: AttrCase::Default,
@@ -2155,7 +2249,9 @@ fn add_simple_specificity(spec: &mut Specificity, simple: &SimpleCompound) {
     spec.classes_attrs = spec
         .classes_attrs
         .saturating_add(simple.classes.len() as u16)
-        .saturating_add(simple.attrs.len() as u16);
+        .saturating_add(simple.attrs.len() as u16)
+        .saturating_add(u16::from(simple.empty))
+        .saturating_add(u16::from(simple.checked));
     if simple.type_name.as_ref().is_some_and(|t| t != "*") {
         spec.types = spec.types.saturating_add(1);
     }
@@ -2179,9 +2275,15 @@ fn add_specificity(spec: &mut Specificity, compound: &CompoundSelector) {
     }
     let structural = u16::from(compound.first_child)
         + u16::from(compound.last_child)
+        + u16::from(compound.only_child)
+        + u16::from(compound.first_of_type)
+        + u16::from(compound.last_of_type)
+        + u16::from(compound.empty)
+        + u16::from(compound.checked)
         + u16::from(compound.root)
         + u16::from(compound.nth_child.is_some())
         + u16::from(compound.nth_of_type.is_some())
+        + u16::from(compound.nth_last_child.is_some())
         + u16::from(compound.interactive.is_some())
         + u16::from(compound.focus_within);
     spec.classes_attrs = spec
@@ -2424,6 +2526,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         }
     }
 
@@ -2451,6 +2555,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         }
     }
 
@@ -2479,6 +2585,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         }
     }
 
@@ -2493,7 +2601,20 @@ mod tests {
             id,
             classes,
             attrs,
+            is_empty: true,
+            checked: false,
         }
+    }
+
+    fn node_checked<'a>(
+        tag: &'a str,
+        id: &'a str,
+        classes: &'a [String],
+        attrs: &'a BTreeMap<String, String>,
+    ) -> MatchNode<'a> {
+        let mut node = node(tag, id, classes, attrs);
+        node.checked = true;
+        node
     }
 
     #[test]
@@ -3267,6 +3388,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let mut layout = LayoutStyle::default();
         apply_stylesheet_to_layout(&mut layout, &rules, &first, None, None);
@@ -3728,7 +3851,12 @@ mod tests {
     fn nth_of_clause_and_invalid_deferred() {
         assert!(parse_stylesheet("li:nth-child(even of .noted) { gap: 1px; }", 0).is_empty());
         assert!(parse_stylesheet("p:nth-of-type(2 of .x) { gap: 1px; }", 0).is_empty());
-        assert!(parse_stylesheet(":nth-last-child(2) { gap: 1px; }", 0).is_empty());
+        let last = parse_stylesheet(":nth-last-child(2) { gap: 1px; }", 0);
+        assert_eq!(last.len(), 1);
+        assert_eq!(
+            last[0].selectors[0].subject.nth_last_child,
+            Some(AnPlusB { a: 0, b: 2 })
+        );
         let ok = parse_stylesheet(":nth-child(2n+1) { gap: 1px; }", 0);
         assert_eq!(ok.len(), 1);
         assert_eq!(
@@ -4504,5 +4632,143 @@ mod tests {
         let mut layout = LayoutStyle::default();
         apply_stylesheet_to_layout(&mut layout, &flat.static_rules, &m, None, None);
         assert_eq!(layout.color, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn subject_disabled_matches_disabled_presence() {
+        let rules = parse_stylesheet("button:disabled { width: 10px; }", 0);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].selectors[0].subject.attrs[0].name, "disabled",
+            "subject :disabled compiles to [disabled] presence"
+        );
+        let empty = BTreeMap::new();
+        let mut disabled = BTreeMap::new();
+        disabled.insert("disabled".into(), String::new());
+        let mut hit = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut hit,
+            &rules,
+            &ctx("button", "", &[], &disabled, &[]),
+            None,
+            None,
+        );
+        assert_eq!(hit.width, Some(LengthSpec::Px(10.0)));
+        let mut miss = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut miss,
+            &rules,
+            &ctx("button", "", &[], &empty, &[]),
+            None,
+            None,
+        );
+        assert!(miss.width.is_none());
+    }
+
+    #[test]
+    fn checked_adjacent_sibling_label_matches() {
+        let rules = parse_stylesheet("input:checked + label { width: 16px; }", 0);
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].selectors[0].ancestors[0].1.checked);
+        let empty = BTreeMap::new();
+        let none = Vec::<String>::new();
+        let input = node_checked("input", "", &none, &empty);
+        let parent = [node("div", "", &none, &empty)];
+        let mut hit = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut hit,
+            &rules,
+            &ctx_full("label", "", &none, &empty, &parent, &[input], 1, 2),
+            None,
+            None,
+        );
+        assert_eq!(hit.width, Some(LengthSpec::Px(16.0)));
+        let unchecked = node("input", "", &none, &empty);
+        let mut miss = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut miss,
+            &rules,
+            &ctx_full("label", "", &none, &empty, &parent, &[unchecked], 1, 2),
+            None,
+            None,
+        );
+        assert!(miss.width.is_none());
+    }
+
+    #[test]
+    fn empty_and_not_empty_use_whitespace_definition() {
+        // :empty = no element children and no non-whitespace UTF-8 text.
+        // Whitespace-only (space / tab / LF / NBSP) still matches :empty.
+        let rules = parse_stylesheet(
+            r#"
+            .box:empty { width: 8px; }
+            .box:not(:empty) { height: 12px; }
+            "#,
+            0,
+        );
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].selectors[0].subject.empty);
+        let classes = vec!["box".into()];
+        let attrs = BTreeMap::new();
+        let mut empty_ctx = ctx("div", "", &classes, &attrs, &[]);
+        empty_ctx.is_empty = true;
+        let mut empty_layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut empty_layout, &rules, &empty_ctx, None, None);
+        assert_eq!(empty_layout.width, Some(LengthSpec::Px(8.0)));
+        assert!(empty_layout.height.is_none());
+
+        empty_ctx.is_empty = false;
+        let mut filled = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut filled, &rules, &empty_ctx, None, None);
+        assert!(filled.width.is_none());
+        assert_eq!(filled.height, Some(LengthSpec::Px(12.0)));
+    }
+
+    #[test]
+    fn only_child_and_of_type_and_nth_last_child() {
+        let rules = parse_stylesheet(
+            r#"
+            .row > :only-child { width: 10px; }
+            .row > p:first-of-type { height: 20px; }
+            .row > p:last-of-type { padding: 8px; }
+            .row > :nth-last-child(1) { gap: 4px; }
+            .row > :nth-last-child(odd) { margin: 2px; }
+            "#,
+            0,
+        );
+        assert_eq!(rules.len(), 5);
+        let parent_c = vec!["row".into()];
+        let empty = BTreeMap::new();
+        let ancestors = [node("div", "", &parent_c, &empty)];
+        let none = Vec::<String>::new();
+
+        let only = ctx_nth("p", "", &none, &empty, &ancestors, 0, 1, 0, 1);
+        let mut lo = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut lo, &rules, &only, None, None);
+        assert_eq!(lo.width, Some(LengthSpec::Px(10.0)));
+        assert_eq!(lo.height, Some(LengthSpec::Px(20.0)));
+        assert_eq!(lo.padding, Some(LengthSpec::Px(8.0)));
+        assert_eq!(lo.gap, Some(LengthSpec::Px(4.0)));
+        assert_eq!(lo.margin, Some(LengthSpec::Px(2.0)));
+
+        // [div, p, p]: last p is last-of-type, nth-last-child(1), even from end (1-based 1).
+        // first p: of-type 0, nth-last-child 2 (even) — not odd from end.
+        let first_p = ctx_nth("p", "", &none, &empty, &ancestors, 1, 3, 0, 2);
+        let mut l1 = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut l1, &rules, &first_p, None, None);
+        assert!(l1.width.is_none());
+        assert_eq!(l1.height, Some(LengthSpec::Px(20.0)));
+        assert!(l1.padding.is_none());
+        assert!(l1.gap.is_none());
+        assert!(l1.margin.is_none());
+
+        let last_p = ctx_nth("p", "", &none, &empty, &ancestors, 2, 3, 1, 2);
+        let mut l2 = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut l2, &rules, &last_p, None, None);
+        assert!(l2.width.is_none());
+        assert!(l2.height.is_none());
+        assert_eq!(l2.padding, Some(LengthSpec::Px(8.0)));
+        assert_eq!(l2.gap, Some(LengthSpec::Px(4.0)));
+        assert_eq!(l2.margin, Some(LengthSpec::Px(2.0)));
     }
 }

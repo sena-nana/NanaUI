@@ -630,6 +630,11 @@ impl WidgetProps {
                         }
                     }
                 }
+                if !self.toggled {
+                    self.attrs.remove("checked");
+                } else if key == "checked" {
+                    self.attrs.insert("checked".into(), String::new());
+                }
             }
             "value" => {
                 if matches!(
@@ -2463,15 +2468,18 @@ impl MessageBridge {
     }
 
     fn node_self_has_bits(&self, id: WidgetId) -> u64 {
+        let is_empty = self.widget_is_empty(id);
         let Some(widget) = self.widgets.get(&id) else {
             return 0;
         };
-        let attrs = cascade_attrs_from_props(&widget.props);
+        let attrs = cascade_attrs_from_widget(widget);
         let node = MatchNode {
             tag: widget.props.element_tag.as_str(),
             id: widget.props.element_id.as_str(),
             classes: widget.props.class_names.as_slice(),
             attrs: &attrs,
+            is_empty,
+            checked: widget_checked_state(widget),
         };
         let mut bits = 0u64;
         for (i, arg) in self.has_args.iter().enumerate() {
@@ -2543,42 +2551,27 @@ impl MessageBridge {
         } else {
             widget.props.element_tag.clone()
         };
-        if !stylesheet_may_match_subject(
-            rules,
-            &tag,
-            widget.props.element_id.as_str(),
-            &widget.props.class_names,
-        ) {
+        let element_id = widget.props.element_id.clone();
+        let class_names = widget.props.class_names.clone();
+        if !stylesheet_may_match_subject(rules, &tag, element_id.as_str(), &class_names) {
             return false;
         }
+        let is_empty = self.widget_is_empty(id);
         let Some(ancestry) = self.match_ancestry(id) else {
             return false;
         };
+        let Some(widget) = self.widgets.get(&id) else {
+            return false;
+        };
         let leaf_classes = widget.props.class_names.clone();
-        let leaf_attrs = cascade_attrs_from_props(&widget.props);
+        let leaf_attrs = cascade_attrs_from_widget(widget);
         let leaf_id = widget.props.element_id.clone();
         let (sibling_index, sibling_count) = self.sibling_position(id);
         let (of_type_index, of_type_count) = self.of_type_position(id);
         let prev_snaps = self.prev_sibling_snaps(id);
-        let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
-            .iter()
-            .skip(1)
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
-        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
-            .iter()
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
+        let ancestor_nodes: Vec<MatchNode<'_>> =
+            ancestry.iter().skip(1).map(|n| n.as_node()).collect();
+        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
         let ctx = MatchContext {
             tag: tag.as_str(),
             id: leaf_id.as_str(),
@@ -2593,6 +2586,8 @@ impl MessageBridge {
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
             focus_within: self.focus_within_of(id),
+            is_empty,
+            checked: widget_checked_state(widget),
         };
         stylesheet_matches(rules, &ctx)
     }
@@ -2702,11 +2697,12 @@ impl MessageBridge {
         let Some(ancestry) = self.match_ancestry(id) else {
             return BTreeMap::new();
         };
+        let is_empty = self.widget_is_empty(id);
         let Some(widget) = self.widgets.get(&id) else {
             return BTreeMap::new();
         };
         let leaf_classes = widget.props.class_names.clone();
-        let leaf_attrs = cascade_attrs_from_props(&widget.props);
+        let leaf_attrs = cascade_attrs_from_widget(widget);
         let leaf_tag = widget.props.element_tag.clone();
         let leaf_id = widget.props.element_id.clone();
         let prop_style = widget.props.prop_style.clone();
@@ -2714,25 +2710,9 @@ impl MessageBridge {
         let (sibling_index, sibling_count) = self.sibling_position(id);
         let (of_type_index, of_type_count) = self.of_type_position(id);
         let prev_snaps = self.prev_sibling_snaps(id);
-        let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
-            .iter()
-            .skip(1)
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
-        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
-            .iter()
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
+        let ancestor_nodes: Vec<MatchNode<'_>> =
+            ancestry.iter().skip(1).map(|n| n.as_node()).collect();
+        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
         let ctx = MatchContext {
             tag: leaf_tag.as_str(),
             id: leaf_id.as_str(),
@@ -2747,6 +2727,8 @@ impl MessageBridge {
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
             focus_within: self.focus_within_of(id),
+            is_empty,
+            checked: widget_checked_state(widget),
         };
         let mut map = crate::css_cascade::matched_custom_properties(&self.stylesheet_rules, &ctx);
         for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&prop_style) {
@@ -2765,6 +2747,7 @@ impl MessageBridge {
         let Some(ancestry) = self.match_ancestry(id) else {
             return;
         };
+        let is_empty = self.widget_is_empty(id);
         let Some(widget) = self.widgets.get(&id) else {
             return;
         };
@@ -2773,7 +2756,7 @@ impl MessageBridge {
         let class_names = widget.props.class_names.clone();
         let element_tag = widget.props.element_tag.clone();
         let element_id = widget.props.element_id.clone();
-        let attrs = cascade_attrs_from_props(&widget.props);
+        let attrs = cascade_attrs_from_widget(widget);
         let inline_style = widget.props.inline_style.clone();
         let prop_style = widget.props.prop_style.clone();
         let hidden = widget.props.layout.hidden;
@@ -2793,25 +2776,9 @@ impl MessageBridge {
         let (of_type_index, of_type_count) = self.of_type_position(id);
         let prev_snaps = self.prev_sibling_snaps(id);
 
-        let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
-            .iter()
-            .skip(1)
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
-        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
-            .iter()
-            .map(|n| MatchNode {
-                tag: n.tag.as_str(),
-                id: n.id.as_str(),
-                classes: n.classes.as_slice(),
-                attrs: &n.attrs,
-            })
-            .collect();
+        let ancestor_nodes: Vec<MatchNode<'_>> =
+            ancestry.iter().skip(1).map(|n| n.as_node()).collect();
+        let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
         let ctx = MatchContext {
             tag: leaf_tag.as_str(),
             id: leaf_id.as_str(),
@@ -2826,6 +2793,8 @@ impl MessageBridge {
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
             focus_within: self.focus_within_of(id),
+            is_empty,
+            checked: widget_checked_state(widget),
         };
 
         // Layer order: kind default → stylesheet → class hints → prop → inline
@@ -3216,6 +3185,16 @@ impl MessageBridge {
             .is_some_and(|w| w.props.attrs.contains_key(GENERATED_PSEUDO_ATTR))
     }
 
+    fn widget_is_dom_text(&self, id: WidgetId) -> bool {
+        self.widgets.get(&id).is_some_and(|w| {
+            crate::widget_map::is_dom_text_node(w.kind, w.props.element_tag.as_str())
+        })
+    }
+
+    fn is_element_sibling(&self, id: WidgetId) -> bool {
+        !self.is_generated_pseudo_widget(id) && !self.widget_is_dom_text(id)
+    }
+
     fn sync_generated_pseudo_for(
         &mut self,
         origin: WidgetId,
@@ -3228,11 +3207,12 @@ impl MessageBridge {
             let Some(ancestry) = self.match_ancestry(origin) else {
                 return;
             };
+            let is_empty = self.widget_is_empty(origin);
             let Some(widget) = self.widgets.get(&origin) else {
                 return;
             };
             let leaf_classes = widget.props.class_names.clone();
-            let leaf_attrs = cascade_attrs_from_props(&widget.props);
+            let leaf_attrs = cascade_attrs_from_widget(widget);
             let leaf_tag = if widget.props.element_tag.is_empty() {
                 widget.kind.element_tag().to_string()
             } else {
@@ -3242,25 +3222,9 @@ impl MessageBridge {
             let (sibling_index, sibling_count) = self.sibling_position(origin);
             let (of_type_index, of_type_count) = self.of_type_position(origin);
             let prev_snaps = self.prev_sibling_snaps(origin);
-            let ancestor_nodes: Vec<MatchNode<'_>> = ancestry
-                .iter()
-                .skip(1)
-                .map(|n| MatchNode {
-                    tag: n.tag.as_str(),
-                    id: n.id.as_str(),
-                    classes: n.classes.as_slice(),
-                    attrs: &n.attrs,
-                })
-                .collect();
-            let prev_nodes: Vec<MatchNode<'_>> = prev_snaps
-                .iter()
-                .map(|n| MatchNode {
-                    tag: n.tag.as_str(),
-                    id: n.id.as_str(),
-                    classes: n.classes.as_slice(),
-                    attrs: &n.attrs,
-                })
-                .collect();
+            let ancestor_nodes: Vec<MatchNode<'_>> =
+                ancestry.iter().skip(1).map(|n| n.as_node()).collect();
+            let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
             let ctx = MatchContext {
                 tag: leaf_tag.as_str(),
                 id: leaf_id.as_str(),
@@ -3275,6 +3239,8 @@ impl MessageBridge {
                 has_bits: self.has_descendant_bits.get(&origin).copied().unwrap_or(0),
                 has_args: self.has_args.as_slice(),
                 focus_within: self.focus_within_of(origin),
+                is_empty,
+                checked: widget_checked_state(widget),
             };
             crate::css_interactive::matched_generated_pseudo(&self.generated_pseudo_rules, &ctx)
         };
@@ -3489,35 +3455,49 @@ impl MessageBridge {
         let mut out = Vec::new();
         let mut cur = Some(id);
         while let Some(cid) = cur {
+            let is_empty = self.widget_is_empty(cid);
             let w = self.widgets.get(&cid)?;
-            out.push(match_snap_from_widget(w));
-            cur = w.parent;
+            let parent = w.parent;
+            out.push(match_snap_from_widget(w, is_empty));
+            cur = parent;
         }
         Some(out)
     }
 
-    /// Position among parent's children for `:first-child` / `:last-child`.
+    fn real_child_ids(&self, parent_id: WidgetId) -> Vec<WidgetId> {
+        let children = self
+            .widgets
+            .get(&parent_id)
+            .map(|p| p.children.clone())
+            .unwrap_or_default();
+        children
+            .into_iter()
+            .filter(|&cid| self.is_element_sibling(cid))
+            .collect()
+    }
+
+    /// Position among parent's **element** children for `:first-child` / `:last-child`.
+    /// Generated `::before` / `::after` and DOM text nodes (`#text` /
+    /// `createText` / `nana-text`) are not siblings. L2 `p` / `span` / `label`
+    /// / headings stay elements even when their kind is [`WidgetKind::Text`].
     fn sibling_position(&self, id: WidgetId) -> (usize, usize) {
-        let Some(widget) = self.widgets.get(&id) else {
+        if !self.is_element_sibling(id) {
+            return (usize::MAX, 0);
+        }
+        let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent) else {
             return (0, 1);
         };
-        let Some(parent_id) = widget.parent else {
-            return (0, 1);
-        };
-        let Some(parent) = self.widgets.get(&parent_id) else {
-            return (0, 1);
-        };
-        let count = parent.children.len();
-        let index = parent
-            .children
-            .iter()
-            .position(|&cid| cid == id)
-            .unwrap_or(0);
+        let real = self.real_child_ids(parent_id);
+        let count = real.len();
+        let index = real.iter().position(|&cid| cid == id).unwrap_or(0);
         (index, count.max(1))
     }
 
     /// Position among same-tag siblings for `:nth-of-type` (0-based index, count).
     fn of_type_position(&self, id: WidgetId) -> (usize, usize) {
+        if !self.is_element_sibling(id) {
+            return (usize::MAX, 0);
+        }
         let Some(widget) = self.widgets.get(&id) else {
             return (0, 1);
         };
@@ -3529,12 +3509,10 @@ impl MessageBridge {
         let Some(parent_id) = widget.parent else {
             return (0, 1);
         };
-        let Some(parent) = self.widgets.get(&parent_id) else {
-            return (0, 1);
-        };
+        let children = self.real_child_ids(parent_id);
         let mut index = 0usize;
         let mut count = 0usize;
-        for &cid in &parent.children {
+        for cid in children {
             let Some(w) = self.widgets.get(&cid) else {
                 continue;
             };
@@ -3554,25 +3532,79 @@ impl MessageBridge {
         (index, count.max(1))
     }
 
+    /// `:empty`: no element children, no host `label`/`value` with a
+    /// non-whitespace UTF-8 scalar (`char::is_whitespace`), and no such child
+    /// text. Text nodes are `#text` / `createText` / `nana-text` only — L2
+    /// `p` / `span` / `label` / headings are elements (even as
+    /// [`WidgetKind::Text`]). Generated `::before`/`::after` ignored.
+    fn widget_is_empty(&self, id: WidgetId) -> bool {
+        let Some(w) = self.widgets.get(&id) else {
+            return true;
+        };
+        if text_has_non_whitespace(&w.props.label) || text_has_non_whitespace(&w.props.value) {
+            return false;
+        }
+        let children = w.children.clone();
+        for cid in children {
+            if self.is_generated_pseudo_widget(cid) {
+                continue;
+            }
+            if self.widget_is_dom_text(cid) {
+                if !self.widget_is_empty(cid) {
+                    return false;
+                }
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
+    fn reapply_parent_and_children(&mut self, parent: WidgetId) {
+        self.reapply_layout_for(parent);
+        let children = self
+            .widgets
+            .get(&parent)
+            .map(|w| w.children.clone())
+            .unwrap_or_default();
+        for id in children {
+            self.reapply_layout_for(id);
+        }
+    }
+
+    fn reapply_following_siblings(&mut self, id: WidgetId) {
+        let Some(parent) = self.widgets.get(&id).and_then(|w| w.parent) else {
+            return;
+        };
+        let children = self
+            .widgets
+            .get(&parent)
+            .map(|w| w.children.clone())
+            .unwrap_or_default();
+        let Some(idx) = children.iter().position(|&cid| cid == id) else {
+            return;
+        };
+        for &cid in &children[idx + 1..] {
+            self.reapply_layout_for(cid);
+        }
+    }
+
     fn prev_sibling_snaps(&self, id: WidgetId) -> Vec<MatchNodeSnap> {
-        let Some(widget) = self.widgets.get(&id) else {
+        let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent) else {
             return Vec::new();
         };
-        let Some(parent_id) = widget.parent else {
+        let real = self.real_child_ids(parent_id);
+        let Some(index) = real.iter().position(|&cid| cid == id) else {
             return Vec::new();
         };
-        let Some(parent) = self.widgets.get(&parent_id) else {
-            return Vec::new();
-        };
-        let Some(index) = parent.children.iter().position(|&cid| cid == id) else {
-            return Vec::new();
-        };
-        parent.children[..index]
+        real[..index]
             .iter()
             .rev()
-            .filter_map(|&cid| {
+            .copied()
+            .filter_map(|cid| {
+                let is_empty = self.widget_is_empty(cid);
                 let w = self.widgets.get(&cid)?;
-                Some(match_snap_from_widget(w))
+                Some(match_snap_from_widget(w, is_empty))
             })
             .collect()
     }
@@ -3957,9 +3989,10 @@ impl MessageBridge {
         {
             self.recascade_inline_svg(parent);
         }
-        // Subject `:has()` on remaining ancestors must drop the removed subtree.
+        // Subject `:has()` / `:empty` / sibling nth on remaining parent.
         if let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid)) {
             self.has_index_ready = false;
+            self.reapply_parent_and_children(parent);
             let mut walk = Some(parent);
             while let Some(pid) = walk {
                 if !self.widgets.contains_key(&pid) {
@@ -4038,9 +4071,9 @@ impl MessageBridge {
             }
         }
         self.sync_containing_block_from_parent(child);
-        // Parent combinators match the child; subject `:has()` restyles ancestors.
+        // Parent combinators / `:empty` / sibling nth match on insert.
         self.has_index_ready = false;
-        self.reapply_layout_for(child);
+        self.reapply_parent_and_children(parent);
         if !self.has_args.is_empty() {
             let mut walk = Some(parent);
             while let Some(pid) = walk {
@@ -4567,6 +4600,16 @@ impl MessageBridge {
                     widget.props.toggled = open;
                 }
             }
+            if matches!(
+                key_n.as_str(),
+                "checked" | "toggled" | "model-value" | "modelvalue"
+            ) {
+                if widget_checked_state(widget) {
+                    widget.props.attrs.insert("checked".into(), String::new());
+                } else {
+                    widget.props.attrs.remove("checked");
+                }
+            }
             // Re-resolve kind from class / role / type after attribute patches.
             if matches!(
                 key_n.as_str(),
@@ -4629,6 +4672,14 @@ impl MessageBridge {
                 | "data-region-id"
                 | "hidden"
                 | "disabled"
+                | "checked"
+                | "toggled"
+                | "model-value"
+                | "modelvalue"
+                | "label"
+                | "text"
+                | "title"
+                | "value"
                 | "dir"
                 | "src"
                 | "data-src"
@@ -4704,15 +4755,33 @@ impl MessageBridge {
                 walk = self.widgets.get(&pid).and_then(|w| w.parent);
             }
         }
+        if matches!(
+            key_n.as_str(),
+            "checked" | "toggled" | "model-value" | "modelvalue" | "disabled"
+        ) {
+            self.reapply_following_siblings(id);
+        }
+        if matches!(key_n.as_str(), "label" | "text" | "title" | "value")
+            && let Some(pid) = self.widgets.get(&id).and_then(|w| w.parent)
+        {
+            self.reapply_layout_for(pid);
+        }
         self.strip_deferred_position_on_overlay(id);
         self.bump();
     }
 
     pub fn set_label(&mut self, id: WidgetId, label: impl Into<String>) {
+        let parent = self.widgets.get(&id).and_then(|w| w.parent);
         if let Some(w) = self.widgets.get_mut(&id) {
             w.props.label = label.into();
-            self.bump();
+        } else {
+            return;
         }
+        self.reapply_layout_for(id);
+        if let Some(pid) = parent {
+            self.reapply_layout_for(pid);
+        }
+        self.bump();
     }
 
     pub fn push_event(&mut self, event: BridgeEvent) {
@@ -4761,10 +4830,23 @@ impl MessageBridge {
             if w.kind.is_overlay() {
                 w.props.active = value;
             }
-            self.bump();
+            if value
+                && crate::widget_map::is_checked_match_host(
+                    w.kind,
+                    w.props.element_tag.as_str(),
+                    &w.props.attrs,
+                )
+            {
+                w.props.attrs.insert("checked".into(), String::new());
+            } else {
+                w.props.attrs.remove("checked");
+            }
         } else {
             return Vec::new();
         }
+        self.reapply_layout_for(id);
+        self.reapply_following_siblings(id);
+        self.bump();
         self.push_event(BridgeEvent::Toggle { id, value });
         vec!["change", "update:modelValue"]
     }
@@ -5146,17 +5228,46 @@ struct MatchNodeSnap {
     id: String,
     classes: Vec<String>,
     attrs: BTreeMap<String, String>,
+    is_empty: bool,
+    checked: bool,
 }
 
-fn cascade_attrs_from_props(props: &WidgetProps) -> BTreeMap<String, String> {
-    let mut attrs = props.attrs.clone();
-    if props.disabled {
+impl MatchNodeSnap {
+    fn as_node(&self) -> MatchNode<'_> {
+        MatchNode {
+            tag: self.tag.as_str(),
+            id: self.id.as_str(),
+            classes: self.classes.as_slice(),
+            attrs: &self.attrs,
+            is_empty: self.is_empty,
+            checked: self.checked,
+        }
+    }
+}
+
+fn widget_checked_state(w: &SemanticWidget) -> bool {
+    crate::widget_map::is_checked_match_host(w.kind, w.props.element_tag.as_str(), &w.props.attrs)
+        && w.props.toggled
+}
+
+fn cascade_attrs_from_widget(w: &SemanticWidget) -> BTreeMap<String, String> {
+    let mut attrs = w.props.attrs.clone();
+    if w.props.disabled {
         attrs.entry("disabled".into()).or_insert_with(String::new);
+    }
+    if widget_checked_state(w) {
+        attrs.entry("checked".into()).or_default();
+    } else {
+        attrs.remove("checked");
     }
     attrs
 }
 
-fn match_snap_from_widget(w: &SemanticWidget) -> MatchNodeSnap {
+fn text_has_non_whitespace(s: &str) -> bool {
+    s.chars().any(|c| !c.is_whitespace())
+}
+
+fn match_snap_from_widget(w: &SemanticWidget, is_empty: bool) -> MatchNodeSnap {
     MatchNodeSnap {
         tag: if w.props.element_tag.is_empty() {
             w.kind.element_tag().to_string()
@@ -5165,7 +5276,9 @@ fn match_snap_from_widget(w: &SemanticWidget) -> MatchNodeSnap {
         },
         id: w.props.element_id.clone(),
         classes: w.props.class_names.clone(),
-        attrs: cascade_attrs_from_props(&w.props),
+        attrs: cascade_attrs_from_widget(w),
+        is_empty,
+        checked: widget_checked_state(w),
     }
 }
 
@@ -8973,6 +9086,468 @@ mod tests {
         );
         bridge.patch_prop(1, "disabled", &HostValue::Bool(true));
         assert!(bridge.get(1).expect("btn").props.layout.width.is_none());
+    }
+
+    #[test]
+    fn subject_disabled_restyles_on_patch() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                element_tag: "button".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet("button:disabled { width: 18px; }");
+        assert!(bridge.get(1).expect("btn").props.layout.width.is_none());
+        bridge.patch_prop(1, "disabled", &HostValue::Bool(true));
+        assert_eq!(
+            bridge.get(1).expect("btn").props.layout.width,
+            Some(LengthSpec::Px(18.0))
+        );
+    }
+
+    #[test]
+    fn checked_plus_label_restyles_following_sibling() {
+        let mut bridge = MessageBridge::new();
+        let mut input_attrs = BTreeMap::new();
+        input_attrs.insert("type".into(), "checkbox".into());
+        bridge.register(
+            1,
+            WidgetKind::Checkbox,
+            WidgetProps {
+                element_tag: "input".into(),
+                attrs: input_attrs,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "label".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(3, WidgetKind::Column, WidgetProps::default());
+        bridge.insert_child(1, 3, None);
+        bridge.insert_child(2, 3, None);
+        bridge.inject_stylesheet("input:checked + label { width: 20px; }");
+        assert!(bridge.get(2).expect("label").props.layout.width.is_none());
+        bridge.patch_prop(1, "checked", &HostValue::Bool(true));
+        assert_eq!(
+            bridge.get(2).expect("label").props.layout.width,
+            Some(LengthSpec::Px(20.0))
+        );
+        bridge.patch_prop(1, "checked", &HostValue::Bool(false));
+        assert!(bridge.get(2).expect("label").props.layout.width.is_none());
+    }
+
+    #[test]
+    fn empty_matches_whitespace_text_but_not_element_or_text() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(".box:empty { width: 8px; } .box:not(:empty) { height: 12px; }");
+        assert_eq!(
+            bridge.get(1).expect("empty").props.layout.width,
+            Some(LengthSpec::Px(8.0))
+        );
+        assert!(bridge.get(1).expect("empty").props.layout.height.is_none());
+
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "#text".into(),
+                label: " \u{00a0}\n\t".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        assert_eq!(
+            bridge.get(1).expect("ws").props.layout.width,
+            Some(LengthSpec::Px(8.0)),
+            "whitespace-only UTF-8 text still :empty"
+        );
+
+        bridge.set_label(2, "hi");
+        assert!(bridge.get(1).expect("text").props.layout.width.is_none());
+        assert_eq!(
+            bridge.get(1).expect("text").props.layout.height,
+            Some(LengthSpec::Px(12.0))
+        );
+
+        let mut bridge2 = MessageBridge::new();
+        bridge2.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge2.register(
+            2,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "span".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge2.inject_stylesheet(".box:empty { width: 8px; } .box:not(:empty) { height: 12px; }");
+        bridge2.insert_child(2, 1, None);
+        assert!(bridge2.get(1).expect("el").props.layout.width.is_none());
+        assert_eq!(
+            bridge2.get(1).expect("el").props.layout.height,
+            Some(LengthSpec::Px(12.0))
+        );
+    }
+
+    #[test]
+    fn only_child_and_nth_last_restyle_on_insert() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["row".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "p".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(
+            ".row > :only-child { width: 10px; } .row > :nth-last-child(1) { height: 6px; }",
+        );
+        assert_eq!(
+            bridge.get(2).expect("only").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+        assert_eq!(
+            bridge.get(2).expect("only").props.layout.height,
+            Some(LengthSpec::Px(6.0))
+        );
+        bridge.register(
+            3,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "p".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(3, 1, None);
+        assert!(bridge.get(2).expect("first").props.layout.width.is_none());
+        assert!(bridge.get(2).expect("first").props.layout.height.is_none());
+        assert_eq!(
+            bridge.get(3).expect("last").props.layout.height,
+            Some(LengthSpec::Px(6.0))
+        );
+    }
+
+    #[test]
+    fn host_set_element_text_is_not_empty() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(".box:empty { width: 8px; } .box:not(:empty) { height: 12px; }");
+        assert_eq!(
+            bridge.get(1).expect("empty").props.layout.width,
+            Some(LengthSpec::Px(8.0))
+        );
+        assert!(bridge.get(1).expect("empty").props.layout.height.is_none());
+        bridge.set_label(1, "hello");
+        assert!(
+            bridge.get(1).expect("text").props.layout.width.is_none(),
+            "setElementText / host label is content; :empty must not match"
+        );
+        assert_eq!(
+            bridge.get(1).expect("text").props.layout.height,
+            Some(LengthSpec::Px(12.0))
+        );
+    }
+
+    #[test]
+    fn dialog_checked_attr_does_not_match_and_toggle_off_clears() {
+        let mut dialog = MessageBridge::new();
+        dialog.register(
+            1,
+            WidgetKind::Dialog,
+            WidgetProps {
+                element_tag: "dialog".into(),
+                ..WidgetProps::default()
+            },
+        );
+        dialog.inject_stylesheet("dialog:checked { width: 20px; }");
+        dialog.patch_prop(1, "checked", &HostValue::Bool(true));
+        assert!(
+            dialog.get(1).expect("dialog").props.layout.width.is_none(),
+            "non-checkable host checked attr must not match :checked"
+        );
+
+        let mut box_bridge = MessageBridge::new();
+        let mut attrs = BTreeMap::new();
+        attrs.insert("type".into(), "checkbox".into());
+        box_bridge.register(
+            1,
+            WidgetKind::Checkbox,
+            WidgetProps {
+                element_tag: "input".into(),
+                attrs,
+                ..WidgetProps::default()
+            },
+        );
+        box_bridge.note_toggle(1, true);
+        assert!(
+            box_bridge
+                .get(1)
+                .expect("on")
+                .props
+                .attrs
+                .contains_key("checked")
+        );
+        box_bridge.note_toggle(1, false);
+        assert!(
+            !box_bridge
+                .get(1)
+                .expect("off")
+                .props
+                .attrs
+                .contains_key("checked"),
+            "note_toggle(false) must remove attrs[\"checked\"]"
+        );
+        box_bridge.patch_prop(1, "checked", &HostValue::Bool(true));
+        assert!(
+            box_bridge
+                .get(1)
+                .expect("patched on")
+                .props
+                .attrs
+                .contains_key("checked")
+        );
+        box_bridge.patch_prop(1, "toggled", &HostValue::Bool(false));
+        assert!(
+            !box_bridge
+                .get(1)
+                .expect("toggled off")
+                .props
+                .attrs
+                .contains_key("checked"),
+            "toggled=false must remove attrs[\"checked\"]"
+        );
+    }
+
+    #[test]
+    fn generated_pseudo_excluded_from_sibling_counts() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["row".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "p".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        let mut after_attrs = BTreeMap::new();
+        after_attrs.insert(GENERATED_PSEUDO_ATTR.into(), "after".into());
+        bridge.register(
+            3,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                attrs: after_attrs,
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(3, 1, None);
+        bridge.inject_stylesheet(
+            ".row > :only-child { width: 10px; } .row > :nth-last-child(1) { height: 6px; }",
+        );
+        assert_eq!(
+            bridge.get(2).expect("real").props.layout.width,
+            Some(LengthSpec::Px(10.0)),
+            ":only-child stays true when the extra sibling is a generated box"
+        );
+        assert_eq!(
+            bridge.get(2).expect("real").props.layout.height,
+            Some(LengthSpec::Px(6.0)),
+            "last real element is :nth-last-child(1) despite parent ::after"
+        );
+        assert!(
+            bridge.get(3).expect("after").props.layout.width.is_none()
+                && bridge.get(3).expect("after").props.layout.height.is_none()
+        );
+    }
+
+    #[test]
+    fn empty_span_child_makes_parent_not_empty() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "span".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".box:empty { width: 8px; } .box:not(:empty) { height: 12px; }");
+        assert!(
+            bridge.get(1).expect("wrap").props.layout.width.is_none(),
+            "empty span is an element child; parent must not match :empty"
+        );
+        assert_eq!(
+            bridge.get(1).expect("wrap").props.layout.height,
+            Some(LengthSpec::Px(12.0))
+        );
+    }
+
+    #[test]
+    fn create_element_p_with_create_text_is_not_empty() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "p".into(),
+                ..WidgetProps::default()
+            },
+        );
+        // createText: WidgetKind::Text, empty tag → register fills nana-text.
+        bridge.register(
+            3,
+            WidgetKind::Text,
+            WidgetProps {
+                label: "hello".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 2, None);
+        bridge.inject_stylesheet(
+            ".box:empty { width: 8px; } .box:not(:empty) { height: 12px; } p:not(:empty) { padding: 2px; }",
+        );
+        assert!(
+            bridge.get(1).expect("parent").props.layout.width.is_none(),
+            "createElement p + createText hello must not match parent :empty"
+        );
+        assert_eq!(
+            bridge.get(1).expect("parent").props.layout.height,
+            Some(LengthSpec::Px(12.0))
+        );
+        assert_eq!(
+            bridge.get(2).expect("p").props.layout.padding,
+            Some(LengthSpec::Px(2.0)),
+            "p is not :empty: createText grandchild is non-whitespace text"
+        );
+    }
+
+    #[test]
+    fn text_node_excluded_from_element_sibling_counts() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["row".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                label: "Hello".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::Text,
+            WidgetProps {
+                element_tag: "span".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 1, None);
+        bridge.inject_stylesheet(
+            ".row > :first-child { width: 10px; } .row > :only-child { height: 8px; } .row > :nth-last-child(1) { padding: 4px; }",
+        );
+        assert!(
+            bridge.get(2).expect("text").props.layout.width.is_none()
+                && bridge.get(2).expect("text").props.layout.height.is_none()
+                && bridge.get(2).expect("text").props.layout.padding.is_none(),
+            "createText / nana-text is not an element sibling"
+        );
+        assert_eq!(
+            bridge.get(3).expect("span").props.layout.width,
+            Some(LengthSpec::Px(10.0)),
+            "span is :first-child among elements"
+        );
+        assert_eq!(
+            bridge.get(3).expect("span").props.layout.height,
+            Some(LengthSpec::Px(8.0)),
+            "span is :only-child among elements"
+        );
+        assert_eq!(
+            bridge.get(3).expect("span").props.layout.padding,
+            Some(LengthSpec::Px(4.0)),
+            "nth-last-child(1) is the span, not the text widget"
+        );
     }
 
     #[test]
