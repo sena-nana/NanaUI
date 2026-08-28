@@ -996,15 +996,21 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("setFocus", move |args| {
             let el = arg_handle(args, 0)?;
-            {
+            let previous = {
                 let mut guard = lock_doc(&host.document)?;
+                let previous = guard.focused();
                 guard.set_focus(el);
-            }
+                previous
+            };
             {
                 let mut bridge = lock_bridge(&host.bridge)?;
-                if bridge.has_interactive_css() {
+                if bridge.has_interactive_css() || bridge.has_focus_within_css() {
                     let mut doc = lock_doc(&host.document)?;
-                    bridge.reapply_interactive_cascade(&mut doc);
+                    bridge.on_runtime_focus_change(
+                        &mut doc,
+                        previous.map(|node| node.0),
+                        Some(el.0),
+                    );
                     bridge.sync_cascaded_layout_into_runtime(&mut doc);
                     doc.flush_host_frame();
                 }
@@ -1015,15 +1021,17 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     {
         let host = host.clone();
         api.register("clearFocus", move |_args| {
-            {
+            let previous = {
                 let mut guard = lock_doc(&host.document)?;
+                let previous = guard.focused();
                 guard.clear_focus();
-            }
+                previous
+            };
             {
                 let mut bridge = lock_bridge(&host.bridge)?;
-                if bridge.has_interactive_css() {
+                if bridge.has_interactive_css() || bridge.has_focus_within_css() {
                     let mut doc = lock_doc(&host.document)?;
-                    bridge.reapply_interactive_cascade(&mut doc);
+                    bridge.on_runtime_focus_change(&mut doc, previous.map(|node| node.0), None);
                     bridge.sync_cascaded_layout_into_runtime(&mut doc);
                     doc.flush_host_frame();
                 }

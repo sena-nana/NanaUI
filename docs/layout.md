@@ -38,7 +38,7 @@ Rust 第一路径用控件自己的布局，不写 CSS。这篇只描述 Vue 兼
 
 **溢出。** `overflow` / `overflow-x` / `overflow-y` 的 `visible` / `hidden` / `clip` / `auto` / `scroll`。`hidden` / `clip` / `auto` / `scroll` 都会裁剪绘制与命中。L1 `overflow: auto|scroll` 的滚动权威仍是 Runtime `ScrollOffset`（JS `scrollTop` / `scrollLeft` / `scrollIntoView` 与滚轮走这条路径，滚动不写回 `LayoutBox`）。自定义滚动条铬是 L2 [`ScrollView`](components.md)，L1 不另做一套 thumb 绘制。
 
-**选择器。** type / class / id / 属性选择器、组合符 ` ` / `>` / `+` / `~`、`:root` / `:first-child` / `:last-child` / `:nth-child()` / `:nth-of-type()`、简单 `:not()` / `:is()` / `:where()`。廉价主体 `:has(.class|#id|type)`（含逗号 OR）按一次 O(n·k) 后序 bitset 匹配（k 为去重后的简单参数，上限 64），不是每主体扫子树。`::before` / `::after` 走生成盒。`::placeholder` 把 `color` / `opacity` 画到 Runtime TextInput 占位文字上（只对 `input` / `textarea`；不是生成盒，也不在非输入上假装占位）。带组合符 / 写在祖先上的 `:has` 计入 skipped_selectors。
+**选择器。** type / class / id / 属性选择器、组合符 ` ` / `>` / `+` / `~`、`:root` / `:first-child` / `:last-child` / `:nth-child()` / `:nth-of-type()`、简单 `:not()` / `:is()` / `:where()`（含廉价 `:not(:disabled)`，与 `[disabled]` / 表单控件 `disabled` 同一份存在性匹配）。廉价主体 `:has(.class|#id|type)`（含逗号 OR）按一次 O(n·k) 后序 bitset 匹配（k 为去重后的简单参数，上限 64），不是每主体扫子树。廉价主体 `:focus-within` 在焦点变化时按祖先链失效，不整表每帧重算。`::before` / `::after` 走生成盒。`::placeholder` 把 `color` / `opacity` 画到 Runtime TextInput 占位文字上（只对 `input` / `textarea`；不是生成盒，也不在非输入上假装占位）。带组合符 / 写在祖先上的 `:has` / `:focus-within` 计入 skipped_selectors。
 
 **层叠。** 同属 author。样式表内部先 normal 再 `!important`（再比特异度和源序）。prop / inline **普通**声明覆盖样式表普通声明（inline 覆盖 prop）。样式表 `!important` 覆盖 prop / inline 普通声明。prop / inline 上的 `!important` 会去掉标志并作为 author-important 再写：覆盖样式表 `!important`，且 inline important 覆盖 prop important。`:hover` / `:focus` 等交互伪类仍跳过，不会当布局条件。
 
