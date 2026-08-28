@@ -897,6 +897,18 @@ impl SettingsSidebar {
     }
 }
 
+/// SettingsSidebar is always hosted inside the shell's wrapping SidebarFrame,
+/// which supplies the standard frame padding; this frame must stay padding-free.
+fn settings_sidebar_frame_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.padding_top = Some(LengthSpec::Px(0.0));
+    layout.padding_right = Some(LengthSpec::Px(0.0));
+    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+    layout.padding_left = Some(LengthSpec::Px(0.0));
+    style
+}
+
 impl ComponentView for SettingsSidebar {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -905,7 +917,9 @@ impl ComponentView for SettingsSidebar {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let mut frame = SidebarFrame::new().gap(SETTINGS_SIDEBAR_GAP);
+        let mut frame = SidebarFrame::new()
+            .gap(SETTINGS_SIDEBAR_GAP)
+            .style(settings_sidebar_frame_style());
         if let Some(assembly) = &self.assembly {
             if let Some(top) = assembly.back_row {
                 frame = frame.top(top);
