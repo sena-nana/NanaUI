@@ -90,11 +90,17 @@ pub enum WindowRole {
 }
 
 /// Unpremultiplied 32-bit RGBA window / taskbar / Dock identity image.
+///
+/// By default the icon is treated as a full-bleed brand mark: when it is
+/// applied as the macOS Dock icon it is fitted into the system icon grid
+/// automatically. Artwork that already carries platform margins opts out via
+/// [`WindowIcon::exact_pixels`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowIcon {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    exact_pixels: bool,
 }
 
 impl WindowIcon {
@@ -120,7 +126,23 @@ impl WindowIcon {
             rgba,
             width,
             height,
+            exact_pixels: false,
         })
+    }
+
+    /// Declare the artwork already follows the platform icon grid, so the
+    /// Dock application must use the pixels as-is.
+    pub fn exact_pixels(mut self, exact: bool) -> Self {
+        self.exact_pixels = exact;
+        self
+    }
+
+    pub fn uses_exact_pixels(&self) -> bool {
+        self.exact_pixels
+    }
+
+    pub fn set_exact_pixels(&mut self, exact: bool) {
+        self.exact_pixels = exact;
     }
 }
 
