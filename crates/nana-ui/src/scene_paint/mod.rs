@@ -45,9 +45,10 @@ pub use validate::{HostTextureSceneResolver, ScenePaintError};
 use backdrop::BackdropPipeline;
 use clip::{
     FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips, local_rect,
-    paint_affine, paint_origin, physical_bounds, physical_scissor, transformed_aabb,
+    paint_origin, paint_transform, physical_bounds, physical_scissor, transformed_aabb,
+    transformed_aabb_projective,
 };
-use color::with_opacity;
+use color::{pack_linear, with_opacity};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
@@ -335,6 +336,9 @@ impl SceneWgpuPainter {
                 &mut max_group_depth,
                 &mut group_slots_uniforms,
                 scene.opacity_groups(primitive.node),
+                scene,
+                origin,
+                scale,
             );
             let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin) else {
                 continue;
@@ -343,7 +347,8 @@ impl SceneWgpuPainter {
                 continue;
             };
             let frag_clip = fragment_clip(&primitive.clips, origin);
-            let affine = paint_affine(primitive.transform.0, origin);
+            let (affine, persp) =
+                paint_transform(primitive.transform.0, primitive.transform.1, origin);
             let bounds = local_rect(primitive.bounds);
             let command_start = commands.len();
             match &primitive.kind {
@@ -362,6 +367,7 @@ impl SceneWgpuPainter {
                         clip,
                         frag_clip,
                         affine,
+                        persp,
                         *background,
                         *border_color,
                         *border_width,
@@ -371,10 +377,10 @@ impl SceneWgpuPainter {
                         surface,
                     ) {
                         if let Some(filter) = surface.backdrop_filter.filter(|f| f.is_active()) {
-                            let world_bounds = if clip::is_translation(affine) {
+                            let world_bounds = if clip::is_translation_projective(affine, persp) {
                                 bounds
                             } else {
-                                transformed_aabb(bounds, affine)
+                                transformed_aabb_projective(bounds, affine, persp)
                             };
                             let phys = physical_bounds(world_bounds, scale, scissor);
                             let radii = corner_radius.map(|r| r * scale);
@@ -396,7 +402,9 @@ impl SceneWgpuPainter {
                             );
                             commands.push(DrawCommand::Backdrop { index: bidx });
                         }
-                        push_quad(&mut commands, index, scissor);
+                        for quad_index in index..self.quads.pending_len() {
+                            push_quad(&mut commands, quad_index, scissor);
+                        }
                     }
                 }
                 ScenePrimitiveKind::QuadBatch {
@@ -417,6 +425,7 @@ impl SceneWgpuPainter {
                             clip,
                             frag_clip,
                             affine,
+                            persp,
                             *background,
                             *border_color,
                             *border_width,
@@ -427,10 +436,11 @@ impl SceneWgpuPainter {
                         ) {
                             if let Some(filter) = surface.backdrop_filter.filter(|f| f.is_active())
                             {
-                                let world_bounds = if clip::is_translation(affine) {
+                                let world_bounds = if clip::is_translation_projective(affine, persp)
+                                {
                                     item_bounds
                                 } else {
-                                    transformed_aabb(item_bounds, affine)
+                                    transformed_aabb_projective(item_bounds, affine, persp)
                                 };
                                 let phys = physical_bounds(world_bounds, scale, scissor);
                                 let radii = corner_radius.map(|r| r * scale);
@@ -452,7 +462,9 @@ impl SceneWgpuPainter {
                                 );
                                 commands.push(DrawCommand::Backdrop { index: bidx });
                             }
-                            push_quad(&mut commands, index, scissor);
+                            for quad_index in index..self.quads.pending_len() {
+                                push_quad(&mut commands, quad_index, scissor);
+                            }
                         }
                     }
                 }
@@ -465,12 +477,16 @@ impl SceneWgpuPainter {
                     line_height,
                     wrap,
                     ellipsis,
+                    max_lines,
                     shaping,
                     horizontal_alignment,
                     vertical_alignment,
                     spans,
                     letter_spacing,
                     text_shadow,
+                    underline: _,
+                    line_through: _,
+                    font_features,
                 } => {
                     let mut push_text =
                         |extra_offset: [f32; 2], color_override: Option<[f32; 4]>| {
@@ -489,12 +505,15 @@ impl SceneWgpuPainter {
                                 *line_height,
                                 *wrap,
                                 *ellipsis,
+                                *max_lines,
                                 *shaping,
                                 *horizontal_alignment,
                                 *vertical_alignment,
                                 spans,
                                 *letter_spacing,
+                                font_features,
                                 affine,
+                                persp,
                                 frag_clip,
                                 primitive.opacity,
                                 extra_offset,
@@ -527,6 +546,7 @@ impl SceneWgpuPainter {
                         &self.queue,
                         bounds,
                         affine,
+                        persp,
                         scale,
                         *icon,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
@@ -539,7 +559,7 @@ impl SceneWgpuPainter {
                 ScenePrimitiveKind::Spinner { phase, color } => {
                     if let Some(range) = self.meshes.push_spinner(
                         bounds,
-                        affine,
+                        mesh_affine(affine, persp),
                         *phase,
                         color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                         primitive.opacity,
@@ -574,7 +594,7 @@ impl SceneWgpuPainter {
                             dash_offset,
                             colors,
                         },
-                        affine,
+                        mesh_affine(affine, persp),
                         *color,
                         primitive.opacity,
                         frag_clip,
@@ -625,6 +645,7 @@ impl SceneWgpuPainter {
                             primitive.id.slot,
                             LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
                             affine,
+                            persp,
                             scissor,
                             primitive.opacity,
                             corner_radius,
@@ -645,13 +666,14 @@ impl SceneWgpuPainter {
                             custom: custom.clone(),
                             opacity: primitive.opacity,
                         };
+                        let custom_bounds = custom_paint_bounds(bounds, affine, persp);
                         renderer.prepare(
                             &node,
                             SceneGpuPrepareContext {
                                 device: &self.device,
                                 queue: &self.queue,
                                 target_format: self.format,
-                                bounds: transformed_aabb(bounds, affine).to_core(),
+                                bounds: custom_bounds.to_core(),
                                 scale_factor: scale,
                                 gpu_work: Some(&gpu_work),
                             },
@@ -659,11 +681,7 @@ impl SceneWgpuPainter {
                         commands.push(DrawCommand::Custom {
                             node,
                             renderer,
-                            bounds: physical_bounds(
-                                transformed_aabb(bounds, affine),
-                                scale,
-                                scissor,
-                            ),
+                            bounds: physical_bounds(custom_bounds, scale, scissor),
                             clip: scissor,
                         });
                     }
@@ -688,6 +706,9 @@ impl SceneWgpuPainter {
             &mut max_group_depth,
             &mut group_slots_uniforms,
             Vec::new(),
+            scene,
+            origin,
+            scale,
         );
         let batch = batch_started.elapsed();
 
@@ -858,6 +879,26 @@ impl SceneWgpuPainter {
     }
 }
 
+/// Stroke/spinner cannot take a homography without a new mesh pipeline.
+/// Planar 3D paints identity here so we do not squash like `scaleX(cos)`.
+fn mesh_affine(affine: [f32; 6], persp: [f32; 2]) -> [f32; 6] {
+    if persp[0].abs() > 1e-8 || persp[1].abs() > 1e-8 {
+        clip::IDENTITY_AFFINE
+    } else {
+        affine
+    }
+}
+
+/// Non-HostTexture custom renderers have no projective VS. Identity dest
+/// when `(g,h)` is live; 2D affine still maps the AABB.
+fn custom_paint_bounds(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalRect {
+    if persp[0].abs() > 1e-8 || persp[1].abs() > 1e-8 {
+        bounds
+    } else {
+        transformed_aabb(bounds, affine)
+    }
+}
+
 fn push_mesh_draw(commands: &mut Vec<DrawCommand>, range: MeshRange, scissor: PhysicalRect) {
     if let Some(DrawCommand::Mesh {
         range: previous,
@@ -930,6 +971,9 @@ fn sync_opacity_groups(
     max_depth: &mut usize,
     uniforms: &mut Vec<GroupSlot>,
     needed: Vec<nana_ui_scene::OpacityGroup>,
+    scene: &nana_ui_scene::UiScene,
+    origin: [f32; 2],
+    scale: f32,
 ) {
     let common = stack
         .iter()
@@ -945,10 +989,71 @@ fn sync_opacity_groups(
         *slots = slots.saturating_add(1);
         *depth = depth.saturating_add(1);
         *max_depth = (*max_depth).max(*depth);
-        uniforms.push(GroupSlot::opacity(group.opacity));
+        uniforms.push(dest_group_slot(&group, scene, origin, scale));
         commands.push(DrawCommand::PushGroup { layer, slot });
         stack.push(group);
     }
+}
+
+fn dest_group_slot(
+    group: &nana_ui_scene::OpacityGroup,
+    scene: &nana_ui_scene::UiScene,
+    origin: [f32; 2],
+    scale: f32,
+) -> GroupSlot {
+    let filter = group.filter;
+    let pad = filter.dest_extent_pad();
+    let clip = if pad > 0.0 {
+        scene
+            .node_bounds(group.node)
+            .map(|bounds| {
+                clip::FragmentClip {
+                    rect: [
+                        bounds.x - origin[0] - pad,
+                        bounds.y - origin[1] - pad,
+                        (bounds.width + pad * 2.0).max(0.0),
+                        (bounds.height + pad * 2.0).max(0.0),
+                    ],
+                    inv_abcd: [1.0, 0.0, 0.0, 1.0],
+                    inv_ef: [0.0, 0.0],
+                    corner_radius: 0.0,
+                    polygon_count: 0,
+                    polygon: [[0.0; 2]; 8],
+                }
+                .for_physical_pixels(scale)
+            })
+            .unwrap_or(clip::FragmentClip::PASS)
+    } else {
+        clip::FragmentClip::PASS
+    };
+    let physical_blur = if scale.is_finite() && scale > 0.0 {
+        filter.blur_radius * scale
+    } else {
+        filter.blur_radius
+    };
+    let mut slot = GroupSlot::dest(
+        group.opacity,
+        [filter.brightness, filter.saturate, filter.contrast],
+        filter.hue_rotate_deg,
+        physical_blur,
+        group.mix_blend.gpu_index(),
+        clip,
+    );
+    if let Some(shadow) = filter.drop_shadow {
+        let (ox, oy, blur) = if scale.is_finite() && scale > 0.0 {
+            (
+                shadow.offset_x * scale,
+                shadow.offset_y * scale,
+                shadow.blur_radius * scale,
+            )
+        } else {
+            (shadow.offset_x, shadow.offset_y, shadow.blur_radius)
+        };
+        slot.drop_shadow_offset = [ox, oy];
+        slot.drop_shadow_blur = blur;
+        slot.drop_shadow_color = pack_linear(shadow.color);
+    }
+    slot
 }
 
 fn pop_opacity_group(
@@ -2139,6 +2244,97 @@ mod tests {
     }
 
     #[test]
+    fn sdf_dashed_border_skips_gaps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                0.0,
+                0.0,
+                80.0,
+                80.0,
+                nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 1.0, 1.0, 1.0]),
+                    border_width: Some(4.0),
+                    border_color: Some([1.0, 0.0, 0.0, 1.0]),
+                    border_style: Some(nana_ui_core::BorderStyle::Dashed),
+                    ..nana_ui_core::LayoutStyle::default()
+                },
+                Some([1.0, 1.0, 1.0, 1.0]),
+            )],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [80.0, 80.0],
+            [80, 80],
+            1.0,
+        );
+        // w=4 → dash 12, gap 8, period 20. Sample the top ring, away from corners.
+        let dash = pixel(&pixels, 80, 10, 2);
+        assert!(
+            is_red_slot(dash),
+            "dashed on-segment must stroke, got {dash:?}"
+        );
+        let gap = pixel(&pixels, 80, 16, 2);
+        assert!(
+            gap[0] > 200 && gap[1] > 200 && gap[2] > 200,
+            "dashed gap must show fill, got {gap:?}"
+        );
+    }
+
+    #[test]
+    fn sdf_dotted_border_skips_gaps_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                0.0,
+                0.0,
+                80.0,
+                80.0,
+                nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 1.0, 1.0, 1.0]),
+                    border_width: Some(4.0),
+                    border_color: Some([1.0, 0.0, 0.0, 1.0]),
+                    border_style: Some(nana_ui_core::BorderStyle::Dotted),
+                    ..nana_ui_core::LayoutStyle::default()
+                },
+                Some([1.0, 1.0, 1.0, 1.0]),
+            )],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [80.0, 80.0],
+            [80, 80],
+            1.0,
+        );
+        // w=4 → round dots period 8, radius 2, on the top centerline.
+        let on = pixel(&pixels, 80, 40, 2);
+        assert!(is_red_slot(on), "dotted center must stroke, got {on:?}");
+        let off = pixel(&pixels, 80, 44, 2);
+        assert!(
+            off[0] > 200 && off[1] > 200 && off[2] > 200,
+            "dotted gap must show fill, got {off:?}"
+        );
+    }
+
+    #[test]
     fn per_point_stroke_colors_paint_on_gpu() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2900,7 +3096,7 @@ mod tests {
                     width: 32.0,
                     height: 32.0,
                 },
-                transform: AffineTransform(
+                transform: AffineTransform::from_matrix(
                     PaintTransform {
                         a: k,
                         b: k,
@@ -2995,6 +3191,8 @@ mod tests {
             vec![nana_ui_scene::OpacityGroup {
                 node: nana_ui_runtime::StableNodeId::new(1).unwrap(),
                 opacity: 0.5,
+                filter: nana_ui_core::ColorFilter::default(),
+                mix_blend: nana_ui_core::MixBlendMode::Normal,
             }]
         );
         let viewport = ScenePaintViewport {
@@ -3042,6 +3240,183 @@ mod tests {
             "group opacity must not darken overlapping children, left={left:?} overlap={overlap:?}"
         );
         drop(texture);
+    }
+
+    #[test]
+    fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let shadow_srgb = [0.5, 0.5, 0.5, 1.0];
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                8.0,
+                8.0,
+                16.0,
+                16.0,
+                nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    paint: nana_ui_core::PaintStyle {
+                        filter: Some(nana_ui_core::ColorFilter {
+                            drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                                offset_x: 16.0,
+                                offset_y: 0.0,
+                                blur_radius: 0.0,
+                                color: shadow_srgb,
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Some([1.0, 0.0, 0.0, 1.0]),
+            )],
+            [],
+        );
+        assert_eq!(
+            scene
+                .opacity_groups(nana_ui_runtime::StableNodeId::new(1).unwrap())
+                .len(),
+            1,
+            "drop-shadow must isolate a dest-group"
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui drop-shadow dest-group paint"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert!(
+            counts.group >= 1,
+            "drop-shadow must composite via dest-group, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let fill = pixel(&pixels, 64, 12, 16);
+        let shadow = pixel(&pixels, 64, 32, 16);
+        let left = pixel(&pixels, 64, 4, 16);
+        let linearized = super::color::to_rgba8(super::color::pack_linear(shadow_srgb));
+        let raw_srgb = super::color::to_rgba8(shadow_srgb);
+        assert!(
+            fill[0] > 200 && fill[1] < 40 && fill[2] < 40,
+            "source silhouette must stay red, got {fill:?}"
+        );
+        assert!(
+            (shadow[0] as i16 - linearized[0] as i16).unsigned_abs() < 20
+                && (shadow[1] as i16 - linearized[1] as i16).unsigned_abs() < 20
+                && (shadow[2] as i16 - linearized[2] as i16).unsigned_abs() < 20,
+            "mid-channel drop-shadow must pack_linear like box-shadow, got {shadow:?} expected {linearized:?}"
+        );
+        assert!(
+            (shadow[0] as i16 - raw_srgb[0] as i16).unsigned_abs() > 40,
+            "raw sRGB gray must not pass as linearized, got {shadow:?} raw {raw_srgb:?}"
+        );
+        assert!(
+            left[0] < 20 && left[1] < 20 && left[2] < 20,
+            "no box-shadow geometry left of the silhouette, got {left:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                24.0,
+                24.0,
+                16.0,
+                16.0,
+                nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    paint: nana_ui_core::PaintStyle {
+                        outline: nana_ui_core::OutlineSpec {
+                            width: 2.0,
+                            color: Some([0.0, 1.0, 0.0, 1.0]),
+                            style: nana_ui_core::OutlineStyle::Solid,
+                        },
+                        box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                            offset_x: 0.0,
+                            offset_y: 0.0,
+                            blur_radius: 0.0,
+                            spread_radius: 4.0,
+                            color: [0.0, 0.0, 1.0, 1.0],
+                            inset: false,
+                        }],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Some([1.0, 0.0, 0.0, 1.0]),
+            )],
+            [],
+        );
+
+        let assert_band = |label: &str, pixels: &[u8], width: u32, scale: f32| {
+            let sx = |logical: f32| (logical * scale).floor() as u32;
+            let fill = pixel(pixels, width, sx(32.0), sx(32.0));
+            let outline = pixel(pixels, width, sx(23.0), sx(32.0));
+            let spread = pixel(pixels, width, sx(21.0), sx(32.0));
+            let beyond = pixel(pixels, width, sx(19.5), sx(32.0));
+            assert!(
+                is_red_slot(fill),
+                "{label} fill must stay red, got {fill:?}"
+            );
+            assert!(
+                is_green_slot(outline),
+                "{label} 2px outline must cover 1 CSS px outside the box, got {outline:?}"
+            );
+            assert!(
+                is_blue_slot(spread),
+                "{label} spread 4px must cover 3 CSS px outside the box, got {spread:?}"
+            );
+            assert!(
+                beyond[0] < 20 && beyond[1] < 20 && beyond[2] < 20,
+                "{label} must not enlarge spread at HiDPI (4.5 CSS px outside), got {beyond:?}"
+            );
+        };
+
+        let one_x = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        assert_band("1x", &one_x, 64, 1.0);
+        let two_x = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [128, 128],
+            2.0,
+        );
+        assert_band("2x", &two_x, 128, 2.0);
     }
 
     #[test]
@@ -3668,7 +4043,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 PaintTransform {
                     a: k,
                     b: k,
@@ -4341,7 +4716,10 @@ mod tests {
                 background: Some(background),
                 paint: nana_ui_core::PaintStyle {
                     background_image: surface.background_image.clone(),
+                    background_layers: surface.background_layers.clone(),
+                    content_image: surface.content_image.clone(),
                     mask: surface.mask.clone(),
+                    border_image: surface.border_image.clone(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -4818,6 +5196,77 @@ mod tests {
             "triangle interior must stay opaque red, got {center:?}"
         );
         drop(texture);
+    }
+
+    #[test]
+    fn perspective_rotate_y_paints_trapezoid_on_gpu() {
+        let mat = nana_ui_core::PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians()));
+        let x = 28.0;
+        let y = 40.0;
+        let width = 200.0;
+        let height = 80.0;
+        let corners = mat
+            .around_origin(x, y, width * 0.5, height * 0.5)
+            .projected_corners(x, y, width, height)
+            .expect("corners");
+        let mut node = colored_quad_node(1, x, y, width, height, [1.0, 0.0, 0.0, 1.0]);
+        Arc::make_mut(&mut node.source_style.layout).transform_3d = Some(mat);
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let viewport = ScenePaintViewport {
+            logical_size: [256.0, 160.0],
+            physical_size: [256, 160],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 256, 160);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui perspective rotateY trapezoid"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .expect("planar 3D must paint in the existing quad pass");
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 160);
+        let pivoted = mat.around_origin(x, y, width * 0.5, height * 0.5);
+        let left_pt = pivoted
+            .project_xy(x + width * 0.2, y + height * 0.5)
+            .expect("left interior");
+        let right_pt = pivoted
+            .project_xy(x + width * 0.8, y + height * 0.5)
+            .expect("right interior");
+        let left_x = left_pt[0].round().clamp(1.0, 254.0) as u32;
+        let right_x = right_pt[0].round().clamp(1.0, 254.0) as u32;
+        let left_span = painted_column_span(&pixels, 256, 160, left_x);
+        let right_span = painted_column_span(&pixels, 256, 160, right_x);
+        assert!(
+            (left_span as i32 - right_span as i32).abs() > 4,
+            "GPU rotateY+perspective must paint a trapezoid, left_span={left_span} right_span={right_span} left_x={left_x} right_x={right_x} corners={corners:?}"
+        );
+        drop(texture);
+    }
+
+    fn painted_column_span(pixels: &[u8], width: u32, height: u32, x: u32) -> u32 {
+        let mut min_y = height;
+        let mut max_y = 0;
+        let mut any = false;
+        for y in 0..height {
+            let color = pixel(pixels, width, x, y);
+            if color[0] > 80 {
+                any = true;
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+        assert!(any, "expected painted pixels in column {x}");
+        max_y - min_y + 1
     }
 
     #[test]
@@ -5526,10 +5975,10 @@ mod tests {
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut painter = SceneWgpuPainter::new(&device, &queue, format);
         let surface = nana_ui_scene::QuadSurfacePaint {
-            background_image: Some(nana_ui_core::BackgroundImage::Url {
+            background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                 url,
-                fit: nana_ui_core::BackgroundImageFit::Stretch,
-            }),
+                nana_ui_core::BackgroundImageFit::Stretch,
+            )),
             ..Default::default()
         };
         let mut scene = UiScene::new();
@@ -5626,7 +6075,14 @@ mod tests {
     fn background_image_file_url_paints_fixture_png() {
         let (fixture_dir, png_path) = blue_tile_fixture_png();
         super::set_background_image_url_base(fixture_dir);
-        let file_url = format!("file://{}", png_path.display());
+        let file_url = url::Url::from_file_path(&png_path)
+            .map(|parsed| parsed.to_string())
+            .unwrap_or_else(|_| {
+                format!(
+                    "file:///{}",
+                    png_path.display().to_string().replace('\\', "/")
+                )
+            });
         let sample = paint_url_quad_and_sample_center(file_url);
         super::image_url::reset_test_url_base();
         assert!(
@@ -5644,6 +6100,586 @@ mod tests {
         assert!(
             sample[2] > 200 && sample[0] < 80,
             "http url png must paint blue tile, got {sample:?}"
+        );
+    }
+
+    fn red_tile_fixture_png() -> std::path::PathBuf {
+        let fixture_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::create_dir_all(&fixture_dir).expect("fixture dir");
+        let png_path = fixture_dir.join("red-tile.png");
+        if !png_path.exists() {
+            let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]));
+            img.save(&png_path).expect("write red fixture png");
+        }
+        png_path
+    }
+
+    fn stripe_tile_fixture_png() -> std::path::PathBuf {
+        let fixture_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::create_dir_all(&fixture_dir).expect("fixture dir");
+        let png_path = fixture_dir.join("stripe-tile.png");
+        if !png_path.exists() {
+            let mut img = image::RgbaImage::new(8, 8);
+            for (x, _y, pixel) in img.enumerate_pixels_mut() {
+                *pixel = if x < 4 {
+                    image::Rgba([255, 0, 0, 255])
+                } else {
+                    image::Rgba([0, 0, 255, 255])
+                };
+            }
+            img.save(&png_path).expect("write stripe fixture png");
+        }
+        png_path
+    }
+
+    fn paint_surface_sample(
+        surface: nana_ui_scene::QuadSurfacePaint,
+        logical: [f32; 2],
+        physical: [u32; 2],
+        fill: [f32; 4],
+        sample_x: u32,
+        sample_y: u32,
+    ) -> [u8; 4] {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1, 0.0, 0.0, logical[0], logical[1], fill, surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: logical,
+            physical_size: physical,
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, physical[0], physical[1]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui image layer png"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, physical[0], physical[1]);
+        let sample = pixel(&pixels, physical[0], sample_x, sample_y);
+        drop(texture);
+        sample
+    }
+
+    #[test]
+    fn img_src_content_image_paints_fixture_png() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                png_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+                nana_ui_core::BackgroundImageFit::Stretch,
+            )),
+            ..Default::default()
+        };
+        let sample = paint_surface_sample(
+            surface,
+            [64.0, 64.0],
+            [64, 64],
+            [0.0, 0.0, 0.0, 1.0],
+            32,
+            32,
+        );
+        super::image_url::reset_test_url_base();
+        assert!(
+            sample[2] > 200 && sample[0] < 80,
+            "img src must paint through content_image, got {sample:?}"
+        );
+    }
+
+    #[test]
+    fn inline_svg_data_url_paints_through_content_image() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><path d=\"M0 0 H8 V8 H0 Z\" fill=\"#00ff00\"/></svg>";
+        use base64::Engine as _;
+        let url = format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(svg.as_bytes())
+        );
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                url,
+                nana_ui_core::BackgroundImageFit::Stretch,
+            )),
+            ..Default::default()
+        };
+        let sample = paint_surface_sample(surface, [8.0, 8.0], [8, 8], [0.0, 0.0, 0.0, 1.0], 4, 4);
+        assert!(
+            sample[1] > 200 && sample[0] < 80 && sample[2] < 80,
+            "inline svg path must paint via the url texture cache, got {sample:?}"
+        );
+    }
+
+    #[test]
+    fn object_fit_contain_letterboxes_on_wide_box() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            content_image: Some(nana_ui_core::BackgroundImage::Url {
+                url: png_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+                fit: nana_ui_core::BackgroundImageFit::Contain,
+                size_width: None,
+                size_height: None,
+                position: nana_ui_core::BackgroundPosition::center(),
+                repeat: nana_ui_core::BackgroundRepeat::NoRepeat,
+            }),
+            ..Default::default()
+        };
+        let fill = [1.0, 0.0, 0.0, 1.0];
+        let center = paint_surface_sample(surface.clone(), [64.0, 32.0], [64, 32], fill, 32, 16);
+        let edge = paint_surface_sample(surface, [64.0, 32.0], [64, 32], fill, 2, 16);
+        super::image_url::reset_test_url_base();
+        assert!(
+            center[2] > 200 && center[0] < 80,
+            "contain center must sample the image, got {center:?}"
+        );
+        assert!(
+            edge[0] > 200 && edge[2] < 80,
+            "contain letterbox must keep background, got {edge:?}"
+        );
+    }
+
+    #[test]
+    fn two_layer_background_paints_top_over_bottom() {
+        let (fixture_dir, blue_path) = blue_tile_fixture_png();
+        let red_path = red_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Url {
+                url: red_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("red-tile.png")
+                    .to_string(),
+                fit: nana_ui_core::BackgroundImageFit::Auto,
+                size_width: None,
+                size_height: None,
+                position: nana_ui_core::BackgroundPosition::default(),
+                repeat: nana_ui_core::BackgroundRepeat::NoRepeat,
+            }),
+            background_layers: vec![nana_ui_core::BackgroundImage::url_with_fit(
+                blue_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+                nana_ui_core::BackgroundImageFit::Stretch,
+            )],
+            ..Default::default()
+        };
+        let top_left = paint_surface_sample(
+            surface.clone(),
+            [64.0, 64.0],
+            [64, 64],
+            [0.0, 0.0, 0.0, 1.0],
+            4,
+            4,
+        );
+        let far = paint_surface_sample(
+            surface,
+            [64.0, 64.0],
+            [64, 64],
+            [0.0, 0.0, 0.0, 1.0],
+            48,
+            48,
+        );
+        super::image_url::reset_test_url_base();
+        assert!(
+            top_left[0] > 200 && top_left[2] < 80,
+            "8px auto red layer must cover the top-left, got {top_left:?}"
+        );
+        assert!(
+            far[2] > 200 && far[0] < 80,
+            "stretch blue layer must show outside the red tile, got {far:?}"
+        );
+    }
+
+    #[test]
+    fn background_repeat_x_tiles_stripe() {
+        let fixture_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let stripe = stripe_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Url {
+                url: stripe
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("stripe-tile.png")
+                    .to_string(),
+                fit: nana_ui_core::BackgroundImageFit::Auto,
+                size_width: None,
+                size_height: None,
+                position: nana_ui_core::BackgroundPosition::default(),
+                repeat: nana_ui_core::BackgroundRepeat::RepeatX,
+            }),
+            ..Default::default()
+        };
+        let left = paint_surface_sample(
+            surface.clone(),
+            [16.0, 8.0],
+            [16, 8],
+            [0.0, 0.0, 0.0, 1.0],
+            2,
+            4,
+        );
+        let mid = paint_surface_sample(surface, [16.0, 8.0], [16, 8], [0.0, 0.0, 0.0, 1.0], 10, 4);
+        super::image_url::reset_test_url_base();
+        assert!(
+            left[0] > 200 && left[2] < 80,
+            "first tile left must be red, got {left:?}"
+        );
+        assert!(
+            mid[0] > 200 && mid[2] < 80,
+            "second tile left must be red from repeat-x, got {mid:?}"
+        );
+    }
+
+    #[test]
+    fn default_background_repeat_tiles_sized_url() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Url {
+                url: png_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+                fit: nana_ui_core::BackgroundImageFit::Length,
+                size_width: Some(nana_ui_core::LengthSpec::Px(32.0)),
+                size_height: None,
+                position: nana_ui_core::BackgroundPosition::default(),
+                repeat: nana_ui_core::BackgroundRepeat::Repeat,
+            }),
+            ..Default::default()
+        };
+        let first = paint_surface_sample(
+            surface.clone(),
+            [64.0, 32.0],
+            [64, 32],
+            [1.0, 0.0, 0.0, 1.0],
+            8,
+            16,
+        );
+        let tiled = paint_surface_sample(
+            surface,
+            [64.0, 32.0],
+            [64, 32],
+            [1.0, 0.0, 0.0, 1.0],
+            40,
+            16,
+        );
+        super::image_url::reset_test_url_base();
+        assert!(
+            first[2] > 200 && first[0] < 80,
+            "first 32px tile must be the image, got {first:?}"
+        );
+        assert!(
+            tiled[2] > 200 && tiled[0] < 80,
+            "unspecified repeat + size 32px must tile, got {tiled:?}"
+        );
+    }
+
+    fn nine_slice_fixture_png() -> (std::path::PathBuf, std::path::PathBuf) {
+        let fixture_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        std::fs::create_dir_all(&fixture_dir).expect("fixture dir");
+        let png_path = fixture_dir.join("nine-slice.png");
+        if !png_path.exists() {
+            let mut img = image::RgbaImage::new(8, 8);
+            for (x, y, pixel) in img.enumerate_pixels_mut() {
+                let region_x = if x < 2 {
+                    0
+                } else if x < 6 {
+                    1
+                } else {
+                    2
+                };
+                let region_y = if y < 2 {
+                    0
+                } else if y < 6 {
+                    1
+                } else {
+                    2
+                };
+                *pixel = match (region_x, region_y) {
+                    (0, 0) => image::Rgba([255, 0, 0, 255]),
+                    (1, 0) => image::Rgba([0, 255, 0, 255]),
+                    (2, 0) => image::Rgba([0, 0, 255, 255]),
+                    (0, 1) => image::Rgba([0, 255, 255, 255]),
+                    (1, 1) => image::Rgba([255, 255, 255, 255]),
+                    (2, 1) => image::Rgba([255, 0, 255, 255]),
+                    (0, 2) => image::Rgba([255, 255, 0, 255]),
+                    (1, 2) => image::Rgba([0, 0, 0, 255]),
+                    _ => image::Rgba([128, 128, 128, 255]),
+                };
+            }
+            img.save(&png_path).expect("write nine-slice png");
+        }
+        (fixture_dir, png_path)
+    }
+
+    fn paint_layout_sample(
+        layout: nana_ui_core::LayoutStyle,
+        logical: [f32; 2],
+        sample_x: u32,
+        sample_y: u32,
+    ) -> [u8; 4] {
+        let fill = layout.background.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [extracted_div(
+                1,
+                &[],
+                0.0,
+                0.0,
+                logical[0],
+                logical[1],
+                layout,
+                Some(fill),
+            )],
+            [],
+        );
+        let physical = [logical[0] as u32, logical[1] as u32];
+        let viewport = ScenePaintViewport {
+            logical_size: logical,
+            physical_size: physical,
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, physical[0], physical[1]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui layout sample"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, physical[0], physical[1]);
+        let sample = pixel(&pixels, physical[0], sample_x, sample_y);
+        drop(texture);
+        sample
+    }
+
+    #[test]
+    fn four_side_solid_borders_still_paint() {
+        let layout = nana_ui_core::LayoutStyle {
+            background: Some([0.1, 0.1, 0.1, 1.0]),
+            border_top_width: Some(6.0),
+            border_right_width: Some(6.0),
+            border_bottom_width: Some(6.0),
+            border_left_width: Some(6.0),
+            border_top_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_right_color: Some([0.0, 1.0, 0.0, 1.0]),
+            border_bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
+            border_left_color: Some([1.0, 1.0, 0.0, 1.0]),
+            ..Default::default()
+        };
+        let top = paint_layout_sample(layout.clone(), [40.0, 40.0], 20, 2);
+        let right = paint_layout_sample(layout.clone(), [40.0, 40.0], 38, 20);
+        let bottom = paint_layout_sample(layout.clone(), [40.0, 40.0], 20, 38);
+        let left = paint_layout_sample(layout, [40.0, 40.0], 2, 20);
+        assert!(
+            top[0] > 200 && top[1] < 80,
+            "top must stay red, got {top:?}"
+        );
+        assert!(
+            right[1] > 200 && right[0] < 80,
+            "right must stay green, got {right:?}"
+        );
+        assert!(
+            bottom[2] > 200 && bottom[0] < 80,
+            "bottom must stay blue, got {bottom:?}"
+        );
+        assert!(
+            left[0] > 200 && left[1] > 200 && left[2] < 80,
+            "left must stay yellow, got {left:?}"
+        );
+    }
+
+    #[test]
+    fn border_image_url_nine_slice_paints_corners_and_fill() {
+        let (fixture_dir, png_path) = nine_slice_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let url = png_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("nine-slice.png")
+            .to_string();
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            border_image: Some(nana_ui_core::BorderImageSpec {
+                source: nana_ui_core::BackgroundImage::url(url),
+                slice: [nana_ui_core::BorderImageSlice::Number(2.0); 4],
+                fill: true,
+            }),
+            ..Default::default()
+        };
+        let tl = paint_surface_sample(
+            surface.clone(),
+            [40.0, 40.0],
+            [40, 40],
+            [0.1, 0.1, 0.1, 1.0],
+            1,
+            1,
+        );
+        let top = paint_surface_sample(
+            surface.clone(),
+            [40.0, 40.0],
+            [40, 40],
+            [0.1, 0.1, 0.1, 1.0],
+            20,
+            1,
+        );
+        let left = paint_surface_sample(
+            surface.clone(),
+            [40.0, 40.0],
+            [40, 40],
+            [0.1, 0.1, 0.1, 1.0],
+            1,
+            20,
+        );
+        let center = paint_surface_sample(
+            surface.clone(),
+            [40.0, 40.0],
+            [40, 40],
+            [0.1, 0.1, 0.1, 1.0],
+            20,
+            20,
+        );
+        let br = paint_surface_sample(
+            surface,
+            [40.0, 40.0],
+            [40, 40],
+            [0.1, 0.1, 0.1, 1.0],
+            38,
+            38,
+        );
+        super::image_url::reset_test_url_base();
+        assert!(
+            tl[0] > 200 && tl[1] < 80,
+            "tl slice must be red, got {tl:?}"
+        );
+        assert!(
+            top[1] > 200 && top[0] < 80,
+            "top slice must be green, got {top:?}"
+        );
+        assert!(
+            left[1] > 200 && left[2] > 200 && left[0] < 80,
+            "left slice must be cyan, got {left:?}"
+        );
+        assert!(
+            center[0] > 200 && center[1] > 200 && center[2] > 200,
+            "fill center must be white, got {center:?}"
+        );
+        assert!(
+            br[0] > 80 && br[0] < 180 && br[1] > 80 && br[1] < 180,
+            "br slice must be gray, got {br:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_border_image_does_not_paint_nine_slice() {
+        let (fixture_dir, png_path) = nine_slice_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let url = png_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("nine-slice.png")
+            .to_string();
+        let layout = nana_ui_core::LayoutStyle {
+            background: Some([0.1, 0.1, 0.1, 1.0]),
+            paint: nana_ui_core::PaintStyle {
+                unsupported_border_image: true,
+                border_image: Some(nana_ui_core::BorderImageSpec {
+                    source: nana_ui_core::BackgroundImage::url(url),
+                    slice: [nana_ui_core::BorderImageSlice::Number(2.0); 4],
+                    fill: true,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let center = paint_layout_sample(layout, [40.0, 40.0], 20, 20);
+        super::image_url::reset_test_url_base();
+        assert!(
+            center[0] < 80 && center[1] < 80 && center[2] < 80,
+            "sticky unsupported must not 9-slice-fill white, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn border_image_linear_gradient_nine_slice_paints() {
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            border_image: Some(nana_ui_core::BorderImageSpec {
+                source: nana_ui_core::BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(
+                    nana_ui_core::LinearGradient {
+                        angle_deg: 180.0,
+                        stops: vec![
+                            nana_ui_core::GradientStop {
+                                position: 0.0,
+                                color: [1.0, 0.0, 0.0, 1.0],
+                            },
+                            nana_ui_core::GradientStop {
+                                position: 1.0,
+                                color: [0.0, 0.0, 1.0, 1.0],
+                            },
+                        ],
+                    },
+                )),
+                slice: [nana_ui_core::BorderImageSlice::Percent(25.0); 4],
+                fill: true,
+            }),
+            ..Default::default()
+        };
+        let top = paint_surface_sample(
+            surface.clone(),
+            [40.0, 40.0],
+            [40, 40],
+            [0.0, 0.0, 0.0, 1.0],
+            20,
+            4,
+        );
+        let bottom = paint_surface_sample(
+            surface,
+            [40.0, 40.0],
+            [40, 40],
+            [0.0, 0.0, 0.0, 1.0],
+            20,
+            36,
+        );
+        assert!(
+            top[0] > 180 && top[2] < 80,
+            "gradient top slice must stay red, got {top:?}"
+        );
+        assert!(
+            bottom[2] > 180 && bottom[0] < 80,
+            "gradient bottom slice must stay blue, got {bottom:?}"
         );
     }
 }

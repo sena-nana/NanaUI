@@ -17,6 +17,14 @@ struct LayerUniforms {
     clip_poly1: vec4<f32>,
     clip_poly2: vec4<f32>,
     clip_poly3: vec4<f32>,
+    filter_hue: f32,
+    filter_blur: f32,
+    mix_blend: u32,
+    _pad_blend: u32,
+    drop_shadow_offset: vec2<f32>,
+    drop_shadow_blur: f32,
+    _pad_drop: f32,
+    drop_shadow_color: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -40,6 +48,23 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     return output;
 }
 
+fn element_filter_blur(uv: vec2<f32>, radius: f32) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(source));
+    let texel = 1.0 / max(dims, vec2<f32>(1.0));
+    let step = radius / 2.0;
+    var acc = vec4<f32>(0.0);
+    var wsum = 0.0;
+    for (var y = -2; y <= 2; y = y + 1) {
+        for (var x = -2; x <= 2; x = x + 1) {
+            let d = vec2<f32>(f32(x), f32(y));
+            let w = exp(-dot(d, d) * 0.5);
+            acc += textureSample(source, source_sampler, uv + d * step * texel) * w;
+            wsum += w;
+        }
+    }
+    return acc / max(wsum, 0.0001);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Clip inverse is stored in dest pixels (`FragmentClip::for_physical_pixels`).
@@ -57,13 +82,35 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     ) {
         discard;
     }
-    var sampled = textureSample(source, source_sampler, input.uv) * layer.opacity;
-    if (layer.filter_b != 1.0 || layer.filter_s != 1.0 || layer.filter_c != 1.0) {
-        var rgb = sampled.xyz * layer.filter_b;
-        let lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-        rgb = mix(vec3(lum), rgb, layer.filter_s);
-        rgb = (rgb - 0.5) * layer.filter_c + 0.5;
-        sampled = vec4(clamp(rgb, vec3(0.0), vec3(1.0)), sampled.a);
+    var sampled = textureSample(source, source_sampler, input.uv);
+    if (layer.filter_blur > 0.5) {
+        sampled = element_filter_blur(input.uv, layer.filter_blur);
+    }
+    if (layer.drop_shadow_color.a > 0.001) {
+        let dims = vec2<f32>(textureDimensions(source));
+        let offset_uv = layer.drop_shadow_offset / max(dims, vec2<f32>(1.0));
+        let shadow_uv = input.uv - offset_uv;
+        var shadow_sample = textureSample(source, source_sampler, shadow_uv);
+        if (layer.drop_shadow_blur > 0.5) {
+            shadow_sample = element_filter_blur(shadow_uv, layer.drop_shadow_blur);
+        }
+        let shadow_a = shadow_sample.a * layer.drop_shadow_color.a;
+        let shadow = vec4<f32>(layer.drop_shadow_color.rgb * shadow_a, shadow_a);
+        sampled = sampled + shadow * (1.0 - sampled.a);
+    }
+    sampled = sampled * layer.opacity;
+    if (layer.filter_b != 1.0
+        || layer.filter_s != 1.0
+        || layer.filter_c != 1.0
+        || abs(layer.filter_hue) > 0.0001)
+    {
+        sampled = apply_color_filter_channels(
+            sampled,
+            layer.filter_b,
+            layer.filter_s,
+            layer.filter_c,
+            layer.filter_hue,
+        );
     }
     return sampled;
 }

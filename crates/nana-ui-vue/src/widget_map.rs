@@ -95,9 +95,15 @@ pub fn resolve_kind_from_hints(
         "select" => WidgetKind::Select,
         "progress" => WidgetKind::Progress,
         "li" => WidgetKind::ListItem,
-        // Lucide / <i> glyphs stay Icon; structural <svg> charts keep children.
-        // Raster <img> nodes use the generic surface path; <i> remains an icon.
+        // Lucide / <i> glyphs stay Icon; structural <svg> is rasterized via
+        // the shared image_url cache (see `svg_inline`). Raster <img> binds
+        // `src` onto PaintStyle.content_image. `<canvas>` is a HostTexture slot
+        // (`canvas:{id}`), not a fake 2D context. `<video>` poster only.
+        // `<iframe>` is an explicit L1 skip.
         "img" => WidgetKind::Box,
+        "canvas" => WidgetKind::Box,
+        "video" => WidgetKind::Box,
+        "iframe" => WidgetKind::Box,
         "i" => WidgetKind::Icon,
         "svg" | "g" => {
             // Lucide Vue stamps `lucide lucide-<name>` on the root <svg>.
@@ -110,7 +116,10 @@ pub fn resolve_kind_from_hints(
                 WidgetKind::Column
             }
         }
-        "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => WidgetKind::Box,
+        "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "defs"
+        | "use" | "symbol" | "clippath" | "mask" | "lineargradient" | "radialgradient" | "stop" => {
+            WidgetKind::Box
+        }
         "text" => WidgetKind::Text,
         "span" | "p" | "label" | "strong" | "em" | "code" | "small" | "b" | "h1" | "h2" | "h3"
         | "h4" | "h5" | "h6" | "output" | "#text" => WidgetKind::Text,
@@ -135,7 +144,23 @@ pub fn resolve_kind_from_hints(
 fn is_svg_structural_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "svg" | "g" | "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon"
+        "svg"
+            | "g"
+            | "path"
+            | "rect"
+            | "circle"
+            | "ellipse"
+            | "line"
+            | "polyline"
+            | "polygon"
+            | "defs"
+            | "use"
+            | "symbol"
+            | "clippath"
+            | "mask"
+            | "lineargradient"
+            | "radialgradient"
+            | "stop"
     )
 }
 
@@ -160,6 +185,9 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "fieldset"
             | "a"
             | "img"
+            | "canvas"
+            | "video"
+            | "iframe"
             | "i"
             | "svg"
             | "g"
@@ -170,6 +198,14 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "line"
             | "polyline"
             | "polygon"
+            | "defs"
+            | "use"
+            | "symbol"
+            | "clippath"
+            | "mask"
+            | "lineargradient"
+            | "radialgradient"
+            | "stop"
             | "text"
             | "body"
             | "template"
@@ -700,6 +736,22 @@ pub(crate) fn math_renderer(props: &WidgetProps) -> Option<&str> {
     .filter(|value| !value.is_empty())
 }
 
+/// HTML `dir="rtl"|"ltr"|"auto"` → [`nana_ui_core::DirSpec`].
+///
+/// `auto` / unknown stay `None` (no first-strong bidi; do not fake `ltr`).
+pub(crate) fn html_dir_spec(props: &WidgetProps) -> Option<nana_ui_core::DirSpec> {
+    html_dir_spec_from_map(&props.attrs)
+}
+
+pub(crate) fn html_dir_spec_from_map(
+    attrs: &std::collections::BTreeMap<String, String>,
+) -> Option<nana_ui_core::DirSpec> {
+    attrs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("dir"))
+        .and_then(|(_, value)| crate::css_map::dir_spec_from_html_attr(value))
+}
+
 pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&'a str> {
     for name in names {
         if let Some(value) = props.attrs.get(*name) {
@@ -714,6 +766,15 @@ pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&
         }
     }
     None
+}
+
+/// Bind `<img src>` / `data-src` onto the replaced-content paint slot.
+pub(crate) fn apply_img_content_image(style: &mut nana_ui_core::LayoutStyle, props: &WidgetProps) {
+    if !props.element_tag.eq_ignore_ascii_case("img") {
+        return;
+    }
+    let src = attr_value(props, &["src", "data-src"]).unwrap_or("");
+    crate::css_paint::apply_img_replaced_content(style, src);
 }
 
 pub(crate) fn parse_status_tone(raw: &str) -> Option<nana_ui_core::StatusTone> {
@@ -836,6 +897,56 @@ pub(crate) fn action_menu_item_danger(props: &WidgetProps) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_dir_attr_maps_rtl_ltr_auto_fail_closed() {
+        let mut props = WidgetProps::default();
+        props.attrs.insert("dir".into(), "rtl".into());
+        assert_eq!(html_dir_spec(&props), Some(nana_ui_core::DirSpec::Rtl));
+        props.attrs.insert("dir".into(), "ltr".into());
+        assert_eq!(html_dir_spec(&props), Some(nana_ui_core::DirSpec::Ltr));
+        props.attrs.insert("dir".into(), "auto".into());
+        assert!(html_dir_spec(&props).is_none());
+        props.attrs.insert("DIR".into(), "RTL".into());
+        props.attrs.remove("dir");
+        assert_eq!(html_dir_spec(&props), Some(nana_ui_core::DirSpec::Rtl));
+    }
+
+    #[test]
+    fn img_maps_to_box_and_src_binds_content_image() {
+        assert_eq!(
+            resolve_kind_from_hints("img", None, None, None),
+            Some(WidgetKind::Box)
+        );
+        let mut props = WidgetProps::default();
+        props.element_tag = "img".into();
+        props.attrs.insert("src".into(), "hero.png".into());
+        let mut style = nana_ui_core::LayoutStyle::default();
+        apply_img_content_image(&mut style, &props);
+        match style.paint.content_image {
+            Some(nana_ui_core::BackgroundImage::Url { ref url, fit, .. }) => {
+                assert_eq!(url, "hero.png");
+                assert_eq!(fit, nana_ui_core::BackgroundImageFit::Stretch);
+            }
+            other => panic!("expected img src paint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canvas_video_iframe_map_to_box() {
+        assert_eq!(
+            resolve_kind_from_hints("canvas", None, None, None),
+            Some(WidgetKind::Box)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("video", None, None, None),
+            Some(WidgetKind::Box)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("iframe", None, None, None),
+            Some(WidgetKind::Box)
+        );
+    }
 
     #[test]
     fn settings_and_sidebar_nav_classes_map() {

@@ -454,6 +454,7 @@ pub struct ComponentElevation {
     pub offset_y: f32,
     pub blur_radius: f32,
     pub spread_radius: f32,
+    pub inset: bool,
 }
 
 impl ComponentElevation {
@@ -466,6 +467,7 @@ impl ComponentElevation {
                 offset_y: 10.0,
                 blur_radius: 30.0,
                 spread_radius: -24.0,
+                inset: false,
             },
             nana_ui_core::ThemeMode::Light => Self {
                 color: [17.0 / 255.0, 24.0 / 255.0, 39.0 / 255.0, 0.24],
@@ -473,6 +475,7 @@ impl ComponentElevation {
                 offset_y: 10.0,
                 blur_radius: 26.0,
                 spread_radius: -24.0,
+                inset: false,
             },
         }
     }
@@ -484,6 +487,7 @@ impl ComponentElevation {
             offset_y: shadow.offset_y,
             blur_radius: shadow.blur_radius,
             spread_radius: shadow.spread_radius,
+            inset: shadow.inset,
         }
     }
 }
@@ -817,6 +821,7 @@ pub struct ComputedStyle {
     pub font_family: Option<Arc<str>>,
     pub line_height: Option<LineHeightSpec>,
     pub letter_spacing: f32,
+    pub font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
 
 impl Default for ComputedStyle {
@@ -834,6 +839,7 @@ impl Default for ComputedStyle {
             font_family: None,
             line_height: None,
             letter_spacing: 0.0,
+            font_features: Vec::new(),
         }
     }
 }
@@ -870,6 +876,7 @@ pub struct TextShapeConstraints {
     pub max_height: Option<f32>,
     pub wrap: bool,
     pub ellipsis: bool,
+    pub max_lines: Option<u16>,
     pub shaping: TextShaping,
     pub preserve_lines: bool,
 }

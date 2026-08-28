@@ -32,6 +32,24 @@ impl FlexDirection {
     }
 }
 
+/// CSS `direction` (`ltr` / `rtl`). Not [`FlexDirection`] (`flex-direction`).
+///
+/// Vertical `writing-mode` stays fail-closed. This remaps logical box edges
+/// and `text-align: start | end` only — it does **not** flip flex/grid
+/// main/cross start or item order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DirSpec {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+impl DirSpec {
+    pub fn is_rtl(self) -> bool {
+        matches!(self, Self::Rtl)
+    }
+}
+
 /// 交叉轴对齐（`align-items` / `align-self`）。
 ///
 /// `Baseline` 用字号近似第一行基线（`0.8em`）；无字号时回退 Start。
@@ -70,6 +88,10 @@ pub enum OverflowSpec {
     Scroll,
 }
 
+/// Half-extent used to leave an overflow axis unclipped when `overflow-x` /
+/// `overflow-y` disagree (`hidden` on one axis, `visible` on the other).
+pub const OVERFLOW_OPEN_AXIS_EXTENT: f32 = 100_000.0;
+
 impl OverflowSpec {
     pub fn scrolls(self) -> bool {
         matches!(self, Self::Auto | Self::Scroll)
@@ -79,6 +101,31 @@ impl OverflowSpec {
     pub fn clips(self) -> bool {
         matches!(self, Self::Hidden | Self::Auto | Self::Scroll)
     }
+}
+
+/// Expand `bounds` on axes that do not clip so `overflow-x` / `overflow-y` can
+/// clip independently without a second clip pipeline.
+pub fn overflow_clip_rect(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    clip_x: bool,
+    clip_y: bool,
+) -> Option<(f32, f32, f32, f32)> {
+    if !clip_x && !clip_y {
+        return None;
+    }
+    let (mut rx, mut ry, mut rw, mut rh) = (x, y, width, height);
+    if !clip_x {
+        rx = x + width * 0.5 - OVERFLOW_OPEN_AXIS_EXTENT;
+        rw = OVERFLOW_OPEN_AXIS_EXTENT * 2.0;
+    }
+    if !clip_y {
+        ry = y + height * 0.5 - OVERFLOW_OPEN_AXIS_EXTENT;
+        rh = OVERFLOW_OPEN_AXIS_EXTENT * 2.0;
+    }
+    Some((rx, ry, rw, rh))
 }
 
 /// CSS `display` 子集（作为布局意图枚举，非 CSSOM）。
@@ -122,12 +169,42 @@ impl DisplaySpec {
 }
 
 /// `text-align` 子集（IFC 行内对齐；块/列容器上的行内子项）。
+///
+/// `Start` / `End` are logical (follow [`LayoutStyle::dir`]). `Left` / `Right`
+/// are physical and do not flip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TextAlignSpec {
     #[default]
     Start,
     Center,
     End,
+    Left,
+    Right,
+}
+
+impl TextAlignSpec {
+    /// Map to a physical main-axis justify keyword for IFC packing.
+    pub fn to_justify(self, rtl: bool) -> JustifySpec {
+        match self {
+            Self::Center => JustifySpec::Center,
+            Self::Left => JustifySpec::Start,
+            Self::Right => JustifySpec::End,
+            Self::Start => {
+                if rtl {
+                    JustifySpec::End
+                } else {
+                    JustifySpec::Start
+                }
+            }
+            Self::End => {
+                if rtl {
+                    JustifySpec::Start
+                } else {
+                    JustifySpec::End
+                }
+            }
+        }
+    }
 }
 
 /// `white-space` 子集。
@@ -165,13 +242,19 @@ pub enum ClearSpec {
     Both,
 }
 
-/// `repeat(auto-fit|auto-fill)` 种类。布局按容器尺寸展开轨，不再当作缺口。
+/// Track-list syntax the grid resolver will not pretend to honor.
+///
+/// Successful `repeat(auto-fit|auto-fill)` is stored on [`GridRepeatAuto`] and
+/// expanded at layout; those variants remain as the repeat *kind*. [`Self::Subgrid`]
+/// is an actual gap: nested grids do not inherit parent tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GridTrackListUnsupported {
-    /// `repeat(auto-fit, …)`
+    /// `repeat(auto-fit, …)` (repeat kind; layout expands it).
     RepeatAutoFit,
-    /// `repeat(auto-fill, …)`
+    /// `repeat(auto-fill, …)` (repeat kind; layout expands it).
     RepeatAutoFill,
+    /// `subgrid` — needs parent tracks in the grid resolver; not faked.
+    Subgrid,
 }
 
 impl GridTrackListUnsupported {
@@ -179,6 +262,7 @@ impl GridTrackListUnsupported {
         match self {
             Self::RepeatAutoFit => "repeat(auto-fit)",
             Self::RepeatAutoFill => "repeat(auto-fill)",
+            Self::Subgrid => "subgrid",
         }
     }
 
@@ -529,6 +613,11 @@ impl PositionSpec {
     pub fn is_out_of_flow(self) -> bool {
         matches!(self, Self::Absolute | Self::Fixed)
     }
+
+    /// CSS positioned: not `static`. `z-index` on these creates a stacking context.
+    pub fn is_positioned(self) -> bool {
+        !matches!(self, Self::Static)
+    }
 }
 
 /// box-sizing：`BorderBox`（默认）声明宽含 padding + border；`ContentBox` 声明宽为内容，
@@ -856,7 +945,7 @@ pub fn icon_y_on_text_glyph_center(
     }
 }
 
-/// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；非完整 calc AST）。
+/// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；calc 在解析期折进这些变体，非完整 AST）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthAtom {
     Px(f32),
@@ -937,7 +1026,7 @@ impl LengthAtom {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthSpec {
     Px(f32),
-    /// 0..=100，相对父 content box。
+    /// 相对父 content box 的百分比（calc 可超出 0..=100，不钳制）。
     Percent(f32),
     /// `Nem`（相对元素 font-size；缺省 16px）。
     Em(f32),
@@ -1155,7 +1244,10 @@ pub enum VisibilitySpec {
     Hidden,
 }
 
-/// Single-layer outset `box-shadow` (physical px after parse).
+/// GPU cap for comma-separated `box-shadow` layers.
+pub const MAX_BOX_SHADOWS: usize = 4;
+
+/// One `box-shadow` layer (physical px after parse).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoxShadowSpec {
     pub offset_x: f32,
@@ -1163,6 +1255,168 @@ pub struct BoxShadowSpec {
     pub blur_radius: f32,
     pub spread_radius: f32,
     pub color: [f32; 4],
+    /// CSS `inset`. Outset (false) paints outside the border box.
+    #[serde(default)]
+    pub inset: bool,
+}
+
+/// GPU-capable CSS `mix-blend-mode` subset. Unknown values fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MixBlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+}
+
+impl MixBlendMode {
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "multiply" => Some(Self::Multiply),
+            "screen" => Some(Self::Screen),
+            _ => None,
+        }
+    }
+
+    pub fn is_normal(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+
+    /// Dest-group BlendState selector (`0` normal, `1` multiply, `2` screen).
+    pub fn gpu_index(self) -> u32 {
+        match self {
+            Self::Normal => 0,
+            Self::Multiply => 1,
+            Self::Screen => 2,
+        }
+    }
+}
+
+/// CSS `pointer-events` (`auto` hits, `none` skips).
+///
+/// Inherited. Unspecified specified-value is [`None`] on
+/// [`LayoutStyle::pointer_events`]; used value is [`Self::inherit_from`].
+/// Root initial used value is [`Self::Auto`]. Unknown keywords fail closed
+/// and do not write a specified value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PointerEventsSpec {
+    #[default]
+    Auto,
+    None,
+}
+
+impl PointerEventsSpec {
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn hittable(self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    /// Used value: specified wins, otherwise inherit `parent`.
+    pub fn inherit_from(specified: Option<Self>, parent: Self) -> Self {
+        specified.unwrap_or(parent)
+    }
+}
+
+/// CSS `border-style` subset. Dashed/dotted stroke the existing rounded-box
+/// SDF ring; `double` / 3D keywords occupy used width but do not paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BorderStyle {
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    /// Parsed but not stroked (`double` / groove / ridge / inset / outset).
+    Unsupported,
+}
+
+impl BorderStyle {
+    /// Packed into [`LayoutStyle::paint_border_style_codes`] / the quad shader.
+    pub const SHADER_SOLID: u8 = 0;
+    pub const SHADER_DASHED: u8 = 1;
+    pub const SHADER_DOTTED: u8 = 2;
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "none" | "hidden" => Some(Self::None),
+            "solid" => Some(Self::Solid),
+            "dashed" => Some(Self::Dashed),
+            "dotted" => Some(Self::Dotted),
+            "double" | "groove" | "ridge" | "inset" | "outset" => Some(Self::Unsupported),
+            _ => None,
+        }
+    }
+
+    /// `none` / `hidden` zero the used border width (CSS).
+    pub fn zeros_used_width(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Solid / dashed / dotted (and unspecified-compat) use the rounded-box stroke.
+    pub fn paints_stroke(self) -> bool {
+        matches!(self, Self::Solid | Self::Dashed | Self::Dotted)
+    }
+
+    pub fn shader_code(self) -> u8 {
+        match self {
+            Self::Dashed => Self::SHADER_DASHED,
+            Self::Dotted => Self::SHADER_DOTTED,
+            Self::None | Self::Solid | Self::Unsupported => Self::SHADER_SOLID,
+        }
+    }
+}
+
+fn used_border_width(width: f32, style: Option<BorderStyle>) -> f32 {
+    match style {
+        Some(s) if s.zeros_used_width() => 0.0,
+        // Unspecified style keeps the declared width (legacy NanaUI / T-B09).
+        // Explicit `none` / `hidden` still zero the used width.
+        None | Some(_) => width.max(0.0),
+    }
+}
+
+fn paint_border_width(width: f32, style: Option<BorderStyle>, color: Option<[f32; 4]>) -> f32 {
+    if width > 0.0 && color.is_some() && edge_paints_stroke(style) {
+        width
+    } else {
+        0.0
+    }
+}
+
+fn edge_paints_stroke(style: Option<BorderStyle>) -> bool {
+    style.map(BorderStyle::paints_stroke).unwrap_or(true)
+}
+
+/// CSS `outline-style` subset. Dashed/dotted fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OutlineStyle {
+    #[default]
+    None,
+    Solid,
+}
+
+/// Paint-only CSS `outline` (does not affect layout).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct OutlineSpec {
+    #[serde(default)]
+    pub width: f32,
+    #[serde(default)]
+    pub color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub style: OutlineStyle,
+}
+
+impl OutlineSpec {
+    pub fn is_active(self) -> bool {
+        self.style == OutlineStyle::Solid && self.width > 0.0
+    }
 }
 
 /// Single-layer `text-shadow` (physical px after parse; blur is paint-hint only).
@@ -1172,6 +1426,26 @@ pub struct TextShadowSpec {
     pub offset_y: f32,
     pub blur_radius: f32,
     pub color: [f32; 4],
+}
+
+/// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TextDecorationLine {
+    pub underline: bool,
+    pub line_through: bool,
+}
+
+impl TextDecorationLine {
+    pub fn is_active(self) -> bool {
+        self.underline || self.line_through
+    }
+}
+
+/// One OpenType `font-feature-settings` tag (`"liga" 1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FontFeatureSetting {
+    pub tag: [u8; 4],
+    pub value: u32,
 }
 
 /// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
@@ -1234,13 +1508,56 @@ impl CssGradient {
     }
 }
 
-/// `background-size` subset for `url()` fills.
+/// Product cap for comma-separated `background-image` layers (plus `<img src>`).
+pub const MAX_BACKGROUND_LAYERS: usize = 8;
+
+/// `background-size` / `object-fit` mapping for `url()` fills.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum BackgroundImageFit {
-    #[default]
     Cover,
     Contain,
     Stretch,
+    /// CSS initial `background-size: auto` / `object-fit: none`.
+    #[default]
+    Auto,
+    /// Explicit `background-size` lengths (`32px`, `50%`, `auto 24px`).
+    Length,
+}
+
+/// CSS `background-repeat` (shader tiling; `space`/`round` map to [`Self::Repeat`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BackgroundRepeat {
+    NoRepeat,
+    /// CSS initial value for unspecified `background-repeat`.
+    #[default]
+    Repeat,
+    RepeatX,
+    RepeatY,
+}
+
+/// `background-position` / `object-position` (percent of free space, or px).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BackgroundPosition {
+    pub x: LengthSpec,
+    pub y: LengthSpec,
+}
+
+impl Default for BackgroundPosition {
+    fn default() -> Self {
+        Self {
+            x: LengthSpec::Percent(0.0),
+            y: LengthSpec::Percent(0.0),
+        }
+    }
+}
+
+impl BackgroundPosition {
+    pub fn center() -> Self {
+        Self {
+            x: LengthSpec::Percent(50.0),
+            y: LengthSpec::Percent(50.0),
+        }
+    }
 }
 
 /// Parsed `background-image` (`linear-gradient`, `radial-gradient`, or `url()`).
@@ -1250,7 +1567,244 @@ pub enum BackgroundImage {
     Url {
         url: String,
         fit: BackgroundImageFit,
+        #[serde(default)]
+        size_width: Option<LengthSpec>,
+        #[serde(default)]
+        size_height: Option<LengthSpec>,
+        #[serde(default)]
+        position: BackgroundPosition,
+        #[serde(default)]
+        repeat: BackgroundRepeat,
     },
+}
+
+impl BackgroundImage {
+    pub fn url(url: impl Into<String>) -> Self {
+        Self::url_with_fit(url, BackgroundImageFit::Auto)
+    }
+
+    pub fn url_with_fit(url: impl Into<String>, fit: BackgroundImageFit) -> Self {
+        Self::Url {
+            url: url.into(),
+            fit,
+            size_width: None,
+            size_height: None,
+            position: BackgroundPosition::default(),
+            repeat: BackgroundRepeat::Repeat,
+        }
+    }
+
+    pub fn url_str(&self) -> Option<&str> {
+        match self {
+            Self::Url { url, .. } => Some(url.as_str()),
+            Self::Gradient(_) => None,
+        }
+    }
+}
+
+/// One `border-image-slice` edge. Unitless numbers are source pixels;
+/// percentages are of the source image's corresponding axis.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum BorderImageSlice {
+    Number(f32),
+    Percent(f32),
+}
+
+impl Default for BorderImageSlice {
+    fn default() -> Self {
+        Self::Percent(100.0)
+    }
+}
+
+impl BorderImageSlice {
+    pub fn to_px(self, image_len: f32) -> f32 {
+        match self {
+            Self::Number(value) => value.max(0.0),
+            Self::Percent(percent) => (percent.max(0.0) / 100.0) * image_len.max(0.0),
+        }
+    }
+}
+
+/// One 9-slice tile: dest rect in border-box px, source UV 0..=1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BorderImageTile {
+    pub dest_x: f32,
+    pub dest_y: f32,
+    pub dest_w: f32,
+    pub dest_h: f32,
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
+/// Minimal CSS `border-image`: `url()` or `linear-gradient` source, slice,
+/// optional `fill`. Width defaults to `1`×slice; outset/repeat stay stretch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BorderImageSpec {
+    pub source: BackgroundImage,
+    /// Top, right, bottom, left.
+    pub slice: [BorderImageSlice; 4],
+    pub fill: bool,
+}
+
+impl BorderImageSpec {
+    pub fn from_source(source: BackgroundImage) -> Self {
+        Self {
+            source,
+            slice: [BorderImageSlice::Percent(100.0); 4],
+            fill: false,
+        }
+    }
+
+    pub fn paints_linear_or_url(&self) -> bool {
+        match &self.source {
+            BackgroundImage::Url { .. } => true,
+            BackgroundImage::Gradient(CssGradient::Linear(_)) => true,
+            BackgroundImage::Gradient(CssGradient::Radial(_)) => false,
+        }
+    }
+
+    /// `image_w` / `image_h` are the CSS border-image intrinsic size (bitmap
+    /// pixels, or the border box for a gradient).
+    pub fn tiles(
+        &self,
+        image_w: f32,
+        image_h: f32,
+        box_w: f32,
+        box_h: f32,
+    ) -> Vec<BorderImageTile> {
+        let image_w = image_w.max(1.0);
+        let image_h = image_h.max(1.0);
+        let mut top_px = self.slice[0].to_px(image_h);
+        let mut right_px = self.slice[1].to_px(image_w);
+        let mut bottom_px = self.slice[2].to_px(image_h);
+        let mut left_px = self.slice[3].to_px(image_w);
+        (top_px, bottom_px) = clamp_pair(top_px, bottom_px, image_h);
+        (left_px, right_px) = clamp_pair(left_px, right_px, image_w);
+        let u_l = left_px / image_w;
+        let u_r = right_px / image_w;
+        let v_t = top_px / image_h;
+        let v_b = bottom_px / image_h;
+        let (dest_top, dest_bottom) = clamp_pair(top_px, bottom_px, box_h.max(0.0));
+        let (dest_left, dest_right) = clamp_pair(left_px, right_px, box_w.max(0.0));
+        let mid_w = (box_w - dest_left - dest_right).max(0.0);
+        let mid_h = (box_h - dest_top - dest_bottom).max(0.0);
+        let mut tiles = vec![
+            BorderImageTile {
+                dest_x: 0.0,
+                dest_y: 0.0,
+                dest_w: dest_left,
+                dest_h: dest_top,
+                u0: 0.0,
+                v0: 0.0,
+                u1: u_l,
+                v1: v_t,
+            },
+            BorderImageTile {
+                dest_x: dest_left,
+                dest_y: 0.0,
+                dest_w: mid_w,
+                dest_h: dest_top,
+                u0: u_l,
+                v0: 0.0,
+                u1: 1.0 - u_r,
+                v1: v_t,
+            },
+            BorderImageTile {
+                dest_x: dest_left + mid_w,
+                dest_y: 0.0,
+                dest_w: dest_right,
+                dest_h: dest_top,
+                u0: 1.0 - u_r,
+                v0: 0.0,
+                u1: 1.0,
+                v1: v_t,
+            },
+            BorderImageTile {
+                dest_x: 0.0,
+                dest_y: dest_top,
+                dest_w: dest_left,
+                dest_h: mid_h,
+                u0: 0.0,
+                v0: v_t,
+                u1: u_l,
+                v1: 1.0 - v_b,
+            },
+        ];
+        if self.fill {
+            tiles.push(BorderImageTile {
+                dest_x: dest_left,
+                dest_y: dest_top,
+                dest_w: mid_w,
+                dest_h: mid_h,
+                u0: u_l,
+                v0: v_t,
+                u1: 1.0 - u_r,
+                v1: 1.0 - v_b,
+            });
+        }
+        tiles.extend([
+            BorderImageTile {
+                dest_x: dest_left + mid_w,
+                dest_y: dest_top,
+                dest_w: dest_right,
+                dest_h: mid_h,
+                u0: 1.0 - u_r,
+                v0: v_t,
+                u1: 1.0,
+                v1: 1.0 - v_b,
+            },
+            BorderImageTile {
+                dest_x: 0.0,
+                dest_y: dest_top + mid_h,
+                dest_w: dest_left,
+                dest_h: dest_bottom,
+                u0: 0.0,
+                v0: 1.0 - v_b,
+                u1: u_l,
+                v1: 1.0,
+            },
+            BorderImageTile {
+                dest_x: dest_left,
+                dest_y: dest_top + mid_h,
+                dest_w: mid_w,
+                dest_h: dest_bottom,
+                u0: u_l,
+                v0: 1.0 - v_b,
+                u1: 1.0 - u_r,
+                v1: 1.0,
+            },
+            BorderImageTile {
+                dest_x: dest_left + mid_w,
+                dest_y: dest_top + mid_h,
+                dest_w: dest_right,
+                dest_h: dest_bottom,
+                u0: 1.0 - u_r,
+                v0: 1.0 - v_b,
+                u1: 1.0,
+                v1: 1.0,
+            },
+        ]);
+        tiles.retain(|tile| {
+            tile.dest_w > 0.0001
+                && tile.dest_h > 0.0001
+                && (tile.u1 - tile.u0) > 1.0e-6
+                && (tile.v1 - tile.v0) > 1.0e-6
+        });
+        tiles
+    }
+}
+
+fn clamp_pair(a: f32, b: f32, max: f32) -> (f32, f32) {
+    let max = max.max(0.0);
+    let sum = a + b;
+    if sum > max && sum > 0.0 {
+        let scale = max / sum;
+        (a * scale, b * scale)
+    } else {
+        (a, b)
+    }
 }
 
 /// `clip-path: inset(...)` components (lengths resolve against the border box).
@@ -1341,12 +1895,33 @@ fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
     }
 }
 
-/// CSS `filter` brightness / saturate / contrast multipliers (default 1).
+/// CSS `filter: drop-shadow()` — alpha silhouette, not border-box geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FilterDropShadow {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: [f32; 4],
+}
+
+/// CSS `filter` brightness / saturate / contrast / hue-rotate / blur / drop-shadow.
+///
+/// `blur` and `drop-shadow` are the element's own filters (dest-group), distinct
+/// from [`BackdropFilter`]. Exotic functions are omitted (fail closed).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ColorFilter {
     pub brightness: f32,
     pub saturate: f32,
     pub contrast: f32,
+    /// `hue-rotate()` in degrees.
+    #[serde(default)]
+    pub hue_rotate_deg: f32,
+    /// Element `blur(Npx)`, clamped at parse time. Not backdrop-filter.
+    #[serde(default)]
+    pub blur_radius: f32,
+    /// Single `drop-shadow()`; extra layers and spread stay fail-closed.
+    #[serde(default)]
+    pub drop_shadow: Option<FilterDropShadow>,
 }
 
 impl Default for ColorFilter {
@@ -1355,15 +1930,33 @@ impl Default for ColorFilter {
             brightness: 1.0,
             saturate: 1.0,
             contrast: 1.0,
+            hue_rotate_deg: 0.0,
+            blur_radius: 0.0,
+            drop_shadow: None,
         }
     }
 }
 
 impl ColorFilter {
+    /// Product cap for element-filter blur (tighter than backdrop frost).
+    pub const MAX_BLUR_RADIUS: f32 = 16.0;
+
     pub fn is_identity(self) -> bool {
         (self.brightness - 1.0).abs() < 1e-5
             && (self.saturate - 1.0).abs() < 1e-5
             && (self.contrast - 1.0).abs() < 1e-5
+            && self.hue_rotate_deg.abs() < 1e-5
+            && self.blur_radius <= 0.0
+            && self.drop_shadow.is_none()
+    }
+
+    /// Dest-group composite clip pad: element blur and/or drop-shadow extent.
+    pub fn dest_extent_pad(self) -> f32 {
+        let drop = self
+            .drop_shadow
+            .map(|shadow| shadow.offset_x.abs().max(shadow.offset_y.abs()) + shadow.blur_radius)
+            .unwrap_or(0.0);
+        self.blur_radius.max(drop)
     }
 }
 
@@ -1407,12 +2000,58 @@ pub struct PaintStyle {
     /// [`LayoutStyle::border_radius`] when set.
     #[serde(default)]
     pub border_radii: Option<[LengthSpec; 4]>,
+    /// `box-shadow` layers in CSS order (first is top-most). Capped at
+    /// [`MAX_BOX_SHADOWS`].
     #[serde(default)]
-    pub box_shadow: Option<BoxShadowSpec>,
+    pub box_shadows: Vec<BoxShadowSpec>,
     #[serde(default)]
     pub text_shadow: Option<TextShadowSpec>,
+    /// Extra stroke outside the border box. Does not affect layout.
+    #[serde(default)]
+    pub outline: OutlineSpec,
+    /// GPU-capable `mix-blend-mode`. Other keywords stay [`MixBlendMode::Normal`].
+    #[serde(default)]
+    pub mix_blend: MixBlendMode,
+    /// `url()` / `linear-gradient` + slice 9-slice. Other sources/repeat/width
+    /// stay fail-closed and sticky; source/slice longhands must not clear it.
+    #[serde(default)]
+    pub unsupported_border_image: bool,
+    /// Painted 9-slice when [`Self::unsupported_border_image`] is false.
+    #[serde(default)]
+    pub border_image: Option<BorderImageSpec>,
     #[serde(default)]
     pub background_image: Option<BackgroundImage>,
+    /// Additional `background-image` layers after the first (CSS comma list).
+    #[serde(default)]
+    pub background_layers: Vec<BackgroundImage>,
+    /// Last parsed `background-size` list, zipped onto a later `background-image`.
+    /// Cleared by the `background` shorthand so leftover longhands do not leak.
+    #[serde(default)]
+    pub background_size_list: Vec<BackgroundImageFit>,
+    /// Explicit width/height for [`BackgroundImageFit::Length`] entries, parallel
+    /// to [`Self::background_size_list`].
+    #[serde(default)]
+    pub background_size_lengths: Vec<(Option<LengthSpec>, Option<LengthSpec>)>,
+    /// Last parsed `background-position` list.
+    #[serde(default)]
+    pub background_position_list: Vec<BackgroundPosition>,
+    /// Last parsed `background-repeat` list.
+    #[serde(default)]
+    pub background_repeat_list: Vec<BackgroundRepeat>,
+    /// `<img src>` replaced content, painted above background layers.
+    #[serde(default)]
+    pub content_image: Option<BackgroundImage>,
+    /// Replaced media that L1 will not pretend to execute (`iframe`, `video`
+    /// without a poster, `<canvas>` without a HostTexture slot). Empty means
+    /// the node is not an explicit skip.
+    #[serde(default)]
+    pub skipped_replaced: Option<String>,
+    /// `object-fit` for [`Self::content_image`] (`None` = CSS `fill` / stretch).
+    #[serde(default)]
+    pub object_fit: Option<BackgroundImageFit>,
+    /// `object-position` for [`Self::content_image`] (`None` = `50% 50%`).
+    #[serde(default)]
+    pub object_position: Option<BackgroundPosition>,
     /// `mask-image` / `-webkit-mask-image` as linear or radial gradient alpha.
     #[serde(default)]
     pub mask: Option<CssGradient>,
@@ -1431,18 +2070,43 @@ impl PaintStyle {
 
     pub fn has_advanced_paint(&self) -> bool {
         self.background_image.is_some()
+            || !self.background_layers.is_empty()
+            || self.content_image.is_some()
             || self.mask.is_some()
             || self.clip_path.is_some()
             || self.filter.is_some_and(|filter| !filter.is_identity())
             || self.backdrop_filter.is_some_and(BackdropFilter::is_active)
+            || !self.box_shadows.is_empty()
+            || self.outline.is_active()
+            || !self.mix_blend.is_normal()
+            || self.border_image.is_some()
+    }
+
+    pub fn primary_box_shadow(&self) -> Option<BoxShadowSpec> {
+        self.box_shadows.first().copied()
+    }
+
+    /// Background layers in CSS paint order (bottom → top), then `<img src>`.
+    pub fn paint_image_layers(&self) -> impl Iterator<Item = &BackgroundImage> {
+        self.background_layers
+            .iter()
+            .rev()
+            .chain(self.background_image.as_ref())
+            .chain(self.content_image.as_ref())
     }
 }
 
 /// CSS 2D affine paint transform applied without changing layout.
 ///
 /// The six fields use the Canvas/CSS `matrix(a, b, c, d, e, f)` convention.
-/// NanaUI applies the matrix around the box center, matching the default CSS
-/// transform origin. Translation is expressed in logical pixels.
+/// NanaUI applies the matrix around [`LayoutStyle::transform_origin`] (default
+/// CSS `50% 50%` = box center) via [`Self::around_center`] /
+/// [`Self::around_origin`]. Translation is expressed in logical pixels.
+///
+/// 2D lists stay on this 2×3. Planar CSS 3D (`perspective()` + `rotateY`, true
+/// `matrix3d`) is stored separately as [`PaintMat4`] and painted as the z=0
+/// homography in the existing Scene quad pass. Parent `perspective` /
+/// `preserve-3d` stay fail-closed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PaintTransform {
     pub a: f32,
@@ -1451,6 +2115,17 @@ pub struct PaintTransform {
     pub d: f32,
     pub e: f32,
     pub f: f32,
+}
+
+const PAINT_MAT4_EPS: f32 = 1e-5;
+
+/// CSS `matrix3d` 4×4 in argument/column-major order (16 floats).
+///
+/// Scene paints the z=0 plane as a 3×3 homography in the existing quad pass
+/// (same 4 vertices, perspective divide). Not a second engine.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaintMat4 {
+    pub m: [f32; 16],
 }
 
 impl Default for PaintTransform {
@@ -1483,17 +2158,299 @@ impl PaintTransform {
         }
     }
 
-    /// Returns the world-space matrix using the default center transform origin.
+    /// World-space 2×3 using the CSS default origin (`50% 50%` = box center).
     pub fn around_center(self, x: f32, y: f32, width: f32, height: f32) -> [f32; 6] {
-        let cx = x + width * 0.5;
-        let cy = y + height * 0.5;
+        self.around_origin(x, y, width * 0.5, height * 0.5)
+    }
+
+    /// World-space 2×3 pivoted at box-local `(origin_x, origin_y)` pixels.
+    ///
+    /// Same six `Copy` coefficients as [`Self::around_center`]; only the pivot
+    /// changes. `origin_x` / `origin_y` are offsets from the box origin `(x, y)`.
+    pub fn around_origin(self, x: f32, y: f32, origin_x: f32, origin_y: f32) -> [f32; 6] {
+        let ox = x + origin_x;
+        let oy = y + origin_y;
         [
             self.a,
             self.b,
             self.c,
             self.d,
-            cx + self.e - self.a * cx - self.c * cy,
-            cy + self.f - self.b * cx - self.d * cy,
+            ox + self.e - self.a * ox - self.c * oy,
+            oy + self.f - self.b * ox - self.d * oy,
+        ]
+    }
+}
+
+impl Default for PaintMat4 {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl PaintMat4 {
+    pub const IDENTITY: Self = Self {
+        m: [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    };
+
+    pub fn from_affine(t: PaintTransform) -> Self {
+        Self {
+            m: [
+                t.a, t.b, 0.0, 0.0, t.c, t.d, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, t.e, t.f, 0.0, 1.0,
+            ],
+        }
+    }
+
+    pub fn from_matrix3d(m: [f32; 16]) -> Option<Self> {
+        m.iter().all(|v| v.is_finite()).then_some(Self { m })
+    }
+
+    pub fn translation(x: f32, y: f32, z: f32) -> Self {
+        let mut m = Self::IDENTITY;
+        m.m[12] = x;
+        m.m[13] = y;
+        m.m[14] = z;
+        m
+    }
+
+    pub fn scaling(x: f32, y: f32, z: f32) -> Self {
+        let mut m = Self::IDENTITY;
+        m.m[0] = x;
+        m.m[5] = y;
+        m.m[10] = z;
+        m
+    }
+
+    pub fn rotate_x(angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        Self {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    pub fn rotate_y(angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        Self {
+            m: [
+                cos, 0.0, -sin, 0.0, 0.0, 1.0, 0.0, 0.0, sin, 0.0, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    pub fn rotate_z(angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        Self {
+            m: [
+                cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    /// CSS `rotate3d(x, y, z, angle)` around a (possibly unnormalized) axis.
+    pub fn rotate3d(x: f32, y: f32, z: f32, angle: f32) -> Option<Self> {
+        let len = (x * x + y * y + z * z).sqrt();
+        if !len.is_finite() || len < PAINT_MAT4_EPS {
+            return None;
+        }
+        let x = x / len;
+        let y = y / len;
+        let z = z / len;
+        let (sin, cos) = angle.sin_cos();
+        let c = 1.0 - cos;
+        Some(Self {
+            m: [
+                cos + x * x * c,
+                y * x * c + z * sin,
+                z * x * c - y * sin,
+                0.0,
+                x * y * c - z * sin,
+                cos + y * y * c,
+                z * y * c + x * sin,
+                0.0,
+                x * z * c + y * sin,
+                y * z * c - x * sin,
+                cos + z * z * c,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        })
+    }
+
+    /// CSS `perspective(d)`: `matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,-1/d, 0,0,0,1)`.
+    pub fn perspective(d: f32) -> Option<Self> {
+        if !d.is_finite() || d.abs() < PAINT_MAT4_EPS {
+            return None;
+        }
+        let mut m = Self::IDENTITY;
+        m.m[11] = -1.0 / d;
+        Some(m)
+    }
+
+    pub fn is_identity(self) -> bool {
+        self.m
+            .iter()
+            .zip(Self::IDENTITY.m.iter())
+            .all(|(a, b)| (*a - *b).abs() <= PAINT_MAT4_EPS)
+    }
+
+    /// Concatenates `rhs` on the right (CSS list order: `self` then `rhs`).
+    pub fn then(self, rhs: Self) -> Self {
+        self.mul(rhs)
+    }
+
+    fn mul(self, rhs: Self) -> Self {
+        let a = self.m;
+        let b = rhs.m;
+        let mut m = [0.0f32; 16];
+        for col in 0..4 {
+            for row in 0..4 {
+                m[col * 4 + row] = a[row] * b[col * 4]
+                    + a[4 + row] * b[col * 4 + 1]
+                    + a[8 + row] * b[col * 4 + 2]
+                    + a[12 + row] * b[col * 4 + 3];
+            }
+        }
+        Self { m }
+    }
+
+    /// `T(pivot) * self * T(-pivot)` with a 2D origin (`z = 0`).
+    pub fn around_origin(self, x: f32, y: f32, origin_x: f32, origin_y: f32) -> Self {
+        let ox = x + origin_x;
+        let oy = y + origin_y;
+        Self::translation(ox, oy, 0.0)
+            .then(self)
+            .then(Self::translation(-ox, -oy, 0.0))
+    }
+
+    /// Map `(x, y, 0, 1)` through this matrix and perspective-divide.
+    pub fn project_xy(self, x: f32, y: f32) -> Option<[f32; 2]> {
+        let m = self.m;
+        let xp = m[0] * x + m[4] * y + m[12];
+        let yp = m[1] * x + m[5] * y + m[13];
+        let wp = m[3] * x + m[7] * y + m[15];
+        if !wp.is_finite() || wp.abs() < 1e-8 {
+            return None;
+        }
+        let sx = xp / wp;
+        let sy = yp / wp;
+        (sx.is_finite() && sy.is_finite()).then_some([sx, sy])
+    }
+
+    /// z=0 homography `(a,b,c,d,e,f)` plus `(g,h)` with `w = g x + h y + 1`.
+    pub fn planar_homography(self) -> Option<([f32; 6], [f32; 2])> {
+        let m = self.m;
+        let mut a = m[0];
+        let mut b = m[1];
+        let mut c = m[4];
+        let mut d = m[5];
+        let mut e = m[12];
+        let mut f = m[13];
+        let mut g = m[3];
+        let mut h = m[7];
+        let i = m[15];
+        if !i.is_finite() || i.abs() < 1e-8 {
+            return None;
+        }
+        let inv = 1.0 / i;
+        a *= inv;
+        b *= inv;
+        c *= inv;
+        d *= inv;
+        e *= inv;
+        f *= inv;
+        g *= inv;
+        h *= inv;
+        [a, b, c, d, e, f, g, h]
+            .into_iter()
+            .all(f32::is_finite)
+            .then_some(([a, b, c, d, e, f], [g, h]))
+    }
+
+    pub fn is_planar_affine(self) -> bool {
+        let Some((_, [g, h])) = self.planar_homography() else {
+            return false;
+        };
+        g.abs() <= PAINT_MAT4_EPS && h.abs() <= PAINT_MAT4_EPS
+    }
+
+    pub fn as_affine(self) -> Option<PaintTransform> {
+        if !self.is_planar_affine() {
+            return None;
+        }
+        let ([a, b, c, d, e, f], _) = self.planar_homography()?;
+        Some(PaintTransform { a, b, c, d, e, f })
+    }
+
+    /// Projected corners of a border box (TL, TR, BR, BL).
+    pub fn projected_corners(
+        self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<[[f32; 2]; 4]> {
+        Some([
+            self.project_xy(x, y)?,
+            self.project_xy(x + width, y)?,
+            self.project_xy(x + width, y + height)?,
+            self.project_xy(x, y + height)?,
+        ])
+    }
+}
+
+/// CSS `transform-box` (2D origin reference).
+///
+/// CSS initial is `view-box`. For CSS layout boxes (HTML), `view-box` uses the
+/// border box and `fill-box` uses the content box — there is no SVG viewport
+/// origin space. Percent [`TransformOrigin`] is relative to this box; the
+/// resulting pivot is still applied via [`PaintTransform::around_origin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TransformBox {
+    /// CSS initial. Used as the border box for CSS layout boxes.
+    #[default]
+    ViewBox,
+    BorderBox,
+    FillBox,
+    ContentBox,
+}
+
+impl TransformBox {
+    /// `content-box` / `fill-box` for HTML; `view-box` / `border-box` stay on
+    /// the layout (border) box.
+    pub fn uses_content_box(self) -> bool {
+        matches!(self, Self::ContentBox | Self::FillBox)
+    }
+}
+
+/// CSS `transform-origin` (2D). Percent is relative to [`LayoutStyle::transform_box`].
+/// A third z length is accepted by the parser and dropped on this 2×3 path.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TransformOrigin {
+    pub x: LengthSpec,
+    pub y: LengthSpec,
+}
+
+impl Default for TransformOrigin {
+    fn default() -> Self {
+        Self {
+            x: LengthSpec::Percent(50.0),
+            y: LengthSpec::Percent(50.0),
+        }
+    }
+}
+
+impl TransformOrigin {
+    /// Resolve to box-local pixels (`50%` of a 40×20 box is `(20, 10)`).
+    pub fn resolve(self, width: f32, height: f32) -> [f32; 2] {
+        [
+            self.x.resolve_px(Some(width)).unwrap_or(width * 0.5),
+            self.y.resolve_px(Some(height)).unwrap_or(height * 0.5),
         ]
     }
 }
@@ -1511,10 +2468,109 @@ impl ParentBox {
     }
 }
 
+/// Specified `*-inline-start/end` plus the physical left/right they compete with.
+///
+/// Cascade order is preserved with generation stamps so a later longhand
+/// (logical or physical) wins the used edge after the final `direction`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct LogicalInlineEdges {
+    pub start: Option<LengthSpec>,
+    pub end: Option<LengthSpec>,
+    pub phys_left: Option<LengthSpec>,
+    pub phys_right: Option<LengthSpec>,
+    #[serde(default)]
+    pub start_gen: u32,
+    #[serde(default)]
+    pub end_gen: u32,
+    #[serde(default)]
+    pub phys_left_gen: u32,
+    #[serde(default)]
+    pub phys_right_gen: u32,
+    #[serde(default)]
+    pub next_gen: u32,
+}
+
+impl LogicalInlineEdges {
+    pub fn has_logical(&self) -> bool {
+        self.start.is_some() || self.end.is_some()
+    }
+
+    fn bump(&mut self) -> u32 {
+        self.next_gen = self.next_gen.saturating_add(1);
+        self.next_gen
+    }
+
+    pub fn set_start(&mut self, spec: Option<LengthSpec>) {
+        self.start = spec;
+        self.start_gen = self.bump();
+    }
+
+    pub fn set_end(&mut self, spec: Option<LengthSpec>) {
+        self.end = spec;
+        self.end_gen = self.bump();
+    }
+
+    pub fn set_phys_left(&mut self, spec: Option<LengthSpec>) {
+        self.phys_left = spec;
+        self.phys_left_gen = self.bump();
+    }
+
+    pub fn set_phys_right(&mut self, spec: Option<LengthSpec>) {
+        self.phys_right = spec;
+        self.phys_right_gen = self.bump();
+    }
+
+    fn pick(
+        logical: Option<LengthSpec>,
+        logical_gen: u32,
+        phys: Option<LengthSpec>,
+        phys_gen: u32,
+    ) -> Option<LengthSpec> {
+        match (logical, phys) {
+            (None, None) => None,
+            (Some(v), None) => Some(v),
+            (None, Some(v)) => Some(v),
+            (Some(lv), Some(pv)) => {
+                if phys_gen >= logical_gen {
+                    Some(pv)
+                } else {
+                    Some(lv)
+                }
+            }
+        }
+    }
+
+    pub fn used_left(&self, rtl: bool) -> Option<LengthSpec> {
+        let (logical, logical_gen) = if rtl {
+            (self.end, self.end_gen)
+        } else {
+            (self.start, self.start_gen)
+        };
+        Self::pick(logical, logical_gen, self.phys_left, self.phys_left_gen)
+    }
+
+    pub fn used_right(&self, rtl: bool) -> Option<LengthSpec> {
+        let (logical, logical_gen) = if rtl {
+            (self.start, self.start_gen)
+        } else {
+            (self.end, self.end_gen)
+        };
+        Self::pick(logical, logical_gen, self.phys_right, self.phys_right_gen)
+    }
+}
+
 /// 可测布局意图（Style Model Layout 盒切片）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutStyle {
     pub direction: Option<FlexDirection>,
+    /// CSS `direction` (`ltr` / `rtl`). `None` = inherit / initial `ltr`.
+    /// Not [`Self::direction`] (`flex-direction`). Remaps logical box edges
+    /// and `text-align: start | end` only — not flex/grid start or item order.
+    #[serde(default)]
+    pub dir: Option<DirSpec>,
+    /// Vertical / sideways `writing-mode` is fail-closed (no axis remap).
+    #[serde(default)]
+    pub unsupported_writing_mode: bool,
     /// `row-reverse` / `column-reverse`：主轴起点对调（measure 反转子项序）。
     #[serde(default)]
     pub flex_reverse: bool,
@@ -1529,13 +2585,35 @@ pub struct LayoutStyle {
     /// CSS `z-index`（整数）。`None` = auto；fixed 层默认按树序叠在内容之上。
     #[serde(default)]
     pub z_index: Option<i32>,
-    /// Paint-only `transform` subset. It never participates in flex/grid
-    /// measurement. Unsupported affine forms remain in
-    /// [`Self::unsupported_transform`] for compatibility diagnostics.
+    /// CSS `isolation: isolate`. Paint-order stacking context; not a layout box.
+    #[serde(default)]
+    pub isolation: bool,
+    /// Paint-only 2D `transform` subset. It never participates in flex/grid
+    /// measurement. Planar CSS 3D is [`Self::transform_3d`]; parent
+    /// `perspective` / `preserve-3d` are [`Self::css_perspective`] /
+    /// [`Self::preserve_3d`] and fail-close child 3D at paint.
     #[serde(default)]
     pub transform: Option<PaintTransform>,
+    /// Planar 4×4 (`perspective()` + `rotateY`, true `matrix3d`). Additive to
+    /// the 2×3: 2D lists stay on [`Self::transform`].
+    #[serde(default)]
+    pub transform_3d: Option<PaintMat4>,
     #[serde(default)]
     pub unsupported_transform: Option<String>,
+    /// CSS `transform-origin`. `None` = `50% 50%` (box center).
+    /// Applied to both the 2×3 and the 4×4 planar path.
+    #[serde(default)]
+    pub transform_origin: Option<TransformOrigin>,
+    /// CSS `perspective` property (not the transform function). Stored so we
+    /// fail closed instead of pretending a parent 3D rendering context exists.
+    #[serde(default)]
+    pub css_perspective: Option<f32>,
+    /// CSS `transform-style: preserve-3d`. Flattening is not implemented.
+    #[serde(default)]
+    pub preserve_3d: bool,
+    /// CSS `transform-box`. Default `view-box` (used as border-box for HTML).
+    #[serde(default)]
+    pub transform_box: TransformBox,
     /// Uniform `gap` shorthand residue / class defaults. Axis overrides win.
     /// `%` / calc 保留为 [`LengthSpec`]（同 margin/padding），布局时相对 CB 解析；
     /// 解析期无 CB 时不得收成 px 或静默丢弃。
@@ -1553,12 +2631,17 @@ pub struct LayoutStyle {
     pub padding_right: Option<LengthSpec>,
     pub padding_bottom: Option<LengthSpec>,
     pub padding_left: Option<LengthSpec>,
+    /// Specified `padding-inline-*` plus physical left/right they compete with.
+    #[serde(default)]
+    pub logical_padding: LogicalInlineEdges,
     /// Uniform margin shorthand residue（`%` 合同同 padding）。
     pub margin: Option<LengthSpec>,
     pub margin_top: Option<LengthSpec>,
     pub margin_right: Option<LengthSpec>,
     pub margin_bottom: Option<LengthSpec>,
     pub margin_left: Option<LengthSpec>,
+    #[serde(default)]
+    pub logical_margin: LogicalInlineEdges,
     /// Inset：`relative` / `absolute` / `fixed` 用（`Px` 或 `%`；measure 时相对 CB 解析）。
     /// `Static` 忽略；`sticky` defer。
     #[serde(default)]
@@ -1569,6 +2652,8 @@ pub struct LayoutStyle {
     pub offset_bottom: Option<LengthSpec>,
     #[serde(default)]
     pub offset_left: Option<LengthSpec>,
+    #[serde(default)]
+    pub logical_inset: LogicalInlineEdges,
     pub width: Option<LengthSpec>,
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
@@ -1597,8 +2682,9 @@ pub struct LayoutStyle {
     pub justify_self: Option<AlignSpec>,
     /// `flex-grow`；>0 时主轴随父方向 Fill。
     pub flex_grow: Option<f32>,
-    /// `flex-shrink`。`None` 按 0，不是 CSS initial 1，避免溢出的定宽行被压扁。
-    /// Vue 写了 `flex-shrink` 或 `flex: initial` 时仍是 `Some(1.0)`。
+    /// `flex-shrink`。未写长手时 `None` 按 **0**（不是 CSS initial 1），避免溢出的
+    /// 定宽行被压扁。`flex` 简写省略 shrink 时仍按 CSS 写成 `Some(1.0)`
+    ///（`flex: initial` / `flex: N` / `flex: N <basis>`）。
     pub flex_shrink: Option<f32>,
     pub flex_basis: Option<LengthSpec>,
     pub overflow_x: OverflowSpec,
@@ -1606,6 +2692,12 @@ pub struct LayoutStyle {
     /// `text-overflow: ellipsis`（需配合 nowrap / 定宽；Scene text 路径兑现）。
     #[serde(default)]
     pub text_overflow_ellipsis: bool,
+    /// `line-clamp` / `-webkit-line-clamp` (wrap + ellipsis, max N lines).
+    #[serde(default)]
+    pub line_clamp: Option<u16>,
+    /// Specified CSS `pointer-events`. `None` means inherit (not `auto`).
+    #[serde(default)]
+    pub pointer_events: Option<PointerEventsSpec>,
     /// `white-space: nowrap`（与 [`Self::white_space`] 同步）。
     #[serde(default)]
     pub white_space_nowrap: bool,
@@ -1639,12 +2731,30 @@ pub struct LayoutStyle {
     /// Foreground `color` (RGBA 0..=1). `None` = inherit / theme text.
     #[serde(default)]
     pub color: Option<[f32; 4]>,
+    /// CSS `text-decoration` / `text-decoration-line`. `None` = inherit / none.
+    #[serde(default)]
+    pub text_decoration: Option<TextDecorationLine>,
+    /// CSS `font-feature-settings`. `None` = inherit; `Some([])` = `normal`.
+    #[serde(default)]
+    pub font_features: Option<Vec<FontFeatureSetting>>,
+    /// `font-variation-settings` axes other than `wght`. cosmic-text Attrs
+    /// only expose `wght` via [`Self::font_weight`]; `BEVL` and the rest fail
+    /// closed.
+    #[serde(default)]
+    pub unsupported_font_variation: bool,
+    /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
+    #[serde(default)]
+    pub placeholder_color: Option<[f32; 4]>,
+    /// `::placeholder` opacity multiplier. Combined with
+    /// [`Self::placeholder_color`] (or theme faint) at TextInput paint.
+    #[serde(default)]
+    pub placeholder_opacity: Option<f32>,
     /// `grid-template-columns` 轻量轨道（侧栏|主区）。
     pub grid_columns: Option<Vec<GridTrack>>,
     /// `grid-template-rows` 轻量轨道（堆叠区；Column 主轴）。
     #[serde(default)]
     pub grid_rows: Option<Vec<GridTrack>>,
-    /// `grid-template-columns` 无法展开的语法（嵌套 auto-fit / auto-fill、坏 token）。
+    /// `grid-template-columns` 无法兑现的语法（`subgrid`、嵌套 auto-fit / auto-fill）。
     /// 成功的 `repeat(auto-fit|auto-fill)` **不**走这里，见 [`Self::grid_columns_repeat`]。
     #[serde(default)]
     pub grid_columns_unsupported: Option<GridTrackListUnsupported>,
@@ -1696,13 +2806,42 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub border_width: Option<f32>,
     #[serde(default)]
+    pub border_top_width: Option<f32>,
+    #[serde(default)]
+    pub border_right_width: Option<f32>,
+    #[serde(default)]
+    pub border_bottom_width: Option<f32>,
+    #[serde(default)]
+    pub border_left_width: Option<f32>,
+    #[serde(default)]
     pub border_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_top_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_right_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_bottom_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_left_color: Option<[f32; 4]>,
+    /// Uniform `border-style` shorthand residue. Longhands override.
+    #[serde(default)]
+    pub border_style: Option<BorderStyle>,
+    #[serde(default)]
+    pub border_top_style: Option<BorderStyle>,
+    #[serde(default)]
+    pub border_right_style: Option<BorderStyle>,
+    #[serde(default)]
+    pub border_bottom_style: Option<BorderStyle>,
+    #[serde(default)]
+    pub border_left_style: Option<BorderStyle>,
 }
 
 impl Default for LayoutStyle {
     fn default() -> Self {
         Self {
             direction: None,
+            dir: None,
+            unsupported_writing_mode: false,
             flex_reverse: false,
             order: 0,
             flex_wrap: FlexWrap::NoWrap,
@@ -1710,8 +2849,14 @@ impl Default for LayoutStyle {
             box_sizing: BoxSizing::BorderBox,
             position: PositionSpec::Static,
             z_index: None,
+            isolation: false,
             transform: None,
+            transform_3d: None,
             unsupported_transform: None,
+            transform_origin: None,
+            transform_box: TransformBox::ViewBox,
+            css_perspective: None,
+            preserve_3d: false,
             gap: None,
             row_gap: None,
             column_gap: None,
@@ -1720,15 +2865,18 @@ impl Default for LayoutStyle {
             padding_right: None,
             padding_bottom: None,
             padding_left: None,
+            logical_padding: LogicalInlineEdges::default(),
             margin: None,
             margin_top: None,
             margin_right: None,
             margin_bottom: None,
             margin_left: None,
+            logical_margin: LogicalInlineEdges::default(),
             offset_top: None,
             offset_right: None,
             offset_bottom: None,
             offset_left: None,
+            logical_inset: LogicalInlineEdges::default(),
             width: None,
             height: None,
             min_width: None,
@@ -1748,6 +2896,8 @@ impl Default for LayoutStyle {
             overflow_x: OverflowSpec::Visible,
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,
+            line_clamp: None,
+            pointer_events: None,
             white_space_nowrap: false,
             white_space: WhiteSpaceSpec::Normal,
             text_align: TextAlignSpec::Start,
@@ -1759,6 +2909,11 @@ impl Default for LayoutStyle {
             line_height: None,
             letter_spacing: None,
             color: None,
+            text_decoration: None,
+            font_features: None,
+            unsupported_font_variation: false,
+            placeholder_color: None,
+            placeholder_opacity: None,
             grid_columns: None,
             grid_rows: None,
             grid_columns_unsupported: None,
@@ -1778,20 +2933,87 @@ impl Default for LayoutStyle {
             background: None,
             border_radius: None,
             border_width: None,
+            border_top_width: None,
+            border_right_width: None,
+            border_bottom_width: None,
+            border_left_width: None,
             border_color: None,
+            border_top_color: None,
+            border_right_color: None,
+            border_bottom_color: None,
+            border_left_color: None,
+            border_style: None,
+            border_top_style: None,
+            border_right_style: None,
+            border_bottom_style: None,
+            border_left_style: None,
         }
     }
 }
 
 impl LayoutStyle {
+    /// Box-local pivot in px, relative to the layout (border) box origin.
+    /// Missing origin is CSS `50% 50%`. `content-box` / `fill-box` subtract
+    /// border + padding (`resolved_padding`: `%` without a CB is 0).
+    pub fn resolved_transform_origin(&self, width: f32, height: f32) -> [f32; 2] {
+        let origin = self.transform_origin.unwrap_or_default();
+        if !self.transform_box.uses_content_box() {
+            return origin.resolve(width, height);
+        }
+        let border = self.resolved_border_edges();
+        let pad = self.resolved_padding();
+        let inset_x = border.left + pad.left;
+        let inset_y = border.top + pad.top;
+        let content_w = (width - inset_x - border.right - pad.right).max(0.0);
+        let content_h = (height - inset_y - border.bottom - pad.bottom).max(0.0);
+        let [ox, oy] = origin.resolve(content_w, content_h);
+        [inset_x + ox, inset_y + oy]
+    }
+
+    /// World-space 2×3 for this node's paint transform, pivoted at origin.
+    /// Planar 3D uses [`Self::world_scene_transform`] instead.
+    pub fn world_paint_transform(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<[f32; 6]> {
+        let (matrix, persp) = self.world_scene_transform(x, y, width, height)?;
+        (persp[0].abs() <= PAINT_MAT4_EPS && persp[1].abs() <= PAINT_MAT4_EPS).then_some(matrix)
+    }
+
+    /// World-space homography of the z=0 plane, pivoted at transform-origin.
+    ///
+    /// `persp` is `(g, h)` in `w = g x + h y + 1`. Zeroes keep a 2×3 affine.
+    pub fn world_scene_transform(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<([f32; 6], [f32; 2])> {
+        let [ox, oy] = self.resolved_transform_origin(width, height);
+        if let Some(mat4) = self.transform_3d {
+            return mat4.around_origin(x, y, ox, oy).planar_homography();
+        }
+        let transform = self.transform?;
+        Some((transform.around_origin(x, y, ox, oy), [0.0, 0.0]))
+    }
+
+    /// True when this node asked for a parent 3D rendering context we do not paint.
+    pub fn fails_closed_3d_context(&self) -> bool {
+        self.css_perspective.is_some() || self.preserve_3d
+    }
+
     pub fn has_surface_paint(&self) -> bool {
         self.background.is_some()
             || self
                 .resolved_border_radii(0.0, 0.0)
                 .iter()
                 .any(|r| *r > 0.0)
-            || self.border_width.unwrap_or(0.0) > 0.0
-            || self.paint.box_shadow.is_some()
+            || self.resolved_border_width() > 0.0
+            || !self.paint.box_shadows.is_empty()
             || self.paint.has_advanced_paint()
     }
 
@@ -1926,12 +3148,118 @@ impl LayoutStyle {
         }
     }
 
-    /// Resolve padding to px without a containing-block width (`%` → 0).
-    /// Uniform border width used in box geometry (all sides).
-    pub fn resolved_border_width(&self) -> f32 {
-        self.border_width.unwrap_or(0.0).max(0.0)
+    /// Per-side border widths (physical px). Longhands override the uniform
+    /// [`Self::border_width`] shorthand. `border-style: none` zeros that side.
+    pub fn resolved_border_edges(&self) -> PaddingSpec {
+        let uniform = self.border_width.unwrap_or(0.0).max(0.0);
+        let styles = self.resolved_border_styles();
+        PaddingSpec {
+            top: used_border_width(self.border_top_width.unwrap_or(uniform), styles[0]),
+            right: used_border_width(self.border_right_width.unwrap_or(uniform), styles[1]),
+            bottom: used_border_width(self.border_bottom_width.unwrap_or(uniform), styles[2]),
+            left: used_border_width(self.border_left_width.unwrap_or(uniform), styles[3]),
+        }
     }
 
+    /// Per-side styles. Longhands override [`Self::border_style`].
+    pub fn resolved_border_styles(&self) -> [Option<BorderStyle>; 4] {
+        let uniform = self.border_style;
+        [
+            self.border_top_style.or(uniform),
+            self.border_right_style.or(uniform),
+            self.border_bottom_style.or(uniform),
+            self.border_left_style.or(uniform),
+        ]
+    }
+
+    /// Per-side colors. Longhands override [`Self::border_color`].
+    pub fn resolved_border_edge_colors(&self) -> [Option<[f32; 4]>; 4] {
+        let uniform = self.border_color;
+        [
+            self.border_top_color.or(uniform),
+            self.border_right_color.or(uniform),
+            self.border_bottom_color.or(uniform),
+            self.border_left_color.or(uniform),
+        ]
+    }
+
+    /// First available border color (uniform or any side).
+    pub fn resolved_border_color(&self) -> Option<[f32; 4]> {
+        self.resolved_border_edge_colors()
+            .into_iter()
+            .flatten()
+            .next()
+    }
+
+    /// Stroke widths for the existing rounded-box path (`none` / unsupported → 0).
+    pub fn paint_border_edges(&self) -> PaddingSpec {
+        let layout = self.resolved_border_edges();
+        let styles = self.resolved_border_styles();
+        let colors = self.resolved_border_edge_colors();
+        PaddingSpec {
+            top: paint_border_width(layout.top, styles[0], colors[0]),
+            right: paint_border_width(layout.right, styles[1], colors[1]),
+            bottom: paint_border_width(layout.bottom, styles[2], colors[2]),
+            left: paint_border_width(layout.left, styles[3], colors[3]),
+        }
+    }
+
+    /// Per-side colors with zero-alpha on sides that do not stroke.
+    pub fn paint_border_edge_colors(&self) -> [[f32; 4]; 4] {
+        let colors = self.resolved_border_edge_colors();
+        let styles = self.resolved_border_styles();
+        let mut out = [[0.0; 4]; 4];
+        for (i, color) in colors.iter().enumerate() {
+            if edge_paints_stroke(styles[i])
+                && let Some(c) = *color
+            {
+                out[i] = c;
+            }
+        }
+        out
+    }
+
+    /// Per-side shader codes (T,R,B,L): 0 solid, 1 dashed, 2 dotted.
+    pub fn paint_border_style_codes(&self) -> [u8; 4] {
+        let styles = self.resolved_border_styles();
+        [
+            styles[0].map(BorderStyle::shader_code).unwrap_or(0),
+            styles[1].map(BorderStyle::shader_code).unwrap_or(0),
+            styles[2].map(BorderStyle::shader_code).unwrap_or(0),
+            styles[3].map(BorderStyle::shader_code).unwrap_or(0),
+        ]
+    }
+
+    pub fn paints_any_border(&self) -> bool {
+        let edges = self.paint_border_edges();
+        !edges.is_zero()
+    }
+
+    /// Uniform stroke used by the current rounded-box shader (max of four sides).
+    pub fn resolved_border_width(&self) -> f32 {
+        let edges = self.resolved_border_edges();
+        edges.top.max(edges.right).max(edges.bottom).max(edges.left)
+    }
+
+    /// Clip rect for descendants, expanded on axes that stay `overflow: visible`.
+    pub fn overflow_clip_box(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        overflow_clip_rect(
+            x,
+            y,
+            width,
+            height,
+            self.overflow_x.clips(),
+            self.overflow_y.clips(),
+        )
+    }
+
+    /// Resolve padding to px without a containing-block width (`%` → 0).
     pub fn resolved_padding(&self) -> PaddingSpec {
         self.resolved_padding_against(None)
     }
@@ -2139,13 +3467,48 @@ impl LayoutStyle {
         self.position.is_out_of_flow()
     }
 
-    /// Single-line ellipsis paint intent (`text-overflow` + typically nowrap).
+    /// Ellipsis paint intent (`text-overflow` or `line-clamp`).
     pub fn uses_text_ellipsis(&self) -> bool {
-        self.text_overflow_ellipsis
+        self.text_overflow_ellipsis || self.line_clamp.is_some_and(|n| n > 0)
+    }
+
+    /// `line-clamp` / `-webkit-line-clamp` line cap.
+    pub fn resolved_line_clamp(&self) -> Option<u16> {
+        self.line_clamp.filter(|n| *n > 0)
+    }
+
+    /// CSS `direction: rtl` used value (`None` / `ltr` → false).
+    pub fn is_rtl(&self) -> bool {
+        matches!(self.dir, Some(DirSpec::Rtl))
+    }
+
+    /// Map stored logical inline edges onto used `padding_*` / `margin_*` /
+    /// `offset_*` left/right using the current [`Self::dir`].
+    ///
+    /// Physical-only styles (no logical inline specs) are left untouched so
+    /// hand-built `LayoutStyle { padding_left, .. }` stays intact.
+    pub fn resolve_logical_box_edges(&mut self) {
+        let rtl = self.is_rtl();
+        if self.logical_padding.has_logical() {
+            self.padding_left = self.logical_padding.used_left(rtl);
+            self.padding_right = self.logical_padding.used_right(rtl);
+        }
+        if self.logical_margin.has_logical() {
+            self.margin_left = self.logical_margin.used_left(rtl);
+            self.margin_right = self.logical_margin.used_right(rtl);
+        }
+        if self.logical_inset.has_logical() {
+            self.offset_left = self.logical_inset.used_left(rtl);
+            self.offset_right = self.logical_inset.used_right(rtl);
+        }
     }
 
     /// Fill unset inherited typography from `parent` (CSS inheritance).
     pub fn inherit_typography_from(&mut self, parent: &Self) {
+        if self.dir.is_none() {
+            self.dir = parent.dir;
+        }
+        self.resolve_logical_box_edges();
         if self.font_size.is_none() {
             self.font_size = parent.font_size;
         }
@@ -2163,6 +3526,12 @@ impl LayoutStyle {
         }
         if self.color.is_none() {
             self.color = parent.color;
+        }
+        if self.text_decoration.is_none() {
+            self.text_decoration = parent.text_decoration;
+        }
+        if self.font_features.is_none() {
+            self.font_features = parent.font_features.clone();
         }
     }
 
@@ -2203,6 +3572,14 @@ impl LayoutStyle {
             self.padding_right,
             self.padding_bottom,
             self.padding_left,
+            self.logical_padding.start,
+            self.logical_padding.end,
+            self.logical_padding.phys_left,
+            self.logical_padding.phys_right,
+            self.logical_margin.start,
+            self.logical_margin.end,
+            self.logical_margin.phys_left,
+            self.logical_margin.phys_right,
             self.margin,
             self.margin_top,
             self.margin_right,
@@ -2212,6 +3589,10 @@ impl LayoutStyle {
             self.offset_right,
             self.offset_bottom,
             self.offset_left,
+            self.logical_inset.start,
+            self.logical_inset.end,
+            self.logical_inset.phys_left,
+            self.logical_inset.phys_right,
             self.width,
             self.height,
             self.min_width,
@@ -2268,8 +3649,8 @@ impl LayoutStyle {
     pub fn approximate_baseline(&self, fallback_font_px: f32) -> f32 {
         let font = self.font_size.unwrap_or(fallback_font_px).max(0.0);
         let pad = self.resolved_padding_against(None);
-        let border = self.resolved_border_width();
-        pad.top + border + font * 0.8
+        let border = self.resolved_border_edges();
+        pad.top + border.top + font * 0.8
     }
 
     /// 查找命名网格线（1-based）。含 `name-start` / `name-end` 由 areas 推导。
@@ -2400,12 +3781,18 @@ impl LayoutStyle {
             || self.grid_auto_flow.is_some()
     }
 
-    /// 作者写了无法展开的模板（嵌套 auto-fit / auto-fill、混写垃圾等）。
+    /// 作者写了无法展开的模板（`subgrid`、嵌套 auto-fit / auto-fill、混写垃圾等）。
     ///
     /// 成功的 `repeat(auto-fit|auto-fill)` 写在 [`Self::grid_columns_repeat`] /
     /// [`Self::grid_rows_repeat`]，**不**置本旗标。
     pub fn has_unsupported_grid_template(&self) -> bool {
         self.grid_columns_unsupported.is_some() || self.grid_rows_unsupported.is_some()
+    }
+
+    /// Paint-order stacking context (not compositing). Opacity groups are
+    /// separate in Scene; this covers `isolation` and positioned + `z-index`.
+    pub fn creates_paint_stacking_context(&self) -> bool {
+        self.isolation || (self.z_index.is_some() && self.position.is_positioned())
     }
 
     /// 子项主轴 Length：Row→width，Column→height。
@@ -2443,10 +3830,10 @@ impl LayoutStyle {
         viewport: Option<(f32, f32)>,
     ) -> ParentBox {
         let pad = self.resolved_padding_against(parent.width);
-        let bw = self.resolved_border_width();
+        let border = self.resolved_border_edges();
         let content_box = matches!(self.box_sizing, BoxSizing::ContentBox);
-        let chrome_w = pad.left + pad.right + 2.0 * bw;
-        let chrome_h = pad.top + pad.bottom + 2.0 * bw;
+        let chrome_w = pad.left + pad.right + border.left + border.right;
+        let chrome_h = pad.top + pad.bottom + border.top + border.bottom;
         let width = self
             .width
             .and_then(|w| w.resolve_with(parent.width, viewport))
@@ -2712,8 +4099,10 @@ fn resolve_box_edge_specs_signed(
 #[cfg(test)]
 mod tests {
     use super::{
-        BoxSizing, DisplaySpec, FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle,
-        LengthSpec, LineHeightSpec, OverflowSpec, ParentBox, TEXT_APPROX_ASCENT_EM, VisibilitySpec,
+        BackgroundImage, BorderImageSlice, BorderImageSpec, BorderStyle, BoxSizing, DisplaySpec,
+        FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle, LengthSpec, LineHeightSpec,
+        OverflowSpec, PaintMat4, PaintTransform, ParentBox, PointerEventsSpec,
+        TEXT_APPROX_ASCENT_EM, TransformBox, TransformOrigin, VisibilitySpec,
         glyph_box_center_from_line_top, icon_y_on_text_glyph_center, text_line_box_height_px,
     };
 
@@ -2723,6 +4112,129 @@ mod tests {
         assert!(OverflowSpec::Auto.clips());
         assert!(OverflowSpec::Scroll.clips());
         assert!(!OverflowSpec::Visible.clips());
+    }
+
+    #[test]
+    fn border_image_tiles_use_slice_and_clamp_to_box() {
+        let spec = BorderImageSpec {
+            source: BackgroundImage::url("frame.png"),
+            slice: [BorderImageSlice::Number(30.0); 4],
+            fill: true,
+        };
+        let tiles = spec.tiles(90.0, 90.0, 100.0, 80.0);
+        let center = tiles
+            .iter()
+            .find(|tile| (tile.dest_x - 30.0).abs() < 0.01 && (tile.dest_y - 30.0).abs() < 0.01)
+            .expect("fill center");
+        assert!((center.dest_w - 40.0).abs() < 0.01);
+        assert!((center.dest_h - 20.0).abs() < 0.01);
+        assert!((center.u0 - 30.0 / 90.0).abs() < 0.01);
+
+        let tight = spec.tiles(90.0, 90.0, 40.0, 40.0);
+        let tl = tight
+            .iter()
+            .find(|tile| tile.dest_x.abs() < 0.01 && tile.dest_y.abs() < 0.01)
+            .expect("tl");
+        assert!((tl.dest_w - 20.0).abs() < 0.01);
+        assert!((tl.dest_h - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn four_side_border_widths_and_none_style() {
+        let layout = LayoutStyle {
+            border_top_width: Some(1.0),
+            border_right_width: Some(2.0),
+            border_bottom_width: Some(3.0),
+            border_left_width: Some(4.0),
+            border_top_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_right_color: Some([0.0, 1.0, 0.0, 1.0]),
+            border_bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
+            border_left_color: Some([1.0, 1.0, 0.0, 1.0]),
+            ..LayoutStyle::default()
+        };
+        let edges = layout.resolved_border_edges();
+        assert!((edges.top - 1.0).abs() < f32::EPSILON);
+        assert!((edges.right - 2.0).abs() < f32::EPSILON);
+        assert!((edges.bottom - 3.0).abs() < f32::EPSILON);
+        assert!((edges.left - 4.0).abs() < f32::EPSILON);
+        assert!((layout.resolved_border_width() - 4.0).abs() < f32::EPSILON);
+        let colors = layout.resolved_border_edge_colors();
+        assert_eq!(colors[0], Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(colors[1], Some([0.0, 1.0, 0.0, 1.0]));
+        assert_eq!(colors[2], Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(colors[3], Some([1.0, 1.0, 0.0, 1.0]));
+
+        let none_left = LayoutStyle {
+            border_width: Some(5.0),
+            border_left_style: Some(BorderStyle::None),
+            ..LayoutStyle::default()
+        };
+        let used = none_left.resolved_border_edges();
+        assert!((used.top - 5.0).abs() < f32::EPSILON);
+        assert!(used.left.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn dashed_dotted_paint_stroke_double_stays_closed() {
+        let dashed = LayoutStyle {
+            border_width: Some(4.0),
+            border_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_style: Some(BorderStyle::Dashed),
+            ..LayoutStyle::default()
+        };
+        assert!((dashed.resolved_border_edges().top - 4.0).abs() < f32::EPSILON);
+        assert!((dashed.paint_border_edges().top - 4.0).abs() < f32::EPSILON);
+        assert_eq!(
+            dashed.paint_border_style_codes(),
+            [BorderStyle::SHADER_DASHED; 4]
+        );
+        assert!(dashed.paints_any_border());
+
+        let dotted = LayoutStyle {
+            border_width: Some(4.0),
+            border_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_style: Some(BorderStyle::Dotted),
+            ..LayoutStyle::default()
+        };
+        assert!((dotted.paint_border_edges().top - 4.0).abs() < f32::EPSILON);
+        assert_eq!(
+            dotted.paint_border_style_codes(),
+            [BorderStyle::SHADER_DOTTED; 4]
+        );
+
+        let double = LayoutStyle {
+            border_width: Some(4.0),
+            border_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_style: Some(BorderStyle::Unsupported),
+            ..LayoutStyle::default()
+        };
+        assert!((double.resolved_border_edges().top - 4.0).abs() < f32::EPSILON);
+        assert!(double.paint_border_edges().is_zero());
+        assert!(!double.paints_any_border());
+    }
+
+    #[test]
+    fn overflow_clip_box_opens_visible_axis() {
+        let mut layout = LayoutStyle::default();
+        layout.overflow_x = OverflowSpec::Hidden;
+        layout.overflow_y = OverflowSpec::Visible;
+        let (x, y, w, h) = layout.overflow_clip_box(10.0, 20.0, 30.0, 40.0).unwrap();
+        assert!((x - 10.0).abs() < f32::EPSILON);
+        assert!((w - 30.0).abs() < f32::EPSILON);
+        assert!(y < 20.0);
+        assert!(h > 40.0);
+
+        layout.overflow_x = OverflowSpec::Visible;
+        layout.overflow_y = OverflowSpec::Hidden;
+        let (x, y, w, h) = layout.overflow_clip_box(10.0, 20.0, 30.0, 40.0).unwrap();
+        assert!(x < 10.0);
+        assert!(w > 30.0);
+        assert!((y - 20.0).abs() < f32::EPSILON);
+        assert!((h - 40.0).abs() < f32::EPSILON);
+
+        layout.overflow_x = OverflowSpec::Visible;
+        layout.overflow_y = OverflowSpec::Visible;
+        assert!(layout.overflow_clip_box(0.0, 0.0, 10.0, 10.0).is_none());
     }
 
     #[test]
@@ -3097,6 +4609,29 @@ mod tests {
     }
 
     #[test]
+    fn pointer_events_none_is_not_hittable() {
+        assert_eq!(
+            PointerEventsSpec::parse("none"),
+            Some(PointerEventsSpec::None)
+        );
+        assert_eq!(
+            PointerEventsSpec::parse("auto"),
+            Some(PointerEventsSpec::Auto)
+        );
+        assert_eq!(PointerEventsSpec::parse("visiblePainted"), None);
+        assert!(!PointerEventsSpec::None.hittable());
+        assert!(PointerEventsSpec::Auto.hittable());
+        assert_eq!(
+            PointerEventsSpec::inherit_from(None, PointerEventsSpec::None),
+            PointerEventsSpec::None
+        );
+        assert_eq!(
+            PointerEventsSpec::inherit_from(Some(PointerEventsSpec::Auto), PointerEventsSpec::None),
+            PointerEventsSpec::Auto
+        );
+    }
+
+    #[test]
     fn merge_line_name_pattern_copies_per_repetition() {
         let pattern = vec![vec!["mid".to_string()], vec!["end".to_string()]];
         let once = GridRepeatAuto::merge_line_name_pattern(&pattern, 1);
@@ -3141,5 +4676,209 @@ mod tests {
             12.0,
         );
         assert!((y - 18.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn paint_transform_then_scales_translation_on_the_same_2x3() {
+        let scale_x = PaintTransform {
+            a: 0.5,
+            ..PaintTransform::default()
+        };
+        let composed = scale_x.then(PaintTransform {
+            e: 10.0,
+            ..PaintTransform::default()
+        });
+        assert!((composed.a - 0.5).abs() < 1e-5);
+        assert!((composed.e - 5.0).abs() < 1e-5);
+        let world = composed.around_center(0.0, 0.0, 20.0, 20.0);
+        assert_eq!(world.len(), 6);
+    }
+
+    #[test]
+    fn around_center_matches_50_percent_origin_not_zero_zero() {
+        let rotate_90 = PaintTransform {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            ..PaintTransform::default()
+        };
+        let center = rotate_90.around_center(10.0, 20.0, 40.0, 20.0);
+        let pct = rotate_90.around_origin(10.0, 20.0, 20.0, 10.0);
+        let zero = rotate_90.around_origin(10.0, 20.0, 0.0, 0.0);
+        assert_eq!(center, pct);
+        assert_ne!(center, zero);
+        assert_eq!(
+            LayoutStyle {
+                transform: Some(rotate_90),
+                ..LayoutStyle::default()
+            }
+            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+            Some(center)
+        );
+        assert_eq!(
+            LayoutStyle {
+                transform: Some(rotate_90),
+                transform_origin: Some(TransformOrigin {
+                    x: LengthSpec::Px(0.0),
+                    y: LengthSpec::Px(0.0),
+                }),
+                ..LayoutStyle::default()
+            }
+            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+            Some(zero)
+        );
+        assert_eq!(
+            LayoutStyle {
+                transform: Some(rotate_90),
+                transform_origin: Some(TransformOrigin {
+                    x: LengthSpec::Percent(50.0),
+                    y: LengthSpec::Percent(50.0),
+                }),
+                ..LayoutStyle::default()
+            }
+            .world_paint_transform(10.0, 20.0, 40.0, 20.0),
+            Some(center)
+        );
+    }
+
+    #[test]
+    fn transform_box_shifts_origin_onto_content_box() {
+        let rotate_90 = PaintTransform {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            ..PaintTransform::default()
+        };
+        let origin = TransformOrigin {
+            x: LengthSpec::Px(0.0),
+            y: LengthSpec::Px(0.0),
+        };
+        let mut style = LayoutStyle {
+            transform: Some(rotate_90),
+            transform_origin: Some(origin),
+            padding: Some(LengthSpec::Px(10.0)),
+            border_width: Some(5.0),
+            border_style: Some(BorderStyle::Solid),
+            ..LayoutStyle::default()
+        };
+        let border = style.world_paint_transform(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(border, Some(rotate_90.around_origin(10.0, 20.0, 0.0, 0.0)));
+        style.transform_box = TransformBox::ContentBox;
+        let content = style.world_paint_transform(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(
+            content,
+            Some(rotate_90.around_origin(10.0, 20.0, 15.0, 15.0))
+        );
+        style.transform_box = TransformBox::FillBox;
+        assert_eq!(
+            style.world_paint_transform(10.0, 20.0, 100.0, 50.0),
+            content
+        );
+        style.transform_box = TransformBox::ViewBox;
+        assert_eq!(style.world_paint_transform(10.0, 20.0, 100.0, 50.0), border);
+        style.transform_box = TransformBox::BorderBox;
+        assert_eq!(style.world_paint_transform(10.0, 20.0, 100.0, 50.0), border);
+        style.transform_box = TransformBox::ContentBox;
+        style.transform_origin = Some(TransformOrigin {
+            x: LengthSpec::Percent(100.0),
+            y: LengthSpec::Percent(100.0),
+        });
+        assert_eq!(style.resolved_transform_origin(100.0, 50.0), [85.0, 35.0]);
+        style.padding_left = Some(LengthSpec::Px(20.0));
+        style.padding = None;
+        style.border_width = None;
+        style.border_style = None;
+        style.transform_origin = Some(TransformOrigin {
+            x: LengthSpec::Percent(50.0),
+            y: LengthSpec::Percent(50.0),
+        });
+        assert_eq!(style.resolved_transform_origin(100.0, 50.0), [60.0, 25.0]);
+    }
+
+    fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    #[test]
+    fn perspective_rotate_y_projects_a_trapezoid() {
+        let mat = PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(PaintMat4::rotate_y(30_f32.to_radians()));
+        let pivoted = mat.around_origin(0.0, 0.0, 100.0, 40.0);
+        let corners = pivoted
+            .projected_corners(0.0, 0.0, 200.0, 80.0)
+            .expect("corners");
+        let left = dist(corners[0], corners[3]);
+        let right = dist(corners[1], corners[2]);
+        assert!(
+            (left - right).abs() > 4.0,
+            "rotateY+perspective must not be a parallelogram: left={left} right={right}"
+        );
+        let top = dist(corners[0], corners[1]);
+        let bottom = dist(corners[3], corners[2]);
+        assert!(
+            (top - 200.0).abs() > 1.0 || (left - 80.0).abs() > 1.0,
+            "projected size must change from the layout box"
+        );
+        assert!(
+            (top - bottom).abs() < 1.0,
+            "rotateY trapezoid keeps parallel top/bottom, got top={top} bottom={bottom}"
+        );
+        let (_, persp) = pivoted.planar_homography().expect("homography");
+        assert!(
+            persp[0].abs() > 1e-4,
+            "perspective row g must be nonzero, got {persp:?}"
+        );
+        assert!(mat.as_affine().is_none(), "must not squash to 2×3");
+    }
+
+    #[test]
+    fn transform_origin_moves_rotate_y_perspective_pivot() {
+        let mat = PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(PaintMat4::rotate_y(30_f32.to_radians()));
+        let center = mat.around_origin(0.0, 0.0, 100.0, 40.0);
+        let zero = mat.around_origin(0.0, 0.0, 0.0, 0.0);
+        let c0 = center.project_xy(0.0, 0.0).unwrap();
+        let z0 = zero.project_xy(0.0, 0.0).unwrap();
+        assert!(
+            (c0[0] - z0[0]).abs() > 1.0,
+            "origin must move the projected corner, center={c0:?} zero={z0:?}"
+        );
+        let mut style = LayoutStyle {
+            transform_3d: Some(mat),
+            ..LayoutStyle::default()
+        };
+        let via_default = style
+            .world_scene_transform(0.0, 0.0, 200.0, 80.0)
+            .expect("3d");
+        style.transform_origin = Some(TransformOrigin {
+            x: LengthSpec::Px(0.0),
+            y: LengthSpec::Px(0.0),
+        });
+        let via_zero = style
+            .world_scene_transform(0.0, 0.0, 200.0, 80.0)
+            .expect("3d zero origin");
+        assert_ne!(via_default, via_zero);
+        assert_eq!(style.world_paint_transform(0.0, 0.0, 200.0, 80.0), None);
+    }
+
+    #[test]
+    fn rotate_x_matches_rotate3d_x_axis() {
+        let angle = 25_f32.to_radians();
+        let a = PaintMat4::rotate_x(angle);
+        let b = PaintMat4::rotate3d(1.0, 0.0, 0.0, angle).expect("axis");
+        for i in 0..16 {
+            assert!(
+                (a.m[i] - b.m[i]).abs() < 1e-5,
+                "m[{i}] rotateX={} rotate3d={}",
+                a.m[i],
+                b.m[i]
+            );
+        }
     }
 }

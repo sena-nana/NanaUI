@@ -1,8 +1,11 @@
 //! CSS paint property parsers (`linear-gradient`, `url()`, `clip-path`, `filter`).
 
 use nana_ui_core::box_layout::{
-    BackdropFilter, BackgroundImage, BackgroundImageFit, ClipInset, ClipPath, ClipPoint,
-    ColorFilter, CssGradient, GradientStop, LengthSpec, LinearGradient, RadialGradient,
+    BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition, BackgroundRepeat,
+    BorderImageSlice, BorderImageSpec, ClipInset, ClipPath, ClipPoint, ColorFilter, CssGradient,
+    FontFeatureSetting, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS,
+    MixBlendMode, OutlineStyle, OverflowSpec, PointerEventsSpec, RadialGradient,
+    TextDecorationLine,
 };
 
 use crate::css_map::{CssLayoutParse, parse_css_length_px, resolve_paint_color};
@@ -15,6 +18,10 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         "background" => apply_background_shorthand(style, val),
         "background-image" => apply_background_image(style, val),
         "background-size" => apply_background_size(style, val),
+        "background-position" => apply_background_position(style, val),
+        "background-repeat" => apply_background_repeat(style, val),
+        "object-fit" => apply_object_fit(style, val),
+        "object-position" => apply_object_position(style, val),
         "background-color" | "fill" => {
             let v = val.trim();
             if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("transparent") {
@@ -38,43 +45,543 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         "text-shadow" => {
             style.paint.text_shadow = crate::css_map::parse_text_shadow(val);
         }
+        "box-shadow" => {
+            if let Some(layers) = crate::css_map::parse_box_shadows(val) {
+                style.paint.box_shadows = layers;
+            }
+        }
+        "outline" => apply_outline_shorthand(style, val),
+        "outline-width" => {
+            if val.trim().eq_ignore_ascii_case("none") {
+                style.paint.outline.width = 0.0;
+            } else if let Some(px) = parse_css_length_px(val, None) {
+                style.paint.outline.width = px.max(0.0);
+            }
+        }
+        "outline-color" => {
+            if let Some(c) = resolve_paint_color(val) {
+                style.paint.outline.color = Some(c);
+            }
+        }
+        "outline-style" => apply_outline_style(style, val),
+        "mix-blend-mode" => {
+            if let Some(mode) = MixBlendMode::parse(val) {
+                style.paint.mix_blend = mode;
+            }
+        }
+        "line-clamp" | "-webkit-line-clamp" => apply_line_clamp(style, val),
+        "text-decoration" | "text-decoration-line" => apply_text_decoration_line(style, val),
+        "font-feature-settings" => apply_font_feature_settings(style, val),
+        "font-variation-settings" => apply_font_variation_settings(style, val),
+        "pointer-events" => {
+            let v = val.trim();
+            if v.eq_ignore_ascii_case("inherit") || v.eq_ignore_ascii_case("unset") {
+                style.pointer_events = None;
+            } else if let Some(spec) = PointerEventsSpec::parse(v) {
+                style.pointer_events = Some(spec);
+            }
+        }
+        "border-image" => apply_border_image_shorthand(style, val),
+        "border-image-source" => apply_border_image_source(style, val),
+        "border-image-slice" => apply_border_image_slice(style, val),
+        "border-image-width" | "border-image-outset" | "border-image-repeat" => {
+            apply_border_image_extra(style, name, val);
+        }
         _ => {}
     }
 }
 
+fn apply_border_image_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        clear_border_image(style, false);
+        return;
+    }
+    match parse_border_image_shorthand(trimmed) {
+        Some(spec) => {
+            style.paint.border_image = Some(spec);
+            style.paint.unsupported_border_image = false;
+        }
+        None => clear_border_image(style, true),
+    }
+}
+
+fn apply_border_image_source(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        style.paint.border_image = None;
+        return;
+    }
+    match parse_border_image_source(trimmed) {
+        BorderImageSourceParse::Supported(source, rest) if rest.trim().is_empty() => {
+            let mut spec = style
+                .paint
+                .border_image
+                .take()
+                .unwrap_or_else(|| BorderImageSpec::from_source(source.clone()));
+            spec.source = source;
+            if spec.paints_linear_or_url() {
+                set_border_image(style, spec);
+            } else {
+                mark_border_image_unsupported(style);
+            }
+        }
+        _ => mark_border_image_unsupported(style),
+    }
+}
+
+fn apply_border_image_slice(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let Some((slice, fill)) = parse_border_image_tail(trimmed) else {
+        mark_border_image_unsupported(style);
+        return;
+    };
+    let mut spec = style
+        .paint
+        .border_image
+        .take()
+        .unwrap_or_else(|| BorderImageSpec::from_source(BackgroundImage::url("")));
+    spec.slice = slice;
+    spec.fill = fill;
+    set_border_image(style, spec);
+}
+
+fn apply_border_image_extra(style: &mut nana_ui_core::LayoutStyle, name: &str, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let default = match name {
+        "border-image-width" => is_default_border_image_width(trimmed),
+        "border-image-outset" => is_default_border_image_outset(trimmed),
+        "border-image-repeat" => is_default_border_image_repeat(trimmed),
+        _ => false,
+    };
+    if !default {
+        mark_border_image_unsupported(style);
+    }
+}
+
+fn set_border_image(style: &mut nana_ui_core::LayoutStyle, spec: BorderImageSpec) {
+    if style.paint.unsupported_border_image {
+        return;
+    }
+    style.paint.border_image = Some(spec);
+}
+
+fn mark_border_image_unsupported(style: &mut nana_ui_core::LayoutStyle) {
+    style.paint.border_image = None;
+    style.paint.unsupported_border_image = true;
+}
+
+fn clear_border_image(style: &mut nana_ui_core::LayoutStyle, unsupported: bool) {
+    style.paint.border_image = None;
+    style.paint.unsupported_border_image = unsupported;
+}
+
+enum BorderImageSourceParse {
+    Supported(BackgroundImage, String),
+    Unsupported,
+    Missing,
+}
+
+fn parse_border_image_shorthand(input: &str) -> Option<BorderImageSpec> {
+    match parse_border_image_source(input) {
+        BorderImageSourceParse::Supported(source, rest) => {
+            let (slice, fill) = parse_border_image_tail(&rest)?;
+            let spec = BorderImageSpec {
+                source,
+                slice,
+                fill,
+            };
+            spec.paints_linear_or_url().then_some(spec)
+        }
+        BorderImageSourceParse::Unsupported | BorderImageSourceParse::Missing => None,
+    }
+}
+
+fn parse_border_image_source(input: &str) -> BorderImageSourceParse {
+    let trimmed = input.trim();
+    if let Some(url) = extract_first_url(trimmed) {
+        return BorderImageSourceParse::Supported(
+            BackgroundImage::url(url),
+            strip_first_function(trimmed, "url"),
+        );
+    }
+    if let Some(grad) = parse_linear_gradient(trimmed) {
+        return BorderImageSourceParse::Supported(
+            BackgroundImage::Gradient(CssGradient::Linear(grad)),
+            strip_first_function(trimmed, "linear-gradient"),
+        );
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("radial-gradient(")
+        || lower.contains("repeating-linear-gradient(")
+        || lower.contains("repeating-radial-gradient(")
+        || lower.contains("conic-gradient(")
+    {
+        return BorderImageSourceParse::Unsupported;
+    }
+    BorderImageSourceParse::Missing
+}
+
+fn parse_border_image_tail(rest: &str) -> Option<([BorderImageSlice; 4], bool)> {
+    if rest.contains('/') {
+        return None;
+    }
+    let mut nums = Vec::new();
+    let mut fill = false;
+    for token in rest.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        if lower == "fill" {
+            fill = true;
+            continue;
+        }
+        if lower == "stretch" {
+            continue;
+        }
+        if matches!(lower.as_str(), "repeat" | "round" | "space") {
+            return None;
+        }
+        nums.push(parse_border_image_slice_token(token)?);
+    }
+    if nums.len() > 4 {
+        return None;
+    }
+    Some((expand_border_image_slice(&nums), fill))
+}
+
+fn parse_border_image_slice_token(token: &str) -> Option<BorderImageSlice> {
+    if let Some(percent) = token.strip_suffix('%') {
+        let value = percent.parse::<f32>().ok()?;
+        return value
+            .is_finite()
+            .then_some(BorderImageSlice::Percent(value.max(0.0)));
+    }
+    if token.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    let value = token.parse::<f32>().ok()?;
+    value
+        .is_finite()
+        .then_some(BorderImageSlice::Number(value.max(0.0)))
+}
+
+fn expand_border_image_slice(nums: &[BorderImageSlice]) -> [BorderImageSlice; 4] {
+    let hundred = BorderImageSlice::Percent(100.0);
+    match nums {
+        [] => [hundred; 4],
+        [a] => [*a; 4],
+        [a, b] => [*a, *b, *a, *b],
+        [a, b, c] => [*a, *b, *c, *b],
+        [a, b, c, d, ..] => [*a, *b, *c, *d],
+    }
+}
+
+fn is_default_border_image_width(val: &str) -> bool {
+    let tokens: Vec<&str> = val.split_whitespace().collect();
+    !tokens.is_empty() && tokens.iter().all(|token| *token == "1")
+}
+
+fn is_default_border_image_outset(val: &str) -> bool {
+    let tokens: Vec<&str> = val.split_whitespace().collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|token| *token == "0" || token.eq_ignore_ascii_case("0px"))
+}
+
+fn is_default_border_image_repeat(val: &str) -> bool {
+    let tokens: Vec<&str> = val.split_whitespace().collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|token| token.eq_ignore_ascii_case("stretch"))
+}
+
+/// Bind `<img src>` onto the replaced-content paint slot (above CSS backgrounds).
+pub fn apply_img_replaced_content(style: &mut nana_ui_core::LayoutStyle, src: &str) {
+    let trimmed = src.trim();
+    if trimmed.is_empty() {
+        style.paint.content_image = None;
+        return;
+    }
+    let fit = style
+        .paint
+        .object_fit
+        .unwrap_or(BackgroundImageFit::Stretch);
+    let position = style
+        .paint
+        .object_position
+        .unwrap_or_else(BackgroundPosition::center);
+    style.paint.content_image = Some(BackgroundImage::Url {
+        url: trimmed.to_string(),
+        fit,
+        size_width: None,
+        size_height: None,
+        position,
+        repeat: BackgroundRepeat::NoRepeat,
+    });
+}
+
+/// Bind `<video poster>` onto the replaced-content slot. Playback is out of L1.
+pub fn apply_video_poster(style: &mut nana_ui_core::LayoutStyle, poster: &str) {
+    let trimmed = poster.trim();
+    if trimmed.is_empty() {
+        style.paint.content_image = None;
+        style.paint.skipped_replaced = Some("video".into());
+        return;
+    }
+    style.paint.skipped_replaced = None;
+    apply_img_replaced_content(style, trimmed);
+}
+
+/// `<iframe>` is not a browser. Do not fetch `src`.
+pub fn apply_iframe_skip(style: &mut nana_ui_core::LayoutStyle) {
+    style.paint.content_image = None;
+    style.paint.skipped_replaced = Some("iframe".into());
+}
+
+/// `<canvas>` is not a CSS 2D bitmap. Pixels exist only on a HostTexture slot
+/// (`data-nana-canvas` / `data-nana-gpu` → `"nana.host-texture"`). Bare canvas
+/// is an empty box; do not bind `src` or a pixmap onto `content_image`.
+pub fn apply_canvas_skip(style: &mut nana_ui_core::LayoutStyle, has_host_texture_slot: bool) {
+    style.paint.content_image = None;
+    style.paint.skipped_replaced = if has_host_texture_slot {
+        None
+    } else {
+        Some("canvas".into())
+    };
+}
+
 fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    // CSS `background` resets size/position/repeat longhands. Do not zip
+    // leftover lists onto a later `background-image`.
+    reset_background_placement_lists(style);
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         style.background = None;
-        style.paint.background_image = None;
+        clear_background_images(style);
         return;
     }
-    if let Some(image) = parse_background_image_value(trimmed) {
-        style.paint.background_image = Some(image);
+    let parts = split_top_level_commas(trimmed);
+    if parts.is_empty() {
         return;
     }
-    if let Some(c) = resolve_paint_color(trimmed) {
+    let mut color = None;
+    let mut layers = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let last = index + 1 == parts.len();
+        let parsed = parse_background_layer(part, last);
+        if let Some(c) = parsed.color {
+            color = Some(c);
+        }
+        if let Some(image) = parsed.image {
+            layers.push(image);
+        }
+    }
+    if let Some(c) = color {
         style.background = Some(c);
-        style.paint.background_image = None;
     }
+    if layers.is_empty() {
+        if color.is_some() {
+            clear_background_images(style);
+        } else if let Some(c) = resolve_paint_color(trimmed) {
+            style.background = Some(c);
+            clear_background_images(style);
+        }
+        return;
+    }
+    assign_background_layers(style, layers);
 }
 
 fn apply_background_image(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-        style.paint.background_image = None;
+        clear_background_images(style);
         return;
     }
-    if let Some(image) = parse_background_image_value(trimmed) {
-        style.paint.background_image = Some(image);
+    let mut layers: Vec<BackgroundImage> = split_top_level_commas(trimmed)
+        .into_iter()
+        .filter_map(|part| parse_background_image_value(&part))
+        .take(MAX_BACKGROUND_LAYERS)
+        .collect();
+    if layers.is_empty() {
+        return;
     }
+    zip_background_longhands(&mut layers, style);
+    assign_background_layers(style, layers);
 }
 
 fn apply_background_size(style: &mut nana_ui_core::LayoutStyle, val: &str) {
-    let fit = parse_background_size_fit(val);
-    if let Some(BackgroundImage::Url { fit: slot, .. }) = style.paint.background_image.as_mut() {
+    let (fits, lengths) = parse_background_size_list(val);
+    if fits.is_empty() {
+        return;
+    }
+    style.paint.background_size_list = fits;
+    style.paint.background_size_lengths = lengths;
+    apply_size_to_existing_layers(style);
+}
+
+fn apply_background_position(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let list = parse_background_position_list(val);
+    if list.is_empty() {
+        return;
+    }
+    style.paint.background_position_list = list;
+    apply_position_to_existing_layers(style);
+}
+
+fn apply_background_repeat(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let list = parse_background_repeat_list(val);
+    if list.is_empty() {
+        return;
+    }
+    style.paint.background_repeat_list = list;
+    apply_repeat_to_existing_layers(style);
+}
+
+fn apply_object_fit(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let Some(fit) = parse_object_fit(val) else {
+        return;
+    };
+    style.paint.object_fit = Some(fit);
+    if let Some(BackgroundImage::Url { fit: slot, .. }) = style.paint.content_image.as_mut() {
         *slot = fit;
     }
+}
+
+fn apply_object_position(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let Some(position) = parse_background_position_value(val) else {
+        return;
+    };
+    style.paint.object_position = Some(position);
+    if let Some(BackgroundImage::Url { position: slot, .. }) = style.paint.content_image.as_mut() {
+        *slot = position;
+    }
+}
+
+fn reset_background_placement_lists(style: &mut nana_ui_core::LayoutStyle) {
+    style.paint.background_size_list.clear();
+    style.paint.background_size_lengths.clear();
+    style.paint.background_position_list.clear();
+    style.paint.background_repeat_list.clear();
+}
+
+fn clear_background_images(style: &mut nana_ui_core::LayoutStyle) {
+    style.paint.background_image = None;
+    style.paint.background_layers.clear();
+}
+
+fn assign_background_layers(
+    style: &mut nana_ui_core::LayoutStyle,
+    mut layers: Vec<BackgroundImage>,
+) {
+    style.paint.background_image = layers.first().cloned();
+    if layers.len() > 1 {
+        style.paint.background_layers = layers.split_off(1);
+    } else {
+        style.paint.background_layers.clear();
+    }
+}
+
+fn zip_background_longhands(layers: &mut [BackgroundImage], style: &nana_ui_core::LayoutStyle) {
+    for (index, layer) in layers.iter_mut().enumerate() {
+        apply_slot_size(
+            layer,
+            cycle(&style.paint.background_size_list, index),
+            cycle(&style.paint.background_size_lengths, index),
+        );
+        apply_slot_position(layer, cycle(&style.paint.background_position_list, index));
+        apply_slot_repeat(layer, cycle(&style.paint.background_repeat_list, index));
+    }
+}
+
+fn apply_size_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
+    let fits = style.paint.background_size_list.clone();
+    let lengths = style.paint.background_size_lengths.clone();
+    if let Some(layer) = style.paint.background_image.as_mut() {
+        apply_slot_size(layer, cycle(&fits, 0), cycle(&lengths, 0));
+    }
+    for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
+        apply_slot_size(layer, cycle(&fits, index + 1), cycle(&lengths, index + 1));
+    }
+}
+
+fn apply_position_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
+    let list = style.paint.background_position_list.clone();
+    if let Some(layer) = style.paint.background_image.as_mut() {
+        apply_slot_position(layer, cycle(&list, 0));
+    }
+    for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
+        apply_slot_position(layer, cycle(&list, index + 1));
+    }
+}
+
+fn apply_repeat_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
+    let list = style.paint.background_repeat_list.clone();
+    if let Some(layer) = style.paint.background_image.as_mut() {
+        apply_slot_repeat(layer, cycle(&list, 0));
+    }
+    for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
+        apply_slot_repeat(layer, cycle(&list, index + 1));
+    }
+}
+
+fn cycle<T: Copy>(list: &[T], index: usize) -> Option<T> {
+    if list.is_empty() {
+        None
+    } else {
+        Some(list[index % list.len()])
+    }
+}
+
+fn apply_slot_size(
+    layer: &mut BackgroundImage,
+    fit: Option<BackgroundImageFit>,
+    lengths: Option<(Option<LengthSpec>, Option<LengthSpec>)>,
+) {
+    let Some(BackgroundImage::Url {
+        fit: slot,
+        size_width,
+        size_height,
+        ..
+    }) = layer_url_mut(layer)
+    else {
+        return;
+    };
+    if let Some(fit) = fit {
+        *slot = fit;
+    }
+    if let Some((width, height)) = lengths {
+        *size_width = width;
+        *size_height = height;
+    }
+}
+
+fn apply_slot_position(layer: &mut BackgroundImage, position: Option<BackgroundPosition>) {
+    let Some(BackgroundImage::Url { position: slot, .. }) = layer_url_mut(layer) else {
+        return;
+    };
+    if let Some(position) = position {
+        *slot = position;
+    }
+}
+
+fn apply_slot_repeat(layer: &mut BackgroundImage, repeat: Option<BackgroundRepeat>) {
+    let Some(BackgroundImage::Url { repeat: slot, .. }) = layer_url_mut(layer) else {
+        return;
+    };
+    if let Some(repeat) = repeat {
+        *slot = repeat;
+    }
+}
+
+fn layer_url_mut(layer: &mut BackgroundImage) -> Option<&mut BackgroundImage> {
+    matches!(layer, BackgroundImage::Url { .. }).then_some(layer)
 }
 
 fn parse_background_image_value(input: &str) -> Option<BackgroundImage> {
@@ -85,10 +592,64 @@ fn parse_background_image_value(input: &str) -> Option<BackgroundImage> {
     if let Some(grad) = parse_radial_gradient(trimmed) {
         return Some(BackgroundImage::Gradient(CssGradient::Radial(grad)));
     }
-    parse_css_url(trimmed).map(|url| BackgroundImage::Url {
-        url,
-        fit: BackgroundImageFit::Cover,
-    })
+    parse_css_url(trimmed).map(BackgroundImage::url)
+}
+
+struct ParsedBackgroundLayer {
+    image: Option<BackgroundImage>,
+    color: Option<[f32; 4]>,
+}
+
+fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLayer {
+    let trimmed = input.trim();
+    let mut rest = trimmed.to_string();
+    let mut image = None;
+    if let Some(url) = extract_first_url(&rest) {
+        image = Some(BackgroundImage::url(url.as_str()));
+        rest = strip_first_function(&rest, "url");
+    } else if let Some(grad) = parse_linear_gradient(trimmed) {
+        image = Some(BackgroundImage::Gradient(CssGradient::Linear(grad)));
+        rest = strip_first_function(&rest, "linear-gradient");
+    } else if let Some(grad) = parse_radial_gradient(trimmed) {
+        image = Some(BackgroundImage::Gradient(CssGradient::Radial(grad)));
+        rest = strip_first_function(&rest, "radial-gradient");
+    }
+    let mut color = None;
+    if allow_color {
+        for token in rest.split_whitespace() {
+            if let Some(c) = resolve_paint_color(token) {
+                color = Some(c);
+                break;
+            }
+        }
+        if color.is_none()
+            && let Some(c) = resolve_paint_color(&rest)
+        {
+            color = Some(c);
+        }
+    }
+    if let Some(BackgroundImage::Url {
+        fit,
+        size_width,
+        size_height,
+        position,
+        repeat,
+        ..
+    }) = image.as_mut()
+    {
+        if let Some(parsed_repeat) = parse_repeat_from_tokens(&rest) {
+            *repeat = parsed_repeat;
+        }
+        if let Some((parsed_fit, w, h)) = parse_size_after_slash(&rest) {
+            *fit = parsed_fit;
+            *size_width = w;
+            *size_height = h;
+        }
+        if let Some(parsed_pos) = parse_position_from_layer_rest(&rest) {
+            *position = parsed_pos;
+        }
+    }
+    ParsedBackgroundLayer { image, color }
 }
 
 pub fn parse_linear_gradient(input: &str) -> Option<LinearGradient> {
@@ -209,12 +770,27 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
     }
     let mut filter = ColorFilter::default();
     for token in split_filter_tokens(trimmed) {
-        if let Some(value) = strip_function(&token, "brightness") {
+        if let Some(value) = strip_complete_function(&token, "brightness") {
             filter.brightness = parse_filter_scalar(value).unwrap_or(1.0);
-        } else if let Some(value) = strip_function(&token, "saturate") {
+        } else if let Some(value) = strip_complete_function(&token, "saturate") {
             filter.saturate = parse_filter_scalar(value).unwrap_or(1.0);
-        } else if let Some(value) = strip_function(&token, "contrast") {
+        } else if let Some(value) = strip_complete_function(&token, "contrast") {
             filter.contrast = parse_filter_scalar(value).unwrap_or(1.0);
+        } else if let Some(value) = strip_complete_function(&token, "hue-rotate") {
+            filter.hue_rotate_deg = parse_hue_rotate(value).unwrap_or(0.0);
+        } else if let Some(value) = strip_complete_function(&token, "blur") {
+            let px = parse_blur_radius(value).unwrap_or(0.0);
+            filter.blur_radius = px.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
+        } else if let Some(value) = strip_complete_function(&token, "drop-shadow") {
+            if filter.drop_shadow.is_some() {
+                return None;
+            }
+            let mut shadow = crate::css_map::parse_drop_shadow(value)?;
+            shadow.blur_radius = shadow.blur_radius.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
+            filter.drop_shadow = Some(shadow);
+        } else {
+            // Unknown function: fail closed (do not apply the known subset).
+            return None;
         }
     }
     if filter.is_identity() {
@@ -269,6 +845,225 @@ fn parse_filter_scalar(input: &str) -> Option<f32> {
     }
 }
 
+fn parse_hue_rotate(input: &str) -> Option<f32> {
+    let trimmed = input.trim().to_ascii_lowercase();
+    if let Some(n) = trimmed.strip_suffix("deg") {
+        return n.trim().parse().ok();
+    }
+    if let Some(n) = trimmed.strip_suffix("turn") {
+        return n.trim().parse::<f32>().ok().map(|turns| turns * 360.0);
+    }
+    if let Some(n) = trimmed.strip_suffix("rad") {
+        return n.trim().parse::<f32>().ok().map(|rad| rad.to_degrees());
+    }
+    trimmed.parse().ok()
+}
+
+fn apply_outline_style(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    match val.trim().to_ascii_lowercase().as_str() {
+        "none" | "hidden" => style.paint.outline.style = OutlineStyle::None,
+        "solid" => style.paint.outline.style = OutlineStyle::Solid,
+        _ => {}
+    }
+}
+
+fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        style.paint.outline = Default::default();
+        return;
+    }
+    let mut saw_style = false;
+    for part in trimmed.split_whitespace() {
+        let lower = part.to_ascii_lowercase();
+        if lower == "none" || lower == "hidden" {
+            style.paint.outline.style = OutlineStyle::None;
+            saw_style = true;
+        } else if lower == "solid" {
+            style.paint.outline.style = OutlineStyle::Solid;
+            saw_style = true;
+        } else if let Some(px) = parse_css_length_px(part, None) {
+            style.paint.outline.width = px.max(0.0);
+        } else if let Some(c) = resolve_paint_color(part) {
+            style.paint.outline.color = Some(c);
+        }
+    }
+    if !saw_style && style.paint.outline.width > 0.0 {
+        style.paint.outline.style = OutlineStyle::Solid;
+    }
+}
+
+fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.eq_ignore_ascii_case("none") {
+        style.text_decoration = Some(TextDecorationLine::default());
+        return;
+    }
+    let mut deco = TextDecorationLine::default();
+    let mut saw = false;
+    for part in trimmed.split_whitespace() {
+        match part.to_ascii_lowercase().as_str() {
+            "underline" => {
+                deco.underline = true;
+                saw = true;
+            }
+            "line-through" => {
+                deco.line_through = true;
+                saw = true;
+            }
+            "overline" | "blink" | "spelling-error" | "grammar-error" => {
+                // cosmic-text can overline; Scene stroke path only does
+                // underline / line-through. Unknown lines fail closed.
+            }
+            "solid" | "double" | "dotted" | "dashed" | "wavy" => {}
+            _ => {}
+        }
+    }
+    if saw {
+        style.text_decoration = Some(deco);
+    }
+}
+
+fn apply_font_feature_settings(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.eq_ignore_ascii_case("normal") {
+        style.font_features = Some(Vec::new());
+        return;
+    }
+    let Some(features) = parse_font_feature_settings(trimmed) else {
+        return;
+    };
+    style.font_features = Some(features);
+}
+
+fn parse_font_feature_settings(raw: &str) -> Option<Vec<FontFeatureSetting>> {
+    let mut out = Vec::new();
+    for chunk in split_comma_list(raw) {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let (tag, rest) = parse_feature_tag(chunk)?;
+        let value = match rest.trim() {
+            "" | "on" => 1,
+            "off" => 0,
+            other => other.parse::<u32>().ok()?,
+        };
+        out.push(FontFeatureSetting { tag, value });
+    }
+    Some(out)
+}
+
+fn parse_feature_tag(raw: &str) -> Option<([u8; 4], &str)> {
+    let s = raw.trim();
+    let quote = s.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let rest = &s[1..];
+    let end = rest.find(quote as char)?;
+    let tag = rest[..end].as_bytes();
+    if tag.len() != 4 || !tag.iter().all(|b| b.is_ascii()) {
+        return None;
+    }
+    let mut out = [0u8; 4];
+    out.copy_from_slice(tag);
+    Some((out, rest[end + 1..].trim()))
+}
+
+fn split_comma_list(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&input[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if start <= input.len() {
+        parts.push(&input[start..]);
+    }
+    parts
+}
+
+fn apply_font_variation_settings(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
+        style.unsupported_font_variation = false;
+        return;
+    }
+    let Some(axes) = parse_font_variation_settings(trimmed) else {
+        style.unsupported_font_variation = true;
+        return;
+    };
+    let mut wght = None;
+    for (tag, value) in axes {
+        if &tag == b"wght" {
+            wght = Some(value);
+        } else {
+            // cosmic-text Attrs only drive the wght axis (via Weight). BEVL and
+            // other axes have no public setter — fail the whole declaration.
+            style.unsupported_font_variation = true;
+            return;
+        }
+    }
+    style.unsupported_font_variation = false;
+    if let Some(wght) = wght {
+        style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
+    }
+}
+
+fn parse_font_variation_settings(raw: &str) -> Option<Vec<([u8; 4], f32)>> {
+    let mut out = Vec::new();
+    for chunk in split_comma_list(raw) {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let (tag, rest) = parse_feature_tag(chunk)?;
+        let value = rest.trim().parse::<f32>().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        out.push((tag, value));
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn apply_line_clamp(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.eq_ignore_ascii_case("none") || trimmed == "0" {
+        style.line_clamp = None;
+        return;
+    }
+    let Ok(n) = trimmed.parse::<u16>() else {
+        return;
+    };
+    if n == 0 {
+        style.line_clamp = None;
+        return;
+    }
+    style.line_clamp = Some(n);
+    style.text_overflow_ellipsis = true;
+    style.white_space_nowrap = false;
+    style.overflow_x = OverflowSpec::Hidden;
+    style.overflow_y = OverflowSpec::Hidden;
+}
+
+/// Split a CSS `filter` / `backdrop-filter` list into function tokens.
+///
+/// A closing `)` at depth 0 starts the next function (`brightness(0.5)sepia()`
+/// is two tokens). Top-level separators match `split_css_space_tokens`:
+/// space, tab, and newline.
 fn split_filter_tokens(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut depth = 0i32;
@@ -276,23 +1071,57 @@ fn split_filter_tokens(input: &str) -> Vec<String> {
     for (idx, ch) in input.char_indices() {
         match ch {
             '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            ' ' if depth == 0 => {
-                if start < idx {
-                    tokens.push(input[start..idx].trim().to_string());
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = idx + ch.len_utf8();
+                    push_filter_token(&mut tokens, &input[start..end]);
+                    start = end;
                 }
-                start = idx + 1;
+            }
+            ' ' | '\t' | '\n' if depth == 0 => {
+                push_filter_token(&mut tokens, &input[start..idx]);
+                start = idx + ch.len_utf8();
             }
             _ => {}
         }
     }
-    if start < input.len() {
-        tokens.push(input[start..].trim().to_string());
-    }
+    push_filter_token(&mut tokens, &input[start..]);
     tokens
-        .into_iter()
-        .filter(|token| !token.is_empty())
-        .collect()
+}
+
+fn push_filter_token(tokens: &mut Vec<String>, raw: &str) {
+    let token = raw.trim();
+    if !token.is_empty() {
+        tokens.push(token.to_string());
+    }
+}
+
+/// Like [`strip_function`], but leftover after the matching `)` is rejected
+/// instead of dropped (`brightness(0.5)sepia()` is not a brightness token).
+fn strip_complete_function<'a>(input: &'a str, name: &str) -> Option<&'a str> {
+    let trimmed = input.trim();
+    let (head, after_open) = trimmed.split_once('(')?;
+    if !head.eq_ignore_ascii_case(name) {
+        return None;
+    }
+    let mut depth = 1i32;
+    for (idx, ch) in after_open.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    if !after_open[idx + ch.len_utf8()..].trim().is_empty() {
+                        return None;
+                    }
+                    return Some(after_open[..idx].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_clip_inset(input: &str) -> Option<ClipPath> {
@@ -514,15 +1343,247 @@ fn parse_css_url(input: &str) -> Option<String> {
     }
 }
 
-fn parse_background_size_fit(input: &str) -> BackgroundImageFit {
-    let lower = input.trim().to_ascii_lowercase();
-    if lower == "contain" {
-        BackgroundImageFit::Contain
-    } else if lower == "100% 100%" || lower == "100%" {
-        BackgroundImageFit::Stretch
-    } else {
-        BackgroundImageFit::Cover
+fn extract_first_url(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    let start = lower.find("url(")?;
+    parse_css_url(&input[start..])
+}
+
+fn strip_first_function(input: &str, name: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let head = format!("{name}(");
+    let Some(start) = lower.find(&head) else {
+        return input.to_string();
+    };
+    if let Some(inner) = strip_function(&input[start..], name) {
+        let end = start + head.len() + inner.len() + 1;
+        let mut out = String::new();
+        out.push_str(&input[..start]);
+        if end < input.len() {
+            out.push_str(&input[end..]);
+        }
+        return out;
     }
+    input.to_string()
+}
+
+fn parse_background_size_list(
+    input: &str,
+) -> (
+    Vec<BackgroundImageFit>,
+    Vec<(Option<LengthSpec>, Option<LengthSpec>)>,
+) {
+    let mut fits = Vec::new();
+    let mut lengths = Vec::new();
+    for part in split_top_level_commas(input) {
+        let (fit, width, height) = parse_background_size_value(&part);
+        fits.push(fit);
+        lengths.push((width, height));
+    }
+    (fits, lengths)
+}
+
+fn parse_background_size_value(
+    input: &str,
+) -> (BackgroundImageFit, Option<LengthSpec>, Option<LengthSpec>) {
+    let lower = input.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return (BackgroundImageFit::Auto, None, None);
+    }
+    if lower == "contain" {
+        return (BackgroundImageFit::Contain, None, None);
+    }
+    if lower == "cover" {
+        return (BackgroundImageFit::Cover, None, None);
+    }
+    if lower == "100% 100%" || lower == "100%" {
+        return (BackgroundImageFit::Stretch, None, None);
+    }
+    if lower == "auto" || lower == "auto auto" {
+        return (BackgroundImageFit::Auto, None, None);
+    }
+    let tokens: Vec<&str> = input.split_whitespace().collect();
+    if tokens.len() >= 2 {
+        let width = parse_size_length(tokens[0]);
+        let height = parse_size_length(tokens[1]);
+        if width.is_some() || height.is_some() {
+            return (BackgroundImageFit::Length, width, height);
+        }
+    } else if tokens.len() == 1
+        && let Some(width) = parse_size_length(tokens[0])
+    {
+        return (BackgroundImageFit::Length, Some(width), None);
+    }
+    (BackgroundImageFit::Auto, None, None)
+}
+
+fn parse_size_length(input: &str) -> Option<LengthSpec> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Some(LengthSpec::Auto);
+    }
+    LengthSpec::parse(trimmed)
+}
+
+fn parse_size_after_slash(
+    input: &str,
+) -> Option<(BackgroundImageFit, Option<LengthSpec>, Option<LengthSpec>)> {
+    let slash = input.find('/')?;
+    let size_src = input[slash + 1..].trim();
+    let size_src = size_src
+        .split_whitespace()
+        .take_while(|token| !is_repeat_token(token))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if size_src.is_empty() {
+        return None;
+    }
+    Some(parse_background_size_value(&size_src))
+}
+
+fn parse_background_position_list(input: &str) -> Vec<BackgroundPosition> {
+    split_top_level_commas(input)
+        .into_iter()
+        .filter_map(|part| parse_background_position_value(&part))
+        .collect()
+}
+
+fn parse_background_position_value(input: &str) -> Option<BackgroundPosition> {
+    let tokens: Vec<&str> = input
+        .split_whitespace()
+        .take_while(|token| *token != "/" && !is_repeat_token(token))
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    match tokens.as_slice() {
+        [one] => Some(position_from_one(one)),
+        [a, b, ..] => Some(position_from_two(a, b)),
+        [] => None,
+    }
+}
+
+fn parse_position_from_layer_rest(input: &str) -> Option<BackgroundPosition> {
+    let before_slash = input.split('/').next().unwrap_or(input);
+    parse_background_position_value(before_slash)
+}
+
+fn position_from_one(token: &str) -> BackgroundPosition {
+    let lower = token.to_ascii_lowercase();
+    match lower.as_str() {
+        "left" => BackgroundPosition {
+            x: LengthSpec::Percent(0.0),
+            y: LengthSpec::Percent(50.0),
+        },
+        "right" => BackgroundPosition {
+            x: LengthSpec::Percent(100.0),
+            y: LengthSpec::Percent(50.0),
+        },
+        "top" => BackgroundPosition {
+            x: LengthSpec::Percent(50.0),
+            y: LengthSpec::Percent(0.0),
+        },
+        "bottom" => BackgroundPosition {
+            x: LengthSpec::Percent(50.0),
+            y: LengthSpec::Percent(100.0),
+        },
+        "center" => BackgroundPosition::center(),
+        _ => BackgroundPosition {
+            x: parse_size_length(token).unwrap_or(LengthSpec::Percent(0.0)),
+            y: LengthSpec::Percent(50.0),
+        },
+    }
+}
+
+fn position_from_two(a: &str, b: &str) -> BackgroundPosition {
+    let a_lower = a.to_ascii_lowercase();
+    let b_lower = b.to_ascii_lowercase();
+    if is_x_keyword(&a_lower) && is_y_keyword(&b_lower) {
+        return BackgroundPosition {
+            x: keyword_x(&a_lower),
+            y: keyword_y(&b_lower),
+        };
+    }
+    if is_y_keyword(&a_lower) && is_x_keyword(&b_lower) {
+        return BackgroundPosition {
+            x: keyword_x(&b_lower),
+            y: keyword_y(&a_lower),
+        };
+    }
+    BackgroundPosition {
+        x: parse_size_length(a).unwrap_or(LengthSpec::Percent(0.0)),
+        y: parse_size_length(b).unwrap_or(LengthSpec::Percent(0.0)),
+    }
+}
+
+fn is_x_keyword(token: &str) -> bool {
+    matches!(token, "left" | "right" | "center")
+}
+
+fn is_y_keyword(token: &str) -> bool {
+    matches!(token, "top" | "bottom" | "center")
+}
+
+fn keyword_x(token: &str) -> LengthSpec {
+    match token {
+        "left" => LengthSpec::Percent(0.0),
+        "right" => LengthSpec::Percent(100.0),
+        _ => LengthSpec::Percent(50.0),
+    }
+}
+
+fn keyword_y(token: &str) -> LengthSpec {
+    match token {
+        "top" => LengthSpec::Percent(0.0),
+        "bottom" => LengthSpec::Percent(100.0),
+        _ => LengthSpec::Percent(50.0),
+    }
+}
+
+fn parse_background_repeat_list(input: &str) -> Vec<BackgroundRepeat> {
+    split_top_level_commas(input)
+        .into_iter()
+        .filter_map(|part| parse_repeat_from_tokens(&part))
+        .collect()
+}
+
+fn parse_repeat_from_tokens(input: &str) -> Option<BackgroundRepeat> {
+    let tokens: Vec<&str> = input
+        .split_whitespace()
+        .filter(|token| is_repeat_token(token))
+        .collect();
+    match tokens.as_slice() {
+        ["repeat-x"] => Some(BackgroundRepeat::RepeatX),
+        ["repeat-y"] => Some(BackgroundRepeat::RepeatY),
+        ["no-repeat"] | ["no-repeat", "no-repeat"] => Some(BackgroundRepeat::NoRepeat),
+        ["repeat"]
+        | ["repeat", "repeat"]
+        | ["space"]
+        | ["round"]
+        | ["space", "space"]
+        | ["round", "round"] => Some(BackgroundRepeat::Repeat),
+        ["repeat", "no-repeat"] => Some(BackgroundRepeat::RepeatX),
+        ["no-repeat", "repeat"] => Some(BackgroundRepeat::RepeatY),
+        _ => None,
+    }
+}
+
+fn is_repeat_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "repeat" | "no-repeat" | "repeat-x" | "repeat-y" | "space" | "round"
+    )
+}
+
+fn parse_object_fit(input: &str) -> Option<BackgroundImageFit> {
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "contain" => BackgroundImageFit::Contain,
+        "cover" => BackgroundImageFit::Cover,
+        "fill" => BackgroundImageFit::Stretch,
+        "none" => BackgroundImageFit::Auto,
+        "scale-down" => BackgroundImageFit::Contain,
+        _ => return None,
+    })
 }
 
 fn strip_function<'a>(input: &'a str, name: &str) -> Option<&'a str> {
@@ -672,6 +1733,7 @@ mod tests {
             "url('file:///tmp/test.png')",
             "url(test.png)",
             "url(\"./assets/icon.png\")",
+            "url(\"icons/mark.svg\")",
         ] {
             let image = parse_background_image_value(css).unwrap();
             match image {
@@ -710,11 +1772,518 @@ mod tests {
         let image =
             parse_background_image_value("url(\"data:image/png;base64,iVBORw0KGgo=\")").unwrap();
         match image {
-            BackgroundImage::Url { ref url, fit } => {
+            BackgroundImage::Url { ref url, fit, .. } => {
                 assert!(url.starts_with("data:image/png;base64,"));
-                assert_eq!(fit, BackgroundImageFit::Cover);
+                assert_eq!(fit, BackgroundImageFit::Auto);
             }
             other => panic!("expected data url background, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn background_image_two_layers_keep_css_order() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: url(\"a.png\"), url(\"b.png\")",
+            None,
+            None,
+        );
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "a.png"),
+            other => panic!("expected first url, got {other:?}"),
+        }
+        assert_eq!(layout.paint.background_layers.len(), 1);
+        match &layout.paint.background_layers[0] {
+            BackgroundImage::Url { url, .. } => assert_eq!(url, "b.png"),
+            other => panic!("expected second url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn background_size_auto_and_px_and_repeat_position() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: url(\"tile.png\"); background-size: 32px 16px; background-repeat: repeat-x; background-position: 10px 20px",
+            None,
+            None,
+        );
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url {
+                fit,
+                size_width,
+                size_height,
+                position,
+                repeat,
+                ..
+            }) => {
+                assert_eq!(fit, BackgroundImageFit::Length);
+                assert_eq!(size_width, Some(LengthSpec::Px(32.0)));
+                assert_eq!(size_height, Some(LengthSpec::Px(16.0)));
+                assert_eq!(position.x, LengthSpec::Px(10.0));
+                assert_eq!(position.y, LengthSpec::Px(20.0));
+                assert_eq!(repeat, BackgroundRepeat::RepeatX);
+            }
+            other => panic!("expected url placement, got {other:?}"),
+        }
+        let mut auto = LayoutStyle::default();
+        auto.apply_css_text(
+            "background-image: url(a.png); background-size: auto",
+            None,
+            None,
+        );
+        match auto.paint.background_image {
+            Some(BackgroundImage::Url { fit, .. }) => assert_eq!(fit, BackgroundImageFit::Auto),
+            other => panic!("expected auto size, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn object_fit_contain_and_img_src_bind() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("object-fit: contain; object-position: left top", None, None);
+        apply_img_replaced_content(&mut layout, "photo.png");
+        match layout.paint.content_image {
+            Some(BackgroundImage::Url {
+                ref url,
+                fit,
+                position,
+                repeat,
+                ..
+            }) => {
+                assert_eq!(url, "photo.png");
+                assert_eq!(fit, BackgroundImageFit::Contain);
+                assert_eq!(position.x, LengthSpec::Percent(0.0));
+                assert_eq!(position.y, LengthSpec::Percent(0.0));
+                assert_eq!(repeat, BackgroundRepeat::NoRepeat);
+            }
+            other => panic!("expected img content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_poster_and_iframe_skip_fail_closed() {
+        let mut poster = LayoutStyle::default();
+        apply_video_poster(&mut poster, "still.png");
+        match poster.paint.content_image {
+            Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "still.png"),
+            other => panic!("expected poster, got {other:?}"),
+        }
+        assert!(poster.paint.skipped_replaced.is_none());
+
+        let mut video = LayoutStyle::default();
+        apply_video_poster(&mut video, "");
+        assert!(video.paint.content_image.is_none());
+        assert_eq!(video.paint.skipped_replaced.as_deref(), Some("video"));
+
+        let mut iframe = LayoutStyle::default();
+        apply_iframe_skip(&mut iframe);
+        assert!(iframe.paint.content_image.is_none());
+        assert_eq!(iframe.paint.skipped_replaced.as_deref(), Some("iframe"));
+    }
+
+    #[test]
+    fn canvas_without_slot_is_not_a_2d_bitmap() {
+        let mut bare = LayoutStyle::default();
+        bare.paint.content_image = Some(BackgroundImage::url_with_fit(
+            "frame.png",
+            BackgroundImageFit::Stretch,
+        ));
+        apply_canvas_skip(&mut bare, false);
+        assert!(
+            bare.paint.content_image.is_none(),
+            "bare <canvas> must not keep a pixmap on content_image"
+        );
+        assert_eq!(bare.paint.skipped_replaced.as_deref(), Some("canvas"));
+
+        let mut slotted = LayoutStyle::default();
+        slotted.paint.content_image = Some(BackgroundImage::url_with_fit(
+            "frame.png",
+            BackgroundImageFit::Stretch,
+        ));
+        apply_canvas_skip(&mut slotted, true);
+        assert!(
+            slotted.paint.content_image.is_none(),
+            "HostTexture canvas still must not pretend to be content_image"
+        );
+        assert!(slotted.paint.skipped_replaced.is_none());
+    }
+
+    #[test]
+    fn unspecified_url_and_size_defaults_to_css_repeat_and_auto() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: url(\"tile.png\"); background-size: 32px",
+            None,
+            None,
+        );
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url {
+                fit,
+                size_width,
+                repeat,
+                ..
+            }) => {
+                assert_eq!(fit, BackgroundImageFit::Length);
+                assert_eq!(size_width, Some(LengthSpec::Px(32.0)));
+                assert_eq!(
+                    repeat,
+                    BackgroundRepeat::Repeat,
+                    "CSS initial background-repeat is repeat"
+                );
+            }
+            other => panic!("expected sized url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn background_shorthand_resets_placement_lists() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-repeat: no-repeat; background-size: cover; background-position: 10px 10px",
+            None,
+            None,
+        );
+        assert!(!layout.paint.background_repeat_list.is_empty());
+        layout.apply_css_text("background: url(\"a.png\")", None, None);
+        assert!(
+            layout.paint.background_repeat_list.is_empty()
+                && layout.paint.background_size_list.is_empty()
+                && layout.paint.background_position_list.is_empty(),
+            "shorthand must reset leftover longhand lists"
+        );
+        match &layout.paint.background_image {
+            Some(BackgroundImage::Url { repeat, fit, .. }) => {
+                assert_eq!(*repeat, BackgroundRepeat::Repeat);
+                assert_eq!(*fit, BackgroundImageFit::Auto);
+            }
+            other => panic!("expected shorthand url, got {other:?}"),
+        }
+        layout.apply_css_text("background-image: url(\"b.png\")", None, None);
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url { repeat, fit, .. }) => {
+                assert_eq!(
+                    repeat,
+                    BackgroundRepeat::Repeat,
+                    "later background-image must not zip pre-shorthand no-repeat"
+                );
+                assert_eq!(fit, BackgroundImageFit::Auto);
+            }
+            other => panic!("expected reset url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn background_shorthand_color_and_two_url_layers() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background: url(\"fg.png\") center / contain no-repeat, url(\"bg.png\") repeat, #112233",
+            None,
+            None,
+        );
+        assert!(layout.background.is_some());
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url {
+                ref url,
+                fit,
+                repeat,
+                ..
+            }) => {
+                assert_eq!(url, "fg.png");
+                assert_eq!(fit, BackgroundImageFit::Contain);
+                assert_eq!(repeat, BackgroundRepeat::NoRepeat);
+            }
+            other => panic!("expected fg url, got {other:?}"),
+        }
+        match layout.paint.background_layers.first() {
+            Some(BackgroundImage::Url { url, repeat, .. }) => {
+                assert_eq!(url, "bg.png");
+                assert_eq!(*repeat, BackgroundRepeat::Repeat);
+            }
+            other => panic!("expected bg url layer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filter_hue_rotate_and_element_blur() {
+        let filter = parse_color_filter("hue-rotate(90deg) blur(8px)").unwrap();
+        assert!((filter.hue_rotate_deg - 90.0).abs() < 0.01);
+        assert!((filter.blur_radius - 8.0).abs() < 0.01);
+        let turn = parse_color_filter("hue-rotate(0.25turn)").unwrap();
+        assert!((turn.hue_rotate_deg - 90.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn filter_clamps_element_blur() {
+        let filter = parse_color_filter("blur(200px)").unwrap();
+        assert!((filter.blur_radius - ColorFilter::MAX_BLUR_RADIUS).abs() < 0.01);
+    }
+
+    #[test]
+    fn filter_drop_shadow_parses_offset_blur_and_color() {
+        let filter = parse_color_filter("drop-shadow(4px 6px 8px rgba(0, 0, 0, 0.5))").unwrap();
+        let shadow = filter.drop_shadow.expect("drop-shadow");
+        assert!((shadow.offset_x - 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.blur_radius - 8.0).abs() < 0.01);
+        assert!((shadow.color[3] - 0.5).abs() < 0.01);
+        let colored = parse_color_filter("drop-shadow(red 2px 3px)").unwrap();
+        let red = colored.drop_shadow.expect("color-first");
+        assert!((red.offset_x - 2.0).abs() < 0.01);
+        assert!((red.color[0] - 1.0).abs() < 0.01);
+        let combined = parse_color_filter("brightness(0.5) drop-shadow(0 4px 4px black)").unwrap();
+        assert!((combined.brightness - 0.5).abs() < 0.01);
+        assert!(combined.drop_shadow.is_some());
+        let glued = parse_color_filter("brightness(0.5)drop-shadow(0 4px 4px black)").unwrap();
+        assert!((glued.brightness - 0.5).abs() < 0.01);
+        assert!(glued.drop_shadow.is_some());
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("filter: drop-shadow(2px 4px 4px red)", None, None);
+        assert!(layout.paint.filter.unwrap().drop_shadow.is_some());
+    }
+
+    #[test]
+    fn filter_drop_shadow_clamps_blur_and_rejects_spread() {
+        let filter = parse_color_filter("drop-shadow(0 0 200px black)").unwrap();
+        assert!(
+            (filter.drop_shadow.unwrap().blur_radius - ColorFilter::MAX_BLUR_RADIUS).abs() < 0.01
+        );
+        assert!(parse_color_filter("drop-shadow(0 0 4px 2px black)").is_none());
+        assert!(parse_color_filter("drop-shadow(inset 0 0 4px black)").is_none());
+        assert!(
+            parse_color_filter("drop-shadow(0 0 4px black) drop-shadow(1px 1px black)").is_none()
+        );
+    }
+
+    #[test]
+    fn filter_unknown_functions_fail_closed() {
+        assert!(parse_color_filter("sepia()").is_none());
+        assert!(parse_color_filter("brightness(0.5) sepia()").is_none());
+        assert!(parse_color_filter("brightness(0.5)sepia()").is_none());
+        assert!(parse_color_filter("brightness(0.5)\tsepia()").is_none());
+        assert!(parse_color_filter("brightness(0.5)\nsepia()").is_none());
+        assert!(parse_color_filter("url(#svg-filter)").is_none());
+        assert!(parse_color_filter("brightness(0.5) url(#svg-filter)").is_none());
+        assert!(parse_color_filter("brightness(0.5)url(#svg-filter)").is_none());
+        assert!(parse_color_filter("drop-shadow(0 0 4px black) sepia()").is_none());
+        assert!(parse_color_filter("blur(200px) sepia()").is_none());
+    }
+
+    #[test]
+    fn filter_empty_none_and_identity_are_unused() {
+        assert!(parse_color_filter("").is_none());
+        assert!(parse_color_filter("   ").is_none());
+        assert!(parse_color_filter("none").is_none());
+        assert!(parse_color_filter("NONE").is_none());
+        assert!(parse_color_filter("brightness(1)").is_none());
+        assert!(parse_color_filter("brightness(1) saturate(1) contrast(1)").is_none());
+        assert!(parse_color_filter("hue-rotate(0deg) blur(0)").is_none());
+    }
+
+    #[test]
+    fn outline_is_paint_only_stroke() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("outline: 2px solid red", None, None);
+        assert!(layout.paint.outline.is_active());
+        assert!((layout.paint.outline.width - 2.0).abs() < 0.01);
+        assert!(layout.border_width.is_none());
+        layout.apply_css_text("outline-style: none", None, None);
+        assert!(!layout.paint.outline.is_active());
+    }
+
+    #[test]
+    fn mix_blend_mode_subset_fails_closed() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("mix-blend-mode: multiply", None, None);
+        assert_eq!(layout.paint.mix_blend, MixBlendMode::Multiply);
+        layout.apply_css_text("mix-blend-mode: overlay", None, None);
+        assert_eq!(
+            layout.paint.mix_blend,
+            MixBlendMode::Multiply,
+            "unknown modes must fail closed"
+        );
+        layout.apply_css_text("mix-blend-mode: screen", None, None);
+        assert_eq!(layout.paint.mix_blend, MixBlendMode::Screen);
+        layout.apply_css_text("mix-blend-mode: normal", None, None);
+        assert!(layout.paint.mix_blend.is_normal());
+    }
+
+    #[test]
+    fn line_clamp_enables_ellipsis_and_wrap() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("-webkit-line-clamp: 2", None, None);
+        assert_eq!(layout.line_clamp, Some(2));
+        assert!(layout.uses_text_ellipsis());
+        assert!(!layout.white_space_nowrap);
+        assert_eq!(layout.overflow_x, OverflowSpec::Hidden);
+        assert_eq!(layout.overflow_y, OverflowSpec::Hidden);
+        layout.apply_css_text("line-clamp: none", None, None);
+        assert!(layout.line_clamp.is_none());
+    }
+
+    #[test]
+    fn text_decoration_underline_and_line_through() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("text-decoration: underline", None, None);
+        let deco = layout.text_decoration.expect("underline");
+        assert!(deco.underline);
+        assert!(!deco.line_through);
+        layout.apply_css_text("text-decoration: underline line-through", None, None);
+        let deco = layout.text_decoration.expect("both");
+        assert!(deco.underline && deco.line_through);
+        layout.apply_css_text("text-decoration: none", None, None);
+        assert_eq!(layout.text_decoration, Some(TextDecorationLine::default()));
+        layout.apply_css_text("text-decoration: overline", None, None);
+        assert_eq!(
+            layout.text_decoration,
+            Some(TextDecorationLine::default()),
+            "overline fails closed (Scene stroke is underline / line-through only)"
+        );
+    }
+
+    #[test]
+    fn font_feature_settings_parse_and_variation_fails_closed() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("font-feature-settings: \"liga\" 1, 'kern' off", None, None);
+        let features = layout.font_features.as_ref().expect("features");
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].tag, *b"liga");
+        assert_eq!(features[0].value, 1);
+        assert_eq!(features[1].tag, *b"kern");
+        assert_eq!(features[1].value, 0);
+        layout.apply_css_text("font-feature-settings: normal", None, None);
+        assert_eq!(layout.font_features.as_deref(), Some(&[][..]));
+
+        layout.apply_css_text("font-variation-settings: \"wght\" 700", None, None);
+        assert!(!layout.unsupported_font_variation);
+        assert_eq!(layout.font_weight, Some(700));
+        layout.apply_css_text("font-variation-settings: \"BEVL\" 1", None, None);
+        assert!(layout.unsupported_font_variation);
+        layout.apply_css_text(
+            "font-variation-settings: \"wght\" 400, \"wdth\" 100",
+            None,
+            None,
+        );
+        assert!(layout.unsupported_font_variation);
+        layout.apply_css_text("font-variation-settings: normal", None, None);
+        assert!(!layout.unsupported_font_variation);
+    }
+
+    #[test]
+    fn pointer_events_none_and_auto() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("pointer-events: none", None, None);
+        assert_eq!(layout.pointer_events, Some(PointerEventsSpec::None));
+        layout.apply_css_text("pointer-events: auto", None, None);
+        assert_eq!(layout.pointer_events, Some(PointerEventsSpec::Auto));
+        layout.apply_css_text("pointer-events: inherit", None, None);
+        assert_eq!(layout.pointer_events, None);
+        layout.apply_css_text("pointer-events: none", None, None);
+        layout.apply_css_text("pointer-events: visiblePainted", None, None);
+        assert_eq!(
+            layout.pointer_events,
+            Some(PointerEventsSpec::None),
+            "unknown values fail closed and keep the last specified value"
+        );
+    }
+
+    #[test]
+    fn border_image_url_slice_fill_is_supported() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-image: url(\"frame.png\") 30 fill", None, None);
+        assert!(!layout.paint.unsupported_border_image);
+        let spec = layout.paint.border_image.as_ref().expect("border-image");
+        assert_eq!(spec.source.url_str(), Some("frame.png"));
+        assert!(spec.fill);
+        assert_eq!(spec.slice, [BorderImageSlice::Number(30.0); 4]);
+        assert!(layout.paint.background_image.is_none());
+        layout.apply_css_text("border-image: none", None, None);
+        assert!(layout.paint.border_image.is_none());
+        assert!(!layout.paint.unsupported_border_image);
+    }
+
+    #[test]
+    fn border_image_linear_gradient_slice_parses() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-image: linear-gradient(red, blue) 20% fill",
+            None,
+            None,
+        );
+        let spec = layout.paint.border_image.as_ref().expect("gradient");
+        assert!(matches!(
+            spec.source,
+            BackgroundImage::Gradient(CssGradient::Linear(_))
+        ));
+        assert_eq!(spec.slice, [BorderImageSlice::Percent(20.0); 4]);
+        assert!(spec.fill);
+        assert!(!layout.paint.unsupported_border_image);
+    }
+
+    #[test]
+    fn border_image_repeat_and_radial_fail_closed() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-image: url(\"frame.png\") 30 round", None, None);
+        assert!(layout.paint.unsupported_border_image);
+        assert!(layout.paint.border_image.is_none());
+        layout.apply_css_text("border-image: none", None, None);
+        layout.apply_css_text(
+            "border-image: radial-gradient(circle, red, blue) 30 fill",
+            None,
+            None,
+        );
+        assert!(layout.paint.unsupported_border_image);
+        assert!(layout.paint.border_image.is_none());
+    }
+
+    #[test]
+    fn border_image_repeat_before_source_stays_unsupported() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-image-repeat: round; border-image-source: url(\"frame.png\"); border-image-slice: 30 fill",
+            None,
+            None,
+        );
+        assert!(layout.paint.unsupported_border_image);
+        assert!(
+            layout.paint.border_image.is_none(),
+            "later source/slice must not install a stretch 9-slice"
+        );
+    }
+
+    #[test]
+    fn border_image_width_before_source_stays_unsupported() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-image-width: 2; border-image-source: url(\"frame.png\"); border-image-slice: 30 fill",
+            None,
+            None,
+        );
+        assert!(layout.paint.unsupported_border_image);
+        assert!(layout.paint.border_image.is_none());
+    }
+
+    #[test]
+    fn border_image_outset_before_source_stays_unsupported() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-image-outset: 4px; border-image-source: url(\"frame.png\"); border-image-slice: 30 fill",
+            None,
+            None,
+        );
+        assert!(layout.paint.unsupported_border_image);
+        assert!(layout.paint.border_image.is_none());
+    }
+
+    #[test]
+    fn box_shadow_inset_and_multiple_layers() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "box-shadow: inset 2px 2px 4px black, 0 4px 8px rgba(0,0,0,0.5), 0 1px 0 red, 0 2px 0 blue, 0 3px 0 green",
+            None,
+            None,
+        );
+        assert_eq!(layout.paint.box_shadows.len(), 4);
+        assert!(layout.paint.box_shadows[0].inset);
+        assert!(!layout.paint.box_shadows[1].inset);
     }
 }

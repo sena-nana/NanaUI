@@ -1,0 +1,24 @@
+{
+  "id": "T-S22",
+  "title": "nested mixed-unit min/max vs containing block",
+  "status": "pass",
+  "viewport": [200, 240],
+  "tolerance_px": 1,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:200px;height:200px;align-items:flex-start;gap:8px",
+    "children": [
+      { "id": "nest", "style": "width:min(80px, max(10px, 20%));height:20px" },
+      { "id": "cap", "style": "width:min(80px, max(10px, 50%));height:20px" },
+      { "id": "nary", "style": "width:min(1px, 2%, 3px);height:20px" },
+      { "id": "clampish", "style": "width:max(10px, min(50%, 30px));height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 200 },
+    { "id": "nest", "x": 0, "y": 0, "w": 40, "h": 20 },
+    { "id": "cap", "x": 0, "y": 28, "w": 80, "h": 20 },
+    { "id": "nary", "x": 0, "y": 56, "w": 1, "h": 20 },
+    { "id": "clampish", "x": 0, "y": 84, "w": 30, "h": 20 }
+  ]
+}

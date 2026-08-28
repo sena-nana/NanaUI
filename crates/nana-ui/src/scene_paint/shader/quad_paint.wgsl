@@ -18,11 +18,13 @@ fn source_over_premult(base: vec4<f32>, src: vec4<f32>) -> vec4<f32> {
 }
 
 fn apply_color_filter(color: vec4<f32>, paint: QuadPaintData) -> vec4<f32> {
-    var rgb = color.xyz * paint.filter_b;
-    let lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-    rgb = mix(vec3(lum), rgb, paint.filter_s);
-    rgb = (rgb - 0.5) * paint.filter_c + 0.5;
-    return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a);
+    return apply_color_filter_channels(
+        color,
+        paint.filter_b,
+        paint.filter_s,
+        paint.filter_c,
+        paint.filter_hue,
+    );
 }
 
 fn point_in_polygon(local: vec2<f32>, paint: QuadPaintData) -> bool {
@@ -48,26 +50,22 @@ fn point_in_polygon(local: vec2<f32>, paint: QuadPaintData) -> bool {
 }
 
 fn sample_url(local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
-    var uv = local;
-    let dims = textureDimensions(url_tex);
-    let tex_aspect = f32(dims.x) / max(f32(dims.y), 1.0);
-    let box_aspect = 1.0;
-    if (paint.url_fit == 0u) {
-        if (tex_aspect > box_aspect) {
-            let scale = box_aspect / tex_aspect;
-            uv.x = (local.x - 0.5) / scale + 0.5;
-        } else {
-            let scale = tex_aspect / box_aspect;
-            uv.y = (local.y - 0.5) / scale + 0.5;
-        }
-    } else if (paint.url_fit == 1u) {
-        if (tex_aspect > box_aspect) {
-            let scale = tex_aspect / box_aspect;
-            uv.y = (local.y - 0.5) / scale + 0.5;
-        } else {
-            let scale = box_aspect / tex_aspect;
-            uv.x = (local.x - 0.5) / scale + 0.5;
-        }
+    let dest = paint.url_dest;
+    if (dest.z <= 0.0001 || dest.w <= 0.0001) {
+        return vec4(0.0);
+    }
+    var uv = (local - dest.xy) / dest.zw;
+    let repeat_x = (paint.url_tex_index & 1u) != 0u;
+    let repeat_y = (paint.url_tex_index & 2u) != 0u;
+    if (repeat_x) {
+        uv.x = fract(uv.x);
+    } else if (uv.x < 0.0 || uv.x > 1.0) {
+        return vec4(0.0);
+    }
+    if (repeat_y) {
+        uv.y = fract(uv.y);
+    } else if (uv.y < 0.0 || uv.y > 1.0) {
+        return vec4(0.0);
     }
     return textureSample(url_tex, url_sampler, uv);
 }

@@ -5,8 +5,7 @@ use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
     AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
     FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec,
-    resolve_grid_track_sizes,
+    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, resolve_grid_track_sizes,
 };
 
 use crate::{
@@ -34,7 +33,8 @@ impl LayoutViewport {
 ///
 /// Consumes the same `LayoutStyle` and shaped text metrics stored in `UiWorld`
 /// (flex wrap / `display:grid` 2D tracks·repeat·areas·placement via
-/// `uses_2d_grid` / percent / calc / absolute / fixed / float / IFC subset)
+/// `uses_2d_grid` / percent / calc / absolute / fixed / float / IFC subset
+/// including shrink-to-avoid-float line boxes beside sibling floats)
 /// and returns atomic layout writeback. Vue `measure_layout` and css-parity
 /// call [`Self::layout_style_tree`] so mixed trees and fixtures share this
 /// algorithm.
@@ -528,6 +528,12 @@ struct PackedFloat {
     id: StableNodeId,
     origin: Point,
     size: Size,
+    side: FloatSpec,
+    /// Margin-box left in the same space as [`Self::origin`].
+    occupy_x: f32,
+    occupy_y: f32,
+    occupy_w: f32,
+    occupy_h: f32,
 }
 
 #[derive(Debug, Default)]
@@ -537,6 +543,61 @@ struct PackedFloats {
     left_bottom: f32,
     /// Occupied bottom of right floats after pack/wrap, relative to content origin.
     right_bottom: f32,
+}
+
+impl PackedFloats {
+    /// Left/right insets at content-relative `y` (line-box top), from sibling
+    /// float margin boxes. Not ancestor intrusion / `shape-outside`.
+    fn insets_at_y(&self, content_origin: Point, content_width: f32, y: f32) -> (f32, f32) {
+        let abs_y = content_origin.y + y;
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        for item in &self.items {
+            let top = item.occupy_y;
+            let bottom = item.occupy_y + item.occupy_h;
+            if abs_y + 0.5 < top || abs_y >= bottom - 0.5 {
+                continue;
+            }
+            match item.side {
+                FloatSpec::Right => {
+                    let occupy_left = item.occupy_x - content_origin.x;
+                    right = right.max((content_width - occupy_left).max(0.0));
+                }
+                _ => {
+                    let occupy_right = item.occupy_x + item.occupy_w - content_origin.x;
+                    left = left.max(occupy_right.max(0.0));
+                }
+            }
+        }
+        (left, right)
+    }
+
+    /// Nearest float margin-box bottom below `y` among floats that occupy `y`.
+    fn next_bottom_after(&self, content_origin: Point, y: f32) -> Option<f32> {
+        let abs_y = content_origin.y + y;
+        let mut best: Option<f32> = None;
+        for item in &self.items {
+            let top = item.occupy_y;
+            let bottom = item.occupy_y + item.occupy_h - content_origin.y;
+            if top > abs_y + 0.5 || bottom <= y + 0.5 {
+                continue;
+            }
+            best = Some(best.map_or(bottom, |value| value.min(bottom)));
+        }
+        best
+    }
+}
+
+/// One wrap line: child indices plus the shortened IFC line box (full width when
+/// not avoiding floats).
+#[derive(Debug, Clone)]
+struct LineBoxSlot {
+    indices: Vec<usize>,
+    main_start: f32,
+    main_available: f32,
+    /// Content-relative cross start after float drop / `clear` (IFC only).
+    cross_y: f32,
+    pin_cross: bool,
 }
 
 /// Geometric same-side pack/wrap. Bottoms are the occupied extent after wrapping,
@@ -629,6 +690,11 @@ fn pack_floated_children(
             id: *child,
             origin: Point { x, y },
             size: child_size,
+            side: child_style.float,
+            occupy_x: x - margin.left,
+            occupy_y: y - margin.top,
+            occupy_w: outer_w,
+            occupy_h: child_size.height + margin.top + margin.bottom,
         });
     }
     Ok(PackedFloats {
@@ -759,10 +825,10 @@ fn intrinsic_size_scoped(
     let fonts = fonts_of(style, parent_font_px);
     let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against_fonts(Some(available.width), fonts);
-    let border = style.resolved_border_width();
+    let border = style.resolved_border_edges();
     let chrome = Size::new(
-        padding.left + padding.right + border * 2.0,
-        padding.top + padding.bottom + border * 2.0,
+        padding.left + padding.right + border.left + border.right,
+        padding.top + padding.bottom + border.top + border.bottom,
     );
     let content_available = Size::new(
         (available.width - chrome.width).max(0.0),
@@ -1065,14 +1131,14 @@ fn place_node_scoped(
     }
 
     let padding = style.resolved_padding_against_fonts(Some(size.width), fonts);
-    let border = style.resolved_border_width();
+    let border = style.resolved_border_edges();
     let content_origin = Point {
-        x: origin.x + border + padding.left,
-        y: origin.y + border + padding.top,
+        x: origin.x + border.left + padding.left,
+        y: origin.y + border.top + padding.top,
     };
     let content = Size::new(
-        size.width - padding.left - padding.right - border * 2.0,
-        size.height - padding.top - padding.bottom - border * 2.0,
+        size.width - padding.left - padding.right - border.left - border.right,
+        size.height - padding.top - padding.bottom - border.top - border.bottom,
     );
     let mut direction = style.direction.unwrap_or(FlexDirection::Column);
     let mut flow = collect_flow_children(&child_ids, nodes)?;
@@ -1170,43 +1236,79 @@ fn place_node_scoped(
             FlexDirection::Column => style.active_grid_rows(),
         };
         let mut justify = if ifc {
-            match style.text_align {
-                TextAlignSpec::Start => JustifySpec::Start,
-                TextAlignSpec::Center => JustifySpec::Center,
-                TextAlignSpec::End => JustifySpec::End,
-            }
+            style.text_align.to_justify(style.is_rtl())
         } else {
             style.justify_content
         };
         if style.flex_reverse && !ifc {
             justify = flip_justify_for_reverse(justify);
         }
-        let mut lines = if wrapping {
-            pack_wrap_lines(
-                &flow,
-                &child_sizes,
-                direction,
-                main_extent(content, direction),
-                gap,
-                grid_tracks,
-                viewport,
-                child_font_px,
-                nodes,
-                ifc,
-            )
+        let full_main = main_extent(content, direction);
+        let mut line_slots = if wrapping {
+            if ifc {
+                pack_ifc_line_boxes(
+                    &flow,
+                    &child_sizes,
+                    content_origin,
+                    content.width,
+                    gap,
+                    cross_gap,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    &packed_floats,
+                )
+            } else {
+                pack_wrap_lines(
+                    &flow,
+                    &child_sizes,
+                    direction,
+                    full_main,
+                    gap,
+                    grid_tracks,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    false,
+                )
+                .into_iter()
+                .map(|indices| LineBoxSlot {
+                    indices,
+                    main_start: 0.0,
+                    main_available: full_main,
+                    cross_y: 0.0,
+                    pin_cross: false,
+                })
+                .collect()
+            }
         } else {
-            vec![(0..flow.len()).collect()]
+            vec![LineBoxSlot {
+                indices: (0..flow.len()).collect(),
+                main_start: 0.0,
+                main_available: full_main,
+                cross_y: 0.0,
+                pin_cross: false,
+            }]
         };
         if matches!(wrap, FlexWrap::WrapReverse) {
-            lines.reverse();
+            line_slots.reverse();
         }
-        let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32)> = Vec::with_capacity(lines.len());
-        for line in &lines {
-            let line_flow: Vec<StableNodeId> = line.iter().map(|&index| flow[index]).collect();
-            let mut line_sizes: Vec<Size> = line.iter().map(|&index| child_sizes[index]).collect();
+        let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
+            Vec::with_capacity(line_slots.len());
+        for slot in &line_slots {
+            let line_flow: Vec<StableNodeId> =
+                slot.indices.iter().map(|&index| flow[index]).collect();
+            let mut line_sizes: Vec<Size> = slot
+                .indices
+                .iter()
+                .map(|&index| child_sizes[index])
+                .collect();
+            let mut line_content = content;
+            set_main_extent(&mut line_content, direction, slot.main_available);
             let line_tracks = grid_tracks.map(|tracks| {
-                let start = line.first().copied().unwrap_or(0);
-                let end = line
+                let start = slot.indices.first().copied().unwrap_or(0);
+                let end = slot
+                    .indices
                     .last()
                     .map(|index| index + 1)
                     .unwrap_or(0)
@@ -1219,7 +1321,7 @@ fn place_node_scoped(
                     &line_flow,
                     &mut line_sizes,
                     direction,
-                    content,
+                    line_content,
                     gap,
                     tracks,
                     viewport,
@@ -1233,7 +1335,7 @@ fn place_node_scoped(
                     &line_flow,
                     &mut line_sizes,
                     direction,
-                    content,
+                    line_content,
                     gap,
                     viewport,
                     child_font_px,
@@ -1256,12 +1358,23 @@ fn place_node_scoped(
                     cross_extent(*size, direction) + cross_margin(margin, direction)
                 })
                 .fold(0.0, f32::max);
-            packed.push((line_flow, line_sizes, line_cross));
+            packed.push((
+                line_flow,
+                line_sizes,
+                line_cross,
+                slot.main_start,
+                slot.main_available,
+                slot.cross_y,
+                slot.pin_cross,
+            ));
         }
         let line_count = packed.len();
         let container_cross = cross_extent(content, direction);
         let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
-            let total = packed.iter().map(|(_, _, cross)| *cross).sum::<f32>()
+            let total = packed
+                .iter()
+                .map(|(_, _, cross, _, _, _, _)| *cross)
+                .sum::<f32>()
                 + cross_gap * line_count.saturating_sub(1) as f32;
             if matches!(
                 style.align_content,
@@ -1286,7 +1399,19 @@ fn place_node_scoped(
         } else {
             (0.0, cross_gap)
         };
-        for (line_flow, line_sizes, line_cross) in packed {
+        for (
+            line_flow,
+            line_sizes,
+            line_cross,
+            line_origin_main,
+            line_main_available,
+            line_cross_y,
+            pin_cross,
+        ) in packed
+        {
+            if pin_cross {
+                cross_cursor = cross_cursor.max(line_cross_y);
+            }
             let occupied = main_occupied(
                 &line_flow,
                 &line_sizes,
@@ -1298,16 +1423,11 @@ fn place_node_scoped(
             );
             let auto_main = count_auto_main_margins(&line_flow, direction, nodes);
             let (mut cursor, effective_gap, auto_main_share) = if auto_main > 0 {
-                let free = (main_extent(content, direction) - occupied).max(0.0);
+                let free = (line_main_available - occupied).max(0.0);
                 (0.0, gap, free / auto_main as f32)
             } else {
-                let (start, extra_gap) = justify_offsets(
-                    justify,
-                    main_extent(content, direction),
-                    occupied,
-                    gap,
-                    line_flow.len(),
-                );
+                let (start, extra_gap) =
+                    justify_offsets(justify, line_main_available, occupied, gap, line_flow.len());
                 (start, extra_gap, 0.0)
             };
             let line_baseline = line_flow
@@ -1374,7 +1494,7 @@ fn place_node_scoped(
                             .max(0.0)
                     }
                 };
-                let main_start = cursor + main_start_margin(margin, direction);
+                let main_start = line_origin_main + cursor + main_start_margin(margin, direction);
                 let child_origin = match direction {
                     FlexDirection::Row => Point {
                         x: content_origin.x + main_start,
@@ -1899,11 +2019,11 @@ fn content_box_main_border_size(
         return content_main;
     }
     let pad = style.resolved_padding_against_fonts(margin_percent_base, fonts);
-    let border = style.resolved_border_width();
+    let border = style.resolved_border_edges();
     content_main
         + match direction {
-            FlexDirection::Row => pad.left + pad.right + 2.0 * border,
-            FlexDirection::Column => pad.top + pad.bottom + 2.0 * border,
+            FlexDirection::Row => pad.left + pad.right + border.left + border.right,
+            FlexDirection::Column => pad.top + pad.bottom + border.top + border.bottom,
         }
 }
 
@@ -2762,6 +2882,206 @@ fn pack_wrap_lines(
     lines
 }
 
+fn ifc_item_outer(
+    style: &LayoutStyle,
+    size: Size,
+    content_width: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+) -> (f32, f32) {
+    let direction = FlexDirection::Row;
+    let margin =
+        style.resolved_margin_against_fonts(Some(content_width), fonts_of(style, parent_font_px));
+    let main = packing_main_size(
+        style,
+        size,
+        direction,
+        content_width,
+        viewport,
+        parent_font_px,
+        None,
+    );
+    let outer_main =
+        main + main_start_margin(margin, direction) + main_end_margin(margin, direction);
+    let outer_cross = cross_extent(size, direction) + cross_margin(margin, direction);
+    (outer_main, outer_cross)
+}
+
+/// IFC wrap using the existing content-width line packer, with per-line available
+/// width reduced by sibling float occupancy (shrink-to-avoid-float).
+#[allow(clippy::too_many_arguments)]
+fn pack_ifc_line_boxes(
+    children: &[StableNodeId],
+    sizes: &[Size],
+    content_origin: Point,
+    content_width: f32,
+    gap: f32,
+    cross_gap: f32,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+    packed_floats: &PackedFloats,
+) -> Vec<LineBoxSlot> {
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    let mut line_main = 0.0f32;
+    let mut line_y = 0.0f32;
+    let mut left_inset = 0.0f32;
+    let mut available = content_width;
+    let refresh = |line_y: f32, left_inset: &mut f32, available: &mut f32| {
+        let (left, right) = packed_floats.insets_at_y(content_origin, content_width, line_y);
+        *left_inset = left;
+        *available = (content_width - left - right).max(0.0);
+    };
+    refresh(line_y, &mut left_inset, &mut available);
+    let flush = |lines: &mut Vec<LineBoxSlot>,
+                 current: &mut Vec<usize>,
+                 line_main: &mut f32,
+                 line_y: &mut f32,
+                 left_inset: &mut f32,
+                 available: &mut f32| {
+        if current.is_empty() {
+            return;
+        }
+        let line_cross = current
+            .iter()
+            .map(|&index| {
+                nodes
+                    .style(children[index])
+                    .map(|style| {
+                        ifc_item_outer(
+                            style.as_ref(),
+                            sizes[index],
+                            content_width,
+                            viewport,
+                            parent_font_px,
+                        )
+                        .1
+                    })
+                    .unwrap_or(0.0)
+            })
+            .fold(0.0f32, f32::max);
+        lines.push(LineBoxSlot {
+            indices: std::mem::take(current),
+            main_start: *left_inset,
+            main_available: *available,
+            cross_y: *line_y,
+            pin_cross: true,
+        });
+        *line_main = 0.0;
+        *line_y += line_cross + cross_gap;
+        refresh(*line_y, left_inset, available);
+    };
+    for (index, child) in children.iter().enumerate() {
+        let Some(style) = nodes.style(*child) else {
+            continue;
+        };
+        let style_ref = style.as_ref();
+        let clear_y = clear_offset(
+            style_ref.clear,
+            packed_floats.left_bottom,
+            packed_floats.right_bottom,
+        );
+        if clear_y > line_y + 0.5 {
+            flush(
+                &mut lines,
+                &mut current,
+                &mut line_main,
+                &mut line_y,
+                &mut left_inset,
+                &mut available,
+            );
+            line_y = clear_y;
+            refresh(line_y, &mut left_inset, &mut available);
+        }
+        let block_break = !style_ref.is_inline_level();
+        if block_break {
+            flush(
+                &mut lines,
+                &mut current,
+                &mut line_main,
+                &mut line_y,
+                &mut left_inset,
+                &mut available,
+            );
+            let (_, outer_cross) = ifc_item_outer(
+                style_ref,
+                sizes[index],
+                content_width,
+                viewport,
+                parent_font_px,
+            );
+            lines.push(LineBoxSlot {
+                indices: vec![index],
+                main_start: 0.0,
+                main_available: content_width,
+                cross_y: line_y,
+                pin_cross: true,
+            });
+            line_y += outer_cross + cross_gap;
+            refresh(line_y, &mut left_inset, &mut available);
+            continue;
+        }
+        let (outer, _) = ifc_item_outer(
+            style_ref,
+            sizes[index],
+            content_width,
+            viewport,
+            parent_font_px,
+        );
+        let need = if current.is_empty() {
+            outer
+        } else {
+            line_main + gap + outer
+        };
+        if !current.is_empty() && need > available + 0.5 {
+            flush(
+                &mut lines,
+                &mut current,
+                &mut line_main,
+                &mut line_y,
+                &mut left_inset,
+                &mut available,
+            );
+        }
+        if current.is_empty() && outer > available + 0.5 {
+            while outer > available + 0.5 {
+                match packed_floats.next_bottom_after(content_origin, line_y) {
+                    Some(next) if next > line_y + 0.5 => {
+                        line_y = next;
+                        refresh(line_y, &mut left_inset, &mut available);
+                    }
+                    _ => break,
+                }
+            }
+        }
+        if current.is_empty() {
+            line_main = outer;
+        } else {
+            line_main += gap + outer;
+        }
+        current.push(index);
+    }
+    flush(
+        &mut lines,
+        &mut current,
+        &mut line_main,
+        &mut line_y,
+        &mut left_inset,
+        &mut available,
+    );
+    if lines.is_empty() {
+        lines.push(LineBoxSlot {
+            indices: Vec::new(),
+            main_start: 0.0,
+            main_available: content_width,
+            cross_y: 0.0,
+            pin_cross: true,
+        });
+    }
+    lines
+}
+
 #[allow(clippy::too_many_arguments)]
 fn wrap_intrinsic_size(
     direction: FlexDirection,
@@ -3094,10 +3414,10 @@ fn distribute_flex_main(
             .unwrap_or(if fill_main { 1.0 } else { 0.0 })
             .max(0.0);
         grows.push(grow);
-        // Unspecified shrink stays 0 (not CSS initial 1) so overflowing
-        // definite rows (lists, toolbars) keep their boxes. Vue CSS that
-        // wants CSS shrink writes `flex-shrink` or `flex: initial`
-        // (`Some(1.0)`). css-parity T-F18/F19 set it explicitly.
+        // Unspecified longhand shrink stays 0 (not CSS initial 1) so overflowing
+        // definite rows (lists, toolbars) keep their boxes. `flex` shorthand that
+        // omits shrink writes `Some(1.0)` (`flex: initial`, `flex: N`, `flex: N <basis>`).
+        // css-parity T-F18/F19 set the longhand explicitly.
         shrinks.push(style.flex_shrink.unwrap_or(0.0).max(0.0));
         match resolve_child_main(main, content_main, viewport, fonts) {
             Some(value) => {
@@ -5167,6 +5487,247 @@ mod tests {
             (boxes["c"].y - 40.0).abs() < 0.5,
             "inline after block starts a new line, got {:?}",
             boxes["c"]
+        );
+    }
+
+    #[test]
+    fn ifc_text_align_start_packs_to_right_in_rtl() {
+        let inline = StyleLayoutNode {
+            id: "a".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                dir: Some(nana_ui_core::DirSpec::Rtl),
+                text_align: nana_ui_core::TextAlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![inline],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            (boxes["a"].x - 160.0).abs() < 0.5,
+            "text-align:start in rtl must pack to inline-start (right), got {:?}",
+            boxes["a"]
+        );
+    }
+
+    fn floated_box(id: &str, side: FloatSpec, width: f32, height: f32) -> StyleLayoutNode {
+        StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(width)),
+                height: Some(LengthSpec::Px(height)),
+                float: side,
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        }
+    }
+
+    fn inline_box(id: &str, width: f32, height: f32) -> StyleLayoutNode {
+        StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(width)),
+                height: Some(LengthSpec::Px(height)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        }
+    }
+
+    #[test]
+    fn ifc_line_box_shrinks_around_float_left() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("fl", FloatSpec::Left, 80.0, 40.0),
+                inline_box("a", 50.0, 20.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!((boxes["fl"].x - 0.0).abs() < 0.5);
+        assert!(
+            (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "IFC line box must start after the left float, not overlap, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            boxes["a"].x + 0.5 >= boxes["fl"].x + boxes["fl"].width
+                || boxes["a"].y + 0.5 >= boxes["fl"].y + boxes["fl"].height,
+            "inline vs float must not overlap, a={:?} fl={:?}",
+            boxes["a"],
+            boxes["fl"]
+        );
+    }
+
+    #[test]
+    fn ifc_inlines_wrap_in_width_beside_float() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("fl", FloatSpec::Left, 80.0, 40.0),
+                inline_box("a", 70.0, 20.0),
+                inline_box("b", 70.0, 20.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "first inline sits in the shortened line, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+            "70+70 exceeds remaining 120 so b wraps beside the float, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn ifc_uses_full_width_below_float() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("fl", FloatSpec::Left, 80.0, 40.0),
+                inline_box("a", 70.0, 20.0),
+                inline_box("b", 70.0, 20.0),
+                inline_box("c", 70.0, 20.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["c"].x - 0.0).abs() < 0.5 && (boxes["c"].y - 40.0).abs() < 0.5,
+            "below the float the line box is full width, got {:?}",
+            boxes["c"]
+        );
+    }
+
+    #[test]
+    fn ifc_oversized_inline_drops_below_float() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("fl", FloatSpec::Left, 80.0, 40.0),
+                inline_box("a", 150.0, 20.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["a"].x - 0.0).abs() < 0.5 && (boxes["a"].y - 40.0).abs() < 0.5,
+            "item wider than remaining width must drop below the float, got {:?}",
+            boxes["a"]
+        );
+    }
+
+    #[test]
+    fn ifc_line_box_shrinks_between_left_and_right_floats() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(300.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("left", FloatSpec::Left, 80.0, 40.0),
+                floated_box("right", FloatSpec::Right, 80.0, 40.0),
+                inline_box("a", 40.0, 20.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 300.0, 80.0);
+        assert!((boxes["left"].x - 0.0).abs() < 0.5);
+        assert!((boxes["right"].x - 220.0).abs() < 0.5);
+        assert!(
+            (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "line box sits between left and right floats, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            boxes["a"].x + boxes["a"].width <= boxes["right"].x + 0.5,
+            "inline must not overlap the right float, a={:?} right={:?}",
+            boxes["a"],
+            boxes["right"]
+        );
+    }
+
+    #[test]
+    fn in_flow_block_does_not_shrink_beside_float() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                floated_box("fl", FloatSpec::Left, 80.0, 40.0),
+                StyleLayoutNode {
+                    id: "block".into(),
+                    style: LayoutStyle {
+                        display: Some(DisplaySpec::Block),
+                        width: Some(LengthSpec::Px(100.0)),
+                        height: Some(LengthSpec::Px(20.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                },
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["block"].x - 0.0).abs() < 0.5 && (boxes["block"].y - 0.0).abs() < 0.5,
+            "block formatting does not shrink beside floats, got {:?}",
+            boxes["block"]
         );
     }
 

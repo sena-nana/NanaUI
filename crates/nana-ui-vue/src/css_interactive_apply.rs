@@ -11,7 +11,7 @@ use crate::css_interactive::{
     MotionDeclarations, MotionStyleRule, matched_interactive_rules, matched_motion_rules,
     partition_motion_entries,
 };
-use crate::css_map::{LayoutStyle, LayoutStyleCss};
+use crate::css_map::{LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode};
 
 /// Resolved transition / animation longhands exposed to `getComputedStyle`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -60,14 +60,26 @@ impl InteractiveRuntimeSnapshot {
     }
 }
 
-/// Paint fields interpolated by CSS transitions / keyframes.
+/// Paint and interpolable layout-size fields for CSS transitions / keyframes.
+///
+/// `transform_origin` is the Copy [`nana_ui_core::TransformOrigin`] on
+/// [`LayoutStyle`]: paint-only, same TRANSFORM dirty as `transform`, not a
+/// layout length. `width` / `height` share this snapshot and the existing
+/// `LengthSpec` lerp; applying them dirties LAYOUT. Non-interpolable sizes
+/// (`min()`/`max()`/`clamp()`, other calc than percent±px) fail closed — they
+/// take the target, they do not snap-fake a mid. Padding is not in this
+/// snapshot. `MotionDeclarations` stays animation/transition longhands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CssPaintSnapshot {
     pub opacity: Option<f32>,
     pub color: Option<[f32; 4]>,
     pub background: Option<[f32; 4]>,
     pub transform: Option<nana_ui_core::box_layout::PaintTransform>,
+    pub transform_3d: Option<nana_ui_core::box_layout::PaintMat4>,
+    pub transform_origin: Option<nana_ui_core::box_layout::TransformOrigin>,
     pub filter: Option<nana_ui_core::box_layout::ColorFilter>,
+    pub width: Option<nana_ui_core::box_layout::LengthSpec>,
+    pub height: Option<nana_ui_core::box_layout::LengthSpec>,
 }
 
 impl CssPaintSnapshot {
@@ -77,7 +89,11 @@ impl CssPaintSnapshot {
             color: layout.color,
             background: layout.background,
             transform: layout.transform,
+            transform_3d: layout.transform_3d,
+            transform_origin: layout.transform_origin,
             filter: layout.paint.filter,
+            width: layout.width,
+            height: layout.height,
         }
     }
 
@@ -93,8 +109,22 @@ impl CssPaintSnapshot {
         }
         if let Some(transform) = self.transform {
             layout.transform = Some(transform);
+            layout.transform_3d = None;
+        }
+        if let Some(transform_3d) = self.transform_3d {
+            layout.transform_3d = Some(transform_3d);
+            layout.transform = None;
+        }
+        if let Some(origin) = self.transform_origin {
+            layout.transform_origin = Some(origin);
         }
         layout.paint.filter = self.filter;
+        if let Some(width) = self.width {
+            layout.width = Some(width);
+        }
+        if let Some(height) = self.height {
+            layout.height = Some(height);
+        }
     }
 }
 
@@ -147,7 +177,10 @@ pub fn apply_interactive_declarations(
             .then(a.2.cmp(&b.2))
             .then(a.3.cmp(&b.3))
     });
-    for (_, _, _, _, entry) in entries {
+    let (dir_entries, rest): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|(_, _, _, _, entry)| css_key_is_direction_or_writing_mode(&entry.property));
+    for (_, _, _, _, entry) in dir_entries.into_iter().chain(rest) {
         layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
     }
 }
@@ -159,12 +192,34 @@ pub fn apply_generated_pseudo_entries(
     percent_h: Option<f32>,
 ) {
     for block in blocks {
-        for entry in block {
-            if entry.property.eq_ignore_ascii_case("content") {
-                continue;
-            }
+        let (dir_entries, rest): (Vec<_>, Vec<_>) = block
+            .iter()
+            .filter(|e| !e.property.eq_ignore_ascii_case("content"))
+            .partition(|e| css_key_is_direction_or_writing_mode(&e.property));
+        for entry in dir_entries.into_iter().chain(rest) {
             layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
         }
+    }
+}
+
+/// Map `::placeholder` color/opacity onto the originating TextInput layout.
+/// Other declarations are ignored — this is not a generated box.
+pub fn apply_placeholder_paint(
+    layout: &mut LayoutStyle,
+    blocks: &[Vec<DeclarationEntry>],
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let mut paint = LayoutStyle::default();
+    apply_generated_pseudo_entries(&mut paint, blocks, percent_w, percent_h);
+    if paint.color.is_some() {
+        layout.placeholder_color = paint.color;
+    }
+    if paint.opacity.is_some() {
+        layout.placeholder_opacity = paint.opacity;
     }
 }
 
@@ -463,10 +518,30 @@ pub fn lerp_paint_for_properties(
         } else {
             to.transform.or(from.transform)
         },
+        transform_3d: if applies("transform") {
+            lerp_transform_3d(from.transform_3d, to.transform_3d, t)
+        } else {
+            to.transform_3d.or(from.transform_3d)
+        },
+        transform_origin: if applies("transform-origin") {
+            lerp_transform_origin(from.transform_origin, to.transform_origin, t)
+        } else {
+            to.transform_origin.or(from.transform_origin)
+        },
         filter: if applies("filter") {
             lerp_filter(from.filter, to.filter, t)
         } else {
             to.filter.or(from.filter)
+        },
+        width: if applies("width") {
+            lerp_layout_length(from.width, to.width, t)
+        } else {
+            to.width.or(from.width)
+        },
+        height: if applies("height") {
+            lerp_layout_length(from.height, to.height, t)
+        } else {
+            to.height.or(from.height)
         },
     }
 }
@@ -486,6 +561,26 @@ fn lerp_color(from: Option<[f32; 4]>, to: Option<[f32; 4]>, t: f32) -> Option<[f
     }
 }
 
+fn lerp_transform_3d(
+    from: Option<nana_ui_core::box_layout::PaintMat4>,
+    to: Option<nana_ui_core::box_layout::PaintMat4>,
+    t: f32,
+) -> Option<nana_ui_core::box_layout::PaintMat4> {
+    use nana_ui_core::box_layout::PaintMat4;
+    match (from, to) {
+        (None, None) => None,
+        (a, b) => {
+            let a = a.unwrap_or(PaintMat4::IDENTITY);
+            let b = b.unwrap_or(PaintMat4::IDENTITY);
+            let mut m = [0.0f32; 16];
+            for i in 0..16 {
+                m[i] = a.m[i] + (b.m[i] - a.m[i]) * t;
+            }
+            PaintMat4::from_matrix3d(m)
+        }
+    }
+}
+
 fn lerp_transform(
     from: Option<nana_ui_core::box_layout::PaintTransform>,
     to: Option<nana_ui_core::box_layout::PaintTransform>,
@@ -493,17 +588,120 @@ fn lerp_transform(
 ) -> Option<nana_ui_core::box_layout::PaintTransform> {
     use nana_ui_core::box_layout::PaintTransform;
     match (from, to) {
-        (Some(a), Some(b)) => Some(PaintTransform {
-            a: a.a + (b.a - a.a) * t,
-            b: a.b + (b.b - a.b) * t,
-            c: a.c + (b.c - a.c) * t,
-            d: a.d + (b.d - a.d) * t,
-            e: a.e + (b.e - a.e) * t,
-            f: a.f + (b.f - a.f) * t,
-        }),
         (None, None) => None,
-        (None, Some(b)) => Some(b),
-        (Some(a), None) => Some(a),
+        (a, b) => {
+            let a = a.unwrap_or_default();
+            let b = b.unwrap_or_default();
+            Some(PaintTransform {
+                a: a.a + (b.a - a.a) * t,
+                b: a.b + (b.b - a.b) * t,
+                c: a.c + (b.c - a.c) * t,
+                d: a.d + (b.d - a.d) * t,
+                e: a.e + (b.e - a.e) * t,
+                f: a.f + (b.f - a.f) * t,
+            })
+        }
+    }
+}
+
+fn lerp_transform_origin(
+    from: Option<nana_ui_core::box_layout::TransformOrigin>,
+    to: Option<nana_ui_core::box_layout::TransformOrigin>,
+    t: f32,
+) -> Option<nana_ui_core::box_layout::TransformOrigin> {
+    use nana_ui_core::box_layout::TransformOrigin;
+    match (from, to) {
+        (None, None) => None,
+        (a, b) => {
+            let a = a.unwrap_or_default();
+            let b = b.unwrap_or_default();
+            Some(TransformOrigin {
+                x: lerp_length_spec(a.x, b.x, t),
+                y: lerp_length_spec(a.y, b.y, t),
+            })
+        }
+    }
+}
+
+fn lerp_layout_length(
+    from: Option<nana_ui_core::box_layout::LengthSpec>,
+    to: Option<nana_ui_core::box_layout::LengthSpec>,
+    t: f32,
+) -> Option<nana_ui_core::box_layout::LengthSpec> {
+    match (from, to) {
+        (Some(a), Some(b)) if length_specs_honestly_interpolable(a, b) => {
+            Some(lerp_length_spec(a, b, t))
+        }
+        (_, b) => b,
+    }
+}
+
+fn length_specs_honestly_interpolable(
+    from: nana_ui_core::box_layout::LengthSpec,
+    to: nana_ui_core::box_layout::LengthSpec,
+) -> bool {
+    use nana_ui_core::box_layout::LengthSpec;
+    match (from, to) {
+        (LengthSpec::Em(_), LengthSpec::Em(_)) => true,
+        (LengthSpec::Rem(_), LengthSpec::Rem(_)) => true,
+        (
+            LengthSpec::Viewport {
+                axis: from_axis, ..
+            },
+            LengthSpec::Viewport { axis: to_axis, .. },
+        ) if from_axis == to_axis => true,
+        _ => length_as_percent_px(from).is_some() && length_as_percent_px(to).is_some(),
+    }
+}
+
+fn lerp_length_spec(
+    from: nana_ui_core::box_layout::LengthSpec,
+    to: nana_ui_core::box_layout::LengthSpec,
+    t: f32,
+) -> nana_ui_core::box_layout::LengthSpec {
+    use nana_ui_core::box_layout::LengthSpec;
+    const EPS: f32 = 1e-6;
+    match (from, to) {
+        (LengthSpec::Em(a), LengthSpec::Em(b)) => LengthSpec::Em(a + (b - a) * t),
+        (LengthSpec::Rem(a), LengthSpec::Rem(b)) => LengthSpec::Rem(a + (b - a) * t),
+        (
+            LengthSpec::Viewport {
+                axis: from_axis,
+                value: a,
+            },
+            LengthSpec::Viewport {
+                axis: to_axis,
+                value: b,
+            },
+        ) if from_axis == to_axis => LengthSpec::Viewport {
+            axis: from_axis,
+            value: a + (b - a) * t,
+        },
+        _ => match (length_as_percent_px(from), length_as_percent_px(to)) {
+            (Some((ap, ax)), Some((bp, bx))) => {
+                let percent = ap + (bp - ap) * t;
+                let offset_px = ax + (bx - ax) * t;
+                if percent.abs() < EPS {
+                    LengthSpec::Px(offset_px)
+                } else if offset_px.abs() < EPS {
+                    LengthSpec::Percent(percent)
+                } else {
+                    LengthSpec::CalcPercentOffset { percent, offset_px }
+                }
+            }
+            _ if t < 0.5 => from,
+            _ => to,
+        },
+    }
+}
+
+fn length_as_percent_px(spec: nana_ui_core::box_layout::LengthSpec) -> Option<(f32, f32)> {
+    use nana_ui_core::box_layout::LengthSpec;
+    match spec {
+        LengthSpec::Px(px) => Some((0.0, px)),
+        LengthSpec::Percent(pct) => Some((pct, 0.0)),
+        LengthSpec::CalcPercentOffset { percent, offset_px } => Some((percent, offset_px)),
+        _ => None,
     }
 }
 
@@ -518,10 +716,52 @@ fn lerp_filter(
             brightness: a.brightness + (b.brightness - a.brightness) * t,
             contrast: a.contrast + (b.contrast - a.contrast) * t,
             saturate: a.saturate + (b.saturate - a.saturate) * t,
+            hue_rotate_deg: a.hue_rotate_deg + (b.hue_rotate_deg - a.hue_rotate_deg) * t,
+            blur_radius: a.blur_radius + (b.blur_radius - a.blur_radius) * t,
+            drop_shadow: lerp_drop_shadow(a.drop_shadow, b.drop_shadow, t),
         }),
         (None, None) => None,
         (None, Some(b)) => Some(b),
         (Some(a), None) => Some(a),
+    }
+}
+
+fn lerp_drop_shadow(
+    from: Option<nana_ui_core::FilterDropShadow>,
+    to: Option<nana_ui_core::FilterDropShadow>,
+    t: f32,
+) -> Option<nana_ui_core::FilterDropShadow> {
+    use nana_ui_core::FilterDropShadow;
+    let zero = FilterDropShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur_radius: 0.0,
+        color: [0.0, 0.0, 0.0, 0.0],
+    };
+    if from.is_none() && to.is_none() {
+        return None;
+    }
+    let a = from.unwrap_or(zero);
+    let b = to.unwrap_or(zero);
+    let out = FilterDropShadow {
+        offset_x: a.offset_x + (b.offset_x - a.offset_x) * t,
+        offset_y: a.offset_y + (b.offset_y - a.offset_y) * t,
+        blur_radius: a.blur_radius + (b.blur_radius - a.blur_radius) * t,
+        color: [
+            a.color[0] + (b.color[0] - a.color[0]) * t,
+            a.color[1] + (b.color[1] - a.color[1]) * t,
+            a.color[2] + (b.color[2] - a.color[2]) * t,
+            a.color[3] + (b.color[3] - a.color[3]) * t,
+        ],
+    };
+    if out.color[3].abs() < 1e-5
+        && out.offset_x.abs() < 1e-5
+        && out.offset_y.abs() < 1e-5
+        && out.blur_radius <= 0.0
+    {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -664,6 +904,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
         let motion = resolve_computed_motion(&sheet.motion_rules, None, None, &ctx);
         assert!(motion.has_transition());
@@ -689,6 +931,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
         let mut base = LayoutStyle::default();
         crate::css_cascade::apply_stylesheet_to_layout(
@@ -741,6 +985,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
         let mut layout = LayoutStyle::default();
         apply_interactive_layers(
@@ -758,5 +1004,179 @@ mod tests {
             None,
         );
         assert_eq!(layout.color, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn lerp_interpolates_copy_transform_origin() {
+        use nana_ui_core::box_layout::{LengthSpec, TransformOrigin};
+
+        let from = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Percent(0.0),
+                y: LengthSpec::Percent(0.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Percent(100.0),
+                y: LengthSpec::Px(20.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mid = lerp_paint(&from, &to, 0.5);
+        assert_eq!(
+            mid.transform_origin,
+            Some(TransformOrigin {
+                x: LengthSpec::Percent(50.0),
+                y: LengthSpec::Px(10.0),
+            })
+        );
+
+        let mixed_from = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Percent(50.0),
+                y: LengthSpec::Px(0.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mixed_to = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Px(10.0),
+                y: LengthSpec::Px(0.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        assert_eq!(
+            lerp_paint(&mixed_from, &mixed_to, 0.5)
+                .transform_origin
+                .expect("origin")
+                .x,
+            LengthSpec::CalcPercentOffset {
+                percent: 25.0,
+                offset_px: 5.0,
+            }
+        );
+    }
+
+    #[test]
+    fn transition_property_transform_does_not_lerp_origin() {
+        use nana_ui_core::box_layout::{LengthSpec, TransformOrigin};
+
+        let from = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Percent(0.0),
+                y: LengthSpec::Percent(0.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            transform_origin: Some(TransformOrigin {
+                x: LengthSpec::Percent(100.0),
+                y: LengthSpec::Percent(100.0),
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mid = lerp_paint_for_properties(&from, &to, 0.5, &["transform".into()]);
+        assert_eq!(mid.transform_origin, to.transform_origin);
+        let origin_only = lerp_paint_for_properties(&from, &to, 0.5, &["transform-origin".into()]);
+        assert_eq!(
+            origin_only.transform_origin,
+            Some(TransformOrigin {
+                x: LengthSpec::Percent(50.0),
+                y: LengthSpec::Percent(50.0),
+            })
+        );
+    }
+
+    #[test]
+    fn keyframes_lerp_transform_origin() {
+        use crate::css_interactive::parse_keyframes_at_rule;
+        use nana_ui_core::box_layout::{LengthSpec, TransformOrigin};
+
+        let (rule, _) = parse_keyframes_at_rule(
+            "@keyframes pivot { from { transform-origin: 0 0; } to { transform-origin: 100% 100%; } }",
+            0,
+        )
+        .expect("keyframes");
+        let mid = keyframe_paint_at(&rule, 0.5).expect("sample");
+        assert_eq!(
+            mid.transform_origin,
+            Some(TransformOrigin {
+                x: LengthSpec::Percent(50.0),
+                y: LengthSpec::Percent(50.0),
+            })
+        );
+    }
+
+    #[test]
+    fn lerp_interpolates_px_width_and_height() {
+        use nana_ui_core::box_layout::LengthSpec;
+
+        let from = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(10.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mid = lerp_paint(&from, &to, 0.5);
+        assert_eq!(mid.width, Some(LengthSpec::Px(25.0)));
+        assert_eq!(mid.height, Some(LengthSpec::Px(50.0)));
+        let origin_only = lerp_paint_for_properties(&from, &to, 0.5, &["transform-origin".into()]);
+        assert_eq!(origin_only.width, to.width);
+        assert_eq!(origin_only.height, to.height);
+    }
+
+    #[test]
+    fn lerp_width_fail_closes_min2_without_snap_fake() {
+        use nana_ui_core::box_layout::{LengthAtom, LengthSpec};
+
+        let from = CssPaintSnapshot {
+            width: Some(LengthSpec::Min2(LengthAtom::Px(10.0), LengthAtom::Px(80.0))),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(40.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let early = lerp_paint(&from, &to, 0.25);
+        assert_eq!(
+            early.width, to.width,
+            "Min2 cannot interpolate; fail-closed to target, not t<0.5 snap-fake"
+        );
+        let calc_from = CssPaintSnapshot {
+            width: Some(LengthSpec::CalcEmOffset {
+                em: 2.0,
+                offset_px: 8.0,
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let calc_to = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(40.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        assert_eq!(
+            lerp_paint(&calc_from, &calc_to, 0.25).width,
+            calc_to.width,
+            "non percent±px calc cannot interpolate; fail-closed to target"
+        );
+    }
+
+    #[test]
+    fn keyframes_lerp_px_width() {
+        use crate::css_interactive::parse_keyframes_at_rule;
+        use nana_ui_core::box_layout::LengthSpec;
+
+        let (rule, _) = parse_keyframes_at_rule(
+            "@keyframes grow { from { width: 10px; } to { width: 40px; } }",
+            0,
+        )
+        .expect("keyframes");
+        let mid = keyframe_paint_at(&rule, 0.5).expect("sample");
+        assert_eq!(mid.width, Some(LengthSpec::Px(25.0)));
     }
 }

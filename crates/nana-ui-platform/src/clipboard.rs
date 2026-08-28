@@ -142,6 +142,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "android")]
+    fn android_default_clipboard_is_unsupported() {
+        let host = default_shared_clipboard();
+        let mut clip = host.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(clip.read_text().is_none());
+        assert!(!clip.write_text("nana"));
+    }
+
+    #[test]
     #[cfg(not(target_os = "android"))]
     fn os_clipboard_roundtrip_when_available() {
         let mut clip = OsClipboard::new();

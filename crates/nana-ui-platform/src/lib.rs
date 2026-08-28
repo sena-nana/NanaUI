@@ -84,8 +84,35 @@ mod tests {
 
     #[test]
     fn android_capabilities_do_not_claim_unwired_native_services() {
-        assert!(!PlatformCapabilities::android_mvp().ime);
-        assert!(!PlatformCapabilities::android_mvp().clipboard);
+        let caps = PlatformCapabilities::android_mvp();
+        assert!(!caps.ime);
+        assert!(!caps.clipboard);
+        assert!(!caps.desktop_shell);
+    }
+
+    /// Shared L1 fields via [`Default`] — Android does not fork `LayoutStyle`.
+    #[test]
+    fn experimental_android_shares_l1_layout_fields() {
+        let style = nana_ui_core::LayoutStyle::default();
+        let _pointer_events: Option<nana_ui_core::PointerEventsSpec> = style.pointer_events;
+        let _transform_3d: Option<nana_ui_core::PaintMat4> = style.transform_3d;
+        let _logical_padding: nana_ui_core::LogicalInlineEdges = style.logical_padding;
+        let _logical_margin: nana_ui_core::LogicalInlineEdges = style.logical_margin;
+        let _logical_inset: nana_ui_core::LogicalInlineEdges = style.logical_inset;
+    }
+
+    /// Compile cfg: Android is an experimental host OS, not a product UI target.
+    #[test]
+    fn android_is_not_a_product_os_cfg() {
+        #[cfg(target_os = "android")]
+        {
+            let _ = SurfacePhase::Pending;
+            assert!(!PlatformCapabilities::android_mvp().desktop_shell);
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            assert!(!cfg!(target_os = "android"));
+        }
     }
 }
 

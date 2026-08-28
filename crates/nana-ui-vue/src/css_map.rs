@@ -37,8 +37,8 @@
 //! `display: contents` → [`DisplaySpec::Contents`]（不生成盒，亦非 `omits_box`）。
 //! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
 //! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
-//! Style Model（`grid_*_repeat`），由布局展开。只有嵌套 auto-fit / auto-fill
-//! 或无法展开的语法才置 [`GridTrackListUnsupported`]。
+//! Style Model（`grid_*_repeat`），由布局展开。`subgrid`、嵌套 auto-fit / auto-fill
+//! 或无法展开的语法才置 [`GridTrackListUnsupported`]（不假装继承父轨）。
 //!
 //! ## margin / padding / gap
 //! 边长与 gap 存 [`LengthSpec`]（px / `%` / 轻量 calc）。margin/padding `%`
@@ -47,21 +47,30 @@
 //! 时不得静默丢弃 `%`。
 //!
 //! ## 逻辑盒属性（CSS Logical Properties）
-//! `padding|margin|inset-{inline|block}[-start|-end]` 在默认
-//! `writing-mode: horizontal-tb` + `direction: ltr` 下映射到 physical 字段
-//!（inline→left/right，block→top/bottom）。`direction:rtl` /
-//! `writing-mode` 竖排 / 双向复杂链 **defer**（勿假翻轴）。
+//! `padding|margin|inset-{inline|block}[-start|-end]` 在
+//! `writing-mode: horizontal-tb` 下映射到 physical 字段。
+//! 逻辑 inline 规格保留到 used-value：最终 `direction` 才映到
+//! `padding_left` / `padding_right` 等（跨层 `direction: rtl` 会 remap）。
+//! HTML `dir="rtl"|"ltr"` 是同一 used 值的 presentational hint；`dir="auto"`
+//! fail-closed（不做 first-strong bidi，不假装 `ltr`）。
+//! `direction: rtl` 把 **inline** 的 start/end 对调到 right/left
+//!（`padding-inline-start` → `padding-right`）。block 轴仍是 top/bottom。
+//! `text-align: start | end` 随 `direction`；`left` / `right` 保持物理边。
+//! **不**翻转 flex/grid 主轴 / 交叉轴起点或 item 序（不是完整 rtl 映射）。
+//! `writing-mode` 竖排 / `unicode-bidi` 隔离 / 完整 IFC 双向 **fail-closed**
+//!（勿假翻轴，勿假装 bidi isolation）。
 //!
 //! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them
 //!（feature `scene-view`）。
 
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BoxShadowSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap,
-    FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
-    GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
-    LengthSpec, LineHeightSpec, OverflowSpec, PaddingSpec, PaintTransform, ParentBox, PositionSpec,
-    TextAlignSpec, TextShadowSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
-    resolve_grid_column_widths, resolve_grid_track_sizes,
+    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClearSpec, DirSpec, DisplaySpec,
+    FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement,
+    GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
+    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges, OverflowSpec,
+    PaddingSpec, PaintTransform, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
+    ViewportAxis, VisibilitySpec, WhiteSpaceSpec, resolve_grid_column_widths,
+    resolve_grid_track_sizes,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -154,194 +163,663 @@ impl CssLayoutParse for LengthSpec {
         if let Some(spec) = parse_viewport_px_sum(s) {
             return Some(spec);
         }
-        if let Some(spec) = parse_viewport_length(s) {
-            return Some(spec);
-        }
-        if let Some(spec) = parse_font_relative_length(s) {
-            return Some(spec);
-        }
-        if let Some(p) = s.strip_suffix('%') {
-            let pct = p.trim().parse::<f32>().ok()?;
-            if (pct - 100.0).abs() < 0.5 {
-                return Some(Self::Fill);
-            }
-            return Some(Self::Percent(pct.clamp(0.0, 100.0)));
-        }
-        let num: f32 = s
-            .trim_end_matches("px")
-            .trim_end_matches("PX")
-            .trim()
-            .parse()
-            .ok()?;
-        Some(Self::Px(num.max(0.0)))
+        parse_length_term_to_spec(s)
     }
 }
 
-/// 轻量 calc（非 AST）：`P%±Npx` / `Npx±P%` / `P%±Q%` / `Npx±Mpx` /
-/// `Nv*±Mpx` / 同单位加减 / 单值。
+/// Nesting cap for `calc()` / `min()` / `max()` / `clamp()` / parentheses.
+/// Counts CSS grouping (one per `(` or math function), not unary `+/-`.
+/// Unary sign runs are capped separately at the same limit.
+const MAX_CALC_DEPTH: u8 = 16;
+const UNIT_PX: u16 = 1 << 0;
+const UNIT_PERCENT: u16 = 1 << 1;
+const UNIT_EM: u16 = 1 << 2;
+const UNIT_REM: u16 = 1 << 3;
+const UNIT_VW: u16 = 1 << 4;
+const UNIT_VH: u16 = 1 << 5;
+const UNIT_VMIN: u16 = 1 << 6;
+const UNIT_VMAX: u16 = 1 << 7;
+
+/// 轻量 calc（非 AST）：线性组合折进既有 [`LengthSpec`]。
+/// `+` `-` `*` `/`、括号、嵌套 `calc`，以及可折成单一维度的 `min`/`max`/`clamp`。
 fn parse_calc_percent_offset(raw: &str) -> Option<LengthSpec> {
     let s = raw.trim();
-    let inner = s
-        .strip_prefix("calc(")
-        .or_else(|| s.strip_prefix("CALC("))?
-        .strip_suffix(')')?
-        .trim();
-    parse_additive_length_expr(inner)
+    if !starts_with_ci(s, "calc(") {
+        return None;
+    }
+    parse_calc_expr_to_spec_at(s, 0)
 }
 
-/// Parse `A ± B` / single term into LengthSpec (px / % / viewport).
-fn parse_additive_length_expr(inner: &str) -> Option<LengthSpec> {
-    let inner = inner.trim();
-    let bytes = inner.as_bytes();
-    let mut op_at = None;
-    for i in 1..bytes.len() {
-        if bytes[i] == b'+' || bytes[i] == b'-' {
-            let prev = bytes[i - 1];
-            if prev.is_ascii_whitespace()
-                || prev.is_ascii_digit()
-                || prev == b'%'
-                || prev == b'x'
-                || prev == b'h'
-                || prev == b'w'
-                || prev == b'n'
-                || prev == b'm'
-            // em / rem
-            {
-                // Avoid splitting inside identifiers; require unit/digit boundary.
-                op_at = Some(i);
+/// Parse a calc math expression (optional `calc()` wrapper) into LengthSpec.
+fn parse_calc_expr_to_spec_at(raw: &str, depth: u8) -> Option<LengthSpec> {
+    let s = raw.trim();
+    // `calc(min/max/clamp(...))` may be mixed-unit Min2/Max2/Clamp3; CalcSum
+    // cannot hold that, so keep the already-folded LengthSpec.
+    if let Some(inner) = strip_calc_wrapper(s) {
+        if let Some(spec) = parse_css_min_max_clamp_at(inner, depth.saturating_add(1)) {
+            return Some(spec);
+        }
+    }
+    parse_calc_expr_to_sum_at(s, depth)?.to_length_spec()
+}
+
+fn strip_calc_wrapper(s: &str) -> Option<&str> {
+    if !starts_with_ci(s, "calc(") {
+        return None;
+    }
+    let (inner, rest) = split_paren_inner(&s[5..])?;
+    rest.trim().is_empty().then_some(inner)
+}
+
+fn parse_calc_expr_to_sum_at(raw: &str, depth: u8) -> Option<CalcSum> {
+    if depth >= MAX_CALC_DEPTH {
+        return None;
+    }
+    let mut parser = CalcParser {
+        s: raw.trim(),
+        i: 0,
+        depth,
+    };
+    let sum = parser.parse_add()?;
+    parser.skip_ws();
+    if parser.i != parser.s.len() {
+        return None;
+    }
+    Some(sum)
+}
+
+/// Linear combination of CSS length units + a unitless number.
+/// Folded into existing LengthSpec variants; not a second layout engine.
+/// `units` keeps zero-valued dimensions (`0px` is still a length).
+#[derive(Clone, Copy, Debug, Default)]
+struct CalcSum {
+    number: f32,
+    px: f32,
+    percent: f32,
+    em: f32,
+    rem: f32,
+    vw: f32,
+    vh: f32,
+    vmin: f32,
+    vmax: f32,
+    units: u16,
+}
+
+impl CalcSum {
+    fn number(v: f32) -> Self {
+        Self {
+            number: v,
+            ..Self::default()
+        }
+    }
+    fn px(v: f32) -> Self {
+        Self {
+            px: v,
+            units: UNIT_PX,
+            ..Self::default()
+        }
+    }
+    fn percent(v: f32) -> Self {
+        Self {
+            percent: v,
+            units: UNIT_PERCENT,
+            ..Self::default()
+        }
+    }
+    fn em(v: f32) -> Self {
+        Self {
+            em: v,
+            units: UNIT_EM,
+            ..Self::default()
+        }
+    }
+    fn rem(v: f32) -> Self {
+        Self {
+            rem: v,
+            units: UNIT_REM,
+            ..Self::default()
+        }
+    }
+    fn viewport(axis: ViewportAxis, value: f32) -> Self {
+        let mut s = Self::default();
+        match axis {
+            ViewportAxis::Width => {
+                s.vw = value;
+                s.units = UNIT_VW;
+            }
+            ViewportAxis::Height => {
+                s.vh = value;
+                s.units = UNIT_VH;
+            }
+            ViewportAxis::Min => {
+                s.vmin = value;
+                s.units = UNIT_VMIN;
+            }
+            ViewportAxis::Max => {
+                s.vmax = value;
+                s.units = UNIT_VMAX;
+            }
+        }
+        s
+    }
+
+    fn has_length(self) -> bool {
+        self.units != 0
+    }
+
+    fn is_pure_number(self) -> bool {
+        self.units == 0
+    }
+
+    fn is_finite(self) -> bool {
+        self.number.is_finite()
+            && self.px.is_finite()
+            && self.percent.is_finite()
+            && self.em.is_finite()
+            && self.rem.is_finite()
+            && self.vw.is_finite()
+            && self.vh.is_finite()
+            && self.vmin.is_finite()
+            && self.vmax.is_finite()
+    }
+
+    fn finish(self) -> Option<Self> {
+        self.is_finite().then_some(self)
+    }
+
+    fn scale(self, k: f32) -> Option<Self> {
+        if !k.is_finite() {
+            return None;
+        }
+        Self {
+            number: self.number * k,
+            px: self.px * k,
+            percent: self.percent * k,
+            em: self.em * k,
+            rem: self.rem * k,
+            vw: self.vw * k,
+            vh: self.vh * k,
+            vmin: self.vmin * k,
+            vmax: self.vmax * k,
+            units: self.units,
+        }
+        .finish()
+    }
+
+    fn neg(self) -> Option<Self> {
+        self.scale(-1.0)
+    }
+
+    fn add(self, rhs: Self) -> Option<Self> {
+        match (self.is_pure_number(), rhs.is_pure_number()) {
+            (true, true) => Self::number(self.number + rhs.number).finish(),
+            (false, false) => {
+                if self.number != 0.0 || rhs.number != 0.0 {
+                    return None;
+                }
+                Self {
+                    px: self.px + rhs.px,
+                    percent: self.percent + rhs.percent,
+                    em: self.em + rhs.em,
+                    rem: self.rem + rhs.rem,
+                    vw: self.vw + rhs.vw,
+                    vh: self.vh + rhs.vh,
+                    vmin: self.vmin + rhs.vmin,
+                    vmax: self.vmax + rhs.vmax,
+                    number: 0.0,
+                    units: self.units | rhs.units,
+                }
+                .finish()
+            }
+            // CSS: unitless 0 may add to a length; any other number may not.
+            (true, false) => (self.number == 0.0).then_some(rhs)?.finish(),
+            (false, true) => (rhs.number == 0.0).then_some(self)?.finish(),
+        }
+    }
+
+    fn mul(self, rhs: Self) -> Option<Self> {
+        match (self.is_pure_number(), rhs.is_pure_number()) {
+            (true, true) => Self::number(self.number * rhs.number).finish(),
+            (true, false) => rhs.scale(self.number),
+            (false, true) => self.scale(rhs.number),
+            (false, false) => None,
+        }
+    }
+
+    fn div(self, rhs: Self) -> Option<Self> {
+        if !rhs.is_pure_number() || rhs.number == 0.0 || !rhs.number.is_finite() {
+            return None;
+        }
+        self.scale(1.0 / rhs.number)
+    }
+
+    fn to_length_spec(self) -> Option<LengthSpec> {
+        if !self.is_finite() {
+            return None;
+        }
+        // Unitless calc (`calc(2 * 3)`) is not a length.
+        if !self.has_length() {
+            return None;
+        }
+        if self.number != 0.0 {
+            return None;
+        }
+        match self.units {
+            UNIT_PX => Some(LengthSpec::Px(self.px)),
+            UNIT_PERCENT => percent_to_spec(self.percent),
+            UNIT_EM => Some(LengthSpec::Em(self.em)),
+            UNIT_REM => Some(LengthSpec::Rem(self.rem)),
+            UNIT_VW => Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Width,
+                value: self.vw,
+            }),
+            UNIT_VH => Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: self.vh,
+            }),
+            UNIT_VMIN => Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Min,
+                value: self.vmin,
+            }),
+            UNIT_VMAX => Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Max,
+                value: self.vmax,
+            }),
+            units if units == UNIT_PX | UNIT_PERCENT => Some(LengthSpec::CalcPercentOffset {
+                percent: self.percent,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_EM => Some(LengthSpec::CalcEmOffset {
+                em: self.em,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_REM => Some(LengthSpec::CalcRemOffset {
+                rem: self.rem,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_VW => Some(LengthSpec::CalcViewportOffset {
+                axis: ViewportAxis::Width,
+                value: self.vw,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_VH => Some(LengthSpec::CalcViewportOffset {
+                axis: ViewportAxis::Height,
+                value: self.vh,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_VMIN => Some(LengthSpec::CalcViewportOffset {
+                axis: ViewportAxis::Min,
+                value: self.vmin,
+                offset_px: self.px,
+            }),
+            units if units == UNIT_PX | UNIT_VMAX => Some(LengthSpec::CalcViewportOffset {
+                axis: ViewportAxis::Max,
+                value: self.vmax,
+                offset_px: self.px,
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn percent_to_spec(p: f32) -> Option<LengthSpec> {
+    p.is_finite().then_some(LengthSpec::Percent(p))
+}
+
+fn calc_sum_from_length_spec(spec: LengthSpec) -> Option<CalcSum> {
+    Some(match spec {
+        LengthSpec::Px(v) => CalcSum::px(v),
+        LengthSpec::Percent(p) => CalcSum::percent(p),
+        LengthSpec::Fill => CalcSum::percent(100.0),
+        LengthSpec::Em(v) => CalcSum::em(v),
+        LengthSpec::Rem(v) => CalcSum::rem(v),
+        LengthSpec::Viewport { axis, value } => CalcSum::viewport(axis, value),
+        LengthSpec::CalcPercentOffset { percent, offset_px } => {
+            let mut s = CalcSum::percent(percent);
+            s.px = offset_px;
+            s.units |= UNIT_PX;
+            s
+        }
+        LengthSpec::CalcViewportOffset {
+            axis,
+            value,
+            offset_px,
+        } => {
+            let mut s = CalcSum::viewport(axis, value);
+            s.px = offset_px;
+            s.units |= UNIT_PX;
+            s
+        }
+        LengthSpec::CalcEmOffset { em, offset_px } => {
+            let mut s = CalcSum::em(em);
+            s.px = offset_px;
+            s.units |= UNIT_PX;
+            s
+        }
+        LengthSpec::CalcRemOffset { rem, offset_px } => {
+            let mut s = CalcSum::rem(rem);
+            s.px = offset_px;
+            s.units |= UNIT_PX;
+            s
+        }
+        LengthSpec::Min2(_, _)
+        | LengthSpec::Max2(_, _)
+        | LengthSpec::Clamp3(_, _, _)
+        | LengthSpec::Shrink
+        | LengthSpec::Auto
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => return None,
+    })
+}
+
+struct CalcParser<'a> {
+    s: &'a str,
+    i: usize,
+    depth: u8,
+}
+
+impl<'a> CalcParser<'a> {
+    fn rest(&self) -> &'a str {
+        &self.s[self.i..]
+    }
+
+    fn skip_ws(&mut self) {
+        let bytes = self.s.as_bytes();
+        while self.i < bytes.len() && bytes[self.i].is_ascii_whitespace() {
+            self.i += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.s.as_bytes().get(self.i).copied()
+    }
+
+    fn eat(&mut self, ch: u8) -> bool {
+        if self.peek() == Some(ch) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn enter(&mut self) -> bool {
+        if self.depth >= MAX_CALC_DEPTH {
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    fn parse_add(&mut self) -> Option<CalcSum> {
+        let mut acc = self.parse_mul()?;
+        loop {
+            self.skip_ws();
+            let sign = match self.peek() {
+                Some(b'+') => {
+                    self.i += 1;
+                    1.0
+                }
+                Some(b'-') => {
+                    self.i += 1;
+                    -1.0
+                }
+                _ => break,
+            };
+            let rhs = self.parse_mul()?;
+            acc = if sign > 0.0 {
+                acc.add(rhs)?
+            } else {
+                acc.add(rhs.neg()?)?
+            };
+        }
+        Some(acc)
+    }
+
+    fn parse_mul(&mut self) -> Option<CalcSum> {
+        let mut acc = self.parse_unary()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'*') => {
+                    self.i += 1;
+                    acc = acc.mul(self.parse_unary()?)?;
+                }
+                Some(b'/') => {
+                    self.i += 1;
+                    acc = acc.div(self.parse_unary()?)?;
+                }
+                _ => break,
+            }
+        }
+        Some(acc)
+    }
+
+    fn parse_unary(&mut self) -> Option<CalcSum> {
+        self.skip_ws();
+        let mut neg = false;
+        let mut signs = 0u8;
+        loop {
+            self.skip_ws();
+            if self.eat(b'+') {
+                signs += 1;
+            } else if self.eat(b'-') {
+                neg = !neg;
+                signs += 1;
+            } else {
+                break;
+            }
+            if signs > MAX_CALC_DEPTH {
+                return None;
+            }
+        }
+        let value = self.parse_primary()?;
+        if neg { value.neg() } else { Some(value) }
+    }
+
+    fn parse_primary(&mut self) -> Option<CalcSum> {
+        self.skip_ws();
+        if self.eat(b'(') {
+            if !self.enter() {
+                return None;
+            }
+            let inner = self.parse_add();
+            self.skip_ws();
+            let closed = self.eat(b')');
+            self.leave();
+            if !closed {
+                return None;
+            }
+            return inner;
+        }
+        if let Some(name) = self.peek_ident() {
+            let lower = name.to_ascii_lowercase();
+            return match lower.as_str() {
+                "calc" | "min" | "max" | "clamp" => self.parse_fn(&lower),
+                // Unknown math functions (tan, atan2, sin, …) fail closed.
+                _ => None,
+            };
+        }
+        self.parse_number_or_dimension()
+    }
+
+    fn peek_ident(&self) -> Option<&'a str> {
+        let rest = self.rest();
+        let mut end = 0usize;
+        for (i, ch) in rest.char_indices() {
+            if i == 0 {
+                if !ch.is_ascii_alphabetic() && ch != '_' {
+                    return None;
+                }
+                end = i + ch.len_utf8();
+            } else if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                end = i + ch.len_utf8();
+            } else {
                 break;
             }
         }
+        if end == 0 { None } else { Some(&rest[..end]) }
     }
-    let Some(op_at) = op_at else {
-        return parse_length_term_to_spec(inner);
-    };
-    let left = inner[..op_at].trim();
-    let sign = if bytes[op_at] == b'+' { 1.0 } else { -1.0 };
-    let right = inner[op_at + 1..].trim();
-    let l = parse_length_term_parts(left)?;
-    let r = parse_length_term_parts(right)?;
-    match (l, r) {
-        (LengthTerm::Percent(p), LengthTerm::Px(px)) => Some(LengthSpec::CalcPercentOffset {
-            percent: p,
-            offset_px: sign * px,
-        }),
-        (LengthTerm::Px(px), LengthTerm::Percent(p)) => Some(LengthSpec::CalcPercentOffset {
-            percent: sign * p,
-            offset_px: px,
-        }),
-        (LengthTerm::Percent(p1), LengthTerm::Percent(p2)) => {
-            let pct = p1 + sign * p2;
-            if (pct - 100.0).abs() < 0.5 {
-                Some(LengthSpec::Fill)
-            } else {
-                Some(LengthSpec::Percent(pct.clamp(0.0, 100.0)))
+
+    fn consume_ident(&mut self) {
+        if let Some(id) = self.peek_ident() {
+            self.i += id.len();
+        }
+    }
+
+    fn parse_fn(&mut self, name: &str) -> Option<CalcSum> {
+        self.consume_ident();
+        self.skip_ws();
+        if !self.eat(b'(') {
+            return None;
+        }
+        if !self.enter() {
+            return None;
+        }
+        let inner_start = self.i;
+        let bytes = self.s.as_bytes();
+        let mut depth = 1i32;
+        while self.i < bytes.len() {
+            match bytes[self.i] {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let inner = &self.s[inner_start..self.i];
+                        self.i += 1;
+                        let out = self.eval_fn(name, inner);
+                        self.leave();
+                        return out;
+                    }
+                }
+                _ => {}
+            }
+            self.i += 1;
+        }
+        self.leave();
+        None
+    }
+
+    fn eval_fn(&self, name: &str, inner: &str) -> Option<CalcSum> {
+        match name {
+            "calc" => parse_calc_expr_to_sum_at(inner, self.depth),
+            "min" | "max" | "clamp" => {
+                let spec = parse_min_max_clamp_inner(name, inner, self.depth)?;
+                calc_sum_from_length_spec(spec)
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_number_or_dimension(&mut self) -> Option<CalcSum> {
+        let n = self.parse_number()?;
+        let rest = self.rest();
+        if rest.starts_with('%') {
+            self.i += 1;
+            return Some(CalcSum::percent(n));
+        }
+        let Some(ident) = self.peek_ident() else {
+            return Some(CalcSum::number(n));
+        };
+        match ident.to_ascii_lowercase().as_str() {
+            "px" => {
+                self.consume_ident();
+                Some(CalcSum::px(n))
+            }
+            "em" => {
+                self.consume_ident();
+                Some(CalcSum::em(n))
+            }
+            "rem" => {
+                self.consume_ident();
+                Some(CalcSum::rem(n))
+            }
+            "vw" => {
+                self.consume_ident();
+                Some(CalcSum::viewport(ViewportAxis::Width, n))
+            }
+            "vh" => {
+                self.consume_ident();
+                Some(CalcSum::viewport(ViewportAxis::Height, n))
+            }
+            "vmin" => {
+                self.consume_ident();
+                Some(CalcSum::viewport(ViewportAxis::Min, n))
+            }
+            "vmax" => {
+                self.consume_ident();
+                Some(CalcSum::viewport(ViewportAxis::Max, n))
+            }
+            // Unknown unit (`deg`, `in`, …) fails closed.
+            _ => None,
+        }
+    }
+
+    fn parse_number(&mut self) -> Option<f32> {
+        let start = self.i;
+        let b = self.s.as_bytes();
+        let mut i = self.i;
+        let mut saw_digit = false;
+        while i < b.len() && b[i].is_ascii_digit() {
+            saw_digit = true;
+            i += 1;
+        }
+        if i < b.len() && b[i] == b'.' {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_digit() {
+                saw_digit = true;
+                i += 1;
             }
         }
-        (LengthTerm::Px(px1), LengthTerm::Px(px2)) => {
-            Some(LengthSpec::Px((px1 + sign * px2).max(0.0)))
+        if !saw_digit {
+            return None;
         }
-        (LengthTerm::Viewport { axis, value }, LengthTerm::Px(px)) => {
-            Some(LengthSpec::CalcViewportOffset {
-                axis,
-                value,
-                offset_px: sign * px,
-            })
-        }
-        (LengthTerm::Px(px), LengthTerm::Viewport { axis, value }) => {
-            // Npx ± Mvh → treat as viewport ± px with flipped sign on px term when
-            // viewport is on the right: px + vh = vh + px; px - vh unsupported → None.
-            if sign > 0.0 {
-                Some(LengthSpec::CalcViewportOffset {
-                    axis,
-                    value,
-                    offset_px: px,
-                })
-            } else {
-                None
+        if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+            let mut j = i + 1;
+            if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+                j += 1;
+            }
+            let exp_start = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > exp_start {
+                i = j;
             }
         }
-        (
-            LengthTerm::Viewport {
-                axis: a1,
-                value: v1,
-            },
-            LengthTerm::Viewport {
-                axis: a2,
-                value: v2,
-            },
-        ) if a1 == a2 => Some(LengthSpec::Viewport {
-            axis: a1,
-            value: (v1 + sign * v2).max(0.0),
-        }),
-        (LengthTerm::Em(e), LengthTerm::Px(px)) => Some(LengthSpec::CalcEmOffset {
-            em: e,
-            offset_px: sign * px,
-        }),
-        (LengthTerm::Px(px), LengthTerm::Em(e)) if sign > 0.0 => Some(LengthSpec::CalcEmOffset {
-            em: e,
-            offset_px: px,
-        }),
-        (LengthTerm::Em(e1), LengthTerm::Em(e2)) => Some(LengthSpec::Em((e1 + sign * e2).max(0.0))),
-        (LengthTerm::Rem(r), LengthTerm::Px(px)) => Some(LengthSpec::CalcRemOffset {
-            rem: r,
-            offset_px: sign * px,
-        }),
-        (LengthTerm::Px(px), LengthTerm::Rem(r)) if sign > 0.0 => Some(LengthSpec::CalcRemOffset {
-            rem: r,
-            offset_px: px,
-        }),
-        (LengthTerm::Rem(r1), LengthTerm::Rem(r2)) => {
-            Some(LengthSpec::Rem((r1 + sign * r2).max(0.0)))
+        let num = self.s[start..i].parse::<f32>().ok()?;
+        if !num.is_finite() {
+            return None;
         }
-        _ => None,
+        self.i = i;
+        Some(num)
     }
 }
 
-#[derive(Clone, Copy)]
-enum LengthTerm {
-    Px(f32),
-    Percent(f32),
-    Em(f32),
-    Rem(f32),
-    Viewport { axis: ViewportAxis, value: f32 },
-}
-
-fn parse_length_term_parts(raw: &str) -> Option<LengthTerm> {
+fn parse_length_term_to_spec(raw: &str) -> Option<LengthSpec> {
     let s = raw.trim();
     if let Some(p) = parse_percent_term(s) {
-        return Some(LengthTerm::Percent(p));
+        return percent_to_spec(p);
     }
-    if let Some((axis, value)) = parse_viewport_term(s) {
-        return Some(LengthTerm::Viewport { axis, value });
+    if let Some(spec) = parse_viewport_length(s) {
+        return Some(spec);
     }
     if let Some(spec) = parse_font_relative_length(s) {
-        return match spec {
-            LengthSpec::Em(v) => Some(LengthTerm::Em(v)),
-            LengthSpec::Rem(v) => Some(LengthTerm::Rem(v)),
-            _ => None,
-        };
+        return Some(spec);
     }
     if let Some(px) = parse_px_term(s) {
-        return Some(LengthTerm::Px(px));
+        return Some(LengthSpec::Px(px.max(0.0)));
     }
     None
 }
 
-fn parse_length_term_to_spec(raw: &str) -> Option<LengthSpec> {
-    match parse_length_term_parts(raw)? {
-        LengthTerm::Px(px) => Some(LengthSpec::Px(px.max(0.0))),
-        LengthTerm::Percent(p) => {
-            if (p - 100.0).abs() < 0.5 {
-                Some(LengthSpec::Fill)
-            } else {
-                Some(LengthSpec::Percent(p.clamp(0.0, 100.0)))
-            }
-        }
-        LengthTerm::Em(v) => Some(LengthSpec::Em(v)),
-        LengthTerm::Rem(v) => Some(LengthSpec::Rem(v)),
-        LengthTerm::Viewport { axis, value } => Some(LengthSpec::Viewport { axis, value }),
-    }
+fn starts_with_ci(s: &str, prefix: &str) -> bool {
+    s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 fn parse_percent_term(raw: &str) -> Option<f32> {
@@ -396,11 +874,18 @@ fn parse_viewport_px_sum(raw: &str) -> Option<LengthSpec> {
     {
         return None;
     }
-    parse_additive_length_expr(s)
+    parse_calc_expr_to_spec_at(s, 0)
 }
 
-/// `min(a,b)` / `max(a,b)` / `clamp(min,val,max)` — args are LengthAtom-capable terms.
+/// `min(a,b)` / `max(a,b)` / `clamp(min,val,max)` — args are math expressions.
 fn parse_css_min_max_clamp(raw: &str) -> Option<LengthSpec> {
+    parse_css_min_max_clamp_at(raw, 0)
+}
+
+fn parse_css_min_max_clamp_at(raw: &str, depth: u8) -> Option<LengthSpec> {
+    if depth >= MAX_CALC_DEPTH {
+        return None;
+    }
     let s = raw.trim();
     let lower = s.to_ascii_lowercase();
     if lower.starts_with("min(") && !lower.starts_with("minmax(") {
@@ -408,72 +893,443 @@ fn parse_css_min_max_clamp(raw: &str) -> Option<LengthSpec> {
         if !rest.trim().is_empty() {
             return None;
         }
-        let (a, b) = split_css_fn_args2(inner)?;
-        return Some(LengthSpec::Min2(
-            parse_length_atom(a)?,
-            parse_length_atom(b)?,
-        ));
+        return parse_min_max_clamp_inner("min", inner, depth);
     }
     if lower.starts_with("max(") && !lower.starts_with("minmax(") {
         let (inner, rest) = split_paren_inner(&s[4..])?;
         if !rest.trim().is_empty() {
             return None;
         }
-        let (a, b) = split_css_fn_args2(inner)?;
-        return Some(LengthSpec::Max2(
-            parse_length_atom(a)?,
-            parse_length_atom(b)?,
-        ));
+        return parse_min_max_clamp_inner("max", inner, depth);
     }
     if lower.starts_with("clamp(") {
         let (inner, rest) = split_paren_inner(&s[6..])?;
         if !rest.trim().is_empty() {
             return None;
         }
-        let (a, b, c) = split_css_fn_args3(inner)?;
-        return Some(LengthSpec::Clamp3(
-            parse_length_atom(a)?,
-            parse_length_atom(b)?,
-            parse_length_atom(c)?,
-        ));
+        return parse_min_max_clamp_inner("clamp", inner, depth);
     }
     None
 }
 
-fn split_css_fn_args2(inner: &str) -> Option<(&str, &str)> {
+fn parse_min_max_clamp_inner(kind: &str, inner: &str, depth: u8) -> Option<LengthSpec> {
+    let args = split_top_level_commas(inner)?;
+    if args.is_empty() || args.len() > 8 {
+        return None;
+    }
+    let next = depth.saturating_add(1);
+    match kind {
+        "min" => parse_min_or_max_args(args, next, true),
+        "max" => parse_min_or_max_args(args, next, false),
+        "clamp" => {
+            if args.len() != 3 {
+                return None;
+            }
+            let lo = parse_length_atom_at(args[0], next)?;
+            let val = parse_length_atom_at(args[1], next)?;
+            let hi = parse_length_atom_at(args[2], next)?;
+            if let Some(folded) = fold_clamp_atoms(lo, val, hi) {
+                return Some(length_atom_to_spec(folded));
+            }
+            Some(LengthSpec::Clamp3(lo, val, hi))
+        }
+        _ => None,
+    }
+}
+
+fn parse_min_or_max_args(args: Vec<&str>, depth: u8, is_min: bool) -> Option<LengthSpec> {
+    if args.len() == 1 {
+        return parse_math_length_at(args[0], depth);
+    }
+    let mut specs = Vec::with_capacity(args.len());
+    for arg in args {
+        specs.push(parse_math_length_at(arg, depth)?);
+    }
+    reduce_min_max_specs(specs, is_min)
+}
+
+/// Fold same-dimension atoms; leftover mixed pair → Min2/Max2.
+/// `min(A, max(B, C))` / `max(A, min(B, C))` → Clamp3 when A shares a
+/// dimension with B or C. Three incomparable leftovers fail closed (no Min list).
+fn reduce_min_max_specs(specs: Vec<LengthSpec>, is_min: bool) -> Option<LengthSpec> {
+    let mut atoms: Vec<LengthAtom> = Vec::new();
+    let mut opposite: Option<LengthSpec> = None;
+    for spec in specs {
+        collect_min_max_operand(spec, is_min, &mut atoms, &mut opposite)?;
+    }
+    let atoms = fold_atom_list(atoms, is_min);
+    match (atoms.as_slice(), opposite) {
+        ([], None) => None,
+        ([one], None) => Some(length_atom_to_spec(*one)),
+        ([a, b], None) => Some(min_max_two_atoms(*a, *b, is_min)),
+        (_, None) => None,
+        ([], Some(other)) => Some(other),
+        ([one], Some(other)) => merge_atom_with_opposite(*one, other, is_min),
+        _ => None,
+    }
+}
+
+fn collect_min_max_operand(
+    spec: LengthSpec,
+    is_min: bool,
+    atoms: &mut Vec<LengthAtom>,
+    opposite: &mut Option<LengthSpec>,
+) -> Option<()> {
+    if let Some(atom) = length_spec_to_atom(spec) {
+        atoms.push(atom);
+        return Some(());
+    }
+    match spec {
+        LengthSpec::Min2(a, b) if is_min => {
+            atoms.push(a);
+            atoms.push(b);
+            Some(())
+        }
+        LengthSpec::Max2(a, b) if !is_min => {
+            atoms.push(a);
+            atoms.push(b);
+            Some(())
+        }
+        LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _) => {
+            if opposite.is_some() {
+                return None;
+            }
+            *opposite = Some(spec);
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn fold_atom_list(atoms: Vec<LengthAtom>, is_min: bool) -> Vec<LengthAtom> {
+    let mut out: Vec<LengthAtom> = Vec::new();
+    for atom in atoms {
+        let mut merged = false;
+        for slot in &mut out {
+            if let Some(folded) = fold_min_or_max_atoms(*slot, atom, is_min) {
+                *slot = folded;
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            out.push(atom);
+        }
+    }
+    out
+}
+
+fn min_max_two_atoms(a: LengthAtom, b: LengthAtom, is_min: bool) -> LengthSpec {
+    if let Some(folded) = fold_min_or_max_atoms(a, b, is_min) {
+        return length_atom_to_spec(folded);
+    }
+    if is_min {
+        LengthSpec::Min2(a, b)
+    } else {
+        LengthSpec::Max2(a, b)
+    }
+}
+
+fn merge_atom_with_opposite(
+    atom: LengthAtom,
+    other: LengthSpec,
+    is_min: bool,
+) -> Option<LengthSpec> {
+    match (other, is_min) {
+        (LengthSpec::Max2(x, y), true) => min_atom_and_max2(atom, x, y),
+        (LengthSpec::Min2(x, y), false) => max_atom_and_min2(atom, x, y),
+        (LengthSpec::Clamp3(lo, val, hi), _) => merge_atom_with_clamp3(atom, lo, val, hi, is_min),
+        (LengthSpec::Min2(x, y), true) => reduce_min_max_specs(
+            vec![
+                length_atom_to_spec(atom),
+                length_atom_to_spec(x),
+                length_atom_to_spec(y),
+            ],
+            true,
+        ),
+        (LengthSpec::Max2(x, y), false) => reduce_min_max_specs(
+            vec![
+                length_atom_to_spec(atom),
+                length_atom_to_spec(x),
+                length_atom_to_spec(y),
+            ],
+            false,
+        ),
+        (spec, _) => {
+            let b = length_spec_to_atom(spec)?;
+            Some(min_max_two_atoms(atom, b, is_min))
+        }
+    }
+}
+
+fn atom_order_same_dim(a: LengthAtom, b: LengthAtom) -> Option<std::cmp::Ordering> {
+    let min_ab = fold_min_or_max_atoms(a, b, true)?;
+    if min_ab == a && min_ab == b {
+        Some(std::cmp::Ordering::Equal)
+    } else if min_ab == a {
+        Some(std::cmp::Ordering::Less)
+    } else {
+        Some(std::cmp::Ordering::Greater)
+    }
+}
+
+/// `min(a, max(x, y))` → atom or Clamp3 when `a` shares a dimension with x or y.
+fn min_atom_and_max2(a: LengthAtom, x: LengthAtom, y: LengthAtom) -> Option<LengthSpec> {
+    if let Some(ord) = atom_order_same_dim(a, x) {
+        return Some(match ord {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => length_atom_to_spec(a),
+            std::cmp::Ordering::Greater => LengthSpec::Clamp3(x, y, a),
+        });
+    }
+    if let Some(ord) = atom_order_same_dim(a, y) {
+        return Some(match ord {
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => length_atom_to_spec(a),
+            std::cmp::Ordering::Greater => LengthSpec::Clamp3(y, x, a),
+        });
+    }
+    None
+}
+
+/// `max(a, min(x, y))` → atom or Clamp3 when `a` shares a dimension with x or y.
+fn max_atom_and_min2(a: LengthAtom, x: LengthAtom, y: LengthAtom) -> Option<LengthSpec> {
+    if let Some(ord) = atom_order_same_dim(a, x) {
+        return Some(match ord {
+            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => length_atom_to_spec(a),
+            std::cmp::Ordering::Less => LengthSpec::Clamp3(a, y, x),
+        });
+    }
+    if let Some(ord) = atom_order_same_dim(a, y) {
+        return Some(match ord {
+            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => length_atom_to_spec(a),
+            std::cmp::Ordering::Less => LengthSpec::Clamp3(a, x, y),
+        });
+    }
+    None
+}
+
+fn merge_atom_with_clamp3(
+    atom: LengthAtom,
+    lo: LengthAtom,
+    val: LengthAtom,
+    hi: LengthAtom,
+    is_min: bool,
+) -> Option<LengthSpec> {
+    let (lo_b, hi_b) = match atom_order_same_dim(lo, hi) {
+        Some(std::cmp::Ordering::Greater) => (hi, lo),
+        Some(_) => (lo, hi),
+        None => return None,
+    };
+    let vs_lo = atom_order_same_dim(atom, lo_b)?;
+    let vs_hi = atom_order_same_dim(atom, hi_b)?;
+    match (is_min, vs_lo, vs_hi) {
+        (true, std::cmp::Ordering::Less | std::cmp::Ordering::Equal, _) => {
+            Some(length_atom_to_spec(atom))
+        }
+        (true, _, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
+            Some(LengthSpec::Clamp3(lo_b, val, hi_b))
+        }
+        (true, std::cmp::Ordering::Greater, std::cmp::Ordering::Less) => {
+            Some(LengthSpec::Clamp3(lo_b, val, atom))
+        }
+        (false, std::cmp::Ordering::Less | std::cmp::Ordering::Equal, _) => {
+            Some(LengthSpec::Clamp3(lo_b, val, hi_b))
+        }
+        (false, _, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
+            Some(length_atom_to_spec(atom))
+        }
+        (false, std::cmp::Ordering::Greater, std::cmp::Ordering::Less) => {
+            Some(LengthSpec::Clamp3(atom, val, hi_b))
+        }
+    }
+}
+
+fn split_top_level_commas(inner: &str) -> Option<Vec<&str>> {
+    let mut args = Vec::new();
     let mut depth = 0i32;
+    let mut start = 0usize;
     for (i, ch) in inner.char_indices() {
         match ch {
             '(' => depth += 1,
             ')' => depth -= 1,
             ',' if depth == 0 => {
-                let a = inner[..i].trim();
-                let b = inner[i + 1..].trim();
-                if a.is_empty() || b.is_empty() {
+                let a = inner[start..i].trim();
+                if a.is_empty() {
                     return None;
                 }
-                return Some((a, b));
+                args.push(a);
+                start = i + 1;
             }
             _ => {}
         }
     }
-    None
+    let last = inner[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    args.push(last);
+    Some(args)
 }
 
-fn split_css_fn_args3(inner: &str) -> Option<(&str, &str, &str)> {
-    let (a, rest) = split_css_fn_args2(inner)?;
-    let (b, c) = split_css_fn_args2(rest)?;
-    Some((a, b, c))
-}
-
-fn parse_length_atom(raw: &str) -> Option<LengthAtom> {
+fn parse_math_length_at(raw: &str, depth: u8) -> Option<LengthSpec> {
+    if depth >= MAX_CALC_DEPTH {
+        return None;
+    }
     let s = raw.trim();
-    // Do not re-enter min/max/clamp (no nested math in L1).
-    let spec = parse_calc_percent_offset(s)
-        .or_else(|| parse_viewport_px_sum(s))
-        .or_else(|| parse_viewport_length(s))
-        .or_else(|| parse_length_term_to_spec(s))?;
-    length_spec_to_atom(spec)
+    if let Some(spec) = parse_css_min_max_clamp_at(s, depth) {
+        return Some(spec);
+    }
+    parse_calc_expr_to_spec_at(s, depth)
+}
+
+fn parse_length_atom_at(raw: &str, depth: u8) -> Option<LengthAtom> {
+    length_spec_to_atom(parse_math_length_at(raw, depth)?)
+}
+
+fn fold_min_or_max_atoms(a: LengthAtom, b: LengthAtom, is_min: bool) -> Option<LengthAtom> {
+    match (a, b) {
+        (LengthAtom::Px(x), LengthAtom::Px(y)) => {
+            Some(LengthAtom::Px(if is_min { x.min(y) } else { x.max(y) }))
+        }
+        (LengthAtom::Percent(x), LengthAtom::Percent(y)) => Some(LengthAtom::Percent(if is_min {
+            x.min(y)
+        } else {
+            x.max(y)
+        })),
+        (LengthAtom::Em(x), LengthAtom::Em(y)) => {
+            Some(LengthAtom::Em(if is_min { x.min(y) } else { x.max(y) }))
+        }
+        (LengthAtom::Rem(x), LengthAtom::Rem(y)) => {
+            Some(LengthAtom::Rem(if is_min { x.min(y) } else { x.max(y) }))
+        }
+        (
+            LengthAtom::Viewport {
+                axis: a1,
+                value: v1,
+            },
+            LengthAtom::Viewport {
+                axis: a2,
+                value: v2,
+            },
+        ) if a1 == a2 => Some(LengthAtom::Viewport {
+            axis: a1,
+            value: if is_min { v1.min(v2) } else { v1.max(v2) },
+        }),
+        (
+            LengthAtom::CalcPercent {
+                percent: p1,
+                offset_px: o1,
+            },
+            LengthAtom::CalcPercent {
+                percent: p2,
+                offset_px: o2,
+            },
+        ) if (p1 - p2).abs() < 1e-4 => Some(LengthAtom::CalcPercent {
+            percent: p1,
+            offset_px: if is_min { o1.min(o2) } else { o1.max(o2) },
+        }),
+        (
+            LengthAtom::CalcViewport {
+                axis: a1,
+                value: v1,
+                offset_px: o1,
+            },
+            LengthAtom::CalcViewport {
+                axis: a2,
+                value: v2,
+                offset_px: o2,
+            },
+        ) if a1 == a2 && (v1 - v2).abs() < 1e-4 => Some(LengthAtom::CalcViewport {
+            axis: a1,
+            value: v1,
+            offset_px: if is_min { o1.min(o2) } else { o1.max(o2) },
+        }),
+        (
+            LengthAtom::CalcEm {
+                em: e1,
+                offset_px: o1,
+            },
+            LengthAtom::CalcEm {
+                em: e2,
+                offset_px: o2,
+            },
+        ) if (e1 - e2).abs() < 1e-4 => Some(LengthAtom::CalcEm {
+            em: e1,
+            offset_px: if is_min { o1.min(o2) } else { o1.max(o2) },
+        }),
+        (
+            LengthAtom::CalcRem {
+                rem: r1,
+                offset_px: o1,
+            },
+            LengthAtom::CalcRem {
+                rem: r2,
+                offset_px: o2,
+            },
+        ) if (r1 - r2).abs() < 1e-4 => Some(LengthAtom::CalcRem {
+            rem: r1,
+            offset_px: if is_min { o1.min(o2) } else { o1.max(o2) },
+        }),
+        _ => None,
+    }
+}
+
+fn fold_clamp_atoms(lo: LengthAtom, val: LengthAtom, hi: LengthAtom) -> Option<LengthAtom> {
+    match (lo, val, hi) {
+        (LengthAtom::Px(a), LengthAtom::Px(v), LengthAtom::Px(b)) => {
+            Some(LengthAtom::Px(v.clamp(a.min(b), a.max(b))))
+        }
+        (LengthAtom::Percent(a), LengthAtom::Percent(v), LengthAtom::Percent(b)) => {
+            Some(LengthAtom::Percent(v.clamp(a.min(b), a.max(b))))
+        }
+        (LengthAtom::Em(a), LengthAtom::Em(v), LengthAtom::Em(b)) => {
+            Some(LengthAtom::Em(v.clamp(a.min(b), a.max(b))))
+        }
+        (LengthAtom::Rem(a), LengthAtom::Rem(v), LengthAtom::Rem(b)) => {
+            Some(LengthAtom::Rem(v.clamp(a.min(b), a.max(b))))
+        }
+        (
+            LengthAtom::Viewport {
+                axis: a1,
+                value: lo_v,
+            },
+            LengthAtom::Viewport {
+                axis: a2,
+                value: val_v,
+            },
+            LengthAtom::Viewport {
+                axis: a3,
+                value: hi_v,
+            },
+        ) if a1 == a2 && a2 == a3 => Some(LengthAtom::Viewport {
+            axis: a1,
+            value: val_v.clamp(lo_v.min(hi_v), lo_v.max(hi_v)),
+        }),
+        _ => None,
+    }
+}
+
+fn length_atom_to_spec(atom: LengthAtom) -> LengthSpec {
+    match atom {
+        LengthAtom::Px(v) => LengthSpec::Px(v),
+        LengthAtom::Percent(p) => percent_to_spec(p).unwrap_or(LengthSpec::Percent(p)),
+        LengthAtom::Em(v) => LengthSpec::Em(v),
+        LengthAtom::Rem(v) => LengthSpec::Rem(v),
+        LengthAtom::Viewport { axis, value } => LengthSpec::Viewport { axis, value },
+        LengthAtom::CalcPercent { percent, offset_px } => {
+            LengthSpec::CalcPercentOffset { percent, offset_px }
+        }
+        LengthAtom::CalcViewport {
+            axis,
+            value,
+            offset_px,
+        } => LengthSpec::CalcViewportOffset {
+            axis,
+            value,
+            offset_px,
+        },
+        LengthAtom::CalcEm { em, offset_px } => LengthSpec::CalcEmOffset { em, offset_px },
+        LengthAtom::CalcRem { rem, offset_px } => LengthSpec::CalcRemOffset { rem, offset_px },
+    }
 }
 
 fn length_spec_to_atom(spec: LengthSpec) -> Option<LengthAtom> {
@@ -500,7 +1356,7 @@ fn length_spec_to_atom(spec: LengthSpec) -> Option<LengthAtom> {
         LengthSpec::CalcRemOffset { rem, offset_px } => {
             Some(LengthAtom::CalcRem { rem, offset_px })
         }
-        // Nested calc / min-max atoms are not re-entered into LengthAtom.
+        // Nested mixed min/max/clamp that did not fold stay LengthSpec-only.
         _ => None,
     }
 }
@@ -542,8 +1398,17 @@ impl LayoutStyleCss for LayoutStyle {
     /// [`crate::css_cascade::DeclarationEntry`] → [`Self::apply_css_property`]
     /// instead of re-splitting rule text on every match.
     fn apply_css_text(&mut self, style: &str, percent_w: Option<f32>, percent_h: Option<f32>) {
+        // `direction` / `writing-mode` first so later logical props in the same
+        // declaration block map against the used dir (not source order).
         for_each_css_decl(style, |key, val| {
-            self.apply_css_property(key, val, percent_w, percent_h);
+            if css_key_is_direction_or_writing_mode(key) {
+                self.apply_css_property(key, val, percent_w, percent_h);
+            }
+        });
+        for_each_css_decl(style, |key, val| {
+            if !css_key_is_direction_or_writing_mode(key) {
+                self.apply_css_property(key, val, percent_w, percent_h);
+            }
         });
     }
 
@@ -685,66 +1550,91 @@ impl LayoutStyleCss for LayoutStyle {
                     self.column_gap = Some(spec);
                 }
             }
-            "padding" => apply_box_edge_shorthand(
-                val,
-                &mut self.padding,
-                &mut self.padding_top,
-                &mut self.padding_right,
-                &mut self.padding_bottom,
-                &mut self.padding_left,
-                parse_box_edge_length,
-            ),
+            "padding" => {
+                apply_box_edge_shorthand(
+                    val,
+                    &mut self.padding,
+                    &mut self.padding_top,
+                    &mut self.padding_right,
+                    &mut self.padding_bottom,
+                    &mut self.padding_left,
+                    parse_box_edge_length,
+                );
+                self.logical_padding
+                    .set_phys_left(self.padding_left.or(self.padding));
+                self.logical_padding
+                    .set_phys_right(self.padding_right.or(self.padding));
+            }
             // Longhand margin/padding % — including top/bottom — use containing-block width
             // at layout time (store LengthSpec; do not drop % when percent_w is None).
             "padding-top" => self.padding_top = parse_box_edge_length(val),
-            "padding-right" => self.padding_right = parse_box_edge_length(val),
+            "padding-right" => {
+                self.padding_right = parse_box_edge_length(val);
+                self.logical_padding.set_phys_right(self.padding_right);
+            }
             "padding-bottom" => self.padding_bottom = parse_box_edge_length(val),
-            "padding-left" => self.padding_left = parse_box_edge_length(val),
-            // Logical padding → physical (default LTR / horizontal-tb).
-            "padding-inline" => apply_logical_pair_shorthand(
-                val,
-                &mut self.padding_left,
-                &mut self.padding_right,
-                parse_box_edge_length,
-            ),
+            "padding-left" => {
+                self.padding_left = parse_box_edge_length(val);
+                self.logical_padding.set_phys_left(self.padding_left);
+            }
+            // Logical padding kept until used-value resolve (final `direction`).
+            "padding-inline" => {
+                apply_logical_inline_edges(val, &mut self.logical_padding, parse_box_edge_length);
+            }
             "padding-block" => apply_logical_pair_shorthand(
                 val,
                 &mut self.padding_top,
                 &mut self.padding_bottom,
                 parse_box_edge_length,
             ),
-            "padding-inline-start" => self.padding_left = parse_box_edge_length(val),
-            "padding-inline-end" => self.padding_right = parse_box_edge_length(val),
+            "padding-inline-start" => {
+                self.logical_padding.set_start(parse_box_edge_length(val));
+            }
+            "padding-inline-end" => {
+                self.logical_padding.set_end(parse_box_edge_length(val));
+            }
             "padding-block-start" => self.padding_top = parse_box_edge_length(val),
             "padding-block-end" => self.padding_bottom = parse_box_edge_length(val),
-            "margin" => apply_box_edge_shorthand(
-                val,
-                &mut self.margin,
-                &mut self.margin_top,
-                &mut self.margin_right,
-                &mut self.margin_bottom,
-                &mut self.margin_left,
-                parse_margin_length,
-            ),
+            "margin" => {
+                apply_box_edge_shorthand(
+                    val,
+                    &mut self.margin,
+                    &mut self.margin_top,
+                    &mut self.margin_right,
+                    &mut self.margin_bottom,
+                    &mut self.margin_left,
+                    parse_margin_length,
+                );
+                self.logical_margin
+                    .set_phys_left(self.margin_left.or(self.margin));
+                self.logical_margin
+                    .set_phys_right(self.margin_right.or(self.margin));
+            }
             "margin-top" => self.margin_top = parse_margin_length(val),
-            "margin-right" => self.margin_right = parse_margin_length(val),
+            "margin-right" => {
+                self.margin_right = parse_margin_length(val);
+                self.logical_margin.set_phys_right(self.margin_right);
+            }
             "margin-bottom" => self.margin_bottom = parse_margin_length(val),
-            "margin-left" => self.margin_left = parse_margin_length(val),
-            // Logical margin → physical (default LTR / horizontal-tb).
-            "margin-inline" => apply_logical_pair_shorthand(
-                val,
-                &mut self.margin_left,
-                &mut self.margin_right,
-                parse_margin_length,
-            ),
+            "margin-left" => {
+                self.margin_left = parse_margin_length(val);
+                self.logical_margin.set_phys_left(self.margin_left);
+            }
+            "margin-inline" => {
+                apply_logical_inline_edges(val, &mut self.logical_margin, parse_margin_length);
+            }
             "margin-block" => apply_logical_pair_shorthand(
                 val,
                 &mut self.margin_top,
                 &mut self.margin_bottom,
                 parse_margin_length,
             ),
-            "margin-inline-start" => self.margin_left = parse_margin_length(val),
-            "margin-inline-end" => self.margin_right = parse_margin_length(val),
+            "margin-inline-start" => {
+                self.logical_margin.set_start(parse_margin_length(val));
+            }
+            "margin-inline-end" => {
+                self.logical_margin.set_end(parse_margin_length(val));
+            }
             "margin-block-start" => self.margin_top = parse_margin_length(val),
             "margin-block-end" => self.margin_bottom = parse_margin_length(val),
             "width" => self.width = LengthSpec::parse(val),
@@ -875,9 +1765,23 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "overflow" => {
-                if let Some(o) = OverflowSpec::parse(val) {
-                    self.overflow_x = o;
-                    self.overflow_y = o;
+                let parts = split_css_space_tokens(val);
+                match parts.as_slice() {
+                    [one] => {
+                        if let Some(o) = OverflowSpec::parse(one) {
+                            self.overflow_x = o;
+                            self.overflow_y = o;
+                        }
+                    }
+                    [x, y, ..] => {
+                        if let Some(o) = OverflowSpec::parse(x) {
+                            self.overflow_x = o;
+                        }
+                        if let Some(o) = OverflowSpec::parse(y) {
+                            self.overflow_y = o;
+                        }
+                    }
+                    _ => {}
                 }
             }
             "overflow-x" => {
@@ -900,13 +1804,36 @@ impl LayoutStyleCss for LayoutStyle {
             | "background-color"
             | "background-image"
             | "background-size"
+            | "background-position"
+            | "background-repeat"
+            | "object-fit"
+            | "object-position"
             | "fill"
             | "mask-image"
             | "-webkit-mask-image"
             | "clip-path"
             | "filter"
             | "backdrop-filter"
-            | "-webkit-backdrop-filter" => {
+            | "-webkit-backdrop-filter"
+            | "box-shadow"
+            | "outline"
+            | "outline-width"
+            | "outline-style"
+            | "outline-color"
+            | "mix-blend-mode"
+            | "line-clamp"
+            | "-webkit-line-clamp"
+            | "text-decoration"
+            | "text-decoration-line"
+            | "font-feature-settings"
+            | "font-variation-settings"
+            | "pointer-events"
+            | "border-image"
+            | "border-image-source"
+            | "border-image-slice"
+            | "border-image-width"
+            | "border-image-outset"
+            | "border-image-repeat" => {
                 crate::css_paint::apply_css_paint_property(self, &key, val);
             }
             "stroke" => {
@@ -927,33 +1854,61 @@ impl LayoutStyleCss for LayoutStyle {
                     self.paint.border_radii = Some(corners);
                 }
             }
-            "box-shadow" => {
-                self.paint.box_shadow = parse_box_shadow(val);
-            }
             "text-shadow" => {
                 self.paint.text_shadow = parse_text_shadow(val);
             }
-            "border-width" | "border-top-width" => {
+            "border-width" => apply_border_width_shorthand(self, val),
+            "border-top-width" => {
                 if let Some(v) = parse_css_length_px(val, None) {
-                    self.border_width = Some(v.max(0.0));
+                    self.border_top_width = Some(v.max(0.0));
                 }
             }
-            "border-color" | "border-top-color" => {
+            "border-right-width" => {
+                if let Some(v) = parse_css_length_px(val, None) {
+                    self.border_right_width = Some(v.max(0.0));
+                }
+            }
+            "border-bottom-width" => {
+                if let Some(v) = parse_css_length_px(val, None) {
+                    self.border_bottom_width = Some(v.max(0.0));
+                }
+            }
+            "border-left-width" => {
+                if let Some(v) = parse_css_length_px(val, None) {
+                    self.border_left_width = Some(v.max(0.0));
+                }
+            }
+            "border-color" => apply_border_color_shorthand(self, val),
+            "border-top-color" => {
                 if let Some(c) = crate::style::parse_css_color(val) {
-                    self.border_color = Some(c);
+                    self.border_top_color = Some(c);
                 }
             }
-            "border" => {
-                // Minimal: "1px solid #ccc" / "1px solid rgb(...)"
-                let parts: Vec<_> = val.split_whitespace().collect();
-                for part in &parts {
-                    if let Some(v) = parse_css_length_px(part, None) {
-                        self.border_width = Some(v.max(0.0));
-                    } else if let Some(c) = crate::style::parse_css_color(part) {
-                        self.border_color = Some(c);
-                    }
+            "border-right-color" => {
+                if let Some(c) = crate::style::parse_css_color(val) {
+                    self.border_right_color = Some(c);
                 }
             }
+            "border-bottom-color" => {
+                if let Some(c) = crate::style::parse_css_color(val) {
+                    self.border_bottom_color = Some(c);
+                }
+            }
+            "border-left-color" => {
+                if let Some(c) = crate::style::parse_css_color(val) {
+                    self.border_left_color = Some(c);
+                }
+            }
+            "border-style" => apply_border_style_shorthand(self, val),
+            "border-top-style" => apply_border_side_style(self, val, 0),
+            "border-right-style" => apply_border_side_style(self, val, 1),
+            "border-bottom-style" => apply_border_side_style(self, val, 2),
+            "border-left-style" => apply_border_side_style(self, val, 3),
+            "border" => apply_border_shorthand(self, val, None),
+            "border-top" => apply_border_shorthand(self, val, Some(0)),
+            "border-right" => apply_border_shorthand(self, val, Some(1)),
+            "border-bottom" => apply_border_shorthand(self, val, Some(2)),
+            "border-left" => apply_border_shorthand(self, val, Some(3)),
             "position" => {
                 if let Some(p) = PositionSpec::parse(val) {
                     self.position = p;
@@ -967,44 +1922,108 @@ impl LayoutStyleCss for LayoutStyle {
                     self.z_index = Some(z);
                 }
             }
+            "isolation" => {
+                let v = val.trim().to_ascii_lowercase();
+                match v.as_str() {
+                    "isolate" => self.isolation = true,
+                    "auto" | "initial" | "unset" => self.isolation = false,
+                    _ => {}
+                }
+            }
             "transform" => {
                 if val.trim().eq_ignore_ascii_case("none") {
                     self.transform = None;
+                    self.transform_3d = None;
                     self.unsupported_transform = None;
-                } else if let Some(transform) = parse_paint_transform(val) {
-                    self.transform = (!transform.is_identity()).then_some(transform);
+                } else if let Some(parsed) = crate::css_paint_transform::parse_css_transform(val) {
+                    match parsed {
+                        crate::css_paint_transform::ParsedPaintTransform::Affine(transform) => {
+                            self.transform = (!transform.is_identity()).then_some(transform);
+                            self.transform_3d = None;
+                        }
+                        crate::css_paint_transform::ParsedPaintTransform::Mat4(mat4) => {
+                            self.transform = None;
+                            self.transform_3d = Some(mat4);
+                        }
+                    }
                     self.unsupported_transform = None;
                 } else {
                     self.transform = None;
+                    self.transform_3d = None;
                     self.unsupported_transform = Some(val.trim().to_owned());
                 }
             }
+            "transform-origin" => {
+                let v = val.trim();
+                if v.eq_ignore_ascii_case("initial") || v.eq_ignore_ascii_case("unset") {
+                    self.transform_origin = None;
+                } else if let Some(origin) = crate::css_paint_transform::parse_transform_origin(v) {
+                    self.transform_origin = Some(origin);
+                }
+            }
+            "transform-box" => {
+                if let Some(box_) = crate::css_paint_transform::parse_transform_box(val) {
+                    self.transform_box = box_;
+                }
+            }
+            // CSS `perspective` property establishes a parent 3D context we do
+            // not paint. Store the length so Scene can fail closed instead of
+            // pretending `rotateY` on children used this vanishing point.
+            "perspective" => {
+                let v = val.trim();
+                if v.eq_ignore_ascii_case("none")
+                    || v.eq_ignore_ascii_case("initial")
+                    || v.eq_ignore_ascii_case("unset")
+                {
+                    self.css_perspective = None;
+                } else if let Some(px) = parse_css_length_px(v, None).filter(|d| d.abs() > 1e-5) {
+                    self.css_perspective = Some(px);
+                }
+            }
+            "transform-style" => {
+                let v = val.trim().to_ascii_lowercase();
+                self.preserve_3d = v == "preserve-3d";
+            }
+            // `perspective-origin` skipped: parent perspective is fail-closed,
+            // so there is no stored vanishing point to offset.
+            "perspective-origin" => {}
             "top" => self.offset_top = parse_inset_length(val),
-            "right" => self.offset_right = parse_inset_length(val),
+            "right" => {
+                self.offset_right = parse_inset_length(val);
+                self.logical_inset.set_phys_right(self.offset_right);
+            }
             "bottom" => self.offset_bottom = parse_inset_length(val),
-            "left" => self.offset_left = parse_inset_length(val),
-            "inset" => apply_position_inset_shorthand(
-                val,
-                &mut self.offset_top,
-                &mut self.offset_right,
-                &mut self.offset_bottom,
-                &mut self.offset_left,
-            ),
-            // Logical inset → physical (default LTR / horizontal-tb).
-            "inset-inline" => apply_logical_pair_shorthand(
-                val,
-                &mut self.offset_left,
-                &mut self.offset_right,
-                parse_inset_length,
-            ),
+            "left" => {
+                self.offset_left = parse_inset_length(val);
+                self.logical_inset.set_phys_left(self.offset_left);
+            }
+            "inset" => {
+                apply_position_inset_shorthand(
+                    val,
+                    &mut self.offset_top,
+                    &mut self.offset_right,
+                    &mut self.offset_bottom,
+                    &mut self.offset_left,
+                );
+                self.logical_inset.set_phys_left(self.offset_left);
+                self.logical_inset.set_phys_right(self.offset_right);
+            }
+            // Logical inset kept until used-value resolve (final `direction`).
+            "inset-inline" => {
+                apply_logical_inline_edges(val, &mut self.logical_inset, parse_inset_length);
+            }
             "inset-block" => apply_logical_pair_shorthand(
                 val,
                 &mut self.offset_top,
                 &mut self.offset_bottom,
                 parse_inset_length,
             ),
-            "inset-inline-start" => self.offset_left = parse_inset_length(val),
-            "inset-inline-end" => self.offset_right = parse_inset_length(val),
+            "inset-inline-start" => {
+                self.logical_inset.set_start(parse_inset_length(val));
+            }
+            "inset-inline-end" => {
+                self.logical_inset.set_end(parse_inset_length(val));
+            }
             "inset-block-start" => self.offset_top = parse_inset_length(val),
             "inset-block-end" => self.offset_bottom = parse_inset_length(val),
             "text-overflow" if val.eq_ignore_ascii_case("ellipsis") => {
@@ -1033,12 +2052,18 @@ impl LayoutStyleCss for LayoutStyle {
             "text-align" => {
                 let kw = val.trim().to_ascii_lowercase();
                 self.text_align = match kw.as_str() {
-                    "left" | "start" => TextAlignSpec::Start,
+                    "start" => TextAlignSpec::Start,
+                    "end" => TextAlignSpec::End,
+                    "left" => TextAlignSpec::Left,
+                    "right" => TextAlignSpec::Right,
                     "center" => TextAlignSpec::Center,
-                    "right" | "end" => TextAlignSpec::End,
                     _ => self.text_align,
                 };
             }
+            "direction" => apply_css_direction(self, val),
+            "writing-mode" => apply_css_writing_mode(self, val),
+            // Fail-closed: do not pretend bidi isolation or IFC bidi.
+            "unicode-bidi" => {}
             "float" => {
                 let kw = val.trim().to_ascii_lowercase();
                 self.float = match kw.as_str() {
@@ -1182,8 +2207,19 @@ impl LayoutStyleCss for LayoutStyle {
                     self.opacity = Some(v.clamp(0.0, 1.0));
                 }
             }
+            // Window-level / chrome: fail closed. `cursor` has no CSS→window
+            // mapping (winit cursor is chrome resize only). `user-select` has
+            // no L1 selection gate. `-webkit-app-region` / `app-region` is
+            // Electron caption CSS on arbitrary boxes; Nana drag is only
+            // AppTitleBar → nana-window, not a CSS region map.
+            "cursor"
+            | "user-select"
+            | "-webkit-user-select"
+            | "-webkit-app-region"
+            | "app-region" => {}
             _ => {}
         }
+        self.resolve_logical_box_edges();
     }
 
     fn apply_flex_shorthand(&mut self, val: &str) {
@@ -1209,40 +2245,49 @@ impl LayoutStyleCss for LayoutStyle {
             self.flex_basis = Some(LengthSpec::Auto);
             return;
         }
+        // CSS `flex` omitted components: grow=1, shrink=1, basis=0.
+        // Unspecified *longhand* `flex-shrink` stays `None` (layout treats as 0).
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        match parts.len() {
-            1 => {
-                if let Ok(g) = parts[0].parse::<f32>() {
+        match parts.as_slice() {
+            [one] => {
+                if let Ok(g) = one.parse::<f32>() {
                     self.flex_grow = Some(g.max(0.0));
                     self.flex_shrink = Some(1.0);
                     self.flex_basis = Some(LengthSpec::Px(0.0));
-                } else if let Some(basis) = LengthSpec::parse(parts[0]) {
+                } else if let Some(basis) = LengthSpec::parse(one) {
+                    self.flex_grow = Some(1.0);
+                    self.flex_shrink = Some(1.0);
                     self.flex_basis = Some(basis);
                 }
             }
-            2 => {
-                if let Ok(g) = parts[0].parse::<f32>() {
+            [a, b] => {
+                if let Ok(g) = a.parse::<f32>() {
                     self.flex_grow = Some(g.max(0.0));
-                }
-                if let Ok(s) = parts[1].parse::<f32>() {
-                    self.flex_shrink = Some(s.max(0.0));
-                } else if let Some(basis) = LengthSpec::parse(parts[1]) {
-                    self.flex_basis = Some(basis);
-                }
-            }
-            _ => {
-                if let Ok(g) = parts[0].parse::<f32>() {
-                    self.flex_grow = Some(g.max(0.0));
-                }
-                if parts.len() > 1
-                    && let Ok(s) = parts[1].parse::<f32>()
+                    if let Ok(s) = b.parse::<f32>() {
+                        self.flex_shrink = Some(s.max(0.0));
+                        self.flex_basis = Some(LengthSpec::Px(0.0));
+                    } else if let Some(basis) = LengthSpec::parse(b) {
+                        self.flex_shrink = Some(1.0);
+                        self.flex_basis = Some(basis);
+                    }
+                } else if let Some(basis) = LengthSpec::parse(a)
+                    && let Ok(g) = b.parse::<f32>()
                 {
-                    self.flex_shrink = Some(s.max(0.0));
-                }
-                if parts.len() > 2 {
-                    self.flex_basis = LengthSpec::parse(parts[2]);
+                    self.flex_grow = Some(g.max(0.0));
+                    self.flex_shrink = Some(1.0);
+                    self.flex_basis = Some(basis);
                 }
             }
+            [g, s, basis, ..] => {
+                if let Ok(g) = g.parse::<f32>() {
+                    self.flex_grow = Some(g.max(0.0));
+                }
+                if let Ok(s) = s.parse::<f32>() {
+                    self.flex_shrink = Some(s.max(0.0));
+                }
+                self.flex_basis = LengthSpec::parse(basis);
+            }
+            _ => {}
         }
     }
 
@@ -1258,6 +2303,7 @@ impl LayoutStyleCss for LayoutStyle {
                 self.apply_css_text(s, percent_w, percent_h);
             }
             nana_js_engine::HostValue::Object(map) => {
+                let mut pairs: Vec<(String, String)> = Vec::with_capacity(map.len());
                 for (k, v) in map {
                     let s = match v {
                         nana_js_engine::HostValue::String(s) => s.clone(),
@@ -1266,7 +2312,17 @@ impl LayoutStyleCss for LayoutStyle {
                         nana_js_engine::HostValue::Null => continue,
                         other => host_value_debug(other),
                     };
-                    self.apply_css_property(k, &s, percent_w, percent_h);
+                    pairs.push((k.clone(), s));
+                }
+                for (k, s) in &pairs {
+                    if css_key_is_direction_or_writing_mode(k) {
+                        self.apply_css_property(k, s, percent_w, percent_h);
+                    }
+                }
+                for (k, s) in &pairs {
+                    if !css_key_is_direction_or_writing_mode(k) {
+                        self.apply_css_property(k, s, percent_w, percent_h);
+                    }
                 }
             }
             nana_js_engine::HostValue::Null => {}
@@ -1277,218 +2333,6 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
         }
-    }
-}
-
-/// Parse CSS 2D affine transforms. Function order is preserved, so
-/// `scale(2) translate(4px)` produces an 8px translation.
-fn parse_paint_transform(raw: &str) -> Option<PaintTransform> {
-    let mut rest = raw.trim();
-    let mut result = PaintTransform::default();
-    while !rest.is_empty() {
-        let open = rest.find('(')?;
-        let name = rest[..open].trim().to_ascii_lowercase();
-        let close = rest[open + 1..].find(')')? + open + 1;
-        let args = rest[open + 1..close]
-            .split(|ch: char| ch == ',' || ch.is_whitespace())
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>();
-        match name.as_str() {
-            "translate" => {
-                if !(1..=2).contains(&args.len()) {
-                    return None;
-                }
-                let x = parse_transform_length(args.first().copied()?)?;
-                let y = match args.get(1).copied() {
-                    Some(value) => parse_transform_length(value)?,
-                    None => 0.0,
-                };
-                result = result.then(translation(x, y));
-            }
-            "translatex" => {
-                if args.len() != 1 {
-                    return None;
-                }
-                result = result.then(translation(
-                    parse_transform_length(args.first().copied()?)?,
-                    0.0,
-                ));
-            }
-            "translatey" => {
-                if args.len() != 1 {
-                    return None;
-                }
-                result = result.then(translation(
-                    0.0,
-                    parse_transform_length(args.first().copied()?)?,
-                ));
-            }
-            "translate3d" if args.len() == 3 => {
-                let z = parse_transform_length(args[2])?;
-                if z != 0.0 {
-                    return None;
-                }
-                result = result.then(translation(
-                    parse_transform_length(args[0])?,
-                    parse_transform_length(args[1])?,
-                ));
-            }
-            "scale" | "scalex" | "scaley" => {
-                let valid_len = if name == "scale" {
-                    (1..=2).contains(&args.len())
-                } else {
-                    args.len() == 1
-                };
-                if !valid_len {
-                    return None;
-                }
-                let x = args.first()?.parse::<f32>().ok()?;
-                let (x, y) = match name.as_str() {
-                    "scalex" => (x, 1.0),
-                    "scaley" => (1.0, x),
-                    _ => (
-                        x,
-                        match args.get(1) {
-                            Some(value) => value.parse::<f32>().ok()?,
-                            None => x,
-                        },
-                    ),
-                };
-                result = result.then(scaling(x, y));
-            }
-            "scale3d" if args.len() == 3 => {
-                let x = args[0].parse::<f32>().ok()?;
-                let y = args[1].parse::<f32>().ok()?;
-                let z = args[2].parse::<f32>().ok()?;
-                if (z - 1.0).abs() > 0.0001 {
-                    return None;
-                }
-                result = result.then(scaling(x, y));
-            }
-            "matrix" if args.len() == 6 => {
-                let values = args
-                    .iter()
-                    .map(|value| value.parse::<f32>().ok())
-                    .collect::<Option<Vec<_>>>()?;
-                result = result.then(PaintTransform {
-                    a: values[0],
-                    b: values[1],
-                    c: values[2],
-                    d: values[3],
-                    e: values[4],
-                    f: values[5],
-                });
-            }
-            "rotate" | "rotatez" => {
-                if args.len() != 1 {
-                    return None;
-                }
-                let angle = parse_transform_angle(args.first().copied()?)?;
-                let (sin, cos) = angle.sin_cos();
-                result = result.then(PaintTransform {
-                    a: cos,
-                    b: sin,
-                    c: -sin,
-                    d: cos,
-                    ..PaintTransform::default()
-                });
-            }
-            "skew" => {
-                if !(1..=2).contains(&args.len()) {
-                    return None;
-                }
-                let x = parse_transform_angle(args.first().copied()?)?.tan();
-                let y = match args.get(1).copied() {
-                    Some(value) => parse_transform_angle(value)?,
-                    None => 0.0,
-                }
-                .tan();
-                result = result.then(PaintTransform {
-                    b: y,
-                    c: x,
-                    ..PaintTransform::default()
-                });
-            }
-            "skewx" => {
-                if args.len() != 1 {
-                    return None;
-                }
-                result = result.then(PaintTransform {
-                    c: parse_transform_angle(args.first().copied()?)?.tan(),
-                    ..PaintTransform::default()
-                });
-            }
-            "skewy" => {
-                if args.len() != 1 {
-                    return None;
-                }
-                result = result.then(PaintTransform {
-                    b: parse_transform_angle(args.first().copied()?)?.tan(),
-                    ..PaintTransform::default()
-                });
-            }
-            _ => return None,
-        }
-        rest = rest[close + 1..].trim_start();
-    }
-    [result.a, result.b, result.c, result.d, result.e, result.f]
-        .into_iter()
-        .all(f32::is_finite)
-        .then_some(result)
-}
-
-fn translation(x: f32, y: f32) -> PaintTransform {
-    PaintTransform {
-        e: x,
-        f: y,
-        ..PaintTransform::default()
-    }
-}
-
-fn scaling(x: f32, y: f32) -> PaintTransform {
-    PaintTransform {
-        a: x,
-        d: y,
-        ..PaintTransform::default()
-    }
-}
-
-fn parse_transform_angle(raw: &str) -> Option<f32> {
-    let raw = raw.trim().to_ascii_lowercase();
-    if let Some(value) = raw.strip_suffix("deg") {
-        value.trim().parse::<f32>().ok().map(f32::to_radians)
-    } else if let Some(value) = raw.strip_suffix("rad") {
-        value.trim().parse().ok()
-    } else if let Some(value) = raw.strip_suffix("turn") {
-        value
-            .trim()
-            .parse::<f32>()
-            .ok()
-            .map(|turns| turns * std::f32::consts::TAU)
-    } else if let Some(value) = raw.strip_suffix("grad") {
-        value
-            .trim()
-            .parse::<f32>()
-            .ok()
-            .map(|grads| grads * std::f32::consts::PI / 200.0)
-    } else if raw == "0" || raw == "+0" || raw == "-0" {
-        Some(0.0)
-    } else {
-        None
-    }
-}
-
-fn parse_transform_length(raw: &str) -> Option<f32> {
-    if raw == "0" || raw == "+0" || raw == "-0" {
-        Some(0.0)
-    } else if let Some(value) = raw
-        .trim()
-        .strip_suffix("px")
-        .or_else(|| raw.trim().strip_suffix("PX"))
-    {
-        value.trim().parse().ok()
-    } else {
-        parse_css_length_px(raw, None)
     }
 }
 
@@ -1651,7 +2495,82 @@ fn apply_position_inset_shorthand(
     }
 }
 
-/// CSS Logical Properties 1–2 值简写（默认 LTR）：`start` / `end` → 两 physical 边。
+/// `direction` / `writing-mode` must be applied before logical box properties
+/// in the same declaration batch so inline start/end map against used dir.
+pub(crate) fn css_key_is_direction_or_writing_mode(key: &str) -> bool {
+    matches!(
+        normalize_css_prop_key(key).as_str(),
+        "direction" | "writing-mode"
+    )
+}
+
+fn normalize_css_prop_key(key: &str) -> String {
+    let key = key.trim().replace('_', "-");
+    if key.chars().any(|c| c.is_ascii_uppercase()) {
+        camel_to_kebab(&key)
+    } else {
+        key.to_ascii_lowercase()
+    }
+}
+
+fn apply_css_direction(layout: &mut LayoutStyle, val: &str) {
+    let v = val.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "rtl" => layout.dir = Some(DirSpec::Rtl),
+        "ltr" | "initial" => layout.dir = Some(DirSpec::Ltr),
+        // Inherited property: `unset` / `inherit` keep the seeded parent value.
+        "inherit" | "unset" => {}
+        _ => {}
+    }
+}
+
+/// HTML `dir` presentational hint → CSS `direction` used value.
+///
+/// `auto` needs first-strong bidi; fail-closed (do not write [`DirSpec::Ltr`]).
+pub(crate) fn dir_spec_from_html_attr(raw: &str) -> Option<DirSpec> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "rtl" => Some(DirSpec::Rtl),
+        "ltr" => Some(DirSpec::Ltr),
+        _ => None,
+    }
+}
+
+fn apply_css_writing_mode(layout: &mut LayoutStyle, val: &str) {
+    let v = val.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "horizontal-tb" | "initial" | "unset" | "inherit" | "lr-tb" | "lr" => {
+            layout.unsupported_writing_mode = false;
+        }
+        "vertical-rl" | "vertical-lr" | "sideways-rl" | "sideways-lr" | "tb-rl" | "tb" | "bt" => {
+            layout.unsupported_writing_mode = true;
+        }
+        _ => {}
+    }
+}
+
+/// Store inline-axis logical pair; used left/right come from later resolve.
+fn apply_logical_inline_edges(
+    val: &str,
+    edges: &mut LogicalInlineEdges,
+    parse_edge: fn(&str) -> Option<LengthSpec>,
+) {
+    let parts: Vec<_> = val.split_whitespace().collect();
+    match parts.len() {
+        1 => {
+            if let Some(v) = parse_edge(parts[0]) {
+                edges.set_start(Some(v));
+                edges.set_end(Some(v));
+            }
+        }
+        n if n >= 2 => {
+            edges.set_start(parse_edge(parts[0]));
+            edges.set_end(parse_edge(parts[1]));
+        }
+        _ => {}
+    }
+}
+
+/// CSS Logical Properties 1–2 值简写：`start` / `end` → 两 physical 边。
 /// 单值两边同值；双值分别为 start、end。不改动未映射轴（与 MDN 轴简写一致）。
 fn apply_logical_pair_shorthand(
     val: &str,
@@ -2199,6 +3118,9 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
         if rest.is_empty() {
             break;
         }
+        if is_subgrid_track_token(rest) {
+            return GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid);
+        }
         // repeat(N, tracks…) — fixed N expands；整表 auto-fit/fill 保留 pattern。
         if let Some(after) = strip_prefix_ci(rest, "repeat(") {
             let Some((inner, next)) = split_paren_inner(after) else {
@@ -2402,6 +3324,17 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
         Some(&s[prefix.len()..])
     } else {
         None
+    }
+}
+
+fn is_subgrid_track_token(rest: &str) -> bool {
+    let Some(after) = strip_prefix_ci(rest, "subgrid") else {
+        return false;
+    };
+    match after.chars().next() {
+        None => true,
+        Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_' => false,
+        Some(_) => true,
     }
 }
 
@@ -2736,7 +3669,7 @@ fn strip_css_comments_local(css: &str) -> String {
     out
 }
 
-/// Iteratively expand `var(--x)` / simple `calc(Npx * k)` inside the custom-prop map.
+/// Iteratively expand `var(--x)` / foldable `calc()` inside the custom-prop map.
 fn resolve_css_custom_property_map(map: &mut std::collections::BTreeMap<String, String>) {
     for _ in 0..8 {
         let snapshot = map.clone();
@@ -2757,26 +3690,16 @@ fn resolve_css_custom_property_map(map: &mut std::collections::BTreeMap<String, 
 
 fn simplify_simple_calc(input: &str) -> String {
     let s = input.trim();
-    let Some(inner) = s
-        .strip_prefix("calc(")
-        .or_else(|| s.strip_prefix("CALC("))
-        .and_then(|rest| rest.strip_suffix(')'))
-    else {
+    if !starts_with_ci(s, "calc(") {
         return input.to_string();
-    };
-    let inner = inner.trim();
-    // calc(16px * .75) / calc(16px * 0.75)
-    if let Some((left, right)) = inner.split_once('*') {
-        let left = left.trim();
-        let right = right.trim();
-        if let (Some(px), Ok(k)) = (parse_css_length_px(left, None), right.parse::<f32>()) {
-            return format!("{}px", (px * k).max(0.0));
-        }
-        if let (Ok(k), Some(px)) = (left.parse::<f32>(), parse_css_length_px(right, None)) {
-            return format!("{}px", (px * k).max(0.0));
-        }
     }
-    input.to_string()
+    // Same engine as LengthSpec::parse — fold only context-free results.
+    match LengthSpec::parse(s) {
+        Some(LengthSpec::Px(px)) => format!("{px}px"),
+        Some(LengthSpec::Em(v)) => format!("{v}em"),
+        Some(LengthSpec::Rem(v)) => format!("{v}rem"),
+        _ => input.to_string(),
+    }
 }
 
 /// CSS custom-property `initial` computes to the guaranteed-invalid value, so
@@ -3267,6 +4190,204 @@ fn parse_box_edge_length_inner(input: &str, clamp_px_non_negative: bool) -> Opti
     })
 }
 
+fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
+    let parts: Vec<&str> = val.split_whitespace().collect();
+    if parts.is_empty() {
+        return;
+    }
+    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
+    let Some(parsed) = parts
+        .iter()
+        .map(|part| parse_css_length_px(part, None).map(|v| v.max(0.0)))
+        .collect::<Option<Vec<f32>>>()
+    else {
+        return;
+    };
+    let [top, right, bottom, left] = match parsed.len() {
+        1 => [parsed[0]; 4],
+        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
+        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
+        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    };
+    style.border_width = Some(top.max(right).max(bottom).max(left));
+    style.border_top_width = Some(top);
+    style.border_right_width = Some(right);
+    style.border_bottom_width = Some(bottom);
+    style.border_left_width = Some(left);
+}
+
+fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
+    let parts = split_css_space_tokens(val);
+    if parts.is_empty() {
+        return;
+    }
+    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
+    let Some(parsed) = parts
+        .iter()
+        .map(|part| crate::style::parse_css_color(part))
+        .collect::<Option<Vec<[f32; 4]>>>()
+    else {
+        return;
+    };
+    let [top, right, bottom, left] = match parsed.len() {
+        1 => [parsed[0]; 4],
+        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
+        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
+        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    };
+    style.border_color = Some(top);
+    style.border_top_color = Some(top);
+    style.border_right_color = Some(right);
+    style.border_bottom_color = Some(bottom);
+    style.border_left_color = Some(left);
+}
+
+fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
+    let parts = split_css_space_tokens(val);
+    if parts.is_empty() {
+        return;
+    }
+    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
+    let Some(parsed) = parts
+        .iter()
+        .map(|part| BorderStyle::parse(part))
+        .collect::<Option<Vec<BorderStyle>>>()
+    else {
+        return;
+    };
+    let [top, right, bottom, left] = match parsed.len() {
+        1 => [parsed[0]; 4],
+        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
+        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
+        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    };
+    style.border_style = Some(top);
+    style.border_top_style = Some(top);
+    style.border_right_style = Some(right);
+    style.border_bottom_style = Some(bottom);
+    style.border_left_style = Some(left);
+}
+
+fn apply_border_side_style(style: &mut LayoutStyle, val: &str, side: usize) {
+    let Some(parsed) = BorderStyle::parse(val) else {
+        return;
+    };
+    match side {
+        0 => style.border_top_style = Some(parsed),
+        1 => style.border_right_style = Some(parsed),
+        2 => style.border_bottom_style = Some(parsed),
+        _ => style.border_left_style = Some(parsed),
+    }
+}
+
+/// `border` / `border-top` … : width || style || color. `side` None = all four.
+fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize>) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.eq_ignore_ascii_case("none") {
+        assign_border_side_style(style, side, BorderStyle::None);
+        assign_border_side_width(style, side, 0.0);
+        return;
+    }
+    let mut width = None;
+    let mut parsed_style = None;
+    let mut color = None;
+    for part in split_css_space_tokens(trimmed) {
+        if let Some(s) = BorderStyle::parse(&part) {
+            parsed_style = Some(s);
+        } else if let Some(v) = parse_css_length_px(&part, None) {
+            width = Some(v.max(0.0));
+        } else if let Some(c) = crate::style::parse_css_color(&part) {
+            color = Some(c);
+        }
+    }
+    if let Some(w) = width {
+        assign_border_side_width(style, side, w);
+    }
+    if let Some(s) = parsed_style {
+        assign_border_side_style(style, side, s);
+    }
+    if let Some(c) = color {
+        assign_border_side_color(style, side, c);
+    }
+}
+
+fn assign_border_side_width(style: &mut LayoutStyle, side: Option<usize>, width: f32) {
+    match side {
+        None => {
+            style.border_width = Some(width);
+            style.border_top_width = Some(width);
+            style.border_right_width = Some(width);
+            style.border_bottom_width = Some(width);
+            style.border_left_width = Some(width);
+        }
+        Some(0) => style.border_top_width = Some(width),
+        Some(1) => style.border_right_width = Some(width),
+        Some(2) => style.border_bottom_width = Some(width),
+        _ => style.border_left_width = Some(width),
+    }
+}
+
+fn assign_border_side_color(style: &mut LayoutStyle, side: Option<usize>, color: [f32; 4]) {
+    match side {
+        None => {
+            style.border_color = Some(color);
+            style.border_top_color = Some(color);
+            style.border_right_color = Some(color);
+            style.border_bottom_color = Some(color);
+            style.border_left_color = Some(color);
+        }
+        Some(0) => style.border_top_color = Some(color),
+        Some(1) => style.border_right_color = Some(color),
+        Some(2) => style.border_bottom_color = Some(color),
+        _ => style.border_left_color = Some(color),
+    }
+}
+
+fn assign_border_side_style(style: &mut LayoutStyle, side: Option<usize>, parsed: BorderStyle) {
+    match side {
+        None => {
+            style.border_style = Some(parsed);
+            style.border_top_style = Some(parsed);
+            style.border_right_style = Some(parsed);
+            style.border_bottom_style = Some(parsed);
+            style.border_left_style = Some(parsed);
+        }
+        Some(0) => style.border_top_style = Some(parsed),
+        Some(1) => style.border_right_style = Some(parsed),
+        Some(2) => style.border_bottom_style = Some(parsed),
+        _ => style.border_left_style = Some(parsed),
+    }
+}
+
+fn split_css_space_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ' ' | '\t' | '\n' if depth == 0 => {
+                if start < idx {
+                    tokens.push(input[start..idx].trim().to_string());
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < input.len() {
+        tokens.push(input[start..].trim().to_string());
+    }
+    tokens
+        .into_iter()
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
 /// Parse CSS `border-radius` shorthand (1–4 values, px or `%`).
 fn parse_border_radius_shorthand(input: &str) -> Option<[LengthSpec; 4]> {
     let parts: Vec<&str> = input.split_whitespace().collect();
@@ -3288,16 +4409,51 @@ fn parse_border_radius_shorthand(input: &str) -> Option<[LengthSpec; 4]> {
     })
 }
 
-/// Parse single-layer outset `box-shadow` (`offset-x offset-y blur spread color`).
-fn parse_box_shadow(input: &str) -> Option<BoxShadowSpec> {
+/// Parse `box-shadow` layers (`inset` + comma list, GPU-capped).
+pub(crate) fn parse_box_shadows(input: &str) -> Option<Vec<BoxShadowSpec>> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return Some(Vec::new());
+    }
+    let mut layers = Vec::new();
+    for part in split_shadow_layers(trimmed) {
+        if let Some(layer) = parse_one_box_shadow_layer(&part) {
+            layers.push(layer);
+            if layers.len() >= nana_ui_core::MAX_BOX_SHADOWS {
+                break;
+            }
+        }
+    }
+    Some(layers)
+}
+
+fn split_shadow_layers(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(input[start..idx].trim().to_string());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if start <= input.len() {
+        parts.push(input[start..].trim().to_string());
+    }
+    parts.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+fn parse_one_box_shadow_layer(input: &str) -> Option<BoxShadowSpec> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    if trimmed.to_ascii_lowercase().contains("inset") {
-        return None;
-    }
-    let (length_tokens, color_token) = split_box_shadow_tokens(trimmed)?;
+    let (length_tokens, color_token, inset) = split_box_shadow_tokens(trimmed)?;
     if length_tokens.is_empty() {
         return None;
     }
@@ -3324,6 +4480,35 @@ fn parse_box_shadow(input: &str) -> Option<BoxShadowSpec> {
         blur_radius,
         spread_radius,
         color,
+        inset,
+    })
+}
+
+/// Parse `filter: drop-shadow()` args. No inset, no spread (4th length).
+pub(crate) fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropShadow> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (length_tokens, color_token, inset) = split_box_shadow_tokens(trimmed)?;
+    if inset || length_tokens.len() < 2 || length_tokens.len() > 3 {
+        return None;
+    }
+    let offset_x = parse_shadow_length_px(&length_tokens[0])?;
+    let offset_y = parse_shadow_length_px(&length_tokens[1])?;
+    let blur_radius = match length_tokens.get(2) {
+        Some(token) => parse_shadow_blur_length_px(token)?,
+        None => 0.0,
+    };
+    let color = match color_token.as_deref() {
+        Some(token) => crate::style::parse_css_color(token)?,
+        None => [0.0, 0.0, 0.0, 1.0],
+    };
+    Some(nana_ui_core::FilterDropShadow {
+        offset_x,
+        offset_y,
+        blur_radius,
+        color,
     })
 }
 
@@ -3336,7 +4521,7 @@ pub(crate) fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
     if trimmed.to_ascii_lowercase().contains("inset") {
         return None;
     }
-    let (length_tokens, color_token) = split_box_shadow_tokens(trimmed)?;
+    let (length_tokens, color_token, _inset) = split_box_shadow_tokens(trimmed)?;
     if length_tokens.is_empty() {
         return None;
     }
@@ -3386,9 +4571,10 @@ fn parse_shadow_blur_length_px(input: &str) -> Option<f32> {
     (px >= 0.0).then_some(px)
 }
 
-fn split_box_shadow_tokens(input: &str) -> Option<(Vec<String>, Option<String>)> {
+fn split_box_shadow_tokens(input: &str) -> Option<(Vec<String>, Option<String>, bool)> {
     let mut length_tokens = Vec::new();
     let mut color_token = None;
+    let mut inset = false;
     let mut paren_depth = 0i32;
     let mut token_start = 0usize;
     for (idx, ch) in input.char_indices() {
@@ -3401,6 +4587,7 @@ fn split_box_shadow_tokens(input: &str) -> Option<(Vec<String>, Option<String>)>
                         input[token_start..idx].trim(),
                         &mut length_tokens,
                         &mut color_token,
+                        &mut inset,
                     )?;
                 }
                 token_start = idx + ch.len_utf8();
@@ -3413,18 +4600,24 @@ fn split_box_shadow_tokens(input: &str) -> Option<(Vec<String>, Option<String>)>
             input[token_start..].trim(),
             &mut length_tokens,
             &mut color_token,
+            &mut inset,
         )?;
     }
-    Some((length_tokens, color_token))
+    Some((length_tokens, color_token, inset))
 }
 
 fn classify_box_shadow_token(
     token: &str,
     length_tokens: &mut Vec<String>,
     color_token: &mut Option<String>,
+    inset: &mut bool,
 ) -> Option<()> {
     let token = token.trim();
     if token.is_empty() {
+        return Some(());
+    }
+    if token.eq_ignore_ascii_case("inset") {
+        *inset = true;
         return Some(());
     }
     if is_css_color_token(token) {
@@ -3449,18 +4642,8 @@ fn is_css_color_token(token: &str) -> bool {
 }
 
 fn is_css_named_color(token: &str) -> bool {
-    matches!(
-        token.to_ascii_lowercase().as_str(),
-        "black"
-            | "white"
-            | "transparent"
-            | "currentcolor"
-            | "red"
-            | "green"
-            | "blue"
-            | "gray"
-            | "grey"
-    )
+    token.eq_ignore_ascii_case("currentcolor")
+        || crate::style::parse_css_named_color(token).is_some()
 }
 
 /// 解析 `12px` / `12` / `50%` / `em` / `vh` / `min()`（相对 base + 活跃 viewport）为逻辑像素。
@@ -3652,6 +4835,133 @@ mod tests {
     }
 
     #[test]
+    fn direction_rtl_padding_inline_start_applies_to_right() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("direction: rtl; padding-inline-start: 12px", None, None);
+        assert_eq!(layout.dir, Some(DirSpec::Rtl));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn direction_rtl_after_padding_inline_start_still_maps_to_right() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("padding-inline-start: 12px; direction: rtl", None, None);
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn direction_rtl_maps_margin_and_inset_inline() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "direction:rtl; margin-inline-start:8px; margin-inline-end:2px; \
+             inset-inline: 24px 16px",
+            None,
+            None,
+        );
+        assert_eq!(layout.margin_right, Some(LengthSpec::Px(8.0)));
+        assert_eq!(layout.margin_left, Some(LengthSpec::Px(2.0)));
+        assert_eq!(layout.offset_right, Some(LengthSpec::Px(24.0)));
+        assert_eq!(layout.offset_left, Some(LengthSpec::Px(16.0)));
+    }
+
+    #[test]
+    fn direction_rtl_padding_inline_shorthand_swaps_start_end() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("direction:rtl; padding-inline: 4px 2px", None, None);
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(4.0)));
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(2.0)));
+    }
+
+    #[test]
+    fn direction_rtl_text_align_start_end_are_logical() {
+        let mut start = LayoutStyle::default();
+        start.apply_css_text("direction:rtl; text-align:start", None, None);
+        assert_eq!(start.text_align, TextAlignSpec::Start);
+        assert_eq!(
+            start.text_align.to_justify(start.is_rtl()),
+            JustifySpec::End
+        );
+
+        let mut end = LayoutStyle::default();
+        end.apply_css_text("direction:rtl; text-align:end", None, None);
+        assert_eq!(end.text_align, TextAlignSpec::End);
+        assert_eq!(end.text_align.to_justify(end.is_rtl()), JustifySpec::Start);
+
+        let mut left = LayoutStyle::default();
+        left.apply_css_text("direction:rtl; text-align:left", None, None);
+        assert_eq!(left.text_align, TextAlignSpec::Left);
+        assert_eq!(
+            left.text_align.to_justify(left.is_rtl()),
+            JustifySpec::Start
+        );
+    }
+
+    #[test]
+    fn direction_rtl_inherit_typography_remaps_logical_padding() {
+        let mut child = LayoutStyle::default();
+        child.apply_css_text("padding-inline-start: 12px", None, None);
+        assert_eq!(child.padding_left, Some(LengthSpec::Px(12.0)));
+        assert!(child.padding_right.is_none());
+
+        let mut parent = LayoutStyle::default();
+        parent.dir = Some(DirSpec::Rtl);
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.dir, Some(DirSpec::Rtl));
+        assert_eq!(child.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(child.padding_left.is_none());
+    }
+
+    #[test]
+    fn direction_rtl_does_not_reverse_flex_or_grid_start() {
+        let mut flex = LayoutStyle::default();
+        flex.apply_css_text(
+            "display:flex; flex-direction:row; direction:rtl; justify-content:start",
+            None,
+            None,
+        );
+        assert_eq!(flex.dir, Some(DirSpec::Rtl));
+        assert_eq!(flex.direction, Some(FlexDirection::Row));
+        assert!(!flex.flex_reverse);
+        assert_eq!(flex.justify_content, JustifySpec::Start);
+
+        let mut grid = LayoutStyle::default();
+        grid.apply_css_text(
+            "display:grid; direction:rtl; justify-content:start; justify-items:start",
+            None,
+            None,
+        );
+        assert_eq!(grid.dir, Some(DirSpec::Rtl));
+        assert!(!grid.flex_reverse);
+        assert_eq!(grid.justify_content, JustifySpec::Start);
+        assert_eq!(grid.justify_items, Some(AlignSpec::Start));
+    }
+
+    #[test]
+    fn writing_mode_vertical_fail_closed_does_not_flip_axis() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "writing-mode: vertical-rl; padding-inline-start: 12px",
+            None,
+            None,
+        );
+        assert!(layout.unsupported_writing_mode);
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_top.is_none());
+    }
+
+    #[test]
+    fn unicode_bidi_isolate_does_not_fake_isolation() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("unicode-bidi: isolate; isolation: isolate", None, None);
+        assert!(layout.isolation);
+        let mut bidi_only = LayoutStyle::default();
+        bidi_only.apply_css_text("unicode-bidi: isolate", None, None);
+        assert!(!bidi_only.isolation);
+    }
+
+    #[test]
     fn flex_direction_column_overrides_display_flex_default_row() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("display:flex; flex-direction:column; gap:4px", None, None);
@@ -3708,6 +5018,143 @@ mod tests {
             Some(LengthSpec::Percent(50.0))
         );
         assert_eq!(LengthSpec::parse("calc(40px)"), Some(LengthSpec::Px(40.0)));
+    }
+
+    #[test]
+    fn calc_mul_div_nested_and_var_parse() {
+        assert_eq!(
+            LengthSpec::parse("calc(12 * 2px)"),
+            Some(LengthSpec::Px(24.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(2px * 12)"),
+            Some(LengthSpec::Px(24.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(100vw / 1280)"),
+            Some(LengthSpec::Viewport {
+                axis: ViewportAxis::Width,
+                value: 100.0 / 1280.0,
+            })
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(100% - 12 * 1px)"),
+            Some(LengthSpec::CalcPercentOffset {
+                percent: 100.0,
+                offset_px: -12.0,
+            })
+        );
+        assert_eq!(
+            LengthSpec::parse("calc((100% - 12px) / 2)"),
+            Some(LengthSpec::CalcPercentOffset {
+                percent: 50.0,
+                offset_px: -6.0,
+            })
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(calc(10px) + 2px)"),
+            Some(LengthSpec::Px(12.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("min(calc(10px), max(1px, 2px))"),
+            Some(LengthSpec::Px(2.0))
+        );
+        // Unknown math functions fail closed (no pretend-success).
+        assert_eq!(LengthSpec::parse("calc(tan(45deg) * 10px)"), None);
+        assert_eq!(LengthSpec::parse("calc(atan2(1, 1) * 10px)"), None);
+
+        with_active_viewport(1280.0, 800.0, || {
+            assert_eq!(
+                LengthSpec::parse("calc(100vw / 1280)")
+                    .unwrap()
+                    .resolve_with(None, active_viewport()),
+                Some(1.0)
+            );
+        });
+
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("--x".into(), "10px".into());
+        with_active_css_vars(&vars, || {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text(
+                "width: calc(2 * var(--x)); height: calc(12 * 2px)",
+                None,
+                None,
+            );
+            assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.height, Some(LengthSpec::Px(24.0)));
+        });
+    }
+
+    #[test]
+    fn calc_fail_closed_and_honest_fold() {
+        assert_eq!(
+            LengthSpec::parse("calc(2 * 3)"),
+            None,
+            "unitless calc is not a length"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(0px + 10)"),
+            None,
+            "0px stays a length; number + length is invalid"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(0px * 10px)"),
+            None,
+            "length times length is unsupported"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(50% * 3)"),
+            Some(LengthSpec::Percent(150.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(99.6%)"),
+            Some(LengthSpec::Percent(99.6)),
+            "must not snap near-100% to Fill"
+        );
+        assert_eq!(LengthSpec::parse("calc(10px / 0)"), None);
+        assert_eq!(
+            LengthSpec::parse("calc(1e20px * 1e20)"),
+            None,
+            "non-finite f32 must fail closed"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(-1 * 8px)"),
+            Some(LengthSpec::Px(-8.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(-1em + 20px)"),
+            Some(LengthSpec::CalcEmOffset {
+                em: -1.0,
+                offset_px: 20.0,
+            })
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(1em - 20px)"),
+            Some(LengthSpec::CalcEmOffset {
+                em: 1.0,
+                offset_px: -20.0,
+            })
+        );
+
+        let mut margin = LayoutStyle::default();
+        margin.apply_css_text("margin-left: calc(-1 * 8px)", None, None);
+        assert_eq!(margin.margin_left, Some(LengthSpec::Px(-8.0)));
+        assert_eq!(margin.resolved_margin_against(None).left, -8.0);
+
+        let props = collect_css_custom_properties(":root { --n: calc(2 * 3); --x: 10px; }");
+        assert_ne!(
+            props.get("--n").map(String::as_str),
+            Some("6px"),
+            "unitless custom-prop calc must not fold to px"
+        );
+        assert_eq!(LengthSpec::parse(props.get("--n").expect("--n")), None);
+        assert_eq!(props.get("--x").map(String::as_str), Some("10px"));
+        with_active_css_vars(&props, || {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text("width: calc(2 * var(--x))", None, None);
+            assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
+        });
     }
 
     #[test]
@@ -3889,6 +5336,26 @@ mod tests {
     }
 
     #[test]
+    fn flex_none_writes_zero_grow_shrink_auto_basis() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("flex: none", None, None);
+        assert_eq!(layout.flex_grow, Some(0.0));
+        assert_eq!(layout.flex_shrink, Some(0.0));
+        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
+        assert!(!layout.grows());
+    }
+
+    #[test]
+    fn flex_auto_writes_css_grow_and_shrink() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("flex: auto", None, None);
+        assert_eq!(layout.flex_grow, Some(1.0));
+        assert_eq!(layout.flex_shrink, Some(1.0));
+        assert_eq!(layout.flex_basis, Some(LengthSpec::Auto));
+        assert!(layout.grows());
+    }
+
+    #[test]
     fn flex_one_sets_grow_not_blind_width() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("flex: 1", None, None);
@@ -3925,6 +5392,71 @@ mod tests {
     }
 
     #[test]
+    fn flex_shorthand_omitted_shrink_is_one() {
+        let mut grow_basis = LayoutStyle::default();
+        grow_basis.apply_css_text("flex: 1 150px", None, None);
+        assert_eq!(grow_basis.flex_grow, Some(1.0));
+        assert_eq!(grow_basis.flex_shrink, Some(1.0));
+        assert_eq!(grow_basis.flex_basis, Some(LengthSpec::Px(150.0)));
+
+        let mut basis_only = LayoutStyle::default();
+        basis_only.apply_css_text("flex: 100px", None, None);
+        assert_eq!(basis_only.flex_grow, Some(1.0));
+        assert_eq!(basis_only.flex_shrink, Some(1.0));
+        assert_eq!(basis_only.flex_basis, Some(LengthSpec::Px(100.0)));
+
+        let mut grow_shrink = LayoutStyle::default();
+        grow_shrink.apply_css_text("flex: 1 2", None, None);
+        assert_eq!(grow_shrink.flex_grow, Some(1.0));
+        assert_eq!(grow_shrink.flex_shrink, Some(2.0));
+        assert_eq!(grow_shrink.flex_basis, Some(LengthSpec::Px(0.0)));
+    }
+
+    #[test]
+    fn isolation_isolate_creates_paint_stacking_context() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("isolation: isolate", None, None);
+        assert!(layout.isolation);
+        assert!(layout.creates_paint_stacking_context());
+        layout.apply_css_text("isolation: auto", None, None);
+        assert!(!layout.isolation);
+        assert!(!layout.creates_paint_stacking_context());
+    }
+
+    #[test]
+    fn positioned_z_index_creates_paint_stacking_context() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("z-index: 3", None, None);
+        assert_eq!(layout.z_index, Some(3));
+        assert!(
+            !layout.creates_paint_stacking_context(),
+            "static + z-index is not a stacking context"
+        );
+        layout.apply_css_text("position: relative", None, None);
+        assert!(layout.creates_paint_stacking_context());
+    }
+
+    #[test]
+    fn subgrid_is_explicit_grid_track_unsupported() {
+        assert_eq!(
+            parse_grid_track_list_result("subgrid", None),
+            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid [foo] [bar]", None),
+            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+        );
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:grid;grid-template-columns:subgrid", None, None);
+        assert_eq!(
+            layout.grid_columns_unsupported,
+            Some(GridTrackListUnsupported::Subgrid)
+        );
+        assert!(layout.grid_columns.is_none());
+        assert!(layout.has_unsupported_grid_template());
+    }
+
+    #[test]
     fn min_width_zero_allows_shrink() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("min-width: 0", None, None);
@@ -3945,6 +5477,18 @@ mod tests {
         layout.apply_css_text("overflow-y: auto", None, None);
         assert_eq!(layout.overflow_y, OverflowSpec::Auto);
         assert!(layout.scrolls_y());
+    }
+
+    #[test]
+    fn overflow_two_value_shorthand_is_independent() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("overflow: hidden visible", None, None);
+        assert_eq!(layout.overflow_x, OverflowSpec::Hidden);
+        assert_eq!(layout.overflow_y, OverflowSpec::Visible);
+        let (x, _, w, h) = layout.overflow_clip_box(0.0, 0.0, 40.0, 20.0).unwrap();
+        assert!((x).abs() < 0.01);
+        assert!((w - 40.0).abs() < 0.01);
+        assert!(h > 20.0);
     }
 
     #[test]
@@ -4088,6 +5632,68 @@ mod tests {
                 Some(176.0) // 38% of 400 = 152 → clamped to 176
             );
         });
+    }
+
+    #[test]
+    fn nested_mixed_min_max_resolves_against_containing_block() {
+        assert_eq!(
+            LengthSpec::parse("min(1px, 2%)"),
+            Some(LengthSpec::Min2(
+                LengthAtom::Px(1.0),
+                LengthAtom::Percent(2.0)
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("min(10px, max(1px, 50%))"),
+            Some(LengthSpec::Clamp3(
+                LengthAtom::Px(1.0),
+                LengthAtom::Percent(50.0),
+                LengthAtom::Px(10.0)
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("min(1px, 2%, 3px)"),
+            Some(LengthSpec::Min2(
+                LengthAtom::Px(1.0),
+                LengthAtom::Percent(2.0)
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("max(10px, min(50%, 30px))"),
+            Some(LengthSpec::Clamp3(
+                LengthAtom::Px(10.0),
+                LengthAtom::Percent(50.0),
+                LengthAtom::Px(30.0)
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(min(10px, max(1px, 50%)))"),
+            Some(LengthSpec::Clamp3(
+                LengthAtom::Px(1.0),
+                LengthAtom::Percent(50.0),
+                LengthAtom::Px(10.0)
+            ))
+        );
+
+        let nest = LengthSpec::parse("min(10px, max(1px, 50%))").unwrap();
+        assert_eq!(nest.resolve_px(Some(200.0)), Some(10.0));
+        assert_eq!(nest.resolve_px(Some(10.0)), Some(5.0));
+        assert_eq!(nest.resolve_px(Some(0.0)), Some(1.0));
+
+        let nary = LengthSpec::parse("min(1px, 2%, 3px)").unwrap();
+        assert_eq!(nary.resolve_px(Some(200.0)), Some(1.0));
+        assert_eq!(nary.resolve_px(Some(0.0)), Some(0.0));
+
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("width: min(80px, max(10px, 20%))", None, None);
+        assert_eq!(
+            layout.width.and_then(|w| w.resolve_px(Some(200.0))),
+            Some(40.0)
+        );
+
+        assert_eq!(LengthSpec::parse("min(1px, 2%, 3em)"), None);
+        assert_eq!(LengthSpec::parse("min(1, 2px)"), None);
+        assert_eq!(LengthSpec::parse("calc(2 * 3)"), None);
     }
 
     #[test]
@@ -4412,6 +6018,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
 
     #[test]
     fn paint_transform_preserves_order_and_supports_common_affine_forms() {
+        // 2D list order. Planar 3D is `transform_3d` in `css_paint_transform`.
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("transform: scale(2) translate(4px, -3px)", None, None);
         assert_eq!(
@@ -4594,7 +6201,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        let shadow = layout.paint.box_shadow.expect("shadow");
+        let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.blur_radius - 8.0).abs() < 0.01);
@@ -4617,6 +6224,27 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
+    fn cursor_user_select_and_app_region_fail_closed() {
+        let mut layout = LayoutStyle::default();
+        let before = layout.clone();
+        layout.apply_css_text(
+            "cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-app-region:drag;app-region:drag",
+            None,
+            None,
+        );
+        assert_eq!(
+            layout, before,
+            "window chrome CSS must not mutate LayoutStyle"
+        );
+        layout.apply_css_text("app-region:no-drag;-webkit-app-region:no-drag", None, None);
+        assert_eq!(
+            layout, before,
+            "app-region:no-drag must not punch a drag map"
+        );
+        assert_eq!(layout.pointer_events, None);
+    }
+
+    #[test]
     fn visibility_visible_inside_display_none_is_stored() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("display:none;visibility:visible", None, None);
@@ -4628,7 +6256,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn box_shadow_parses_negative_offsets_and_spread() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: -4px 6px 8px -24px", None, None);
-        let shadow = layout.paint.box_shadow.expect("shadow");
+        let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x + 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.blur_radius - 8.0).abs() < 0.01);
@@ -4639,24 +6267,140 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn box_shadow_lilia_like_negative_spread() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: 0 10px 30px -24px rgba(0,0,0,0.12)", None, None);
-        let shadow = layout.paint.box_shadow.expect("shadow");
+        let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_y - 10.0).abs() < 0.01);
         assert!((shadow.blur_radius - 30.0).abs() < 0.01);
         assert!((shadow.spread_radius + 24.0).abs() < 0.01);
     }
 
     #[test]
-    fn box_shadow_rejects_inset() {
+    fn box_shadow_parses_inset() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: inset 2px 2px 4px black", None, None);
-        assert!(layout.paint.box_shadow.is_none());
+        let shadow = layout.paint.primary_box_shadow().expect("inset");
+        assert!(shadow.inset);
+        assert!((shadow.offset_x - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn border_width_four_sides() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border-width: 1px 2px 3px 4px", None, None);
+        let edges = layout.resolved_border_edges();
+        assert!((edges.top - 1.0).abs() < 0.01);
+        assert!((edges.right - 2.0).abs() < 0.01);
+        assert!((edges.bottom - 3.0).abs() < 0.01);
+        assert!((edges.left - 4.0).abs() < 0.01);
+        layout.apply_css_text("border-left-width: 8px", None, None);
+        assert!((layout.resolved_border_edges().left - 8.0).abs() < 0.01);
+        assert!((layout.resolved_border_width() - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn border_four_side_colors_and_styles_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-width: 1px 2px 3px 4px; border-color: red blue green yellow; border-style: solid",
+            None,
+            None,
+        );
+        let colors = layout.resolved_border_edge_colors();
+        assert_eq!(colors[0], Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(colors[1], Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(colors[2], Some([0.0, 0.5, 0.0, 1.0]));
+        assert_eq!(colors[3], Some([1.0, 1.0, 0.0, 1.0]));
+        assert_eq!(
+            layout.resolved_border_styles(),
+            [Some(BorderStyle::Solid); 4]
+        );
+        assert!(layout.paints_any_border());
+
+        layout.apply_css_text(
+            "border-top-color: black; border-right-style: none",
+            None,
+            None,
+        );
+        assert_eq!(layout.border_top_color, Some([0.0, 0.0, 0.0, 1.0]));
+        let edges = layout.resolved_border_edges();
+        assert!((edges.right).abs() < 0.01, "none style zeros used width");
+        assert!((edges.top - 1.0).abs() < 0.01);
+
+        let mut sides = LayoutStyle::default();
+        sides.apply_css_text(
+            "border-top: 2px solid red; border-right: 4px solid blue",
+            None,
+            None,
+        );
+        let side_edges = sides.resolved_border_edges();
+        assert!((side_edges.top - 2.0).abs() < 0.01);
+        assert!((side_edges.right - 4.0).abs() < 0.01);
+        assert_eq!(sides.border_top_color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(sides.border_right_color, Some([0.0, 0.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn border_four_side_shorthand_fail_closed() {
+        let mut widths = LayoutStyle::default();
+        widths.apply_css_text("border-width: 1px 2px bogus 4px", None, None);
+        assert_eq!(
+            (
+                widths.border_width,
+                widths.border_top_width,
+                widths.border_right_width,
+                widths.border_bottom_width,
+                widths.border_left_width,
+            ),
+            (None, None, None, None, None),
+            "unknown width token must not collapse 4-value to 3-value (1/2/4/2)"
+        );
+
+        let mut styles = LayoutStyle::default();
+        styles.apply_css_text("border-style: solid dashed bogus dotted", None, None);
+        assert_eq!(
+            (
+                styles.border_style,
+                styles.border_top_style,
+                styles.border_right_style,
+                styles.border_bottom_style,
+                styles.border_left_style,
+            ),
+            (None, None, None, None, None),
+            "unknown style token must not collapse 4-value to 3-value (solid/dashed/dotted/dashed)"
+        );
+    }
+
+    #[test]
+    fn border_style_dashed_dotted_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("border: 4px dashed red", None, None);
+        assert_eq!(layout.border_style, Some(BorderStyle::Dashed));
+        assert_eq!(
+            layout.paint_border_style_codes(),
+            [BorderStyle::SHADER_DASHED; 4]
+        );
+        assert!(layout.paints_any_border());
+
+        layout.apply_css_text("border-style: dotted", None, None);
+        assert_eq!(
+            layout.resolved_border_styles(),
+            [Some(BorderStyle::Dotted); 4]
+        );
+        assert!(layout.paints_any_border());
+
+        layout.apply_css_text("border-style: double", None, None);
+        assert_eq!(
+            layout.resolved_border_styles(),
+            [Some(BorderStyle::Unsupported); 4]
+        );
+        assert!(!layout.paints_any_border());
+        assert!((layout.resolved_border_edges().top - 4.0).abs() < 0.01);
     }
 
     #[test]
     fn box_shadow_color_before_lengths() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: red 4px 6px", None, None);
-        let shadow = layout.paint.box_shadow.expect("shadow");
+        let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.color[0] - 1.0).abs() < 0.01);
@@ -4666,7 +6410,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn box_shadow_color_after_lengths() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: 4px 6px red", None, None);
-        let shadow = layout.paint.box_shadow.expect("shadow");
+        let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.color[0] - 1.0).abs() < 0.01);
@@ -4676,7 +6420,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn box_shadow_css_beats_card_elevation_when_set() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: 0 4px 8px rgba(0,0,0,0.5)", None, None);
-        assert!(layout.paint.box_shadow.is_some());
+        assert!(layout.paint.primary_box_shadow().is_some());
         assert!(layout.has_surface_paint());
     }
 

@@ -27,6 +27,8 @@ struct LayerUniform {
     affine: vec4<f32>,
     // e, f, dest.x, dest.y
     origin: vec4<f32>,
+    // g, h of the z=0 homography (`w = g x + h y + 1`); zeros keep 2×3
+    persp: vec4<f32>,
     // rounded clip in the same pre-affine logical space as dest (sibling Quad)
     clip: vec4<f32>,
     // overflow parallelogram: local rect + inverse CSS matrix
@@ -68,10 +70,10 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         layer.origin.z + uv.x * layer.params.z,
         layer.origin.w + uv.y * layer.params.w,
     );
-    let world = vec2<f32>(
-        layer.affine.x * local.x + layer.affine.z * local.y + layer.origin.x,
-        layer.affine.y * local.x + layer.affine.w * local.y + layer.origin.y,
-    );
+    let xp = layer.affine.x * local.x + layer.affine.z * local.y + layer.origin.x;
+    let yp = layer.affine.y * local.x + layer.affine.w * local.y + layer.origin.y;
+    let w = layer.persp.x * local.x + layer.persp.y * local.y + 1.0;
+    let world = select(vec2<f32>(xp, yp), vec2<f32>(xp, yp) / w, abs(w) >= 1e-8);
     let physical = world * layer.source.y;
     let dest = vec2<f32>(max(layer.source.z, 1.0), max(layer.source.w, 1.0));
     var output: VertexOutput;
@@ -577,6 +579,7 @@ impl GpuTexturePrimitive {
         queue: &wgpu::Queue,
         bounds: LogicalRect,
         affine: [f32; 6],
+        persp: [f32; 2],
         scale_factor: f32,
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -604,7 +607,7 @@ impl GpuTexturePrimitive {
                 mapped_at_creation: false,
             });
             let layer_uniform_value =
-                make_layer_uniform(&self.layer, bounds, affine, scale_factor, dest_size);
+                make_layer_uniform(&self.layer, bounds, affine, persp, scale_factor, dest_size);
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
@@ -644,7 +647,7 @@ impl GpuTexturePrimitive {
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
             let layer_uniform_value =
-                make_layer_uniform(&self.layer, bounds, affine, scale_factor, dest_size);
+                make_layer_uniform(&self.layer, bounds, affine, persp, scale_factor, dest_size);
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
@@ -869,6 +872,7 @@ struct LayerUniform {
     source: [f32; 4],
     affine: [f32; 4],
     origin: [f32; 4],
+    persp: [f32; 4],
     clip: [f32; 4],
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
@@ -879,6 +883,7 @@ fn make_layer_uniform(
     layer: &HostTextureLayer,
     bounds: LogicalRect,
     affine: [f32; 6],
+    persp: [f32; 2],
     scale_factor: f32,
     dest_size: [u32; 2],
 ) -> LayerUniform {
@@ -907,6 +912,7 @@ fn make_layer_uniform(
         ],
         affine: [affine[0], affine[1], affine[2], affine[3]],
         origin: [affine[4], affine[5], bounds.x, bounds.y],
+        persp: [persp[0], persp[1], 0.0, 0.0],
         clip: [clip.x, clip.y, clip.width.max(0.0), clip.height.max(0.0)],
         clip_rect: layer.fragment_clip_rect,
         clip_inv_abcd: layer.fragment_clip_inv_abcd,
@@ -1085,6 +1091,7 @@ mod tests {
             &HostTextureLayer::from_binding(premultiplied.clone()),
             bounds,
             identity,
+            [0.0, 0.0],
             1.0,
             [320, 180],
         );
@@ -1092,6 +1099,7 @@ mod tests {
             &HostTextureLayer::from_binding(opaque),
             LogicalRect::new(0.0, 0.0, 320.0, 180.0),
             identity,
+            [0.0, 0.0],
             1.0,
             [320, 180],
         );
@@ -1102,6 +1110,7 @@ mod tests {
             &HostTextureLayer::from_binding(premultiplied.clone()).with_corner_radius(8.0),
             bounds,
             identity,
+            [0.0, 0.0],
             1.0,
             [320, 180],
         );
@@ -1115,6 +1124,7 @@ mod tests {
                 .with_clip(bounds),
             contain_dest,
             identity,
+            [0.0, 0.0],
             1.0,
             [320, 180],
         );

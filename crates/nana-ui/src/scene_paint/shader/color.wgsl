@@ -103,3 +103,43 @@ fn unpack_u32(data: vec2<u32>) -> vec4<f32> {
 
     return vec4<f32>(rg.y, rg.x, ba.y, ba.x);
 }
+
+fn apply_hue_rotate(rgb: vec3<f32>, deg: f32) -> vec3<f32> {
+    if (abs(deg) < 0.0001) {
+        return rgb;
+    }
+    let rad = deg * 0.01745329252;
+    let c = cos(rad);
+    let s = sin(rad);
+    let col0 = vec3<f32>(
+        0.213 + 0.787 * c - 0.213 * s,
+        0.213 - 0.213 * c + 0.143 * s,
+        0.213 - 0.213 * c - 0.787 * s,
+    );
+    let col1 = vec3<f32>(
+        0.715 - 0.715 * c - 0.715 * s,
+        0.715 + 0.285 * c + 0.140 * s,
+        0.715 - 0.715 * c + 0.715 * s,
+    );
+    let col2 = vec3<f32>(
+        0.072 - 0.072 * c + 0.928 * s,
+        0.072 - 0.072 * c - 0.283 * s,
+        0.072 + 0.928 * c + 0.072 * s,
+    );
+    return clamp(mat3x3<f32>(col0, col1, col2) * rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn apply_color_filter_channels(
+    color: vec4<f32>,
+    brightness: f32,
+    saturate: f32,
+    contrast: f32,
+    hue_deg: f32,
+) -> vec4<f32> {
+    var rgb = color.xyz * brightness;
+    let lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+    rgb = mix(vec3(lum), rgb, saturate);
+    rgb = (rgb - 0.5) * contrast + 0.5;
+    rgb = apply_hue_rotate(clamp(rgb, vec3(0.0), vec3(1.0)), hue_deg);
+    return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a);
+}

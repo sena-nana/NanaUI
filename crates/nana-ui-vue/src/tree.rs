@@ -1132,6 +1132,13 @@ impl NanaTreeDocument {
             .unwrap_or_default()
     }
 
+    pub(crate) fn overflow_scrolls(&self, node: NodeHandle) -> bool {
+        let Ok(id) = StableNodeId::try_from(node) else {
+            return false;
+        };
+        self.context().overflow_scrolls(id)
+    }
+
     pub fn scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
         StableNodeId::try_from(node)
             .ok()
@@ -1159,30 +1166,6 @@ impl NanaTreeDocument {
         true
     }
 
-    /// Route a logical-pixel wheel delta to the nearest Runtime `ScrollView`.
-    ///
-    /// `is_scroll_view` identifies projected scrollports (Vue sidebar-frame
-    /// body). At a clamped edge the event bubbles to an enclosing match.
-    pub(crate) fn scroll_at(
-        &mut self,
-        x: f32,
-        y: f32,
-        delta: nana_ui_runtime::ScrollOffset,
-        mut is_scroll_view: impl FnMut(NodeHandle) -> bool,
-    ) -> Option<NodeHandle> {
-        if !x.is_finite() || !y.is_finite() || !delta.x.is_finite() || !delta.y.is_finite() {
-            return None;
-        }
-        let mut current = self.hit_test(x, y);
-        while let Some(node) = current {
-            if is_scroll_view(node) && self.scroll_by(node, delta) {
-                return Some(node);
-            }
-            current = self.parent_node(node);
-        }
-        None
-    }
-
     pub(crate) fn scroll_by(
         &mut self,
         node: NodeHandle,
@@ -1202,26 +1185,82 @@ impl NanaTreeDocument {
         )
     }
 
+    /// Apply `delta` using host/Scene metrics in the same commit as the offset
+    /// so engine boxes cannot clamp the wheel to zero.
+    pub(crate) fn scroll_by_with_metrics(
+        &mut self,
+        node: NodeHandle,
+        delta: nana_ui_runtime::ScrollOffset,
+        metrics: nana_ui_runtime::ScrollMetrics,
+    ) -> bool {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return false;
+        }
+        let Ok(id) = StableNodeId::try_from(node) else {
+            return false;
+        };
+        let current = self.scroll_offset(node);
+        let next = metrics.clamp(nana_ui_runtime::ScrollOffset {
+            x: (current.x + delta.x).max(0.0),
+            y: (current.y + delta.y).max(0.0),
+        });
+        if next == current {
+            return false;
+        }
+        self.commit_pending_with(|mutations| {
+            mutations.set_scroll_metrics(id, Some(metrics));
+            mutations.set_scroll_offset(id, next);
+        })
+        .ok();
+        self.runtime.scroll_offset(id) == Some(next)
+    }
+
     fn publish_scroll_metrics_from_layout(&mut self, node: NodeHandle) {
-        let Some(metrics) = self.layout_scroll_metrics(node) else {
+        let Some(metrics) = self.layout_scroll_metrics_from(node, None) else {
             return;
         };
         let Ok(id) = StableNodeId::try_from(node) else {
             return;
         };
-        if self.runtime.scroll_metrics(id) == Some(metrics) {
+        if !self.should_adopt_scroll_metrics(id, metrics) {
             return;
         }
         self.pending.mutations.set_scroll_metrics(id, Some(metrics));
     }
 
-    fn layout_scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
-        let viewport = self.layout_box(node)?;
+    fn should_adopt_scroll_metrics(
+        &self,
+        id: StableNodeId,
+        metrics: nana_ui_runtime::ScrollMetrics,
+    ) -> bool {
+        match self.runtime.scroll_metrics(id) {
+            Some(existing) if existing == metrics => false,
+            Some(existing)
+                if metrics.content_width <= existing.content_width
+                    && metrics.content_height <= existing.content_height =>
+            {
+                false
+            }
+            _ => true,
+        }
+    }
+
+    pub(crate) fn layout_scroll_metrics_from(
+        &self,
+        node: NodeHandle,
+        store: Option<&LayoutBoxStore>,
+    ) -> Option<nana_ui_runtime::ScrollMetrics> {
+        let viewport = store
+            .and_then(|store| store.get(node))
+            .or_else(|| self.layout_box(node))?;
         let mut content_width = viewport.width;
         let mut content_height = viewport.height;
         let mut stack = self.children_of(node);
         while let Some(child) = stack.pop() {
-            if let Some(box_) = self.layout_box(child) {
+            if let Some(box_) = store
+                .and_then(|store| store.get(child))
+                .or_else(|| self.layout_box(child))
+            {
                 content_width = content_width.max(box_.x + box_.width - viewport.x);
                 content_height = content_height.max(box_.y + box_.height - viewport.y);
             }
@@ -1467,6 +1506,10 @@ impl NanaTreeDocument {
             let interaction = InteractionState {
                 pointer_events: !widget.props.disabled
                     && !widget.props.layout.hidden
+                    && !matches!(
+                        widget.props.layout.pointer_events,
+                        Some(nana_ui_core::PointerEventsSpec::None)
+                    )
                     && !widget
                         .props
                         .attrs
@@ -2337,7 +2380,7 @@ impl NanaTreeDocument {
         self.write_layout_boxes(boxes, true);
     }
 
-    /// Flush the engine, then WriteLayout only nodes with no Runtime box.
+    /// Flush the engine, then WriteLayout missing boxes or a larger overflow extent.
     pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
         self.write_layout_boxes(boxes, false);
     }
@@ -2367,7 +2410,16 @@ impl NanaTreeDocument {
                 continue;
             }
             if !overwrite && self.has_engine_layout_box(handle) {
-                continue;
+                // Engine flush runs first and always writes a box. Host/Scene
+                // paint may still own a larger overflow extent (sidebar body
+                // content). Expanding that box keeps wheel metrics honest;
+                // shrinking to CSS auto-height 0 stays forbidden.
+                let Some(engine) = self.layout_box(handle) else {
+                    continue;
+                };
+                if box_.width <= engine.width && box_.height <= engine.height {
+                    continue;
+                }
             }
             if let Ok(id) = StableNodeId::try_from(handle)
                 && (self.runtime.contains(id) || self.nodes.contains_key(&handle.0))
@@ -2687,6 +2739,9 @@ impl NanaTreeDocument {
                             match pseudo {
                                 crate::css_interactive::GeneratedPseudo::Before => "before",
                                 crate::css_interactive::GeneratedPseudo::After => "after",
+                                crate::css_interactive::GeneratedPseudo::Placeholder => {
+                                    "placeholder"
+                                }
                             }
                             .into(),
                         )]),
@@ -2845,6 +2900,11 @@ fn host_texture_content(slot: String, revision: u64) -> CustomRenderNode {
 }
 
 fn canvas_host_texture_slot(id: &str) -> Option<String> {
+    // Slot contract: `data-nana-canvas="{id}"` → CustomRenderNode
+    // renderer `"nana.host-texture"` / resource `"canvas:{id}"`.
+    // Canvas 2D pixels come from nana-ui-web-api (tiny-skia), uploaded by
+    // CanvasGpuBridge. This is not a browser `<canvas>` and does not imply
+    // a working 2D context on the node by itself.
     id.parse::<u64>()
         .ok()
         .filter(|id| *id > 0)
@@ -6212,6 +6272,40 @@ mod tests {
                 if icon == nana_ui_core::Icon::Search
         ));
         assert!(doc.runtime.standard_visual(svg_id).is_none());
+    }
+
+    #[test]
+    fn canvas_without_slot_is_not_a_2d_bitmap() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let canvas = doc.create_element("canvas");
+        doc.insert(canvas, doc.mount_root(), None);
+        doc.apply_layout_boxes(&[(
+            canvas,
+            LayoutBox {
+                handle: canvas,
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 150.0,
+            },
+        )]);
+
+        let id = StableNodeId::try_from(canvas).expect("canvas id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "bare <canvas> must not attach a HostTexture CustomRender"
+        );
+        assert!(
+            doc.scene().primitives().all(|primitive| {
+                primitive.node.get() != canvas.0
+                    || !matches!(
+                        &primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                            if custom.renderer.as_ref() == "nana.host-texture"
+                    )
+            }),
+            "bare <canvas> must not sample host-texture as a 2d bitmap"
+        );
     }
 
     #[test]
@@ -9713,6 +9807,81 @@ mod tests {
 
         assert_eq!(doc.hit_test(11.0, 1.0), Some(node));
         assert_ne!(doc.hit_test(1.0, 1.0), Some(node));
+    }
+
+    #[test]
+    fn pointer_events_none_is_not_hit() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let under = doc.create_element("button");
+        let overlay = doc.create_element("div");
+        let root = doc.mount_root();
+        doc.insert(under, root, None);
+        doc.insert(overlay, root, None);
+        let mut under_props = crate::WidgetProps::default();
+        under_props.layout.width = Some(nana_ui_core::LengthSpec::Px(40.0));
+        under_props.layout.height = Some(nana_ui_core::LengthSpec::Px(40.0));
+        let mut overlay_props = crate::WidgetProps::default();
+        overlay_props.layout.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
+        overlay_props.layout.width = Some(nana_ui_core::LengthSpec::Px(40.0));
+        overlay_props.layout.height = Some(nana_ui_core::LengthSpec::Px(40.0));
+        let snapshot = crate::SemanticSnapshot {
+            revision: 1,
+            theme: nana_ui_core::ThemeMode::Light,
+            appearance: nana_ui_core::AppearanceSettings::default(),
+            roots: vec![under.0, overlay.0],
+            widgets: vec![
+                crate::SemanticWidget {
+                    id: under.0,
+                    kind: crate::WidgetKind::Button,
+                    props: under_props,
+                    children: Vec::new(),
+                    parent: Some(root.0),
+                },
+                crate::SemanticWidget {
+                    id: overlay.0,
+                    kind: crate::WidgetKind::Column,
+                    props: overlay_props,
+                    children: Vec::new(),
+                    parent: Some(root.0),
+                },
+            ],
+        };
+        doc.sync_semantic_styles(&snapshot);
+        doc.inject_layout_boxes(&[
+            (
+                under,
+                LayoutBox {
+                    handle: under,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 40.0,
+                    height: 40.0,
+                },
+            ),
+            (
+                overlay,
+                LayoutBox {
+                    handle: overlay,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 40.0,
+                    height: 40.0,
+                },
+            ),
+        ]);
+
+        let overlay_id = StableNodeId::try_from(overlay).unwrap();
+        assert!(!doc.runtime.interaction(overlay_id).unwrap().pointer_events);
+        assert_eq!(
+            doc.runtime
+                .node_style(overlay_id)
+                .unwrap()
+                .layout
+                .pointer_events,
+            Some(nana_ui_core::PointerEventsSpec::None)
+        );
+        assert_ne!(doc.hit_test(20.0, 20.0), Some(overlay));
+        assert_eq!(doc.hit_test(20.0, 20.0), Some(under));
     }
 
     #[test]

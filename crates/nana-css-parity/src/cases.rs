@@ -4,18 +4,19 @@
 pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-F01", "T-F02", "T-F03", "T-F04", "T-F05", "T-F06", "T-F07", "T-F08", "T-F09", "T-F10",
     "T-F11", "T-F12", "T-F13", "T-F14", "T-F15", "T-F16", "T-F17", "T-F18", "T-F19", "T-F20",
-    "T-F21", "T-F22", "T-F23", "T-F24", "T-F25", "T-F26", "T-S01", "T-S02", "T-S03", "T-S04",
-    "T-S05", "T-S06", "T-S07", "T-S08", "T-S09", "T-S10", "T-S11", "T-S12", "T-S13", "T-S14",
-    "T-S15", "T-S16", "T-S17", "T-S18", "T-S19", "T-S20", "T-L01", "T-L02", "T-L03", "T-L04",
-    "T-B01", "T-B02", "T-B03", "T-B04", "T-B05", "T-B06", "T-B07", "T-B08", "T-B09", "T-B10",
-    "T-B11", "T-B12", "T-B13", "T-V01", "T-V02", "T-D01", "T-W01", "T-W02", "T-W03", "T-W04",
-    "T-W05", "T-W06", "T-W07", "T-W08", "T-W09", "T-G01", "T-G02", "T-G03", "T-G04", "T-G05",
-    "T-G06", "T-G07", "T-G08", "T-G09", "T-G10", "T-G11", "T-G12", "T-G13", "T-G14", "T-G15",
-    "T-G16", "T-G17", "T-G18", "T-G19", "T-G20", "T-G21", "T-G22", "T-G23", "T-G24", "T-G25",
-    "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32", "T-G33", "T-G34", "T-P01",
-    "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07", "T-P08", "T-P09", "T-P10", "T-P11",
-    "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17", "T-P18", "T-P19", "T-I01", "T-I02",
-    "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03", "T-FL04",
+    "T-F21", "T-F22", "T-F23", "T-F24", "T-F25", "T-F26", "T-F27", "T-S01", "T-S02", "T-S03",
+    "T-S04", "T-S05", "T-S06", "T-S07", "T-S08", "T-S09", "T-S10", "T-S11", "T-S12", "T-S13",
+    "T-S14", "T-S15", "T-S16", "T-S17", "T-S18", "T-S19", "T-S20", "T-S21", "T-S22", "T-L01",
+    "T-L02", "T-L03", "T-L04", "T-B01", "T-B02", "T-B03", "T-B04", "T-B05", "T-B06", "T-B07",
+    "T-B08", "T-B09", "T-B10", "T-B11", "T-B12", "T-B13", "T-V01", "T-V02", "T-D01", "T-W01",
+    "T-W02", "T-W03", "T-W04", "T-W05", "T-W06", "T-W07", "T-W08", "T-W09", "T-G01", "T-G02",
+    "T-G03", "T-G04", "T-G05", "T-G06", "T-G07", "T-G08", "T-G09", "T-G10", "T-G11", "T-G12",
+    "T-G13", "T-G14", "T-G15", "T-G16", "T-G17", "T-G18", "T-G19", "T-G20", "T-G21", "T-G22",
+    "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
+    "T-G33", "T-G34", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07", "T-P08",
+    "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17", "T-P18",
+    "T-P19", "T-I01", "T-I02", "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05",
+    "T-FL06",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -47,6 +48,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-F24", true, None), // align-content space-between wrap
         ("T-F25", true, None), // align-content stretch wrap
         ("T-F26", true, None), // align-content:normal → stretch
+        ("T-F27", true, None), // flex:1 <basis> 省略 shrink → CSS 1
         ("T-S01", true, None),
         ("T-S02", true, None), // measure Fill 链
         ("T-S03", true, None),
@@ -67,6 +69,8 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-S18", true, None), // width:fit-content clamp to available
         ("T-S19", true, None), // width:min-content wrap = widest child
         ("T-S20", true, None), // width:fit-content vs column stretch Fill
+        ("T-S21", true, None), // calc * / + nested min/max + var 展开后再算
+        ("T-S22", true, None), // 混单位嵌套 min/max 相对包含块兑现
         ("T-L01", true, None),
         ("T-L02", true, None), // 显式 width:220 + flex:1
         ("T-L03", true, None), // class nana-settings-row → space-between
@@ -157,5 +161,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-FL02", true, None), // two float:left wrap, no overlap
         ("T-FL03", true, None), // clear:both after wrapping same-side floats uses packed bottom
         ("T-FL04", true, None), // float's own clear:left starts below packed left
+        ("T-FL05", true, None), // IFC line box shrinks beside float:left; inlines wrap in remainder
+        ("T-FL06", true, None), // oversized inline drops below float (no overlap)
     ]
 }

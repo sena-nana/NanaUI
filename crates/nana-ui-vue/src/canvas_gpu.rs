@@ -85,5 +85,7 @@ impl CanvasGpuBridge {
 }
 
 pub(crate) fn slot(id: CanvasId) -> String {
+    // HostTexture registry key. Must match `tree::canvas_host_texture_slot`
+    // (`canvas:{id}`) so Scene samples this node in document order.
     format!("canvas:{}", id.0)
 }

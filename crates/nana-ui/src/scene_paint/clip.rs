@@ -57,17 +57,56 @@ pub(super) const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 /// CSS/Canvas `matrix(a, b, c, d, e, f)`: `x' = ax + cy + e`, `y' = bx + dy + f`.
 pub(super) fn transform_point([a, b, c, d, e, f]: [f32; 6], x: f32, y: f32) -> [f32; 2] {
-    [a * x + c * y + e, b * x + d * y + f]
+    transform_point_projective([a, b, c, d, e, f], [0.0, 0.0], x, y)
+}
+
+pub(super) fn transform_point_projective(
+    [a, b, c, d, e, f]: [f32; 6],
+    [g, h]: [f32; 2],
+    x: f32,
+    y: f32,
+) -> [f32; 2] {
+    let xp = a * x + c * y + e;
+    let yp = b * x + d * y + f;
+    let w = g * x + h * y + 1.0;
+    if !w.is_finite() || w.abs() < 1e-8 {
+        return [xp, yp];
+    }
+    [xp / w, yp / w]
 }
 
 /// Scene origin is a post-translation of every primitive and clip.
+/// For a homography, that is `a' = a + ox*g` (not merely `e += ox`).
 pub(super) fn paint_affine(transform: [f32; 6], origin: [f32; 2]) -> [f32; 6] {
-    let [a, b, c, d, e, f] = transform;
-    [a, b, c, d, e + origin[0], f + origin[1]]
+    paint_transform(transform, [0.0, 0.0], origin).0
 }
 
-pub(super) fn is_translation([a, b, c, d, _, _]: [f32; 6]) -> bool {
-    a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0
+pub(super) fn paint_transform(
+    [a, b, c, d, e, f]: [f32; 6],
+    [g, h]: [f32; 2],
+    origin: [f32; 2],
+) -> ([f32; 6], [f32; 2]) {
+    let ox = origin[0];
+    let oy = origin[1];
+    (
+        [
+            a + ox * g,
+            b + oy * g,
+            c + ox * h,
+            d + oy * h,
+            e + ox,
+            f + oy,
+        ],
+        [g, h],
+    )
+}
+
+pub(super) fn is_translation(transform: [f32; 6]) -> bool {
+    is_translation_projective(transform, [0.0, 0.0])
+}
+
+pub(super) fn is_translation_projective([a, b, c, d, _, _]: [f32; 6], [g, h]: [f32; 2]) -> bool {
+    a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 && g.abs() <= 1e-8 && h.abs() <= 1e-8
 }
 
 /// Pixel origin of a span of `logical_extent` centered on `logical_center`.
@@ -227,6 +266,9 @@ fn axis_aligned_rounded_fragment_clips(
     clips
         .iter()
         .filter_map(|clip| {
+            if clip.transform.is_projective() {
+                return None;
+            }
             let affine = paint_affine(clip.transform.0, origin);
             if !is_axis_aligned(affine) || clip.corner_radius <= 0.0 {
                 return None;
@@ -253,6 +295,9 @@ pub(super) fn polygon_fragment_clips(
             if points.len() < 3 {
                 return None;
             }
+            if clip.transform.is_projective() {
+                return None;
+            }
             let affine = paint_affine(clip.transform.0, origin);
             let inverse = invert_affine(affine)?;
             let local: Vec<[f32; 2]> = points.iter().copied().collect();
@@ -275,6 +320,9 @@ pub(super) fn rotated_fragment_clips(
     clips
         .iter()
         .filter_map(|clip| {
+            if clip.transform.is_projective() {
+                return None;
+            }
             let affine = paint_affine(clip.transform.0, origin);
             if is_axis_aligned(affine) {
                 return None;
@@ -450,13 +498,26 @@ pub(super) fn local_rect(bounds: SceneRect) -> LogicalRect {
     }
 }
 
-/// Axis-aligned bounds of a rectangle after the affine is applied.
+/// Axis-aligned bounds of a rectangle after the (possibly projective) transform.
 pub(super) fn transformed_aabb(bounds: LogicalRect, transform: [f32; 6]) -> LogicalRect {
+    transformed_aabb_projective(bounds, transform, [0.0, 0.0])
+}
+
+pub(super) fn transformed_aabb_projective(
+    bounds: LogicalRect,
+    transform: [f32; 6],
+    persp: [f32; 2],
+) -> LogicalRect {
     let corners = [
-        transform_point(transform, bounds.x, bounds.y),
-        transform_point(transform, bounds.x + bounds.width, bounds.y),
-        transform_point(transform, bounds.x, bounds.y + bounds.height),
-        transform_point(transform, bounds.x + bounds.width, bounds.y + bounds.height),
+        transform_point_projective(transform, persp, bounds.x, bounds.y),
+        transform_point_projective(transform, persp, bounds.x + bounds.width, bounds.y),
+        transform_point_projective(transform, persp, bounds.x, bounds.y + bounds.height),
+        transform_point_projective(
+            transform,
+            persp,
+            bounds.x + bounds.width,
+            bounds.y + bounds.height,
+        ),
     ];
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -481,7 +542,17 @@ pub(super) fn translated_rect(
     transform: [f32; 6],
     origin: [f32; 2],
 ) -> LogicalRect {
-    transformed_aabb(local_rect(bounds), paint_affine(transform, origin))
+    translated_rect_projective(bounds, transform, [0.0, 0.0], origin)
+}
+
+pub(super) fn translated_rect_projective(
+    bounds: SceneRect,
+    transform: [f32; 6],
+    persp: [f32; 2],
+    origin: [f32; 2],
+) -> LogicalRect {
+    let (matrix, persp) = paint_transform(transform, persp, origin);
+    transformed_aabb_projective(local_rect(bounds), matrix, persp)
 }
 
 pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [f32; 2] {
@@ -505,7 +576,12 @@ pub(super) fn intersect_clips(
     origin: [f32; 2],
 ) -> Option<LogicalRect> {
     clips.iter().try_fold(viewport, |visible, clip| {
-        visible.intersection(translated_rect(clip.bounds, clip.transform.0, origin))
+        visible.intersection(translated_rect_projective(
+            clip.bounds,
+            clip.transform.0,
+            clip.transform.1,
+            origin,
+        ))
     })
 }
 
@@ -625,7 +701,7 @@ mod tests {
                 width: 50.0,
                 height: 50.0,
             },
-            transform: AffineTransform([1.0, 0.0, 0.0, 1.0, 5.0, 8.0]),
+            transform: AffineTransform::from_matrix([1.0, 0.0, 0.0, 1.0, 5.0, 8.0]),
             corner_radius: 0.0,
             polygon_clip: None,
         }];
@@ -647,7 +723,7 @@ mod tests {
                 width: 20.0,
                 height: 20.0,
             },
-            transform: AffineTransform([1.0, 0.0, 0.0, 1.0, 200.0, 0.0]),
+            transform: AffineTransform::from_matrix([1.0, 0.0, 0.0, 1.0, 200.0, 0.0]),
             corner_radius: 0.0,
             polygon_clip: None,
         }];
@@ -705,6 +781,8 @@ mod tests {
 
     #[test]
     fn paint_affine_adds_scene_origin_to_translation() {
+        assert!(is_translation(IDENTITY_AFFINE));
+        assert!(!is_translation([0.0, 1.0, -1.0, 0.0, 5.0, 7.0]));
         assert_eq!(
             paint_affine([1.0, 0.0, 0.0, 1.0, 4.0, 6.0], [-40.0, -20.0]),
             [1.0, 0.0, 0.0, 1.0, -36.0, -14.0]
@@ -713,6 +791,22 @@ mod tests {
             transform_point([0.0, 1.0, -1.0, 0.0, 5.0, 7.0], 3.0, 4.0),
             [1.0, 10.0]
         );
+    }
+
+    #[test]
+    fn paint_transform_bakes_scene_origin_into_homography() {
+        let matrix = [1.0, 0.0, 0.0, 1.0, 4.0, 6.0];
+        let persp = [0.01, 0.0];
+        let origin = [-40.0, -20.0];
+        let (baked, out_persp) = paint_transform(matrix, persp, origin);
+        assert_eq!(out_persp, persp);
+        assert!((baked[0] - (1.0 + origin[0] * persp[0])).abs() < 1e-6);
+        assert_eq!(baked[4], 4.0 + origin[0]);
+        assert_eq!(baked[5], 6.0 + origin[1]);
+        let p = transform_point_projective(matrix, persp, 10.0, 20.0);
+        let q = transform_point_projective(baked, out_persp, 10.0, 20.0);
+        assert!((q[0] - (p[0] + origin[0])).abs() < 1e-4);
+        assert!((q[1] - (p[1] + origin[1])).abs() < 1e-4);
     }
 
     #[test]
@@ -756,7 +850,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,
@@ -819,7 +913,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,
@@ -992,7 +1086,7 @@ mod tests {
     fn rotated_outer_polygon_is_not_dest_wrapped_twice() {
         let k = std::f32::consts::FRAC_1_SQRT_2;
         let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
-        let rotated = AffineTransform(
+        let rotated = AffineTransform::from_matrix(
             nana_ui_core::PaintTransform {
                 a: k,
                 b: k,
@@ -1072,7 +1166,7 @@ mod tests {
                 width: 64.0,
                 height: 64.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,
@@ -1143,7 +1237,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,
@@ -1164,7 +1258,7 @@ mod tests {
                 width: 64.0,
                 height: 64.0,
             },
-            transform: AffineTransform(
+            transform: AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,

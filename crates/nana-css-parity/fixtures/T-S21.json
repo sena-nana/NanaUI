@@ -1,0 +1,26 @@
+{
+  "id": "T-S21",
+  "title": "calc mul/div + nested min/max + var",
+  "status": "pass",
+  "viewport": [1280, 240],
+  "tolerance_px": 1,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;width:1280px;height:200px;align-items:flex-start;gap:8px",
+    "children": [
+      { "id": "mul", "style": "width:calc(12 * 2px);height:20px" },
+      { "id": "divvw", "style": "width:calc(100vw / 1280);height:20px" },
+      { "id": "mix", "style": "width:calc(100% - 12 * 1px);height:20px" },
+      { "id": "nest", "style": "width:min(calc(10px), max(1px, 2px));height:20px" },
+      { "id": "varx", "style": "width:calc(var(--x, 8px) * 3);height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 1280, "h": 200 },
+    { "id": "mul", "x": 0, "y": 0, "w": 24, "h": 20 },
+    { "id": "divvw", "x": 0, "y": 28, "w": 1, "h": 20 },
+    { "id": "mix", "x": 0, "y": 56, "w": 1268, "h": 20 },
+    { "id": "nest", "x": 0, "y": 84, "w": 2, "h": 20 },
+    { "id": "varx", "x": 0, "y": 112, "w": 24, "h": 20 }
+  ]
+}

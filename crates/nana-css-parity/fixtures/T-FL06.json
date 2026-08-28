@@ -1,0 +1,20 @@
+{
+  "id": "T-FL06",
+  "title": "宽于剩余行盒的行内项下移到浮动底边（不重叠）",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:200px;height:80px",
+    "children": [
+      { "id": "fl", "style": "float:left;width:80px;height:40px" },
+      { "id": "a", "style": "display:inline-block;width:150px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "fl", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "a", "x": 0, "y": 40, "w": 150, "h": 20 }
+  ]
+}

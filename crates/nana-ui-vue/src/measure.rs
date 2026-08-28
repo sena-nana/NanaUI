@@ -738,6 +738,40 @@ mod tests {
     }
 
     #[test]
+    fn four_side_border_widths_shrink_content_under_border_box() {
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:300px;height:100px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text(
+            "display:flex;flex-direction:row;width:100px;height:40px;padding:0;box-sizing:border-box;border-top-width:1px;border-right-width:2px;border-bottom-width:3px;border-left-width:4px",
+            None,
+            None,
+        );
+        let mut inner = LayoutStyle::default();
+        inner.apply_css_text("width:100%;height:100%", None, None);
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::with_children(
+                "a",
+                a,
+                vec![LayoutNode::leaf("inner", inner)],
+            )],
+        );
+        let map = map_of(&root, 320.0, 120.0);
+        assert!((map["a"].width - 100.0).abs() < 0.01);
+        assert!((map["a"].height - 40.0).abs() < 0.01);
+        assert!((map["inner"].x - 4.0).abs() < 0.01);
+        assert!((map["inner"].y - 1.0).abs() < 0.01);
+        assert!((map["inner"].width - 94.0).abs() < 0.01);
+        assert!((map["inner"].height - 36.0).abs() < 0.01);
+    }
+
+    #[test]
     fn content_box_width_plus_padding_expands_border_box() {
         let mut root_s = LayoutStyle::default();
         root_s.apply_css_text(
@@ -1710,6 +1744,81 @@ mod tests {
         a.apply_css_text("width:150px;flex:initial;height:40px", None, None);
         let mut b = LayoutStyle::default();
         b.apply_css_text("width:150px;flex:initial;height:40px", None, None);
+        assert_eq!(a.flex_shrink, Some(1.0));
+        assert_eq!(b.flex_shrink, Some(1.0));
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::leaf("a", a), LayoutNode::leaf("b", b)],
+        );
+        let map = map_of(&root, 240.0, 100.0);
+        assert!((map["a"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_none_keeps_overflowing_definite_row() {
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text("width:150px;flex:none;height:40px", None, None);
+        let mut b = LayoutStyle::default();
+        b.apply_css_text("width:150px;flex:none;height:40px", None, None);
+        assert_eq!(a.flex_grow, Some(0.0));
+        assert_eq!(a.flex_shrink, Some(0.0));
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::leaf("a", a), LayoutNode::leaf("b", b)],
+        );
+        let map = map_of(&root, 240.0, 100.0);
+        assert!((map["a"].width - 150.0).abs() < 0.01);
+        assert!((map["b"].width - 150.0).abs() < 0.01);
+        assert!((map["b"].x - 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_auto_shrinks_overflowing_definite_row() {
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text("width:150px;flex:auto;height:40px", None, None);
+        let mut b = LayoutStyle::default();
+        b.apply_css_text("width:150px;flex:auto;height:40px", None, None);
+        assert_eq!(a.flex_grow, Some(1.0));
+        assert_eq!(a.flex_shrink, Some(1.0));
+        let root = LayoutNode::with_children(
+            "root",
+            root_s,
+            vec![LayoutNode::leaf("a", a), LayoutNode::leaf("b", b)],
+        );
+        let map = map_of(&root, 240.0, 100.0);
+        assert!((map["a"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].width - 100.0).abs() < 0.01);
+        assert!((map["b"].x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn flex_shorthand_grow_basis_omits_shrink_one() {
+        let mut root_s = LayoutStyle::default();
+        root_s.apply_css_text(
+            "display:flex;flex-direction:row;align-items:flex-start;width:200px;height:80px;gap:0",
+            None,
+            None,
+        );
+        let mut a = LayoutStyle::default();
+        a.apply_css_text("flex:1 150px;height:40px", None, None);
+        let mut b = LayoutStyle::default();
+        b.apply_css_text("flex:1 150px;height:40px", None, None);
         assert_eq!(a.flex_shrink, Some(1.0));
         assert_eq!(b.flex_shrink, Some(1.0));
         let root = LayoutNode::with_children(

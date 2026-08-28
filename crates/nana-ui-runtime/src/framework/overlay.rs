@@ -5,8 +5,7 @@ use nana_ui_core::DialogCloseTrigger;
 use super::{AppContext, Entity, FrameworkError};
 use crate::{
     CommandPalette, ComponentView, ConfirmDialog, Dialog, DocumentId, Drawer, IconButton,
-    ModalInitialFocus, ModalSurface, MutationQueue, RangeField, ScrollOffset, ScrollView,
-    StableNodeId,
+    ModalInitialFocus, ModalSurface, MutationQueue, RangeField, ScrollOffset, StableNodeId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,7 +290,7 @@ impl AppContext {
         document: DocumentId,
         target: StableNodeId,
         delta: ScrollOffset,
-    ) -> Result<Option<Entity<ScrollView>>, FrameworkError> {
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
         let Some(root) = self
             .active_runtime_overlays(document)
             .into_iter()
@@ -305,15 +304,8 @@ impl AppContext {
         }
         let mut current = Some(target);
         while let Some(id) = current {
-            if self
-                .views
-                .get(&id)
-                .is_some_and(|view| view.is::<ScrollView>())
-            {
-                let entity = Entity::from_stable_id(id);
-                if self.scroll_by(entity, delta)? {
-                    return Ok(Some(entity));
-                }
+            if self.scroll_node_by(id, delta)? {
+                return Ok(Some(id));
             }
             if id == root {
                 break;

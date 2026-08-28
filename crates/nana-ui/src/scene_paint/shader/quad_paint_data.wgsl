@@ -7,6 +7,7 @@ const PAINT_FILTER: u32 = 8u;
 const PAINT_POLYGON: u32 = 16u;
 const PAINT_RADIAL: u32 = 32u;
 const PAINT_MASK_RADIAL: u32 = 64u;
+const PAINT_SHADOW_INSET: u32 = 128u;
 
 struct QuadPaintData {
     flags: u32,
@@ -20,7 +21,7 @@ struct QuadPaintData {
     filter_b: f32,
     filter_s: f32,
     filter_c: f32,
-    _pad_filter: f32,
+    filter_hue: f32,
     grad_stops0: vec4<f32>,
     grad_stops1: vec4<f32>,
     grad_stops2: vec4<f32>,
@@ -53,6 +54,18 @@ struct QuadPaintData {
     mask_center_y: f32,
     mask_radial_shape: u32,
     _pad_tail1: u32,
+    url_dest: vec4<f32>,
+    // Four scalars, not vec3: vec3 in a storage struct is 16-byte aligned and
+    // would inflate the stride past the CPU QuadPaintData (560).
+    outline_width: f32,
+    // Packed T/R/B/L 2-bit styles: 0 solid, 1 dashed, 2 dotted.
+    border_styles: u32,
+    _pad_outline1: f32,
+    _pad_outline2: f32,
+    outline_color: vec4<f32>,
+    border_color_right: vec4<f32>,
+    border_color_bottom: vec4<f32>,
+    border_color_left: vec4<f32>,
 }
 
 fn gradient_axis(angle_deg: f32) -> vec2<f32> {

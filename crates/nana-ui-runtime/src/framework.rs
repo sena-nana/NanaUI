@@ -1156,11 +1156,7 @@ impl AppContext {
             .world
             .document_order(document)
             .into_iter()
-            .filter(|id| {
-                self.views
-                    .get(id)
-                    .is_some_and(|view| view.is::<ScrollView>())
-            })
+            .filter(|id| self.is_scroll_view(*id))
             .filter_map(|id| {
                 let metrics = self.scroll_metrics_from_layout(id)?;
                 (self.world.scroll_metrics(id) != Some(metrics))
@@ -5562,15 +5558,18 @@ impl AppContext {
         )
     }
 
-    /// Route a logical-pixel scroll delta to the nearest hit ScrollView. At a
-    /// clamped edge the event bubbles to an enclosing ScrollView.
+    /// Route a logical-pixel scroll delta to the nearest hit scroll container.
+    ///
+    /// L2 [`ScrollView`] and L1 `overflow: auto|scroll` share [`ScrollOffset`].
+    /// At a clamped edge the event bubbles to an enclosing container.
+    /// Scrollbar chrome stays on [`ScrollView`] only.
     pub fn scroll_at(
         &mut self,
         document: DocumentId,
         x: f32,
         y: f32,
         delta: ScrollOffset,
-    ) -> Result<Option<Entity<ScrollView>>, FrameworkError> {
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
         if !x.is_finite() || !y.is_finite() || !delta.x.is_finite() || !delta.y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
@@ -5584,27 +5583,97 @@ impl AppContext {
             current = self.world.node(id).and_then(|node| node.parent);
         }
         for id in ancestors {
-            if !self
-                .views
-                .get(&id)
-                .is_some_and(|view| view.is::<ScrollView>())
-            {
-                continue;
-            }
-            let entity = Entity::from_stable_id(id);
-            if self.scroll_by(entity, delta)? {
-                return Ok(Some(entity));
+            if self.scroll_node_by(id, delta)? {
+                return Ok(Some(id));
             }
         }
         Ok(None)
     }
 
-    /// Whether a node is a scroll container. Scrollbar drag and wheel routing
-    /// both key off this, so nothing else needs the view type.
+    /// Whether a node is an L2 [`ScrollView`]. Scrollbar drag and hover chrome
+    /// key off this; wheel also routes to L1 `overflow: auto|scroll` boxes.
     pub fn is_scroll_view(&self, id: StableNodeId) -> bool {
         self.views
             .get(&id)
             .is_some_and(|view| view.is::<ScrollView>())
+    }
+
+    /// Whether L1 `overflow: auto|scroll` applies on either axis.
+    pub fn overflow_scrolls(&self, id: StableNodeId) -> bool {
+        self.world.node_style(id).is_some_and(|style| {
+            style.layout.overflow_x.scrolls() || style.layout.overflow_y.scrolls()
+        })
+    }
+
+    fn overflow_axes(&self, id: StableNodeId) -> Option<(bool, bool)> {
+        let style = self.world.node_style(id)?;
+        let x = style.layout.overflow_x.scrolls();
+        let y = style.layout.overflow_y.scrolls();
+        (x || y).then_some((x, y))
+    }
+
+    fn write_scroll_metrics(
+        &mut self,
+        id: StableNodeId,
+        metrics: ScrollMetrics,
+    ) -> Result<bool, FrameworkError> {
+        if self.world.scroll_metrics(id) == Some(metrics) {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_metrics(id, Some(metrics));
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    fn ensure_scroll_metrics(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        let Some(metrics) = self.scroll_metrics_from_layout(id) else {
+            return Ok(());
+        };
+        self.write_scroll_metrics(id, metrics)?;
+        Ok(())
+    }
+
+    /// Move a [`ScrollView`] or L1 overflow scroller by `delta`. Returns
+    /// `false` at a clamped edge so the caller can bubble.
+    pub(crate) fn scroll_node_by(
+        &mut self,
+        id: StableNodeId,
+        delta: ScrollOffset,
+    ) -> Result<bool, FrameworkError> {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
+        }
+        if self.is_scroll_view(id) {
+            return self.scroll_by(Entity::from_stable_id(id), delta);
+        }
+        let Some((scrolls_x, scrolls_y)) = self.overflow_axes(id) else {
+            return Ok(false);
+        };
+        self.ensure_scroll_metrics(id)?;
+        let current = self.world.scroll_offset(id).unwrap_or_default();
+        let next = self.world.clamp_scroll_offset(
+            id,
+            ScrollOffset {
+                x: if scrolls_x {
+                    (current.x + delta.x).max(0.0)
+                } else {
+                    current.x
+                },
+                y: if scrolls_y {
+                    (current.y + delta.y).max(0.0)
+                } else {
+                    current.y
+                },
+            },
+        );
+        if next == current {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_offset(id, next);
+        self.world.commit(mutations)?;
+        Ok(true)
     }
 
     fn scrollbar_bar(
@@ -7191,6 +7260,45 @@ mod tests {
                 .set_ime_preedit(document, "输入".into(), None)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn text_input_placeholder_uses_layout_color_and_opacity() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut field = TextInput::new("").placeholder("Hint");
+        {
+            let layout = Arc::make_mut(&mut field.style.layout);
+            layout.placeholder_color = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.placeholder_opacity = Some(0.5);
+        }
+        let input = context.create_component(document, field).unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            input.stable_id(),
+            crate::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        context
+            .world_mut()
+            .resolve_styles(&[input.stable_id()])
+            .unwrap();
+        context
+            .world_mut()
+            .shape_text(&[input.stable_id()], &mut crate::MeasureTextShaper)
+            .unwrap();
+
+        match context.world().component_geometry(input.stable_id()) {
+            Some(crate::ComponentGeometry::TextInput { text, .. }) => {
+                assert_eq!(text.color, Some([1.0, 0.0, 0.0, 0.5]));
+            }
+            other => panic!("expected text input geometry, got {other:?}"),
+        }
     }
 
     #[test]

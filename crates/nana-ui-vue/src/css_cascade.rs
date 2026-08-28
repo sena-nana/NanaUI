@@ -20,17 +20,34 @@
 //! `::before`/`::after`, `@keyframes`, and transition/animation longhands — see
 //! [`crate::css_interactive::ParsedStylesheet`].
 //!
-//! Still deferred (skipped at parse): `:has()`, `:nth-child(… of …)`, nested /
-//! complex `:not()` args, `@media` / `@supports` / `@layer`, and other at-rules.
+//! Still deferred (skipped at parse): combinators inside `:has()`,
+//! `:nth-child(… of …)`, nested / complex `:not()` args, unknown at-rules,
+//! unknown `@supports` predicates, `@import … layer()` / `supports()`,
+//! and cascade-layer *priority* (unlayered vs layered).
+//! `::placeholder` is parsed with generated pseudos and applied as TextInput
+//! placeholder paint (not a generated box).
+//! Cheap subject `:has(.class|#id|type)` descendant-present is matched with an
+//! O(n·k) precomputed bitset (k = unique simple `:has` args, cap 64).
+//! `@import` / `@media` (width/height/orientation/prefers-color-scheme) /
+//! `@font-face` / matching `@supports` / `@layer { }` (author source order,
+//! names recorded) merge into the same [`ParsedStylesheet`] (not a second cascade).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::css_at_rule::{
+    ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_supports_condition,
+    font_face_from_pairs, is_blocked_href, parse_import_prelude, parse_layer_prelude,
+    parse_media_query_list,
+};
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractiveSelector,
-    InteractiveStyleRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet,
-    parse_keyframes_at_rule, partition_motion_entries,
+    InteractiveStyleRule, MediaRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet,
+    merge_parsed_stylesheet, offset_source_order, parse_keyframes_at_rule,
+    partition_motion_entries,
 };
-use crate::css_map::{LayoutStyle, LayoutStyleCss, split_important_flag};
+use crate::css_map::{
+    LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode, split_important_flag,
+};
 
 /// One parsed declaration from a rule block (`property: value`, `!important` stripped).
 ///
@@ -119,6 +136,9 @@ pub struct CompoundSelector {
     pub nth_of_type: Option<AnPlusB>,
     /// `:hover` / `:focus` / `:active` when parsed for interactive buckets.
     pub interactive: Option<InteractivePseudo>,
+    /// Cheap `:has()` descendant-present queries (OR inside each list, AND across
+    /// lists). Combinators inside `:has()` fail parse.
+    pub has_queries: Vec<Vec<SimpleCompound>>,
 }
 
 /// CSS An+B microsyntax (`odd`/`even`/`2n+1`/…) for `:nth-child` / `:nth-of-type`.
@@ -239,6 +259,12 @@ pub struct MatchContext<'a> {
     pub of_type_index: usize,
     /// Count of siblings (including self) sharing this element's tag.
     pub of_type_count: usize,
+    /// Bit i is set when a descendant matches [`Self::has_args`]`[i]`.
+    /// Precomputed once per cascade pass (O(n·k), not per-subject subtree walk).
+    pub has_bits: u64,
+    /// Unique simple compounds used by subject `:has()` in the current sheet.
+    /// Empty ⇒ every `:has()` fails closed.
+    pub has_args: &'a [SimpleCompound],
 }
 
 impl<'a> MatchContext<'a> {
@@ -268,8 +294,12 @@ pub struct StylesheetParseReport {
     pub skipped_declarations: usize,
     /// Selectors that failed to parse (deferred/unsupported syntax).
     pub skipped_selectors: usize,
-    /// At-rule blocks skipped entirely (@media, @supports, @layer, …).
+    /// At-rule blocks skipped entirely (unknown `@supports` predicates, failed
+    /// `@import`, unknown at-rules). Applied `@supports` / `@layer` do not
+    /// increment this.
     pub skipped_at_rules: usize,
+    /// Successfully loaded `@import` stylesheets (cycle / depth / missing are skipped).
+    pub imported_sheets: usize,
 }
 
 impl StylesheetParseReport {
@@ -281,6 +311,7 @@ impl StylesheetParseReport {
             skipped_declarations: self.skipped_declarations + other.skipped_declarations,
             skipped_selectors: self.skipped_selectors + other.skipped_selectors,
             skipped_at_rules: self.skipped_at_rules + other.skipped_at_rules,
+            imported_sheets: self.imported_sheets + other.imported_sheets,
         }
     }
 }
@@ -295,27 +326,335 @@ pub fn parse_stylesheet_full(
     css: &str,
     order_base: u32,
 ) -> (ParsedStylesheet, StylesheetParseReport) {
+    parse_stylesheet_full_with_options(css, order_base, &mut ParseStylesheetOptions::default())
+}
+
+/// Like [`parse_stylesheet_full`], with `@import` loader / media environment.
+pub fn parse_stylesheet_full_with_options(
+    css: &str,
+    order_base: u32,
+    options: &mut ParseStylesheetOptions<'_>,
+) -> (ParsedStylesheet, StylesheetParseReport) {
+    let loader = options.loader;
+    let base_href = options.base_href.map(str::to_string);
+    let mut local_cache = HashMap::new();
+    if let Some(cache) = options.import_cache.as_mut() {
+        parse_stylesheet_full_with_cache(css, order_base, loader, base_href.as_deref(), cache)
+    } else {
+        parse_stylesheet_full_with_cache(
+            css,
+            order_base,
+            loader,
+            base_href.as_deref(),
+            &mut local_cache,
+        )
+    }
+}
+
+fn parse_stylesheet_full_with_cache(
+    css: &str,
+    order_base: u32,
+    loader: Option<&dyn crate::css_at_rule::StylesheetLoader>,
+    base_href: Option<&str>,
+    cache: &mut HashMap<String, ParsedStylesheet>,
+) -> (ParsedStylesheet, StylesheetParseReport) {
     let stripped = strip_css_comments(css);
     let mut report = StylesheetParseReport::default();
     let mut sheet = ParsedStylesheet::default();
     let mut order = order_base;
-    let mut rest = stripped.as_str();
+    let mut stack = Vec::new();
+    if let Some(href) = base_href {
+        stack.push(href.to_string());
+    }
+    parse_stylesheet_into(
+        &stripped,
+        &mut order,
+        &mut sheet,
+        &mut report,
+        &mut ImportParseCtx {
+            loader,
+            stack: &mut stack,
+            cache,
+        },
+        true,
+    );
+    (sheet, report)
+}
+
+struct ImportParseCtx<'a> {
+    loader: Option<&'a dyn crate::css_at_rule::StylesheetLoader>,
+    stack: &'a mut Vec<String>,
+    cache: &'a mut HashMap<String, ParsedStylesheet>,
+}
+
+/// `Some(rest)` when the at-rule was consumed; `None` means unknown.
+fn parse_known_at_rule<'a>(
+    rest: &'a str,
+    order: &mut u32,
+    sheet: &mut ParsedStylesheet,
+    report: &mut StylesheetParseReport,
+    ctx: &mut ImportParseCtx<'_>,
+) -> Option<&'a str> {
+    let (name, after_name) = at_rule_ident(rest)?;
+    if name.eq_ignore_ascii_case("charset") {
+        return Some(skip_at_rule(rest));
+    }
+    if name.eq_ignore_ascii_case("keyframes") || name.eq_ignore_ascii_case("-webkit-keyframes") {
+        let (keyframes, next) = parse_keyframes_at_rule(rest, *order)?;
+        sheet.keyframes.insert(keyframes.name.clone(), keyframes);
+        *order = order.saturating_add(1);
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("import") {
+        let (prelude, body, next) = split_at_rule_tail(after_name)?;
+        if body.is_some() {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        }
+        apply_import(prelude, order, sheet, report, ctx);
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("media") {
+        let (prelude, body, next) = split_at_rule_tail(after_name)?;
+        let Some(inner_css) = body else {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        };
+        let query = parse_media_query_list(prelude);
+        let mut inner = ParsedStylesheet::default();
+        // Nested `@import` is invalid (CSS spec); reuse the late-import skip.
+        parse_stylesheet_into(inner_css, order, &mut inner, report, ctx, false);
+        sheet.media_rules.push(MediaRule {
+            query,
+            sheet: inner,
+        });
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("font-face") {
+        let (_prelude, body, next) = split_at_rule_tail(after_name)?;
+        let Some(inner_css) = body else {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        };
+        let entries = parse_declaration_entries(inner_css);
+        let pairs = entries
+            .iter()
+            .map(|e| (e.property.as_str(), e.value.as_str()));
+        if let Some(mut face) = font_face_from_pairs(pairs) {
+            face.base_href = ctx.stack.last().cloned();
+            sheet.font_faces.push(face);
+        } else {
+            report.skipped_declarations += 1;
+        }
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("supports") {
+        let (prelude, body, next) = split_at_rule_tail(after_name)?;
+        let Some(inner_css) = body else {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        };
+        match evaluate_supports_condition(prelude) {
+            Some(true) => {
+                parse_stylesheet_into(inner_css, order, sheet, report, ctx, false);
+            }
+            _ => {
+                report.skipped_at_rules += 1;
+            }
+        }
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("layer") {
+        let (prelude, body, next) = split_at_rule_tail(after_name)?;
+        let Some(parsed) = parse_layer_prelude(prelude) else {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        };
+        record_layer_names(sheet, &parsed.names);
+        if let Some(inner_css) = body {
+            parse_stylesheet_into(inner_css, order, sheet, report, ctx, false);
+        }
+        return Some(next);
+    }
+    None
+}
+
+fn apply_import(
+    prelude: &str,
+    order: &mut u32,
+    sheet: &mut ParsedStylesheet,
+    report: &mut StylesheetParseReport,
+    ctx: &mut ImportParseCtx<'_>,
+) {
+    let Some(parsed) = parse_import_prelude(prelude) else {
+        report.skipped_at_rules += 1;
+        return;
+    };
+    let (href, media) = match parsed {
+        ImportPrelude::Unsupported => {
+            report.skipped_at_rules += 1;
+            return;
+        }
+        ImportPrelude::Ready { href, media } => (href, media),
+    };
+    if is_blocked_href(&href) {
+        report.skipped_at_rules += 1;
+        return;
+    }
+    if ctx.stack.len() as u32 >= MAX_IMPORT_DEPTH {
+        report.skipped_at_rules += 1;
+        return;
+    }
+    let Some(loader) = ctx.loader else {
+        report.skipped_at_rules += 1;
+        return;
+    };
+    let from = ctx.stack.last().map(String::as_str);
+    let Some((css, canonical)) = loader.load(&href, from) else {
+        report.skipped_at_rules += 1;
+        return;
+    };
+    if ctx.stack.iter().any(|h| h.eq_ignore_ascii_case(&canonical)) {
+        report.skipped_at_rules += 1;
+        return;
+    }
+    let imported = if let Some(cached) = ctx.cache.get(&canonical) {
+        let mut cloned = cached.clone();
+        offset_source_order(&mut cloned, *order);
+        cloned
+    } else {
+        ctx.stack.push(canonical.clone());
+        let mut nested = ParsedStylesheet::default();
+        let mut nested_order = 0u32;
+        let stripped = strip_css_comments(&css);
+        parse_stylesheet_into(&stripped, &mut nested_order, &mut nested, report, ctx, true);
+        ctx.stack.pop();
+        ctx.cache.insert(canonical, nested.clone());
+        offset_source_order(&mut nested, *order);
+        nested
+    };
+    if let Some(max) = imported.max_source_order() {
+        *order = max.saturating_add(1);
+    }
+    report.imported_sheets += 1;
+    if media.is_unconditional() {
+        merge_parsed_stylesheet(sheet, imported);
+    } else {
+        sheet.media_rules.push(MediaRule {
+            query: media,
+            sheet: imported,
+        });
+    }
+}
+
+fn record_layer_names(sheet: &mut ParsedStylesheet, names: &[String]) {
+    for name in names {
+        if !name.is_empty() && !sheet.layer_names.iter().any(|existing| existing == name) {
+            sheet.layer_names.push(name.clone());
+        }
+    }
+}
+
+fn at_rule_ident(s: &str) -> Option<(&str, &str)> {
+    let s = s.strip_prefix('@')?;
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or(s.len());
+    if end == 0 {
+        return None;
+    }
+    Some((&s[..end], s[end..].trim_start()))
+}
+
+fn split_at_rule_tail(after_name: &str) -> Option<(&str, Option<&str>, &str)> {
+    let bytes = after_name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    i += 1;
+                }
+            }
+            b'{' | b';' => break,
+            _ => i += 1,
+        }
+    }
+    if i >= bytes.len() {
+        return Some((after_name.trim(), None, ""));
+    }
+    let prelude = after_name[..i].trim();
+    if bytes[i] == b';' {
+        return Some((prelude, None, &after_name[i + 1..]));
+    }
+    let mut depth = 0i32;
+    let mut j = i;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let body = &after_name[i + 1..j];
+                    return Some((prelude, Some(body), &after_name[j + 1..]));
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    Some((prelude, Some(&after_name[i + 1..]), ""))
+}
+
+fn parse_stylesheet_into(
+    css: &str,
+    order: &mut u32,
+    sheet: &mut ParsedStylesheet,
+    report: &mut StylesheetParseReport,
+    ctx: &mut ImportParseCtx<'_>,
+    mut allow_import: bool,
+) {
+    let mut rest = css;
+    // CSS ignores `@import` after any style rule or non-charset/import at-rule,
+    // and any `@import` nested inside `@media { }` (not a valid import position).
     while !rest.is_empty() {
         rest = rest.trim_start();
         if rest.is_empty() {
             break;
         }
         if rest.starts_with('@') {
-            if let Some((keyframes, next)) = parse_keyframes_at_rule(rest, order) {
-                sheet.keyframes.insert(keyframes.name.clone(), keyframes);
-                order = order.saturating_add(1);
-                rest = next;
+            let at_name = at_rule_ident(rest).map(|(name, _)| name);
+            if at_name.is_some_and(|name| name.eq_ignore_ascii_case("import")) && !allow_import {
+                rest = skip_at_rule(rest);
+                report.skipped_at_rules += 1;
                 continue;
             }
-            rest = skip_at_rule(rest);
-            report.skipped_at_rules += 1;
+            if let Some(next) = parse_known_at_rule(rest, order, sheet, report, ctx) {
+                if let Some(name) = at_name
+                    && !name.eq_ignore_ascii_case("import")
+                    && !name.eq_ignore_ascii_case("charset")
+                {
+                    allow_import = false;
+                }
+                rest = next;
+            } else {
+                allow_import = false;
+                rest = skip_at_rule(rest);
+                report.skipped_at_rules += 1;
+            }
             continue;
         }
+        allow_import = false;
         let Some((selector_text, body, next)) = split_rule(rest) else {
             report.skipped_rules += 1;
             rest = match rest.find('}') {
@@ -377,7 +716,7 @@ pub fn parse_stylesheet_full(
                 selectors: static_selectors.clone(),
                 declarations: layout_declarations.clone(),
                 declaration_entries: layout_entries.clone(),
-                source_order: order,
+                source_order: *order,
             });
         }
         if !interactive_selectors.is_empty() && (has_layout || has_motion) {
@@ -388,7 +727,7 @@ pub fn parse_stylesheet_full(
                     declarations: layout_declarations.clone(),
                     declaration_entries: layout_entries.clone(),
                     motion: motion_for_rules.clone(),
-                    source_order: order,
+                    source_order: *order,
                 });
             }
         }
@@ -401,7 +740,7 @@ pub fn parse_stylesheet_full(
                     declarations: layout_declarations.clone(),
                     declaration_entries: layout_entries.clone(),
                     motion: motion_for_rules.clone(),
-                    source_order: order,
+                    source_order: *order,
                 });
             }
         }
@@ -410,14 +749,13 @@ pub fn parse_stylesheet_full(
             sheet.motion_rules.push(MotionStyleRule {
                 selectors: static_selectors,
                 motion,
-                source_order: order,
+                source_order: *order,
             });
         }
         if consumed {
-            order = order.saturating_add(1);
+            *order = order.saturating_add(1);
         }
     }
-    (sheet, report)
 }
 
 fn entries_to_declaration_text(entries: &[DeclarationEntry]) -> String {
@@ -435,12 +773,20 @@ fn entries_to_declaration_text(entries: &[DeclarationEntry]) -> String {
 }
 
 /// [`parse_stylesheet`] plus skipped-content diagnostics.
+///
+/// Matching `@media` (default [`crate::css_at_rule::MediaEnvironment`]) is
+/// flattened into the returned rules so the simple parse API affects cascade.
 pub fn parse_stylesheet_with_report(
     css: &str,
     order_base: u32,
 ) -> (Vec<StyleRule>, StylesheetParseReport) {
     let (sheet, report) = parse_stylesheet_full(css, order_base);
-    (sheet.static_rules, report)
+    (
+        sheet
+            .flatten(&crate::css_at_rule::MediaEnvironment::default())
+            .static_rules,
+        report,
+    )
 }
 
 /// Apply matched stylesheet declarations onto a fresh layout (author layer).
@@ -703,6 +1049,7 @@ pub fn rebuild_layout_style(
     if !inline_style.trim().is_empty() {
         apply_css_text_important_only(&mut layout, inline_style, percent_w, percent_h);
     }
+    layout.resolve_logical_box_edges();
     layout
 }
 
@@ -714,10 +1061,19 @@ fn apply_matched_stylesheet(
     percent_h: Option<f32>,
     important_only: bool,
 ) {
+    let mut dir_entries = Vec::new();
+    let mut rest = Vec::new();
     for (_, _, entry) in matched_declaration_entries(rules, ctx) {
         if !important_only || entry.important {
-            layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
+            if css_key_is_direction_or_writing_mode(&entry.property) {
+                dir_entries.push(entry);
+            } else {
+                rest.push(entry);
+            }
         }
+    }
+    for entry in dir_entries.into_iter().chain(rest) {
+        layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
     }
 }
 
@@ -729,14 +1085,24 @@ fn apply_css_text_important_only(
     percent_w: Option<f32>,
     percent_h: Option<f32>,
 ) {
-    for entry in parse_declaration_entries(style) {
-        if entry.important {
-            layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
-        }
+    let entries: Vec<_> = parse_declaration_entries(style)
+        .into_iter()
+        .filter(|entry| entry.important)
+        .collect();
+    for entry in entries
+        .iter()
+        .filter(|e| css_key_is_direction_or_writing_mode(&e.property))
+        .chain(
+            entries
+                .iter()
+                .filter(|e| !css_key_is_direction_or_writing_mode(&e.property)),
+        )
+    {
+        layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
     }
 }
 
-fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
+pub(crate) fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
     if let Some(tag) = &simple.type_name
         && !node.tag.eq_ignore_ascii_case(tag)
         && tag != "*"
@@ -825,6 +1191,22 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
         && !anb.matches_index(ctx.of_type_index.saturating_add(1))
     {
         return false;
+    }
+    if !compound.has_queries.is_empty() {
+        if ctx.has_args.is_empty() {
+            return false;
+        }
+        for query in &compound.has_queries {
+            let any = query.iter().any(|alt| {
+                ctx.has_args
+                    .iter()
+                    .position(|have| have == alt)
+                    .is_some_and(|i| i < 64 && (ctx.has_bits & (1u64 << i)) != 0)
+            });
+            if !any {
+                return false;
+            }
+        }
     }
     true
 }
@@ -977,6 +1359,9 @@ fn parse_interactive_selector(raw: &str) -> Option<InteractiveSelector> {
         i += 1;
     }
     let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Interactive)?;
+    if ancestors.iter().any(|(_, c)| !c.has_queries.is_empty()) {
+        return None;
+    }
     let mut interactive_count = 0usize;
     let mut interactive_at = None::<usize>;
     let mut interactive_pseudo = None::<InteractivePseudo>;
@@ -1054,6 +1439,11 @@ fn parse_selector_chain(s: &str) -> Option<Selector> {
         i += 1;
     }
     let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Static)?;
+    // Cheap subset: `:has()` only on the subject. Ancestor `:has()` would need
+    // per-ancestor bitsets and is skipped (counted as unsupported).
+    if ancestors.iter().any(|(_, c)| !c.has_queries.is_empty()) {
+        return None;
+    }
     let mut specificity = Specificity::default();
     for (_, c) in &ancestors {
         add_specificity(&mut specificity, c);
@@ -1071,6 +1461,7 @@ fn strip_subject_generated_pseudo(s: &str) -> Option<(String, GeneratedPseudo)> 
     for (suffix, pseudo) in [
         ("::before", GeneratedPseudo::Before),
         ("::after", GeneratedPseudo::After),
+        ("::placeholder", GeneratedPseudo::Placeholder),
         (":before", GeneratedPseudo::Before),
         (":after", GeneratedPseudo::After),
     ] {
@@ -1097,7 +1488,7 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
             return true;
         }
         match name {
-            "where" | "is" | "not" | "nth-child" | "nth-of-type" => false,
+            "where" | "is" | "not" | "nth-child" | "nth-of-type" | "has" => false,
             "root" | "first-child" | "last-child" => false,
             _ => true,
         }
@@ -1127,7 +1518,7 @@ fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> boo
             let name = &after[..end];
             let rem = &after[end..];
             match name {
-                "where" | "is" | "not" | "nth-child" | "nth-of-type" => {
+                "where" | "is" | "not" | "nth-child" | "nth-of-type" | "has" => {
                     if !rem.starts_with('(') {
                         return true;
                     }
@@ -1419,6 +1810,34 @@ fn parse_compound(raw: &str, mode: ParseCompoundMode) -> Option<CompoundSelector
                             _ => unreachable!(),
                         }
                     }
+                    "has" => {
+                        if i >= chars.len() || chars[i] != '(' {
+                            return None;
+                        }
+                        i += 1;
+                        let inner_start = i;
+                        let mut depth = 1i32;
+                        while i < chars.len() {
+                            match chars[i] {
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                        if depth != 0 || i >= chars.len() {
+                            return None;
+                        }
+                        let inner: String = chars[inner_start..i].iter().collect();
+                        i += 1; // skip ')'
+                        let alts = parse_simple_selector_list(inner.trim())?;
+                        out.has_queries.push(alts);
+                    }
                     "not" | "is" | "where" => {
                         if i >= chars.len() || chars[i] != '(' {
                             return None;
@@ -1480,6 +1899,7 @@ fn compound_is_empty(out: &CompoundSelector) -> bool {
         && !out.root
         && out.nth_child.is_none()
         && out.nth_of_type.is_none()
+        && out.has_queries.is_empty()
 }
 
 fn parse_attr_inner(inner: &str) -> Option<AttrSelector> {
@@ -1711,6 +2131,10 @@ fn add_specificity(spec: &mut Specificity, compound: &CompoundSelector) {
     if !compound.is_alts.is_empty() {
         spec.saturating_add_assign(max_alts_specificity(&compound.is_alts));
     }
+    // :has() — specificity of the most specific argument (Selectors L4).
+    for query in &compound.has_queries {
+        spec.saturating_add_assign(max_alts_specificity(query));
+    }
     // :where() — always 0 (intentionally omitted).
 }
 
@@ -1909,7 +2333,7 @@ fn split_selector_list(s: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_map::{FlexDirection, FlexWrap, LengthSpec};
+    use crate::css_map::{DirSpec, FlexDirection, FlexWrap, LengthSpec};
 
     fn ctx<'a>(
         tag: &'a str,
@@ -1929,6 +2353,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         }
     }
 
@@ -1953,6 +2379,8 @@ mod tests {
             sibling_count,
             of_type_index: sibling_index,
             of_type_count: sibling_count,
+            has_bits: 0,
+            has_args: &[],
         }
     }
 
@@ -1978,6 +2406,8 @@ mod tests {
             sibling_count,
             of_type_index,
             of_type_count,
+            has_bits: 0,
+            has_args: &[],
         }
     }
 
@@ -2016,9 +2446,9 @@ mod tests {
     #[test]
     fn skipped_content_counters_report_every_drop_kind() {
         let css = concat!(
-            "@media (prefers-color-scheme: dark) { .dark { color: red } }",
+            "@supports (color: lab(0% 0 0)) { .lab { color: red } }",
             ".empty { }",
-            ".deferred:has(.x) { color: red }",
+            "input::file-selector-button { color: gray }",
             ".kept { color: blue }"
         );
         let (rules, report) = parse_stylesheet_with_report(css, 0);
@@ -2027,6 +2457,67 @@ mod tests {
         assert_eq!(report.skipped_selectors, 1);
         assert_eq!(report.rules, 1);
         assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn cheap_has_descendant_present_matches_subject() {
+        let rules = parse_stylesheet(".card:has(.badge) { width: 80px }", 0);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].selectors[0].subject.has_queries.len(), 1);
+        let empty = BTreeMap::new();
+        let card = vec!["card".into()];
+        let badge = SimpleCompound {
+            classes: vec!["badge".into()],
+            ..Default::default()
+        };
+        let args = [badge];
+        let mut layout = LayoutStyle::default();
+        let hit = ctx("div", "", &card, &empty, &[]);
+        let mut hit = hit;
+        hit.has_bits = 1;
+        hit.has_args = &args;
+        apply_stylesheet_to_layout(&mut layout, &rules, &hit, None, None);
+        assert_eq!(layout.width, Some(LengthSpec::Px(80.0)));
+
+        let mut miss = LayoutStyle::default();
+        let mut nohit = ctx("div", "", &card, &empty, &[]);
+        nohit.has_args = &args;
+        apply_stylesheet_to_layout(&mut miss, &rules, &nohit, None, None);
+        assert!(miss.width.is_none());
+    }
+
+    #[test]
+    fn has_with_combinator_is_skipped() {
+        let (_, report) = parse_stylesheet_with_report(
+            ".card:has(.a > .b) { color: red } input::placeholder { color: gray }",
+            0,
+        );
+        assert_eq!(report.skipped_selectors, 1);
+        assert_eq!(report.rules, 0);
+    }
+
+    #[test]
+    fn placeholder_pseudo_parses_as_generated_not_skipped() {
+        let (sheet, report) =
+            parse_stylesheet_full("input::placeholder { color: gray; opacity: 0.5 }", 0);
+        assert_eq!(report.skipped_selectors, 0);
+        assert_eq!(sheet.generated_pseudo_rules.len(), 1);
+        assert_eq!(
+            sheet.generated_pseudo_rules[0].pseudo,
+            crate::css_interactive::GeneratedPseudo::Placeholder
+        );
+        assert!(
+            sheet.generated_pseudo_rules[0]
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "color")
+        );
+    }
+
+    #[test]
+    fn ancestor_has_is_skipped() {
+        let (_, report) = parse_stylesheet_with_report(".card:has(.x) .child { color: red }", 0);
+        assert_eq!(report.skipped_selectors, 1);
     }
 
     #[test]
@@ -2208,6 +2699,40 @@ mod tests {
         );
         assert_eq!(layout.direction, Some(FlexDirection::Row));
         assert_eq!(layout.gap, Some(LengthSpec::Px(20.0)));
+    }
+
+    #[test]
+    fn direction_rtl_cross_layer_stylesheet_logical_then_inline_dir() {
+        let rules = parse_stylesheet(".box { padding-inline-start: 12px; }", 0);
+        let classes = vec!["box".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let layout = rebuild_layout_style(
+            LayoutStyle::default(),
+            &rules,
+            &m,
+            "",
+            "direction: rtl",
+            None,
+            None,
+        );
+        assert_eq!(layout.dir, Some(DirSpec::Rtl));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn direction_rtl_inherited_dir_seed_remaps_stylesheet_logical() {
+        let rules = parse_stylesheet(".box { padding-inline-start: 12px; }", 0);
+        let classes = vec!["box".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let mut base = LayoutStyle::default();
+        base.dir = Some(DirSpec::Rtl);
+        let layout = rebuild_layout_style(base, &rules, &m, "", "", None, None);
+        assert_eq!(layout.dir, Some(DirSpec::Rtl));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
     }
 
     #[test]
@@ -2619,6 +3144,8 @@ mod tests {
             sibling_count: 3,
             of_type_index: 0,
             of_type_count: 3,
+            has_bits: 0,
+            has_args: &[],
         };
         let mut layout = LayoutStyle::default();
         apply_stylesheet_to_layout(&mut layout, &rules, &first, None, None);
@@ -3289,5 +3816,572 @@ mod tests {
             &root,
             &ctx("div", "", &none, &empty, &parent)
         ));
+    }
+
+    #[test]
+    fn import_merges_into_same_cascade() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert("theme.css".into(), ".imported { width: 40px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("main.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            @import url("theme.css");
+            .local { height: 20px; }
+            "#,
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 1);
+        assert_eq!(report.skipped_at_rules, 0);
+        let env = crate::css_at_rule::MediaEnvironment::default();
+        let flat = sheet.flatten(&env);
+        assert_eq!(flat.static_rules.len(), 2);
+        let names: Vec<String> = flat
+            .static_rules
+            .iter()
+            .filter_map(|r| r.selectors.first()?.subject.classes.first().cloned())
+            .collect();
+        assert_eq!(names, vec!["imported".to_string(), "local".to_string()]);
+        assert!(flat.static_rules[0].source_order < flat.static_rules[1].source_order);
+    }
+
+    #[test]
+    fn import_cycle_is_skipped_once() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            "a.css".into(),
+            "@import \"b.css\"; .a { width: 1px; }".into(),
+        );
+        files.insert(
+            "b.css".into(),
+            "@import \"a.css\"; .b { width: 2px; }".into(),
+        );
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("root.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            "@import \"a.css\"; .root { width: 3px; }",
+            0,
+            &mut options,
+        );
+        assert!(report.skipped_at_rules >= 1, "cycle must increment skip");
+        assert!(report.imported_sheets >= 1);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        let names: Vec<String> = flat
+            .static_rules
+            .iter()
+            .filter_map(|r| r.selectors.first()?.subject.classes.first().cloned())
+            .collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+        assert!(names.contains(&"root".to_string()));
+        assert_eq!(names.len(), 3, "each sheet once: {names:?}");
+    }
+
+    #[test]
+    fn media_min_width_apply_and_skip() {
+        let (sheet, report) = parse_stylesheet_full(
+            "@media (min-width: 800px) { .wide { width: 100px; } } .always { height: 8px; }",
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 0);
+        assert_eq!(sheet.media_rules.len(), 1);
+        assert_eq!(sheet.static_rules.len(), 1);
+
+        let wide = crate::css_at_rule::MediaEnvironment {
+            width: 900.0,
+            height: 500.0,
+            color_scheme_dark: false,
+        };
+        let narrow = crate::css_at_rule::MediaEnvironment {
+            width: 400.0,
+            height: 500.0,
+            color_scheme_dark: false,
+        };
+        let applied = sheet.flatten(&wide);
+        assert_eq!(applied.static_rules.len(), 2);
+        let skipped = sheet.flatten(&narrow);
+        assert_eq!(skipped.static_rules.len(), 1);
+        assert_eq!(
+            skipped.static_rules[0].selectors[0].subject.classes[0],
+            "always"
+        );
+
+        let classes = vec!["wide".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let mut layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut layout, &applied.static_rules, &m, None, None);
+        assert_eq!(layout.width, Some(LengthSpec::Px(100.0)));
+        let mut skipped_layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut skipped_layout, &skipped.static_rules, &m, None, None);
+        assert!(skipped_layout.width.is_none());
+    }
+
+    #[test]
+    fn font_face_parses_family_src_weight() {
+        let (sheet, report) = parse_stylesheet_full(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: url("./Display.woff2") format("woff2");
+                font-weight: bold;
+            }
+            .use { font-family: Display; }
+            "#,
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 0);
+        assert_eq!(sheet.font_faces.len(), 1);
+        assert_eq!(sheet.font_faces[0].family, "Display");
+        assert_eq!(sheet.font_faces[0].weight, Some(700));
+        assert_eq!(
+            sheet.font_faces[0].src[0],
+            crate::css_at_rule::FontFaceSrc::Url("./Display.woff2".into())
+        );
+        assert_eq!(sheet.static_rules.len(), 1);
+    }
+
+    #[test]
+    fn supports_display_flex_applies_lab_skips() {
+        let (sheet, report) = parse_stylesheet_full(
+            concat!(
+                "@supports (display: flex) { .ok { display: flex; width: 40px; } }",
+                "@supports (color: lab(0% 0 0)) { .lab { width: 99px; } }",
+            ),
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 1);
+        assert_eq!(report.rules, 1);
+        assert_eq!(sheet.static_rules.len(), 1);
+        assert_eq!(sheet.static_rules[0].selectors[0].subject.classes[0], "ok");
+
+        let classes = vec!["ok".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let mut layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
+        assert_eq!(layout.display, Some(crate::css_map::DisplaySpec::Flex));
+        assert_eq!(layout.width, Some(LengthSpec::Px(40.0)));
+
+        let lab_classes = vec!["lab".into()];
+        let lab_ctx = ctx("div", "", &lab_classes, &attrs, &[]);
+        let mut lab_layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut lab_layout, &sheet.static_rules, &lab_ctx, None, None);
+        assert!(lab_layout.width.is_none());
+    }
+
+    #[test]
+    fn layer_inner_rules_apply_as_author_order_names_recorded() {
+        // Full cascade-layer priority (unlayered beats layered) is not
+        // implemented: inner rules join author source order. Names are
+        // recorded first-seen. Anonymous `@layer { }` is the same flattening.
+        let (sheet, report) = parse_stylesheet_full(
+            r#"
+            @layer base, utilities;
+            @layer base { .x { width: 10px; } }
+            @layer { .anon { height: 8px; } }
+            .after { width: 20px; }
+            "#,
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 0);
+        assert_eq!(
+            sheet.layer_names,
+            vec!["base".to_string(), "utilities".to_string()]
+        );
+        assert_eq!(sheet.static_rules.len(), 3);
+        let names: Vec<String> = sheet
+            .static_rules
+            .iter()
+            .filter_map(|r| r.selectors.first()?.subject.classes.first().cloned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["x".to_string(), "anon".to_string(), "after".to_string()]
+        );
+        assert!(sheet.static_rules[0].source_order < sheet.static_rules[1].source_order);
+        assert!(sheet.static_rules[1].source_order < sheet.static_rules[2].source_order);
+
+        let classes = vec!["x".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let mut layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
+        assert_eq!(layout.width, Some(LengthSpec::Px(10.0)));
+    }
+
+    #[test]
+    fn layer_invalid_prelude_skips_whole_block() {
+        let (sheet, report) = parse_stylesheet_full(
+            "@layer foo bar { .x { width: 1px; } } .kept { height: 2px; }",
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 1);
+        assert_eq!(sheet.static_rules.len(), 1);
+        assert_eq!(
+            sheet.static_rules[0].selectors[0].subject.classes[0],
+            "kept"
+        );
+    }
+
+    #[test]
+    fn import_supports_and_layer_do_not_load() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert("theme.css".into(), ".imported { width: 40px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("main.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            @import url("theme.css") supports(display: grid);
+            @import url("theme.css") layer(utilities);
+            @import "theme.css" layer;
+            .local { height: 20px; }
+            "#,
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 3);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        let names: Vec<String> = flat
+            .static_rules
+            .iter()
+            .filter_map(|r| r.selectors.first()?.subject.classes.first().cloned())
+            .collect();
+        assert_eq!(names, vec!["local".to_string()]);
+    }
+
+    #[test]
+    fn protocol_relative_import_is_skipped() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            "evil.example/remote.css".into(),
+            ".remote { width: 9px; }".into(),
+        );
+        files.insert("host/share/unc.css".into(), ".unc { width: 8px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            @import url("//evil.example/remote.css");
+            @import url("\\host\share\unc.css");
+            .local { height: 2px; }
+            "#,
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 2);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(
+            flat.static_rules[0].selectors[0].subject.classes[0],
+            "local"
+        );
+    }
+
+    #[test]
+    fn escaped_supports_import_is_skipped() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert("theme.css".into(), ".imported { width: 40px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("main.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            @import url("theme.css") supp\6frts(display: grid);
+            @import url("theme.css") l\61yer;
+            .local { height: 20px; }
+            "#,
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 2);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        let names: Vec<String> = flat
+            .static_rules
+            .iter()
+            .filter_map(|r| r.selectors.first()?.subject.classes.first().cloned())
+            .collect();
+        assert_eq!(names, vec!["local".to_string()]);
+    }
+
+    #[test]
+    fn http_and_data_import_are_skipped() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            "https://example.com/remote.css".into(),
+            ".remote { width: 9px; }".into(),
+        );
+        files.insert("data:text/css,.x{}".into(), ".data { width: 8px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            @import url("https://example.com/remote.css");
+            @import url("http://example.com/remote.css");
+            @import url("data:text/css,.x{}");
+            .local { height: 2px; }
+            "#,
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 3);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(
+            flat.static_rules[0].selectors[0].subject.classes[0],
+            "local"
+        );
+    }
+
+    #[test]
+    fn print_media_rules_and_font_faces_are_not_applied_on_screen() {
+        let (sheet, report) = parse_stylesheet_full(
+            r#"
+            @media print {
+                .print { width: 10px; }
+                @font-face {
+                    font-family: "PrintOnly";
+                    src: url("./print.ttf");
+                }
+            }
+            .screen { height: 8px; }
+            "#,
+            0,
+        );
+        assert_eq!(report.skipped_at_rules, 0);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(
+            flat.static_rules[0].selectors[0].subject.classes[0],
+            "screen"
+        );
+        assert!(
+            flat.font_faces.is_empty(),
+            "print @font-face must not flatten on screen"
+        );
+        assert_eq!(sheet.all_font_faces().len(), 1);
+    }
+
+    #[test]
+    fn filesystem_jail_rejects_dotdot_and_absolute_escape() {
+        use crate::css_at_rule::{FsStylesheetLoader, ParseStylesheetOptions};
+        let root =
+            std::env::temp_dir().join(format!("nanaui-css-jail-{}-escape", std::process::id()));
+        let jail = root.join("jail");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(root.join("secret.css"), ".escaped { width: 99px; }").expect("secret");
+        let abs = root
+            .join("secret.css")
+            .canonicalize()
+            .expect("abs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let loader = FsStylesheetLoader { base: &jail };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            &format!(
+                r#"
+                @import url("../secret.css");
+                @import url("{abs}");
+                .local {{ height: 3px; }}
+                "#
+            ),
+            0,
+            &mut options,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 2);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(
+            flat.static_rules[0].selectors[0].subject.classes[0],
+            "local"
+        );
+    }
+
+    #[test]
+    fn stylesheet_read_size_cap_skips_oversize_import() {
+        use crate::css_at_rule::{
+            FsStylesheetLoader, ParseStylesheetOptions, with_stylesheet_byte_cap,
+        };
+        let jail = std::env::temp_dir().join(format!("nanaui-css-jail-{}-cap", std::process::id()));
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(jail.join("big.css"), "x".repeat(64)).expect("big");
+        let loader = FsStylesheetLoader { base: &jail };
+        let (sheet, report) = with_stylesheet_byte_cap(32, || {
+            let mut options = ParseStylesheetOptions {
+                loader: Some(&loader),
+                ..ParseStylesheetOptions::default()
+            };
+            parse_stylesheet_full_with_options(
+                "@import url(\"big.css\"); .local { height: 4px; }",
+                0,
+                &mut options,
+            )
+        });
+        let _ = std::fs::remove_dir_all(&jail);
+        assert_eq!(report.imported_sheets, 0);
+        assert!(report.skipped_at_rules >= 1);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+    }
+
+    #[test]
+    fn font_face_url_resolves_relative_to_declaring_sheet() {
+        use crate::css_at_rule::{
+            FsStylesheetLoader, ParseStylesheetOptions, font_face_url_src, load_font_face_bytes,
+        };
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-css-jail-{}-font-rel", std::process::id()));
+        let sheets = jail.join("sheets");
+        let fonts = sheets.join("fonts");
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&fonts).expect("fonts");
+        std::fs::write(fonts.join("n.ttf"), b"dummy-font").expect("ttf");
+        std::fs::write(
+            sheets.join("theme.css"),
+            r#"
+            @font-face {
+                font-family: "Rel";
+                src: url("./fonts/n.ttf");
+            }
+            "#,
+        )
+        .expect("theme");
+        let loader = FsStylesheetLoader { base: &jail };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            "@import url(\"sheets/theme.css\");",
+            0,
+            &mut options,
+        );
+        assert_eq!(report.imported_sheets, 1);
+        assert_eq!(report.skipped_at_rules, 0);
+        assert_eq!(sheet.font_faces.len(), 1);
+        let face = &sheet.font_faces[0];
+        assert_eq!(face.family, "Rel");
+        let base = face.base_href.as_deref().expect("declaring sheet href");
+        let base_norm = base.replace('\\', "/");
+        assert!(
+            base_norm.ends_with("theme.css"),
+            "base_href should be the declaring sheet, got {base}"
+        );
+        let url = font_face_url_src(face).expect("url");
+        let loaded = load_font_face_bytes(url, face.base_href.as_deref(), &jail);
+        assert!(
+            loaded.is_some(),
+            "font url must resolve relative to the declaring sheet"
+        );
+        assert!(
+            load_font_face_bytes(url, None, &jail).is_none(),
+            "resolving against the root jail must miss sheets/fonts/n.ttf"
+        );
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn late_import_after_style_rule_is_skipped() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert("late.css".into(), ".imported { width: 40px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("main.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"
+            .local { height: 20px; }
+            @import url("late.css");
+            "#,
+            0,
+            &mut options,
+        );
+        assert!(
+            report.skipped_at_rules >= 1,
+            "CSS ignores @import after a style rule"
+        );
+        assert_eq!(report.imported_sheets, 0);
+        let flat = sheet.flatten(&crate::css_at_rule::MediaEnvironment::default());
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(
+            flat.static_rules[0].selectors[0].subject.classes[0],
+            "local"
+        );
+    }
+
+    #[test]
+    fn nested_import_inside_media_is_skipped() {
+        use crate::css_at_rule::{MemoryStylesheetLoader, ParseStylesheetOptions};
+        let mut files = std::collections::HashMap::new();
+        files.insert("x.css".into(), ".imported { width: 40px; }".into());
+        let loader = MemoryStylesheetLoader { files };
+        let mut options = ParseStylesheetOptions {
+            loader: Some(&loader),
+            base_href: Some("main.css"),
+            ..ParseStylesheetOptions::default()
+        };
+        let (sheet, report) = parse_stylesheet_full_with_options(
+            r#"@media screen { @import url(x.css); .a{color:red} }"#,
+            0,
+            &mut options,
+        );
+        assert!(
+            report.skipped_at_rules >= 1,
+            "CSS ignores nested @import inside @media"
+        );
+        assert_eq!(report.imported_sheets, 0);
+        let env = crate::css_at_rule::MediaEnvironment::default();
+        let flat = sheet.flatten(&env);
+        assert_eq!(flat.static_rules.len(), 1);
+        assert_eq!(flat.static_rules[0].selectors[0].subject.classes[0], "a");
+        let classes = vec!["a".into()];
+        let attrs = BTreeMap::new();
+        let m = ctx("div", "", &classes, &attrs, &[]);
+        let mut layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut layout, &flat.static_rules, &m, None, None);
+        assert_eq!(layout.color, Some([1.0, 0.0, 0.0, 1.0]));
     }
 }

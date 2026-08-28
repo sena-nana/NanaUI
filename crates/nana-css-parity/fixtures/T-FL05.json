@@ -1,0 +1,22 @@
+{
+  "id": "T-FL05",
+  "title": "IFC 行盒在 float:left 旁缩窄；行内项在剩余宽里折行",
+  "status": "pass",
+  "viewport": [200, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:block;width:200px;height:80px",
+    "children": [
+      { "id": "fl", "style": "float:left;width:80px;height:40px" },
+      { "id": "a", "style": "display:inline-block;width:70px;height:20px" },
+      { "id": "b", "style": "display:inline-block;width:70px;height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 80 },
+    { "id": "fl", "x": 0, "y": 0, "w": 80, "h": 40 },
+    { "id": "a", "x": 80, "y": 0, "w": 70, "h": 20 },
+    { "id": "b", "x": 80, "y": 20, "w": 70, "h": 20 }
+  ]
+}

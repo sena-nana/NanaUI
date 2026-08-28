@@ -6,30 +6,49 @@ use super::clip::FragmentClip;
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 128;
+const GROUP_UNIFORM_SIZE: u64 = 176;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct GroupSlot {
     pub opacity: f32,
     pub clip: FragmentClip,
     pub filter: [f32; 3],
+    pub filter_hue: f32,
+    pub filter_blur: f32,
+    pub mix_blend: u32,
+    pub drop_shadow_offset: [f32; 2],
+    pub drop_shadow_blur: f32,
+    pub drop_shadow_color: [f32; 4],
 }
 
 impl GroupSlot {
     pub fn opacity(opacity: f32) -> Self {
+        Self::dest(opacity, [1.0, 1.0, 1.0], 0.0, 0.0, 0, FragmentClip::PASS)
+    }
+
+    pub fn dest(
+        opacity: f32,
+        filter: [f32; 3],
+        filter_hue: f32,
+        filter_blur: f32,
+        mix_blend: u32,
+        clip: FragmentClip,
+    ) -> Self {
         Self {
             opacity,
-            clip: FragmentClip::PASS,
-            filter: [1.0, 1.0, 1.0],
+            clip,
+            filter,
+            filter_hue,
+            filter_blur,
+            mix_blend,
+            drop_shadow_offset: [0.0, 0.0],
+            drop_shadow_blur: 0.0,
+            drop_shadow_color: [0.0, 0.0, 0.0, 0.0],
         }
     }
 
     pub fn clip(clip: FragmentClip) -> Self {
-        Self {
-            opacity: 1.0,
-            clip,
-            filter: [1.0, 1.0, 1.0],
-        }
+        Self::dest(1.0, [1.0, 1.0, 1.0], 0.0, 0.0, 0, clip)
     }
 }
 
@@ -75,7 +94,83 @@ fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
     }
+    bytes[128..132].copy_from_slice(&slot.filter_hue.to_le_bytes());
+    bytes[132..136].copy_from_slice(&slot.filter_blur.to_le_bytes());
+    bytes[136..140].copy_from_slice(&slot.mix_blend.to_le_bytes());
+    bytes[144..148].copy_from_slice(&slot.drop_shadow_offset[0].to_le_bytes());
+    bytes[148..152].copy_from_slice(&slot.drop_shadow_offset[1].to_le_bytes());
+    bytes[152..156].copy_from_slice(&slot.drop_shadow_blur.to_le_bytes());
+    for (index, value) in slot.drop_shadow_color.iter().enumerate() {
+        let offset = 160 + index * 4;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
     bytes
+}
+
+fn blend_multiply() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Dst,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
+}
+
+fn blend_screen() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
+}
+
+fn make_group_pipeline(
+    device: &wgpu::Device,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+    label: &'static str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: pipeline_cache,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -105,10 +200,13 @@ pub(super) struct DestTarget {
     blit_bind_group: wgpu::BindGroup,
     group_layers: Vec<GroupLayer>,
     group_pipeline: wgpu::RenderPipeline,
+    group_pipeline_multiply: wgpu::RenderPipeline,
+    group_pipeline_screen: wgpu::RenderPipeline,
     group_bind_layout: wgpu::BindGroupLayout,
     group_sampler: wgpu::Sampler,
     group_uniforms: wgpu::Buffer,
     group_uniform_slots: u64,
+    slot_blend: Vec<u32>,
 }
 
 impl DestTarget {
@@ -313,31 +411,33 @@ impl DestTarget {
                 bind_group_layouts: &[Some(&group_bind_layout)],
                 immediate_size: 0,
             });
-        let group_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.group.pipeline"),
-            layout: Some(&group_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &group_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &group_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: pipeline_cache,
-        });
+        let group_pipeline = make_group_pipeline(
+            device,
+            pipeline_cache,
+            &group_pipeline_layout,
+            &group_shader,
+            format,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            "nana-ui.scene.group.pipeline",
+        );
+        let group_pipeline_multiply = make_group_pipeline(
+            device,
+            pipeline_cache,
+            &group_pipeline_layout,
+            &group_shader,
+            format,
+            blend_multiply(),
+            "nana-ui.scene.group.pipeline.multiply",
+        );
+        let group_pipeline_screen = make_group_pipeline(
+            device,
+            pipeline_cache,
+            &group_pipeline_layout,
+            &group_shader,
+            format,
+            blend_screen(),
+            "nana-ui.scene.group.pipeline.screen",
+        );
         Self {
             width,
             height,
@@ -349,10 +449,13 @@ impl DestTarget {
             blit_bind_group,
             group_layers: Vec::new(),
             group_pipeline,
+            group_pipeline_multiply,
+            group_pipeline_screen,
             group_bind_layout,
             group_sampler,
             group_uniforms,
             group_uniform_slots: GROUP_UNIFORM_SLOTS,
+            slot_blend: Vec::new(),
         }
     }
 
@@ -390,6 +493,7 @@ impl DestTarget {
                 work.record_upload(bytes.len());
             }
         }
+        self.slot_blend = slots.iter().map(|slot| slot.mix_blend).collect();
     }
 
     fn resize_group_uniforms(&mut self, device: &wgpu::Device, slots: u64) {
@@ -490,7 +594,13 @@ impl DestTarget {
         let max_slot = self.group_uniform_slots.saturating_sub(1) as u32;
         let slot = slot.min(max_slot);
         let offset = (slot as u64 * GROUP_UNIFORM_STRIDE) as u32;
-        pass.set_pipeline(&self.group_pipeline);
+        let blend = self.slot_blend.get(slot as usize).copied().unwrap_or(0);
+        let pipeline = match blend {
+            1 => &self.group_pipeline_multiply,
+            2 => &self.group_pipeline_screen,
+            _ => &self.group_pipeline,
+        };
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.group_layers[layer].bind_group, &[offset]);
         pass.draw(0..3, 0..1);
         if let Some(work) = gpu_work {

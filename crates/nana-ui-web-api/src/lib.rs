@@ -673,6 +673,10 @@ mod tests {
     #[test]
     fn shim_is_nonempty_and_mentions_window() {
         assert!(WEB_API_SHIM_JS.contains("localStorage"));
+        assert!(WEB_API_SHIM_JS.contains("matchMedia"));
+        assert!(WEB_API_SHIM_JS.contains("hostCall(\"evaluateMediaQuery\""));
+        assert!(WEB_API_SHIM_JS.contains("evaluateMediaQueryLocal"));
+        assert!(WEB_API_SHIM_JS.contains("ty === \"all\" || ty === \"screen\""));
         assert!(WEB_API_SHIM_JS.contains("requestAnimationFrame"));
         assert!(WEB_API_SHIM_JS.contains("ResizeObserver"));
         assert!(WEB_API_SHIM_JS.contains("history"));

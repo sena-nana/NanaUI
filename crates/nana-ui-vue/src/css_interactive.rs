@@ -2,10 +2,14 @@
 //!
 //! Rules land in [`ParsedStylesheet`] buckets at parse time. Static cascade in
 //! [`crate::css_cascade`] ignores them until a later bridge / Runtime agent wires
-//! hover restyle, `::before`/`::after` boxes, and animation timelines.
+//! hover restyle, `::before`/`::after` boxes, `::placeholder` input paint, and
+//! animation timelines.
 
 use std::collections::BTreeMap;
 
+use crate::css_at_rule::{
+    FontFaceRule, MediaEnvironment, MediaQueryList, evaluate_media_query_list,
+};
 use crate::css_cascade::{
     Combinator, CompoundSelector, DeclarationEntry, MatchContext, MatchNode, Selector, Specificity,
     StyleRule, compound_matches, parse_declaration_entries,
@@ -52,11 +56,15 @@ pub struct InteractiveStyleRule {
     pub source_order: u32,
 }
 
-/// Generated pseudo-element kind (`::before` / `::after`, including legacy single-colon).
+/// Generated pseudo-element kind.
+///
+/// `::before` / `::after` (including legacy single-colon) materialize boxes.
+/// `::placeholder` is paint-only on Runtime TextInput — never a generated child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GeneratedPseudo {
     Before,
     After,
+    Placeholder,
 }
 
 impl GeneratedPseudo {
@@ -64,12 +72,13 @@ impl GeneratedPseudo {
         match name.to_ascii_lowercase().as_str() {
             "before" => Some(Self::Before),
             "after" => Some(Self::After),
+            "placeholder" => Some(Self::Placeholder),
             _ => None,
         }
     }
 }
 
-/// Rule for a generated `::before` / `::after` box (parse-only; no anonymous nodes yet).
+/// Rule for a generated `::before` / `::after` box or `::placeholder` paint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedPseudoRule {
     /// Originating element selector (pseudo stripped from subject).
@@ -150,7 +159,18 @@ pub struct MotionStyleRule {
     pub source_order: u32,
 }
 
+/// Parsed `@media` block. Inner rules join the cascade only while the query matches.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MediaRule {
+    pub query: MediaQueryList,
+    pub sheet: ParsedStylesheet,
+}
+
 /// Full stylesheet parse output: static cascade rules plus deferred buckets.
+///
+/// `static_rules` / interactive / … are **unconditional**. Matching `@media`
+/// inner rules are applied through [`ParsedStylesheet::flatten`] so viewport
+/// / theme changes do not re-parse CSS text.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedStylesheet {
     pub static_rules: Vec<StyleRule>,
@@ -158,6 +178,116 @@ pub struct ParsedStylesheet {
     pub generated_pseudo_rules: Vec<GeneratedPseudoRule>,
     pub keyframes: BTreeMap<String, KeyframesRule>,
     pub motion_rules: Vec<MotionStyleRule>,
+    pub media_rules: Vec<MediaRule>,
+    pub font_faces: Vec<FontFaceRule>,
+    /// First-seen `@layer` names (order recorded; cascade-layer *priority* is not applied).
+    pub layer_names: Vec<String>,
+}
+
+impl ParsedStylesheet {
+    pub fn is_cascade_empty(&self) -> bool {
+        self.static_rules.is_empty()
+            && self.interactive_rules.is_empty()
+            && self.generated_pseudo_rules.is_empty()
+            && self.motion_rules.is_empty()
+            && self.keyframes.is_empty()
+            && self.media_rules.is_empty()
+            && self.font_faces.is_empty()
+    }
+
+    /// Copy unconditional buckets plus inner sheets whose `@media` matches `env`.
+    pub fn flatten(&self, env: &MediaEnvironment) -> ParsedStylesheet {
+        let mut out = ParsedStylesheet {
+            static_rules: self.static_rules.clone(),
+            interactive_rules: self.interactive_rules.clone(),
+            generated_pseudo_rules: self.generated_pseudo_rules.clone(),
+            keyframes: self.keyframes.clone(),
+            motion_rules: self.motion_rules.clone(),
+            media_rules: Vec::new(),
+            font_faces: self.font_faces.clone(),
+            layer_names: self.layer_names.clone(),
+        };
+        for media in &self.media_rules {
+            if evaluate_media_query_list(&media.query, env) {
+                merge_parsed_stylesheet(&mut out, media.sheet.flatten(env));
+            }
+        }
+        out
+    }
+
+    pub fn max_source_order(&self) -> Option<u32> {
+        let nested = self
+            .media_rules
+            .iter()
+            .filter_map(|m| m.sheet.max_source_order());
+        [
+            self.static_rules.last().map(|r| r.source_order),
+            self.interactive_rules.last().map(|r| r.source_order),
+            self.generated_pseudo_rules.last().map(|r| r.source_order),
+            self.motion_rules.last().map(|r| r.source_order),
+            self.keyframes.values().map(|r| r.source_order).max(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(nested)
+        .max()
+    }
+
+    pub fn all_font_faces(&self) -> Vec<&FontFaceRule> {
+        let mut out = Vec::new();
+        self.collect_font_faces(&mut out);
+        out
+    }
+
+    fn collect_font_faces<'a>(&'a self, out: &mut Vec<&'a FontFaceRule>) {
+        out.extend(self.font_faces.iter());
+        for media in &self.media_rules {
+            media.sheet.collect_font_faces(out);
+        }
+    }
+}
+
+/// Append `src` buckets onto `dest` (same cascade, not a second sheet store).
+pub fn merge_parsed_stylesheet(dest: &mut ParsedStylesheet, src: ParsedStylesheet) {
+    dest.static_rules.extend(src.static_rules);
+    dest.interactive_rules.extend(src.interactive_rules);
+    dest.generated_pseudo_rules
+        .extend(src.generated_pseudo_rules);
+    dest.motion_rules.extend(src.motion_rules);
+    dest.font_faces.extend(src.font_faces);
+    dest.media_rules.extend(src.media_rules);
+    for name in src.layer_names {
+        if !name.is_empty() && !dest.layer_names.iter().any(|existing| existing == &name) {
+            dest.layer_names.push(name);
+        }
+    }
+    for (name, rule) in src.keyframes {
+        dest.keyframes.insert(name, rule);
+    }
+}
+
+pub(crate) fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
+    if delta == 0 {
+        return;
+    }
+    for rule in &mut sheet.static_rules {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for rule in &mut sheet.interactive_rules {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for rule in &mut sheet.generated_pseudo_rules {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for rule in &mut sheet.motion_rules {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for rule in sheet.keyframes.values_mut() {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for media in &mut sheet.media_rules {
+        offset_source_order(&mut media.sheet, delta);
+    }
 }
 
 /// Declaration blocks for generated pseudos matching an originating element.
@@ -165,6 +295,7 @@ pub struct ParsedStylesheet {
 pub struct GeneratedPseudoMatch {
     pub before: Vec<Vec<DeclarationEntry>>,
     pub after: Vec<Vec<DeclarationEntry>>,
+    pub placeholder: Vec<Vec<DeclarationEntry>>,
 }
 
 const MOTION_PROPERTIES: &[&str] = &[
@@ -292,7 +423,7 @@ pub fn matched_interactive_rules<'a>(
     matched
 }
 
-/// Generated `::before` / `::after` declaration blocks for an originating element.
+/// Generated `::before` / `::after` / `::placeholder` blocks for an originating element.
 pub fn matched_generated_pseudo(
     rules: &[GeneratedPseudoRule],
     ctx: &MatchContext<'_>,
@@ -314,6 +445,7 @@ pub fn matched_generated_pseudo(
         match pseudo {
             GeneratedPseudo::Before => out.before.push(entries),
             GeneratedPseudo::After => out.after.push(entries),
+            GeneratedPseudo::Placeholder => out.placeholder.push(entries),
         }
     }
     out
@@ -601,6 +733,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
 
         let card_hovered = [InteractivePseudoFlags {
@@ -663,6 +797,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
 
         // Inner card not hovered; outer card hovered — must still match.
@@ -724,6 +860,8 @@ mod tests {
             sibling_count: 1,
             of_type_index: 0,
             of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
         };
         let hover = matched_interactive_rules(
             &sheet.interactive_rules,
