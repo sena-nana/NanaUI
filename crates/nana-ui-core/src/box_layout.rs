@@ -1474,14 +1474,43 @@ impl LinearGradient {
 pub struct RadialGradient {
     /// `true` = `circle`, `false` = `ellipse`.
     pub circle: bool,
-    /// Center in border-box normalized coordinates (0..1).
-    pub center: [f32; 2],
+    /// Center as specified (`%` / keywords → [`LengthSpec::Percent`], `px` →
+    /// [`LengthSpec::Px`]). Resolve with [`Self::resolved_center`] at used-value;
+    /// never treat px as a fraction of 100.
+    pub center: [LengthSpec; 2],
     pub stops: Vec<GradientStop>,
 }
 
 impl RadialGradient {
     pub fn stop_count(&self) -> usize {
         self.stops.len().min(8)
+    }
+
+    /// Border-box fractions for the GPU sampler. Length units need a positive
+    /// used box axis; missing size fails closed (`None`) instead of px/100.
+    pub fn resolved_center(&self, width: f32, height: f32) -> Option<[f32; 2]> {
+        Some([
+            radial_center_axis_frac(self.center[0], width)?,
+            radial_center_axis_frac(self.center[1], height)?,
+        ])
+    }
+}
+
+fn radial_center_axis_frac(spec: LengthSpec, axis: f32) -> Option<f32> {
+    match spec {
+        LengthSpec::Percent(p) => Some(p / 100.0),
+        LengthSpec::Fill
+        | LengthSpec::Shrink
+        | LengthSpec::Auto
+        | LengthSpec::MinContent
+        | LengthSpec::MaxContent
+        | LengthSpec::FitContent => None,
+        _ => {
+            if !axis.is_finite() || axis <= 0.0 {
+                return None;
+            }
+            spec.resolve_px(Some(axis)).map(|px| px / axis)
+        }
     }
 }
 
@@ -1904,8 +1933,10 @@ pub struct FilterDropShadow {
     pub color: [f32; 4],
 }
 
-/// CSS `filter` brightness / saturate / contrast / hue-rotate / blur / drop-shadow.
+/// CSS `filter` brightness / saturate / contrast / grayscale / hue-rotate / blur / drop-shadow.
 ///
+/// Solo `grayscale()` is encoded in [`Self::saturate`] (`grayscale(1)` → saturate 0).
+/// A list that also has `saturate()` cannot share that slot and stays fail-closed.
 /// `blur` and `drop-shadow` are the element's own filters (dest-group), distinct
 /// from [`BackdropFilter`]. Exotic functions are omitted (fail closed).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

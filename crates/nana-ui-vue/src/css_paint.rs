@@ -214,7 +214,7 @@ fn parse_border_image_source(input: &str) -> BorderImageSourceParse {
     if let Some(grad) = parse_linear_gradient(trimmed) {
         return BorderImageSourceParse::Supported(
             BackgroundImage::Gradient(CssGradient::Linear(grad)),
-            strip_first_function(trimmed, "linear-gradient"),
+            strip_first_linear_gradient_fn(trimmed),
         );
     }
     let lower = trimmed.to_ascii_lowercase();
@@ -609,7 +609,7 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
         rest = strip_first_function(&rest, "url");
     } else if let Some(grad) = parse_linear_gradient(trimmed) {
         image = Some(BackgroundImage::Gradient(CssGradient::Linear(grad)));
-        rest = strip_first_function(&rest, "linear-gradient");
+        rest = strip_first_linear_gradient_fn(&rest);
     } else if let Some(grad) = parse_radial_gradient(trimmed) {
         image = Some(BackgroundImage::Gradient(CssGradient::Radial(grad)));
         rest = strip_first_function(&rest, "radial-gradient");
@@ -653,13 +653,28 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
 }
 
 pub fn parse_linear_gradient(input: &str) -> Option<LinearGradient> {
-    let inner = strip_function(input, "linear-gradient")?;
+    let trimmed = input.trim();
+    let repeating = strip_function(trimmed, "repeating-linear-gradient").is_some();
+    let inner = if repeating {
+        strip_function(trimmed, "repeating-linear-gradient")?
+    } else {
+        strip_function(trimmed, "linear-gradient")?
+    };
     let (angle_deg, stops_src) = split_gradient_header(inner)?;
-    let stops = parse_gradient_stops(stops_src)?;
-    if stops.is_empty() {
+    let stops = parse_gradient_stops(stops_src, repeating)?;
+    if stops.len() < 2 {
         return None;
     }
     Some(LinearGradient { angle_deg, stops })
+}
+
+fn strip_first_linear_gradient_fn(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    if lower.contains("repeating-linear-gradient(") {
+        strip_first_function(input, "repeating-linear-gradient")
+    } else {
+        strip_first_function(input, "linear-gradient")
+    }
 }
 
 fn parse_mask_image(input: &str) -> Option<CssGradient> {
@@ -675,8 +690,8 @@ fn parse_mask_image(input: &str) -> Option<CssGradient> {
 pub fn parse_radial_gradient(input: &str) -> Option<RadialGradient> {
     let inner = strip_function(input, "radial-gradient")?;
     let (circle, center, stops_src) = split_radial_header(inner)?;
-    let stops = parse_gradient_stops(stops_src)?;
-    if stops.is_empty() {
+    let stops = parse_gradient_stops(stops_src, false)?;
+    if stops.len() < 2 {
         return None;
     }
     Some(RadialGradient {
@@ -686,7 +701,11 @@ pub fn parse_radial_gradient(input: &str) -> Option<RadialGradient> {
     })
 }
 
-fn split_radial_header(input: &str) -> Option<(bool, [f32; 2], &str)> {
+fn default_radial_center() -> [LengthSpec; 2] {
+    [LengthSpec::Percent(50.0), LengthSpec::Percent(50.0)]
+}
+
+fn split_radial_header(input: &str) -> Option<(bool, [LengthSpec; 2], &str)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -698,18 +717,18 @@ fn split_radial_header(input: &str) -> Option<(bool, [f32; 2], &str)> {
     let circle = !lower.starts_with("ellipse");
     let center = if let Some(at_idx) = lower.find(" at ") {
         parse_radial_center(&head[at_idx + 4..])?
-    } else if resolve_paint_color(head).is_some() {
-        return Some((circle, [0.5, 0.5], trimmed));
+    } else if split_color_and_rest(head).is_some() {
+        return Some((circle, default_radial_center(), trimmed));
     } else {
-        [0.5, 0.5]
+        default_radial_center()
     };
     Some((circle, center, tail))
 }
 
-fn parse_radial_center(input: &str) -> Option<[f32; 2]> {
+fn parse_radial_center(input: &str) -> Option<[LengthSpec; 2]> {
     let trimmed = input.trim();
     if trimmed.eq_ignore_ascii_case("center") {
-        return Some([0.5, 0.5]);
+        return Some(default_radial_center());
     }
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     if parts.len() == 2 {
@@ -719,31 +738,37 @@ fn parse_radial_center(input: &str) -> Option<[f32; 2]> {
     }
     if parts.len() == 1 {
         let x = parse_radial_center_axis(parts[0], true)?;
-        return Some([x, 0.5]);
+        return Some([x, LengthSpec::Percent(50.0)]);
     }
     None
 }
 
-fn parse_radial_center_axis(token: &str, horizontal: bool) -> Option<f32> {
+fn parse_radial_center_axis(token: &str, horizontal: bool) -> Option<LengthSpec> {
     let lower = token.to_ascii_lowercase();
     match lower.as_str() {
-        "left" if horizontal => Some(0.0),
-        "right" if horizontal => Some(1.0),
-        "top" if !horizontal => Some(0.0),
-        "bottom" if !horizontal => Some(1.0),
-        "center" => Some(0.5),
+        "left" if horizontal => Some(LengthSpec::Percent(0.0)),
+        "right" if horizontal => Some(LengthSpec::Percent(100.0)),
+        "top" if !horizontal => Some(LengthSpec::Percent(0.0)),
+        "bottom" if !horizontal => Some(LengthSpec::Percent(100.0)),
+        "center" => Some(LengthSpec::Percent(50.0)),
         _ => {
             if lower.ends_with('%') {
-                lower
+                return lower
                     .trim_end_matches('%')
                     .trim()
                     .parse::<f32>()
                     .ok()
-                    .map(|v| (v / 100.0).clamp(0.0, 1.0))
-            } else if let Some(px) = parse_css_length_px(token, None) {
-                Some((px / 100.0).clamp(0.0, 1.0))
-            } else {
-                None
+                    .map(LengthSpec::Percent);
+            }
+            let spec = LengthSpec::parse(token)?;
+            match spec {
+                LengthSpec::Fill
+                | LengthSpec::Shrink
+                | LengthSpec::Auto
+                | LengthSpec::MinContent
+                | LengthSpec::MaxContent
+                | LengthSpec::FitContent => None,
+                other => Some(other),
             }
         }
     }
@@ -769,13 +794,26 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
         return None;
     }
     let mut filter = ColorFilter::default();
+    let mut saw_saturate = false;
+    let mut saw_grayscale = false;
     for token in split_filter_tokens(trimmed) {
         if let Some(value) = strip_complete_function(&token, "brightness") {
             filter.brightness = parse_filter_scalar(value).unwrap_or(1.0);
         } else if let Some(value) = strip_complete_function(&token, "saturate") {
+            if saw_grayscale {
+                return None;
+            }
+            saw_saturate = true;
             filter.saturate = parse_filter_scalar(value).unwrap_or(1.0);
         } else if let Some(value) = strip_complete_function(&token, "contrast") {
             filter.contrast = parse_filter_scalar(value).unwrap_or(1.0);
+        } else if let Some(value) = strip_complete_function(&token, "grayscale") {
+            if saw_saturate {
+                return None;
+            }
+            saw_grayscale = true;
+            let amount = parse_filter_scalar(value).unwrap_or(1.0).clamp(0.0, 1.0);
+            filter.saturate *= 1.0 - amount;
         } else if let Some(value) = strip_complete_function(&token, "hue-rotate") {
             filter.hue_rotate_deg = parse_hue_rotate(value).unwrap_or(0.0);
         } else if let Some(value) = strip_complete_function(&token, "blur") {
@@ -1152,12 +1190,12 @@ fn split_gradient_header(input: &str) -> Option<(f32, &str)> {
             let angle_deg = parse_gradient_angle(head)?;
             return Some((angle_deg, tail));
         }
-        if resolve_paint_color(head).is_some() {
+        if split_color_and_rest(head).is_some() {
             return Some((180.0, trimmed));
         }
         return None;
     }
-    if resolve_paint_color(trimmed).is_some() {
+    if split_color_and_rest(trimmed).is_some() {
         return Some((180.0, trimmed));
     }
     None
@@ -1206,50 +1244,179 @@ fn parse_gradient_angle(token: &str) -> Option<f32> {
     })
 }
 
-fn parse_gradient_stops(input: &str) -> Option<Vec<GradientStop>> {
+fn parse_gradient_stops(input: &str, repeating: bool) -> Option<Vec<GradientStop>> {
     let parts = split_top_level_commas(input);
-    let mut stops = Vec::new();
-    for (index, part) in parts.iter().enumerate() {
+    let mut raw = Vec::new();
+    for part in &parts {
         let trimmed = part.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let (color_src, position) = if let Some(space) = find_stop_position(trimmed) {
-            (
-                trimmed[..space].trim(),
-                parse_stop_position(&trimmed[space..])?,
-            )
-        } else {
+        raw.push(parse_color_stop_item(trimmed)?);
+    }
+    let mut stops = Vec::new();
+    let last_index = raw.len().saturating_sub(1);
+    for (index, item) in raw.iter().enumerate() {
+        if item.positions.is_empty() {
             let position = if stops.is_empty() {
                 0.0
-            } else if index == parts.len() - 1 {
+            } else if index == last_index {
                 1.0
             } else {
-                index as f32 / (parts.len().saturating_sub(1) as f32)
+                index as f32 / (raw.len().saturating_sub(1) as f32)
             };
-            (trimmed, position)
-        };
-        let color = resolve_paint_color(color_src)?;
-        stops.push(GradientStop { position, color });
-        if stops.len() >= MAX_GRADIENT_STOPS {
+            stops.push(GradientStop {
+                position,
+                color: item.color,
+            });
+        } else {
+            for &position in &item.positions {
+                stops.push(GradientStop {
+                    position,
+                    color: item.color,
+                });
+            }
+        }
+        if stops.len() >= MAX_GRADIENT_STOPS && !repeating {
             break;
         }
     }
-    normalize_gradient_stops(&mut stops);
-    if stops.is_empty() { None } else { Some(stops) }
+    if repeating {
+        stops = expand_repeating_linear_stops(stops)?;
+    } else {
+        normalize_gradient_stops(&mut stops);
+        stops.truncate(MAX_GRADIENT_STOPS);
+    }
+    if stops.len() < 2 { None } else { Some(stops) }
 }
 
-fn find_stop_position(input: &str) -> Option<usize> {
+struct ColorStopItem {
+    color: [f32; 4],
+    positions: Vec<f32>,
+}
+
+fn parse_color_stop_item(input: &str) -> Option<ColorStopItem> {
+    let (color, rest) = split_color_and_rest(input)?;
+    let mut positions = Vec::new();
+    for token in rest.split_whitespace() {
+        if token.is_empty() {
+            continue;
+        }
+        positions.push(parse_stop_position(token)?);
+        if positions.len() > 2 {
+            return None;
+        }
+    }
+    Some(ColorStopItem { color, positions })
+}
+
+fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    for name in ["rgba", "hsla", "rgb", "hsl"] {
+        if let Some(end) = leading_function_end(&lower, name) {
+            let color = resolve_paint_color(&trimmed[..end])?;
+            return Some((color, trimmed[end..].trim()));
+        }
+    }
+    if let Some((head, rest)) = split_first_token(trimmed)
+        && let Some(color) = resolve_paint_color(head)
+    {
+        return Some((color, rest));
+    }
+    resolve_paint_color(trimmed).map(|color| (color, ""))
+}
+
+fn leading_function_end(lower: &str, name: &str) -> Option<usize> {
+    let head = format!("{name}(");
+    if !lower.starts_with(&head) {
+        return None;
+    }
     let mut depth = 0i32;
-    for (idx, ch) in input.char_indices().rev() {
+    let mut started = false;
+    for (idx, ch) in lower.char_indices() {
         match ch {
-            ')' => depth += 1,
-            '(' => depth -= 1,
-            ' ' if depth == 0 => return Some(idx),
+            '(' => {
+                depth += 1;
+                started = true;
+            }
+            ')' if started => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx + ch.len_utf8());
+                }
+            }
             _ => {}
         }
     }
     None
+}
+
+fn split_first_token(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    let idx = trimmed.find(char::is_whitespace)?;
+    Some((trimmed[..idx].trim(), trimmed[idx..].trim()))
+}
+
+fn expand_repeating_linear_stops(stops: Vec<GradientStop>) -> Option<Vec<GradientStop>> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let start = stops[0].position;
+    let end = stops[stops.len() - 1].position;
+    let period = end - start;
+    if period <= 1e-5 {
+        return None;
+    }
+    if start.abs() <= 1e-5 && (end - 1.0).abs() <= 1e-5 {
+        let mut out = stops;
+        out.truncate(MAX_GRADIENT_STOPS);
+        return Some(out);
+    }
+    let n_min = ((0.0 - start) / period).ceil() as i32;
+    let n_max = ((1.0 - start) / period).ceil() as i32;
+    let mut out: Vec<GradientStop> = Vec::new();
+    for n in n_min..=n_max {
+        for stop in &stops {
+            let pos = stop.position + n as f32 * period;
+            if pos < -1e-4 {
+                continue;
+            }
+            if pos > 1.0 + 1e-4 {
+                continue;
+            }
+            let pos = pos.clamp(0.0, 1.0);
+            if let Some(last) = out.last()
+                && (last.position - pos).abs() < 1e-5
+                && last.color[0] == stop.color[0]
+                && last.color[1] == stop.color[1]
+                && last.color[2] == stop.color[2]
+                && last.color[3] == stop.color[3]
+            {
+                continue;
+            }
+            out.push(GradientStop {
+                position: pos,
+                color: stop.color,
+            });
+            if out.len() >= MAX_GRADIENT_STOPS {
+                break;
+            }
+        }
+        if out.len() >= MAX_GRADIENT_STOPS {
+            break;
+        }
+    }
+    if out.len() < 2 {
+        return None;
+    }
+    if out[0].position > 1e-4 || out.last().is_some_and(|stop| stop.position < 1.0 - 1e-4) {
+        return None;
+    }
+    Some(out)
 }
 
 fn parse_stop_position(input: &str) -> Option<f32> {
@@ -1262,7 +1429,7 @@ fn parse_stop_position(input: &str) -> Option<f32> {
             .ok()
             .map(|v| (v / 100.0).clamp(0.0, 1.0))
     } else if let Some(px) = parse_css_length_px(trimmed, None) {
-        Some(px / 100.0)
+        Some((px / 100.0).clamp(0.0, 1.0))
     } else {
         None
     }
@@ -1621,6 +1788,59 @@ mod tests {
     }
 
     #[test]
+    fn linear_gradient_dual_color_stop_positions() {
+        let grad = parse_linear_gradient("linear-gradient(#ffffff 0 97%, transparent)").unwrap();
+        assert_eq!(grad.stops.len(), 3);
+        assert!((grad.stops[0].position - 0.0).abs() < 0.01);
+        assert!((grad.stops[1].position - 0.97).abs() < 0.01);
+        assert!((grad.stops[2].position - 1.0).abs() < 0.01);
+        assert!(grad.stops[0].color[0] > 0.9 && grad.stops[1].color[0] > 0.9);
+        assert!(grad.stops[2].color[3] < 0.01);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background: linear-gradient(#fff 0 97%, transparent)",
+            None,
+            None,
+        );
+        assert!(layout.paint.background_image.is_some());
+    }
+
+    #[test]
+    fn repeating_linear_gradient_extends_stops() {
+        let grad = parse_linear_gradient("repeating-linear-gradient(red, blue 25%)").unwrap();
+        assert!(grad.stops.len() >= 4);
+        assert!((grad.stops[0].position - 0.0).abs() < 0.01);
+        assert!((grad.stops.last().unwrap().position - 1.0).abs() < 0.01);
+        let same_as_linear = parse_linear_gradient("repeating-linear-gradient(red, blue)").unwrap();
+        assert_eq!(same_as_linear.stops.len(), 2);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: repeating-linear-gradient(90deg, #000, transparent 25%)",
+            None,
+            None,
+        );
+        assert!(
+            layout.paint.background_image.is_some(),
+            "repeating-linear-gradient must not drop the layer"
+        );
+        assert!(parse_linear_gradient("repeating-linear-gradient(red 10%, red 10%)").is_none());
+        assert!(
+            parse_linear_gradient("repeating-linear-gradient(red, blue 10%)").is_none(),
+            "period that cannot tile [0,1] in 8 stops must fail closed, not stretch last to 1"
+        );
+        let mut overflow = LayoutStyle::default();
+        overflow.apply_css_text(
+            "background-image: repeating-linear-gradient(red, blue 10%)",
+            None,
+            None,
+        );
+        assert!(
+            overflow.paint.background_image.is_none(),
+            "overflowing repeating-linear-gradient must drop the layer"
+        );
+    }
+
+    #[test]
     fn background_shorthand_gradient_not_dropped() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
@@ -1657,6 +1877,23 @@ mod tests {
         assert!((filter.brightness - 0.5).abs() < 0.01);
         assert!(filter.saturate.abs() < 0.01);
         assert!((filter.contrast - 1.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn filter_grayscale_encodes_as_saturate() {
+        let full = parse_color_filter("grayscale()").unwrap();
+        assert!(full.saturate.abs() < 0.01);
+        let half = parse_color_filter("grayscale(50%)").unwrap();
+        assert!((half.saturate - 0.5).abs() < 0.01);
+        let with_brightness = parse_color_filter("brightness(0.8) grayscale(1)").unwrap();
+        assert!((with_brightness.brightness - 0.8).abs() < 0.01);
+        assert!(with_brightness.saturate.abs() < 0.01);
+        assert!(parse_color_filter("grayscale(0)").is_none());
+        assert!(parse_color_filter("grayscale() sepia()").is_none());
+        assert!(parse_color_filter("grayscale(1) saturate(2)").is_none());
+        assert!(parse_color_filter("saturate(2) grayscale(50%)").is_none());
+        assert!(parse_color_filter("grayscale(1)saturate(2)").is_none());
+        assert!(parse_color_filter("brightness(0.8) saturate(1.2) grayscale(1)").is_none());
     }
 
     #[test]
@@ -1707,9 +1944,35 @@ mod tests {
     fn radial_gradient_circle_at_center_parses() {
         let grad = parse_radial_gradient("radial-gradient(circle at center, red, blue)").unwrap();
         assert!(grad.circle);
-        assert!((grad.center[0] - 0.5).abs() < 0.01);
-        assert!((grad.center[1] - 0.5).abs() < 0.01);
+        assert_eq!(grad.center[0], LengthSpec::Percent(50.0));
+        assert_eq!(grad.center[1], LengthSpec::Percent(50.0));
         assert_eq!(grad.stops.len(), 2);
+    }
+
+    #[test]
+    fn mask_radial_px_center_uses_length_not_div100() {
+        let grad =
+            parse_radial_gradient("radial-gradient(circle at 10px 20px, black, transparent)")
+                .unwrap();
+        assert_eq!(grad.center[0], LengthSpec::Px(10.0));
+        assert_eq!(grad.center[1], LengthSpec::Px(20.0));
+        let used = grad.resolved_center(200.0, 100.0).unwrap();
+        assert!((used[0] - 0.05).abs() < 1e-5, "got {}", used[0]);
+        assert!((used[1] - 0.20).abs() < 1e-5, "got {}", used[1]);
+        assert!(grad.resolved_center(0.0, 100.0).is_none());
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "mask-image: radial-gradient(circle at 10px 20px, black, transparent)",
+            None,
+            None,
+        );
+        match layout.paint.mask {
+            Some(CssGradient::Radial(ref radial)) => {
+                assert_eq!(radial.center[0], LengthSpec::Px(10.0));
+                assert_eq!(radial.center[1], LengthSpec::Px(20.0));
+            }
+            other => panic!("expected radial mask, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2129,6 +2392,7 @@ mod tests {
             None,
         );
         assert!(layout.unsupported_font_variation);
+        assert_eq!(layout.font_weight, Some(400));
         layout.apply_css_text("font-variation-settings: normal", None, None);
         assert!(!layout.unsupported_font_variation);
     }
