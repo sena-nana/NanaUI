@@ -167,10 +167,21 @@ impl Default for ParseStylesheetOptions<'static> {
 pub struct FontFaceRule {
     pub family: String,
     pub src: Vec<FontFaceSrc>,
-    /// CSS `font-weight` as a single value (`400`, `bold` → 700). Ranges use the start.
+    /// CSS `font-weight` start (`400`, `bold` → 700). Range start for `200 700`.
     pub weight: Option<u16>,
+    /// Inclusive CSS `font-weight` range end. `None` means a single value.
+    pub weight_end: Option<u16>,
     /// Canonical href of the sheet that declared this rule (relative `url()` base).
     pub base_href: Option<String>,
+}
+
+impl FontFaceRule {
+    /// Inclusive `(min, max)` CSS weight span, or `None` if the descriptor was omitted.
+    pub fn weight_span(&self) -> Option<(u16, u16)> {
+        let start = self.weight?;
+        let end = self.weight_end.unwrap_or(start);
+        Some((start.min(end), start.max(end)))
+    }
 }
 
 /// `@import` prelude after the URL: load, or fail closed (`layer` / `supports`).
@@ -316,6 +327,7 @@ where
     let mut family = None;
     let mut src = Vec::new();
     let mut weight = None;
+    let mut weight_end = None;
     for (property, value) in pairs {
         if property.eq_ignore_ascii_case("font-family") {
             let name = unquote_css_string(value.trim());
@@ -325,7 +337,10 @@ where
         } else if property.eq_ignore_ascii_case("src") {
             src = parse_font_face_src(value);
         } else if property.eq_ignore_ascii_case("font-weight") {
-            weight = parse_font_weight_token(value);
+            if let Some((start, end)) = parse_font_weight_range(value) {
+                weight = Some(start);
+                weight_end = (end != start).then_some(end);
+            }
         }
     }
     let family = family?;
@@ -336,6 +351,7 @@ where
         family,
         src,
         weight,
+        weight_end,
         base_href: None,
     })
 }
@@ -1090,12 +1106,30 @@ fn skip_format_hint(s: &str) -> &str {
     }
 }
 
-fn parse_font_weight_token(value: &str) -> Option<u16> {
-    let first = value.split_whitespace().next()?.trim();
-    match first.to_ascii_lowercase().as_str() {
+fn parse_font_weight_range(value: &str) -> Option<(u16, u16)> {
+    let mut parts = value.split_whitespace();
+    let start = parse_one_font_weight_token(parts.next()?.trim())?;
+    let end = match parts.next() {
+        Some(token) => parse_one_font_weight_token(token.trim())?,
+        None => start,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((start.min(end), start.max(end)))
+}
+
+fn parse_one_font_weight_token(token: &str) -> Option<u16> {
+    match token.to_ascii_lowercase().as_str() {
         "normal" => Some(400),
         "bold" => Some(700),
-        other => other.parse().ok(),
+        other => {
+            let n: f32 = other.parse().ok()?;
+            if !n.is_finite() {
+                return None;
+            }
+            Some(n.round().clamp(1.0, 1000.0) as u16)
+        }
     }
 }
 
@@ -1163,6 +1197,8 @@ mod tests {
         .expect("face");
         assert_eq!(face.family, "Display");
         assert_eq!(face.weight, Some(700));
+        assert_eq!(face.weight_end, None);
+        assert_eq!(face.weight_span(), Some((700, 700)));
         assert_eq!(face.src[0], FontFaceSrc::Url("./a.woff2".into()));
         assert_eq!(face.src[1], FontFaceSrc::Local("Arial".into()));
         assert_eq!(font_face_url_src(&face), Some("./a.woff2"));
@@ -1173,6 +1209,26 @@ mod tests {
         assert!(
             load_font_face_bytes("https://example.com/a.woff2", None, Path::new(".")).is_none()
         );
+    }
+
+    #[test]
+    fn font_face_weight_range_is_not_only_start() {
+        let face = font_face_from_pairs([
+            ("font-family", "Alimama FangYuanTi VF"),
+            ("src", "url(\"./AlimamaFangYuanTiVF.ttf\")"),
+            ("font-weight", "200 700"),
+        ])
+        .expect("face");
+        assert_eq!(face.weight, Some(200));
+        assert_eq!(face.weight_end, Some(700));
+        assert_eq!(face.weight_span(), Some((200, 700)));
+        let swapped = font_face_from_pairs([
+            ("font-family", "Display"),
+            ("src", "url(\"./a.ttf\")"),
+            ("font-weight", "700 200"),
+        ])
+        .expect("swapped");
+        assert_eq!(swapped.weight_span(), Some((200, 700)));
     }
 
     #[test]

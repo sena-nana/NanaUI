@@ -2733,9 +2733,10 @@ pub struct LayoutStyle {
     /// CSS `font-feature-settings`. `None` = inherit; `Some([])` = `normal`.
     #[serde(default)]
     pub font_features: Option<Vec<FontFeatureSetting>>,
-    /// `font-variation-settings` axes other than `wght`. cosmic-text Attrs
-    /// only expose `wght` via [`Self::font_weight`]; `BEVL` and the rest fail
-    /// closed.
+    /// `font-variation-settings` axes other than `wght`. cosmic-text 0.19
+    /// `FontSystem` only instantiates `wght` (via [`Self::font_weight`]);
+    /// `BEVL` / `wdth` / other axes fail this declaration only and are never
+    /// remapped to weight.
     #[serde(default)]
     pub unsupported_font_variation: bool,
     /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.

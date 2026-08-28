@@ -1981,7 +1981,6 @@ impl LayoutStyleCss for LayoutStyle {
             | "text-decoration"
             | "text-decoration-line"
             | "font-feature-settings"
-            | "font-variation-settings"
             | "pointer-events"
             | "border-image"
             | "border-image-source"
@@ -2248,6 +2247,7 @@ impl LayoutStyleCss for LayoutStyle {
                     self.font_weight = Some(w);
                 }
             }
+            "font-variation-settings" => apply_font_variation_settings(self, val),
             "font-family" => {
                 if let Some(name) = parse_css_font_family(val) {
                     self.font_family = Some(name);
@@ -4048,6 +4048,70 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
     LengthSpec::parse(s)?
         .resolve_with_fonts(None, active_viewport(), fonts)
         .map(|v| v.max(0.0))
+}
+
+/// CSS `font-variation-settings`. cosmic-text 0.19 `FontSystem` / `Attrs` only
+/// instantiate the `wght` axis (via [`LayoutStyle::font_weight`]). Other
+/// OpenType variation tags (`BEVL`, `wdth`, …) fail this declaration only —
+/// they are not remapped to `wght` and are not stuffed into `FontFeatures`
+/// (that path is `font-feature-settings`).
+pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
+    let trimmed = val.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
+        style.unsupported_font_variation = false;
+        return;
+    }
+    let Some(axes) = parse_font_variation_settings(trimmed) else {
+        style.unsupported_font_variation = true;
+        return;
+    };
+    let mut unsupported = false;
+    let mut wght = None;
+    for (tag, value) in axes {
+        if &tag == b"wght" {
+            wght = Some(value);
+        } else {
+            unsupported = true;
+        }
+    }
+    style.unsupported_font_variation = unsupported;
+    if let Some(wght) = wght {
+        style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
+    }
+}
+
+fn parse_font_variation_settings(raw: &str) -> Option<Vec<([u8; 4], f32)>> {
+    let mut out = Vec::new();
+    for chunk in raw.split(',') {
+        let chunk = chunk.trim();
+        if chunk.is_empty() {
+            continue;
+        }
+        let (tag, rest) = parse_variation_tag(chunk)?;
+        let value = rest.trim().parse::<f32>().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        out.push((tag, value));
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn parse_variation_tag(raw: &str) -> Option<([u8; 4], &str)> {
+    let s = raw.trim();
+    let quote = s.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let rest = &s[1..];
+    let end = rest.find(quote as char)?;
+    let tag = rest[..end].as_bytes();
+    if tag.len() != 4 || !tag.iter().all(|b| b.is_ascii()) {
+        return None;
+    }
+    let mut out = [0u8; 4];
+    out.copy_from_slice(tag);
+    Some((out, rest[end + 1..].trim()))
 }
 
 /// CSS `font-weight` → 100..=900. `inherit`/`unset` → `None`.
@@ -7478,5 +7542,34 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(ring.background.is_none(), "fill:none must clear background");
         assert_eq!(ring.border_width, Some(28.0));
         assert!(ring.border_color.is_some());
+    }
+
+    #[test]
+    fn font_variation_bevl_does_not_become_wght() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("font-variation-settings: \"BEVL\" 50", None, None);
+        assert!(layout.unsupported_font_variation);
+        assert_eq!(
+            layout.font_weight, None,
+            "BEVL must not silently become font-weight / wght"
+        );
+        assert!(
+            layout.font_features.is_none(),
+            "variation axes must not be stuffed into font-feature-settings"
+        );
+        layout.apply_css_text(
+            "font-weight: 600; font-variation-settings: \"BEVL\" 50",
+            None,
+            None,
+        );
+        assert_eq!(layout.font_weight, Some(600));
+        assert!(layout.unsupported_font_variation);
+        layout.apply_css_text(
+            "font-variation-settings: \"wght\" 350, \"BEVL\" 50",
+            None,
+            None,
+        );
+        assert_eq!(layout.font_weight, Some(350));
+        assert!(layout.unsupported_font_variation);
     }
 }
