@@ -805,15 +805,16 @@ fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_ui_core::{LayoutStyle, OverflowSpec};
     use nana_ui_platform::{
         ImeEvent, InputModifiers, MemoryClipboard, PointerType, shared_clipboard,
     };
     use nana_ui_runtime::{
         ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Card,
         ComponentGeometry, Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, MeasureTextShaper,
-        ModalSlots, MutationQueue, OverlayHost, OverlayHostState, RangeField, ScrollAxes,
-        ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
-        Table, TableCell, TableRow, Text, TextArea, TextInput,
+        ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost, OverlayHostState, RangeField,
+        ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption,
+        SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea, TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1767,6 +1768,72 @@ mod tests {
         assert_eq!(
             context.world().scroll_offset(outer.stable_id()).unwrap().y,
             60.0
+        );
+    }
+
+    #[test]
+    fn wheel_on_overflow_auto_updates_scroll_offset() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let scroller = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let child = nana_ui_runtime::StableNodeId::new(2).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(scroller, document, NodeKind::Element { tag: "div".into() });
+        create.create(child, document, NodeKind::Element { tag: "item".into() });
+        create.insert(scroller, child, None);
+        create.set_style(
+            scroller,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_y: OverflowSpec::Auto,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        create.write_layout(
+            scroller,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0,
+            },
+        );
+        create.write_layout(
+            child,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 300.0,
+            },
+        );
+        context.commit_mutations(create).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &wheel(10.0, 10.0, -1.0))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().scroll_offset(scroller).unwrap().y, 60.0);
+        assert_eq!(context.world().scroll_offset(child).unwrap().y, 0.0);
+        assert!(
+            context
+                .world()
+                .node_style(scroller)
+                .unwrap()
+                .layout
+                .overflow_y
+                .scrolls()
+        );
+        assert!(
+            !context.is_scroll_view(scroller),
+            "L1 overflow must not stamp a ScrollView"
         );
     }
 

@@ -9,9 +9,9 @@ use bevy_ecs::component::{Component, Mutable};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
 use nana_ui_core::{
-    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, SemanticColorRole, SemanticPalette,
-    StyleModelRef, SwitchControlPosition, ThemeMode, TooltipConfig, cubic_point,
-    icon_y_on_text_glyph_center,
+    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, LayoutStyle, PointerEventsSpec,
+    SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode,
+    TooltipConfig, cubic_point, icon_y_on_text_glyph_center,
 };
 
 use crate::animation::ActiveAnimation;
@@ -202,6 +202,7 @@ struct HitEntry {
     id: StableNodeId,
     layout: LayoutBox,
     transform: [f32; 6],
+    persp: [f32; 2],
     /// Clips applied to this node's own hit (and therefore its subtree).
     self_clips: Vec<(LayoutBox, [f32; 6])>,
     /// Extra clips applied to descendants only (overflow / visual frames).
@@ -1761,24 +1762,31 @@ impl UiWorld {
         let presentation = self.text_input_presentation_source(id);
         let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
         let is_text_input = presentation.is_some();
-        let wrap = if is_text_input {
+        let wrap = if source.layout.resolved_line_clamp().is_some() {
+            true
+        } else if is_text_input {
             text_input_multiline && !source.layout.white_space_nowrap
         } else {
             !source.layout.white_space_nowrap
         };
         let preserve_lines = source.layout.white_space == nana_ui_core::WhiteSpaceSpec::Pre;
+        let ellipsis = !is_text_input && source.layout.uses_text_ellipsis();
+        let max_lines = (!is_text_input)
+            .then(|| source.layout.resolved_line_clamp())
+            .flatten();
         let measured = layout.width > 0.0 || layout.height > 0.0;
         if !measured {
             return crate::TextShapeConstraints {
                 wrap,
-                ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
+                ellipsis,
+                max_lines,
                 shaping: self.text_shaping(id),
                 preserve_lines,
                 ..crate::TextShapeConstraints::default()
             };
         }
         let padding = source.layout.resolved_padding_against(Some(layout.width));
-        let border = source.layout.resolved_border_width();
+        let border = source.layout.resolved_border_edges();
         let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
             Some(StandardVisual::Checkbox { .. }) => 24.0,
             Some(StandardVisual::Switch { .. }) => 38.0,
@@ -1789,7 +1797,12 @@ impl UiWorld {
                 None
             } else {
                 Some(
-                    (layout.width - padding.left - padding.right - border * 2.0 - leading_visual)
+                    (layout.width
+                        - padding.left
+                        - padding.right
+                        - border.left
+                        - border.right
+                        - leading_visual)
                         .max(0.0),
                 )
             },
@@ -1802,9 +1815,12 @@ impl UiWorld {
                         .layout
                         .max_height
                         .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)))
-            .then(|| (layout.height - padding.top - padding.bottom - border * 2.0).max(0.0)),
+            .then(|| {
+                (layout.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0)
+            }),
             wrap,
-            ellipsis: !is_text_input && source.layout.text_overflow_ellipsis,
+            ellipsis,
+            max_lines,
             shaping: self.text_shaping(id),
             preserve_lines,
         }
@@ -2084,41 +2100,71 @@ impl UiWorld {
             .into_iter()
             .enumerate()
             .rev()
-            .map(|(position, (id, transform))| (id, transform, None::<usize>, position))
+            .map(|(position, (id, transform))| {
+                (
+                    id,
+                    (transform, [0.0f32, 0.0]),
+                    None::<usize>,
+                    position,
+                    self.parent_used_pointer_events(id),
+                    false,
+                )
+            })
             .collect::<Vec<_>>();
         let mut built: Vec<Built> = Vec::new();
         let mut memo = AncestorMemo::default();
-        while let Some((id, parent_transform, parent, position)) = stack.pop() {
+        while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
+            stack.pop()
+        {
             let style = self.component::<ResolvedStyle>(id).0.as_ref();
             let layout = *self.component::<LayoutBox>(id);
             let node_style = self.component::<NodeStyle>(id).layout.as_ref();
-            let local = node_style
-                .transform
-                .map(|transform| {
-                    transform.around_center(layout.x, layout.y, layout.width, layout.height)
-                })
-                .unwrap_or(IDENTITY_AFFINE);
-            let transform = then_affine(parent_transform, local);
+            let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
+                (IDENTITY_AFFINE, [0.0, 0.0])
+            } else {
+                node_style
+                    .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+                    .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
+            };
+            let (transform, persp) = then_hit(parent_hit, local);
             let scroll = *self.component::<ScrollOffset>(id);
-            let child_transform =
-                then_affine(transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
+            let child_transform = then_hit(
+                (transform, persp),
+                ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
+            );
+            let child_blocks_3d = parent_blocks_3d || node_style.fails_closed_3d_context();
             let children = Arc::clone(&self.component::<Hierarchy>(id).children);
+            let used_pe =
+                PointerEventsSpec::inherit_from(node_style.pointer_events, parent_used_pe);
             if !style.visible {
                 // `visibility:hidden` skips this entry but descendants may be
                 // `visibility:visible` and still need the accumulated transform.
-                stack.extend(
-                    children
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .map(|(position, child)| (*child, child_transform, parent, position)),
-                );
+                stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
+                    (
+                        *child,
+                        child_transform,
+                        parent,
+                        position,
+                        used_pe,
+                        child_blocks_3d,
+                    )
+                }));
                 continue;
             }
             let mut self_clips = Vec::new();
             let mut child_clips = Vec::new();
-            if node_style.clips_overflow() {
-                child_clips.push((layout, transform));
+            if let Some((x, y, w, h)) =
+                node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
+            {
+                child_clips.push((
+                    LayoutBox {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    },
+                    transform,
+                ));
             }
             if self.clip_visuals != 0 {
                 if matches!(
@@ -2139,14 +2185,14 @@ impl UiWorld {
                     && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
                         self.component_geometry(parent_id)
                 {
-                    self_clips.push((body, parent_transform));
+                    self_clips.push((body, parent_hit.0));
                 }
             }
             let interaction = self.component::<InteractionState>(id);
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
-            let hittable = interaction.pointer_events && !confirm_busy;
+            let hittable = interaction.pointer_events && used_pe.hittable() && !confirm_busy;
             let menu = hittable
                 .then(|| self.component_geometry(id))
                 .flatten()
@@ -2162,6 +2208,7 @@ impl UiWorld {
                     id,
                     layout,
                     transform,
+                    persp,
                     self_clips,
                     child_clips,
                     z_index: self.stacking_z_index_memo(id, &mut memo),
@@ -2175,13 +2222,16 @@ impl UiWorld {
             // Sibling position is the sort key. Invisible siblings are skipped
             // and leave gaps, which is harmless because only relative order
             // between surviving siblings is ever compared.
-            stack.extend(
-                children
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .map(|(position, child)| (*child, child_transform, Some(index), position)),
-            );
+            stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
+                (
+                    *child,
+                    child_transform,
+                    Some(index),
+                    position,
+                    used_pe,
+                    child_blocks_3d,
+                )
+            }));
         }
         let n = built.len();
         let mut parent_of = Vec::with_capacity(n);
@@ -2599,10 +2649,18 @@ impl UiWorld {
                     || previous.layout.opacity != style.layout.opacity;
                 let paint_visibility_changed =
                     previous.layout.paint.visibility != style.layout.paint.visibility;
+                let pointer_events_changed =
+                    previous.layout.pointer_events != style.layout.pointer_events;
                 let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
                 let transform_changed = previous.layout.transform != style.layout.transform
+                    || previous.layout.transform_3d != style.layout.transform_3d
+                    || previous.layout.transform_origin != style.layout.transform_origin
+                    || previous.layout.transform_box != style.layout.transform_box
+                    || previous.layout.css_perspective != style.layout.css_perspective
+                    || previous.layout.preserve_3d != style.layout.preserve_3d
                     || previous.layout.unsupported_transform != style.layout.unsupported_transform;
-                let stacking_changed = previous.layout.z_index != style.layout.z_index;
+                let stacking_changed = previous.layout.z_index != style.layout.z_index
+                    || previous.layout.isolation != style.layout.isolation;
                 let layout_changed =
                     layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
                 *self.component_mut::<NodeStyle>(*id) = style.clone();
@@ -2649,6 +2707,12 @@ impl UiWorld {
                     if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
                         self.mark(parent, DirtyMask::ACCESSIBILITY);
                     }
+                }
+                if pointer_events_changed {
+                    // Inherited: unspecified descendants pick up the new used
+                    // value. Not a layout dirty.
+                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::INPUT);
+                    self.clear_hover_for_pointer_events_none(*id);
                 }
                 if transform_changed {
                     // Scene extract and hit-test read `layout.transform`; LAYOUT
@@ -3626,6 +3690,7 @@ impl UiWorld {
                         offset_y: 14.0,
                         blur_radius: 30.0,
                         spread_radius: 0.0,
+                        inset: false,
                     },
                 })
             }
@@ -3825,7 +3890,10 @@ impl UiWorld {
                         },
                         content: Arc::from(presentation.display_value.as_str()),
                         color: Some(if presentation.placeholder {
-                            self.style_model.palette.faint.as_rgba_array()
+                            text_input_placeholder_color(
+                                &source.layout,
+                                self.style_model.palette.faint.as_rgba_array(),
+                            )
                         } else {
                             style
                                 .color
@@ -5156,10 +5224,50 @@ impl UiWorld {
             .world
             .get::<InteractionState>(entity)
             .expect("runtime entity must have interaction state");
-        if !interaction.pointer_events {
+        if !interaction.pointer_events || !self.used_pointer_events(target).hittable() {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
         Ok(())
+    }
+
+    fn used_pointer_events(&self, id: StableNodeId) -> PointerEventsSpec {
+        let mut current = Some(id);
+        while let Some(node) = current {
+            if let Some(specified) = self.component::<NodeStyle>(node).layout.pointer_events {
+                return specified;
+            }
+            current = self.parent_id(node);
+        }
+        PointerEventsSpec::Auto
+    }
+
+    fn parent_used_pointer_events(&self, id: StableNodeId) -> PointerEventsSpec {
+        self.parent_id(id)
+            .map(|parent| self.used_pointer_events(parent))
+            .unwrap_or(PointerEventsSpec::Auto)
+    }
+
+    fn clear_hover_for_pointer_events_none(&mut self, root: StableNodeId) {
+        let mut stack = vec![root];
+        let mut cleared = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !self.used_pointer_events(id).hittable() {
+                let had_hover = self.pointer_hover.values().any(|target| target == &id);
+                let had_press = self.pointer_press.values().any(|target| target == &id);
+                self.pointer_hover.retain(|_, target| target != &id);
+                self.pointer_press.retain(|_, target| target != &id);
+                if had_hover || had_press {
+                    cleared.push(id);
+                }
+            }
+            stack.extend(self.component::<Hierarchy>(id).children.iter().copied());
+        }
+        if !cleared.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            for id in cleared {
+                self.mark_interaction_style(id);
+            }
+        }
     }
 
     fn mark_interaction_style(&mut self, id: StableNodeId) {
@@ -5371,7 +5479,7 @@ impl UiWorld {
                 .map(|role| palette.get(role).as_rgba_array())
         });
         let border_color = layout
-            .border_color
+            .resolved_border_color()
             .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array()));
         (foreground, color, background, border_color)
     }
@@ -5420,6 +5528,10 @@ impl UiWorld {
                 .or(inherited.font_family),
             line_height: layout.line_height.or(inherited.line_height),
             letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
+            font_features: layout
+                .font_features
+                .clone()
+                .unwrap_or(inherited.font_features),
         };
         {
             let resolved = self.component::<ResolvedStyle>(id);
@@ -6069,6 +6181,14 @@ fn form_field_geometry(
     })
 }
 
+fn text_input_placeholder_color(layout: &LayoutStyle, faint: [f32; 4]) -> [f32; 4] {
+    let mut color = layout.placeholder_color.unwrap_or(faint);
+    if let Some(opacity) = layout.placeholder_opacity {
+        color[3] = (color[3] * opacity).clamp(0.0, 1.0);
+    }
+    color
+}
+
 fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
     crate::components::status_tone_role(tone)
 }
@@ -6180,6 +6300,7 @@ fn shape_text_input_presentation(
         max_height: None,
         wrap: source.multiline && constraints.wrap,
         ellipsis: false,
+        max_lines: None,
         shaping: constraints.shaping,
         preserve_lines: constraints.preserve_lines,
     };
@@ -6388,17 +6509,17 @@ fn first_hit_candidate(node: &HitEntry, x: f32, y: f32) -> Option<StableNodeId> 
     if !node
         .self_clips
         .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y))
     {
         return None;
     }
     let menu_hit = node
         .menu
-        .is_some_and(|menu| transformed_contains(menu, node.transform, x, y));
+        .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
     let children_ok = node
         .child_clips
         .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y));
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y));
     let menu_z = node.z_index.max(1_000);
     if children_ok {
         for child in node.children.iter().rev() {
@@ -6413,7 +6534,7 @@ fn first_hit_candidate(node: &HitEntry, x: f32, y: f32) -> Option<StableNodeId> 
     if menu_hit {
         return Some(node.id);
     }
-    if node.hittable && transformed_contains(node.layout, node.transform, x, y) {
+    if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
         return Some(node.id);
     }
     None
@@ -6423,17 +6544,17 @@ fn collect_hit_candidates(node: &HitEntry, x: f32, y: f32, out: &mut Vec<StableN
     if !node
         .self_clips
         .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y))
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y))
     {
         return;
     }
     let menu_hit = node
         .menu
-        .is_some_and(|menu| transformed_contains(menu, node.transform, x, y));
+        .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
     let children_ok = node
         .child_clips
         .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, x, y));
+        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y));
     let menu_z = node.z_index.max(1_000);
     let mut emitted_menu = !menu_hit;
     if children_ok {
@@ -6448,32 +6569,70 @@ fn collect_hit_candidates(node: &HitEntry, x: f32, y: f32, out: &mut Vec<StableN
     if !emitted_menu {
         out.push(node.id);
     }
-    if node.hittable && transformed_contains(node.layout, node.transform, x, y) {
+    if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
         out.push(node.id);
     }
 }
 
 fn then_affine([a, b, c, d, e, f]: [f32; 6], rhs: [f32; 6]) -> [f32; 6] {
-    let [ra, rb, rc, rd, re, rf] = rhs;
-    [
-        a * ra + c * rb,
-        b * ra + d * rb,
-        a * rc + c * rd,
-        b * rc + d * rd,
-        a * re + c * rf + e,
-        b * re + d * rf + f,
-    ]
+    then_hit(([a, b, c, d, e, f], [0.0, 0.0]), (rhs, [0.0, 0.0])).0
 }
 
-fn transformed_contains(bounds: LayoutBox, [a, b, c, d, e, f]: [f32; 6], x: f32, y: f32) -> bool {
-    let determinant = a * d - b * c;
-    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
+fn then_hit(
+    (left, [lg, lh]): ([f32; 6], [f32; 2]),
+    (right, [rg, rh]): ([f32; 6], [f32; 2]),
+) -> ([f32; 6], [f32; 2]) {
+    let [a, b, c, d, e, f] = left;
+    let [ra, rb, rc, rd, re, rf] = right;
+    let na = a * ra + c * rb + e * rg;
+    let nb = b * ra + d * rb + f * rg;
+    let nc = a * rc + c * rd + e * rh;
+    let nd = b * rc + d * rd + f * rh;
+    let ne = a * re + c * rf + e;
+    let nf = b * re + d * rf + f;
+    let ng = lg * ra + lh * rb + rg;
+    let nh = lg * rc + lh * rd + rh;
+    let ni = lg * re + lh * rf + 1.0;
+    if !ni.is_finite() || ni.abs() < 1e-8 {
+        return (IDENTITY_AFFINE, [0.0, 0.0]);
+    }
+    let inv = 1.0 / ni;
+    (
+        [na * inv, nb * inv, nc * inv, nd * inv, ne * inv, nf * inv],
+        [ng * inv, nh * inv],
+    )
+}
+
+fn transformed_contains(
+    bounds: LayoutBox,
+    [a, b, c, d, e, f]: [f32; 6],
+    [g, h]: [f32; 2],
+    x: f32,
+    y: f32,
+) -> bool {
+    let det = a * (d - f * h) - c * (b - f * g) + e * (b * h - d * g);
+    if !det.is_finite() || det.abs() <= f32::EPSILON {
         return false;
     }
-    let translated_x = x - e;
-    let translated_y = y - f;
-    let local_x = (d * translated_x - c * translated_y) / determinant;
-    let local_y = (-b * translated_x + a * translated_y) / determinant;
+    let inv = 1.0 / det;
+    let ia = (d - f * h) * inv;
+    let ic = (-c + e * h) * inv;
+    let ie = (c * f - e * d) * inv;
+    let ib = (-b + f * g) * inv;
+    let id = (a - e * g) * inv;
+    let if_ = (e * b - a * f) * inv;
+    let ig = (b * h - d * g) * inv;
+    let ih = (c * g - a * h) * inv;
+    let ii = (a * d - c * b) * inv;
+    if !ii.is_finite() || ii.abs() < 1e-8 {
+        return false;
+    }
+    let w = ig * x + ih * y + ii;
+    if !w.is_finite() || w.abs() < 1e-8 {
+        return false;
+    }
+    let local_x = (ia * x + ic * y + ie) / w;
+    let local_y = (ib * x + id * y + if_) / w;
     bounds.contains(local_x, local_y)
 }
 
@@ -6494,7 +6653,12 @@ fn layout_excluding_transform_eq(
     let strip = |style: &nana_ui_core::LayoutStyle| {
         let mut style = style.clone();
         style.transform = None;
+        style.transform_3d = None;
         style.unsupported_transform = None;
+        style.transform_origin = None;
+        style.transform_box = nana_ui_core::TransformBox::ViewBox;
+        style.css_perspective = None;
+        style.preserve_3d = false;
         style
     };
     strip(left) == strip(right)
@@ -6505,6 +6669,7 @@ fn layout_semantics_changed(
     next: &nana_ui_core::LayoutStyle,
 ) -> bool {
     previous.direction != next.direction
+        || previous.dir != next.dir
         || previous.flex_reverse != next.flex_reverse
         || previous.order != next.order
         || previous.flex_wrap != next.flex_wrap
@@ -6547,6 +6712,7 @@ fn layout_semantics_changed(
         || previous.overflow_x != next.overflow_x
         || previous.overflow_y != next.overflow_y
         || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
+        || previous.line_clamp != next.line_clamp
         || previous.white_space_nowrap != next.white_space_nowrap
         || previous.white_space != next.white_space
         || previous.text_align != next.text_align
@@ -6566,6 +6732,15 @@ fn layout_semantics_changed(
         || previous.grid_rows_repeat != next.grid_rows_repeat
         || previous.grid_placement != next.grid_placement
         || previous.border_width != next.border_width
+        || previous.border_top_width != next.border_top_width
+        || previous.border_right_width != next.border_right_width
+        || previous.border_bottom_width != next.border_bottom_width
+        || previous.border_left_width != next.border_left_width
+        || previous.border_style != next.border_style
+        || previous.border_top_style != next.border_top_style
+        || previous.border_right_style != next.border_right_style
+        || previous.border_bottom_style != next.border_bottom_style
+        || previous.border_left_style != next.border_left_style
 }
 
 /// Validate-then-apply staging for one mutation batch.
@@ -8155,7 +8330,10 @@ fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
 mod tests {
     use super::*;
     use crate::{Easing, MeasureTextShaper};
-    use nana_ui_core::{LayoutStyle, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
+    use nana_ui_core::{
+        LayoutStyle, LengthSpec, OverflowSpec, PaintMat4, PaintTransform, PointerEventsSpec,
+        SemanticColorRole,
+    };
 
     fn node(value: u64) -> StableNodeId {
         StableNodeId::new(value).unwrap()
@@ -9160,6 +9338,235 @@ mod tests {
     }
 
     #[test]
+    fn pointer_events_none_inherits_unless_child_is_explicit_auto() {
+        use nana_ui_core::PointerEventsSpec;
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "under".into(),
+            },
+        );
+        create.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "overlay".into(),
+            },
+        );
+        create.create(
+            node(4),
+            document(1),
+            NodeKind::Element {
+                tag: "inherited".into(),
+            },
+        );
+        create.create(
+            node(5),
+            document(1),
+            NodeKind::Element {
+                tag: "explicit-auto".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.insert(node(1), node(3), None);
+        create.insert(node(3), node(4), None);
+        create.insert(node(3), node(5), None);
+        create.write_layout(node(2), box_at(0.0, 0.0, 80.0, 80.0));
+        create.write_layout(node(3), box_at(0.0, 0.0, 80.0, 80.0));
+        create.write_layout(node(4), box_at(10.0, 10.0, 20.0, 20.0));
+        create.write_layout(node(5), box_at(40.0, 10.0, 20.0, 20.0));
+        let mut auto = NodeStyle::default();
+        Arc::make_mut(&mut auto.layout).pointer_events = Some(PointerEventsSpec::Auto);
+        create.set_style(node(5), auto);
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 50.0, 20.0), Some(node(5)));
+
+        let mut none = NodeStyle::default();
+        Arc::make_mut(&mut none.layout).pointer_events = Some(PointerEventsSpec::None);
+        let mut skip = MutationQueue::new();
+        skip.set_style(node(3), none);
+        world.commit(skip).unwrap();
+        let work = world.take_system_work();
+        assert!(
+            work.layout.is_empty(),
+            "pointer-events is not a layout dirty"
+        );
+        assert!(work.input_hit_test.contains(&node(3)));
+        assert!(work.input_hit_test.contains(&node(4)));
+        world.resolve_styles(&work.style).unwrap();
+        assert!(world.rebuild_hit_test_scoped(document(1), &work.input_hit_test));
+
+        assert_ne!(world.hit_test(document(1), 50.0, 50.0), Some(node(3)));
+        assert_eq!(
+            world.hit_test(document(1), 15.0, 15.0),
+            Some(node(2)),
+            "unspecified child inherits none"
+        );
+        assert_eq!(
+            world.hit_test(document(1), 50.0, 20.0),
+            Some(node(5)),
+            "explicit auto child is a target again"
+        );
+        assert_eq!(
+            world.hit_test(document(1), 20.0, 50.0),
+            Some(node(2)),
+            "parent padding that is not on the auto child passes through"
+        );
+    }
+
+    #[test]
+    fn pointer_events_none_clears_hover_without_layout() {
+        use nana_ui_core::PointerEventsSpec;
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        create.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
+        create.write_layout(node(3), box_at(4.0, 4.0, 16.0, 16.0));
+        world.commit(create).unwrap();
+        world.take_system_work();
+        world
+            .set_pointer_hover(document(1), 7, Some(node(3)))
+            .unwrap();
+        world.take_system_work();
+        assert_eq!(world.pointer_hover(document(1), 7), Some(node(3)));
+
+        let mut none = NodeStyle::default();
+        Arc::make_mut(&mut none.layout).pointer_events = Some(PointerEventsSpec::None);
+        let mut skip = MutationQueue::new();
+        skip.set_style(node(2), none);
+        world.commit(skip).unwrap();
+        assert_eq!(world.pointer_hover(document(1), 7), None);
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(3))),
+            Err(UiWorldError::NotPointerInteractive(node(3)))
+        );
+        assert_eq!(
+            world.set_pointer_hover(document(1), 7, Some(node(2))),
+            Err(UiWorldError::NotPointerInteractive(node(2)))
+        );
+    }
+
+    #[test]
+    fn overflow_auto_clips_descendant_hit_testing() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "port".into() },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element { tag: "item".into() },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.write_layout(node(2), box_at(0.0, 0.0, 100.0, 50.0));
+        queue.write_layout(node(3), box_at(0.0, 80.0, 100.0, 20.0));
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_y: OverflowSpec::Auto,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        world.rebuild_hit_test(document(1));
+        assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
+        assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(2)));
+
+        let mut scroll = MutationQueue::new();
+        scroll.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: 80.0 });
+        world.commit(scroll).unwrap();
+        world.take_system_work();
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 10.0, 5.0), Some(node(3)));
+        assert_eq!(world.layout_box(node(3)).unwrap().y, 80.0);
+    }
+
+    #[test]
+    fn overflow_x_hidden_does_not_clip_visible_y() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "port".into() },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element { tag: "item".into() },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.write_layout(node(2), box_at(0.0, 0.0, 100.0, 50.0));
+        queue.write_layout(node(3), box_at(0.0, 80.0, 40.0, 20.0));
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_x: OverflowSpec::Hidden,
+                    overflow_y: OverflowSpec::Visible,
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        world.rebuild_hit_test(document(1));
+        assert_eq!(
+            world.hit_test(document(1), 10.0, 85.0),
+            Some(node(3)),
+            "visible Y must not clip a descendant below the padding box"
+        );
+
+        let mut moved = MutationQueue::new();
+        moved.write_layout(node(3), box_at(120.0, 10.0, 40.0, 20.0));
+        world.commit(moved).unwrap();
+        world.take_system_work();
+        world.rebuild_hit_test(document(1));
+        assert_ne!(
+            world.hit_test(document(1), 130.0, 15.0),
+            Some(node(3)),
+            "hidden X must still clip a descendant to the right"
+        );
+    }
+
+    #[test]
     fn visibility_visible_child_unhides_inside_hidden_parent() {
         use nana_ui_core::VisibilitySpec;
 
@@ -9773,6 +10180,7 @@ mod tests {
             max_height: Some(20.0),
             wrap: true,
             ellipsis: true,
+            max_lines: None,
             shaping: crate::TextShaping::Advanced,
             preserve_lines: false,
         };
@@ -9788,6 +10196,7 @@ mod tests {
                 max_height: None,
                 wrap: true,
                 ellipsis: false,
+                max_lines: None,
                 shaping: crate::TextShaping::Advanced,
                 preserve_lines: false,
             })
@@ -9802,6 +10211,7 @@ mod tests {
                 max_height: None,
                 wrap: false,
                 ellipsis: false,
+                max_lines: None,
                 shaping: crate::TextShaping::Advanced,
                 preserve_lines: false,
             })
@@ -11018,6 +11428,104 @@ mod tests {
         assert_eq!(world.hit_test(document(1), 55.0, 10.0), Some(node(2)));
         assert_eq!(world.hit_test(document(1), 45.0, 10.0), None);
         assert_eq!(world.hit_test(document(1), 65.0, 10.0), None);
+    }
+
+    #[test]
+    fn hit_test_follows_perspective_rotate_y_homography() {
+        let mat = PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(PaintMat4::rotate_y(30_f32.to_radians()));
+        let layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        let (transform, persp) = LayoutStyle {
+            transform_3d: Some(mat),
+            ..LayoutStyle::default()
+        }
+        .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+        .expect("homography");
+        assert!(
+            persp[0].abs() > 1e-8 || persp[1].abs() > 1e-8,
+            "perspective+rotateY must keep (g,h)"
+        );
+        assert!(
+            transformed_contains(layout, transform, persp, 100.0, 40.0),
+            "projected center must hit"
+        );
+        let corners = mat
+            .around_origin(0.0, 0.0, 100.0, 40.0)
+            .projected_corners(0.0, 0.0, 200.0, 80.0)
+            .expect("corners");
+        let max_x = corners.iter().map(|p| p[0]).fold(f32::MIN, f32::max);
+        let min_y = corners.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+        let empty_corner_x = max_x - 1.0;
+        let empty_corner_y = min_y + 1.0;
+        assert!(
+            !transformed_contains(layout, transform, persp, empty_corner_x, empty_corner_y),
+            "trapezoid AABB empty corner must miss, probe=({empty_corner_x}, {empty_corner_y}) corners={corners:?}"
+        );
+
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.write_layout(node(1), layout);
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    transform_3d: Some(mat),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 100.0, 40.0), Some(node(1)));
+        assert_eq!(
+            world.hit_test(document(1), empty_corner_x, empty_corner_y),
+            None
+        );
+    }
+
+    #[test]
+    fn hit_test_skips_css_pointer_events_none() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 40.0,
+            },
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    pointer_events: Some(PointerEventsSpec::None),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document(1));
+        assert_eq!(world.hit_test(document(1), 10.0, 10.0), None);
     }
 
     #[test]

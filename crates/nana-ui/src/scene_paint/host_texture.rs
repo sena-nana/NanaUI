@@ -33,6 +33,7 @@ impl HostTexturePipeline {
         slot: u8,
         bounds: LogicalRect,
         affine: [f32; 6],
+        persp: [f32; 2],
         clip: PhysicalRect,
         opacity: f32,
         corner_radius: f32,
@@ -67,11 +68,12 @@ impl HostTexturePipeline {
             queue,
             crate::geometry::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
             affine,
+            persp,
             scale_factor,
             physical_size,
             gpu_work,
         );
-        let world = clip::transformed_aabb(bounds, affine);
+        let world = clip::transformed_aabb_projective(bounds, affine, persp);
         let clip = physical_scissor(world, scale_factor, physical_size)
             .map(|world| intersect_physical(world, clip))
             .unwrap_or(PhysicalRect {

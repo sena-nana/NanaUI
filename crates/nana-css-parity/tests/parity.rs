@@ -117,6 +117,10 @@ fn t_f25_align_content_stretch_wrap() {
 fn t_f26_align_content_normal_is_stretch() {
     assert_pass_case("T-F26");
 }
+#[test]
+fn t_f27_flex_shorthand_omitted_shrink() {
+    assert_pass_case("T-F27");
+}
 
 // --- Size ---
 
@@ -268,6 +272,14 @@ fn t_s20_fit_content_not_fill_under_stretch() {
         box_.w
     );
     assert_pass_case("T-S20");
+}
+#[test]
+fn t_s21_calc_mul_div_nested_min_var() {
+    assert_pass_case("T-S21");
+}
+#[test]
+fn t_s22_nested_mixed_min_max_containing_block() {
+    assert_pass_case("T-S22");
 }
 #[test]
 fn t_b10_negative_margin_rem_padding() {
@@ -564,6 +576,45 @@ fn t_fl04_float_own_clear_left() {
         b.y
     );
     assert_pass_case("T-FL04");
+}
+#[test]
+fn t_fl05_ifc_shrinks_beside_float() {
+    let case = load_fixture(&fixture_path("T-FL05")).unwrap();
+    let a = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "a")
+        .expect("T-FL05 a");
+    let b = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "b")
+        .expect("T-FL05 b");
+    assert!(
+        a.x >= 80.0 && b.y >= 20.0,
+        "T-FL05 must assert shrink+wrap beside the float (not full-width packing), got a=({},{}) b=({},{})",
+        a.x,
+        a.y,
+        b.x,
+        b.y
+    );
+    assert_pass_case("T-FL05");
+}
+#[test]
+fn t_fl06_oversized_inline_drops_below_float() {
+    let case = load_fixture(&fixture_path("T-FL06")).unwrap();
+    let a = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "a")
+        .expect("T-FL06 a");
+    assert!(
+        a.y >= 40.0 && a.x < 1.0,
+        "T-FL06 must assert drop below the float so overlap at y=0 fails, got x={} y={}",
+        a.x,
+        a.y
+    );
+    assert_pass_case("T-FL06");
 }
 #[test]
 fn t_v01_display_none() {

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use nana_ui_core::{
-    BackgroundImage, ClipPath, ColorFilter, ControlSize, DrawerSide, Icon, LineHeightSpec,
-    SwitchControlPosition, UI_METRICS, icon_y_on_text_glyph_center,
+    BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DrawerSide, Icon,
+    LineHeightSpec, MixBlendMode, SwitchControlPosition, UI_METRICS, icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
@@ -39,22 +39,47 @@ pub struct SceneRect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AffineTransform(pub [f32; 6]);
+pub struct AffineTransform(pub [f32; 6], pub [f32; 2]);
 
 impl AffineTransform {
-    pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0]);
+
+    pub const fn from_matrix(matrix: [f32; 6]) -> Self {
+        Self(matrix, [0.0, 0.0])
+    }
+
+    pub fn is_projective(self) -> bool {
+        self.1[0].abs() > 1e-8 || self.1[1].abs() > 1e-8
+    }
 
     pub fn then(self, rhs: Self) -> Self {
         let [a, b, c, d, e, f] = self.0;
+        let [g, h] = self.1;
         let [ra, rb, rc, rd, re, rf] = rhs.0;
-        Self([
-            a * ra + c * rb,
-            b * ra + d * rb,
-            a * rc + c * rd,
-            b * rc + d * rd,
-            a * re + c * rf + e,
-            b * re + d * rf + f,
-        ])
+        let [rg, rh] = rhs.1;
+        let na = a * ra + c * rb + e * rg;
+        let nb = b * ra + d * rb + f * rg;
+        let nc = a * rc + c * rd + e * rh;
+        let nd = b * rc + d * rd + f * rh;
+        let ne = a * re + c * rf + e;
+        let nf = b * re + d * rf + f;
+        let ng = g * ra + h * rb + rg;
+        let nh = g * rc + h * rd + rh;
+        let ni = g * re + h * rf + 1.0;
+        if !ni.is_finite() || ni.abs() < 1e-8 {
+            return Self::IDENTITY;
+        }
+        let inv = 1.0 / ni;
+        Self(
+            [na * inv, nb * inv, nc * inv, nd * inv, ne * inv, nf * inv],
+            [ng * inv, nh * inv],
+        )
+    }
+}
+
+impl From<[f32; 6]> for AffineTransform {
+    fn from(matrix: [f32; 6]) -> Self {
+        Self::from_matrix(matrix)
     }
 }
 
@@ -94,11 +119,28 @@ pub struct PrimitiveId {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuadSurfacePaint {
     pub background_image: Option<BackgroundImage>,
+    /// Extra CSS `background-image` layers after the first (below it).
+    pub background_layers: Vec<BackgroundImage>,
+    /// `<img src>` replaced content, painted above background layers.
+    pub content_image: Option<BackgroundImage>,
     pub mask: Option<nana_ui_core::CssGradient>,
     /// Resolved polygon vertices in border-box coordinates (px).
     pub polygon_clip: Option<Vec<[f32; 2]>>,
     pub filter: Option<ColorFilter>,
     pub backdrop_filter: Option<nana_ui_core::BackdropFilter>,
+    /// Extra `box-shadow` layers after the primary (GPU cap 4 including primary).
+    pub extra_shadows: Vec<ComponentElevation>,
+    pub outline_width: f32,
+    pub outline_color: Option<[f32; 4]>,
+    pub mix_blend: MixBlendMode,
+    /// Per-side stroke (T,R,B,L). All-zero keeps [`ScenePrimitiveKind::Quad::border_width`].
+    pub border_widths: [f32; 4],
+    /// Per-side colors (T,R,B,L). Zero alpha falls back to the quad `border_color`.
+    pub border_colors: [[f32; 4]; 4],
+    /// Per-side shader style (T,R,B,L): 0 solid, 1 dashed, 2 dotted.
+    pub border_styles: [u8; 4],
+    /// Minimal `border-image` 9-slice (`url()` / linear-gradient + slice).
+    pub border_image: Option<BorderImageSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,12 +172,16 @@ pub enum ScenePrimitiveKind {
         letter_spacing: f32,
         wrap: bool,
         ellipsis: bool,
+        max_lines: Option<u16>,
         shaping: TextShaping,
         horizontal_alignment: TextHorizontalAlignment,
         vertical_alignment: TextVerticalAlignment,
         /// Theme-resolved committed-text spans. Empty means solid `color`.
         spans: Vec<SceneTextSpan>,
         text_shadow: Option<nana_ui_core::TextShadowSpec>,
+        underline: bool,
+        line_through: bool,
+        font_features: Vec<nana_ui_core::FontFeatureSetting>,
     },
     Icon {
         icon: Icon,
@@ -217,6 +263,8 @@ pub struct ScenePrimitive {
 pub struct OpacityGroup {
     pub node: StableNodeId,
     pub opacity: f32,
+    pub filter: ColorFilter,
+    pub mix_blend: MixBlendMode,
 }
 
 /// Isolating ancestor with a non-identity CSS `filter`.
@@ -228,9 +276,10 @@ pub struct FilterGroup {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SceneOrderKey {
-    /// `(z_index, document_order)` for each isolating opacity group from
-    /// outermost to innermost, then this primitive's node. Keeps a group's
-    /// subtree contiguous against siblings.
+    /// `(z_index, document_order)` for each isolating stacking group from
+    /// outermost to innermost, then this primitive's node. Opacity groups,
+    /// `isolation: isolate`, and positioned + `z-index` keep a subtree
+    /// contiguous against siblings. Not full CSS Appendix E.
     stack: Vec<(i32, usize)>,
     slot: u8,
     node: StableNodeId,
@@ -382,6 +431,11 @@ impl UiScene {
             stacking_changed |= previous.is_some_and(|old| {
                 old.z_index != node.z_index
                     || local_opacity(old).to_bits() != local_opacity(&node).to_bits()
+                    || old.source_style.layout.paint.filter != node.source_style.layout.paint.filter
+                    || old.source_style.layout.paint.mix_blend
+                        != node.source_style.layout.paint.mix_blend
+                    || old.source_style.layout.creates_paint_stacking_context()
+                        != node.source_style.layout.creates_paint_stacking_context()
             });
             changed.push(node.id);
             if scroll_changed {
@@ -713,7 +767,8 @@ impl UiScene {
             return 0;
         }
         let before = self.primitives.len();
-        let (parent_transform, parent_opacity, parent_clips) = self.ancestor_state(&node);
+        let (parent_transform, parent_opacity, parent_clips, parent_blocks_3d) =
+            self.ancestor_state(&node);
         let layout = node.layout;
         let bounds = SceneRect {
             x: layout.x,
@@ -721,19 +776,8 @@ impl UiScene {
             width: layout.width,
             height: layout.height,
         };
-        let local_transform = node
-            .source_style
-            .layout
-            .transform
-            .map(|transform| {
-                AffineTransform(transform.around_center(
-                    layout.x,
-                    layout.y,
-                    layout.width,
-                    layout.height,
-                ))
-            })
-            .unwrap_or_default();
+        let local_transform =
+            node_scene_transform(node.source_style.layout.as_ref(), layout, parent_blocks_3d);
         let transform = parent_transform.then(local_transform);
         let local_opacity = local_opacity(&node);
         let opacity = if is_opacity_group(&self.nodes, &node) {
@@ -743,9 +787,22 @@ impl UiScene {
         };
         let style = node.source_style.layout.as_ref();
         let clips: Arc<[ClipRegion]> = {
-            let mut chain = if node.source_style.layout.clips_overflow() {
+            let mut chain = if let Some((x, y, w, h)) = node.source_style.layout.overflow_clip_box(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ) {
                 let mut own = parent_clips.to_vec();
-                own.push(ClipRegion::axis_aligned(bounds, transform));
+                own.push(ClipRegion::axis_aligned(
+                    SceneRect {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    },
+                    transform,
+                ));
                 own
             } else {
                 parent_clips.to_vec()
@@ -841,22 +898,28 @@ impl UiScene {
                     Some(ComponentGeometry::StatusBadge { background, .. }) => {
                         (Some(*background), None, 0.0)
                     }
-                    _ => (
-                        node.style.background,
-                        surface_border_color,
-                        if surface_border_color.is_some() {
-                            style.border_width.unwrap_or(0.0).max(0.0)
+                    _ => {
+                        if matches!(node.standard_visual, Some(StandardVisual::Switch { .. })) {
+                            (node.style.background, None, 0.0)
                         } else {
-                            0.0
-                        },
-                    ),
+                            let edges = style.paint_border_edges();
+                            (
+                                node.style.background,
+                                style.resolved_border_color().or(surface_border_color),
+                                edges.top.max(edges.right).max(edges.bottom).max(edges.left),
+                            )
+                        }
+                    }
                 };
             if !matches!(
                 node.standard_visual,
                 Some(StandardVisual::MenuSurface { .. })
             ) && (style.has_surface_paint()
+                || style.paints_any_border()
                 || ((node.standard_visual.is_none() || standard_visual_uses_root_surface)
-                    && (node.style.background.is_some() || node.style.border_color.is_some())))
+                    && (node.style.background.is_some()
+                        || node.style.border_color.is_some()
+                        || style.paints_any_border())))
             {
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 0 },
@@ -874,7 +937,7 @@ impl UiScene {
                         corner_radius: surface_corner_radii(style, bounds.width, bounds.height),
                         shadow: style
                             .paint
-                            .box_shadow
+                            .primary_box_shadow()
                             .map(ComponentElevation::from_box_shadow)
                             .or(match node.component_geometry.as_ref() {
                                 Some(ComponentGeometry::Card { elevation, .. }) => *elevation,
@@ -885,6 +948,23 @@ impl UiScene {
                                 quad_surface_from_style(style, bounds.width, bounds.height);
                             if is_filter_group(&self.nodes, &node) {
                                 surface.filter = None;
+                            }
+                            let component_owns_border = matches!(
+                                node.component_geometry.as_ref(),
+                                Some(
+                                    ComponentGeometry::Button { .. }
+                                        | ComponentGeometry::TextInput { .. }
+                                )
+                            ) || matches!(
+                                node.standard_visual,
+                                Some(StandardVisual::Switch { .. })
+                            );
+                            if !component_owns_border {
+                                let edges = style.paint_border_edges();
+                                surface.border_widths =
+                                    [edges.top, edges.right, edges.bottom, edges.left];
+                                surface.border_colors = style.paint_border_edge_colors();
+                                surface.border_styles = style.paint_border_style_codes();
                             }
                             surface
                         },
@@ -966,8 +1046,9 @@ impl UiScene {
                         family: node.style.font_family.as_deref().map(str::to_owned),
                         line_height: node.style.line_height,
                         letter_spacing: node.style.letter_spacing,
-                        wrap: !style.white_space_nowrap,
-                        ellipsis: style.text_overflow_ellipsis,
+                        wrap: !style.white_space_nowrap || style.resolved_line_clamp().is_some(),
+                        ellipsis: style.uses_text_ellipsis(),
+                        max_lines: style.resolved_line_clamp(),
                         shaping: if node.text_input.is_some() {
                             TextShaping::Advanced
                         } else {
@@ -977,8 +1058,25 @@ impl UiScene {
                         vertical_alignment: node.source_style.text_vertical_alignment,
                         spans: scene_text_spans(&node, &text.value),
                         text_shadow: style.paint.text_shadow,
+                        underline: style.text_decoration.is_some_and(|d| d.underline),
+                        line_through: style.text_decoration.is_some_and(|d| d.line_through),
+                        font_features: style.font_features.clone().unwrap_or_default(),
                     },
                 });
+                if let Some(deco) = style.text_decoration.filter(|d| d.is_active()) {
+                    insert_text_decoration_strokes(
+                        self,
+                        id,
+                        text_bounds,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node.z_index,
+                        node_order,
+                        node.style.color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                        deco,
+                    );
+                }
             }
             match node.component_geometry.as_ref() {
                 Some(ComponentGeometry::ModalFrame {
@@ -3201,11 +3299,15 @@ impl UiScene {
                                 letter_spacing: 0.0,
                                 wrap: false,
                                 ellipsis: false,
+                                max_lines: None,
                                 shaping: TextShaping::Auto,
                                 horizontal_alignment: TextHorizontalAlignment::Center,
                                 vertical_alignment: TextVerticalAlignment::Center,
                                 spans: Vec::new(),
                                 text_shadow: None,
+                                underline: false,
+                                line_through: false,
+                                font_features: Vec::new(),
                             },
                         });
                     }
@@ -3532,8 +3634,27 @@ impl UiScene {
         }
         self.primitives.len() - before
     }
+}
 
-    fn ancestor_state(&self, node: &ExtractedNode) -> (AffineTransform, f32, Arc<[ClipRegion]>) {
+fn node_scene_transform(
+    style: &nana_ui_core::LayoutStyle,
+    layout: LayoutBox,
+    block_3d: bool,
+) -> AffineTransform {
+    if block_3d && style.transform_3d.is_some() {
+        return AffineTransform::IDENTITY;
+    }
+    style
+        .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+        .map(|(matrix, persp)| AffineTransform(matrix, persp))
+        .unwrap_or_default()
+}
+
+impl UiScene {
+    fn ancestor_state(
+        &self,
+        node: &ExtractedNode,
+    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
         let mut ancestors = Vec::new();
         let mut parent = node.parent;
         let mut visited = HashSet::new();
@@ -3548,34 +3669,30 @@ impl UiScene {
         let mut transform = AffineTransform::IDENTITY;
         let mut opacity = 1.0;
         let mut clips = Vec::new();
+        let mut blocks_3d = false;
         for ancestor in ancestors {
             let layout = ancestor.layout;
-            let local = ancestor
-                .source_style
-                .layout
-                .transform
-                .map(|value| {
-                    AffineTransform(value.around_center(
-                        layout.x,
-                        layout.y,
-                        layout.width,
-                        layout.height,
-                    ))
-                })
-                .unwrap_or_default();
+            let local = node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false);
             transform = transform.then(local);
+            if ancestor.source_style.layout.fails_closed_3d_context() {
+                blocks_3d = true;
+            }
             if !is_opacity_group(&self.nodes, ancestor) {
                 opacity *= local_opacity(ancestor);
             }
-            if ancestor.source_style.layout.clips_overflow()
-                && !(is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent)
+            if let Some((x, y, w, h)) = ancestor.source_style.layout.overflow_clip_box(
+                layout.x,
+                layout.y,
+                layout.width,
+                layout.height,
+            ) && !(is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent)
             {
                 clips.push(ClipRegion {
                     bounds: SceneRect {
-                        x: layout.x,
-                        y: layout.y,
-                        width: layout.width,
-                        height: layout.height,
+                        x,
+                        y,
+                        width: w,
+                        height: h,
                     },
                     transform,
                     corner_radius: 0.0,
@@ -3634,7 +3751,7 @@ impl UiScene {
             ) {
                 clips.push(region);
             }
-            transform = transform.then(AffineTransform([
+            transform = transform.then(AffineTransform::from_matrix([
                 1.0,
                 0.0,
                 0.0,
@@ -3643,7 +3760,7 @@ impl UiScene {
                 -ancestor.scroll_offset.y,
             ]));
         }
-        (transform, opacity, clips.into())
+        (transform, opacity, clips.into(), blocks_3d)
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
@@ -3741,23 +3858,46 @@ fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     )
 }
 
-fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
-    let opacity = local_opacity(node);
-    opacity > 0.0 && opacity < 1.0 && node.children.iter().any(|child| nodes.contains_key(child))
+fn has_extracted_child(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    node.children.iter().any(|child| nodes.contains_key(child))
 }
 
-fn is_filter_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
-    node.source_style
+fn dest_filter_applies(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    let Some(filter) = node
+        .source_style
         .layout
         .paint
         .filter
-        .is_some_and(|filter| !filter.is_identity())
-        && (node.children.iter().any(|child| nodes.contains_key(child))
-            || node
-                .text
-                .as_ref()
-                .is_some_and(|text| !text.value.is_empty())
-            || node.custom_render.is_some())
+        .filter(|filter| !filter.is_identity())
+    else {
+        return false;
+    };
+    filter.blur_radius > 0.0
+        || filter.drop_shadow.is_some()
+        || has_extracted_child(nodes, node)
+        || node
+            .text
+            .as_ref()
+            .is_some_and(|text| !text.value.is_empty())
+        || node.custom_render.is_some()
+}
+
+fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    let opacity = local_opacity(node);
+    let translucent = opacity > 0.0 && opacity < 1.0 && has_extracted_child(nodes, node);
+    translucent
+        || dest_filter_applies(nodes, node)
+        || !node.source_style.layout.paint.mix_blend.is_normal()
+}
+
+fn is_stacking_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    is_opacity_group(nodes, node)
+        || (has_extracted_child(nodes, node)
+            && node.source_style.layout.creates_paint_stacking_context())
+}
+
+fn is_filter_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    dest_filter_applies(nodes, node)
 }
 
 fn opacity_groups_from(
@@ -3775,6 +3915,17 @@ fn opacity_groups_from(
             groups.push(OpacityGroup {
                 node: id,
                 opacity: local_opacity(candidate),
+                filter: if dest_filter_applies(nodes, candidate) {
+                    candidate
+                        .source_style
+                        .layout
+                        .paint
+                        .filter
+                        .unwrap_or_default()
+                } else {
+                    ColorFilter::default()
+                },
+                mix_blend: candidate.source_style.layout.paint.mix_blend,
             });
         }
         current = candidate.parent;
@@ -3869,21 +4020,30 @@ fn filter_groups_from(
     groups
 }
 
-/// `(z_index, document_order)` of every isolating opacity group above (and
-/// including) `node`, outermost first.
+/// `(z_index, document_order)` of every isolating stacking group above (and
+/// including) `node`, outermost first. Opacity / filter / mix-blend dest groups
+/// plus `isolation` and positioned + `z-index`.
 fn group_prefix(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node_order: &HashMap<StableNodeId, usize>,
     node: StableNodeId,
 ) -> Vec<(i32, usize)> {
-    opacity_groups_from(nodes, node)
-        .into_iter()
-        .map(|group| {
-            let z_index = nodes.get(&group.node).map(|node| node.z_index).unwrap_or(0);
-            let order = node_order.get(&group.node).copied().unwrap_or(0);
-            (z_index, order)
-        })
-        .collect()
+    let mut stack = Vec::new();
+    let mut current = Some(node);
+    let mut visited = HashSet::new();
+    while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        let Some(candidate) = nodes.get(&id) else {
+            break;
+        };
+        if is_stacking_group(nodes, candidate) {
+            let z_index = candidate.z_index;
+            let order = node_order.get(&id).copied().unwrap_or(0);
+            stack.push((z_index, order));
+        }
+        current = candidate.parent;
+    }
+    stack.reverse();
+    stack
 }
 
 fn order_key(
@@ -4039,6 +4199,7 @@ fn component_text_primitive(
             letter_spacing: node.style.letter_spacing,
             wrap: multiline || intrinsic_multiline,
             ellipsis,
+            max_lines: None,
             shaping: if node.text_input.is_some() {
                 TextShaping::Advanced
             } else {
@@ -4052,6 +4213,22 @@ fn component_text_primitive(
             },
             spans: scene_text_spans(node, region.content.as_ref()),
             text_shadow: node.source_style.layout.paint.text_shadow,
+            underline: node
+                .source_style
+                .layout
+                .text_decoration
+                .is_some_and(|d| d.underline),
+            line_through: node
+                .source_style
+                .layout
+                .text_decoration
+                .is_some_and(|d| d.line_through),
+            font_features: node
+                .source_style
+                .layout
+                .font_features
+                .clone()
+                .unwrap_or_default(),
         },
     }
 }
@@ -4145,6 +4322,8 @@ fn quad_surface_from_style(
 ) -> QuadSurfacePaint {
     QuadSurfacePaint {
         background_image: style.paint.background_image.clone(),
+        background_layers: style.paint.background_layers.clone(),
+        content_image: style.paint.content_image.clone(),
         mask: style.paint.mask.clone(),
         polygon_clip: style
             .paint
@@ -4156,6 +4335,34 @@ fn quad_surface_from_style(
             .paint
             .backdrop_filter
             .filter(|filter| filter.is_active()),
+        extra_shadows: style
+            .paint
+            .box_shadows
+            .iter()
+            .skip(1)
+            .copied()
+            .map(ComponentElevation::from_box_shadow)
+            .collect(),
+        outline_width: if style.paint.outline.is_active() {
+            style.paint.outline.width
+        } else {
+            0.0
+        },
+        outline_color: style
+            .paint
+            .outline
+            .is_active()
+            .then_some(style.paint.outline.color)
+            .flatten(),
+        mix_blend: style.paint.mix_blend,
+        border_widths: [0.0; 4],
+        border_colors: [[0.0; 4]; 4],
+        border_styles: [0; 4],
+        border_image: if style.paint.unsupported_border_image {
+            None
+        } else {
+            style.paint.border_image.clone()
+        },
     }
 }
 
@@ -4187,6 +4394,52 @@ fn visual_stroke(
             cap: StrokeCap::Round,
             pattern: None,
         },
+    }
+}
+
+fn insert_text_decoration_strokes(
+    scene: &mut UiScene,
+    node: StableNodeId,
+    bounds: SceneRect,
+    transform: AffineTransform,
+    clips: Arc<[ClipRegion]>,
+    opacity: f32,
+    z_index: i32,
+    document_order: usize,
+    color: [f32; 4],
+    deco: nana_ui_core::TextDecorationLine,
+) {
+    let width = 1.0_f32.max(bounds.height * 0.06);
+    let mut emit = |slot: u8, y: f32| {
+        scene.insert_primitive(ScenePrimitive {
+            id: PrimitiveId { node, slot },
+            node,
+            bounds: SceneRect {
+                x: bounds.x,
+                y: y - width * 0.5,
+                width: bounds.width,
+                height: width,
+            },
+            transform,
+            clips: Arc::clone(&clips),
+            opacity,
+            z_index,
+            document_order,
+            kind: ScenePrimitiveKind::Stroke {
+                points: vec![[bounds.x, y], [bounds.x + bounds.width, y]],
+                width,
+                color,
+                widths: Vec::new(),
+                cap: StrokeCap::Butt,
+                pattern: None,
+            },
+        });
+    };
+    if deco.underline {
+        emit(12, bounds.y + bounds.height - width);
+    }
+    if deco.line_through {
+        emit(13, bounds.y + bounds.height * 0.5);
     }
 }
 
@@ -4818,6 +5071,7 @@ mod tests {
                 offset_y: 4.0,
                 blur_radius: 18.0,
                 spread_radius: 0.0,
+                inset: false,
             },
             background: [0.1, 0.1, 0.1, 1.0],
             border: [0.2, 0.2, 0.2, 1.0],
@@ -4882,6 +5136,174 @@ mod tests {
     }
 
     #[test]
+    fn rotate_pivot_follows_transform_origin() {
+        let rotate_90 = nana_ui_core::PaintTransform {
+            a: 0.0,
+            b: 1.0,
+            c: -1.0,
+            d: 0.0,
+            ..Default::default()
+        };
+        let mut centered = node(1, None, &[]);
+        centered.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 10.0,
+        };
+        centered.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+        centered.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform: Some(rotate_90),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut corner = node(2, None, &[]);
+        corner.layout = centered.layout;
+        corner.custom_render = Some(CustomRenderNode::new("test", "resource", 1));
+        corner.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform: Some(rotate_90),
+                transform_origin: Some(nana_ui_core::TransformOrigin {
+                    x: nana_ui_core::LengthSpec::Px(0.0),
+                    y: nana_ui_core::LengthSpec::Px(0.0),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([centered, corner], []);
+        let center_tf = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(1))
+            .expect("center")
+            .transform
+            .0;
+        let corner_tf = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("corner")
+            .transform
+            .0;
+        assert_eq!(center_tf, rotate_90.around_center(0.0, 0.0, 20.0, 10.0));
+        assert_eq!(corner_tf, rotate_90.around_origin(0.0, 0.0, 0.0, 0.0));
+        assert_ne!(center_tf, corner_tf);
+    }
+
+    #[test]
+    fn perspective_rotate_y_stores_projective_on_the_primitive() {
+        let mat = nana_ui_core::PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians()));
+        let mut card = node(1, None, &[]);
+        card.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        card.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+        card.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([card], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(1))
+            .expect("card");
+        assert!(
+            primitive.transform.is_projective(),
+            "perspective+rotateY must not collapse to affine, persp={:?}",
+            primitive.transform.1
+        );
+        let expected = mat
+            .around_origin(0.0, 0.0, 100.0, 40.0)
+            .planar_homography()
+            .expect("homography");
+        assert_eq!(primitive.transform.0, expected.0);
+        assert_eq!(primitive.transform.1, expected.1);
+    }
+
+    #[test]
+    fn parent_preserve_3d_fail_closes_child_3d() {
+        let mat = nana_ui_core::PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians()));
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                preserve_3d: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("child");
+        assert_eq!(primitive.transform, AffineTransform::IDENTITY);
+    }
+
+    #[test]
+    fn parent_perspective_fail_closes_child_3d() {
+        let mat = nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians());
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                css_perspective: Some(800.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+        };
+        child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("child");
+        assert_eq!(primitive.transform, AffineTransform::IDENTITY);
+    }
+
+    #[test]
     fn ancestor_clip_transform_and_opacity_are_composed() {
         let mut root = node(1, None, &[2]);
         root.source_style = NodeStyle {
@@ -4917,6 +5339,8 @@ mod tests {
             vec![OpacityGroup {
                 node: id(1),
                 opacity: 0.5,
+                filter: ColorFilter::default(),
+                mix_blend: MixBlendMode::Normal,
             }]
         );
         assert_eq!(custom.clips.len(), 1);
@@ -5031,6 +5455,104 @@ mod tests {
             order(&scene),
             vec![1, 3, 2],
             "losing group isolation must reorder the retained descendant"
+        );
+    }
+
+    #[test]
+    fn positioned_z_index_keeps_high_z_child_contiguous() {
+        let mut parent = node(1, None, &[2]);
+        parent.z_index = 0;
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                position: nana_ui_core::PositionSpec::Relative,
+                z_index: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.z_index = 10;
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                z_index: Some(10),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut sibling = node(3, None, &[]);
+        sibling.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 1.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child, sibling], []);
+        let order = scene
+            .primitives()
+            .map(|primitive| primitive.node.get())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![1, 2, 3],
+            "positioned z-index parent must isolate its high-z child from a later sibling"
+        );
+    }
+
+    #[test]
+    fn isolation_keeps_high_z_child_contiguous() {
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                isolation: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(2, Some(1), &[]);
+        child.z_index = 10;
+        child.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut sibling = node(3, None, &[]);
+        sibling.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 1.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent.clone(), child, sibling.clone()], []);
+        let order = |scene: &UiScene| {
+            scene
+                .primitives()
+                .map(|primitive| primitive.node.get())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&scene), vec![1, 2, 3]);
+
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                isolation: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        scene.apply_delta([parent], []);
+        assert_eq!(
+            order(&scene),
+            vec![1, 3, 2],
+            "losing isolation must reorder the retained high-z descendant"
         );
     }
 
@@ -5549,6 +6071,7 @@ mod tests {
                 offset_y: 8.0,
                 blur_radius: 24.0,
                 spread_radius: 0.0,
+                inset: false,
             },
         });
         let mut scene = UiScene::default();
@@ -5656,6 +6179,7 @@ mod tests {
                 offset_y: 12.0,
                 blur_radius: 24.0,
                 spread_radius: 0.0,
+                inset: false,
             },
         });
 
@@ -5763,6 +6287,7 @@ mod tests {
                 offset_y: 14.0,
                 blur_radius: 30.0,
                 spread_radius: 0.0,
+                inset: false,
             },
         });
         let mut scene = UiScene::default();
@@ -6452,6 +6977,7 @@ mod tests {
                 offset_y: 3.0,
                 blur_radius: 8.0,
                 spread_radius: 0.0,
+                inset: false,
             }),
             spinner: Some(LayoutBox {
                 x: 68.0,
@@ -7313,6 +7839,7 @@ mod tests {
                         brightness: 0.5,
                         saturate: 1.0,
                         contrast: 1.0,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
@@ -7344,6 +7871,217 @@ mod tests {
             other => panic!("expected quad, got {other:?}"),
         }
         assert_eq!(scene.filter_groups(id(2)).len(), 1);
+        assert_eq!(
+            scene.opacity_groups(id(2)),
+            vec![OpacityGroup {
+                node: id(1),
+                opacity: 1.0,
+                filter: nana_ui_core::ColorFilter {
+                    brightness: 0.5,
+                    saturate: 1.0,
+                    contrast: 1.0,
+                    ..Default::default()
+                },
+                mix_blend: MixBlendMode::Normal,
+            }]
+        );
+    }
+
+    #[test]
+    fn css_mix_blend_and_element_blur_isolate_dest_groups() {
+        let mut blended = node(1, None, &[]);
+        blended.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    mix_blend: MixBlendMode::Multiply,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut blended).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([blended], []);
+        assert_eq!(
+            scene.opacity_groups(id(1)),
+            vec![OpacityGroup {
+                node: id(1),
+                opacity: 1.0,
+                filter: ColorFilter::default(),
+                mix_blend: MixBlendMode::Multiply,
+            }]
+        );
+
+        let mut blurred = node(2, None, &[]);
+        blurred.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 1.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    filter: Some(nana_ui_core::ColorFilter {
+                        blur_radius: 8.0,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut blurred).background = Some([0.0, 1.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([blurred], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 0,
+            })
+            .expect("blur quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(surface.filter.is_none(), "element blur is dest-group owned");
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+        assert_eq!(scene.filter_groups(id(2)).len(), 1);
+        assert_eq!(scene.opacity_groups(id(2))[0].filter.blur_radius, 8.0);
+    }
+
+    #[test]
+    fn css_drop_shadow_isolates_dest_group_not_box_shadow() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    filter: Some(nana_ui_core::ColorFilter {
+                        drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                            offset_x: 4.0,
+                            offset_y: 6.0,
+                            blur_radius: 8.0,
+                            color: [0.0, 0.0, 0.0, 0.5],
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("drop-shadow quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad {
+                surface, shadow, ..
+            } => {
+                assert!(
+                    surface.filter.is_none(),
+                    "drop-shadow is dest-group owned, not leaf shader"
+                );
+                assert!(
+                    shadow.is_none(),
+                    "drop-shadow must not reuse box-shadow quads"
+                );
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+        assert_eq!(scene.filter_groups(id(1)).len(), 1);
+        let group = &scene.opacity_groups(id(1))[0];
+        let shadow = group.filter.drop_shadow.expect("dest-group drop-shadow");
+        assert!((shadow.offset_x - 4.0).abs() < 0.01);
+        assert!((shadow.offset_y - 6.0).abs() < 0.01);
+        assert!((shadow.blur_radius - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn css_box_shadow_layers_outline_and_line_clamp_travel() {
+        let mut painted = node(1, None, &[]);
+        painted.text = Some(TextContent {
+            value: "clamped".into(),
+        });
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 1.0, 1.0, 1.0]),
+                line_clamp: Some(2),
+                text_overflow_ellipsis: true,
+                paint: nana_ui_core::PaintStyle {
+                    box_shadows: vec![
+                        nana_ui_core::BoxShadowSpec {
+                            offset_x: 2.0,
+                            offset_y: 2.0,
+                            blur_radius: 4.0,
+                            spread_radius: 0.0,
+                            color: [0.0, 0.0, 0.0, 1.0],
+                            inset: true,
+                        },
+                        nana_ui_core::BoxShadowSpec {
+                            offset_x: 0.0,
+                            offset_y: 4.0,
+                            blur_radius: 8.0,
+                            spread_radius: 0.0,
+                            color: [0.0, 0.0, 0.0, 0.5],
+                            inset: false,
+                        },
+                    ],
+                    outline: nana_ui_core::OutlineSpec {
+                        width: 2.0,
+                        color: Some([1.0, 0.0, 0.0, 1.0]),
+                        style: nana_ui_core::OutlineStyle::Solid,
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("shadow quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad {
+                shadow, surface, ..
+            } => {
+                assert!(shadow.is_some_and(|s| s.inset));
+                assert_eq!(surface.extra_shadows.len(), 1);
+                assert!(!surface.extra_shadows[0].inset);
+                assert!((surface.outline_width - 2.0).abs() < f32::EPSILON);
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+        let text = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .expect("text");
+        match &text.kind {
+            ScenePrimitiveKind::Text {
+                max_lines,
+                ellipsis,
+                wrap,
+                ..
+            } => {
+                assert_eq!(*max_lines, Some(2));
+                assert!(*ellipsis);
+                assert!(*wrap);
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7430,6 +8168,132 @@ mod tests {
                     .expect("backdrop-filter must travel to scene quad");
                 assert!((backdrop.blur_radius - 16.0).abs() < 0.01);
                 assert!((backdrop.saturate - 1.2).abs() < 0.01);
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn img_content_image_and_two_background_layers_travel_on_quad() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    background_image: Some(nana_ui_core::BackgroundImage::url("fg.png")),
+                    background_layers: vec![nana_ui_core::BackgroundImage::url("bg.png")],
+                    content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                        "photo.png",
+                        nana_ui_core::BackgroundImageFit::Contain,
+                    )),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([0.1, 0.1, 0.1, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert_eq!(
+                    surface
+                        .background_image
+                        .as_ref()
+                        .and_then(|image| image.url_str()),
+                    Some("fg.png")
+                );
+                assert_eq!(surface.background_layers.len(), 1);
+                assert_eq!(
+                    surface
+                        .content_image
+                        .as_ref()
+                        .and_then(|image| image.url_str()),
+                    Some("photo.png")
+                );
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn border_image_travels_on_quad() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    border_image: Some(nana_ui_core::BorderImageSpec {
+                        source: nana_ui_core::BackgroundImage::url("frame.png"),
+                        slice: [nana_ui_core::BorderImageSlice::Number(30.0); 4],
+                        fill: true,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([0.1, 0.1, 0.1, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                let spec = surface.border_image.as_ref().expect("border-image");
+                assert_eq!(spec.source.url_str(), Some("frame.png"));
+                assert!(spec.fill);
+            }
+            other => panic!("expected quad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsupported_border_image_does_not_travel_on_quad() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    unsupported_border_image: true,
+                    border_image: Some(nana_ui_core::BorderImageSpec {
+                        source: nana_ui_core::BackgroundImage::url("frame.png"),
+                        slice: [nana_ui_core::BorderImageSlice::Number(30.0); 4],
+                        fill: true,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([0.1, 0.1, 0.1, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => {
+                assert!(
+                    surface.border_image.is_none(),
+                    "sticky unsupported must not project a 9-slice"
+                );
             }
             other => panic!("expected quad, got {other:?}"),
         }

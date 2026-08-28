@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use nana_ui_core::{BackgroundImage, BackgroundImageFit, CssGradient};
+use nana_ui_core::{
+    BackgroundImage, BackgroundImageFit, BackgroundRepeat, BorderImageSpec, BorderImageTile,
+    CssGradient, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS,
+};
 use nana_ui_runtime::ComponentElevation;
 use nana_ui_scene::QuadSurfacePaint;
 
 use super::{
     clip::LogicalRect,
     color::{orthographic, pack_linear, with_opacity},
-    image_url::resolve_background_image_url,
+    image_url::decode_url_rgba,
 };
 use crate::PhysicalRect;
 
@@ -20,6 +23,7 @@ const PAINT_FILTER: u32 = 8;
 const PAINT_POLYGON: u32 = 16;
 const PAINT_RADIAL: u32 = 32;
 const PAINT_MASK_RADIAL: u32 = 64;
+const PAINT_SHADOW_INSET: u32 = 128;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -29,14 +33,14 @@ struct SolidInstance {
     size: [f32; 2],
     border_color: [f32; 4],
     border_radius: [f32; 4],
-    border_width: f32,
+    border_widths: [f32; 4],
     shadow_color: [f32; 4],
     shadow_offset: [f32; 2],
     shadow_blur_radius: f32,
     shadow_spread_radius: f32,
     snap: u32,
     affine_abcd: [f32; 4],
-    affine_ef: [f32; 2],
+    affine_ef: [f32; 4],
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 3],
@@ -56,7 +60,7 @@ struct QuadPaintData {
     filter_b: f32,
     filter_s: f32,
     filter_c: f32,
-    _pad_filter: [f32; 1],
+    filter_hue: f32,
     grad_stops0: [f32; 4],
     grad_stops1: [f32; 4],
     grad_stops2: [f32; 4],
@@ -89,9 +93,17 @@ struct QuadPaintData {
     mask_center_y: f32,
     mask_radial_shape: u32,
     _pad_tail1: u32,
+    url_dest: [f32; 4],
+    outline_width: f32,
+    border_styles: u32,
+    _pad_outline: [f32; 2],
+    outline_color: [f32; 4],
+    border_color_right: [f32; 4],
+    border_color_bottom: [f32; 4],
+    border_color_left: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 464);
+const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 560);
 const _: () = assert!(std::mem::align_of::<QuadPaintData>() == 4);
 
 #[repr(C)]
@@ -103,7 +115,10 @@ struct Uniforms {
 }
 
 struct CachedUrlTexture {
+    _texture: wgpu::Texture,
     view: wgpu::TextureView,
+    width: u32,
+    height: u32,
 }
 
 pub(super) struct QuadPipeline {
@@ -115,7 +130,7 @@ pub(super) struct QuadPipeline {
     paint_capacity: usize,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
-    url_cache: HashMap<String, CachedUrlTexture>,
+    url_cache: HashMap<String, Option<CachedUrlTexture>>,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
     instances: wgpu::Buffer,
     instance_capacity: usize,
@@ -169,7 +184,7 @@ impl QuadPipeline {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -284,6 +299,10 @@ impl QuadPipeline {
         self.url_bind_groups.clear();
     }
 
+    pub(super) fn pending_len(&self) -> u32 {
+        self.pending.len() as u32
+    }
+
     pub(super) fn paint_buffer(&self) -> &wgpu::Buffer {
         &self.paint_buffer
     }
@@ -297,6 +316,7 @@ impl QuadPipeline {
         clip: LogicalRect,
         fragment_clip: super::clip::FragmentClip,
         affine: [f32; 6],
+        persp: [f32; 2],
         background: Option<[f32; 4]>,
         border_color: Option<[f32; 4]>,
         border_width: f32,
@@ -305,84 +325,227 @@ impl QuadPipeline {
         opacity: f32,
         surface: &QuadSurfacePaint,
     ) -> Option<u32> {
-        let world = super::clip::transformed_aabb(bounds, affine);
+        let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
         let _ = world.intersection(clip)?;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
-        let translation = super::clip::is_translation(affine);
-        let (position, instance_affine, snap) = if translation {
+        let translation = super::clip::is_translation_projective(affine, persp);
+        let (position, instance_affine, instance_persp, snap) = if translation {
             (
                 [bounds.x + affine[4], bounds.y + affine[5]],
                 super::clip::IDENTITY_AFFINE,
+                [0.0, 0.0],
                 1,
             )
         } else {
-            ([bounds.x, bounds.y], affine, 0)
+            ([bounds.x, bounds.y], affine, persp, 0)
         };
         let index = self.pending.len() as u32;
-        let paint = pack_paint(
-            device,
-            queue,
-            &mut self.url_cache,
-            surface,
-            bounds.width,
-            bounds.height,
-        );
-        let paint_url = if paint.flags & PAINT_URL != 0 {
-            surface
-                .background_image
-                .as_ref()
-                .and_then(|image| match image {
-                    BackgroundImage::Url { url, .. } => Some(url.clone()),
-                    _ => None,
-                })
+        let shadows = collect_shadows(shadow, surface);
+        let split_shadows = shadows.len() > 1 || shadows.iter().any(|layer| layer.inset);
+        let outsets = shadows
+            .iter()
+            .copied()
+            .filter(|layer| !layer.inset)
+            .collect::<Vec<_>>();
+        let insets = shadows
+            .iter()
+            .copied()
+            .filter(|layer| layer.inset)
+            .collect::<Vec<_>>();
+        let fill_shadow = if split_shadows {
+            None
+        } else {
+            outsets.first().copied()
+        };
+        let (mut edge_widths, edge_colors) =
+            resolved_instance_border(border_color, border_width, surface);
+        let zero_widths = [0.0f32; 4];
+        let zero_colors = [[0.0f32; 4]; 4];
+        let mut layers = surface_paint_layers(surface);
+        let content_layer = if surface.content_image.is_some() {
+            layers.pop()
         } else {
             None
         };
-        self.pending_paint.push(paint);
-        self.pending_urls.push(paint_url);
-        self.pending.push(SolidInstance {
-            color: pack_linear(with_opacity(
-                background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
+        let border_tiles = prepare_border_image_tiles(
+            device,
+            queue,
+            &mut self.url_cache,
+            surface.border_image.as_ref(),
+            bounds.width,
+            bounds.height,
+        );
+        if border_tiles.is_some() {
+            edge_widths = zero_widths;
+        }
+        if split_shadows {
+            for layer in outsets.iter().rev() {
+                push_solid_instance(
+                    &mut self.pending,
+                    &mut self.pending_paint,
+                    &mut self.pending_urls,
+                    shadow_only_paint(false),
+                    None,
+                    position,
+                    [bounds.width, bounds.height],
+                    None,
+                    zero_colors,
+                    zero_widths,
+                    corner_radius,
+                    Some(*layer),
+                    opacity,
+                    snap,
+                    instance_affine,
+                    instance_persp,
+                    fragment_clip,
+                );
+            }
+        }
+        if layers.is_empty() {
+            let paint = pack_shared(
+                device,
+                queue,
+                &mut self.url_cache,
+                surface,
+                bounds.width,
+                bounds.height,
+                None,
+            );
+            push_solid_instance(
+                &mut self.pending,
+                &mut self.pending_paint,
+                &mut self.pending_urls,
+                paint,
+                None,
+                position,
+                [bounds.width, bounds.height],
+                background,
+                edge_colors,
+                edge_widths,
+                corner_radius,
+                fill_shadow,
                 opacity,
-            )),
-            position,
-            size: [bounds.width, bounds.height],
-            border_color: pack_linear(with_opacity(
-                border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]),
+                snap,
+                instance_affine,
+                instance_persp,
+                fragment_clip,
+            );
+        } else {
+            for (layer_index, layer) in layers.iter().enumerate() {
+                let (paint, paint_url) = pack_layer(
+                    device,
+                    queue,
+                    &mut self.url_cache,
+                    surface,
+                    layer,
+                    bounds.width,
+                    bounds.height,
+                );
+                let first = layer_index == 0;
+                push_solid_instance(
+                    &mut self.pending,
+                    &mut self.pending_paint,
+                    &mut self.pending_urls,
+                    paint,
+                    paint_url,
+                    position,
+                    [bounds.width, bounds.height],
+                    if first { background } else { None },
+                    if first { edge_colors } else { zero_colors },
+                    if first { edge_widths } else { zero_widths },
+                    corner_radius,
+                    if first { fill_shadow } else { None },
+                    opacity,
+                    snap,
+                    instance_affine,
+                    instance_persp,
+                    fragment_clip,
+                );
+            }
+        }
+        if let Some((paint_url, tiles)) = border_tiles.as_ref() {
+            for tile in tiles {
+                let paint = QuadPaintData {
+                    flags: PAINT_URL,
+                    url_dest: url_dest_for_uv(tile.u0, tile.v0, tile.u1, tile.v1),
+                    ..Default::default()
+                };
+                push_solid_instance(
+                    &mut self.pending,
+                    &mut self.pending_paint,
+                    &mut self.pending_urls,
+                    paint,
+                    Some(paint_url.clone()),
+                    [position[0] + tile.dest_x, position[1] + tile.dest_y],
+                    [tile.dest_w, tile.dest_h],
+                    None,
+                    zero_colors,
+                    zero_widths,
+                    [0.0; 4],
+                    None,
+                    opacity,
+                    snap,
+                    instance_affine,
+                    instance_persp,
+                    fragment_clip,
+                );
+            }
+        }
+        if let Some(layer) = content_layer {
+            let (paint, paint_url) = pack_layer(
+                device,
+                queue,
+                &mut self.url_cache,
+                surface,
+                layer,
+                bounds.width,
+                bounds.height,
+            );
+            push_solid_instance(
+                &mut self.pending,
+                &mut self.pending_paint,
+                &mut self.pending_urls,
+                paint,
+                paint_url,
+                position,
+                [bounds.width, bounds.height],
+                None,
+                zero_colors,
+                zero_widths,
+                corner_radius,
+                None,
                 opacity,
-            )),
-            border_radius: corner_radius,
-            border_width,
-            shadow_color: pack_linear(with_opacity(
-                shadow
-                    .map(|shadow| shadow.color)
-                    .unwrap_or([0.0, 0.0, 0.0, 0.0]),
-                opacity,
-            )),
-            shadow_offset: [
-                shadow.map(|shadow| shadow.offset_x).unwrap_or(0.0),
-                shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0),
-            ],
-            shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
-            shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0),
-            snap,
-            affine_abcd: [
-                instance_affine[0],
-                instance_affine[1],
-                instance_affine[2],
-                instance_affine[3],
-            ],
-            affine_ef: [instance_affine[4], instance_affine[5]],
-            clip_rect: fragment_clip.rect,
-            clip_inv_abcd: fragment_clip.inv_abcd,
-            clip_inv_ef: [
-                fragment_clip.inv_ef[0],
-                fragment_clip.inv_ef[1],
-                fragment_clip.corner_radius,
-            ],
-        });
+                snap,
+                instance_affine,
+                instance_persp,
+                fragment_clip,
+            );
+        }
+        if split_shadows {
+            for layer in insets.iter().rev() {
+                push_solid_instance(
+                    &mut self.pending,
+                    &mut self.pending_paint,
+                    &mut self.pending_urls,
+                    shadow_only_paint(true),
+                    None,
+                    position,
+                    [bounds.width, bounds.height],
+                    None,
+                    zero_colors,
+                    zero_widths,
+                    corner_radius,
+                    Some(*layer),
+                    opacity,
+                    snap,
+                    instance_affine,
+                    instance_persp,
+                    fragment_clip,
+                );
+            }
+        }
         Some(index)
     }
 
@@ -466,6 +629,7 @@ impl QuadPipeline {
     fn create_url_bind_group(&self, device: &wgpu::Device, url: Option<&str>) -> wgpu::BindGroup {
         let url_view = url
             .and_then(|key| self.url_cache.get(key))
+            .and_then(|cached| cached.as_ref())
             .map(|cached| &cached.view)
             .unwrap_or(&self.url_view);
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -535,16 +699,200 @@ impl QuadPipeline {
     }
 }
 
+fn collect_shadows(
+    primary: Option<ComponentElevation>,
+    surface: &QuadSurfacePaint,
+) -> Vec<ComponentElevation> {
+    let mut shadows = Vec::new();
+    if let Some(shadow) = primary {
+        shadows.push(shadow);
+    }
+    shadows.extend(surface.extra_shadows.iter().copied());
+    shadows.truncate(nana_ui_core::MAX_BOX_SHADOWS);
+    shadows
+}
+
+fn shadow_only_paint(inset: bool) -> QuadPaintData {
+    let mut paint = QuadPaintData::default();
+    if inset {
+        paint.flags |= PAINT_SHADOW_INSET;
+    }
+    paint
+}
+
+fn push_solid_instance(
+    pending: &mut Vec<SolidInstance>,
+    pending_paint: &mut Vec<QuadPaintData>,
+    pending_urls: &mut Vec<Option<String>>,
+    mut paint: QuadPaintData,
+    paint_url: Option<String>,
+    position: [f32; 2],
+    size: [f32; 2],
+    background: Option<[f32; 4]>,
+    border_colors: [[f32; 4]; 4],
+    border_widths: [f32; 4],
+    corner_radius: [f32; 4],
+    shadow: Option<ComponentElevation>,
+    opacity: f32,
+    snap: u32,
+    instance_affine: [f32; 6],
+    instance_persp: [f32; 2],
+    fragment_clip: super::clip::FragmentClip,
+) {
+    paint.border_color_right = pack_linear(with_opacity(border_colors[1], opacity));
+    paint.border_color_bottom = pack_linear(with_opacity(border_colors[2], opacity));
+    paint.border_color_left = pack_linear(with_opacity(border_colors[3], opacity));
+    pending_paint.push(paint);
+    pending_urls.push(paint_url);
+    pending.push(SolidInstance {
+        color: pack_linear(with_opacity(
+            background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            opacity,
+        )),
+        position,
+        size,
+        border_color: pack_linear(with_opacity(border_colors[0], opacity)),
+        border_radius: corner_radius,
+        border_widths,
+        shadow_color: pack_linear(with_opacity(
+            shadow
+                .map(|shadow| shadow.color)
+                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            opacity,
+        )),
+        shadow_offset: [
+            shadow.map(|shadow| shadow.offset_x).unwrap_or(0.0),
+            shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0),
+        ],
+        shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
+        shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0)
+            + paint.outline_width.max(0.0),
+        snap,
+        affine_abcd: [
+            instance_affine[0],
+            instance_affine[1],
+            instance_affine[2],
+            instance_affine[3],
+        ],
+        affine_ef: [
+            instance_affine[4],
+            instance_affine[5],
+            instance_persp[0],
+            instance_persp[1],
+        ],
+        clip_rect: fragment_clip.rect,
+        clip_inv_abcd: fragment_clip.inv_abcd,
+        clip_inv_ef: [
+            fragment_clip.inv_ef[0],
+            fragment_clip.inv_ef[1],
+            fragment_clip.corner_radius,
+        ],
+    });
+}
+
+fn pack_border_styles(codes: [u8; 4]) -> u32 {
+    (u32::from(codes[0]) & 3)
+        | ((u32::from(codes[1]) & 3) << 2)
+        | ((u32::from(codes[2]) & 3) << 4)
+        | ((u32::from(codes[3]) & 3) << 6)
+}
+
+fn resolved_instance_border(
+    border_color: Option<[f32; 4]>,
+    border_width: f32,
+    surface: &QuadSurfacePaint,
+) -> ([f32; 4], [[f32; 4]; 4]) {
+    let fallback = border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    if surface
+        .border_widths
+        .iter()
+        .copied()
+        .any(|width| width > 0.0)
+    {
+        let mut colors = surface.border_colors;
+        for color in colors.iter_mut() {
+            if color[3] <= 0.0 {
+                *color = fallback;
+            }
+        }
+        (surface.border_widths, colors)
+    } else {
+        ([border_width.max(0.0); 4], [fallback; 4])
+    }
+}
+
+fn surface_paint_layers(surface: &QuadSurfacePaint) -> Vec<&BackgroundImage> {
+    let mut layers = Vec::new();
+    for layer in surface.background_layers.iter().rev() {
+        layers.push(layer);
+    }
+    if let Some(image) = surface.background_image.as_ref() {
+        layers.push(image);
+    }
+    let cap = if surface.content_image.is_some() {
+        MAX_BACKGROUND_LAYERS.saturating_sub(1)
+    } else {
+        MAX_BACKGROUND_LAYERS
+    };
+    if layers.len() > cap {
+        let skip = layers.len() - cap;
+        layers.drain(..skip);
+    }
+    if let Some(image) = surface.content_image.as_ref() {
+        layers.push(image);
+    }
+    layers
+}
+
 fn pack_paint(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, CachedUrlTexture>,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
     surface: &QuadSurfacePaint,
     width: f32,
     height: f32,
 ) -> QuadPaintData {
+    let layers = surface_paint_layers(surface);
+    pack_shared(
+        device,
+        queue,
+        cache,
+        surface,
+        width,
+        height,
+        layers.first().copied(),
+    )
+}
+
+fn pack_layer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    surface: &QuadSurfacePaint,
+    layer: &BackgroundImage,
+    width: f32,
+    height: f32,
+) -> (QuadPaintData, Option<String>) {
+    let paint = pack_shared(device, queue, cache, surface, width, height, Some(layer));
+    let paint_url = if paint.flags & PAINT_URL != 0 {
+        layer.url_str().map(str::to_string)
+    } else {
+        None
+    };
+    (paint, paint_url)
+}
+
+fn pack_shared(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    surface: &QuadSurfacePaint,
+    width: f32,
+    height: f32,
+    layer: Option<&BackgroundImage>,
+) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
-    if let Some(BackgroundImage::Gradient(grad)) = surface.background_image.as_ref() {
+    if let Some(BackgroundImage::Gradient(grad)) = layer {
         paint.flags |= PAINT_GRADIENT;
         match grad {
             CssGradient::Linear(linear) => {
@@ -582,8 +930,14 @@ fn pack_paint(
             paint.filter_b = filter.brightness;
             paint.filter_s = filter.saturate;
             paint.filter_c = filter.contrast;
+            paint.filter_hue = filter.hue_rotate_deg;
         }
     }
+    if surface.outline_width > 0.0 {
+        paint.outline_width = surface.outline_width;
+        paint.outline_color = surface.outline_color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    }
+    paint.border_styles = pack_border_styles(surface.border_styles);
     if let Some(points) = surface.polygon_clip.as_ref() {
         if points.len() >= 3 {
             paint.flags |= PAINT_POLYGON;
@@ -598,15 +952,35 @@ fn pack_paint(
             paint.poly3 = [flat[6][0], flat[6][1], flat[7][0], flat[7][1]];
         }
     }
-    if let Some(BackgroundImage::Url { url, fit }) = surface.background_image.as_ref() {
-        if load_url_texture(device, queue, cache, url) {
+    if let Some(BackgroundImage::Url {
+        url,
+        fit,
+        size_width,
+        size_height,
+        position,
+        repeat,
+    }) = layer
+    {
+        if let Some((tex_w, tex_h)) = load_url_texture(device, queue, cache, url) {
             paint.flags |= PAINT_URL;
-            paint.url_tex_index = 0;
+            paint.url_tex_index = repeat_bits(*repeat);
             paint.url_fit = match fit {
                 BackgroundImageFit::Cover => 0,
                 BackgroundImageFit::Contain => 1,
                 BackgroundImageFit::Stretch => 2,
+                BackgroundImageFit::Auto => 3,
+                BackgroundImageFit::Length => 4,
             };
+            paint.url_dest = url_dest_rect(
+                *fit,
+                *size_width,
+                *size_height,
+                *position,
+                width,
+                height,
+                tex_w as f32,
+                tex_h as f32,
+            );
         }
     }
     paint
@@ -656,14 +1030,15 @@ fn pack_mask_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::GradientSto
 fn load_url_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, CachedUrlTexture>,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
     url: &str,
-) -> bool {
-    if cache.contains_key(url) {
-        return true;
+) -> Option<(u32, u32)> {
+    if let Some(cached) = cache.get(url) {
+        return cached.as_ref().map(|entry| (entry.width, entry.height));
     }
     let Some((width, height, rgba)) = decode_url_rgba(url) else {
-        return false;
+        cache.insert(url.to_string(), None);
+        return None;
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("nana-ui.scene.quad.url"),
@@ -699,47 +1074,269 @@ fn load_url_texture(
         },
     );
     let view = texture.create_view(&Default::default());
-    cache.insert(url.to_string(), CachedUrlTexture { view });
-    true
+    cache.insert(
+        url.to_string(),
+        Some(CachedUrlTexture {
+            _texture: texture,
+            view,
+            width,
+            height,
+        }),
+    );
+    Some((width, height))
 }
 
-fn decode_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let resolved = resolve_background_image_url(url)?;
-    if resolved.starts_with("data:") {
-        return decode_data_url_rgba(&resolved);
+const BORDER_IMAGE_LINEAR_SIZE: u32 = 64;
+
+fn prepare_border_image_tiles(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    spec: Option<&BorderImageSpec>,
+    box_w: f32,
+    box_h: f32,
+) -> Option<(String, Vec<BorderImageTile>)> {
+    let spec = spec.filter(|spec| spec.paints_linear_or_url())?;
+    let (key, image_w, image_h) = match &spec.source {
+        BackgroundImage::Url { url, .. } => {
+            if url.is_empty() {
+                return None;
+            }
+            let (tex_w, tex_h) = load_url_texture(device, queue, cache, url)?;
+            (url.clone(), tex_w as f32, tex_h as f32)
+        }
+        BackgroundImage::Gradient(CssGradient::Linear(linear)) => {
+            let key = linear_gradient_cache_key(linear);
+            if !cache.contains_key(&key) {
+                let rgba = rasterize_linear_gradient(linear, BORDER_IMAGE_LINEAR_SIZE);
+                insert_rgba_texture(
+                    device,
+                    queue,
+                    cache,
+                    &key,
+                    BORDER_IMAGE_LINEAR_SIZE,
+                    BORDER_IMAGE_LINEAR_SIZE,
+                    &rgba,
+                );
+            } else if cache.get(&key).is_some_and(Option::is_none) {
+                return None;
+            }
+            (key, box_w, box_h)
+        }
+        BackgroundImage::Gradient(CssGradient::Radial(_)) => return None,
+    };
+    let tiles = spec.tiles(image_w, image_h, box_w, box_h);
+    if tiles.is_empty() {
+        None
+    } else {
+        Some((key, tiles))
     }
-    if resolved.starts_with("http://") || resolved.starts_with("https://") {
-        return decode_http_rgba(&resolved);
+}
+
+fn insert_rgba_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    key: &str,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui.scene.quad.border-image"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&Default::default());
+    cache.insert(
+        key.to_string(),
+        Some(CachedUrlTexture {
+            _texture: texture,
+            view,
+            width,
+            height,
+        }),
+    );
+}
+
+fn linear_gradient_cache_key(linear: &LinearGradient) -> String {
+    let mut key = format!("nana:border-image-linear:{:.4}", linear.angle_deg);
+    for stop in linear.stops.iter().take(8) {
+        key.push_str(&format!(
+            ":{:.4},{:.4},{:.4},{:.4},{:.4}",
+            stop.position, stop.color[0], stop.color[1], stop.color[2], stop.color[3]
+        ));
     }
-    let bytes = std::fs::read(&resolved).ok()?;
-    decode_image_bytes(&bytes)
+    key
 }
 
-fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let payload = url
-        .strip_prefix("data:image/png;base64,")
-        .or_else(|| url.strip_prefix("data:image/jpeg;base64,"))?;
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .ok()?;
-    decode_image_bytes(&bytes)
-}
-
-fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let mut response = ureq::get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
+fn rasterize_linear_gradient(linear: &LinearGradient, size: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    let size_f = size as f32;
+    for y in 0..size {
+        for x in 0..size {
+            let t = cpu_gradient_t(
+                (x as f32 + 0.5) / size_f,
+                (y as f32 + 0.5) / size_f,
+                linear.angle_deg,
+            );
+            let color = cpu_sample_stops(t, &linear.stops);
+            let i = ((y * size + x) * 4) as usize;
+            rgba[i] = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[i + 1] = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[i + 2] = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+            rgba[i + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
     }
-    let bytes = response.body_mut().read_to_vec().ok()?;
-    decode_image_bytes(&bytes)
+    rgba
 }
 
-fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let image = image::load_from_memory(bytes).ok()?;
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Some((width, height, rgba.into_raw()))
+fn cpu_gradient_t(lx: f32, ly: f32, angle_deg: f32) -> f32 {
+    let rad = angle_deg * 0.017453292;
+    let axis_x = rad.sin();
+    let axis_y = -rad.cos();
+    let denom = axis_x.abs() + axis_y.abs();
+    if denom <= 0.0001 {
+        return 0.5;
+    }
+    ((lx - 0.5) * axis_x / denom + (ly - 0.5) * axis_y / denom + 0.5).clamp(0.0, 1.0)
+}
+
+fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
+    if stops.is_empty() {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    if stops.len() == 1 || t <= stops[0].position {
+        return stops[0].color;
+    }
+    if t >= stops[stops.len() - 1].position {
+        return stops[stops.len() - 1].color;
+    }
+    for window in stops.windows(2) {
+        let a = window[0];
+        let b = window[1];
+        if t >= a.position && t <= b.position {
+            let mix = (t - a.position) / (b.position - a.position).max(0.0001);
+            return [
+                a.color[0] + (b.color[0] - a.color[0]) * mix,
+                a.color[1] + (b.color[1] - a.color[1]) * mix,
+                a.color[2] + (b.color[2] - a.color[2]) * mix,
+                a.color[3] + (b.color[3] - a.color[3]) * mix,
+            ];
+        }
+    }
+    stops[0].color
+}
+
+fn url_dest_for_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [f32; 4] {
+    let du = (u1 - u0).max(1.0e-6);
+    let dv = (v1 - v0).max(1.0e-6);
+    [-u0 / du, -v0 / dv, 1.0 / du, 1.0 / dv]
+}
+
+fn repeat_bits(repeat: BackgroundRepeat) -> u32 {
+    match repeat {
+        BackgroundRepeat::NoRepeat => 0,
+        BackgroundRepeat::Repeat => 1 | 2,
+        BackgroundRepeat::RepeatX => 1,
+        BackgroundRepeat::RepeatY => 2,
+    }
+}
+
+fn url_dest_rect(
+    fit: BackgroundImageFit,
+    size_width: Option<LengthSpec>,
+    size_height: Option<LengthSpec>,
+    position: nana_ui_core::BackgroundPosition,
+    box_w: f32,
+    box_h: f32,
+    tex_w: f32,
+    tex_h: f32,
+) -> [f32; 4] {
+    let (drawn_w, drawn_h) = match fit {
+        BackgroundImageFit::Stretch => (box_w, box_h),
+        BackgroundImageFit::Cover => {
+            let scale = (box_w / tex_w.max(1.0)).max(box_h / tex_h.max(1.0));
+            (tex_w * scale, tex_h * scale)
+        }
+        BackgroundImageFit::Contain => {
+            let scale = (box_w / tex_w.max(1.0)).min(box_h / tex_h.max(1.0));
+            (tex_w * scale, tex_h * scale)
+        }
+        BackgroundImageFit::Auto => (tex_w, tex_h),
+        BackgroundImageFit::Length => {
+            resolve_explicit_size(size_width, size_height, box_w, box_h, tex_w, tex_h)
+        }
+    };
+    let origin_x = position_origin(position.x, box_w, drawn_w);
+    let origin_y = position_origin(position.y, box_h, drawn_h);
+    [
+        origin_x / box_w.max(1.0),
+        origin_y / box_h.max(1.0),
+        drawn_w / box_w.max(1.0),
+        drawn_h / box_h.max(1.0),
+    ]
+}
+
+fn resolve_explicit_size(
+    size_width: Option<LengthSpec>,
+    size_height: Option<LengthSpec>,
+    box_w: f32,
+    box_h: f32,
+    tex_w: f32,
+    tex_h: f32,
+) -> (f32, f32) {
+    let width = size_width.and_then(|spec| resolve_size_len(spec, box_w));
+    let height = size_height.and_then(|spec| resolve_size_len(spec, box_h));
+    match (width, height) {
+        (Some(width), Some(height)) => (width, height),
+        (Some(width), None) => (width, width * tex_h / tex_w.max(1.0)),
+        (None, Some(height)) => (height * tex_w / tex_h.max(1.0), height),
+        (None, None) => (tex_w, tex_h),
+    }
+}
+
+fn resolve_size_len(spec: LengthSpec, box_len: f32) -> Option<f32> {
+    match spec {
+        LengthSpec::Auto | LengthSpec::Fill | LengthSpec::Shrink => None,
+        other => other.resolve_px(Some(box_len)),
+    }
+}
+
+fn position_origin(spec: LengthSpec, box_len: f32, image_len: f32) -> f32 {
+    match spec {
+        LengthSpec::Percent(percent) => (box_len - image_len) * (percent / 100.0),
+        LengthSpec::Px(value) => value,
+        other => other.resolve_px(Some(box_len)).unwrap_or(0.0),
+    }
 }
 
 fn solid_pipeline(
@@ -764,14 +1361,14 @@ fn solid_pipeline(
                     2 => Float32x2,
                     3 => Float32x4,
                     4 => Float32x4,
-                    5 => Float32,
+                    5 => Float32x4,
                     6 => Float32x4,
                     7 => Float32x2,
                     8 => Float32,
                     9 => Float32,
                     10 => Uint32,
                     11 => Float32x4,
-                    12 => Float32x2,
+                    12 => Float32x4,
                     13 => Float32x4,
                     14 => Float32x4,
                     15 => Float32x3,
@@ -852,4 +1449,51 @@ fn pack_paint_sets_mask_flag() {
     let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
     assert_ne!(paint.flags & PAINT_MASK, 0, "flags={}", paint.flags);
     assert_eq!(paint.mask_stop_count, 2);
+}
+
+#[cfg(test)]
+#[test]
+fn pack_paint_sets_hue_rotate() {
+    use nana_ui_core::ColorFilter;
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let surface = QuadSurfacePaint {
+        filter: Some(ColorFilter {
+            hue_rotate_deg: 90.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    assert_ne!(paint.flags & PAINT_FILTER, 0, "flags={}", paint.flags);
+    assert!((paint.filter_hue - 90.0).abs() < 0.01);
+}
+
+#[cfg(test)]
+#[test]
+fn pack_paint_packs_dashed_border_styles() {
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let surface = QuadSurfacePaint {
+        border_styles: [1, 2, 1, 0],
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    assert_eq!(paint.border_styles, 1 | (2 << 2) | (1 << 4));
+}
+
+#[cfg(test)]
+#[test]
+fn url_dest_for_uv_maps_source_slice() {
+    let dest = url_dest_for_uv(0.25, 0.0, 0.75, 0.5);
+    let uv0_x = (0.0 - dest[0]) / dest[2];
+    let uv1_x = (1.0 - dest[0]) / dest[2];
+    let uv0_y = (0.0 - dest[1]) / dest[3];
+    let uv1_y = (1.0 - dest[1]) / dest[3];
+    assert!((uv0_x - 0.25).abs() < 1.0e-5);
+    assert!((uv1_x - 0.75).abs() < 1.0e-5);
+    assert!((uv0_y - 0.0).abs() < 1.0e-5);
+    assert!((uv1_y - 0.5).abs() < 1.0e-5);
 }

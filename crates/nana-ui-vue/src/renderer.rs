@@ -797,8 +797,10 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("injectStylesheet", move |args| {
             let css = arg_str(args, 0).unwrap_or_default();
+            let href = arg_str(args, 1);
             lock_doc(&host.document)?.inject_stylesheet(&css);
             let mut bridge = lock_bridge(&host.bridge)?;
+            apply_inject_stylesheet_href(&mut bridge, href.as_deref());
             bridge.inject_stylesheet(&css);
             let mut doc = lock_doc(&host.document)?;
             bridge.resolve_document_layout(&mut doc);
@@ -807,40 +809,23 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     }
     {
         let host = host.clone();
+        api.register("evaluateMediaQuery", move |args| {
+            let query = arg_str(args, 0).unwrap_or_default();
+            let bridge = lock_bridge(&host.bridge)?;
+            Ok(HostValue::Bool(bridge.evaluate_media_query_text(&query)))
+        });
+    }
+    {
+        let host = host.clone();
         api.register("computedStyle", move |args| {
             let el = arg_handle(args, 0)?;
+            let guard = lock_doc(&host.document)?;
             let bridge = lock_bridge(&host.bridge)?;
-            let id = widget_id(el);
-            let motion = bridge.computed_motion_for(id).cloned().unwrap_or_default();
-            Ok(HostValue::Object(
-                [
-                    (
-                        "transitionDelay".into(),
-                        HostValue::string(motion.transition_delay),
-                    ),
-                    (
-                        "transitionDuration".into(),
-                        HostValue::string(motion.transition_duration),
-                    ),
-                    (
-                        "transitionProperty".into(),
-                        HostValue::string(motion.transition_property),
-                    ),
-                    (
-                        "animationDelay".into(),
-                        HostValue::string(motion.animation_delay),
-                    ),
-                    (
-                        "animationDuration".into(),
-                        HostValue::string(motion.animation_duration),
-                    ),
-                    (
-                        "animationName".into(),
-                        HostValue::string(motion.animation_name),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
+            Ok(computed_style_host_value(
+                &guard,
+                &bridge,
+                &host.layout_boxes,
+                el,
             ))
         });
     }
@@ -950,10 +935,12 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("injectStyleElement", move |args| {
             let css = arg_str(args, 0).unwrap_or_default();
+            let href = arg_str(args, 1);
             let mut guard = lock_doc(&host.document)?;
             let handle = guard.inject_style_element(&css);
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
+            apply_inject_stylesheet_href(&mut bridge, href.as_deref());
             bridge.inject_stylesheet(&css);
             let mut doc = lock_doc(&host.document)?;
             bridge.resolve_document_layout(&mut doc);
@@ -1217,6 +1204,136 @@ fn is_falsey_attr_value(value: &HostValue) -> bool {
     }
 }
 
+fn computed_style_host_value(
+    doc: &NanaTreeDocument,
+    bridge: &MessageBridge,
+    store: &LayoutBoxStore,
+    el: NodeHandle,
+) -> HostValue {
+    let id = widget_id(el);
+    let motion = bridge.computed_motion_for(id).cloned().unwrap_or_default();
+    let box_ = get_layout_box_from(store, doc, el);
+    let (width, height) = match box_ {
+        Some(b) => (b.width, b.height),
+        None => (0.0, 0.0),
+    };
+    let layout = node_layout(bridge, el);
+    let opacity = layout.and_then(|l| l.opacity).unwrap_or(1.0);
+    let color = layout.and_then(|l| l.color);
+    let transform = layout.map(|l| {
+        if let Some(t) = l.transform {
+            format_used_transform(t)
+        } else if let Some(mat) = l.transform_3d {
+            format_used_mat4(mat)
+        } else {
+            "none".into()
+        }
+    });
+    let map = [
+        (
+            "transitionDelay".into(),
+            HostValue::string(motion.transition_delay),
+        ),
+        (
+            "transitionDuration".into(),
+            HostValue::string(motion.transition_duration),
+        ),
+        (
+            "transitionProperty".into(),
+            HostValue::string(motion.transition_property),
+        ),
+        (
+            "animationDelay".into(),
+            HostValue::string(motion.animation_delay),
+        ),
+        (
+            "animationDuration".into(),
+            HostValue::string(motion.animation_duration),
+        ),
+        (
+            "animationName".into(),
+            HostValue::string(motion.animation_name),
+        ),
+        ("width".into(), HostValue::string(format_used_px(width))),
+        ("height".into(), HostValue::string(format_used_px(height))),
+        (
+            "opacity".into(),
+            HostValue::string(format_used_number(opacity)),
+        ),
+        (
+            "color".into(),
+            HostValue::string(color.map(format_used_color).unwrap_or_default()),
+        ),
+        (
+            "transform".into(),
+            HostValue::string(transform.unwrap_or_else(|| "none".into())),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    HostValue::Object(map)
+}
+
+fn format_used_px(value: f32) -> String {
+    if !value.is_finite() {
+        return "0px".into();
+    }
+    format!("{}px", format_used_number(value))
+}
+
+fn format_used_number(value: f32) -> String {
+    if !value.is_finite() {
+        return "0".into();
+    }
+    let rounded = (value * 1000.0).round() / 1000.0;
+    if (rounded - rounded.round()).abs() < 1e-6 {
+        format!("{}", rounded.round() as i32)
+    } else {
+        let s = format!("{rounded:.3}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn format_used_color([r, g, b, a]: [f32; 4]) -> String {
+    let ri = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let gi = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bi = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if a >= 0.999 {
+        format!("rgb({ri}, {gi}, {bi})")
+    } else {
+        format!(
+            "rgba({ri}, {gi}, {bi}, {})",
+            format_used_number(a.clamp(0.0, 1.0))
+        )
+    }
+}
+
+fn format_used_transform(t: nana_ui_core::PaintTransform) -> String {
+    if t.is_identity() {
+        return "none".into();
+    }
+    format!(
+        "matrix({}, {}, {}, {}, {}, {})",
+        format_used_number(t.a),
+        format_used_number(t.b),
+        format_used_number(t.c),
+        format_used_number(t.d),
+        format_used_number(t.e),
+        format_used_number(t.f)
+    )
+}
+
+fn format_used_mat4(t: nana_ui_core::PaintMat4) -> String {
+    if t.is_identity() {
+        return "none".into();
+    }
+    if let Some(affine) = t.as_affine() {
+        return format_used_transform(affine);
+    }
+    let parts: Vec<String> = t.m.iter().copied().map(format_used_number).collect();
+    format!("matrix3d({})", parts.join(", "))
+}
+
 fn layout_box_host_value(
     doc: &NanaTreeDocument,
     bridge: &MessageBridge,
@@ -1228,11 +1345,11 @@ fn layout_box_host_value(
         Some(b) => (b.x as f64, b.y as f64, b.width as f64, b.height as f64),
         None => (0.0, 0.0, 0.0, 0.0),
     };
-    let border_width = node_layout(bridge, el)
-        .and_then(|layout| layout.border_width)
-        .unwrap_or(0.0) as f64;
-    let client_width = (width - 2.0 * border_width).max(0.0);
-    let client_height = (height - 2.0 * border_width).max(0.0);
+    let edges = node_layout(bridge, el)
+        .map(|layout| layout.resolved_border_edges())
+        .unwrap_or_default();
+    let client_width = (width - edges.left as f64 - edges.right as f64).max(0.0);
+    let client_height = (height - edges.top as f64 - edges.bottom as f64).max(0.0);
     let (scroll_width, scroll_height) =
         query_scroll_content_size(store, doc, el, client_width as f32, client_height as f32);
     let (offset_parent, offset_left, offset_top) =
@@ -1247,7 +1364,10 @@ fn layout_box_host_value(
             ("left", x),
             ("bottom", y + height),
             ("right", x + width),
-            ("borderWidth", border_width),
+            (
+                "borderWidth",
+                edges.top.max(edges.right).max(edges.bottom).max(edges.left) as f64,
+            ),
             ("clientWidth", client_width),
             ("clientHeight", client_height),
             ("scrollWidth", scroll_width as f64),
@@ -1255,8 +1375,8 @@ fn layout_box_host_value(
             ("offsetParent", offset_parent),
             ("offsetLeft", offset_left),
             ("offsetTop", offset_top),
-            ("clientLeft", border_width),
-            ("clientTop", border_width),
+            ("clientLeft", edges.left as f64),
+            ("clientTop", edges.top as f64),
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), HostValue::Number(value)))
@@ -1326,6 +1446,16 @@ fn app_shell_slot_widget_kind(kind_raw: &str) -> Option<WidgetKind> {
     let raw = raw.strip_prefix("nana-").unwrap_or(&raw);
     (raw == "app-title-bar").then_some(WidgetKind::Column)
 }
+
+fn apply_inject_stylesheet_href(bridge: &mut MessageBridge, href: Option<&str>) {
+    if let Some(href) = href
+        && let Some(base) = stylesheet_base_from_href(href)
+    {
+        bridge.set_stylesheet_base(base);
+    }
+}
+
+pub(crate) use crate::css_at_rule::stylesheet_base_from_href;
 
 fn arg_str(args: &[HostValue], index: usize) -> Option<String> {
     args.get(index).and_then(|v| match v {
@@ -1412,6 +1542,9 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
             }
             if let Some(is) = doc.get_attribute(node, "is") {
                 props.attrs.insert("is".into(), is);
+            }
+            if let Some(dir) = doc.get_attribute(node, "dir") {
+                props.attrs.insert("dir".into(), dir);
             }
             if let Some(class) = doc.get_attribute(node, "class") {
                 props.class_names = class.split_whitespace().map(str::to_string).collect();
@@ -1570,6 +1703,7 @@ fn camel_to_kebab(input: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     #[test]
     fn css_style_prop_name_converts_camel_case() {
@@ -2666,6 +2800,52 @@ mod tests {
     }
 
     #[test]
+    fn insert_static_content_dir_rtl_remaps_stylesheet_padding_inline_start() {
+        use nana_ui_core::LengthSpec;
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = doc.lock().unwrap().mount_root().0 as f64;
+        let pair = api
+            .call(
+                "insertStaticContent",
+                &[
+                    HostValue::string(r#"<div dir="rtl" class="box"></div>"#),
+                    HostValue::Number(body),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Null,
+                ],
+            )
+            .unwrap();
+        let HostValue::Array(ids) = pair else {
+            panic!("expected [start,end]");
+        };
+        let id = ids[0].as_f64().unwrap() as u64;
+        {
+            let mut bridge = bridge.lock().unwrap();
+            assert_eq!(
+                bridge.get(id).expect("static box").props.attrs.get("dir"),
+                Some(&"rtl".to_string())
+            );
+            bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
+            let layout = &bridge.get(id).expect("static box").props.layout;
+            assert_eq!(layout.dir, Some(crate::css_map::DirSpec::Rtl));
+            assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+            assert!(layout.padding_left.is_none());
+            assert!(!layout.flex_reverse);
+        }
+    }
+
+    #[test]
     fn scroll_into_view_host_op_scrolls_overflow_ancestor() {
         use crate::bridge::WidgetProps;
         use nana_ui_core::{LengthSpec, OverflowSpec};
@@ -3019,5 +3199,328 @@ mod tests {
             );
             assert_eq!(d.query_selector("body"), Some(NodeHandle(body as u64)));
         }
+    }
+
+    #[test]
+    fn inject_without_base_skips_relative_import() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let leaked = cwd.join("_nana_ui_must_not_import.css");
+        std::fs::write(&leaked, ".leaked { width: 99px; }").expect("bait css");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(leaked);
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                "@import \"_nana_ui_must_not_import.css\"; .local { height: 8px; }",
+            )],
+        )
+        .unwrap();
+        let skips = bridge.lock().unwrap().stylesheet_skips();
+        assert_eq!(
+            skips.imported_sheets, 0,
+            "relative @import without a document base must not scan cwd"
+        );
+        assert!(skips.skipped_at_rules >= 1);
+    }
+
+    #[test]
+    fn inject_href_sets_base_and_loads_relative_import() {
+        let dir = std::env::temp_dir().join(format!(
+            "nana-ui-css-base-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("base dir");
+        std::fs::write(dir.join("theme.css"), ".imported { width: 40px; }").expect("theme");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(dir.clone());
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let sheet_href = dir.join("app.css");
+        api.call(
+            "injectStylesheet",
+            &[
+                HostValue::string("@import \"theme.css\"; .local { height: 8px; }"),
+                HostValue::string(sheet_href.to_string_lossy().into_owned()),
+            ],
+        )
+        .unwrap();
+        let skips = bridge.lock().unwrap().stylesheet_skips();
+        assert_eq!(skips.imported_sheets, 1, "href must set stylesheet base");
+        assert_eq!(skips.skipped_at_rules, 0);
+    }
+
+    #[test]
+    fn match_media_screen_min_width_agrees_with_flatten() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(900, 500, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(el),
+                HostValue::string("class"),
+                HostValue::string("wide"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                "@media screen and (min-width: 800px) { .wide { width: 100px; height: 10px; } }",
+            )],
+        )
+        .unwrap();
+        api.call("resolveLayout", &[]).unwrap();
+
+        let screen = api
+            .call("evaluateMediaQuery", &[HostValue::string("screen")])
+            .unwrap();
+        assert_eq!(screen, HostValue::Bool(true));
+        let all = api
+            .call("evaluateMediaQuery", &[HostValue::string("all")])
+            .unwrap();
+        assert_eq!(all, HostValue::Bool(true));
+        let print = api
+            .call("evaluateMediaQuery", &[HostValue::string("print")])
+            .unwrap();
+        assert_eq!(print, HostValue::Bool(false));
+        let paren_screen = api
+            .call("evaluateMediaQuery", &[HostValue::string("(screen)")])
+            .unwrap();
+        let rust_paren = crate::css_at_rule::evaluate_media_query_list(
+            &crate::css_at_rule::parse_media_query_list("(screen)"),
+            &crate::css_at_rule::MediaEnvironment::default(),
+        );
+        assert_eq!(
+            paren_screen,
+            HostValue::Bool(rust_paren),
+            "matchMedia('(screen)') must use the same evaluator as CSS flatten"
+        );
+
+        let q = "screen and (min-width: 800px)";
+        let matches = api
+            .call("evaluateMediaQuery", &[HostValue::string(q)])
+            .unwrap();
+        let wide = crate::css_at_rule::MediaEnvironment {
+            width: 960.0,
+            height: 640.0,
+            color_scheme_dark: false,
+        };
+        let list = crate::css_at_rule::parse_media_query_list(q);
+        let flatten_match = crate::css_at_rule::evaluate_media_query_list(&list, &wide);
+        assert_eq!(matches, HostValue::Bool(flatten_match));
+        assert_eq!(matches, HostValue::Bool(true));
+
+        let got = doc
+            .lock()
+            .unwrap()
+            .layout_box(NodeHandle(el as u64))
+            .expect("wide box");
+        assert!(
+            (got.width - 100.0).abs() < 0.5,
+            "flatten must apply the matching @media screen rule, got {got:?}"
+        );
+
+        {
+            let mut d = doc.lock().unwrap();
+            d.set_viewport(400, 500, 1.0);
+        }
+        api.call("resolveLayout", &[]).unwrap();
+        let matches_narrow = api
+            .call("evaluateMediaQuery", &[HostValue::string(q)])
+            .unwrap();
+        assert_eq!(matches_narrow, HostValue::Bool(false));
+        let got_narrow = doc
+            .lock()
+            .unwrap()
+            .layout_box(NodeHandle(el as u64))
+            .expect("narrow box");
+        assert!(
+            (got_narrow.width - 100.0).abs() > 0.5,
+            "flatten must drop the rule when matchMedia is false, got {got_narrow:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_base_from_href_skips_bare_and_remote() {
+        assert!(stylesheet_base_from_href("theme.css").is_none());
+        assert!(stylesheet_base_from_href("https://example.com/a.css").is_none());
+        assert!(stylesheet_base_from_href("nana://app/").is_none());
+        assert!(stylesheet_base_from_href(".").is_none());
+        assert!(
+            stylesheet_base_from_href("//cdn.example.com/npm/pkg/theme.css").is_none(),
+            "protocol-relative must not become a Windows UNC jail"
+        );
+        assert!(stylesheet_base_from_href("//cdn.example.com/x.css").is_none());
+        assert!(stylesheet_base_from_href(r"\\cdn.example.com\npm\pkg\theme.css").is_none());
+        assert!(stylesheet_base_from_href("%2f%2fcdn.example.com/npm/pkg/theme.css").is_none());
+        assert!(stylesheet_base_from_href("file://evil.example/fonts/a.css").is_none());
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                stylesheet_base_from_href(r"\\?\C:\jail\src\theme.css"),
+                Some(PathBuf::from(r"\\?\C:\jail\src")),
+                "VerbatimDisk is a local jail, not UNC"
+            );
+        }
+        let dir = stylesheet_base_from_href("src/App.vue").expect("relative dir");
+        assert_eq!(dir, PathBuf::from("src"));
+    }
+
+    #[test]
+    fn inject_protocol_relative_href_skips_relative_import() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let leaked = cwd.join("_nana_ui_protocol_rel_must_not_import.css");
+        std::fs::write(&leaked, ".leaked { width: 99px; }").expect("bait css");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(leaked);
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 80, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        api.call(
+            "injectStylesheet",
+            &[
+                HostValue::string(
+                    "@import \"_nana_ui_protocol_rel_must_not_import.css\"; .local { height: 8px; }",
+                ),
+                HostValue::string("//cdn.example.com/npm/pkg/theme.css"),
+            ],
+        )
+        .unwrap();
+        assert!(stylesheet_base_from_href("//cdn.example.com/npm/pkg/theme.css").is_none());
+        let skips = bridge.lock().unwrap().stylesheet_skips();
+        assert_eq!(
+            skips.imported_sheets, 0,
+            "protocol-relative href must not set a jail or load cwd-relative @import"
+        );
+        assert!(skips.skipped_at_rules >= 1);
+    }
+
+    #[test]
+    fn computed_style_returns_used_layout_paint_from_draw_projection() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let store = Arc::new(LayoutBoxStore::new());
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge_and_layout(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+            Arc::clone(&store),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let el = api
+            .call("createElement", &[HostValue::string("div")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(el),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(el),
+                HostValue::string("style"),
+                HostValue::string(
+                    "color: rgb(0, 128, 0); opacity: 0.5; transform: translate(4px, 0)",
+                ),
+            ],
+        )
+        .unwrap();
+        store.record(NodeHandle(el as u64), 10.0, 20.0, 80.0, 24.0);
+        let result = api
+            .call("computedStyle", &[HostValue::Number(el)])
+            .expect("computedStyle");
+        let HostValue::Object(map) = result else {
+            panic!("expected object");
+        };
+        assert_eq!(map.get("width").and_then(HostValue::as_str), Some("80px"));
+        assert_eq!(map.get("height").and_then(HostValue::as_str), Some("24px"));
+        assert_eq!(map.get("opacity").and_then(HostValue::as_str), Some("0.5"));
+        assert_eq!(
+            map.get("color").and_then(HostValue::as_str),
+            Some("rgb(0, 128, 0)")
+        );
+        let transform = map
+            .get("transform")
+            .and_then(HostValue::as_str)
+            .unwrap_or("");
+        assert!(
+            transform.starts_with("matrix("),
+            "used transform must be CSS matrix, got {transform}"
+        );
     }
 }

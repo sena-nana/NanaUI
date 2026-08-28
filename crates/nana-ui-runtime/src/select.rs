@@ -445,6 +445,7 @@ fn select_menu_geometry(
             offset_y: 8.0,
             blur_radius: 16.0,
             spread_radius: 0.0,
+            inset: false,
         },
         background: palette.surface.as_rgba_array(),
         border: palette.border_soft.as_rgba_array(),

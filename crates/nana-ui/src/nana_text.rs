@@ -1,8 +1,8 @@
 //! Nana-owned cosmic-text shaper. Layout metrics stay on Runtime.
 
 use cosmic_text::{
-    Affinity, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics,
-    Shaping, Weight, Wrap,
+    Affinity, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag,
+    FontFeatures, FontSystem, Metrics, Shaping, Weight, Wrap,
 };
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{
@@ -48,6 +48,143 @@ pub(crate) fn lock_font_system(shared: &SharedFontSystem) -> MutexGuard<'_, Font
     shared
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Register a CSS `@font-face` source into the process-wide [`FontSystem`].
+///
+/// Loads `data` into fontdb, then aliases the CSS `font-family` (and optional
+/// weight) onto the new faces so `font-family: Display` resolves. This is the
+/// host hook for L1 `@font-face` — not a CSSOM `FontFace` object.
+///
+/// Returns the number of faces recorded (file faces + CSS family aliases).
+pub fn register_host_font_face(family: &str, data: Vec<u8>, weight: Option<u16>) -> usize {
+    let family = family.trim();
+    if family.is_empty() || data.is_empty() {
+        return 0;
+    }
+    if data.len() as u64 > 8 * 1024 * 1024 {
+        return 0;
+    }
+    let font_system = nana_font_system();
+    let mut fonts = lock_font_system(&font_system);
+    let ids = fonts
+        .db_mut()
+        .load_font_source(cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(
+            data,
+        )));
+    let mut aliases = 0usize;
+    let snapshots: Vec<cosmic_text::fontdb::FaceInfo> = ids
+        .iter()
+        .filter_map(|id| fonts.db().face(*id).cloned())
+        .collect();
+    for mut info in snapshots {
+        let already = info
+            .families
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(family));
+        if !already {
+            info.families.insert(
+                0,
+                (
+                    family.to_string(),
+                    cosmic_text::fontdb::Language::English_UnitedStates,
+                ),
+            );
+        }
+        if let Some(weight) = weight {
+            info.weight = cosmic_text::fontdb::Weight(weight);
+        }
+        info.id = cosmic_text::fontdb::ID::dummy();
+        fonts.db_mut().push_face_info(info);
+        aliases += 1;
+    }
+    ids.len() + aliases
+}
+
+/// Bind `@font-face` `local("Family")` to a face already in [`FontSystem`].
+///
+/// Matches fontdb family names and PostScript names (ASCII case-insensitive).
+/// Does not load bytes or follow `url()`. If `weight` is set, matching-weight
+/// faces are preferred; otherwise any family hit succeeds.
+///
+/// Returns the number of alias faces recorded (0 if nothing matched).
+pub fn alias_host_font_face_local(
+    css_family: &str,
+    local_family: &str,
+    weight: Option<u16>,
+) -> usize {
+    let css_family = css_family.trim();
+    let local_family = local_family.trim();
+    if css_family.is_empty() || local_family.is_empty() {
+        return 0;
+    }
+    let font_system = nana_font_system();
+    let mut fonts = lock_font_system(&font_system);
+    let snapshots: Vec<cosmic_text::fontdb::FaceInfo> = fonts
+        .db()
+        .faces()
+        .filter(|face| face_matches_local_name(face, local_family))
+        .cloned()
+        .collect();
+    if snapshots.is_empty() {
+        return 0;
+    }
+    let chosen = select_local_faces(snapshots, weight);
+    let mut aliases = 0usize;
+    let mut to_push = Vec::new();
+    for mut info in chosen {
+        let already = info
+            .families
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(css_family));
+        if already {
+            aliases += 1;
+            continue;
+        }
+        info.families.insert(
+            0,
+            (
+                css_family.to_string(),
+                cosmic_text::fontdb::Language::English_UnitedStates,
+            ),
+        );
+        info.id = cosmic_text::fontdb::ID::dummy();
+        to_push.push(info);
+        aliases += 1;
+    }
+    if !to_push.is_empty() {
+        let db = fonts.db_mut();
+        for info in to_push {
+            db.push_face_info(info);
+        }
+    }
+    aliases
+}
+
+fn face_matches_local_name(face: &cosmic_text::fontdb::FaceInfo, local_family: &str) -> bool {
+    face.families
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(local_family))
+        || face.post_script_name.eq_ignore_ascii_case(local_family)
+}
+
+fn select_local_faces(
+    snapshots: Vec<cosmic_text::fontdb::FaceInfo>,
+    weight: Option<u16>,
+) -> Vec<cosmic_text::fontdb::FaceInfo> {
+    let Some(weight) = weight else {
+        return snapshots;
+    };
+    let matching: Vec<_> = snapshots
+        .iter()
+        .filter(|face| face.weight.0 == weight)
+        .cloned()
+        .collect();
+    if matching.is_empty() {
+        snapshots
+    } else {
+        matching
+    }
 }
 
 fn build_font_system() -> FontSystem {
@@ -235,9 +372,13 @@ impl NanaTextShaper {
             Wrap::None
         });
         buffer.set_ellipsize(if constraints.ellipsis {
-            Ellipsize::End(EllipsizeHeightLimit::Height(
-                constraints.max_height.unwrap_or(f32::INFINITY),
-            ))
+            let limit = constraints
+                .max_lines
+                .map(|n| EllipsizeHeightLimit::Lines(n.max(1) as usize))
+                .unwrap_or_else(|| {
+                    EllipsizeHeightLimit::Height(constraints.max_height.unwrap_or(f32::INFINITY))
+                });
+            Ellipsize::End(limit)
         } else {
             Ellipsize::None
         });
@@ -263,6 +404,13 @@ fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
         .weight(font_weight(style.font_weight));
     if style.letter_spacing != 0.0 {
         attrs = attrs.letter_spacing(letter_spacing_em(style.letter_spacing, style.font_size));
+    }
+    if !style.font_features.is_empty() {
+        let mut features = FontFeatures::new();
+        for setting in &style.font_features {
+            features.set(FeatureTag::new(&setting.tag), setting.value);
+        }
+        attrs = attrs.font_features(features);
     }
     attrs
 }
@@ -427,6 +575,72 @@ mod tests {
     fn assert_positive_finite(metrics: TextMetrics) {
         assert!(metrics.width.is_finite() && metrics.width > 0.0);
         assert!(metrics.height.is_finite() && metrics.height > 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn register_host_font_face_aliases_css_family() {
+        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let added = register_host_font_face("NanaCssFace", data.to_vec(), Some(400));
+        assert!(added > 0, "bundled Regular face must load");
+        let fonts = nana_font_system();
+        let db = lock_font_system(&fonts);
+        let found = db.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("NanaCssFace"))
+        });
+        assert!(found, "CSS family alias must be queryable in fontdb");
+    }
+
+    #[test]
+    fn register_host_font_face_rejects_garbage() {
+        assert_eq!(
+            register_host_font_face("Nope", b"not-a-font".to_vec(), Some(400)),
+            0
+        );
+    }
+
+    #[test]
+    fn alias_host_font_face_local_unknown_family_is_zero() {
+        assert_eq!(
+            alias_host_font_face_local("NopeLocal", "DefinitelyNotANanaFont_xyz", None),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn alias_host_font_face_local_binds_bundled_noto() {
+        let added = alias_host_font_face_local("NanaBundledLocal", "Noto Sans SC", Some(400));
+        assert!(added > 0, "bundled Noto Sans SC must satisfy local()");
+        let fonts = nana_font_system();
+        let db = lock_font_system(&fonts);
+        let found = db.db().faces().any(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("NanaBundledLocal"))
+        });
+        assert!(found, "local() alias of bundled family must be queryable");
+    }
+
+    #[test]
+    fn alias_host_font_face_local_same_family_succeeds_without_reload() {
+        let fonts = nana_font_system();
+        let existing = {
+            let db = lock_font_system(&fonts);
+            db.db()
+                .faces()
+                .find_map(|face| face.families.first().map(|(name, _)| name.clone()))
+        };
+        let Some(name) = existing else {
+            return;
+        };
+        let added = alias_host_font_face_local(&name, &name, None);
+        assert!(
+            added > 0,
+            "local() of an already-loaded family must succeed without url bytes"
+        );
     }
 
     #[test]

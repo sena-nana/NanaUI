@@ -41,6 +41,10 @@ flush 将变更抽成 `ExtractedNode` 增量，`UiScene::apply_delta` 更新绘�
 - **`clip-path: polygon(...)`**：Scene 存 AABB + 局部顶点；**自身 quad** 在 fragment 做点内多边形测试；**子项 / 文本 / HostTexture** 通过 dest-group 在合成 pass 做 winding 多边形测试（非 AABB-only）。
 - **HostTexture**：祖先 inset-round overflow clip 的 `corner_radius` 经 `clip_inv_ef.z` 传入 host-texture shader，与 quad 共用 rounded-box SDF。
 
+### CSS filter drop-shadow
+
+`filter: drop-shadow(offset-x offset-y blur color)` 走 dest 合成组：子树先画进 group 层，合成时采样该层 **alpha 轮廓**（UV 按 offset 平移），再用与元素 `filter: blur()` 相同的 5×5 核模糊并着色，然后 source-over 到原图之下。不是 `box-shadow` 的 rounded-box SDF quad，也不新开 backdrop ping-pong pipeline。blur 半径 cap 16px。多层 `drop-shadow`、spread、`inset` 仍 fail closed。未知 `filter` 函数仍整表 fail closed。
+
 ### CSS backdrop-filter
 
 `backdrop-filter: blur(Npx)` 是**逐节点**效果：在绘制该节点填充之前，从当前 dest 纹理（`sample_count = 1` 的 `dest.color` 或 opacity-group 层）采样其 bounds（按 blur 核扩展）背后的**已绘制**内容（document order 中排在该节点之前的 Quad / HostTexture / 自定义 GPU 槽等），经 separable Gaussian 模糊后再合成回节点区域（圆角 / clip-path / mask-image 仍生效），最后才画半透明 fill / gradient。这与 Windows `nana-window` 整窗 Mica/Acrylic 或 Appearance `backdrop_*` **无关**。含 HostTexture / 自定义 GPU 节点 / dest 组 / backdrop-filter 的帧走 interleaved dest（`sample_count = 1`）；仅含 CSS `url()` 的 quad 仍走 4× MSAA。**任意 affine transform**（含旋转）的节点：copy/blur 区域用变换后 AABB，composite 顶点在逻辑 quad UV 上应用 `quad_abcd`/`quad_ef` 映射到 dest 像素再采样模糊纹理。opacity group 内 backdrop 从该 group 层采样，而非 dest 根纹理。composite pass 的 ancestor `FragmentClip`（含 inset-round 与 polygon）与 quad 共用同一套 `inside_fragment_clip`。

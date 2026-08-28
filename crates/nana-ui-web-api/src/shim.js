@@ -2167,6 +2167,11 @@
             return fromHost("animationDuration", "animationDuration", read("animation-duration", "animationDuration", "0s"));
           if (key === "animation-name" || key === "animationname")
             return fromHost("animationName", "animationName", read("animation-name", "animationName", "none"));
+          if (key === "width") return fromHost("width", "width", read("width", "width", "0px"));
+          if (key === "height") return fromHost("height", "height", read("height", "height", "0px"));
+          if (key === "opacity") return fromHost("opacity", "opacity", read("opacity", "opacity", "1"));
+          if (key === "color") return fromHost("color", "color", read("color", "color", ""));
+          if (key === "transform") return fromHost("transform", "transform", read("transform", "transform", "none"));
           if (style.getPropertyValue) return style.getPropertyValue(name) || "";
           return style[name] || "";
         },
@@ -2176,6 +2181,11 @@
         animationDelay: fromHost("animationDelay", "animationDelay", "0s"),
         animationDuration: fromHost("animationDuration", "animationDuration", "0s"),
         animationName: fromHost("animationName", "animationName", "none"),
+        width: fromHost("width", "width", "0px"),
+        height: fromHost("height", "height", "0px"),
+        opacity: fromHost("opacity", "opacity", "1"),
+        color: fromHost("color", "color", ""),
+        transform: fromHost("transform", "transform", "none"),
       };
       // Prefer explicit inline style when present.
       const td = read("transition-duration", "transitionDuration", null);
@@ -2215,26 +2225,127 @@
   WindowShim.prototype.constructor = WindowShim;
 
   function evaluateMediaQuery(win, query) {
-    const parts = String(query || "").toLowerCase().split(/\s+and\s+/);
-    return parts.every(function (part) {
-      const q = part.trim().replace(/^\(|\)$/g, "").trim();
-      let match = /^min-width\s*:\s*([\d.]+)px$/.exec(q);
-      if (match) return Number(win.innerWidth) >= Number(match[1]);
-      match = /^max-width\s*:\s*([\d.]+)px$/.exec(q);
-      if (match) return Number(win.innerWidth) <= Number(match[1]);
-      match = /^min-height\s*:\s*([\d.]+)px$/.exec(q);
-      if (match) return Number(win.innerHeight) >= Number(match[1]);
-      match = /^max-height\s*:\s*([\d.]+)px$/.exec(q);
-      if (match) return Number(win.innerHeight) <= Number(match[1]);
-      if (q === "orientation: landscape") return Number(win.innerWidth) >= Number(win.innerHeight);
-      if (q === "orientation: portrait") return Number(win.innerHeight) > Number(win.innerWidth);
-      if (q === "prefers-color-scheme: dark") {
-        return !!(win.document && win.document.documentElement && win.document.documentElement.dataset.theme === "dark");
+    try {
+      const hosted = hostCall("evaluateMediaQuery", [String(query || "")]);
+      if (typeof hosted === "boolean") return hosted;
+    } catch (_err) {}
+    return evaluateMediaQueryLocal(win, query);
+  }
+
+  function splitMediaList(query) {
+    const s = String(query || "");
+    const out = [];
+    let start = 0;
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charAt(i);
+      if (c === "(") depth += 1;
+      else if (c === ")") depth -= 1;
+      else if (c === "," && depth === 0) {
+        const part = s.slice(start, i).trim();
+        if (part) out.push(part);
+        start = i + 1;
       }
-      if (q === "prefers-color-scheme: light") {
-        return !(win.document && win.document.documentElement && win.document.documentElement.dataset.theme === "dark");
+    }
+    const part = s.slice(start).trim();
+    if (part) out.push(part);
+    return out;
+  }
+
+  function splitMediaAnd(query) {
+    const s = String(query || "");
+    const out = [];
+    let start = 0;
+    let depth = 0;
+    const lower = s.toLowerCase();
+    let i = 0;
+    while (i < s.length) {
+      const c = s.charAt(i);
+      if (c === "(") depth += 1;
+      else if (c === ")") depth -= 1;
+      if (depth === 0 && lower.slice(i, i + 5) === " and ") {
+        const part = s.slice(start, i).trim();
+        if (part) out.push(part);
+        i += 5;
+        start = i;
+        continue;
       }
-      return false;
+      i += 1;
+    }
+    const part = s.slice(start).trim();
+    if (part) out.push(part);
+    return out;
+  }
+
+  function evaluateMediaFeature(win, raw) {
+    let q = String(raw || "").trim().toLowerCase();
+    if (q.charAt(0) === "(" && q.charAt(q.length - 1) === ")" && q.length >= 2) {
+      q = q.slice(1, -1).trim();
+    }
+    q = q.replace(/\s+/g, " ");
+    let match = /^min-width\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Number(win.innerWidth) >= Number(match[1]);
+    match = /^max-width\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Number(win.innerWidth) <= Number(match[1]);
+    match = /^width\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Math.abs(Number(win.innerWidth) - Number(match[1])) < 0.5;
+    match = /^min-height\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Number(win.innerHeight) >= Number(match[1]);
+    match = /^max-height\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Number(win.innerHeight) <= Number(match[1]);
+    match = /^height\s*:\s*([\d.]+)px$/.exec(q);
+    if (match) return Math.abs(Number(win.innerHeight) - Number(match[1])) < 0.5;
+    const compact = q.replace(/\s/g, "");
+    if (compact === "orientation:landscape") return Number(win.innerWidth) >= Number(win.innerHeight);
+    if (compact === "orientation:portrait") return Number(win.innerHeight) > Number(win.innerWidth);
+    if (compact === "prefers-color-scheme:dark") {
+      return !!(win.document && win.document.documentElement && win.document.documentElement.dataset.theme === "dark");
+    }
+    if (compact === "prefers-color-scheme:light") {
+      return !(win.document && win.document.documentElement && win.document.documentElement.dataset.theme === "dark");
+    }
+    return false;
+  }
+
+  function evaluateOneMediaQuery(win, raw) {
+    let rest = String(raw || "").trim().toLowerCase();
+    if (!rest) return true;
+    let negated = false;
+    if (/^not\b/.test(rest)) {
+      negated = true;
+      rest = rest.replace(/^not\s+/, "");
+    } else if (/^only\b/.test(rest)) {
+      rest = rest.replace(/^only\s+/, "");
+    }
+    let typeOk = true;
+    let featureText = rest;
+    if (rest.charAt(0) !== "(") {
+      const m = /^(all|screen|print|[a-z][\w-]*)\b/.exec(rest);
+      if (!m) return false;
+      const ty = m[1];
+      typeOk = ty === "all" || ty === "screen";
+      rest = rest.slice(m[0].length).trim();
+      if (rest) {
+        if (!/^and\b/.test(rest)) return negated;
+        featureText = rest.replace(/^and\s+/, "");
+      } else {
+        featureText = "";
+      }
+    }
+    const featuresOk = !featureText || splitMediaAnd(featureText).every(function (part) {
+      return evaluateMediaFeature(win, part);
+    });
+    const matched = typeOk && featuresOk;
+    return negated ? !matched : matched;
+  }
+
+  // Local fallback when the Vue host op is unavailable. Same subset as Rust
+  // evaluate_media_query: screen/all true, print/unknown false.
+  function evaluateMediaQueryLocal(win, query) {
+    const parts = splitMediaList(String(query || "").toLowerCase());
+    if (!parts.length) return true;
+    return parts.some(function (part) {
+      return evaluateOneMediaQuery(win, part);
     });
   }
 

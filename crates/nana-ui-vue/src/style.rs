@@ -16,13 +16,13 @@
 
 use nana_ui_core::{SemanticColor, SemanticColorRole, SemanticPalette, ThemeMode};
 
-/// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` / a few named colors.
+/// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` / named colors.
 ///
 /// **L1 paint only** — does not create formal ThemeTokens.
 /// Prefer [`map_css_color_for_tokens`] on the Tokens path.
 pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
     let s = input.trim();
-    if s.is_empty() || s.eq_ignore_ascii_case("transparent") {
+    if s.is_empty() {
         return Some([0.0, 0.0, 0.0, 0.0]);
     }
     if let Some(c) = parse_light_dark_color(s) {
@@ -31,15 +31,8 @@ pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
     if let Some(c) = parse_color_mix(s) {
         return Some(c);
     }
-    match s.to_ascii_lowercase().as_str() {
-        "white" => return Some([1.0, 1.0, 1.0, 1.0]),
-        "black" => return Some([0.0, 0.0, 0.0, 1.0]),
-        "red" => return Some([1.0, 0.0, 0.0, 1.0]),
-        "green" => return Some([0.0, 0.5, 0.0, 1.0]),
-        "blue" => return Some([0.0, 0.0, 1.0, 1.0]),
-        "coral" => return Some([1.0, 0.5, 0.31, 1.0]),
-        "dodgerblue" => return Some([0.12, 0.56, 1.0, 1.0]),
-        _ => {}
+    if let Some(c) = parse_css_named_color(s) {
+        return Some(c);
     }
     if let Some(hex) = s.strip_prefix('#') {
         return parse_hex_color(hex);
@@ -73,6 +66,37 @@ pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
         return Some(c);
     }
     None
+}
+
+/// CSS2 / CSS Color 3 named keywords used by L1 paint, tests, and UI.
+///
+/// Single table for [`parse_css_color`] and shadow-token classification.
+pub(crate) fn parse_css_named_color(input: &str) -> Option<[f32; 4]> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "transparent" => Some([0.0, 0.0, 0.0, 0.0]),
+        // CSS 2.1 color keywords (HTML4 + orange).
+        "aqua" => Some([0.0, 1.0, 1.0, 1.0]),
+        "black" => Some([0.0, 0.0, 0.0, 1.0]),
+        "blue" => Some([0.0, 0.0, 1.0, 1.0]),
+        "fuchsia" => Some([1.0, 0.0, 1.0, 1.0]),
+        "gray" | "grey" => Some([0.5, 0.5, 0.5, 1.0]),
+        "green" => Some([0.0, 0.5, 0.0, 1.0]),
+        "lime" => Some([0.0, 1.0, 0.0, 1.0]),
+        "maroon" => Some([0.5, 0.0, 0.0, 1.0]),
+        "navy" => Some([0.0, 0.0, 0.5, 1.0]),
+        "olive" => Some([0.5, 0.5, 0.0, 1.0]),
+        "orange" => Some([1.0, 165.0 / 255.0, 0.0, 1.0]),
+        "purple" => Some([0.5, 0.0, 0.5, 1.0]),
+        "red" => Some([1.0, 0.0, 0.0, 1.0]),
+        "silver" => Some([192.0 / 255.0, 192.0 / 255.0, 192.0 / 255.0, 1.0]),
+        "teal" => Some([0.0, 0.5, 0.5, 1.0]),
+        "white" => Some([1.0, 1.0, 1.0, 1.0]),
+        "yellow" => Some([1.0, 1.0, 0.0, 1.0]),
+        // CSS Color 3 names already used by L1 paint.
+        "coral" => Some([1.0, 0.5, 0.31, 1.0]),
+        "dodgerblue" => Some([0.12, 0.56, 1.0, 1.0]),
+        _ => None,
+    }
 }
 
 /// CSS Color 5 `color-mix(in srgb|oklch, A P%, B)` — sRGB lerp (oklch uses same
@@ -285,6 +309,30 @@ mod tests {
             parse_css_color("rgb(0, 128, 255)"),
             Some([0.0, 128.0 / 255.0, 1.0, 1.0])
         );
+    }
+
+    #[test]
+    fn parses_named_css_colors() {
+        assert_eq!(parse_css_color("yellow"), Some([1.0, 1.0, 0.0, 1.0]));
+        assert_eq!(
+            parse_css_color("orange"),
+            Some([1.0, 165.0 / 255.0, 0.0, 1.0])
+        );
+        assert_eq!(parse_css_color("transparent"), Some([0.0, 0.0, 0.0, 0.0]));
+        assert_eq!(parse_css_color("purple"), Some([0.5, 0.0, 0.5, 1.0]));
+        assert_eq!(parse_css_color("gray"), Some([0.5, 0.5, 0.5, 1.0]));
+        assert_eq!(parse_css_color("grey"), Some([0.5, 0.5, 0.5, 1.0]));
+        assert_eq!(parse_css_color("aqua"), Some([0.0, 1.0, 1.0, 1.0]));
+        assert_eq!(parse_css_color("fuchsia"), Some([1.0, 0.0, 1.0, 1.0]));
+        assert_eq!(parse_css_color("lime"), Some([0.0, 1.0, 0.0, 1.0]));
+        assert_eq!(parse_css_color("maroon"), Some([0.5, 0.0, 0.0, 1.0]));
+        assert_eq!(parse_css_color("Navy"), Some([0.0, 0.0, 0.5, 1.0]));
+        assert_eq!(parse_css_color("olive"), Some([0.5, 0.5, 0.0, 1.0]));
+        assert_eq!(
+            parse_css_color("SILVER"),
+            Some([192.0 / 255.0, 192.0 / 255.0, 192.0 / 255.0, 1.0])
+        );
+        assert_eq!(parse_css_color("teal"), Some([0.0, 0.5, 0.5, 1.0]));
     }
 
     #[test]

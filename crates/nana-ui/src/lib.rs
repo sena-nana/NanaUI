@@ -158,7 +158,7 @@ pub use layout::{
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
 pub use nana_app_icon::{default_window_icon, window_icon_from_png};
-pub use nana_text::NanaTextShaper;
+pub use nana_text::{NanaTextShaper, alias_host_font_face_local, register_host_font_face};
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};

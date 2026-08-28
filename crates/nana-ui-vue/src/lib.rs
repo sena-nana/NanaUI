@@ -80,11 +80,13 @@ mod app;
 mod bridge;
 #[cfg(feature = "hosted")]
 mod canvas_gpu;
+mod css_at_rule;
 mod css_cascade;
 mod css_interactive;
 mod css_interactive_apply;
 mod css_map;
 mod css_paint;
+mod css_paint_transform;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
 mod input;
@@ -97,6 +99,7 @@ mod renderer;
 mod scroll;
 mod shell_contract;
 mod style;
+mod svg_inline;
 mod tree;
 #[cfg(feature = "hosted")]
 mod webgpu;
@@ -156,31 +159,39 @@ pub use bridge::{
 };
 
 /// Adapter internals: stylesheet parse / cascade. Not the L1/L2 application prelude.
+pub use css_at_rule::{
+    FontFaceRule, FontFaceSrc, ImportPrelude, LayerPrelude, MAX_FONT_FACE_BYTES, MAX_IMPORT_DEPTH,
+    MAX_REGISTERED_FONT_BYTES, MAX_STYLESHEET_BYTES, MediaEnvironment, MediaFeature, MediaQuery,
+    MediaQueryList, MediaType, MemoryStylesheetLoader, ParseStylesheetOptions, StylesheetLoader,
+    evaluate_media_query, evaluate_media_query_list, evaluate_supports_condition, is_blocked_href,
+    parse_import_prelude, parse_layer_prelude, parse_media_query_list,
+};
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
     MatchContext, MatchNode, Selector, SimpleCompound, Specificity, StyleRule,
     StylesheetParseReport, apply_stylesheet_to_layout,
     collect_document_custom_properties_from_rules, matched_declaration_entries,
-    matched_declarations, parse_stylesheet, parse_stylesheet_full, parse_stylesheet_with_report,
-    rebuild_layout_style, selector_matches,
+    matched_declarations, parse_stylesheet, parse_stylesheet_full,
+    parse_stylesheet_full_with_options, parse_stylesheet_with_report, rebuild_layout_style,
+    selector_matches,
 };
 pub use css_interactive::{
     GeneratedPseudo, GeneratedPseudoMatch, GeneratedPseudoRule, InteractiveMatchState,
     InteractivePseudo, InteractivePseudoFlags, InteractiveSelector, InteractiveStyleRule,
-    KeyframeBlock, KeyframeSelector, KeyframesRule, MotionDeclarations, MotionStyleRule,
+    KeyframeBlock, KeyframeSelector, KeyframesRule, MediaRule, MotionDeclarations, MotionStyleRule,
     ParsedStylesheet, keyframes_by_name, matched_generated_pseudo, matched_interactive_rules,
-    matched_motion_rules, partition_motion_entries,
+    matched_motion_rules, merge_parsed_stylesheet, partition_motion_entries,
 };
 /// Adapter internals: CSS subset → LayoutStyle. Prefer [`prelude`] for hosts.
 pub use css_map::{
-    AlignSpec, BoxSizing, CssLayoutParse, DisplaySpec, FlexDirection, FlexWrap, FontSizeContext,
-    GridAutoFlow, GridTrack, GridTrackListParse, GridTrackListUnsupported, JustifySpec,
-    LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec, OverflowSpec, PaddingSpec, ParentBox,
-    PositionSpec, collect_document_css_custom_properties, parse_box_edge_length,
-    parse_css_font_family, parse_css_font_size, parse_css_font_weight, parse_css_length_px,
-    parse_css_letter_spacing, parse_css_line_height, parse_grid_template_columns,
-    parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
-    resolve_grid_track_sizes, resolve_paint_color,
+    AlignSpec, BoxSizing, CssLayoutParse, DirSpec, DisplaySpec, FlexDirection, FlexWrap,
+    FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse, GridTrackListUnsupported,
+    JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec, OverflowSpec,
+    PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
+    parse_box_edge_length, parse_css_font_family, parse_css_font_size, parse_css_font_weight,
+    parse_css_length_px, parse_css_letter_spacing, parse_css_line_height,
+    parse_grid_template_columns, parse_grid_track_list_result, parse_inset_length,
+    resolve_grid_column_widths, resolve_grid_track_sizes, resolve_paint_color,
 };
 #[cfg(feature = "hosted")]
 pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueRuntimeProgram};
@@ -931,6 +942,17 @@ impl VueHost {
             .inject_stylesheet(css);
     }
 
+    /// Directory used as the jail / relative base for `@import` and `@font-face` `url()`.
+    ///
+    /// Typically the Vue document / SFC directory. Unset (empty / `.`) skips
+    /// relative imports instead of scanning the process cwd.
+    pub fn set_stylesheet_base(&self, base: PathBuf) {
+        self.bridge
+            .lock()
+            .expect("vue bridge")
+            .set_stylesheet_base(base);
+    }
+
     /// Builds the framework-owned registry with renderer, DOM and Web APIs.
     pub fn host_api_registry(&self) -> HostApiRegistry {
         let mut api = HostApiRegistry::new();
@@ -1153,8 +1175,12 @@ impl VueHost {
         let mut api = self.host_api_registry();
         api.try_extend(application_api)?;
         engine.register_host_api(&api)?;
+        let artifact_name = artifact.name.clone();
         if artifact.is_binary_release() {
             engine.initialize(artifact)?;
+            if let Some(base) = crate::renderer::stylesheet_base_from_href(&artifact_name) {
+                self.set_stylesheet_base(base);
+            }
             return Ok(());
         }
         let source = artifact.source_utf8()?;
@@ -1165,6 +1191,9 @@ impl VueHost {
             compose_runtime_artifact(artifact.name.clone(), source)
         };
         engine.initialize(composed)?;
+        if let Some(base) = crate::renderer::stylesheet_base_from_href(&artifact_name) {
+            self.set_stylesheet_base(base);
+        }
         Ok(())
     }
 
@@ -1509,6 +1538,31 @@ impl VueHost {
         Ok(true)
     }
 
+    /// Resolve the topmost node under `(x, y)` for native input routing.
+    ///
+    /// Scene paint boxes in [`LayoutBoxStore`] win when present so file drag
+    /// and early-frame probes match painted geometry. Runtime hit-test is the
+    /// fallback when no paint box covers the point.
+    fn hit_test_client_point(&self, x: f32, y: f32) -> Option<NodeHandle> {
+        let doc = self.document.lock().expect("vue doc");
+        if !self.layout_boxes.snapshot().is_empty() {
+            let mut stack = vec![doc.mount_root()];
+            let mut preorder = Vec::new();
+            while let Some(node) = stack.pop() {
+                preorder.push(node);
+                for child in doc.children_of(node).into_iter().rev() {
+                    stack.push(child);
+                }
+            }
+            for handle in preorder.into_iter().rev() {
+                if self.layout_boxes.contains_point(handle, x, y) {
+                    return Some(handle);
+                }
+            }
+        }
+        doc.hit_test(x, y)
+    }
+
     /// Dispatch a native file hover/drop lifecycle through the same Vue event
     /// tree as pointer input. Dropped files are descriptors with an absolute
     /// path; reading their contents remains an application Host API decision.
@@ -1520,7 +1574,7 @@ impl VueHost {
         position: Option<(f32, f32)>,
     ) -> Result<bool, JsEngineError> {
         let target_at_position =
-            position.and_then(|(x, y)| self.document.lock().expect("vue doc").hit_test(x, y));
+            position.and_then(|(x, y)| self.hit_test_client_point(x, y));
         let mount_root = self.document.lock().expect("vue doc").mount_root();
         let target = target_at_position
             .or(self.file_drag_target)
@@ -2220,13 +2274,20 @@ impl VueHost {
         if allowed && commit_runtime {
             let delta = crate::scroll::wheel_scroll_delta(&input);
             let scrolled = {
+                let painted = self.layout_boxes.snapshot();
                 let mut document = self.document.lock().expect("vue doc");
+                // `pump_frame` / engine flush rewrites fixture chrome and
+                // shrinks overflow content. Restore the host paint boxes
+                // before committing ScrollOffset so chrome stays put.
+                if !painted.is_empty() {
+                    document.inject_layout_boxes(&painted);
+                }
                 let bridge = self.bridge.lock().expect("vue bridge");
-                crate::scroll::apply_runtime_wheel(
+                crate::scroll::apply_runtime_wheel_from(
                     &mut document,
                     &bridge,
-                    input.client_x,
-                    input.client_y,
+                    &self.layout_boxes,
+                    Some(target),
                     delta,
                 )
                 .is_some()

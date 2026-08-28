@@ -18,27 +18,33 @@
 //! not a separate CPU paint channel. CustomContent has been removed.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use nana_ui_core::{
     AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
     SwitchControlPosition, ThemeMode, WindowMaterialMode,
 };
 
+use crate::css_at_rule::{
+    FontFaceRule, FontFaceSrc, FsStylesheetLoader, MediaEnvironment, ParseStylesheetOptions,
+    evaluate_media_query_list, font_registration_would_exceed_cap, load_font_face_bytes,
+    parse_media_query_list,
+};
 use crate::css_cascade::{
-    MatchContext, MatchNode, StyleRule, StylesheetParseReport,
-    collect_document_custom_properties_from_rules, parse_stylesheet_full, rebuild_layout_style,
-    stylesheet_matches, stylesheet_may_match_subject,
+    MatchContext, MatchNode, SimpleCompound, StyleRule, StylesheetParseReport,
+    collect_document_custom_properties_from_rules, parse_stylesheet_full_with_options,
+    rebuild_layout_style, simple_matches, stylesheet_matches, stylesheet_may_match_subject,
 };
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
-    KeyframesRule, MotionStyleRule,
+    KeyframesRule, MotionStyleRule, ParsedStylesheet, merge_parsed_stylesheet,
 };
 use crate::css_interactive_apply::{
     ActiveCssTransition, CssComputedMotion, CssPaintSnapshot, InteractiveRuntimeSnapshot,
-    apply_generated_pseudo_entries, apply_interactive_layers, build_keyframes_spec,
-    build_transition_spec, css_keyframes_animation_id, generated_pseudo_has_content,
-    keyframe_paint_at, lerp_paint_for_properties, parse_content_text, parse_transition_properties,
-    resolve_computed_motion,
+    apply_generated_pseudo_entries, apply_interactive_layers, apply_placeholder_paint,
+    build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
+    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
+    parse_transition_properties, resolve_computed_motion,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
@@ -747,6 +753,14 @@ impl WidgetProps {
                     self.persist_native_payload("src", value);
                 }
             }
+            "poster" => {
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("poster");
+                } else {
+                    self.attrs.insert("poster".into(), s);
+                }
+            }
             "module-width" | "modules-width" => {
                 let s = host_string(value);
                 if s.is_empty() {
@@ -981,6 +995,8 @@ impl WidgetProps {
                         self.record_prop_style("gap", &s);
                     }
                 }
+                // Uniform `gap` prop resets axis longhands from prior `style` (CSS shorthand).
+                self.strip_inline_css_properties(&["gap", "row-gap", "column-gap"]);
             }
             "padding" => {
                 if let nana_js_engine::HostValue::Number(n) = value {
@@ -1001,6 +1017,7 @@ impl WidgetProps {
                         self.record_prop_style("width", &s);
                     }
                 }
+                persist_svg_length_attr(self, "width", value);
             }
             "height" => {
                 if let nana_js_engine::HostValue::Number(n) = value {
@@ -1011,6 +1028,7 @@ impl WidgetProps {
                         self.record_prop_style("height", &s);
                     }
                 }
+                persist_svg_length_attr(self, "height", value);
             }
             "flex-direction" | "flexdirection" => {
                 let d = host_string(value).to_ascii_lowercase();
@@ -1065,6 +1083,16 @@ impl WidgetProps {
                     self.attrs.insert("hidden".into(), String::new());
                 } else {
                     self.attrs.remove("hidden");
+                }
+            }
+            "dir" => {
+                // Presentational hint: persist for cascade seed + `[dir]` selectors.
+                // Used `LayoutStyle.dir` is applied in `reapply_layout_for_inner`.
+                let s = host_string(value);
+                if s.is_empty() {
+                    self.attrs.remove("dir");
+                } else {
+                    self.attrs.insert("dir".into(), s);
                 }
             }
             "multiple" => {
@@ -1135,6 +1163,30 @@ impl WidgetProps {
         }
         kept.push(format!("{property}: {value}"));
         self.prop_style = kept.join("; ");
+    }
+
+    fn strip_inline_css_properties(&mut self, properties: &[&str]) {
+        if self.inline_style.trim().is_empty() || properties.is_empty() {
+            return;
+        }
+        let mut kept = Vec::new();
+        'decl: for decl in self.inline_style.split(';') {
+            let decl = decl.trim();
+            if decl.is_empty() {
+                continue;
+            }
+            let Some((k, _)) = decl.split_once(':') else {
+                kept.push(decl.to_string());
+                continue;
+            };
+            for property in properties {
+                if k.trim().eq_ignore_ascii_case(property) {
+                    continue 'decl;
+                }
+            }
+            kept.push(decl.to_string());
+        }
+        self.inline_style = kept.join("; ");
     }
 
     pub fn display_label(&self) -> &str {
@@ -1245,6 +1297,7 @@ fn is_framework_native_prop(key: &str) -> bool {
             | "id"
             | "role"
             | "hidden"
+            | "dir"
             | "disabled"
             | "tabindex"
             | "ref"
@@ -1911,6 +1964,12 @@ pub struct MessageBridge {
     next_generated_pseudo_id: u64,
     /// Originating widget → generated pseudo child ids.
     generated_pseudo_children: HashMap<WidgetId, GeneratedPseudoChildren>,
+    /// Unique simple `:has()` arguments for the current stylesheet (bitset index).
+    has_args: Vec<SimpleCompound>,
+    /// Per-widget descendant-present bits matching [`Self::has_args`].
+    has_descendant_bits: HashMap<WidgetId, u64>,
+    /// When true, [`Self::has_descendant_bits`] is valid for the current tree.
+    has_index_ready: bool,
     /// Resolved motion longhands for `getComputedStyle` / Vue `<Transition>`.
     computed_motion: HashMap<WidgetId, CssComputedMotion>,
     /// Active CSS transition timelines keyed by widget id.
@@ -1928,12 +1987,40 @@ pub struct MessageBridge {
     layout_viewport: Option<(f32, f32)>,
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     stylesheet_skips: StylesheetParseReport,
+    /// Unflattened author sheets (imports already merged; `@media` kept conditional).
+    authored_sheets: Vec<ParsedStylesheet>,
+    /// Parsed `@font-face` rules registered with the host font system when possible.
+    font_faces: Vec<FontFaceRule>,
+    /// Successfully registered faces, keyed by canonical path or `local:name` + family + weight.
+    font_register_keys: HashSet<(String, String, u16)>,
+    /// Bytes of successfully registered `@font-face` files (host memory cap).
+    font_bytes_used: u64,
+    /// Base directory for relative `@import` / `@font-face` `url(...)`.
+    stylesheet_base: PathBuf,
+    /// Parsed imported sheets keyed by canonical href (not re-parsed every frame).
+    import_cache: HashMap<String, ParsedStylesheet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct GeneratedPseudoChildren {
     before: Option<WidgetId>,
     after: Option<WidgetId>,
+}
+
+fn stylesheet_base_is_set(base: &Path) -> bool {
+    !base.as_os_str().is_empty() && base != Path::new(".")
+}
+
+fn host_alias_local_font_face(css_family: &str, local_name: &str, weight: Option<u16>) -> bool {
+    #[cfg(feature = "scene-view")]
+    {
+        nana_ui::alias_host_font_face_local(css_family, local_name, weight) > 0
+    }
+    #[cfg(not(feature = "scene-view"))]
+    {
+        let _ = (css_family, local_name, weight);
+        false
+    }
 }
 
 impl Default for MessageBridge {
@@ -1960,6 +2047,9 @@ impl MessageBridge {
             next_rule_order: 0,
             next_generated_pseudo_id: 1,
             generated_pseudo_children: HashMap::new(),
+            has_args: Vec::new(),
+            has_descendant_bits: HashMap::new(),
+            has_index_ready: false,
             computed_motion: HashMap::new(),
             css_transitions: HashMap::new(),
             css_transition_base: HashMap::new(),
@@ -1968,6 +2058,12 @@ impl MessageBridge {
             stylesheet_vars: BTreeMap::new(),
             layout_viewport: None,
             stylesheet_skips: StylesheetParseReport::default(),
+            authored_sheets: Vec::new(),
+            font_faces: Vec::new(),
+            font_register_keys: HashSet::new(),
+            font_bytes_used: 0,
+            stylesheet_base: PathBuf::new(),
+            import_cache: HashMap::new(),
         }
     }
 
@@ -2007,47 +2103,161 @@ impl MessageBridge {
     ///
     /// Empty / fully-deferred sheets are a no-op. Non-empty injects dirty nodes
     /// that match the new rules and their descendants. Unmatched subtrees stay.
+    /// `@import` loads through [`FsStylesheetLoader`] into this same cascade;
+    /// `@media` is stored parsed and flattened against the current viewport /
+    /// theme without re-parsing CSS text.
     pub fn inject_stylesheet(&mut self, css: &str) {
         if css.trim().is_empty() {
             return;
         }
-        let (sheet, report) = parse_stylesheet_full(css, self.next_rule_order);
+        let base = self.stylesheet_base.clone();
+        let attach_loader = stylesheet_base_is_set(&base);
+        let loader = FsStylesheetLoader { base: &base };
+        let mut cache = std::mem::take(&mut self.import_cache);
+        let mut options = ParseStylesheetOptions {
+            media: self.media_environment(),
+            loader: if attach_loader { Some(&loader) } else { None },
+            base_href: None,
+            import_cache: Some(&mut cache),
+        };
+        let (sheet, report) =
+            parse_stylesheet_full_with_options(css, self.next_rule_order, &mut options);
+        self.import_cache = cache;
         self.stylesheet_skips = self.stylesheet_skips.combine(report);
-        if sheet.static_rules.is_empty()
-            && sheet.interactive_rules.is_empty()
-            && sheet.generated_pseudo_rules.is_empty()
-            && sheet.motion_rules.is_empty()
-            && sheet.keyframes.is_empty()
-        {
+        if sheet.is_cascade_empty() {
             return;
         }
-        let next_order = [
-            sheet.static_rules.last().map(|r| r.source_order),
-            sheet.interactive_rules.last().map(|r| r.source_order),
-            sheet.generated_pseudo_rules.last().map(|r| r.source_order),
-            sheet.motion_rules.last().map(|r| r.source_order),
-            sheet.keyframes.values().map(|r| r.source_order).max(),
-        ]
-        .into_iter()
-        .flatten()
-        .max();
-        if let Some(last) = next_order {
+        if let Some(last) = sheet.max_source_order() {
             self.next_rule_order = last.saturating_add(1);
         }
-        let new_static = sheet.static_rules.clone();
-        self.stylesheet_rules.extend(sheet.static_rules);
-        self.interactive_rules.extend(sheet.interactive_rules);
-        self.generated_pseudo_rules
-            .extend(sheet.generated_pseudo_rules);
-        self.motion_rules.extend(sheet.motion_rules);
-        for (name, rule) in sheet.keyframes {
-            self.keyframes.insert(name, rule);
+        let env = self.media_environment();
+        let flattened = sheet.flatten(&env);
+        for face in &flattened.font_faces {
+            self.consider_font_face(face);
         }
+        let new_static = flattened.static_rules;
+        self.authored_sheets.push(sheet);
+        self.rebuild_active_stylesheet();
         self.rebuild_stylesheet_vars();
         self.reapply_layout_cascade_matching(&new_static);
         if self.has_interactive_css() {
             self.reapply_layout_cascade_all();
         }
+    }
+
+    pub fn set_stylesheet_base(&mut self, base: PathBuf) {
+        if !stylesheet_base_is_set(&base) {
+            self.stylesheet_base = PathBuf::new();
+            return;
+        }
+        self.stylesheet_base = std::fs::canonicalize(&base).unwrap_or(base);
+    }
+
+    /// Same subset as CSS `@media` flatten (`screen`/`all` true, `print` false).
+    pub fn evaluate_media_query_text(&self, query: &str) -> bool {
+        evaluate_media_query_list(&parse_media_query_list(query), &self.media_environment())
+    }
+
+    pub fn registered_font_faces(&self) -> &[FontFaceRule] {
+        &self.font_faces
+    }
+
+    /// Register a flattened `@font-face` after the first `src` entry that
+    /// resolves. `local()` and `url()` are tried in CSS order: a matching
+    /// system/bundled family wins without loading bytes; otherwise the next
+    /// source is tried. Unmatched `local()` is fail-closed (skip, not error).
+    fn consider_font_face(&mut self, face: &FontFaceRule) {
+        for src in &face.src {
+            match src {
+                FontFaceSrc::Local(local_name) => {
+                    if self.try_register_local_font_face(face, local_name) {
+                        return;
+                    }
+                }
+                FontFaceSrc::Url(url) => {
+                    if self.try_register_url_font_face(face, url) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn try_register_local_font_face(&mut self, face: &FontFaceRule, local_name: &str) -> bool {
+        let weight = face.weight.unwrap_or(400);
+        let key = (format!("local:{local_name}"), face.family.clone(), weight);
+        if self.font_register_keys.contains(&key) {
+            return true;
+        }
+        if !host_alias_local_font_face(&face.family, local_name, face.weight) {
+            return false;
+        }
+        self.font_register_keys.insert(key);
+        self.font_faces.push(face.clone());
+        true
+    }
+
+    fn try_register_url_font_face(&mut self, face: &FontFaceRule, url: &str) -> bool {
+        let Some((bytes, canonical)) =
+            load_font_face_bytes(url, face.base_href.as_deref(), &self.stylesheet_base)
+        else {
+            return false;
+        };
+        let weight = face.weight.unwrap_or(400);
+        let key = (
+            canonical.to_string_lossy().into_owned(),
+            face.family.clone(),
+            weight,
+        );
+        if self.font_register_keys.contains(&key) {
+            return true;
+        }
+        let add = bytes.len() as u64;
+        if font_registration_would_exceed_cap(self.font_bytes_used, add) {
+            return false;
+        }
+        #[cfg(feature = "scene-view")]
+        {
+            if nana_ui::register_host_font_face(&face.family, bytes, face.weight) == 0 {
+                return false;
+            }
+        }
+        #[cfg(not(feature = "scene-view"))]
+        {
+            let _ = bytes;
+        }
+        self.font_register_keys.insert(key);
+        self.font_bytes_used = self.font_bytes_used.saturating_add(add);
+        self.font_faces.push(face.clone());
+        true
+    }
+
+    fn media_environment(&self) -> MediaEnvironment {
+        let (width, height) = self.layout_viewport.unwrap_or((960.0, 640.0));
+        MediaEnvironment {
+            width,
+            height,
+            color_scheme_dark: matches!(self.theme, ThemeMode::Dark),
+        }
+    }
+
+    fn authored_has_media(&self) -> bool {
+        self.authored_sheets
+            .iter()
+            .any(|sheet| !sheet.media_rules.is_empty())
+    }
+
+    fn rebuild_active_stylesheet(&mut self) {
+        let env = self.media_environment();
+        let mut combined = ParsedStylesheet::default();
+        for sheet in &self.authored_sheets {
+            merge_parsed_stylesheet(&mut combined, sheet.flatten(&env));
+        }
+        self.stylesheet_rules = combined.static_rules;
+        self.interactive_rules = combined.interactive_rules;
+        self.generated_pseudo_rules = combined.generated_pseudo_rules;
+        self.motion_rules = combined.motion_rules;
+        self.keyframes = combined.keyframes;
     }
 
     /// Accumulated stylesheet skipped-content counters, so hosts can surface
@@ -2090,11 +2300,84 @@ impl MessageBridge {
         self.bump();
     }
 
+    fn ensure_has_index(&mut self) {
+        if !self.has_index_ready {
+            self.refresh_has_descendant_index();
+        }
+    }
+
+    /// One post-order walk: bit i means a descendant matches `has_args[i]`.
+    /// Total work is O(n·k) with k unique simple `:has()` args (cap 64).
+    fn refresh_has_descendant_index(&mut self) {
+        let mut args = Vec::new();
+        for rule in &self.stylesheet_rules {
+            for sel in &rule.selectors {
+                push_has_args(&sel.subject, &mut args);
+            }
+        }
+        for rule in &self.interactive_rules {
+            push_has_args(&rule.selector.subject, &mut args);
+        }
+        for rule in &self.generated_pseudo_rules {
+            push_has_args(&rule.originating_selector.subject, &mut args);
+        }
+        self.has_args = args;
+        self.has_descendant_bits.clear();
+        self.has_index_ready = true;
+        if self.has_args.is_empty() {
+            return;
+        }
+        let ids: Vec<WidgetId> = self.widgets.keys().copied().collect();
+        for id in ids {
+            if !self.has_descendant_bits.contains_key(&id) {
+                self.compute_has_bits_postorder(id);
+            }
+        }
+    }
+
+    fn compute_has_bits_postorder(&mut self, id: WidgetId) -> u64 {
+        if let Some(&bits) = self.has_descendant_bits.get(&id) {
+            return bits;
+        }
+        let children = self
+            .widgets
+            .get(&id)
+            .map(|w| w.children.clone())
+            .unwrap_or_default();
+        let mut bits = 0u64;
+        for child in children {
+            bits |= self.node_self_has_bits(child);
+            bits |= self.compute_has_bits_postorder(child);
+        }
+        self.has_descendant_bits.insert(id, bits);
+        bits
+    }
+
+    fn node_self_has_bits(&self, id: WidgetId) -> u64 {
+        let Some(widget) = self.widgets.get(&id) else {
+            return 0;
+        };
+        let node = MatchNode {
+            tag: widget.props.element_tag.as_str(),
+            id: widget.props.element_id.as_str(),
+            classes: widget.props.class_names.as_slice(),
+            attrs: &widget.props.attrs,
+        };
+        let mut bits = 0u64;
+        for (i, arg) in self.has_args.iter().enumerate() {
+            if i < 64 && simple_matches(arg, &node) {
+                bits |= 1u64 << i;
+            }
+        }
+        bits
+    }
+
     fn reapply_layout_cascade_all(&mut self) {
         let mut ids: Vec<WidgetId> = self.widgets.keys().copied().collect();
         // Parents before children so inherited typography / em font-size see
         // computed ancestor `font-size` (CSS inheritance + rem root).
         ids.sort_by_cached_key(|id| self.widget_depth(*id));
+        self.refresh_has_descendant_index();
         for id in ids {
             self.reapply_layout_for(id);
         }
@@ -2105,6 +2388,7 @@ impl MessageBridge {
         if new_rules.is_empty() {
             return;
         }
+        self.refresh_has_descendant_index();
         let mut dirty = HashSet::new();
         let ids: Vec<WidgetId> = self.widgets.keys().copied().collect();
         for id in ids {
@@ -2196,6 +2480,8 @@ impl MessageBridge {
             sibling_count,
             of_type_index,
             of_type_count,
+            has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
+            has_args: self.has_args.as_slice(),
         };
         stylesheet_matches(rules, &ctx)
     }
@@ -2239,6 +2525,9 @@ impl MessageBridge {
     }
 
     fn reapply_layout_for(&mut self, id: WidgetId) {
+        // Refresh once per cascade pass. `bump()` clears the flag so a loop of
+        // `reapply_layout_for` never rebuilds the index per node (O(n²)).
+        self.ensure_has_index();
         let vars = self.inherited_css_vars_for(id);
         let fonts = self.font_context_for(id);
         let viewport = self.layout_viewport;
@@ -2344,6 +2633,8 @@ impl MessageBridge {
             sibling_count,
             of_type_index,
             of_type_count,
+            has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
+            has_args: self.has_args.as_slice(),
         };
         let mut map = crate::css_cascade::matched_custom_properties(&self.stylesheet_rules, &ctx);
         for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&prop_style) {
@@ -2366,6 +2657,7 @@ impl MessageBridge {
             return;
         };
         let kind = widget.kind;
+        let parent_id = widget.parent;
         let class_names = widget.props.class_names.clone();
         let element_tag = widget.props.element_tag.clone();
         let element_id = widget.props.element_id.clone();
@@ -2419,6 +2711,8 @@ impl MessageBridge {
             sibling_count,
             of_type_index,
             of_type_count,
+            has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
+            has_args: self.has_args.as_slice(),
         };
 
         // Layer order: kind default → stylesheet → class hints → prop → inline
@@ -2434,7 +2728,8 @@ impl MessageBridge {
         // `display:flex` (`if direction.is_none() → Row`) would no-op — toolbars
         // with `justify-content:space-between` stay vertical and eat the Fill
         // height, clipping siblings (Repo evidence main pane painted empty).
-        let base = if self.stylesheet_rules.is_empty()
+        let mut base = if self.stylesheet_rules.is_empty()
+            && self.authored_sheets.is_empty()
             && inline_style.trim().is_empty()
             && prop_style.trim().is_empty()
         {
@@ -2465,6 +2760,21 @@ impl MessageBridge {
             layout.padding = defaults.padding;
             layout
         };
+
+        // CSS `direction` inherits. Seed the used parent value before cascade so
+        // `padding-inline-start` on the child maps against RTL without requiring
+        // the child to repeat `direction`. Do not seed flex `direction`.
+        if base.dir.is_none()
+            && let Some(pid) = parent_id
+            && let Some(parent) = self.widgets.get(&pid)
+        {
+            base.dir = parent.props.layout.dir;
+        }
+        // HTML `dir` is a presentational hint: overrides inherited dir, loses to
+        // author CSS `direction`. `auto` is fail-closed (no specified value).
+        if let Some(attr_dir) = crate::widget_map::html_dir_spec_from_map(&leaf_attrs) {
+            base.dir = Some(attr_dir);
+        }
 
         // Author layers: stylesheet → class hints → prop style → class hints →
         // inline → class hints → stylesheet !important → prop !important →
@@ -2558,10 +2868,42 @@ impl MessageBridge {
         {
             layout.inherit_typography_from(&parent.props.layout);
         }
+        if matches!(kind, WidgetKind::Input | WidgetKind::Textarea)
+            && !self.generated_pseudo_rules.is_empty()
+        {
+            let matched = crate::css_interactive::matched_generated_pseudo(
+                &self.generated_pseudo_rules,
+                &ctx,
+            );
+            apply_placeholder_paint(&mut layout, &matched.placeholder, cb_w, cb_h);
+        }
         // Preserve explicit hidden flag from the `hidden` attribute.
         if hidden {
             layout.hidden = true;
         }
+
+        if leaf_tag.eq_ignore_ascii_case("img") {
+            let src = leaf_attrs
+                .get("src")
+                .or_else(|| leaf_attrs.get("data-src"))
+                .map(String::as_str)
+                .unwrap_or("");
+            crate::css_paint::apply_img_replaced_content(&mut layout, src);
+        } else if leaf_tag.eq_ignore_ascii_case("video") {
+            let poster = leaf_attrs.get("poster").map(String::as_str).unwrap_or("");
+            crate::css_paint::apply_video_poster(&mut layout, poster);
+        } else if leaf_tag.eq_ignore_ascii_case("iframe") {
+            crate::css_paint::apply_iframe_skip(&mut layout);
+        } else if leaf_tag.eq_ignore_ascii_case("canvas") {
+            let slotted = leaf_attrs.iter().any(|(key, value)| {
+                !value.is_empty()
+                    && (key.eq_ignore_ascii_case("data-nana-canvas")
+                        || key.eq_ignore_ascii_case("data-nana-gpu"))
+            });
+            crate::css_paint::apply_canvas_skip(&mut layout, slotted);
+        }
+
+        crate::svg_inline::apply_inline_svg_replaced(self, id, &mut layout);
 
         if let Some(widget) = self.widgets.get_mut(&id) {
             if widget.props.layout != layout {
@@ -2586,6 +2928,7 @@ impl MessageBridge {
             .map(|(id, widget)| (*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
             .collect();
         self.interactive_runtime = Some(snapshot);
+        self.refresh_has_descendant_index();
         let ids: Vec<WidgetId> = self
             .widgets
             .keys()
@@ -2815,6 +3158,8 @@ impl MessageBridge {
                 sibling_count,
                 of_type_index,
                 of_type_count,
+                has_bits: self.has_descendant_bits.get(&origin).copied().unwrap_or(0),
+                has_args: self.has_args.as_slice(),
             };
             crate::css_interactive::matched_generated_pseudo(&self.generated_pseudo_rules, &ctx)
         };
@@ -2875,6 +3220,8 @@ impl MessageBridge {
         let pseudo_name = match _pseudo {
             GeneratedPseudo::Before => "before",
             GeneratedPseudo::After => "after",
+            // Paint-only; this helper is only called for before/after boxes.
+            GeneratedPseudo::Placeholder => "placeholder",
         };
         let text = blocks
             .iter()
@@ -2937,7 +3284,7 @@ impl MessageBridge {
                 .get(&origin)
                 .and_then(|w| w.children.first().copied())
                 .filter(|id| *id != child),
-            GeneratedPseudo::After => None,
+            GeneratedPseudo::After | GeneratedPseudo::Placeholder => None,
         };
         self.insert_child(child, origin, anchor);
     }
@@ -3151,6 +3498,9 @@ impl MessageBridge {
         if changed {
             // Theme-conditional document vars (`:root[data-theme=…]`) must
             // re-resolve; otherwise Primary paint sticks on the last inject.
+            if self.authored_has_media() {
+                self.rebuild_active_stylesheet();
+            }
             self.rebuild_stylesheet_vars();
             self.reapply_layout_cascade_all();
         }
@@ -3489,6 +3839,7 @@ impl MessageBridge {
                 self.generated_pseudo_children.remove(&origin);
             }
         }
+        let svg_parent = self.widgets.get(&id).and_then(|w| w.parent);
         if let Some(widget) = self.widgets.remove(&id) {
             if let Some(parent) = widget.parent
                 && let Some(p) = self.widgets.get_mut(&parent)
@@ -3504,6 +3855,23 @@ impl MessageBridge {
         self.css_transitions.remove(&id);
         self.css_transition_base.remove(&id);
         self.css_transition_progress.remove(&id);
+        if let Some(parent) = svg_parent
+            && self.widgets.contains_key(&parent)
+        {
+            self.recascade_inline_svg(parent);
+        }
+        // Subject `:has()` on remaining ancestors must drop the removed subtree.
+        if let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid)) {
+            self.has_index_ready = false;
+            let mut walk = Some(parent);
+            while let Some(pid) = walk {
+                if !self.widgets.contains_key(&pid) {
+                    break;
+                }
+                self.reapply_layout_for(pid);
+                walk = self.widgets.get(&pid).and_then(|w| w.parent);
+            }
+        }
         self.bump();
     }
 
@@ -3573,9 +3941,24 @@ impl MessageBridge {
             }
         }
         self.sync_containing_block_from_parent(child);
-        // Parent combinators (`.parent > .child`) need a rebuild after insert.
+        // Parent combinators match the child; subject `:has()` restyles ancestors.
+        self.has_index_ready = false;
         self.reapply_layout_for(child);
+        if !self.has_args.is_empty() {
+            let mut walk = Some(parent);
+            while let Some(pid) = walk {
+                self.reapply_layout_for(pid);
+                walk = self.widgets.get(&pid).and_then(|w| w.parent);
+            }
+        }
+        self.recascade_inline_svg(parent);
         self.bump();
+    }
+
+    fn recascade_inline_svg(&mut self, id: WidgetId) {
+        if let Some(root) = crate::svg_inline::nearest_svg_root(self, id) {
+            self.reapply_layout_for(root);
+        }
     }
 
     /// Host / Scene 回写最近布局得到的包含块尺寸（供后续 `style` `%` 解析）。
@@ -3620,6 +4003,10 @@ impl MessageBridge {
         }
         // Re-cascade after CB writeback so % / vh resolve against fresh bases.
         if viewport_changed {
+            if self.authored_has_media() {
+                self.rebuild_active_stylesheet();
+                self.rebuild_stylesheet_vars();
+            }
             self.reapply_layout_cascade_all();
         } else if changed {
             self.bump();
@@ -4142,6 +4529,10 @@ impl MessageBridge {
                 | "id"
                 | "data-region-id"
                 | "hidden"
+                | "dir"
+                | "src"
+                | "data-src"
+                | "poster"
                 | "gap"
                 | "padding"
                 | "width"
@@ -4160,12 +4551,24 @@ impl MessageBridge {
                 | "overflowy"
                 | "grid-template-columns"
                 | "gridtemplatecolumns"
-        ) || key_n.starts_with("data-");
+        ) || key_n.starts_with("data-")
+            || is_common_svg_attr(key_n.as_str());
+        let prev_dir = self.widgets.get(&id).map(|w| w.props.layout.dir);
+        let restyle_has_ancestors = matches!(key_n.as_str(), "class" | "classname" | "id")
+            && !self.has_args.is_empty();
+        if restyle_has_ancestors {
+            self.has_index_ready = false;
+        }
         if full_rebuild {
             self.reapply_layout_for(id);
         } else if let Some(widget) = self.widgets.get_mut(&id) {
             pin_svg_chart_min_height(&mut widget.props);
             widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
+        }
+        if let Some(root) = crate::svg_inline::nearest_svg_root(self, id)
+            && !(full_rebuild && root == id)
+        {
+            self.reapply_layout_for(root);
         }
         // Parent size/padding change updates children's containing-block base.
         if matches!(key_n.as_str(), "style" | "width" | "height" | "padding") {
@@ -4176,6 +4579,29 @@ impl MessageBridge {
                 .unwrap_or_default();
             for child in children {
                 self.sync_containing_block_from_parent(child);
+            }
+        }
+        // Inherited `direction` is seeded onto children before cascade. A later
+        // parent `direction: rtl` must recascade so logical edges remap.
+        if full_rebuild {
+            let next_dir = self.widgets.get(&id).map(|w| w.props.layout.dir);
+            if prev_dir != next_dir {
+                let mut dirty = HashSet::new();
+                self.collect_subtree_ids(id, &mut dirty);
+                dirty.remove(&id);
+                let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
+                ordered.sort_unstable();
+                for child in ordered {
+                    self.reapply_layout_for(child);
+                }
+            }
+        }
+        // Subject `:has()` on ancestors depends on this node's class / id.
+        if restyle_has_ancestors {
+            let mut walk = self.widgets.get(&id).and_then(|w| w.parent);
+            while let Some(pid) = walk {
+                self.reapply_layout_for(pid);
+                walk = self.widgets.get(&pid).and_then(|w| w.parent);
             }
         }
         self.strip_deferred_position_on_overlay(id);
@@ -4346,6 +4772,17 @@ impl MessageBridge {
 
     fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
+        self.has_index_ready = false;
+    }
+}
+
+fn push_has_args(compound: &crate::css_cascade::CompoundSelector, out: &mut Vec<SimpleCompound>) {
+    for query in &compound.has_queries {
+        for alt in query {
+            if !out.contains(alt) && out.len() < 64 {
+                out.push(alt.clone());
+            }
+        }
     }
 }
 
@@ -4441,6 +4878,53 @@ fn normalize_prop_key(key: &str) -> String {
     kebab.to_ascii_lowercase()
 }
 
+fn persist_svg_length_attr(props: &mut WidgetProps, name: &str, value: &nana_js_engine::HostValue) {
+    if !is_svg_length_tag(&props.element_tag) {
+        return;
+    }
+    let s = match value {
+        nana_js_engine::HostValue::Number(n) if n.is_finite() => {
+            if n.fract() == 0.0 {
+                format!("{}", *n as i64)
+            } else {
+                n.to_string()
+            }
+        }
+        _ => host_string(value),
+    };
+    if s.is_empty() {
+        props.attrs.remove(name);
+    } else {
+        props.attrs.insert(name.to_string(), s);
+    }
+}
+
+fn is_svg_length_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "svg"
+            | "g"
+            | "path"
+            | "rect"
+            | "circle"
+            | "ellipse"
+            | "line"
+            | "polyline"
+            | "polygon"
+            | "text"
+            | "image"
+            | "use"
+            | "symbol"
+            | "foreignobject"
+            | "clippath"
+            | "mask"
+            | "lineargradient"
+            | "radialgradient"
+            | "stop"
+            | "defs"
+    )
+}
+
 /// Common SVG attrs after [`normalize_prop_key`] (kebab / lowercase).
 fn is_common_svg_attr(key: &str) -> bool {
     matches!(
@@ -4479,6 +4963,24 @@ fn is_common_svg_attr(key: &str) -> bool {
             | "d"
             | "fill"
             | "stroke"
+            | "width"
+            | "height"
+            | "offset"
+            | "stop-color"
+            | "stopcolor"
+            | "stop-opacity"
+            | "stopopacity"
+            | "gradienttransform"
+            | "gradient-transform"
+            | "gradientunits"
+            | "gradient-units"
+            | "spreadmethod"
+            | "spread-method"
+            | "font-size"
+            | "font-family"
+            | "text-anchor"
+            | "dominant-baseline"
+            | "overflow"
     )
 }
 
@@ -4815,6 +5317,107 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn img_src_cascades_onto_content_image() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "img".into();
+        props.attrs.insert("src".into(), "hero.png".into());
+        props.inline_style = "object-fit: contain".into();
+        bridge.register(3, WidgetKind::Box, props);
+        let layout = &bridge.get(3).expect("img").props.layout;
+        match &layout.paint.content_image {
+            Some(nana_ui_core::BackgroundImage::Url { url, fit, .. }) => {
+                assert_eq!(url, "hero.png");
+                assert_eq!(*fit, nana_ui_core::BackgroundImageFit::Contain);
+            }
+            other => panic!("expected img content_image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_poster_binds_content_image_and_iframe_skips_src() {
+        let mut bridge = MessageBridge::new();
+        let mut video = WidgetProps::default();
+        video.element_tag = "video".into();
+        video.attrs.insert("poster".into(), "frame.png".into());
+        video.attrs.insert("src".into(), "clip.mp4".into());
+        bridge.register(3, WidgetKind::Box, video);
+        match &bridge
+            .get(3)
+            .expect("video")
+            .props
+            .layout
+            .paint
+            .content_image
+        {
+            Some(nana_ui_core::BackgroundImage::Url { url, .. }) => {
+                assert_eq!(url, "frame.png");
+            }
+            other => panic!("expected video poster, got {other:?}"),
+        }
+        assert!(
+            bridge
+                .get(3)
+                .expect("video")
+                .props
+                .layout
+                .paint
+                .skipped_replaced
+                .is_none()
+        );
+
+        let mut bare = WidgetProps::default();
+        bare.element_tag = "video".into();
+        bare.attrs.insert("src".into(), "clip.mp4".into());
+        bridge.register(4, WidgetKind::Box, bare);
+        let paint = &bridge.get(4).expect("bare video").props.layout.paint;
+        assert!(paint.content_image.is_none());
+        assert_eq!(paint.skipped_replaced.as_deref(), Some("video"));
+
+        let mut iframe = WidgetProps::default();
+        iframe.element_tag = "iframe".into();
+        iframe
+            .attrs
+            .insert("src".into(), "https://example.com".into());
+        bridge.register(5, WidgetKind::Box, iframe);
+        let paint = &bridge.get(5).expect("iframe").props.layout.paint;
+        assert!(
+            paint.content_image.is_none(),
+            "iframe must not load src as an image"
+        );
+        assert_eq!(paint.skipped_replaced.as_deref(), Some("iframe"));
+    }
+
+    #[test]
+    fn canvas_without_slot_is_not_a_2d_bitmap() {
+        let mut bridge = MessageBridge::new();
+        let mut bare = WidgetProps::default();
+        bare.element_tag = "canvas".into();
+        bare.attrs.insert("width".into(), "300".into());
+        bare.attrs.insert("height".into(), "150".into());
+        bare.attrs.insert("src".into(), "frame.png".into());
+        bridge.register(3, WidgetKind::Box, bare);
+        let paint = &bridge.get(3).expect("bare canvas").props.layout.paint;
+        assert!(
+            paint.content_image.is_none(),
+            "bare <canvas> must not bind src as a 2d bitmap"
+        );
+        assert_eq!(paint.skipped_replaced.as_deref(), Some("canvas"));
+
+        let mut slotted = WidgetProps::default();
+        slotted.element_tag = "canvas".into();
+        slotted.attrs.insert("data-nana-canvas".into(), "42".into());
+        slotted.attrs.insert("src".into(), "frame.png".into());
+        bridge.register(4, WidgetKind::Box, slotted);
+        let paint = &bridge.get(4).expect("slotted canvas").props.layout.paint;
+        assert!(
+            paint.content_image.is_none(),
+            "HostTexture canvas must not pretend to be content_image"
+        );
+        assert!(paint.skipped_replaced.is_none());
+    }
+
+    #[test]
     fn measure_layout_boxes_place_row_children() {
         let mut bridge = MessageBridge::new();
         bridge.ensure_document_roots(1, 2);
@@ -4997,10 +5600,97 @@ mod tests {
             bridge.get(2).unwrap().props.layout.gap,
             Some(LengthSpec::Px(24.0))
         );
+    }
+
+    #[test]
+    fn direction_rtl_parent_style_recascades_child_logical() {
+        let mut bridge = MessageBridge::new();
+        let mut parent = WidgetProps::default();
+        parent.element_tag = "div".into();
+        bridge.register(1, WidgetKind::Column, parent);
+        let mut child = WidgetProps::default();
+        child.element_tag = "div".into();
+        child.class_names = vec!["box".into()];
+        bridge.register(2, WidgetKind::Box, child);
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
         assert_eq!(
-            bridge.get(3).unwrap().props.layout.gap,
-            Some(LengthSpec::Px(40.0))
+            bridge.get(2).unwrap().props.layout.padding_left,
+            Some(LengthSpec::Px(12.0))
         );
+        assert!(bridge.get(2).unwrap().props.layout.padding_right.is_none());
+
+        bridge.patch_prop(1, "style", &HostValue::string("direction: rtl"));
+        let child_layout = &bridge.get(2).unwrap().props.layout;
+        assert_eq!(child_layout.dir, Some(crate::css_map::DirSpec::Rtl));
+        assert_eq!(child_layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(child_layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn html_dir_rtl_host_attr_remaps_stylesheet_padding_inline_start() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "div".into();
+        props.class_names = vec!["box".into()];
+        props.attrs.insert("dir".into(), "rtl".into());
+        bridge.register(1, WidgetKind::Box, props);
+        bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert_eq!(layout.dir, Some(crate::css_map::DirSpec::Rtl));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
+        assert!(!layout.flex_reverse);
+    }
+
+    #[test]
+    fn html_dir_rtl_patch_prop_remaps_stylesheet_logical() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "div".into();
+        props.class_names = vec!["box".into()];
+        bridge.register(1, WidgetKind::Box, props);
+        bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.padding_left,
+            Some(LengthSpec::Px(12.0))
+        );
+
+        bridge.patch_prop(1, "dir", &HostValue::string("rtl"));
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert_eq!(layout.dir, Some(crate::css_map::DirSpec::Rtl));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn html_dir_auto_fail_closed_does_not_fake_ltr_or_rtl() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "div".into();
+        props.class_names = vec!["box".into()];
+        props.attrs.insert("dir".into(), "auto".into());
+        bridge.register(1, WidgetKind::Box, props);
+        bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert!(layout.dir.is_none());
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_right.is_none());
+    }
+
+    #[test]
+    fn html_dir_loses_to_author_css_direction() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.element_tag = "div".into();
+        props.class_names = vec!["box".into()];
+        props.attrs.insert("dir".into(), "rtl".into());
+        bridge.register(1, WidgetKind::Box, props);
+        bridge.inject_stylesheet(".box { direction: ltr; padding-inline-start: 12px; }");
+        let layout = &bridge.get(1).unwrap().props.layout;
+        assert_eq!(layout.dir, Some(crate::css_map::DirSpec::Ltr));
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+        assert!(layout.padding_right.is_none());
     }
 
     #[test]
@@ -7727,6 +8417,358 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_pseudo_paints_input_and_skips_non_inputs() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Input,
+            WidgetProps {
+                element_tag: "input".into(),
+                placeholder: "hint".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["field".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "input::placeholder { color: gray; opacity: 0.5 } .field::placeholder { color: red; width: 40px; }",
+        );
+        let input = bridge.get(1).expect("input");
+        assert_eq!(
+            input.props.layout.placeholder_color,
+            Some([0.5, 0.5, 0.5, 1.0])
+        );
+        assert_eq!(input.props.layout.placeholder_opacity, Some(0.5));
+        let div = bridge.get(2).expect("div");
+        assert!(div.props.layout.placeholder_color.is_none());
+        assert!(div.props.layout.width.is_none());
+        assert!(
+            !bridge.snapshot().widgets.iter().any(|w| {
+                w.props.attrs.get(GENERATED_PSEUDO_ATTR).map(String::as_str) == Some("placeholder")
+            }),
+            "::placeholder must not materialize a generated box"
+        );
+    }
+
+    #[test]
+    fn has_descendant_present_restyles_parent() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                class_names: vec!["badge".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".card { width: 10px; } .card:has(.badge) { width: 80px; }");
+        let parent = bridge.get(1).expect("card");
+        assert_eq!(parent.props.layout.width, Some(LengthSpec::Px(80.0)));
+    }
+
+    #[test]
+    fn has_descendant_present_restyles_parent_on_insert_and_remove() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(".card { width: 10px; } .card:has(.badge) { width: 80px; }");
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+        bridge.register(
+            2,
+            WidgetKind::Text,
+            WidgetProps {
+                class_names: vec!["badge".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(80.0))
+        );
+        bridge.unregister(2);
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+    }
+
+    #[test]
+    fn has_descendant_present_restyles_parent_on_class_toggle() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(2, WidgetKind::Text, WidgetProps::default());
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".card { color: black; } .card:has(.badge) { color: red; }");
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.color,
+            Some([0.0, 0.0, 0.0, 1.0])
+        );
+
+        bridge.patch_prop(2, "class", &HostValue::string("badge"));
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.color,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+
+        bridge.patch_prop(2, "classname", &HostValue::string("plain"));
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.color,
+            Some([0.0, 0.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn inject_font_face_skips_failed_load() {
+        let mut bridge = MessageBridge::new();
+        bridge.inject_stylesheet(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: url("./missing.woff2");
+                font-weight: 400;
+            }
+            "#,
+        );
+        assert!(
+            bridge.registered_font_faces().is_empty(),
+            "failed/missing font load must not register"
+        );
+    }
+
+    #[test]
+    fn inject_font_face_unknown_local_is_fail_closed() {
+        let mut bridge = MessageBridge::new();
+        bridge.inject_stylesheet(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: local("DefinitelyNotANanaFont_xyz");
+                font-weight: 400;
+            }
+            "#,
+        );
+        assert!(
+            bridge.registered_font_faces().is_empty(),
+            "unmatched local() must fail closed"
+        );
+    }
+
+    #[test]
+    fn inject_font_face_local_then_url_falls_back_to_url() {
+        let jail = std::env::temp_dir().join(format!(
+            "nanaui-bridge-font-{}-local-fallback",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(jail.join("ok.ttf"), b"dummy-font-bytes").expect("ttf");
+        let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(jail.clone());
+        bridge.inject_stylesheet(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: local("DefinitelyNotANanaFont_xyz"), url("./ok.ttf");
+                font-weight: 400;
+            }
+            "#,
+        );
+        assert_eq!(bridge.registered_font_faces().len(), 1);
+        assert_eq!(bridge.registered_font_faces()[0].family, "Display");
+        assert_eq!(
+            bridge.registered_font_faces()[0].src[0],
+            crate::css_at_rule::FontFaceSrc::Local("DefinitelyNotANanaFont_xyz".into())
+        );
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn inject_font_face_url_then_unknown_local_does_not_register_on_miss() {
+        let mut bridge = MessageBridge::new();
+        bridge.inject_stylesheet(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: url("./missing.woff2"), local("DefinitelyNotANanaFont_xyz");
+                font-weight: 400;
+            }
+            "#,
+        );
+        assert!(
+            bridge.registered_font_faces().is_empty(),
+            "missing url then unmatched local() must not register"
+        );
+    }
+
+    #[test]
+    fn inject_font_face_falls_back_to_next_src_url() {
+        let jail = std::env::temp_dir().join(format!(
+            "nanaui-bridge-font-{}-src-fallback",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(jail.join("ok.ttf"), b"dummy-font-bytes").expect("ttf");
+        let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(jail.clone());
+        bridge.inject_stylesheet(
+            r#"
+            @font-face {
+                font-family: "Display";
+                src: url("./missing.woff2") format("woff2") tech("color-COLRv0"),
+                     url("./ok.ttf") format("truetype");
+                font-weight: 400;
+            }
+            "#,
+        );
+        assert_eq!(bridge.registered_font_faces().len(), 1);
+        assert_eq!(bridge.registered_font_faces()[0].family, "Display");
+        assert_eq!(
+            crate::css_at_rule::font_face_url_srcs(&bridge.registered_font_faces()[0])
+                .collect::<Vec<_>>(),
+            vec!["./missing.woff2", "./ok.ttf"]
+        );
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn inject_font_face_registers_once_and_dedupes() {
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-bridge-font-{}-dedupe", std::process::id()));
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(jail.join("Display.woff2"), b"dummy-font-bytes").expect("font");
+        let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(jail.clone());
+        let css = r#"
+            @font-face {
+                font-family: "Display";
+                src: url("./Display.woff2");
+                font-weight: 400;
+            }
+        "#;
+        bridge.inject_stylesheet(css);
+        bridge.inject_stylesheet(css);
+        assert_eq!(bridge.registered_font_faces().len(), 1);
+        assert_eq!(bridge.registered_font_faces()[0].family, "Display");
+        assert_eq!(bridge.registered_font_faces()[0].weight, Some(400));
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn inject_print_font_face_is_not_registered_on_screen() {
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-bridge-font-{}-print", std::process::id()));
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&jail).expect("jail");
+        std::fs::write(jail.join("print.ttf"), b"dummy-font-bytes").expect("font");
+        let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(jail.clone());
+        bridge.inject_stylesheet(
+            r#"
+            @media print {
+                @font-face {
+                    font-family: "PrintOnly";
+                    src: url("./print.ttf");
+                }
+                .print { width: 10px; }
+            }
+            "#,
+        );
+        assert!(
+            bridge.registered_font_faces().is_empty(),
+            "unmatched @media print @font-face must not register"
+        );
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn inject_font_url_resolves_relative_to_importing_sheet() {
+        let jail =
+            std::env::temp_dir().join(format!("nanaui-bridge-font-{}-rel", std::process::id()));
+        let sheets = jail.join("sheets");
+        let fonts = sheets.join("fonts");
+        let _ = std::fs::remove_dir_all(&jail);
+        std::fs::create_dir_all(&fonts).expect("fonts");
+        std::fs::write(fonts.join("n.ttf"), b"dummy-font-bytes").expect("ttf");
+        std::fs::write(
+            sheets.join("theme.css"),
+            r#"
+            @font-face {
+                font-family: "Rel";
+                src: url("./fonts/n.ttf");
+                font-weight: 400;
+            }
+            "#,
+        )
+        .expect("theme");
+        let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(jail.clone());
+        bridge.inject_stylesheet("@import url(\"sheets/theme.css\");");
+        assert_eq!(bridge.registered_font_faces().len(), 1);
+        assert_eq!(bridge.registered_font_faces()[0].family, "Rel");
+        let _ = std::fs::remove_dir_all(&jail);
+    }
+
+    #[test]
+    fn media_min_width_recascades_when_viewport_changes() {
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.class_names = vec!["wide".into()];
+        props.element_tag = "div".into();
+        bridge.register(1, WidgetKind::Column, props);
+        bridge.inject_stylesheet("@media (min-width: 800px) { .wide { width: 100px; } }");
+        // Default media env is 960×640, so the rule applies on inject.
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.width,
+            Some(LengthSpec::Px(100.0))
+        );
+        bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+        assert!(
+            bridge.get(1).unwrap().props.layout.width.is_none(),
+            "narrow viewport must drop the min-width:800px rule"
+        );
+        bridge.sync_layout_containing_blocks(ParentBox::from_viewport(900.0, 300.0));
+        assert_eq!(
+            bridge.get(1).unwrap().props.layout.width,
+            Some(LengthSpec::Px(100.0))
+        );
+    }
+
+    #[test]
     fn transition_duration_from_stylesheet_is_nonzero() {
         let mut bridge = MessageBridge::new();
         bridge.register(
@@ -8006,6 +9048,53 @@ mod tests {
                 .background
                 .is_some_and(|bg| bg[0] > 0.0 && bg[0] < 1.0),
             "mid-transition paint should still reflect hover-in progress before retarget catches up, got {current:?}"
+        );
+    }
+
+    #[test]
+    fn px_width_transition_dirties_layout() {
+        use nana_ui_core::LengthSpec;
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let box_el = doc.create_element("div");
+        doc.insert(box_el, root, None);
+        bridge.register(
+            box_el.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["box".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".box { width: 40px; height: 20px; transition: width 200ms linear; } \
+             .box:hover { width: 80px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.set_runtime_clock_for_test(Duration::ZERO);
+        doc.set_pointer_hover(0, Some(box_el));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(Duration::from_millis(100));
+        assert!(bridge.tick_css_animations(&mut doc));
+        let node = StableNodeId::new(box_el.0).expect("box id");
+        let dirty = doc.world().pending_layout_dirty();
+        assert!(
+            dirty.iter().any(|id| *id == node),
+            "px width transition must dirty LAYOUT, got {dirty:?}"
+        );
+        doc.flush_host_frame();
+        let style = doc.world().node_style(node).expect("box runtime style");
+        let width = match style.layout.width {
+            Some(LengthSpec::Px(px)) => px,
+            other => panic!("expected interpolated px width, got {other:?}"),
+        };
+        assert!(
+            (width - 60.0).abs() < 1.0,
+            "mid-transition width expected ~60px, got {width}"
         );
     }
 }

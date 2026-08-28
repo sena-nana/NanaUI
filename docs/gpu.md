@@ -70,6 +70,20 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
+## 媒体槽（Canvas / video / iframe）
+
+这些不是浏览器。可见输出仍然只走 Runtime → UiScene → `SceneWgpuPainter`。
+
+| 节点 | 槽位合同 | L1 行为 |
+| --- | --- | --- |
+| `<nana-gpu>` / `data-nana-gpu` | `"nana.host-texture"` + 宿主登记的 slot 名 | `GpuTextureView` |
+| `<canvas data-nana-canvas="{id}">` | `"nana.host-texture"` + `canvas:{id}` | 2D 像素来自 `nana-ui-web-api`（tiny-skia），hosted 路径由 `CanvasGpuBridge` dirty upload。`getContext("2d")` 只在 web-api shim 里存在，不是 Chromium 2D |
+| `getContext("webgpu")` | `"nana.host-texture"` + `webgpu-canvas:{id}` | 同一套 HostTexture，不是第二套 Device |
+| `<video poster>` | 无 CustomRenderNode；`poster` 走 `content_image` URL 缓存 | 只显示 poster。不解码视频、不播第一帧 |
+| `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src` |
+
+没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。
+
 ## 按图离屏
 
 离屏必须按 Scene 图、在采样**之前**编码时，仍挂 `GpuTextureView`，再实现 `SceneResourceProducer`。第一次接入用 `prepare_window_frame` 即可。
@@ -81,3 +95,4 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 - 在 UI 画完之后再往 Surface 上盖一层实时画面
 - 把 GPU 内容攒到帧尾一次性画，打乱和按钮的前后关系
 - 同一资源在一帧里提交互相冲突的 revision（整帧会失败，不会挑一个用）
+- 为 Android 另写一套 renderer，或把实验 NativeActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）

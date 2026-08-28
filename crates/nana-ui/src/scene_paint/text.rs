@@ -1,5 +1,8 @@
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{Align, Attrs, Buffer, Color, Metrics, Shaping, SwashCache, SwashContent, Wrap};
+use cosmic_text::{
+    Align, Attrs, Buffer, Color, FeatureTag, FontFeatures, Metrics, Shaping, SwashCache,
+    SwashContent, Wrap,
+};
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::SceneTextSpan;
@@ -141,6 +144,7 @@ struct AffineKey {
     origin_bits: [u32; 2],
     scale_bits: u32,
     affine_bits: [u32; 6],
+    persp_bits: [u32; 2],
     clip_bits: [u32; 30],
     color_bits: [u32; 4],
 }
@@ -320,12 +324,14 @@ struct ShapeKey {
     line_height_bits: u32,
     wrap: bool,
     ellipsis: bool,
+    max_lines: Option<u16>,
     shaping: u8,
     letter_spacing_bits: u32,
     width_bits: u32,
     height_bits: u32,
     align: u8,
     spans: Option<Vec<(String, [u32; 4])>>,
+    font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
 
 /// Borrowed form of [`ShapeKey`] built straight from the scene primitive.
@@ -340,6 +346,7 @@ struct ShapeKeyRef<'a> {
     line_height_bits: u32,
     wrap: bool,
     ellipsis: bool,
+    max_lines: Option<u16>,
     shaping: u8,
     letter_spacing_bits: u32,
     width_bits: u32,
@@ -347,6 +354,7 @@ struct ShapeKeyRef<'a> {
     align: u8,
     /// `Some` only for rich text, whose span colors change the shaped attrs.
     spans: Option<&'a [(&'a str, [f32; 4])]>,
+    font_features: &'a [nana_ui_core::FontFeatureSetting],
 }
 
 impl ShapeKeyRef<'_> {
@@ -359,11 +367,13 @@ impl ShapeKeyRef<'_> {
         self.line_height_bits.hash(&mut hasher);
         self.wrap.hash(&mut hasher);
         self.ellipsis.hash(&mut hasher);
+        self.max_lines.hash(&mut hasher);
         self.shaping.hash(&mut hasher);
         self.letter_spacing_bits.hash(&mut hasher);
         self.width_bits.hash(&mut hasher);
         self.height_bits.hash(&mut hasher);
         self.align.hash(&mut hasher);
+        self.font_features.hash(&mut hasher);
         match self.spans {
             None => 0u8.hash(&mut hasher),
             Some(spans) => {
@@ -387,11 +397,13 @@ impl ShapeKeyRef<'_> {
             line_height_bits: self.line_height_bits,
             wrap: self.wrap,
             ellipsis: self.ellipsis,
+            max_lines: self.max_lines,
             shaping: self.shaping,
             letter_spacing_bits: self.letter_spacing_bits,
             width_bits: self.width_bits,
             height_bits: self.height_bits,
             align: self.align,
+            font_features: self.font_features.to_vec(),
             spans: self.spans.map(|spans| {
                 spans
                     .iter()
@@ -411,11 +423,13 @@ impl ShapeKey {
             && self.line_height_bits == other.line_height_bits
             && self.wrap == other.wrap
             && self.ellipsis == other.ellipsis
+            && self.max_lines == other.max_lines
             && self.shaping == other.shaping
             && self.letter_spacing_bits == other.letter_spacing_bits
             && self.width_bits == other.width_bits
             && self.height_bits == other.height_bits
             && self.align == other.align
+            && self.font_features == other.font_features
             && match (&self.spans, other.spans) {
                 (None, None) => true,
                 (Some(mine), Some(theirs)) => {
@@ -544,12 +558,15 @@ impl TextPipeline {
         line_height: Option<LineHeightSpec>,
         wrap: bool,
         ellipsis: bool,
+        max_lines: Option<u16>,
         shaping: TextShaping,
         horizontal: TextHorizontalAlignment,
         vertical: TextVerticalAlignment,
         spans: &[SceneTextSpan],
         letter_spacing: f32,
+        font_features: &[nana_ui_core::FontFeatureSetting],
         affine: [f32; 6],
+        persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
         opacity: f32,
         paint_offset: [f32; 2],
@@ -575,7 +592,7 @@ impl TextPipeline {
         let physical_width = bounds.width.max(0.0) * scale;
         let physical_height = bounds.height.max(line_height) * scale;
         let default_color = with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), opacity);
-        let attrs = text_attrs(family, weight, letter_spacing, size);
+        let attrs = text_attrs(family, weight, letter_spacing, size, font_features);
         let shaping = match shaping {
             TextShaping::Auto if content.is_ascii() => Shaping::Basic,
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
@@ -595,6 +612,7 @@ impl TextPipeline {
             line_height_bits: physical_line_height.to_bits(),
             wrap,
             ellipsis,
+            max_lines,
             shaping: match shaping {
                 Shaping::Basic => 0,
                 Shaping::Advanced => 1,
@@ -608,6 +626,7 @@ impl TextPipeline {
                 TextHorizontalAlignment::End => 2,
             },
             spans: rich.then_some(painted.as_slice()),
+            font_features,
         };
         let hash = key.hash64();
         if self.shape_cache.get(hash, &key).is_none() {
@@ -619,9 +638,10 @@ impl TextPipeline {
             buffer.set_size(Some(physical_width), Some(physical_height));
             buffer.set_wrap(if wrap { Wrap::Word } else { Wrap::None });
             buffer.set_ellipsize(if ellipsis {
-                cosmic_text::Ellipsize::End(cosmic_text::EllipsizeHeightLimit::Height(
-                    physical_height,
-                ))
+                let limit = max_lines
+                    .map(|n| cosmic_text::EllipsizeHeightLimit::Lines(n.max(1) as usize))
+                    .unwrap_or(cosmic_text::EllipsizeHeightLimit::Height(physical_height));
+                cosmic_text::Ellipsize::End(limit)
             } else {
                 cosmic_text::Ellipsize::None
             });
@@ -645,9 +665,9 @@ impl TextPipeline {
         let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];
-        if clip::is_translation(affine) {
+        if clip::is_translation_projective(affine, persp) {
             let line_logical = laid_out_height / scale;
-            let [_, wy] = clip::transform_point(affine, aligned[0], aligned[1]);
+            let [_, wy] = clip::transform_point_projective(affine, persp, aligned[0], aligned[1]);
             let (top_px, _) =
                 clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
             aligned[1] += top_px / scale - wy;
@@ -655,10 +675,12 @@ impl TextPipeline {
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
         }
-        // Cryoglyph TextBounds is an AABB. Rotated overflow must go through
-        // the affine atlas path so fragment_clip can discard parallelogram
-        // exteriors; translation-only axis-aligned clips keep the AABB path.
-        if clip::is_translation(affine) && fragment_clip == clip::FragmentClip::PASS {
+        // Cryoglyph TextBounds is an AABB. Rotated / projective overflow must
+        // go through the glyph-quad path so the same homography as Quad is
+        // applied to each glyph (4 corners, no triangulation).
+        if clip::is_translation_projective(affine, persp)
+            && fragment_clip == clip::FragmentClip::PASS
+        {
             self.prepare_cryoglyph(
                 device,
                 queue,
@@ -678,6 +700,7 @@ impl TextPipeline {
                 aligned,
                 scale,
                 affine,
+                persp,
                 fragment_clip,
                 default_color,
             )
@@ -773,6 +796,7 @@ impl TextPipeline {
         aligned: [f32; 2],
         scale: f32,
         affine: [f32; 6],
+        persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
         default_color: [f32; 4],
     ) -> Option<PreparedText> {
@@ -781,6 +805,7 @@ impl TextPipeline {
             origin_bits: [aligned[0].to_bits(), aligned[1].to_bits()],
             scale_bits: scale.to_bits(),
             affine_bits: affine.map(f32::to_bits),
+            persp_bits: persp.map(f32::to_bits),
             clip_bits: fragment_clip.to_bits(),
             color_bits: default_color.map(f32::to_bits),
         };
@@ -837,8 +862,15 @@ impl TextPipeline {
             return None;
         }
         let (atlas_w, atlas_h, atlas) = pack_glyph_atlas(&mut packed);
-        let vertices =
-            affine_glyph_vertices(&packed, affine, scale, atlas_w, atlas_h, fragment_clip);
+        let vertices = affine_glyph_vertices(
+            &packed,
+            affine,
+            persp,
+            scale,
+            atlas_w,
+            atlas_h,
+            fragment_clip,
+        );
         if vertices.is_empty() {
             return None;
         }
@@ -1125,6 +1157,7 @@ fn text_attrs<'a>(
     weight: Option<u16>,
     letter_spacing: f32,
     font_size: f32,
+    font_features: &[nana_ui_core::FontFeatureSetting],
 ) -> Attrs<'a> {
     let mut attrs =
         Attrs::new()
@@ -1144,6 +1177,13 @@ fn text_attrs<'a>(
     if tracking != 0.0 {
         attrs = attrs.letter_spacing(tracking);
     }
+    if !font_features.is_empty() {
+        let mut features = FontFeatures::new();
+        for setting in font_features {
+            features.set(FeatureTag::new(&setting.tag), setting.value);
+        }
+        attrs = attrs.font_features(features);
+    }
     attrs
 }
 
@@ -1162,13 +1202,20 @@ fn color_from_cosmic(color: Color) -> [f32; 4] {
     ]
 }
 
-/// Four corners of a glyph quad after the same CSS/Canvas affine used for Quad/Mesh.
-fn transform_glyph_quad(affine: [f32; 6], x: f32, y: f32, w: f32, h: f32) -> [[f32; 2]; 4] {
+/// Four corners of a glyph quad after the same Scene homography as Quad.
+fn transform_glyph_quad(
+    affine: [f32; 6],
+    persp: [f32; 2],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> [[f32; 2]; 4] {
     [
-        clip::transform_point(affine, x, y),
-        clip::transform_point(affine, x + w, y),
-        clip::transform_point(affine, x, y + h),
-        clip::transform_point(affine, x + w, y + h),
+        clip::transform_point_projective(affine, persp, x, y),
+        clip::transform_point_projective(affine, persp, x + w, y),
+        clip::transform_point_projective(affine, persp, x, y + h),
+        clip::transform_point_projective(affine, persp, x + w, y + h),
     ]
 }
 
@@ -1242,6 +1289,7 @@ fn pack_glyph_atlas(glyphs: &mut [PackedGlyph]) -> (u32, u32, Vec<u8>) {
 fn affine_glyph_vertices(
     glyphs: &[PackedGlyph],
     affine: [f32; 6],
+    persp: [f32; 2],
     scale: f32,
     atlas_w: u32,
     atlas_h: u32,
@@ -1254,6 +1302,7 @@ fn affine_glyph_vertices(
     for glyph in glyphs {
         let [tl, tr, bl, br] = transform_glyph_quad(
             affine,
+            persp,
             glyph.logical.x,
             glyph.logical.y,
             glyph.logical.width,
@@ -1331,8 +1380,8 @@ mod tests {
     fn glyph_quads_follow_90_degree_affine() {
         let identity = clip::IDENTITY_AFFINE;
         let rot90 = [0.0, 1.0, -1.0, 0.0, 0.0, 0.0];
-        let unrotated = transform_glyph_quad(identity, 10.0, 20.0, 30.0, 8.0);
-        let rotated = transform_glyph_quad(rot90, 10.0, 20.0, 30.0, 8.0);
+        let unrotated = transform_glyph_quad(identity, [0.0, 0.0], 10.0, 20.0, 30.0, 8.0);
+        let rotated = transform_glyph_quad(rot90, [0.0, 0.0], 10.0, 20.0, 30.0, 8.0);
         let unrotated_bounds = quad_aabb(&unrotated);
         let rotated_bounds = quad_aabb(&rotated);
         assert_ne!(
@@ -1362,6 +1411,30 @@ mod tests {
         assert_eq!(rotated[1], [-20.0, 40.0]);
         assert_eq!(rotated[2], [-28.0, 10.0]);
         assert_eq!(rotated[3], [-28.0, 40.0]);
+    }
+
+    #[test]
+    fn glyph_quads_follow_perspective_rotate_y_homography() {
+        let mat = nana_ui_core::PaintMat4::perspective(800.0)
+            .expect("d")
+            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians()))
+            .around_origin(0.0, 0.0, 100.0, 40.0);
+        let (affine, persp) = mat.planar_homography().expect("homography");
+        let corners = transform_glyph_quad(affine, persp, 0.0, 0.0, 200.0, 80.0);
+        let left = {
+            let dx = corners[0][0] - corners[2][0];
+            let dy = corners[0][1] - corners[2][1];
+            (dx * dx + dy * dy).sqrt()
+        };
+        let right = {
+            let dx = corners[1][0] - corners[3][0];
+            let dy = corners[1][1] - corners[3][1];
+            (dx * dx + dy * dy).sqrt()
+        };
+        assert!(
+            (left - right).abs() > 4.0,
+            "text glyph quads must share the box homography, left={left} right={right}"
+        );
     }
 
     #[test]
@@ -1426,7 +1499,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             },
-            transform: nana_ui_scene::AffineTransform(
+            transform: nana_ui_scene::AffineTransform::from_matrix(
                 nana_ui_core::PaintTransform {
                     a: k,
                     b: k,
@@ -1538,12 +1611,15 @@ mod tests {
                 None,
                 false,
                 false,
+                None,
                 TextShaping::Auto,
                 TextHorizontalAlignment::Start,
                 TextVerticalAlignment::Top,
                 &[],
                 0.0,
+                &[],
                 affine,
+                [0.0, 0.0],
                 fragment_clip,
                 1.0,
                 [0.0, 0.0],
@@ -1625,12 +1701,15 @@ mod tests {
                 None,
                 true,
                 false,
+                None,
                 TextShaping::Auto,
                 TextHorizontalAlignment::Start,
                 TextVerticalAlignment::Top,
                 &[],
                 0.0,
+                &[],
                 affine,
+                [0.0, 0.0],
                 fragment_clip,
                 1.0,
                 [0.0, 0.0],

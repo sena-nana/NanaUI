@@ -15,7 +15,7 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 没有自绘标题栏的窗口设 `WindowSettings::system_caption(true)`，避免 Windows 无框窗口失去关闭按钮。
 
-关闭 / 最小化 / 最大化是窗口动作。控件发出语义（`WindowChromeAction`），Scene host 去执行。普通控件拿不到窗口句柄。
+关闭 / 最小化 / 最大化是窗口动作。控件发出语义（`WindowChromeAction`），Scene host 去执行。普通控件拿不到窗口句柄。L1 CSS `-webkit-app-region` / `app-region` 不是拖拽合同：任意盒写 `drag` 也不会变成 caption。
 
 `WindowChromeState` 绑在明确的 `WindowId` 上。单窗口可用默认入口（只认收到的第一扇窗）；多窗口在 `WindowCommand::Open` 拿到 ID 后用 `for_window` 各建一份。关窗后不会自动接管别的窗口。
 

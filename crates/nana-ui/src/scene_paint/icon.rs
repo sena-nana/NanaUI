@@ -276,6 +276,7 @@ impl IconPipeline {
         queue: &wgpu::Queue,
         bounds: LogicalRect,
         affine: [f32; 6],
+        persp: [f32; 2],
         scale: f32,
         icon: Icon,
         color: [f32; 4],
@@ -299,7 +300,7 @@ impl IconPipeline {
         let color = pack_linear(with_opacity(color, opacity));
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
-        let [tl, tr, bl, br] = icon_quad(bounds, affine, scale);
+        let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
         let corners = [
             (tl, [0.0, 0.0]),
             (tr, [1.0, 0.0]),
@@ -455,12 +456,13 @@ impl IconPipeline {
     }
 }
 
-fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4] {
+fn icon_quad(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2], scale: f32) -> [[f32; 2]; 4] {
     let extent = bounds.width.min(bounds.height);
     let x = bounds.x + (bounds.width - extent) * 0.5;
     let y = bounds.y + (bounds.height - extent) * 0.5;
-    if clip::is_translation(affine) {
-        let [cx, cy] = clip::transform_point(affine, x + extent * 0.5, y + extent * 0.5);
+    if clip::is_translation_projective(affine, persp) {
+        let [cx, cy] =
+            clip::transform_point_projective(affine, persp, x + extent * 0.5, y + extent * 0.5);
         let (x0, px) = clip::snap_centered_origin(cx, extent, scale);
         let (y0, _) = clip::snap_centered_origin(cy, extent, scale);
         [[x0, y0], [x0 + px, y0], [x0, y0 + px], [x0 + px, y0 + px]]
@@ -472,7 +474,7 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> [[f32; 2]; 4]
             [x + extent, y + extent],
         ]
         .map(|[px, py]| {
-            let [tx, ty] = clip::transform_point(affine, px, py);
+            let [tx, ty] = clip::transform_point_projective(affine, persp, px, py);
             [tx * scale, ty * scale]
         })
     }
