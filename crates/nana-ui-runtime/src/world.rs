@@ -5510,6 +5510,7 @@ impl UiWorld {
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
+        let box_visible = !layout.omits_box() && inherited.box_visible;
         let next = ComputedStyle {
             foreground,
             color,
@@ -5517,7 +5518,8 @@ impl UiWorld {
             border_color,
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
             visibility,
-            visible: !layout.omits_box()
+            box_visible,
+            visible: box_visible
                 && visibility != nana_ui_core::VisibilitySpec::Hidden
                 && self.overlay_branch_active(id)
                 && self.menu_branch_open(id),
