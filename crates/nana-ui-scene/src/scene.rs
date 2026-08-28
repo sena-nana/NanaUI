@@ -108,6 +108,16 @@ impl ClipRegion {
             polygon_clip: None,
         }
     }
+
+    /// Ellipse filling `bounds` (`clip-path: circle()` / `ellipse()`).
+    pub fn ellipse(bounds: SceneRect, transform: AffineTransform) -> Self {
+        Self {
+            bounds,
+            transform,
+            corner_radius: 0.0,
+            polygon_clip: Some(vec![[f32::NEG_INFINITY, f32::NEG_INFINITY]]),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,7 +133,7 @@ pub struct QuadSurfacePaint {
     pub background_layers: Vec<BackgroundImage>,
     /// `<img src>` replaced content, painted above background layers.
     pub content_image: Option<BackgroundImage>,
-    pub mask: Option<nana_ui_core::CssGradient>,
+    pub mask: Option<nana_ui_core::MaskImage>,
     /// Resolved polygon vertices in border-box coordinates (px).
     pub polygon_clip: Option<Vec<[f32; 2]>>,
     pub filter: Option<ColorFilter>,
@@ -182,6 +192,8 @@ pub enum ScenePrimitiveKind {
         underline: bool,
         line_through: bool,
         font_features: Vec<nana_ui_core::FontFeatureSetting>,
+        italic: bool,
+        wrap_break: nana_ui_core::TextWrapBreak,
     },
     Icon {
         icon: Icon,
@@ -1046,7 +1058,7 @@ impl UiScene {
                         family: node.style.font_family.as_deref().map(str::to_owned),
                         line_height: node.style.line_height,
                         letter_spacing: node.style.letter_spacing,
-                        wrap: !style.white_space_nowrap || style.resolved_line_clamp().is_some(),
+                        wrap: style.text_wraps(),
                         ellipsis: style.uses_text_ellipsis(),
                         max_lines: style.resolved_line_clamp(),
                         shaping: if node.text_input.is_some() {
@@ -1061,6 +1073,8 @@ impl UiScene {
                         underline: style.text_decoration.is_some_and(|d| d.underline),
                         line_through: style.text_decoration.is_some_and(|d| d.line_through),
                         font_features: style.font_features.clone().unwrap_or_default(),
+                        italic: node.style.italic,
+                        wrap_break: style.text_wrap_break(),
                     },
                 });
                 if let Some(deco) = style.text_decoration.filter(|d| d.is_active()) {
@@ -3308,6 +3322,8 @@ impl UiScene {
                                 underline: false,
                                 line_through: false,
                                 font_features: Vec::new(),
+                                italic: false,
+                                wrap_break: nana_ui_core::TextWrapBreak::Word,
                             },
                         });
                     }
@@ -3989,6 +4005,18 @@ fn clip_path_region(
                 polygon_clip: Some(local_points),
             })
         }
+        ClipPath::Circle(_) | ClipPath::Ellipse(_) => {
+            let [x, y, w, h] = clip_path.resolve_ellipse_rect(bounds.width, bounds.height)?;
+            Some(ClipRegion::ellipse(
+                SceneRect {
+                    x: bounds.x + x,
+                    y: bounds.y + y,
+                    width: w.max(0.0),
+                    height: h.max(0.0),
+                },
+                transform,
+            ))
+        }
     }
 }
 
@@ -4229,6 +4257,8 @@ fn component_text_primitive(
                 .font_features
                 .clone()
                 .unwrap_or_default(),
+            italic: node.style.italic,
+            wrap_break: node.source_style.layout.text_wrap_break(),
         },
     }
 }
@@ -8100,14 +8130,14 @@ mod tests {
                             }],
                         }),
                     )),
-                    mask: Some(nana_ui_core::CssGradient::Linear(
-                        nana_ui_core::LinearGradient {
+                    mask: Some(nana_ui_core::MaskImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                             angle_deg: 180.0,
                             stops: vec![nana_ui_core::GradientStop {
                                 position: 0.0,
                                 color: [0.0, 0.0, 0.0, 1.0],
                             }],
-                        },
+                        }),
                     )),
                     ..Default::default()
                 },

@@ -213,8 +213,51 @@ pub enum WhiteSpaceSpec {
     #[default]
     Normal,
     Nowrap,
-    /// 保留空格与换行；按换行拆成多行量测。
+    /// 保留空格与换行；不在行内折行（仅显式 `\n`）。
     Pre,
+    /// 保留空格与换行，并允许行内折行。
+    PreWrap,
+    /// 保留换行并允许折行；空格折叠是部分行为（不假装完整 CSS）。
+    PreLine,
+}
+
+impl WhiteSpaceSpec {
+    /// Soft wrap (CSS `normal` / `pre-wrap` / `pre-line`).
+    pub fn wraps(self) -> bool {
+        matches!(self, Self::Normal | Self::PreWrap | Self::PreLine)
+    }
+
+    /// Keep explicit line breaks as lines (`pre` / `pre-wrap` / `pre-line`).
+    pub fn preserve_newlines(self) -> bool {
+        matches!(self, Self::Pre | Self::PreWrap | Self::PreLine)
+    }
+}
+
+/// CSS `word-break` subset mapped to cosmic-text wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WordBreakSpec {
+    #[default]
+    Normal,
+    /// `break-all` → glyph wrap.
+    BreakAll,
+}
+
+/// CSS `overflow-wrap` / `word-wrap` subset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OverflowWrapSpec {
+    #[default]
+    Normal,
+    /// `anywhere` / `break-word` → word wrap with glyph fallback.
+    Anywhere,
+}
+
+/// cosmic-text wrap mode once wrapping is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+pub enum TextWrapBreak {
+    #[default]
+    Word,
+    WordOrGlyph,
+    Glyph,
 }
 
 /// `float` 子集（块/IFC：左/右浮动 + `clear`）。
@@ -1551,9 +1594,14 @@ pub enum BackgroundImageFit {
     Auto,
     /// Explicit `background-size` lengths (`32px`, `50%`, `auto 24px`).
     Length,
+    /// CSS `object-fit: scale-down` (`min(none, contain)`).
+    ScaleDown,
 }
 
-/// CSS `background-repeat` (shader tiling; `space`/`round` map to [`Self::Repeat`]).
+/// CSS `background-repeat` (shader tiling).
+///
+/// `space` and mixed `space`/`round`/`repeat` stay [`Self::Unsupported`] so the
+/// url layer is not painted as `repeat`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum BackgroundRepeat {
     NoRepeat,
@@ -1562,6 +1610,14 @@ pub enum BackgroundRepeat {
     Repeat,
     RepeatX,
     RepeatY,
+    /// Both axes `round` (integer tiles via dest scale).
+    Round,
+    /// `round` on X, `no-repeat` on Y.
+    RoundX,
+    /// `no-repeat` on X, `round` on Y.
+    RoundY,
+    /// `space` or mixed keywords we will not fake as `repeat`.
+    Unsupported,
 }
 
 /// `background-position` / `object-position` (percent of free space, or px).
@@ -1626,6 +1682,22 @@ impl BackgroundImage {
     pub fn url_str(&self) -> Option<&str> {
         match self {
             Self::Url { url, .. } => Some(url.as_str()),
+            Self::Gradient(_) => None,
+        }
+    }
+}
+
+/// `mask-image` source: gradient alpha or a jailed `url()` texture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MaskImage {
+    Gradient(CssGradient),
+    Url(String),
+}
+
+impl MaskImage {
+    pub fn url_str(&self) -> Option<&str> {
+        match self {
+            Self::Url(url) => Some(url.as_str()),
             Self::Gradient(_) => None,
         }
     }
@@ -1887,11 +1959,38 @@ pub struct ClipPoint {
     pub y: LengthSpec,
 }
 
-/// Parsed `clip-path` (`inset` or `polygon`).
+/// `circle()` / `ellipse()` radius: length, or CSS `closest-side` / `farthest-side`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ClipShapeRadius {
+    ClosestSide,
+    FarthestSide,
+    Length(LengthSpec),
+}
+
+/// `clip-path: circle(...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClipCircle {
+    pub radius: ClipShapeRadius,
+    pub cx: LengthSpec,
+    pub cy: LengthSpec,
+}
+
+/// `clip-path: ellipse(...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClipEllipse {
+    pub rx: ClipShapeRadius,
+    pub ry: ClipShapeRadius,
+    pub cx: LengthSpec,
+    pub cy: LengthSpec,
+}
+
+/// Parsed `clip-path` (`inset`, `polygon`, `circle`, or `ellipse`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClipPath {
     Inset(ClipInset),
     Polygon(Vec<ClipPoint>),
+    Circle(ClipCircle),
+    Ellipse(ClipEllipse),
 }
 
 impl ClipPath {
@@ -1914,6 +2013,76 @@ impl ClipPath {
                 .collect(),
         )
     }
+
+    /// Local ellipse/circle bounding box `[x, y, w, h]` in the border box.
+    pub fn resolve_ellipse_rect(&self, width: f32, height: f32) -> Option<[f32; 4]> {
+        let (cx, cy, rx, ry) = match self {
+            Self::Circle(circle) => {
+                let cx = resolve_clip_axis(circle.cx, width);
+                let cy = resolve_clip_axis(circle.cy, height);
+                let r = circle.radius.resolve_circle(width, height, cx, cy);
+                (cx, cy, r, r)
+            }
+            Self::Ellipse(ellipse) => {
+                let cx = resolve_clip_axis(ellipse.cx, width);
+                let cy = resolve_clip_axis(ellipse.cy, height);
+                let rx = ellipse.radius_x(width, cx);
+                let ry = ellipse.radius_y(height, cy);
+                (cx, cy, rx, ry)
+            }
+            Self::Inset(_) | Self::Polygon(_) => return None,
+        };
+        if rx <= 0.0 || ry <= 0.0 {
+            return None;
+        }
+        Some([cx - rx, cy - ry, rx * 2.0, ry * 2.0])
+    }
+}
+
+impl ClipShapeRadius {
+    fn resolve_circle(self, width: f32, height: f32, cx: f32, cy: f32) -> f32 {
+        match self {
+            Self::ClosestSide => cx.min(cy).min(width - cx).min(height - cy).max(0.0),
+            Self::FarthestSide => cx.max(cy).max(width - cx).max(height - cy).max(0.0),
+            Self::Length(spec) => resolve_circle_radius_len(spec, width, height),
+        }
+    }
+
+    fn resolve_ellipse_axis(self, axis: f32, closest: f32, farthest: f32) -> f32 {
+        match self {
+            Self::ClosestSide => closest.max(0.0),
+            Self::FarthestSide => farthest.max(0.0),
+            Self::Length(spec) => match spec {
+                LengthSpec::Percent(p) => axis.max(0.0) * p / 100.0,
+                LengthSpec::Px(v) => v.max(0.0),
+                other => other
+                    .resolve_px(Some(axis.max(0.0)))
+                    .unwrap_or(0.0)
+                    .max(0.0),
+            },
+        }
+    }
+}
+
+impl ClipEllipse {
+    fn radius_x(&self, width: f32, cx: f32) -> f32 {
+        self.rx
+            .resolve_ellipse_axis(width, cx.min(width - cx), cx.max(width - cx))
+    }
+
+    fn radius_y(&self, height: f32, cy: f32) -> f32 {
+        self.ry
+            .resolve_ellipse_axis(height, cy.min(height - cy), cy.max(height - cy))
+    }
+}
+
+fn resolve_circle_radius_len(spec: LengthSpec, width: f32, height: f32) -> f32 {
+    let reference = ((width * width + height * height) * 0.5).sqrt().max(0.0);
+    match spec {
+        LengthSpec::Percent(p) => reference * p / 100.0,
+        LengthSpec::Px(v) => v.max(0.0),
+        other => other.resolve_px(Some(reference)).unwrap_or(0.0).max(0.0),
+    }
 }
 
 fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
@@ -1933,10 +2102,13 @@ pub struct FilterDropShadow {
     pub color: [f32; 4],
 }
 
-/// CSS `filter` brightness / saturate / contrast / grayscale / hue-rotate / blur / drop-shadow.
+/// CSS `filter` brightness / saturate / contrast / grayscale / hue-rotate / invert /
+/// opacity / blur / drop-shadow.
 ///
 /// Solo `grayscale()` is encoded in [`Self::saturate`] (`grayscale(1)` → saturate 0).
 /// A list that also has `saturate()` cannot share that slot and stays fail-closed.
+/// `invert` / `opacity` reuse the existing color-filter uniform slots (no extra pass).
+/// `sepia()` has no free slot and stays fail-closed (whole list).
 /// `blur` and `drop-shadow` are the element's own filters (dest-group), distinct
 /// from [`BackdropFilter`]. Exotic functions are omitted (fail closed).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1947,12 +2119,23 @@ pub struct ColorFilter {
     /// `hue-rotate()` in degrees.
     #[serde(default)]
     pub hue_rotate_deg: f32,
+    /// `invert()` amount in 0..=1 (packed in existing quad/layer pads).
+    #[serde(default)]
+    pub invert: f32,
+    /// `opacity()` multiplier (default 1). Packed in existing quad pads;
+    /// dest-group multiplies the group opacity uniform.
+    #[serde(default = "color_filter_opacity_default")]
+    pub opacity: f32,
     /// Element `blur(Npx)`, clamped at parse time. Not backdrop-filter.
     #[serde(default)]
     pub blur_radius: f32,
     /// Single `drop-shadow()`; extra layers and spread stay fail-closed.
     #[serde(default)]
     pub drop_shadow: Option<FilterDropShadow>,
+}
+
+fn color_filter_opacity_default() -> f32 {
+    1.0
 }
 
 impl Default for ColorFilter {
@@ -1962,6 +2145,8 @@ impl Default for ColorFilter {
             saturate: 1.0,
             contrast: 1.0,
             hue_rotate_deg: 0.0,
+            invert: 0.0,
+            opacity: 1.0,
             blur_radius: 0.0,
             drop_shadow: None,
         }
@@ -1977,6 +2162,8 @@ impl ColorFilter {
             && (self.saturate - 1.0).abs() < 1e-5
             && (self.contrast - 1.0).abs() < 1e-5
             && self.hue_rotate_deg.abs() < 1e-5
+            && self.invert.abs() < 1e-5
+            && (self.opacity - 1.0).abs() < 1e-5
             && self.blur_radius <= 0.0
             && self.drop_shadow.is_none()
     }
@@ -2083,9 +2270,9 @@ pub struct PaintStyle {
     /// `object-position` for [`Self::content_image`] (`None` = `50% 50%`).
     #[serde(default)]
     pub object_position: Option<BackgroundPosition>,
-    /// `mask-image` / `-webkit-mask-image` as linear or radial gradient alpha.
+    /// `mask-image` / `-webkit-mask-image` (gradient alpha or `url()` texture).
     #[serde(default)]
-    pub mask: Option<CssGradient>,
+    pub mask: Option<MaskImage>,
     #[serde(default)]
     pub clip_path: Option<ClipPath>,
     #[serde(default)]
@@ -2731,6 +2918,15 @@ pub struct LayoutStyle {
     /// `white-space` 子集。
     #[serde(default)]
     pub white_space: WhiteSpaceSpec,
+    /// CSS `word-break`. `None` = inherit / `normal`.
+    #[serde(default)]
+    pub word_break: Option<WordBreakSpec>,
+    /// CSS `overflow-wrap` / `word-wrap`. `None` = inherit / `normal`.
+    #[serde(default)]
+    pub overflow_wrap: Option<OverflowWrapSpec>,
+    /// CSS `aspect-ratio` as width/height. `None` = `auto`.
+    #[serde(default)]
+    pub aspect_ratio: Option<f32>,
     /// `text-align`（IFC 行对齐）。
     #[serde(default)]
     pub text_align: TextAlignSpec,
@@ -2746,6 +2942,9 @@ pub struct LayoutStyle {
     /// CSS `font-weight` as 100..=900. `None` = inherit / normal.
     #[serde(default)]
     pub font_weight: Option<u16>,
+    /// CSS `font-style: italic` / `oblique`. `None` = inherit / `normal`.
+    #[serde(default)]
+    pub font_italic: Option<bool>,
     /// Preferred named family from `font-family` (generics stripped). `None` = UI default.
     #[serde(default)]
     pub font_family: Option<String>,
@@ -2928,11 +3127,15 @@ impl Default for LayoutStyle {
             pointer_events: None,
             white_space_nowrap: false,
             white_space: WhiteSpaceSpec::Normal,
+            word_break: None,
+            overflow_wrap: None,
+            aspect_ratio: None,
             text_align: TextAlignSpec::Start,
             float: FloatSpec::None,
             clear: ClearSpec::None,
             font_size: None,
             font_weight: None,
+            font_italic: None,
             font_family: None,
             line_height: None,
             letter_spacing: None,
@@ -3505,6 +3708,53 @@ impl LayoutStyle {
         self.line_clamp.filter(|n| *n > 0)
     }
 
+    /// Soft wrap for text layout / Scene.
+    ///
+    /// Runtime chrome still sets [`Self::white_space_nowrap`] without
+    /// [`WhiteSpaceSpec::Nowrap`]; both gates apply. `line-clamp` forces wrap.
+    pub fn text_wraps(&self) -> bool {
+        if self.resolved_line_clamp().is_some() {
+            true
+        } else if self.white_space_nowrap {
+            false
+        } else {
+            self.white_space.wraps()
+        }
+    }
+
+    /// cosmic-text wrap break once [`Self::text_wraps`] is true.
+    pub fn text_wrap_break(&self) -> TextWrapBreak {
+        if matches!(self.word_break, Some(WordBreakSpec::BreakAll)) {
+            TextWrapBreak::Glyph
+        } else if matches!(self.overflow_wrap, Some(OverflowWrapSpec::Anywhere)) {
+            TextWrapBreak::WordOrGlyph
+        } else {
+            TextWrapBreak::Word
+        }
+    }
+
+    /// In-flow block-level auto width is stretch-fit (used = containing block),
+    /// not shrink-to-fit. Floats, out-of-flow, and inline-level boxes shrink.
+    pub fn stretch_fit_inline(&self) -> bool {
+        !self.is_inline_level() && !self.is_floated() && !self.is_out_of_flow()
+    }
+
+    /// Apply `aspect-ratio` to used **content-box** extents.
+    ///
+    /// CSS: a definite used width fills an automatic height. Block `width:auto`
+    /// is stretch-fit (already the CB) so both axes then definite — the ratio
+    /// does **not** shrink the inline size from a definite height.
+    pub fn apply_aspect_ratio_used(&self, width: &mut Option<f32>, height: &mut Option<f32>) {
+        let Some(ratio) = self.aspect_ratio.filter(|r| r.is_finite() && *r > 0.0) else {
+            return;
+        };
+        if let (Some(w), None) = (*width, *height)
+            && w > 0.0
+        {
+            *height = Some(w / ratio);
+        }
+    }
+
     /// CSS `direction: rtl` used value (`None` / `ltr` → false).
     pub fn is_rtl(&self) -> bool {
         matches!(self.dir, Some(DirSpec::Rtl))
@@ -3542,6 +3792,15 @@ impl LayoutStyle {
         }
         if self.font_weight.is_none() {
             self.font_weight = parent.font_weight;
+        }
+        if self.font_italic.is_none() {
+            self.font_italic = parent.font_italic;
+        }
+        if self.word_break.is_none() {
+            self.word_break = parent.word_break;
+        }
+        if self.overflow_wrap.is_none() {
+            self.overflow_wrap = parent.overflow_wrap;
         }
         if self.font_family.is_none() {
             self.font_family = parent.font_family.clone();
@@ -3862,7 +4121,7 @@ impl LayoutStyle {
         let content_box = matches!(self.box_sizing, BoxSizing::ContentBox);
         let chrome_w = pad.left + pad.right + border.left + border.right;
         let chrome_h = pad.top + pad.bottom + border.top + border.bottom;
-        let width = self
+        let mut width = self
             .width
             .and_then(|w| w.resolve_with(parent.width, viewport))
             .or_else(|| {
@@ -3875,7 +4134,7 @@ impl LayoutStyle {
                 }
             })
             .map(|w| Self::axis_content_extent(w, chrome_w, content_box, self.width));
-        let height = self
+        let mut height = self
             .height
             .and_then(|h| h.resolve_with(parent.height, viewport))
             .or_else(|| {
@@ -3890,6 +4149,14 @@ impl LayoutStyle {
                 .height
                 .filter(|_| matches!(self.height, Some(LengthSpec::Fill))))
             .map(|h| Self::axis_content_extent(h, chrome_h, content_box, self.height));
+        if self.aspect_ratio.is_some_and(|r| r.is_finite() && r > 0.0) {
+            if width.is_none() && self.stretch_fit_inline() {
+                width = parent
+                    .width
+                    .map(|w| Self::axis_content_extent(w, chrome_w, content_box, self.width));
+            }
+            self.apply_aspect_ratio_used(&mut width, &mut height);
+        }
         ParentBox { width, height }
     }
 
@@ -4286,6 +4553,53 @@ mod tests {
         let parent = ParentBox::from_viewport(800.0, 600.0);
         let box_ = shell.resolve_content_box(parent);
         assert_eq!(box_.height, Some(600.0));
+    }
+
+    #[test]
+    fn resolve_content_box_aspect_ratio_fills_auto_height() {
+        let layout = LayoutStyle {
+            width: Some(LengthSpec::Px(80.0)),
+            aspect_ratio: Some(1.0),
+            ..LayoutStyle::default()
+        };
+        let box_ = layout.resolve_content_box(ParentBox::from_viewport(400.0, 200.0));
+        assert_eq!(box_.width, Some(80.0));
+        assert_eq!(box_.height, Some(80.0));
+
+        let wide = LayoutStyle {
+            width: Some(LengthSpec::Px(160.0)),
+            aspect_ratio: Some(16.0 / 9.0),
+            ..LayoutStyle::default()
+        };
+        let box_ = wide.resolve_content_box(ParentBox::from_viewport(400.0, 200.0));
+        assert!((box_.height.unwrap() - 90.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn resolve_content_box_aspect_ratio_does_not_shrink_auto_width() {
+        let layout = LayoutStyle {
+            height: Some(LengthSpec::Px(80.0)),
+            aspect_ratio: Some(1.0),
+            ..LayoutStyle::default()
+        };
+        let cb = ParentBox::from_viewport(400.0, 200.0);
+        let box_ = layout.resolve_content_box(cb);
+        assert_eq!(
+            box_.width,
+            Some(400.0),
+            "block width:auto used width is the CB, not height×ratio"
+        );
+        assert_eq!(box_.height, Some(80.0));
+
+        let child = LayoutStyle {
+            width: Some(LengthSpec::Percent(50.0)),
+            ..LayoutStyle::default()
+        };
+        assert_eq!(
+            child.resolve_content_box(box_).width,
+            Some(200.0),
+            "% children must resolve against the CB, not a shrink-wrapped 80"
+        );
     }
 
     #[test]

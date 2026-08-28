@@ -2,7 +2,7 @@
 
 use cosmic_text::{
     Affinity, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag,
-    FontFeatures, FontSystem, Metrics, Shaping, Weight, Wrap,
+    FontFeatures, FontSystem, Metrics, Shaping, Style, Weight, Wrap,
 };
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{
@@ -415,11 +415,7 @@ impl NanaTextShaper {
             Some(constraints.max_width.unwrap_or(f32::INFINITY)),
             Some(constraints.max_height.unwrap_or(f32::INFINITY)),
         );
-        buffer.set_wrap(if constraints.wrap {
-            Wrap::Word
-        } else {
-            Wrap::None
-        });
+        buffer.set_wrap(cosmic_wrap(constraints.wrap, constraints.wrap_break));
         buffer.set_ellipsize(if constraints.ellipsis {
             let limit = constraints
                 .max_lines
@@ -451,6 +447,9 @@ fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
     let mut attrs = Attrs::new()
         .family(resolve_family(style.font_family.as_deref()))
         .weight(font_weight(style.font_weight));
+    if style.italic {
+        attrs = attrs.style(Style::Italic);
+    }
     if style.letter_spacing != 0.0 {
         attrs = attrs.letter_spacing(letter_spacing_em(style.letter_spacing, style.font_size));
     }
@@ -462,6 +461,17 @@ fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
         attrs = attrs.font_features(features);
     }
     attrs
+}
+
+pub(crate) fn cosmic_wrap(wrap: bool, mode: nana_ui_core::TextWrapBreak) -> Wrap {
+    if !wrap {
+        return Wrap::None;
+    }
+    match mode {
+        nana_ui_core::TextWrapBreak::Word => Wrap::Word,
+        nana_ui_core::TextWrapBreak::WordOrGlyph => Wrap::WordOrGlyph,
+        nana_ui_core::TextWrapBreak::Glyph => Wrap::Glyph,
+    }
 }
 
 pub(crate) fn letter_spacing_em(letter_spacing_px: f32, font_size: f32) -> f32 {

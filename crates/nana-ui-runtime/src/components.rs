@@ -818,6 +818,7 @@ pub struct ComputedStyle {
     pub visible: bool,
     pub font_size: f32,
     pub font_weight: Option<u16>,
+    pub italic: bool,
     pub font_family: Option<Arc<str>>,
     pub line_height: Option<LineHeightSpec>,
     pub letter_spacing: f32,
@@ -836,6 +837,7 @@ impl Default for ComputedStyle {
             visible: true,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,
+            italic: false,
             font_family: None,
             line_height: None,
             letter_spacing: 0.0,
@@ -879,6 +881,7 @@ pub struct TextShapeConstraints {
     pub max_lines: Option<u16>,
     pub shaping: TextShaping,
     pub preserve_lines: bool,
+    pub wrap_break: nana_ui_core::TextWrapBreak,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1067,10 +1070,18 @@ fn measure_em_text(
         let line_height = resolved_text_line_height(style).max(em);
         let mut max_w = 0.0f32;
         let mut lines = 0usize;
+        let wrap_width = constraints.max_width.filter(|w| *w > 0.0);
         for line in text.value.split('\n') {
-            lines += 1;
             let w = line.chars().count() as f32 * em;
-            max_w = max_w.max(w);
+            if constraints.wrap {
+                let max = wrap_width.unwrap_or(w).max(em);
+                let wrapped = ((w / max).ceil() as usize).max(1);
+                lines += wrapped;
+                max_w = max_w.max(w.min(max));
+            } else {
+                lines += 1;
+                max_w = max_w.max(w);
+            }
         }
         return TextMetrics {
             width: max_w,
