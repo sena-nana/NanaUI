@@ -14,7 +14,48 @@
 //! Overlay / layout kinds come from documented `nana-*` contracts, HTML tags, and
 //! ARIA `role` — not product kit BEM (`ui-dialog`, `ctx-menu`, `dd__menu`, …).
 
+use std::collections::BTreeMap;
+
 use crate::bridge::{SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps};
+
+/// DOM text nodes (`#text` / `createText` / `nana-text`), not L2 `p` / `span` /
+/// `label` / `h1`–`h6`. `WidgetKind::Text` is shared by both.
+pub fn is_dom_text_node(kind: WidgetKind, tag: &str) -> bool {
+    let resolved = if tag.is_empty() {
+        if kind == WidgetKind::Text {
+            "nana-text"
+        } else {
+            return false;
+        }
+    } else {
+        tag
+    };
+    resolved.eq_ignore_ascii_case("#text")
+        || resolved.eq_ignore_ascii_case("nana-text")
+        || resolved.eq_ignore_ascii_case("createtext")
+}
+
+/// Checkbox / radio / switch hosts for cheap `:checked` (`toggled`).
+/// Overlay `toggled` (dialog / drawer) is not a checked control.
+pub fn is_checked_match_host(
+    kind: WidgetKind,
+    tag: &str,
+    attrs: &BTreeMap<String, String>,
+) -> bool {
+    if matches!(kind, WidgetKind::Checkbox | WidgetKind::Switch) {
+        return true;
+    }
+    let ty = attrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let type_ok = ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio");
+    if !type_ok {
+        return false;
+    }
+    kind == WidgetKind::Input || tag.eq_ignore_ascii_case("input")
+}
 
 /// Downlevel HTML / role / class hints onto Nana foundations.
 pub fn resolve_kind_from_hints(
@@ -1238,6 +1279,48 @@ mod tests {
             resolve_kind_from_hints("output", None, None, None),
             Some(WidgetKind::Text)
         );
+    }
+
+    #[test]
+    fn dom_text_node_is_text_tag_not_l2_text_kind() {
+        assert!(is_dom_text_node(WidgetKind::Text, "#text"));
+        assert!(is_dom_text_node(WidgetKind::Text, "nana-text"));
+        assert!(is_dom_text_node(WidgetKind::Text, "createText"));
+        assert!(is_dom_text_node(WidgetKind::Text, ""));
+        assert!(!is_dom_text_node(WidgetKind::Text, "span"));
+        assert!(!is_dom_text_node(WidgetKind::Text, "p"));
+        assert!(!is_dom_text_node(WidgetKind::Text, "label"));
+        assert!(!is_dom_text_node(WidgetKind::Text, "h1"));
+        assert!(!is_dom_text_node(WidgetKind::Column, ""));
+    }
+
+    #[test]
+    fn checked_match_host_is_checkbox_radio_switch_not_overlay() {
+        let mut checkbox = BTreeMap::new();
+        checkbox.insert("type".into(), "checkbox".into());
+        let mut radio = BTreeMap::new();
+        radio.insert("type".into(), "radio".into());
+        assert!(is_checked_match_host(
+            WidgetKind::Checkbox,
+            "input",
+            &checkbox
+        ));
+        assert!(is_checked_match_host(WidgetKind::Input, "input", &radio));
+        assert!(is_checked_match_host(
+            WidgetKind::Switch,
+            "button",
+            &BTreeMap::new()
+        ));
+        assert!(!is_checked_match_host(
+            WidgetKind::Dialog,
+            "dialog",
+            &BTreeMap::new()
+        ));
+        assert!(!is_checked_match_host(
+            WidgetKind::Input,
+            "input",
+            &BTreeMap::new()
+        ));
     }
 
     #[test]

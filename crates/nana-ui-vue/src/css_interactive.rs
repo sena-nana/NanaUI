@@ -16,6 +16,10 @@ use crate::css_cascade::{
 };
 
 /// Interactive pseudo-class supported at parse time.
+///
+/// `:focus-visible` maps to [`Self::Focus`]: this engine has no keyboard-vs-pointer
+/// signal, so it matches only while focused (same as `:focus`) and never paints
+/// a focus-visible layer without focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InteractivePseudo {
     Hover,
@@ -27,7 +31,7 @@ impl InteractivePseudo {
     pub fn from_ident(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "hover" => Some(Self::Hover),
-            "focus" => Some(Self::Focus),
+            "focus" | "focus-visible" => Some(Self::Focus),
             "active" => Some(Self::Active),
             _ => None,
         }
@@ -721,6 +725,8 @@ mod tests {
             id: "",
             classes: &card,
             attrs: &empty,
+            is_empty: true,
+            checked: false,
         }];
         let icon_ctx = MatchContext {
             tag: "span",
@@ -736,6 +742,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
 
         let card_hovered = [InteractivePseudoFlags {
@@ -779,12 +787,16 @@ mod tests {
                 id: "",
                 classes: &card,
                 attrs: &empty,
+                is_empty: true,
+                checked: false,
             },
             MatchNode {
                 tag: "div",
                 id: "",
                 classes: &card,
                 attrs: &empty,
+                is_empty: true,
+                checked: false,
             },
         ];
         let icon_ctx = MatchContext {
@@ -801,6 +813,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
 
         // Inner card not hovered; outer card hovered — must still match.
@@ -865,6 +879,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let hover = matched_interactive_rules(
             &sheet.interactive_rules,
@@ -907,6 +923,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let hovered = InteractiveMatchState {
             subject: InteractivePseudoFlags {
@@ -939,6 +957,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         assert!(
             matched_interactive_rules(
@@ -949,5 +969,58 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn focus_visible_maps_to_focus_and_requires_focus() {
+        let (sheet, report) = parse_stylesheet_full(".field:focus-visible { color: red; }", 0);
+        assert_eq!(report.skipped_selectors, 0);
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        assert_eq!(
+            sheet.interactive_rules[0].selector.pseudo,
+            InteractivePseudo::Focus
+        );
+        let classes = vec!["field".into()];
+        let empty = BTreeMap::new();
+        let ctx = MatchContext {
+            tag: "input",
+            id: "",
+            classes: &classes,
+            attrs: &empty,
+            ancestors: &[],
+            preceding_siblings: &[],
+            sibling_index: 0,
+            sibling_count: 1,
+            of_type_index: 0,
+            of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
+            focus_within: false,
+            is_empty: true,
+            checked: false,
+        };
+        assert!(
+            matched_interactive_rules(
+                &sheet.interactive_rules,
+                &ctx,
+                &InteractiveMatchState::default(),
+                InteractivePseudo::Focus,
+            )
+            .is_empty(),
+            "focus-visible must not match without focus"
+        );
+        let focused = matched_interactive_rules(
+            &sheet.interactive_rules,
+            &ctx,
+            &InteractiveMatchState {
+                subject: InteractivePseudoFlags {
+                    focus: true,
+                    ..Default::default()
+                },
+                ancestors: &[],
+            },
+            InteractivePseudo::Focus,
+        );
+        assert_eq!(focused.len(), 1);
     }
 }

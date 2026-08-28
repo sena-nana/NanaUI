@@ -717,6 +717,8 @@ fn lerp_filter(
             contrast: a.contrast + (b.contrast - a.contrast) * t,
             saturate: a.saturate + (b.saturate - a.saturate) * t,
             hue_rotate_deg: a.hue_rotate_deg + (b.hue_rotate_deg - a.hue_rotate_deg) * t,
+            invert: a.invert + (b.invert - a.invert) * t,
+            opacity: a.opacity + (b.opacity - a.opacity) * t,
             blur_radius: a.blur_radius + (b.blur_radius - a.blur_radius) * t,
             drop_shadow: lerp_drop_shadow(a.drop_shadow, b.drop_shadow, t),
         }),
@@ -907,6 +909,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let motion = resolve_computed_motion(&sheet.motion_rules, None, None, &ctx);
         assert!(motion.has_transition());
@@ -935,6 +939,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let mut base = LayoutStyle::default();
         crate::css_cascade::apply_stylesheet_to_layout(
@@ -975,6 +981,8 @@ mod tests {
             id: "",
             classes: &card,
             attrs: &empty,
+            is_empty: true,
+            checked: false,
         }];
         let ctx = MatchContext {
             tag: "span",
@@ -990,6 +998,8 @@ mod tests {
             has_bits: 0,
             has_args: &[],
             focus_within: false,
+            is_empty: true,
+            checked: false,
         };
         let mut layout = LayoutStyle::default();
         apply_interactive_layers(
