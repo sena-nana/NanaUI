@@ -67,6 +67,19 @@ pub fn rasterize_document(bytes: &[u8]) -> Option<RasterizedSvg> {
     )
 }
 
+/// URL image decode: document size, straight alpha, contained within `max_edge`.
+pub fn rasterize_document_capped(bytes: &[u8], max_edge: u32) -> Option<RasterizedSvg> {
+    render(
+        Source::Bytes(bytes),
+        None,
+        None,
+        None,
+        Fit::DocumentCapped { max_edge },
+        None,
+        true,
+    )
+}
+
 enum Source<'a> {
     Str(&'a str),
     Bytes(&'a [u8]),
@@ -74,6 +87,7 @@ enum Source<'a> {
 
 enum Fit {
     Document,
+    DocumentCapped { max_edge: u32 },
     Stretch { width: u32, height: u32 },
     Contain { pixel_size: u32 },
 }
@@ -88,6 +102,8 @@ fn render(
     unpremultiply: bool,
 ) -> Option<RasterizedSvg> {
     let mut options = resvg::usvg::Options::default();
+    // The default string resolver `fs::read`s absolute/cwd paths. Keep data: only.
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     if let Some((width, height)) = default_size {
         options.default_size = resvg::usvg::Size::from_wh(width, height)?;
     }
@@ -117,6 +133,22 @@ fn render(
                 return None;
             }
             (int.width(), int.height(), tiny_skia::Transform::identity())
+        }
+        Fit::DocumentCapped { max_edge } => {
+            let src_w = size.width().max(f32::EPSILON);
+            let src_h = size.height().max(f32::EPSILON);
+            let max_edge = max_edge.max(1) as f32;
+            let scale = (max_edge / src_w).min(max_edge / src_h).min(1.0);
+            let width = (src_w * scale).round().clamp(1.0, max_edge) as u32;
+            let height = (src_h * scale).round().clamp(1.0, max_edge) as u32;
+            (
+                width,
+                height,
+                tiny_skia::Transform::from_scale(
+                    width as f32 / src_w,
+                    height as f32 / src_h,
+                ),
+            )
         }
         Fit::Stretch { width, height } => {
             let sx = width as f32 / size.width().max(f32::EPSILON);

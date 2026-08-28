@@ -181,46 +181,9 @@ impl PathExt<'_> {
 
 const MAX_SVG_EDGE: u32 = 2048;
 
-fn capped_raster_size(src_w: f32, src_h: f32) -> (u32, u32) {
-    let src_w = src_w.max(0.001);
-    let src_h = src_h.max(0.001);
-    let scale = (MAX_SVG_EDGE as f32 / src_w)
-        .min(MAX_SVG_EDGE as f32 / src_h)
-        .min(1.0);
-    let width = (src_w * scale).round().clamp(1.0, MAX_SVG_EDGE as f32) as u32;
-    let height = (src_h * scale).round().clamp(1.0, MAX_SVG_EDGE as f32) as u32;
-    (width, height)
-}
-
 fn decode_svg_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let mut options = resvg::usvg::Options::default();
-    // Default string resolver `fs::read`s absolute/cwd paths. Keep data: only.
-    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
-    let tree = resvg::usvg::Tree::from_data(bytes, &options).ok()?;
-    let (width, height) = capped_raster_size(tree.size().width(), tree.size().height());
-    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    let sx = width as f32 / tree.size().width().max(0.001);
-    let sy = height as f32 / tree.size().height().max(0.001);
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(sx, sy),
-        &mut pixmap.as_mut(),
-    );
-    Some((width, height, unpremultiply_rgba(pixmap.data())))
-}
-
-fn unpremultiply_rgba(rgba: &[u8]) -> Vec<u8> {
-    let mut output = rgba.to_vec();
-    for pixel in output.as_chunks_mut::<4>().0 {
-        let a = pixel[3] as u16;
-        if a > 0 {
-            for channel in &mut pixel[..3] {
-                let scaled = (*channel as u16).saturating_mul(255).saturating_add(a / 2);
-                *channel = scaled.checked_div(a).unwrap_or(255).min(255) as u8;
-            }
-        }
-    }
-    output
+    let raster = nana_svg_raster::rasterize_document_capped(bytes, MAX_SVG_EDGE)?;
+    Some((raster.width, raster.height, raster.rgba.to_vec()))
 }
 
 #[cfg(test)]
