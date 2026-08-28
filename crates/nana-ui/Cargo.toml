@@ -14,23 +14,16 @@ path = "src/lib.rs"
 default = []
 full = ["bundled-fonts", "components", "hosted", "syntax-highlighting"]
 bundled-fonts = []
+# Compatibility flags must gate real code: every entry here either maps to a
+# `cfg(feature = …)` component module or pulls a runtime feature. No-op aliases
+# were removed — enable `components` / `full` instead.
 components = [
     "calendar",
     "charts",
     "controls",
-    "feedback",
     "graph-canvas",
     "image-viewer",
-    "overlays",
-    "popover",
-    "qr-code",
     "rich-text",
-    "math",
-    "diagrams",
-    "selects",
-    "settings-components",
-    "surfaces",
-    "xy-pad",
 ]
 calendar = []
 charts = []
@@ -39,21 +32,9 @@ syntax-highlighting = [
     "controls",
     "nana-ui-runtime/syntax-highlighting",
 ]
-feedback = []
 graph-canvas = []
 image-viewer = []
-overlays = []
-popover = []
-# Compatibility flags. QrCode / markdown parse live in nana-ui-runtime;
-# mermaid and math fences are host-owned presenter slots, not extra crates.
-qr-code = []
 rich-text = []
-math = ["rich-text"]
-diagrams = ["rich-text"]
-selects = []
-settings-components = ["controls"]
-surfaces = ["feedback"]
-xy-pad = []
 gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:ureq", "dep:url", "dep:wgpu"]
 hosted = [
     "gpu",
@@ -85,11 +66,11 @@ nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
 nana-ui-platform = { workspace = true, features = ["clipboard"] }
 nana-window = { workspace = true, optional = true }
-raw-window-handle = { version = "0.6.2", optional = true }
+raw-window-handle = { workspace = true, optional = true }
 nana-app-icon = { workspace = true, optional = true, features = ["runtime"] }
 unicode-segmentation.workspace = true
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde.workspace = true
+serde_json.workspace = true
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 
@@ -106,7 +87,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ], optional = true }
-windows-sys = { version = "0.61.2", optional = true, features = [
+windows-sys = { workspace = true, optional = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_Input_Pointer",

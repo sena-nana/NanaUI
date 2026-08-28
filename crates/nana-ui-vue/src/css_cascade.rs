@@ -871,6 +871,14 @@ pub fn matched_declaration_entries(
     rules: &[StyleRule],
     ctx: &MatchContext<'_>,
 ) -> Vec<(Specificity, u32, DeclarationEntry)> {
+    let refs: Vec<&StyleRule> = rules.iter().collect();
+    matched_declaration_entries_from(&refs, ctx)
+}
+
+fn matched_declaration_entries_from(
+    rules: &[&StyleRule],
+    ctx: &MatchContext<'_>,
+) -> Vec<(Specificity, u32, DeclarationEntry)> {
     // (important, specificity, source_order, decl_index, entry)
     let mut matched: Vec<(bool, Specificity, u32, u32, DeclarationEntry)> = Vec::new();
     for rule in rules {
@@ -899,6 +907,140 @@ pub fn matched_declaration_entries(
         .into_iter()
         .map(|(_, spec, order, _, entry)| (spec, order, entry))
         .collect()
+}
+
+/// Bucket index over rules by the subject compound's key facts (type / id /
+/// class). Candidates are a strict superset of real matches —
+/// [`selector_matches`] still validates every candidate — so cascade results
+/// equal a linear scan at O(candidates) instead of O(all rules).
+///
+/// Keys follow [`compound_matches`] comparison semantics: types fold to ASCII
+/// lowercase (`*` is no key), ids and classes compare exactly. A rule falls
+/// into the always-check bucket when any of its selectors could match without
+/// sharing a key (attr / structural-pseudo / universal subjects, or key-less
+/// `:is()` / `:where()` arms).
+#[derive(Debug, Default, Clone)]
+pub struct RuleIndex {
+    by_type: HashMap<String, Vec<u32>>,
+    by_id: HashMap<String, Vec<u32>>,
+    by_class: HashMap<String, Vec<u32>>,
+    keyless: Vec<u32>,
+}
+
+impl RuleIndex {
+    pub fn build(rules: &[StyleRule]) -> Self {
+        let mut index = Self::default();
+        for (order, rule) in rules.iter().enumerate() {
+            let order = order as u32;
+            let mut types: Vec<&str> = Vec::new();
+            let mut ids: Vec<&str> = Vec::new();
+            let mut classes: Vec<&str> = Vec::new();
+            let mut keyless = false;
+            for sel in &rule.selectors {
+                if !subject_keys(&sel.subject, &mut types, &mut ids, &mut classes) {
+                    keyless = true;
+                    break;
+                }
+            }
+            if keyless || (types.is_empty() && ids.is_empty() && classes.is_empty()) {
+                index.keyless.push(order);
+                continue;
+            }
+            for type_name in types {
+                index
+                    .by_type
+                    .entry(type_name.to_ascii_lowercase())
+                    .or_default()
+                    .push(order);
+            }
+            for id in ids {
+                index.by_id.entry(id.to_string()).or_default().push(order);
+            }
+            for class in classes {
+                index
+                    .by_class
+                    .entry(class.to_string())
+                    .or_default()
+                    .push(order);
+            }
+        }
+        index
+    }
+
+    /// Candidate rule indices for `ctx`, deduplicated in rule order.
+    pub fn candidate_ids(&self, ctx: &MatchContext<'_>) -> Vec<u32> {
+        let mut ids = self.keyless.clone();
+        if !ctx.tag.is_empty()
+            && let Some(bucket) = self.by_type.get(&ctx.tag.to_ascii_lowercase())
+        {
+            ids.extend_from_slice(bucket);
+        }
+        if !ctx.id.is_empty()
+            && let Some(bucket) = self.by_id.get(ctx.id)
+        {
+            ids.extend_from_slice(bucket);
+        }
+        for class in ctx.classes {
+            if let Some(bucket) = self.by_class.get(class) {
+                ids.extend_from_slice(bucket);
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// Candidate rules for `ctx`, in rule order.
+    pub fn candidates<'a>(
+        &self,
+        rules: &'a [StyleRule],
+        ctx: &MatchContext<'_>,
+    ) -> Vec<&'a StyleRule> {
+        self.candidate_ids(ctx)
+            .into_iter()
+            .map(|order| &rules[order as usize])
+            .collect()
+    }
+}
+
+/// Collect one subject compound's type / id / class keys. Returns `false` when
+/// the compound can match without sharing any key (`:is()` / `:where()` arm
+/// with only attr / structural pseudos), which forces the rule always-check.
+/// `:not()` arms only restrict matches, so they contribute no keys.
+fn subject_keys<'a>(
+    compound: &'a CompoundSelector,
+    types: &mut Vec<&'a str>,
+    ids: &mut Vec<&'a str>,
+    classes: &mut Vec<&'a str>,
+) -> bool {
+    if let Some(type_name) = &compound.type_name
+        && type_name != "*"
+    {
+        types.push(type_name);
+    }
+    if let Some(id) = &compound.id {
+        ids.push(id);
+    }
+    classes.extend(compound.classes.iter().map(String::as_str));
+    for alt in compound.is_alts.iter().chain(compound.where_alts.iter()) {
+        let mut alt_keys = 0usize;
+        if let Some(type_name) = &alt.type_name
+            && type_name != "*"
+        {
+            types.push(type_name);
+            alt_keys += 1;
+        }
+        if let Some(id) = &alt.id {
+            ids.push(id);
+            alt_keys += 1;
+        }
+        alt_keys += alt.classes.len();
+        classes.extend(alt.classes.iter().map(String::as_str));
+        if alt_keys == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Split a declaration block into structured entries (once per rule at parse).
@@ -985,7 +1127,7 @@ fn data_theme_constraint_from_compound(c: &CompoundSelector) -> Option<String> {
 }
 
 /// Custom properties from **element-scoped** rules matching `ctx` (cascade
-/// order; later wins).
+/// order; later wins), restricted to [`RuleIndex`] candidates.
 ///
 /// Document-level selectors (`:root`, `html`, `body`, `*`, `[data-theme=…]`, …)
 /// are skipped here. Those `--*` are collected theme-aware into the bridge
@@ -994,8 +1136,16 @@ fn data_theme_constraint_from_compound(c: &CompoundSelector) -> Option<String> {
 /// `:root { --bg }` on parentless nodes would clobber
 /// `:root[data-theme=light]` overlays (orphans report empty ancestors and
 /// thus match `:root`).
-pub fn matched_custom_properties(
+pub fn matched_custom_properties_indexed(
     rules: &[StyleRule],
+    index: &RuleIndex,
+    ctx: &MatchContext<'_>,
+) -> BTreeMap<String, String> {
+    matched_custom_properties_from(&index.candidates(rules, ctx), ctx)
+}
+
+fn matched_custom_properties_from(
+    rules: &[&StyleRule],
     ctx: &MatchContext<'_>,
 ) -> BTreeMap<String, String> {
     let mut matched: Vec<(Specificity, u32, u32, DeclarationEntry)> = Vec::new();
@@ -1099,6 +1249,40 @@ pub fn rebuild_layout_style(
     layout
 }
 
+/// [`rebuild_layout_style`] restricted to [`RuleIndex`] candidates. Cascade
+/// order inside the candidate set is unchanged, so results are identical.
+pub fn rebuild_layout_style_indexed(
+    mut layout: LayoutStyle,
+    rules: &[StyleRule],
+    index: &RuleIndex,
+    ctx: &MatchContext<'_>,
+    prop_style: &str,
+    inline_style: &str,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) -> LayoutStyle {
+    let candidates = index.candidates(rules, ctx);
+    apply_matched_stylesheet_from(&mut layout, &candidates, ctx, percent_w, percent_h, false);
+    layout.apply_class_layout_hints(ctx.classes);
+    if !prop_style.trim().is_empty() {
+        layout.apply_css_text(prop_style, percent_w, percent_h);
+        layout.apply_class_layout_hints(ctx.classes);
+    }
+    if !inline_style.trim().is_empty() {
+        layout.apply_css_text(inline_style, percent_w, percent_h);
+        layout.apply_class_layout_hints(ctx.classes);
+    }
+    apply_matched_stylesheet_from(&mut layout, &candidates, ctx, percent_w, percent_h, true);
+    if !prop_style.trim().is_empty() {
+        apply_css_text_important_only(&mut layout, prop_style, percent_w, percent_h);
+    }
+    if !inline_style.trim().is_empty() {
+        apply_css_text_important_only(&mut layout, inline_style, percent_w, percent_h);
+    }
+    layout.resolve_logical_box_edges();
+    layout
+}
+
 fn apply_matched_stylesheet(
     layout: &mut LayoutStyle,
     rules: &[StyleRule],
@@ -1107,9 +1291,21 @@ fn apply_matched_stylesheet(
     percent_h: Option<f32>,
     important_only: bool,
 ) {
+    let refs: Vec<&StyleRule> = rules.iter().collect();
+    apply_matched_stylesheet_from(layout, &refs, ctx, percent_w, percent_h, important_only);
+}
+
+fn apply_matched_stylesheet_from(
+    layout: &mut LayoutStyle,
+    rules: &[&StyleRule],
+    ctx: &MatchContext<'_>,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+    important_only: bool,
+) {
     let mut dir_entries = Vec::new();
     let mut rest = Vec::new();
-    for (_, _, entry) in matched_declaration_entries(rules, ctx) {
+    for (_, _, entry) in matched_declaration_entries_from(rules, ctx) {
         if !important_only || entry.important {
             if css_key_is_direction_or_writing_mode(&entry.property) {
                 dir_entries.push(entry);
@@ -3447,6 +3643,91 @@ mod tests {
     }
 
     #[test]
+    fn rule_index_candidates_superset_of_linear_scan() {
+        // Exercises every bucket: tag (case-insensitive), id, class, attr-only,
+        // structural pseudos, universal, `:is()` arms, `:not()`, descendant and
+        // sibling combinators.
+        let (sheet, _) = parse_stylesheet_full(
+            "div { width: 1px; } \
+             DIV { height: 2px; } \
+             * { order: 0; } \
+             #main { padding: 1px; } \
+             .card { background: red; } \
+             .card:hover { background: blue; } \
+             .card > .icon { color: red; } \
+             nav a { color: green; } \
+             h1 + p { margin: 2px; } \
+             [hidden] { display: none; } \
+             li:first-child { padding: 3px; } \
+             :is(.a, [data-x]) { opacity: 0.5; } \
+             .btn:not(.ghost) { border: 1px; } \
+             p:is(.lead, .hero) { font-weight: bold; }",
+            0,
+        );
+        let rules = &sheet.static_rules;
+        let index = RuleIndex::build(rules);
+        let attrs: BTreeMap<String, String> = BTreeMap::new();
+        let card_classes = vec!["card".to_string()];
+        let card_node = MatchNode {
+            tag: "div",
+            id: "",
+            classes: &card_classes,
+            attrs: &attrs,
+            is_empty: true,
+            checked: false,
+        };
+        let ancestors = [card_node];
+        let cases: Vec<(&str, &str, Vec<&str>)> = vec![
+            ("div", "", vec![]),
+            ("div", "main", vec!["card"]),
+            ("span", "", vec!["icon", "a"]),
+            ("p", "", vec!["lead"]),
+            ("button", "", vec!["btn", "ghost"]),
+            ("li", "", vec![]),
+            ("h1", "", vec![]),
+            ("article", "", vec!["data-x"]),
+        ];
+        for (tag, id, class_names) in &cases {
+            let classes: Vec<String> = class_names.iter().map(|c| c.to_string()).collect();
+            let ctx = MatchContext {
+                tag,
+                id,
+                classes: &classes,
+                attrs: &attrs,
+                ancestors: &ancestors,
+                preceding_siblings: &[],
+                sibling_index: 0,
+                sibling_count: 1,
+                of_type_index: 0,
+                of_type_count: 1,
+                has_bits: 0,
+                has_args: &[],
+                focus_within: false,
+                is_empty: true,
+                checked: false,
+            };
+            let matched: Vec<usize> = rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| rule.selectors.iter().any(|sel| selector_matches(sel, &ctx)))
+                .map(|(i, _)| i)
+                .collect();
+            let candidates = index.candidate_ids(&ctx);
+            for order in &matched {
+                assert!(
+                    candidates.contains(&(*order as u32)),
+                    "linear match {order} missing from index candidates {candidates:?}"
+                );
+            }
+            // Candidate validation still yields identical matched declarations.
+            let indexed = index.candidates(rules, &ctx);
+            let indexed_entries = matched_declaration_entries_from(&indexed, &ctx);
+            let linear_entries = matched_declaration_entries(rules, &ctx);
+            assert_eq!(indexed_entries, linear_entries);
+        }
+    }
+
+    #[test]
     fn matched_custom_properties_skip_document_root_scope() {
         // Orphan / parentless nodes satisfy :root matching, but document `--*`
         // must not rematch here — bridge stylesheet_vars owns theme overlays.
@@ -3463,7 +3744,7 @@ mod tests {
         let classes = vec!["surface".into()];
         // Parentless → would match :root for layout, but custom props skip it.
         let orphan = ctx("div", "", &classes, &empty, &[]);
-        let props = matched_custom_properties(&rules, &orphan);
+        let props = matched_custom_properties_indexed(&rules, &RuleIndex::build(&rules), &orphan);
         assert!(
             !props.contains_key("--bg"),
             "document :root --bg must not overlay theme-aware stylesheet_vars"

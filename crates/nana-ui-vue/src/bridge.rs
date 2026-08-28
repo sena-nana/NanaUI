@@ -33,7 +33,7 @@ use crate::css_at_rule::{
 use crate::css_cascade::{
     MatchContext, MatchNode, SimpleCompound, StyleRule, StylesheetParseReport,
     collect_document_custom_properties_from_rules, parse_stylesheet_full_with_options,
-    rebuild_layout_style, simple_matches, stylesheet_matches, stylesheet_may_match_subject,
+    rebuild_layout_style_indexed, simple_matches, stylesheet_matches, stylesheet_may_match_subject,
 };
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
@@ -1964,6 +1964,8 @@ pub struct MessageBridge {
     /// Parsed author stylesheet rules (source order across inject calls).
     /// Declaration entries are cached on each [`StyleRule`] at parse time.
     stylesheet_rules: Vec<StyleRule>,
+    /// Subject-key bucket index over [`Self::stylesheet_rules`], rebuilt with it.
+    stylesheet_rule_index: crate::css_cascade::RuleIndex,
     /// Deferred interactive (`:hover` / `:focus` / `:active`) rules.
     interactive_rules: Vec<InteractiveStyleRule>,
     /// Deferred generated pseudo rules (`::before` / `::after`).
@@ -2066,6 +2068,7 @@ impl MessageBridge {
             appearance: AppearanceSettings::default(),
             scaffolded: false,
             stylesheet_rules: Vec::new(),
+            stylesheet_rule_index: crate::css_cascade::RuleIndex::default(),
             interactive_rules: Vec::new(),
             generated_pseudo_rules: Vec::new(),
             keyframes: BTreeMap::new(),
@@ -2362,6 +2365,7 @@ impl MessageBridge {
             merge_parsed_stylesheet(&mut combined, sheet.flatten(&env));
         }
         self.stylesheet_rules = combined.static_rules;
+        self.stylesheet_rule_index = crate::css_cascade::RuleIndex::build(&self.stylesheet_rules);
         self.interactive_rules = combined.interactive_rules;
         self.generated_pseudo_rules = combined.generated_pseudo_rules;
         self.motion_rules = combined.motion_rules;
@@ -2730,7 +2734,11 @@ impl MessageBridge {
             is_empty,
             checked: widget_checked_state(widget),
         };
-        let mut map = crate::css_cascade::matched_custom_properties(&self.stylesheet_rules, &ctx);
+        let mut map = crate::css_cascade::matched_custom_properties_indexed(
+            &self.stylesheet_rules,
+            &self.stylesheet_rule_index,
+            &ctx,
+        );
         for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&prop_style) {
             map.insert(k, v);
         }
@@ -2862,9 +2870,10 @@ impl MessageBridge {
         // inline → class hints → stylesheet !important → prop !important →
         // inline !important. Layout sizing comes from those layers / public
         // class contracts — not from id / data-region-id / kind whitelists.
-        let mut layout = rebuild_layout_style(
+        let mut layout = rebuild_layout_style_indexed(
             base,
             &self.stylesheet_rules,
+            &self.stylesheet_rule_index,
             &ctx,
             &prop_style,
             &inline_style,
@@ -3004,20 +3013,37 @@ impl MessageBridge {
         }
         let snapshot = Self::collect_interactive_runtime_snapshot(doc);
         self.cascade_focused = snapshot.focused;
-        let from_snapshots: HashMap<WidgetId, CssPaintSnapshot> = self
-            .widgets
+        // Interactive pseudo-classes resolve at the subject and ancestor
+        // positions only, so a hover/press/focus change invalidates exactly
+        // [`Self::interactive_dirty_ids`]; the previous snapshot decides
+        // whether anything changed at all (steady-state frames recascade
+        // nothing). First pass (no snapshot) stays a full recascade.
+        let dirty = self.interactive_dirty_ids(&snapshot);
+        let ids: Vec<WidgetId> = match dirty {
+            Some(dirty) => {
+                let mut ids: Vec<WidgetId> = dirty
+                    .into_iter()
+                    .filter(|id| !self.is_generated_pseudo_widget(*id))
+                    .collect();
+                ids.sort_unstable();
+                ids
+            }
+            None => self
+                .widgets
+                .keys()
+                .copied()
+                .filter(|id| !self.is_generated_pseudo_widget(*id))
+                .collect(),
+        };
+        let from_snapshots: HashMap<WidgetId, CssPaintSnapshot> = ids
             .iter()
-            .filter(|(id, _)| !self.is_generated_pseudo_widget(**id))
-            .map(|(id, widget)| (*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
+            .filter_map(|id| {
+                let widget = self.widgets.get(id)?;
+                Some((*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
+            })
             .collect();
         self.interactive_runtime = Some(snapshot);
         self.refresh_has_descendant_index();
-        let ids: Vec<WidgetId> = self
-            .widgets
-            .keys()
-            .copied()
-            .filter(|id| !self.is_generated_pseudo_widget(*id))
-            .collect();
         for id in &ids {
             self.reapply_layout_for(*id);
         }
@@ -3086,6 +3112,55 @@ impl MessageBridge {
             self.tick_css_animations(doc);
         }
         self.bump();
+    }
+
+    /// Widgets whose interactive CSS result can differ from the previous pass.
+    /// `None` = no previous snapshot (first pass → full recascade); empty =
+    /// steady state. A hover/press change invalidates the subject plus its
+    /// descendants (ancestor flags feed `.card:hover .icon` matching); a focus
+    /// move additionally walks the old/new `:focus-within` ancestor chains.
+    fn interactive_dirty_ids(
+        &self,
+        next: &InteractiveRuntimeSnapshot,
+    ) -> Option<HashSet<WidgetId>> {
+        let prev = self.interactive_runtime.as_ref()?;
+        let mut changed: HashSet<WidgetId> = HashSet::new();
+        for (prev_map, next_map) in [
+            (&prev.hovered, &next.hovered),
+            (&prev.pressed, &next.pressed),
+        ] {
+            for key in prev_map.keys().chain(next_map.keys()) {
+                if prev_map.contains_key(key) != next_map.contains_key(key) {
+                    changed.insert(*key);
+                }
+            }
+        }
+        if prev.focused != next.focused {
+            for focused in [prev.focused, next.focused].into_iter().flatten() {
+                changed.insert(focused);
+                let mut cur = self.widgets.get(&focused).and_then(|w| w.parent);
+                while let Some(pid) = cur {
+                    changed.insert(pid);
+                    cur = self.widgets.get(&pid).and_then(|w| w.parent);
+                }
+            }
+        }
+        if changed.is_empty() {
+            return Some(HashSet::new());
+        }
+        let mut dirty = changed.clone();
+        let mut queue: Vec<WidgetId> = changed.iter().copied().collect();
+        while let Some(id) = queue.pop() {
+            let Some(widget) = self.widgets.get(&id) else {
+                continue;
+            };
+            for child in &widget.children {
+                if dirty.insert(*child) {
+                    queue.push(*child);
+                }
+            }
+        }
+        Some(dirty)
     }
 
     fn pin_host_driven_transition_paint(
@@ -4182,6 +4257,11 @@ impl MessageBridge {
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
         self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
+        // CSS measure only fills boxes the engine has not produced yet. When
+        // every reachable node already has one, skip the shadow-tree rebuild.
+        if self.all_reachable_nodes_have_engine_boxes(doc) {
+            return;
+        }
         let boxes = crate::measure_bridge_layout_boxes(self, logical_w, logical_h);
         let missing: Vec<_> = boxes
             .into_iter()
@@ -4190,6 +4270,21 @@ impl MessageBridge {
         if !missing.is_empty() {
             doc.apply_layout_boxes(&missing);
         }
+    }
+
+    /// True when every widget reachable from the document roots already has an
+    /// engine box. Unreachable widgets (measure never emits them) are ignored.
+    fn all_reachable_nodes_have_engine_boxes(&self, doc: &crate::tree::NanaTreeDocument) -> bool {
+        let mut stack: Vec<WidgetId> = self.root_ids().to_vec();
+        while let Some(id) = stack.pop() {
+            if !doc.has_engine_layout_box(crate::tree::NodeHandle(id)) {
+                return false;
+            }
+            if let Some(widget) = self.widgets.get(&id) {
+                stack.extend(widget.children.iter().copied());
+            }
+        }
+        true
     }
 
     fn write_containing_block(
@@ -8614,6 +8709,125 @@ mod tests {
         let hovered = bridge.get(1).expect("widget").props.layout.background;
         assert_ne!(idle, hovered);
         assert_eq!(hovered, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn interactive_dirty_ids_cover_subject_descendants_and_focus_chains() {
+        // tree: 1 root → 2 card → 3 icon; 1 → 4 button
+        let mut bridge = MessageBridge::new();
+        bridge.register(1, WidgetKind::Column, WidgetProps::default());
+        bridge.register(2, WidgetKind::Card, WidgetProps::default());
+        bridge.register(3, WidgetKind::Icon, WidgetProps::default());
+        bridge.register(4, WidgetKind::Button, WidgetProps::default());
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 2, None);
+        bridge.insert_child(4, 1, None);
+
+        // Steady state: identical snapshot → nothing recascades.
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            hovered: BTreeMap::from([(2, ())]),
+            ..Default::default()
+        });
+        let steady = bridge
+            .interactive_dirty_ids(&InteractiveRuntimeSnapshot {
+                hovered: BTreeMap::from([(2, ())]),
+                ..Default::default()
+            })
+            .expect("previous snapshot exists");
+        assert!(steady.is_empty(), "unchanged snapshot must dirty nobody");
+
+        // New hover subject appears: only it is dirty — the already-hovered
+        // card subtree keeps its state and stays out.
+        let moved = bridge
+            .interactive_dirty_ids(&InteractiveRuntimeSnapshot {
+                hovered: BTreeMap::from([(2, ()), (4, ())]),
+                ..Default::default()
+            })
+            .expect("previous snapshot exists");
+        assert!(
+            !moved.contains(&2) && !moved.contains(&3),
+            "card subtree out"
+        );
+        assert!(moved.contains(&4), "new hover subject in");
+
+        // Card gains hover: the card and its `.icon` descendant recascade.
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot::default());
+        let card_hover = bridge
+            .interactive_dirty_ids(&InteractiveRuntimeSnapshot {
+                hovered: BTreeMap::from([(2, ())]),
+                ..Default::default()
+            })
+            .expect("previous snapshot exists");
+        assert!(card_hover.contains(&2) && card_hover.contains(&3));
+        assert!(!card_hover.contains(&4), "sibling button stays out");
+
+        // Focus move: old/new subjects, their descendants, and both
+        // `:focus-within` ancestor chains.
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            focused: Some(3),
+            ..Default::default()
+        });
+        let focus_move = bridge
+            .interactive_dirty_ids(&InteractiveRuntimeSnapshot {
+                focused: Some(4),
+                ..Default::default()
+            })
+            .expect("previous snapshot exists");
+        for id in [3, 4, 1, 2] {
+            assert!(focus_move.contains(&id), "widget {id} must be dirty");
+        }
+    }
+
+    #[test]
+    fn interactive_pass_re_cascades_only_dirty_widgets_after_hover_ends() {
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["ok".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["ok".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".ok { background: rgb(0, 0, 255); } .ok:hover { background: red; }",
+        );
+        // Widget 1 was hovered in the previous pass; the Runtime snapshot the
+        // pass collects from an idle document is empty, so hover ends.
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            hovered: BTreeMap::from([(1, ())]),
+            ..Default::default()
+        });
+        bridge.reapply_layout_for(1);
+        assert_eq!(
+            bridge.get(1).expect("hovered").props.layout.background,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        bridge.reapply_interactive_cascade(&mut doc);
+        assert_eq!(
+            bridge.get(1).expect("unhovered").props.layout.background,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "hover end must restore the base paint"
+        );
+        assert_eq!(
+            bridge.get(2).expect("idle sibling").props.layout.background,
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
+        // Steady state: a second pass with no runtime change keeps the paint.
+        bridge.reapply_interactive_cascade(&mut doc);
+        assert_eq!(
+            bridge.get(1).expect("steady").props.layout.background,
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
     }
 
     #[test]
