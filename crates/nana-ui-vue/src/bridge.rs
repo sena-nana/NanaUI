@@ -1991,8 +1991,8 @@ pub struct MessageBridge {
     authored_sheets: Vec<ParsedStylesheet>,
     /// Parsed `@font-face` rules registered with the host font system when possible.
     font_faces: Vec<FontFaceRule>,
-    /// Successfully registered faces, keyed by canonical path or `local:name` + family + weight.
-    font_register_keys: HashSet<(String, String, u16)>,
+    /// Successfully registered faces, keyed by canonical path or `local:name` + family + weight span.
+    font_register_keys: HashSet<(String, String, u16, u16)>,
     /// Bytes of successfully registered `@font-face` files (host memory cap).
     font_bytes_used: u64,
     /// Base directory for relative `@import` / `@font-face` `url(...)`.
@@ -2011,16 +2011,26 @@ fn stylesheet_base_is_set(base: &Path) -> bool {
     !base.as_os_str().is_empty() && base != Path::new(".")
 }
 
-fn host_alias_local_font_face(css_family: &str, local_name: &str, weight: Option<u16>) -> bool {
+fn host_alias_local_font_face(
+    css_family: &str,
+    local_name: &str,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+) -> bool {
     #[cfg(feature = "scene-view")]
     {
-        nana_ui::alias_host_font_face_local(css_family, local_name, weight) > 0
+        nana_ui::alias_host_font_face_local(css_family, local_name, weight, weight_end) > 0
     }
     #[cfg(not(feature = "scene-view"))]
     {
-        let _ = (css_family, local_name, weight);
+        let _ = (css_family, local_name, weight, weight_end);
         false
     }
+}
+
+fn font_face_register_key(src: String, face: &FontFaceRule) -> (String, String, u16, u16) {
+    let (lo, hi) = face.weight_span().unwrap_or((400, 400));
+    (src, face.family.clone(), lo, hi)
 }
 
 impl Default for MessageBridge {
@@ -2184,12 +2194,11 @@ impl MessageBridge {
     }
 
     fn try_register_local_font_face(&mut self, face: &FontFaceRule, local_name: &str) -> bool {
-        let weight = face.weight.unwrap_or(400);
-        let key = (format!("local:{local_name}"), face.family.clone(), weight);
+        let key = font_face_register_key(format!("local:{local_name}"), face);
         if self.font_register_keys.contains(&key) {
             return true;
         }
-        if !host_alias_local_font_face(&face.family, local_name, face.weight) {
+        if !host_alias_local_font_face(&face.family, local_name, face.weight, face.weight_end) {
             return false;
         }
         self.font_register_keys.insert(key);
@@ -2203,12 +2212,7 @@ impl MessageBridge {
         else {
             return false;
         };
-        let weight = face.weight.unwrap_or(400);
-        let key = (
-            canonical.to_string_lossy().into_owned(),
-            face.family.clone(),
-            weight,
-        );
+        let key = font_face_register_key(canonical.to_string_lossy().into_owned(), face);
         if self.font_register_keys.contains(&key) {
             return true;
         }
@@ -2218,7 +2222,9 @@ impl MessageBridge {
         }
         #[cfg(feature = "scene-view")]
         {
-            if nana_ui::register_host_font_face(&face.family, bytes, face.weight) == 0 {
+            if nana_ui::register_host_font_face(&face.family, bytes, face.weight, face.weight_end)
+                == 0
+            {
                 return false;
             }
         }

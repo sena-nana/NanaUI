@@ -996,47 +996,7 @@ fn split_comma_list(input: &str) -> Vec<&str> {
 }
 
 fn apply_font_variation_settings(style: &mut nana_ui_core::LayoutStyle, val: &str) {
-    let trimmed = val.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
-        style.unsupported_font_variation = false;
-        return;
-    }
-    let Some(axes) = parse_font_variation_settings(trimmed) else {
-        style.unsupported_font_variation = true;
-        return;
-    };
-    let mut wght = None;
-    for (tag, value) in axes {
-        if &tag == b"wght" {
-            wght = Some(value);
-        } else {
-            // cosmic-text Attrs only drive the wght axis (via Weight). BEVL and
-            // other axes have no public setter — fail the whole declaration.
-            style.unsupported_font_variation = true;
-            return;
-        }
-    }
-    style.unsupported_font_variation = false;
-    if let Some(wght) = wght {
-        style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
-    }
-}
-
-fn parse_font_variation_settings(raw: &str) -> Option<Vec<([u8; 4], f32)>> {
-    let mut out = Vec::new();
-    for chunk in split_comma_list(raw) {
-        let chunk = chunk.trim();
-        if chunk.is_empty() {
-            continue;
-        }
-        let (tag, rest) = parse_feature_tag(chunk)?;
-        let value = rest.trim().parse::<f32>().ok()?;
-        if !value.is_finite() {
-            return None;
-        }
-        out.push((tag, value));
-    }
-    if out.is_empty() { None } else { Some(out) }
+    crate::css_map::apply_font_variation_settings(style, val);
 }
 
 fn apply_line_clamp(style: &mut nana_ui_core::LayoutStyle, val: &str) {
@@ -2158,6 +2118,11 @@ mod tests {
         assert_eq!(layout.font_weight, Some(700));
         layout.apply_css_text("font-variation-settings: \"BEVL\" 1", None, None);
         assert!(layout.unsupported_font_variation);
+        assert_eq!(
+            layout.font_weight,
+            Some(700),
+            "BEVL must not remap onto font-weight / wght"
+        );
         layout.apply_css_text(
             "font-variation-settings: \"wght\" 400, \"wdth\" 100",
             None,

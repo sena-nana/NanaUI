@@ -53,11 +53,21 @@ pub(crate) fn lock_font_system(shared: &SharedFontSystem) -> MutexGuard<'_, Font
 /// Register a CSS `@font-face` source into the process-wide [`FontSystem`].
 ///
 /// Loads `data` into fontdb, then aliases the CSS `font-family` (and optional
-/// weight) onto the new faces so `font-family: Display` resolves. This is the
-/// host hook for L1 `@font-face` — not a CSSOM `FontFace` object.
+/// weight range) onto the new faces so `font-family: Display` resolves. This is
+/// the host hook for L1 `@font-face` — not a CSSOM `FontFace` object.
+///
+/// `weight` is the CSS start (or sole) value; `weight_end` is the inclusive
+/// range end (`font-weight: 200 700`). fontdb stores one `Weight` per face, so
+/// a range is registered as CSS 100-step aliases covering that span — not only
+/// the start.
 ///
 /// Returns the number of faces recorded (file faces + CSS family aliases).
-pub fn register_host_font_face(family: &str, data: Vec<u8>, weight: Option<u16>) -> usize {
+pub fn register_host_font_face(
+    family: &str,
+    data: Vec<u8>,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+) -> usize {
     let family = family.trim();
     if family.is_empty() || data.is_empty() {
         return 0;
@@ -77,26 +87,11 @@ pub fn register_host_font_face(family: &str, data: Vec<u8>, weight: Option<u16>)
         .iter()
         .filter_map(|id| fonts.db().face(*id).cloned())
         .collect();
-    for mut info in snapshots {
-        let already = info
-            .families
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case(family));
-        if !already {
-            info.families.insert(
-                0,
-                (
-                    family.to_string(),
-                    cosmic_text::fontdb::Language::English_UnitedStates,
-                ),
-            );
+    for info in snapshots {
+        for aliased in css_family_weight_aliases(info, family, weight, weight_end) {
+            fonts.db_mut().push_face_info(aliased);
+            aliases += 1;
         }
-        if let Some(weight) = weight {
-            info.weight = cosmic_text::fontdb::Weight(weight);
-        }
-        info.id = cosmic_text::fontdb::ID::dummy();
-        fonts.db_mut().push_face_info(info);
-        aliases += 1;
     }
     ids.len() + aliases
 }
@@ -105,13 +100,14 @@ pub fn register_host_font_face(family: &str, data: Vec<u8>, weight: Option<u16>)
 ///
 /// Matches fontdb family names and PostScript names (ASCII case-insensitive).
 /// Does not load bytes or follow `url()`. If `weight` is set, matching-weight
-/// faces are preferred; otherwise any family hit succeeds.
+/// (or in-range) faces are preferred; otherwise any family hit succeeds.
 ///
 /// Returns the number of alias faces recorded (0 if nothing matched).
 pub fn alias_host_font_face_local(
     css_family: &str,
     local_family: &str,
     weight: Option<u16>,
+    weight_end: Option<u16>,
 ) -> usize {
     let css_family = css_family.trim();
     let local_family = local_family.trim();
@@ -129,10 +125,10 @@ pub fn alias_host_font_face_local(
     if snapshots.is_empty() {
         return 0;
     }
-    let chosen = select_local_faces(snapshots, weight);
+    let chosen = select_local_faces(snapshots, weight, weight_end);
     let mut aliases = 0usize;
     let mut to_push = Vec::new();
-    for mut info in chosen {
+    for info in chosen {
         let already = info
             .families
             .iter()
@@ -141,16 +137,10 @@ pub fn alias_host_font_face_local(
             aliases += 1;
             continue;
         }
-        info.families.insert(
-            0,
-            (
-                css_family.to_string(),
-                cosmic_text::fontdb::Language::English_UnitedStates,
-            ),
-        );
-        info.id = cosmic_text::fontdb::ID::dummy();
-        to_push.push(info);
-        aliases += 1;
+        for aliased in css_family_weight_aliases(info, css_family, weight, weight_end) {
+            to_push.push(aliased);
+            aliases += 1;
+        }
     }
     if !to_push.is_empty() {
         let db = fonts.db_mut();
@@ -159,6 +149,61 @@ pub fn alias_host_font_face_local(
         }
     }
     aliases
+}
+
+fn css_family_weight_aliases(
+    mut info: cosmic_text::fontdb::FaceInfo,
+    family: &str,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+) -> Vec<cosmic_text::fontdb::FaceInfo> {
+    let already = info
+        .families
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(family));
+    if !already {
+        info.families.insert(
+            0,
+            (
+                family.to_string(),
+                cosmic_text::fontdb::Language::English_UnitedStates,
+            ),
+        );
+    }
+    let Some(start) = weight else {
+        info.id = cosmic_text::fontdb::ID::dummy();
+        return vec![info];
+    };
+    let end = weight_end.unwrap_or(start);
+    css_font_weight_alias_stops(start, end)
+        .into_iter()
+        .map(|w| {
+            let mut face = info.clone();
+            face.weight = cosmic_text::fontdb::Weight(w);
+            face.id = cosmic_text::fontdb::ID::dummy();
+            face
+        })
+        .collect()
+}
+
+/// CSS 100-step aliases covering an `@font-face` `font-weight` range.
+pub(crate) fn css_font_weight_alias_stops(min: u16, max: u16) -> Vec<u16> {
+    let lo = min.min(max).clamp(1, 1000);
+    let hi = min.max(max).clamp(1, 1000);
+    let mut stops = vec![lo];
+    let mut step = lo.saturating_add(99) / 100 * 100;
+    if step <= lo {
+        step = step.saturating_add(100);
+    }
+    while step < hi {
+        stops.push(step);
+        step = step.saturating_add(100);
+    }
+    if hi != lo {
+        stops.push(hi);
+    }
+    stops.dedup();
+    stops
 }
 
 fn face_matches_local_name(face: &cosmic_text::fontdb::FaceInfo, local_family: &str) -> bool {
@@ -171,13 +216,17 @@ fn face_matches_local_name(face: &cosmic_text::fontdb::FaceInfo, local_family: &
 fn select_local_faces(
     snapshots: Vec<cosmic_text::fontdb::FaceInfo>,
     weight: Option<u16>,
+    weight_end: Option<u16>,
 ) -> Vec<cosmic_text::fontdb::FaceInfo> {
-    let Some(weight) = weight else {
+    let Some(start) = weight else {
         return snapshots;
     };
+    let end = weight_end.unwrap_or(start);
+    let lo = start.min(end);
+    let hi = start.max(end);
     let matching: Vec<_> = snapshots
         .iter()
-        .filter(|face| face.weight.0 == weight)
+        .filter(|face| face.weight.0 >= lo && face.weight.0 <= hi)
         .cloned()
         .collect();
     if matching.is_empty() {
@@ -581,7 +630,7 @@ mod tests {
     #[cfg(feature = "bundled-fonts")]
     fn register_host_font_face_aliases_css_family() {
         let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
-        let added = register_host_font_face("NanaCssFace", data.to_vec(), Some(400));
+        let added = register_host_font_face("NanaCssFace", data.to_vec(), Some(400), None);
         assert!(added > 0, "bundled Regular face must load");
         let fonts = nana_font_system();
         let db = lock_font_system(&fonts);
@@ -596,15 +645,56 @@ mod tests {
     #[test]
     fn register_host_font_face_rejects_garbage() {
         assert_eq!(
-            register_host_font_face("Nope", b"not-a-font".to_vec(), Some(400)),
+            register_host_font_face("Nope", b"not-a-font".to_vec(), Some(400), None),
             0
         );
     }
 
     #[test]
+    fn css_font_weight_alias_stops_cover_range_not_only_start() {
+        assert_eq!(
+            css_font_weight_alias_stops(200, 700),
+            vec![200, 300, 400, 500, 600, 700]
+        );
+        assert_eq!(css_font_weight_alias_stops(400, 400), vec![400]);
+        assert_eq!(
+            css_font_weight_alias_stops(700, 200),
+            vec![200, 300, 400, 500, 600, 700]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn register_host_font_face_weight_range_aliases_stops() {
+        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let added = register_host_font_face("NanaVfRangeFace", data.to_vec(), Some(200), Some(700));
+        assert!(added > 0, "bundled Regular face must load");
+        let fonts = nana_font_system();
+        let db = lock_font_system(&fonts);
+        let mut weights: Vec<u16> = db
+            .db()
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("NanaVfRangeFace"))
+            })
+            .map(|face| face.weight.0)
+            .collect();
+        weights.sort_unstable();
+        weights.dedup();
+        for stop in [200u16, 400, 700] {
+            assert!(
+                weights.contains(&stop),
+                "range 200 700 must register stop {stop}, got {weights:?}"
+            );
+        }
+    }
+
+    #[test]
     fn alias_host_font_face_local_unknown_family_is_zero() {
         assert_eq!(
-            alias_host_font_face_local("NopeLocal", "DefinitelyNotANanaFont_xyz", None),
+            alias_host_font_face_local("NopeLocal", "DefinitelyNotANanaFont_xyz", None, None),
             0
         );
     }
@@ -612,7 +702,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn alias_host_font_face_local_binds_bundled_noto() {
-        let added = alias_host_font_face_local("NanaBundledLocal", "Noto Sans SC", Some(400));
+        let added = alias_host_font_face_local("NanaBundledLocal", "Noto Sans SC", Some(400), None);
         assert!(added > 0, "bundled Noto Sans SC must satisfy local()");
         let fonts = nana_font_system();
         let db = lock_font_system(&fonts);
@@ -636,7 +726,7 @@ mod tests {
         let Some(name) = existing else {
             return;
         };
-        let added = alias_host_font_face_local(&name, &name, None);
+        let added = alias_host_font_face_local(&name, &name, None, None);
         assert!(
             added > 0,
             "local() of an already-loaded family must succeed without url bytes"

@@ -26,7 +26,7 @@ Rust 第一路径用控件自己的布局，不写 CSS。这篇只描述 Vue 兼
 
 **`display: contents`。** 子节点提升到父级格式化上下文；该节点自己没有盒子。
 
-**文字。** 字号、字重、字体、行高、字距、颜色。`line-clamp` / `-webkit-line-clamp` 限制行数并打省略号。`text-decoration: underline | line-through` 由 Scene 在文本盒上描线。`font-feature-settings` 写入 cosmic-text OpenType features。`font-variation-settings: "wght" N` 并进已有 `font-weight`（cosmic-text 只公开这条轴）；`BEVL` 及其余轴 fail-closed（`unsupported_font_variation`）。字距是近似。
+**文字。** 字号、字重、字体、行高、字距、颜色。`line-clamp` / `-webkit-line-clamp` 限制行数并打省略号。`text-decoration: underline | line-through` 由 Scene 在文本盒上描线。`font-feature-settings` 写入 cosmic-text OpenType features。`font-variation-settings: "wght" N` 并进已有 `font-weight`（cosmic-text 0.19 `FontSystem` / `Attrs` 只公开这条可变轴）。其余轴（含阿里妈妈 `BEVL`、`wdth`）只让**该声明** fail-closed（`unsupported_font_variation`），不把标签改写成 `wght`，也不塞进 `FontFeatures`。字距是近似。
 
 **隐藏。** `display: none` 不占位、不参与点击。`visibility: hidden` **仍占位**（参与 flex/grid 测量），但不绘制、不命中。内部 `layout.hidden`（侧栏、菜单等）与 `display: none` 一样跳过布局。
 
@@ -46,7 +46,7 @@ Rust 第一路径用控件自己的布局，不写 CSS。这篇只描述 Vue 兼
 
 **`@media`。** 子集：`min/max/width`、`min/max/height`（px）、`orientation`、`prefers-color-scheme`，以及 `screen` / `all` / `print` 类型。条件匹配时规则进入 cascade；视口或主题变化只重新 flatten 已解析规则，不重扫 CSS 文本。JS `matchMedia` 经 host op `evaluateMediaQuery` 与 CSS flatten 共用同一套 Rust 求值（`screen`/`all` 为真、`print` 为假）；无 host 时 web-api shim 回退同一子集。
 
-**`@font-face`。** 解析 `font-family` / `src` / `font-weight`，经宿主 [`register_host_font_face`](../../crates/nana-ui/src/nana_text.rs) / [`alias_host_font_face_local`](../../crates/nana-ui/src/nana_text.rs) 写入共享 `FontSystem` / fontdb（与 `bundled-fonts` 同一套库）。不是 CSSOM `FontFace`。相对 `url(...)` 相对**声明该规则的样式表**。`src` 跳过 `format()` / `tech()`，按声明顺序尝试 `local()` 与 `url()`：`local("Family")` 命中已加载的 fontdb 家族名或 PostScript 名则别名 CSS `font-family` 且不读 url；未命中则 fail-closed 试下一项。未匹配的 `@media`（含 `print`）里的 `@font-face` 不注册。读上限 8MB；按 canonical 路径或 `local:name` + family + weight 去重。
+**`@font-face`。** 解析 `font-family` / `src` / `font-weight`（含 `font-weight: 200 700` 范围：宿主按 100 档在 fontdb 登记别名，不是只取起点），经宿主 [`register_host_font_face`](../../crates/nana-ui/src/nana_text.rs) / [`alias_host_font_face_local`](../../crates/nana-ui/src/nana_text.rs) 写入共享 `FontSystem` / fontdb（与 `bundled-fonts` 同一套库）。不是 CSSOM `FontFace`。相对 `url(...)` 相对**声明该规则的样式表**。`src` 跳过 `format()` / `tech()`，按声明顺序尝试 `local()` 与 `url()`：`local("Family")` 命中已加载的 fontdb 家族名或 PostScript 名则别名 CSS `font-family` 且不读 url；未命中则 fail-closed 试下一项。未匹配的 `@media`（含 `print`）里的 `@font-face` 不注册。读上限 8MB；按 canonical 路径或 `local:name` + family + weight 范围去重。
 
 **`@supports`。** 解析期求值，匹配则把内部规则并进同一份 cascade。谓词子集是 L1 已有的：`display: flex|grid|block`（以及 L1 已解析的其它 `display` 关键字）、`color`（`parse_css_color` 能解析的值）、`width`（`LengthSpec::parse` 能解析的值），可加 `not` / `and` / `or`。未知谓词（`selector()`、`lab()` / `display-p3`、未列入的属性）整块 fail-closed，计入 `skipped_at_rules`。
 
