@@ -1,6 +1,6 @@
 /**
  * NanaCalendar — week-column heatmap host.
- * Semantic peer of Runtime `CalendarHeatmap` (`nana-calendar`).
+ * Semantic peer of Runtime `CalendarHeatmap` (`nana-calendar-heatmap`).
  *
  * `data` / `options` pass through. An `options` object maps heatmap metrics:
  * `cellSize`, `cellGap`, `cellRadius`, `labelWidth`, `monthLabelHeight`,
@@ -39,7 +39,7 @@ export const NanaCalendar = {
     }
 
     return () =>
-      h("nana-calendar", {
+      h("nana-calendar-heatmap", {
         ...attrs,
         class: ["nana-calendar", attrs.class].filter(Boolean).join(" "),
         data: props.data !== undefined ? props.data : props.options,

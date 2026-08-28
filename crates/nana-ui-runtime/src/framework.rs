@@ -10704,16 +10704,31 @@ mod tests {
         assert!(context.resolve_component_tag("button").is_some());
         assert_eq!(
             context
-                .resolve_component_tag("nana-button")
+                .resolve_component_tag("nana-gpu")
                 .map(ComponentTypeId::as_str),
-            Some("nana.button")
+            Some("nana.gpu")
         );
         assert_eq!(
             context
-                .resolve_component_tag("chip")
+                .resolve_component_tag("gpu-view")
                 .map(ComponentTypeId::as_str),
-            Some("nana.button"),
-            "chip is the compact Button Selected/Subtle tag, not a second type"
+            Some("nana.gpu-view")
+        );
+        assert_eq!(
+            context.resolve_component_tag("chip"),
+            None,
+            "chip is a Button variant, not a registry tag"
+        );
+        assert_eq!(
+            context.resolve_component_tag("virtual-list"),
+            None,
+            "virtual windows use scroll-view, not a second type"
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-button")
+                .map(ComponentTypeId::as_str),
+            Some("nana.button")
         );
         assert_eq!(
             context
@@ -10757,22 +10772,19 @@ mod tests {
         );
         assert_eq!(
             context
-                .resolve_component_tag("search-dropdown")
+                .resolve_component_tag("search")
                 .map(ComponentTypeId::as_str),
             Some("nana.search")
         );
         assert_eq!(
             context
-                .resolve_component_tag("nana-search-dropdown")
+                .resolve_component_tag("nana-search")
                 .map(ComponentTypeId::as_str),
             Some("nana.search")
         );
-        assert_ne!(
-            context
-                .resolve_component_tag("search")
-                .map(ComponentTypeId::as_str),
-            Some("nana.search"),
-            "HTML search stays unregistered; nana-search-dropdown owns search-dropdown"
+        assert!(
+            context.resolve_component_tag("search-dropdown").is_none(),
+            "search-dropdown is not a second name for nana.search"
         );
 
         #[derive(Clone)]

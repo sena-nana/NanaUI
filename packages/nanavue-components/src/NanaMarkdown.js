@@ -1,6 +1,6 @@
 /**
  * NanaMarkdown — native markdown source host.
- * Semantic peer of Runtime `NativeMarkdown` (`nana-markdown`).
+ * Semantic peer of Runtime `NativeMarkdown` (`nana-native-markdown`).
  *
  * Vue supplies the source string. Parsing stays on the host.
  * Optional `mermaidRenderer` / `mathRenderer` names are identity only.
@@ -28,7 +28,7 @@ export const NanaMarkdown = {
         props.modelValue !== undefined && props.modelValue !== null
           ? props.modelValue
           : props.value ?? "";
-      return h("nana-markdown", {
+      return h("nana-native-markdown", {
         ...attrs,
         class: ["nana-markdown", attrs.class].filter(Boolean).join(" "),
         value: source,

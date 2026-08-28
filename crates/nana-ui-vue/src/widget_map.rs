@@ -135,6 +135,8 @@ pub fn resolve_kind_from_hints(
         "textarea" | "hosted-textarea" | "nana-hosted-textarea" => WidgetKind::Textarea,
         "select" => WidgetKind::Select,
         "progress" => WidgetKind::Progress,
+        "hr" => WidgetKind::Divider,
+        "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" => WidgetKind::Column,
         "li" => WidgetKind::ListItem,
         // Lucide / <i> glyphs stay Icon; structural <svg> is rasterized via
         // the shared image_url cache (see `svg_inline`). Raster <img> binds
@@ -262,6 +264,14 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "textarea"
             | "select"
             | "progress"
+            | "hr"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tfoot"
+            | "tr"
+            | "td"
+            | "th"
     )
 }
 
@@ -274,67 +284,34 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         return Some(kind);
     }
     Some(match t {
-        "nana-tabs" | "nana-tabs__list" => WidgetKind::Tabs,
-        "nana-tabs__item" => WidgetKind::Chip,
-        "nana-segmented" => WidgetKind::Segmented,
-        "nana-segmented__item" => WidgetKind::Chip,
-        "nana-chip" | "chip" => WidgetKind::Chip,
-        "nana-range-field" | "nana-range" => WidgetKind::Range,
-        "nana-button" | "ui-button" => WidgetKind::Button,
-        "nana-switch" | "ui-switch" => WidgetKind::Switch,
-        "nana-checkbox" | "ui-checkbox" => WidgetKind::Checkbox,
+        "nana-tabs__list" => WidgetKind::Tabs,
+        "nana-tabs__item" | "nana-segmented__item" => WidgetKind::Chip,
+        "nana-range" => WidgetKind::Range,
+        "ui-button" => WidgetKind::Button,
+        "nana-scroll" => WidgetKind::ScrollView,
+        "ui-switch" => WidgetKind::Switch,
+        "ui-checkbox" => WidgetKind::Checkbox,
         "nana-input" | "ui-input" => WidgetKind::Input,
         "nana-hosted-textarea" | "hosted-textarea" => WidgetKind::Textarea,
-        "nana-card" | "ui-card" | "card" => WidgetKind::Card,
-        "nana-list-item" | "ui-list-item" | "list-item" => WidgetKind::ListItem,
-        "nana-sidebar-row" | "sidebar-row" | "nana-sidebar-nav__item" => WidgetKind::SidebarRow,
-        "nana-sidebar-frame" => WidgetKind::SidebarFrame,
-        "nana-settings-row" | "settings-row" => WidgetKind::SettingsRow,
-        "nana-settings-card" | "settings-card" => WidgetKind::SettingsCard,
-        "nana-empty" | "empty-state" => WidgetKind::EmptyState,
-        "nana-status" | "nana-status-badge" => WidgetKind::StatusBadge,
-        "nana-validation" | "nana-validation-message" => WidgetKind::ValidationMessage,
-        "nana-labeled-value" => WidgetKind::LabeledValue,
-        "nana-progress" | "ui-progress" => WidgetKind::Progress,
-        "nana-spinner" | "ui-spinner" => WidgetKind::Spinner,
-        "nana-form-field" | "nana-form" => WidgetKind::FormField,
-        "nana-interactive-card" => WidgetKind::InteractiveCard,
-        "nana-skeleton" => WidgetKind::Skeleton,
-        "nana-level-meter" | "nana-level" => WidgetKind::LevelMeter,
-        "nana-column" | "vstack" => WidgetKind::Column,
-        "nana-row" | "hstack" => WidgetKind::Row,
-        "nana-stack" | "stack" => WidgetKind::Box,
-        // Documented overlay contracts (`nana-*` + generic HTML names).
-        "nana-dialog" | "nana-overlay" | "nana-confirm" | "nana-confirm-dialog" => {
-            WidgetKind::Dialog
-        }
-        "nana-drawer" | "nana-sheet" => WidgetKind::Drawer,
-        "nana-popover" | "popover" => WidgetKind::Popover,
-        "nana-context-menu" | "context-menu" | "contextmenu" => WidgetKind::ContextMenu,
-        "nana-toast" | "toast" => WidgetKind::Toast,
-        "nana-tooltip" | "tooltip" => WidgetKind::Tooltip,
-        "nana-action-menu" => WidgetKind::ActionMenu,
-        "nana-action-menu-item" => WidgetKind::ActionMenuItem,
-        "nana-xy-pad" | "nana-xypad" | "xy-pad" => WidgetKind::XYPad,
-        "nana-qr-code" | "nana-qr" | "qr-code" => WidgetKind::QrCode,
-        "nana-command-palette" | "command-palette" => WidgetKind::CommandPalette,
-        "nana-tree-view" | "tree-view" => WidgetKind::TreeView,
-        "nana-calendar" | "nana-calendar-heatmap" => WidgetKind::CalendarHeatmap,
-        "nana-image-viewer" | "image-viewer" => WidgetKind::ImageViewer,
-        "nana-markdown" | "native-markdown" => WidgetKind::NativeMarkdown,
-        "nana-graph-canvas" | "graph-canvas" | "graphcanvas" => WidgetKind::GraphCanvas,
-        "nana-workspace" => WidgetKind::Workspace,
-        "nana-dock" => WidgetKind::Dock,
-        "nana-split-pane" | "split-pane" => WidgetKind::SplitPane,
-        "nana-app-shell" | "app-shell" => WidgetKind::AppShell,
-        "nana-settings-page" | "settings-page" => WidgetKind::SettingsPage,
-        "nana-select" => WidgetKind::Select,
-        "nana-dropdown" | "ui-dropdown" | "dropdown" => WidgetKind::Dropdown,
-        "nana-search" | "nana-search-dropdown" | "search-dropdown" => WidgetKind::SearchDropdown,
+        "ui-card" => WidgetKind::Card,
+        "ui-list-item" => WidgetKind::ListItem,
+        "nana-sidebar-nav__item" => WidgetKind::SidebarRow,
+        "nana-empty" => WidgetKind::EmptyState,
+        "nana-status" => WidgetKind::StatusBadge,
+        "nana-validation" => WidgetKind::ValidationMessage,
+        "ui-progress" => WidgetKind::Progress,
+        "ui-spinner" => WidgetKind::Spinner,
+        "vstack" => WidgetKind::Column,
+        "hstack" => WidgetKind::Row,
+        "nana-overlay" | "nana-confirm" | "nana-confirm-dialog" => WidgetKind::Dialog,
+        "nana-sheet" => WidgetKind::Drawer,
+        "nana-xypad" => WidgetKind::XYPad,
+        "nana-calendar" => WidgetKind::CalendarHeatmap,
+        "nana-markdown" => WidgetKind::NativeMarkdown,
+        "graphcanvas" => WidgetKind::GraphCanvas,
+        "ui-dropdown" => WidgetKind::Dropdown,
         _ if t == "lucide" || t.starts_with("lucide-") => WidgetKind::Icon,
         _ if t.contains("sidebar") && t.contains("row") => WidgetKind::SidebarRow,
-        // Do NOT match arbitrary "*card*" substrings — that promotes layout
-        // shells (and blocks flex-direction → Row) into Card.
         _ => return None,
     })
 }
@@ -355,6 +332,7 @@ fn is_input_like_kind(kind: WidgetKind) -> bool {
         || matches!(
             kind,
             WidgetKind::Input
+                | WidgetKind::NumberInput
                 | WidgetKind::Textarea
                 | WidgetKind::Checkbox
                 | WidgetKind::Switch
@@ -1140,7 +1118,7 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-form", None, None, None),
-            Some(WidgetKind::FormField)
+            Some(WidgetKind::Column)
         );
         assert_eq!(
             resolve_kind_from_hints("form", None, None, None),
@@ -1169,7 +1147,7 @@ mod tests {
             Some(WidgetKind::LevelMeter)
         );
         assert_eq!(
-            resolve_kind_from_hints("nana-level", None, None, None),
+            resolve_kind_from_hints("nana-level-meter", None, None, None),
             Some(WidgetKind::LevelMeter)
         );
         assert_eq!(
@@ -1193,7 +1171,7 @@ mod tests {
             Some(WidgetKind::XYPad)
         );
         assert_eq!(
-            resolve_kind_from_hints("nana-qr", None, None, None),
+            resolve_kind_from_hints("nana-qr-code", None, None, None),
             Some(WidgetKind::QrCode)
         );
         assert_eq!(
@@ -1217,7 +1195,7 @@ mod tests {
             Some(WidgetKind::TreeView)
         );
         assert_eq!(
-            resolve_kind_from_hints("nana-calendar", None, None, None),
+            resolve_kind_from_hints("nana-calendar-heatmap", None, None, None),
             Some(WidgetKind::CalendarHeatmap)
         );
         assert_eq!(
@@ -1225,7 +1203,7 @@ mod tests {
             Some(WidgetKind::ImageViewer)
         );
         assert_eq!(
-            resolve_kind_from_hints("nana-markdown", None, None, None),
+            resolve_kind_from_hints("nana-native-markdown", None, None, None),
             Some(WidgetKind::NativeMarkdown)
         );
         assert_eq!(
@@ -1255,6 +1233,59 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("nana-settings-page", None, None, None),
             Some(WidgetKind::SettingsPage)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-icon-button", None, None, None),
+            Some(WidgetKind::IconButton)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-number-input", None, None, None),
+            Some(WidgetKind::NumberInput)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("hr", None, None, None),
+            Some(WidgetKind::Divider)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-scroll-view", None, None, None),
+            Some(WidgetKind::ScrollView)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("table", None, None, None),
+            Some(WidgetKind::Column),
+            "HTML table stays a layout box"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-table", None, None, None),
+            Some(WidgetKind::Table)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-desktop-shell", None, None, None),
+            Some(WidgetKind::DesktopShell)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-app-title-bar", None, None, None),
+            Some(WidgetKind::AppTitleBar)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-time-series-chart", None, None, None),
+            Some(WidgetKind::TimeSeriesChart)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-settings-collapsible-card", None, None, None),
+            Some(WidgetKind::SettingsCollapsibleCard)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-gpu", None, None, None),
+            Some(WidgetKind::GpuTextureView)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-gpu-view", None, None, None),
+            Some(WidgetKind::GpuView)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-virtual-list", None, None, None),
+            Some(WidgetKind::Column)
         );
         assert_eq!(
             resolve_kind_from_hints(

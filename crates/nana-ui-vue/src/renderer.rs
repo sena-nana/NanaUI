@@ -175,7 +175,6 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                         .eq_ignore_ascii_case("form")
                         .then_some(WidgetKind::Column)
                 })
-                .or_else(|| app_shell_slot_widget_kind(&kind_raw))
                 .ok_or_else(|| JsException::new(format!("unknown widget kind: {kind_raw}")))?;
             let prop_map = match args.get(1) {
                 Some(HostValue::Object(map)) => Some(map),
@@ -201,8 +200,6 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 .unwrap_or_else(|| {
                     if WidgetKind::parse(&kind_raw).is_some() {
                         kind.element_tag().to_owned()
-                    } else if app_shell_slot_widget_kind(&kind_raw).is_some() {
-                        "nana-app-title-bar".into()
                     } else {
                         kind_raw.trim().to_ascii_lowercase()
                     }
@@ -1448,13 +1445,6 @@ fn lock_bridge(
         .map_err(|_| JsException::new("nana message bridge poisoned"))
 }
 
-/// AppShell title-bar is a tagged slot, not a `WidgetKind` / ComponentRegistry tag.
-fn app_shell_slot_widget_kind(kind_raw: &str) -> Option<WidgetKind> {
-    let raw = kind_raw.trim().to_ascii_lowercase();
-    let raw = raw.strip_prefix("nana-").unwrap_or(&raw);
-    (raw == "app-title-bar").then_some(WidgetKind::Column)
-}
-
 fn apply_inject_stylesheet_href(bridge: &mut MessageBridge, href: Option<&str>) {
     if let Some(href) = href
         && let Some(base) = stylesheet_base_from_href(href)
@@ -1809,7 +1799,7 @@ mod tests {
             assert_eq!(w.kind, WidgetKind::Column);
             assert_eq!(w.props.element_tag, "form");
         }
-        for kind in ["nana-form", "form-field", "nana-form-field"] {
+        for kind in ["form-field", "nana-form-field"] {
             let id = api
                 .call("createWidget", &[HostValue::string(kind)])
                 .unwrap_or_else(|error| panic!("createWidget({kind}): {error}"));
@@ -1839,7 +1829,7 @@ mod tests {
             let nid = id.as_f64().expect("id") as u64;
             let snap = bridge.lock().unwrap().snapshot();
             let w = snap.get(nid).expect("widget");
-            assert_eq!(w.kind, WidgetKind::Column);
+            assert_eq!(w.kind, WidgetKind::AppTitleBar);
             assert_eq!(w.props.element_tag, "nana-app-title-bar");
         }
         assert!(

@@ -41,10 +41,10 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-chip` / class `nana-chip` | Chip | Button Selected/Subtle 变体（非独立 catalog 身份） |
 | `nana-switch` / role=switch | Switch | `nana_ui::Switch` |
 | `nana-checkbox` / `input[type=checkbox]` | Checkbox | `nana_ui::Checkbox` |
-| `nana-input` / `<input>` | Input | `nana_ui::TextInput` |
+| `nana-text-input` / `<input>` | Input | `nana_ui::TextInput` |
 | `nana-tabs` / role=tablist / class `nana-tabs` | Tabs | `nana_ui::Tabs` |
 | `nana-segmented` / class `nana-segmented` | Segmented | `nana_ui::SegmentedControl` |
-| `nana-range` / role=slider | Range | `nana_ui::RangeField` |
+| `nana-range-field` / role=slider | Range | `nana_ui::RangeField` |
 | `nana-sidebar-row` / class sidebar-row | SidebarRow | `nana_ui::SidebarRow` |
 | `div` / `section` / `main` / `nana-stack` / `nana-column` / `nana-row` / `nana-box` | 初始 tag（Column / Row / Box） | L3 `Stack`（`nana.stack`；column/row/box 为标签别名）。方向与网格写在 `LayoutStyle`，不按 CSS 改 `WidgetKind` |
 | `#text` / `span` / `p` / `h*` | Text | `nana_ui::Text` |
@@ -63,22 +63,42 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-tooltip` | Tooltip | Runtime `Tooltip`（无 StandardVisual） |
 | `nana-action-menu` | ActionMenu | Runtime `ActionMenu` |
 | `nana-action-menu-item` | ActionMenuItem | Runtime `ActionMenuItem` |
-| `nana-xy-pad` / `nana-xypad` / `xy-pad` | XYPad | Runtime `XYPad` |
-| `nana-qr-code` / `nana-qr` / `qr-code` | QrCode | Runtime `QrCode`（有 modules）或 LabeledValue 占位 |
-| `nana-form-field` / `nana-form` | FormField | Runtime `FormField`（子控件走 composer） |
+| `nana-xy-pad` | XYPad | Runtime `XYPad` |
+| `nana-qr-code` | QrCode | Runtime `QrCode`（有 modules）或 LabeledValue 占位 |
+| `nana-form-field` | FormField | Runtime `FormField`（子控件走 composer） |
 | `nana-interactive-card` | InteractiveCard | Runtime `InteractiveCard`（内容子树走 composer） |
 | `nana-skeleton` | Skeleton | Runtime `Skeleton` / Scene leaf |
-| `nana-level-meter` / `nana-level` | LevelMeter | Runtime `LevelMeter` / Scene leaf |
+| `nana-level-meter` | LevelMeter | Runtime `LevelMeter` / Scene leaf |
 | `nana-command-palette` | CommandPalette | Runtime `CommandPalette` |
 | `nana-tree-view` | TreeView | Runtime `TreeView` |
-| `nana-calendar` | CalendarHeatmap | Runtime `CalendarHeatmap`（`data` 单元格；`options` 对象为热图度量，数组仍作单元格回退；无法解释时投影空热图） |
+| `nana-calendar-heatmap` | CalendarHeatmap | Runtime `CalendarHeatmap`（`data` 单元格；`options` 对象为热图度量，数组仍作单元格回退；无法解释时投影空热图） |
 | `nana-image-viewer` | ImageViewer | Runtime `ImageViewer`（仅 host texture id，不解码） |
-| `nana-markdown` | NativeMarkdown | Runtime `NativeMarkdown::from_source`（`mermaid`/`mmd`、`math`/`latex`/`tex` 栅栏落到块种类；可选 `mermaidRenderer`/`mathRenderer` 仅为 `mermaid:{source}` / `math:{source}` 身份，不实现排版） |
+| `nana-native-markdown` | NativeMarkdown | Runtime `NativeMarkdown::from_source`（`mermaid`/`mmd`、`math`/`latex`/`tex` 栅栏落到块种类；可选 `mermaidRenderer`/`mathRenderer` 仅为 `mermaid:{source}` / `math:{source}` 身份，不实现排版） |
 | `nana-graph-canvas` | GraphCanvas | Runtime `GraphCanvas`（`nodes`/`edges`/`model`/`viewport`/`selection`；无法解释时投影空模型） |
 | `nana-workspace` | Workspace | Runtime `Workspace`（`region` / `data-region` 子节点为 slots） |
 | `nana-dock` | Dock | Runtime `Dock`（子节点或 `layout`/`root`；有子节点时不是 dummy `item("dock", None)`） |
 | `nana-split-pane` | SplitPane | Runtime `SplitPane`（前两子节点 + `axis`；可选 handle） |
 | `nana-app-shell` | AppShell | Runtime `AppShell`（`title` → title bar，默认槽 → body） |
+| `nana-gpu` / `data-nana-gpu` | GpuTextureView | Runtime `GpuTextureView`（`nana.gpu`） |
+| `nana-gpu-view` | GpuView | Runtime `GpuView`（`nana.gpu-view`） |
+| `nana-icon-button` | IconButton | Runtime `IconButton` |
+| `nana-icon` / `<i>` | Icon | Runtime `IconGlyph` |
+| `nana-number-input` | NumberInput | Runtime `NumberInput`（HTML `input[type=number]` 仍是 `TextInput`） |
+| `nana-divider` / `<hr>` | Divider | Runtime `Divider` |
+| `nana-thumbnail` | Thumbnail | Runtime `Thumbnail` |
+| `nana-list` | List | Runtime `List`（HTML `ul`/`ol` 仍是布局盒） |
+| `nana-scroll-view` | ScrollView | Runtime `ScrollView`（`scrollbars` / `axes`） |
+| `nana-table` | Table | Runtime `Table`（HTML `<table>` 仍是布局盒） |
+| `nana-table-row` | TableRow | Runtime `TableRow` |
+| `nana-table-cell` | TableCell | Runtime `TableCell`（`header` 标列表头） |
+| `nana-reorder-list` | ReorderList | Runtime `ReorderList` |
+| `nana-time-series-chart` | TimeSeriesChart | Runtime `TimeSeriesChart` |
+| `nana-desktop-shell` | DesktopShell | Runtime `DesktopShell` |
+| `nana-app-title-bar` | AppTitleBar | Runtime `AppTitleBar` |
+| `nana-pane-chrome` | PaneChrome | Runtime `PaneChrome` |
+| `nana-sidebar-section` | SidebarSection | Runtime `SidebarSection` |
+| `nana-sidebar-footer` | SidebarFooter | Runtime `SidebarFooter` |
+| `nana-settings-collapsible-card` | SettingsCollapsibleCard | Runtime `SettingsCollapsibleCard` |
 
 ## NanaButton ↔ `Button`
 
@@ -148,6 +168,22 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `NanaDock` children / `layout` / `root` | Runtime `Dock` items（`id`/`title`/`data-dock-id`）；有子节点时不是 `item("dock", None)` |
 | `NanaSplitPane` `axis` / first two children | Runtime `SplitPane` `first`/`second`；可选 `nana-split-handle` / 第三子为 handle；`size`/`defaultSize`/`min`/`max` |
 | `NanaAppShell` `title` + default slot | Runtime `AppShell`；无 title-bar 子节点时 `title` 生成 `nana-app-title-bar`；其余为 `body`；`data-slot=overlay` 为 overlay |
+| `NanaAppTitleBar` `title` / `maximized` / `windowControls` | Runtime `AppTitleBar`；槽 `leading` / `center` / `trailing` / `controls` |
+| `NanaDesktopShell` 具名槽 | Runtime `DesktopShell`（`title-bar` / `primary` / `navigation` / `inspector` / `bottom` / `overlay`） |
+| `NanaPaneChrome` | Runtime `PaneChrome`；槽 `header` / `tabs` / `body` |
+| `NanaScrollView` `scrollbars` / `axes` | Runtime `ScrollView`；`scrollbars` 为 `auto`（默认）/ `always` / `hidden` |
+| `NanaNumberInput` `modelValue` / `min` / `max` / `step` | Runtime `NumberInput`；不是 HTML `type=number` |
+| `NanaDivider` `orientation` | Runtime `Divider` |
+| `NanaList` / `NanaListItem` | Runtime `List` / `ListItem`；槽 `leading` / `content` / `trailing` |
+| `NanaTable` / `NanaTableRow` / `NanaTableCell` | Runtime 表格；HTML `<table>` 不升级 |
+| `NanaTimeSeriesChart` `values` / `data` | Runtime `TimeSeriesChart` |
+| `NanaReorderList` `options` / `items` | Runtime `ReorderList` |
+| `NanaSidebarSection` / `NanaSidebarFooter` | Runtime 侧栏节与页脚 |
+| `NanaSettingsCollapsibleCard` `open` | Runtime `SettingsCollapsibleCard`；槽 `summary` / `details` / `accessory` |
+| `NanaGpu` `source` | Runtime `GpuTextureView`；`<nana-gpu>` + `data-nana-gpu`。不是 `GpuView` 直写 pass |
+| `NanaVirtualList` `count` / `itemExtent` / `extents` / `overscan` | `ScrollView` + 可见窗口；默认槽 `{ index, key }` |
+| `NanaVirtualTable` `rowCount` / `columnCount` | 两轴窗口；默认槽 `{ row, column, rowKey, columnKey }` |
+| `NanaVirtualTree` 展开后的扁平行 | 与 `VirtualTreeLayout` 相同：折叠子树不进索引；槽 `{ index, key, depth }` |
 | `NanaContextMenu` option `icon` | Runtime `ContextMenuItem::icon`（`Icon::parse_name` 成功才设置） |
 
 浮层关闭：宿主 `Toggle false` / `SelectValue` → Vue `change` + `update:modelValue` / `update:open`。
@@ -156,14 +192,12 @@ Lilia `UiDialog` / `.modal`（`aria-modal`）presence → Dialog open；**不**�
 
 ## FormField / InteractiveCard / Skeleton / LevelMeter
 
-无独立 Vue 包装组件：用 `nana-*` 标签或 class 进入 Runtime 投影。
-
 | Vue | Runtime |
 |-----|---------|
-| `nana-form-field` / `nana-form` `label` / `hint` / `invalid` / `size` | `FormField`；`invalid` 时 `hint` 为 error；控件 = 首个非 Text 或 input-like 子节点 |
-| `nana-interactive-card` `active` / `disabled` | `InteractiveCard` `selected` / `disabled` |
-| `nana-skeleton` 布局宽高 | `Skeleton` width/height |
-| `nana-level-meter` / `nana-level` `progress`/`value`（0..=1）+ `tone` | `LevelMeter` |
+| `NanaFormField` / `nana-form-field` `label` / `hint` / `invalid` / `size` | `FormField`；`invalid` 时 `hint` 为 error；默认槽 = `control` |
+| `NanaInteractiveCard` `active` / `disabled` | `InteractiveCard` `selected` / `disabled` |
+| `NanaSkeleton` 布局宽高 | `Skeleton` width/height |
+| `NanaLevelMeter` / `nana-level-meter` / `nana-level` `progress`/`value`（0..=1）+ `tone` | `LevelMeter` |
 
 FormField / InteractiveCard 承载子节点，不 Scene 路由。Skeleton / LevelMeter 是 Scene leaf。
 

@@ -15,16 +15,17 @@ use crate::{
     CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card, Checkbox,
     CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
     Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
-    FormField, FrameworkError, GraphCanvas, GraphModel, HostedTextarea, IconButton, IconGlyph,
-    ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue, LevelMeter, List, ListItem,
-    ListItemSlots, ModalSurface, NativeMarkdown, NumberInput, PaneChrome, Popover, Progress,
-    QrCode, RangeField, ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption,
-    SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow,
-    SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
-    Skeleton, Spinner, SplitPane, Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs,
-    Text, TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast,
-    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace,
-    WorkspaceRegionSlot, XYPad, XYPadValue,
+    FormField, FrameworkError, GpuTextureView, GpuView, GraphCanvas, GraphModel, HostedTextarea,
+    IconButton, IconGlyph, ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue,
+    LevelMeter, List, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, NumberInput,
+    PaneChrome, Popover, Progress, QrCode, RangeField, ReorderItem, ReorderList, ScrollView,
+    SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
+    SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
+    SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
+    StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
+    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip,
+    TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace, WorkspaceRegionSlot, XYPad,
+    XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
@@ -37,15 +38,9 @@ impl UiExtension for NanaBuiltinComponents {
 
     fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
         registrar.register_component::<Stack>()?;
-        registrar.register_component_alias::<Stack>(
-            "nana.column",
-            &[
-                "column", "col", "vstack", "div", "section", "article", "main", "nav", "header",
-                "footer", "ul", "ol",
-            ],
-        )?;
-        registrar.register_component_alias::<Stack>("nana.row", &["row", "hstack"])?;
-        registrar.register_component_alias::<Stack>("nana.box", &["box", "container", "layout"])?;
+        registrar.register_component_alias::<Stack>("nana.column", &["column"])?;
+        registrar.register_component_alias::<Stack>("nana.row", &["row"])?;
+        registrar.register_component_alias::<Stack>("nana.box", &["box"])?;
         registrar.register_component::<Text>()?;
         registrar.register_component::<Button>()?;
         registrar.register_component::<IconButton>()?;
@@ -115,6 +110,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<PaneChrome>()?;
         registrar.register_component::<SidebarSection>()?;
         registrar.register_component::<SidebarFooter>()?;
+        registrar.register_component::<GpuTextureView>()?;
+        registrar.register_component::<GpuView>()?;
         Ok(())
     }
 }
@@ -138,7 +135,7 @@ impl RegisterableComponent for Stack {
 
 impl RegisterableComponent for Text {
     const TYPE_ID: &'static str = "nana.text";
-    const TAGS: &'static [&'static str] = &["text", "label", "p", "span", "h1", "h2", "h3"];
+    const TAGS: &'static [&'static str] = &["text"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Text::new(spec.display_label()).style(crate::NodeStyle {
             layout: Arc::clone(spec.layout),
@@ -149,7 +146,7 @@ impl RegisterableComponent for Text {
 
 impl RegisterableComponent for Button {
     const TYPE_ID: &'static str = "nana.button";
-    const TAGS: &'static [&'static str] = &["button", "btn", "chip"];
+    const TAGS: &'static [&'static str] = &["button"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Button::new(spec.display_label())
             .layout(Arc::clone(spec.layout))
@@ -163,7 +160,7 @@ impl RegisterableComponent for Button {
 
 impl RegisterableComponent for IconButton {
     const TYPE_ID: &'static str = "nana.icon-button";
-    const TAGS: &'static [&'static str] = &["icon-button", "iconbutton"];
+    const TAGS: &'static [&'static str] = &["icon-button"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let icon = spec.icon.unwrap_or(Icon::Add);
         let mut component = IconButton::new(icon, Arc::<str>::from(spec.display_label()))
@@ -183,7 +180,7 @@ impl RegisterableComponent for IconButton {
 
 impl RegisterableComponent for IconGlyph {
     const TYPE_ID: &'static str = "nana.icon";
-    const TAGS: &'static [&'static str] = &["icon", "i"];
+    const TAGS: &'static [&'static str] = &["icon"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let Some(icon) = spec.icon else {
             return IconGlyph::new(Icon::Search).size(0.0);
@@ -200,7 +197,7 @@ impl RegisterableComponent for IconGlyph {
 
 impl RegisterableComponent for Checkbox {
     const TYPE_ID: &'static str = "nana.checkbox";
-    const TAGS: &'static [&'static str] = &["checkbox", "check"];
+    const TAGS: &'static [&'static str] = &["checkbox"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Checkbox::new(spec.display_label(), spec.toggled)
             .indeterminate(parse_flag(spec.attr("indeterminate")))
@@ -212,7 +209,7 @@ impl RegisterableComponent for Checkbox {
 
 impl RegisterableComponent for Divider {
     const TYPE_ID: &'static str = "nana.divider";
-    const TAGS: &'static [&'static str] = &["divider", "separator", "hr"];
+    const TAGS: &'static [&'static str] = &["divider"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut divider = if spec
             .attr("orientation")
@@ -234,7 +231,7 @@ impl RegisterableComponent for Divider {
 
 impl RegisterableComponent for NumberInput {
     const TYPE_ID: &'static str = "nana.number-input";
-    const TAGS: &'static [&'static str] = &["number-input", "number", "stepper"];
+    const TAGS: &'static [&'static str] = &["number-input"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut input = NumberInput::new(f64::from(spec.number))
             .range(f64::from(spec.min), f64::from(spec.max))
@@ -256,7 +253,7 @@ impl RegisterableComponent for NumberInput {
 
 impl RegisterableComponent for Switch {
     const TYPE_ID: &'static str = "nana.switch";
-    const TAGS: &'static [&'static str] = &["switch", "toggle"];
+    const TAGS: &'static [&'static str] = &["switch"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Switch::new(spec.display_label(), spec.toggled)
             .disabled(spec.disabled)
@@ -303,7 +300,7 @@ impl RegisterableComponent for Card {
 
 impl RegisterableComponent for ListItem {
     const TYPE_ID: &'static str = "nana.list-item";
-    const TAGS: &'static [&'static str] = &["list-item", "listitem", "li"];
+    const TAGS: &'static [&'static str] = &["list-item"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         ListItem::new(spec.display_label())
             .selected(spec.active)
@@ -341,7 +338,7 @@ impl RegisterableComponent for Thumbnail {
 
 impl RegisterableComponent for TextInput {
     const TYPE_ID: &'static str = "nana.text-input";
-    const TAGS: &'static [&'static str] = &["input", "text-field", "textfield"];
+    const TAGS: &'static [&'static str] = &["text-input"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -410,7 +407,7 @@ impl RegisterableComponent for HostedTextarea {
 
 impl RegisterableComponent for RangeField {
     const TYPE_ID: &'static str = "nana.range-field";
-    const TAGS: &'static [&'static str] = &["range", "range-field", "slider"];
+    const TAGS: &'static [&'static str] = &["range-field"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let min = spec.min as f64;
         let max = if spec.max > spec.min {
@@ -453,7 +450,7 @@ impl RegisterableComponent for Progress {
 
 impl RegisterableComponent for Spinner {
     const TYPE_ID: &'static str = "nana.spinner";
-    const TAGS: &'static [&'static str] = &["spinner", "loading"];
+    const TAGS: &'static [&'static str] = &["spinner"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Spinner::new(spec.display_label())
     }
@@ -461,7 +458,7 @@ impl RegisterableComponent for Spinner {
 
 impl RegisterableComponent for StatusBadge {
     const TYPE_ID: &'static str = "nana.status-badge";
-    const TAGS: &'static [&'static str] = &["status", "status-badge", "statusbadge"];
+    const TAGS: &'static [&'static str] = &["status-badge"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         StatusBadge::new(spec.display_label(), parse_status_tone(spec.attr("tone")))
             .compact(spec.attr("compact").is_some_and(truthy_attr))
@@ -470,8 +467,7 @@ impl RegisterableComponent for StatusBadge {
 
 impl RegisterableComponent for ValidationMessage {
     const TYPE_ID: &'static str = "nana.validation-message";
-    const TAGS: &'static [&'static str] =
-        &["validation", "validation-message", "validationmessage"];
+    const TAGS: &'static [&'static str] = &["validation-message"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let message = if spec.hint.is_empty() {
             spec.display_label()
@@ -484,7 +480,7 @@ impl RegisterableComponent for ValidationMessage {
 
 impl RegisterableComponent for EmptyState {
     const TYPE_ID: &'static str = "nana.empty-state";
-    const TAGS: &'static [&'static str] = &["empty", "empty-state", "emptystate"];
+    const TAGS: &'static [&'static str] = &["empty-state"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = EmptyState::new(spec.display_label());
         if !spec.hint.is_empty() {
@@ -503,7 +499,7 @@ impl RegisterableComponent for EmptyState {
 
 impl RegisterableComponent for LabeledValue {
     const TYPE_ID: &'static str = "nana.labeled-value";
-    const TAGS: &'static [&'static str] = &["labeled-value", "labeledvalue"];
+    const TAGS: &'static [&'static str] = &["labeled-value"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let emphasis = if flag_attr(spec, &["muted"]) {
             ValueEmphasis::Muted
@@ -522,7 +518,7 @@ impl RegisterableComponent for LabeledValue {
 
 impl RegisterableComponent for Dialog {
     const TYPE_ID: &'static str = "nana.dialog";
-    const TAGS: &'static [&'static str] = &["dialog", "modal"];
+    const TAGS: &'static [&'static str] = &["dialog"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Dialog::new(spec.display_label());
         if !spec.hint.is_empty() {
@@ -537,7 +533,7 @@ impl RegisterableComponent for Dialog {
 
 impl RegisterableComponent for ConfirmDialog {
     const TYPE_ID: &'static str = "nana.confirm-dialog";
-    const TAGS: &'static [&'static str] = &["confirm-dialog", "confirm", "alertdialog"];
+    const TAGS: &'static [&'static str] = &["confirm-dialog"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let message = if spec.hint.is_empty() {
             spec.value
@@ -578,7 +574,7 @@ impl RegisterableComponent for Select {
 
 impl RegisterableComponent for Tabs {
     const TYPE_ID: &'static str = "nana.tabs";
-    const TAGS: &'static [&'static str] = &["tabs", "tablist"];
+    const TAGS: &'static [&'static str] = &["tabs"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Tabs::new(if spec.value.is_empty() {
             spec.display_label()
@@ -596,7 +592,7 @@ impl RegisterableComponent for Tabs {
 
 impl RegisterableComponent for SegmentedControl {
     const TYPE_ID: &'static str = "nana.segmented";
-    const TAGS: &'static [&'static str] = &["segmented", "segmented-control"];
+    const TAGS: &'static [&'static str] = &["segmented"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SegmentedControl::new();
         component = component.size(spec.size).fill(flag_attr(spec, &["fill"]));
@@ -648,7 +644,7 @@ impl RegisterableComponent for Dropdown {
 
 impl RegisterableComponent for SearchDropdown {
     const TYPE_ID: &'static str = "nana.search";
-    const TAGS: &'static [&'static str] = &["search-dropdown"];
+    const TAGS: &'static [&'static str] = &["search"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -681,7 +677,7 @@ impl RegisterableComponent for SearchDropdown {
 
 impl RegisterableComponent for Drawer {
     const TYPE_ID: &'static str = "nana.drawer";
-    const TAGS: &'static [&'static str] = &["drawer", "sheet"];
+    const TAGS: &'static [&'static str] = &["drawer"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             Drawer::new(spec.display_label()).side(parse_drawer_side(spec.attr("side")));
@@ -707,7 +703,7 @@ impl RegisterableComponent for Popover {
 
 impl RegisterableComponent for ContextMenu {
     const TYPE_ID: &'static str = "nana.context-menu";
-    const TAGS: &'static [&'static str] = &["context-menu", "contextmenu"];
+    const TAGS: &'static [&'static str] = &["context-menu"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let searchable = flag_attr(spec, &["searchable"]) || spec.options.len() >= 6;
         let query = spec
@@ -779,7 +775,7 @@ impl RegisterableComponent for Tooltip {
 
 impl RegisterableComponent for XYPad {
     const TYPE_ID: &'static str = "nana.xy-pad";
-    const TAGS: &'static [&'static str] = &["xy-pad", "xypad"];
+    const TAGS: &'static [&'static str] = &["xy-pad"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let x = attr_f32(spec, &["x", "data-x"]).unwrap_or(spec.number);
         let y = attr_f32(spec, &["y", "data-y"]).unwrap_or(0.0);
@@ -806,7 +802,7 @@ impl RegisterableComponent for XYPad {
 
 impl RegisterableComponent for QrCode {
     const TYPE_ID: &'static str = "nana.qr-code";
-    const TAGS: &'static [&'static str] = &["qr-code", "qr"];
+    const TAGS: &'static [&'static str] = &["qr-code"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let size = match spec.layout.width {
             Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
@@ -885,7 +881,7 @@ impl RegisterableComponent for Skeleton {
 
 impl RegisterableComponent for LevelMeter {
     const TYPE_ID: &'static str = "nana.level-meter";
-    const TAGS: &'static [&'static str] = &["level-meter", "level"];
+    const TAGS: &'static [&'static str] = &["level-meter"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = LevelMeter::new(spec.number).tone(parse_status_tone(spec.attr("tone")));
         if let Some(height) = spec.layout.height {
@@ -947,7 +943,7 @@ impl RegisterableComponent for TreeView {
 
 impl RegisterableComponent for CalendarHeatmap<()> {
     const TYPE_ID: &'static str = "nana.calendar-heatmap";
-    const TAGS: &'static [&'static str] = &["calendar", "calendar-heatmap"];
+    const TAGS: &'static [&'static str] = &["calendar-heatmap"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = CalendarHeatmap::new(calendar_data_from_spec(spec))
             .options(calendar_options_from_spec(spec));
@@ -985,7 +981,7 @@ impl RegisterableComponent for ImageViewer {
 
 impl RegisterableComponent for NativeMarkdown {
     const TYPE_ID: &'static str = "nana.native-markdown";
-    const TAGS: &'static [&'static str] = &["markdown", "native-markdown"];
+    const TAGS: &'static [&'static str] = &["native-markdown"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         NativeMarkdown::from_source(markdown_source_from_spec(spec))
     }
@@ -993,7 +989,7 @@ impl RegisterableComponent for NativeMarkdown {
 
 impl RegisterableComponent for GraphCanvas {
     const TYPE_ID: &'static str = "nana.graph-canvas";
-    const TAGS: &'static [&'static str] = &["graph-canvas", "graphcanvas"];
+    const TAGS: &'static [&'static str] = &["graph-canvas"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             GraphCanvas::new("main", graph_model_from_spec(spec)).disabled(spec.disabled);
@@ -1170,7 +1166,7 @@ impl RegisterableComponent for SettingsCard {
 
 impl RegisterableComponent for SettingsPage {
     const TYPE_ID: &'static str = "nana.settings-page";
-    const TAGS: &'static [&'static str] = &["settings-page", "settingspage"];
+    const TAGS: &'static [&'static str] = &["settings-page"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let model = settings_model_from_spec(spec).unwrap_or_else(|| fallback_settings_model(spec));
         let mut state = SettingsState::new(&model);
@@ -1223,7 +1219,7 @@ impl RegisterableComponent for List {
 
 impl RegisterableComponent for ScrollView {
     const TYPE_ID: &'static str = "nana.scroll-view";
-    const TAGS: &'static [&'static str] = &["scroll-view", "scrollview", "scroll"];
+    const TAGS: &'static [&'static str] = &["scroll-view"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = ScrollView::new(parse_scroll_axes(spec))
             .scrollbars(parse_scrollbar_visibility(spec))
@@ -1249,7 +1245,7 @@ impl RegisterableComponent for Table {
 
 impl RegisterableComponent for TableRow {
     const TYPE_ID: &'static str = "nana.table-row";
-    const TAGS: &'static [&'static str] = &["table-row", "tr"];
+    const TAGS: &'static [&'static str] = &["table-row"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         TableRow::new()
             .selected(spec.active || spec.toggled)
@@ -1261,7 +1257,7 @@ impl RegisterableComponent for TableRow {
 /// rather than the tag.
 impl RegisterableComponent for TableCell {
     const TYPE_ID: &'static str = "nana.table-cell";
-    const TAGS: &'static [&'static str] = &["table-cell", "td"];
+    const TAGS: &'static [&'static str] = &["table-cell"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = TableCell::new(spec.display_label())
             .column_header(flag_attr(
@@ -1302,7 +1298,7 @@ impl RegisterableComponent for ReorderList {
 
 impl RegisterableComponent for TimeSeriesChart {
     const TYPE_ID: &'static str = "nana.time-series-chart";
-    const TAGS: &'static [&'static str] = &["time-series-chart", "timeserieschart"];
+    const TAGS: &'static [&'static str] = &["time-series-chart"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             TimeSeriesChart::new(time_series_values_from_spec(spec)).style(layout_only_style(spec));
@@ -1351,7 +1347,7 @@ impl RegisterableComponent for DesktopShell {
 
 impl RegisterableComponent for AppTitleBar {
     const TYPE_ID: &'static str = "nana.app-title-bar";
-    const TAGS: &'static [&'static str] = &["app-title-bar", "apptitlebar", "titlebar"];
+    const TAGS: &'static [&'static str] = &["app-title-bar"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = AppTitleBar::new(spec.display_label())
             .maximized(flag_attr(spec, &["maximized"]))
@@ -1380,7 +1376,7 @@ impl RegisterableComponent for AppTitleBar {
 
 impl RegisterableComponent for PaneChrome {
     const TYPE_ID: &'static str = "nana.pane-chrome";
-    const TAGS: &'static [&'static str] = &["pane-chrome", "panechrome"];
+    const TAGS: &'static [&'static str] = &["pane-chrome"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = PaneChrome::new()
             .active(!spec.disabled)
