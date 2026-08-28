@@ -205,7 +205,7 @@ pub fn node_from_css(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_map::{DisplaySpec, VisibilitySpec};
+    use crate::css_map::{DisplaySpec, VisibilitySpec, WhiteSpaceSpec};
     use std::collections::BTreeMap;
 
     fn map_of(root: &LayoutNode, w: f32, h: f32) -> BTreeMap<String, MeasuredBox> {
@@ -1941,6 +1941,25 @@ mod tests {
         assert!(
             (map["root"].height - 40.0).abs() < 0.01,
             "pre + 2 lines × 20px must be 40, got {}",
+            map["root"].height
+        );
+    }
+
+    #[test]
+    fn white_space_pre_wrap_text_wraps_long_line() {
+        let mut style = LayoutStyle::default();
+        style.apply_css_text(
+            "display:block;width:200px;font-size:16px;line-height:20px;white-space:pre-wrap",
+            None,
+            None,
+        );
+        assert_eq!(style.white_space, WhiteSpaceSpec::PreWrap);
+        let mut node = LayoutNode::with_children("root", style, Vec::new());
+        node.text = Some("ab\ncd".into());
+        let map = map_of(&node, 200.0, 80.0);
+        assert!(
+            (map["root"].height - 40.0).abs() < 0.01,
+            "pre-wrap must keep explicit newlines (not Normal), got {}",
             map["root"].height
         );
     }

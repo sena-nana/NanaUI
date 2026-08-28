@@ -2194,14 +2194,38 @@ impl LayoutStyleCss for LayoutStyle {
                 self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::Pre;
             }
-            "white-space"
-                if matches!(
-                    val.to_ascii_lowercase().as_str(),
-                    "normal" | "wrap" | "pre-wrap" | "pre-line"
-                ) =>
-            {
+            "white-space" if val.eq_ignore_ascii_case("pre-wrap") => {
+                self.white_space_nowrap = false;
+                self.white_space = WhiteSpaceSpec::PreWrap;
+            }
+            "white-space" if val.eq_ignore_ascii_case("pre-line") => {
+                self.white_space_nowrap = false;
+                self.white_space = WhiteSpaceSpec::PreLine;
+            }
+            "white-space" if matches!(val.to_ascii_lowercase().as_str(), "normal" | "wrap") => {
                 self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::Normal;
+            }
+            "word-break" => {
+                let kw = val.trim().to_ascii_lowercase();
+                self.word_break = match kw.as_str() {
+                    "break-all" => Some(nana_ui_core::WordBreakSpec::BreakAll),
+                    "normal" | "keep-all" => Some(nana_ui_core::WordBreakSpec::Normal),
+                    _ => self.word_break,
+                };
+            }
+            "overflow-wrap" | "word-wrap" => {
+                let kw = val.trim().to_ascii_lowercase();
+                self.overflow_wrap = match kw.as_str() {
+                    "anywhere" | "break-word" => Some(nana_ui_core::OverflowWrapSpec::Anywhere),
+                    "normal" => Some(nana_ui_core::OverflowWrapSpec::Normal),
+                    _ => self.overflow_wrap,
+                };
+            }
+            "aspect-ratio" => {
+                if let Some(ratio) = parse_css_aspect_ratio(val) {
+                    self.aspect_ratio = ratio;
+                }
             }
             "text-align" => {
                 let kw = val.trim().to_ascii_lowercase();
@@ -2245,6 +2269,14 @@ impl LayoutStyleCss for LayoutStyle {
             "font-weight" => {
                 if let Some(w) = parse_css_font_weight(val) {
                     self.font_weight = Some(w);
+                }
+            }
+            "font-style" => {
+                let kw = val.trim().to_ascii_lowercase();
+                match kw.as_str() {
+                    "italic" | "oblique" => self.font_italic = Some(true),
+                    "normal" => self.font_italic = Some(false),
+                    _ => {}
                 }
             }
             "font-variation-settings" => apply_font_variation_settings(self, val),
@@ -4114,6 +4146,33 @@ fn parse_variation_tag(raw: &str) -> Option<([u8; 4], &str)> {
     Some((out, rest[end + 1..].trim()))
 }
 
+/// CSS `aspect-ratio` → `Some(None)` for `auto`, `Some(Some(w/h))` for a ratio.
+fn parse_css_aspect_ratio(input: &str) -> Option<Option<f32>> {
+    let s = input.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    if s == "auto" {
+        return Some(None);
+    }
+    let mut nums = Vec::new();
+    for token in s.split(|ch: char| ch == '/' || ch.is_whitespace()) {
+        if token.is_empty() || token == "auto" {
+            continue;
+        }
+        let n: f32 = token.parse().ok()?;
+        if !n.is_finite() || n <= 0.0 {
+            return None;
+        }
+        nums.push(n);
+    }
+    match nums.as_slice() {
+        [w] => Some(Some(*w)),
+        [w, h] => Some(Some(*w / *h)),
+        _ => None,
+    }
+}
+
 /// CSS `font-weight` → 100..=900. `inherit`/`unset` → `None`.
 pub fn parse_css_font_weight(input: &str) -> Option<u16> {
     let expanded = expand_css_var_fallback(input.trim());
@@ -4571,7 +4630,7 @@ fn assign_border_side_style(style: &mut LayoutStyle, side: Option<usize>, parsed
     }
 }
 
-fn split_css_space_tokens(input: &str) -> Vec<String> {
+pub(crate) fn split_css_space_tokens(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
@@ -7303,6 +7362,51 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.white_space, WhiteSpaceSpec::Pre);
         assert_eq!(layout.font_size, Some(16.0));
         assert_eq!(layout.line_height, Some(LineHeightSpec::Absolute(20.0)));
+    }
+
+    #[test]
+    fn white_space_pre_wrap_and_pre_line_are_not_normal() {
+        let mut wrap = LayoutStyle::default();
+        wrap.apply_css_text("white-space: pre-wrap", None, None);
+        assert_eq!(wrap.white_space, WhiteSpaceSpec::PreWrap);
+        assert!(wrap.white_space.wraps());
+        assert!(wrap.white_space.preserve_newlines());
+        assert!(!wrap.white_space_nowrap);
+
+        let mut line = LayoutStyle::default();
+        line.apply_css_text("white-space: pre-line", None, None);
+        assert_eq!(line.white_space, WhiteSpaceSpec::PreLine);
+        assert!(line.white_space.wraps());
+    }
+
+    #[test]
+    fn aspect_ratio_font_style_and_wrap_break_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "width:80px;aspect-ratio:1 / 1;font-style:italic;word-break:break-all;overflow-wrap:anywhere",
+            None,
+            None,
+        );
+        assert_eq!(layout.aspect_ratio, Some(1.0));
+        assert_eq!(layout.font_italic, Some(true));
+        assert_eq!(
+            layout.word_break,
+            Some(nana_ui_core::WordBreakSpec::BreakAll)
+        );
+        assert_eq!(
+            layout.overflow_wrap,
+            Some(nana_ui_core::OverflowWrapSpec::Anywhere)
+        );
+        assert_eq!(layout.text_wrap_break(), nana_ui_core::TextWrapBreak::Glyph);
+
+        let mut ratio = LayoutStyle::default();
+        ratio.apply_css_text("aspect-ratio: 16/9", None, None);
+        assert!((ratio.aspect_ratio.unwrap() - 16.0 / 9.0).abs() < 1e-5);
+
+        let mut auto = LayoutStyle::default();
+        auto.aspect_ratio = Some(1.0);
+        auto.apply_css_text("aspect-ratio: auto", None, None);
+        assert_eq!(auto.aspect_ratio, None);
     }
 
     #[test]
