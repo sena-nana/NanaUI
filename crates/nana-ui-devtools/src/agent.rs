@@ -694,6 +694,17 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// GPU-less environments skip pixel evidence, and the skip must stay observable.
+    fn offscreen_gpu() -> Option<OffscreenSnapshots> {
+        match OffscreenSnapshots::new() {
+            Ok(gpu) => Some(gpu),
+            Err(error) => {
+                eprintln!("skipping offscreen GPU evidence: {error}");
+                None
+            }
+        }
+    }
+
     #[test]
     fn a_widget_keeps_its_projected_geometry_across_a_bare_pump() {
         let mut session =
@@ -814,7 +825,7 @@ mod tests {
 
     #[test]
     fn vue_session_screenshot_matches_semantic_after_click() {
-        if OffscreenSnapshots::new().is_err() {
+        if offscreen_gpu().is_none() {
             return;
         }
         let mut session =
@@ -868,7 +879,7 @@ mod tests {
         );
         let handled = session.click_node(button.stable_id().get()).expect("click");
         assert!(handled);
-        if OffscreenSnapshots::new().is_ok() {
+        if offscreen_gpu().is_some() {
             let (size, pixels) = session.screenshot_rgba().expect("preview");
             assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
             assert!(pixels.iter().any(|channel| *channel != 0));
@@ -885,7 +896,7 @@ mod tests {
         const WIDTH: u32 = 96;
         const HEIGHT: u32 = 96;
 
-        let Ok(mut gpu) = OffscreenSnapshots::new() else {
+        let Some(mut gpu) = offscreen_gpu() else {
             return;
         };
         let renderers = default_scene_gpu_renderers();
@@ -958,7 +969,7 @@ mod tests {
         const WIDTH: u32 = 160;
         const HEIGHT: u32 = 120;
 
-        let Ok(mut gpu) = OffscreenSnapshots::new() else {
+        let Some(mut gpu) = offscreen_gpu() else {
             return;
         };
         let document_id = DocumentId::new(1).expect("document");
@@ -1056,7 +1067,7 @@ mod tests {
         const WIDTH: u32 = 320;
         const HEIGHT: u32 = 360;
 
-        if OffscreenSnapshots::new().is_err() {
+        if offscreen_gpu().is_none() {
             return;
         }
         let document_id = DocumentId::new(1).expect("document");
