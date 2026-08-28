@@ -4190,12 +4190,19 @@ fn parse_box_edge_length_inner(input: &str, clamp_px_non_negative: bool) -> Opti
     })
 }
 
+/// CSS 1–4 box sides. Any unparsed token must have already failed (no 4→3 collapse).
+fn css_four_sides<T: Copy>(parsed: &[T]) -> Option<[T; 4]> {
+    Some(match parsed.len() {
+        1 => [parsed[0]; 4],
+        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
+        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
+        4.. => [parsed[0], parsed[1], parsed[2], parsed[3]],
+        0 => return None,
+    })
+}
+
 fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
-    if parts.is_empty() {
-        return;
-    }
-    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
     let Some(parsed) = parts
         .iter()
         .map(|part| parse_css_length_px(part, None).map(|v| v.max(0.0)))
@@ -4203,11 +4210,8 @@ fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
     else {
         return;
     };
-    let [top, right, bottom, left] = match parsed.len() {
-        1 => [parsed[0]; 4],
-        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
-        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
-        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    let Some([top, right, bottom, left]) = css_four_sides(&parsed) else {
+        return;
     };
     style.border_width = Some(top.max(right).max(bottom).max(left));
     style.border_top_width = Some(top);
@@ -4218,10 +4222,6 @@ fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
 
 fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
-    if parts.is_empty() {
-        return;
-    }
-    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
     let Some(parsed) = parts
         .iter()
         .map(|part| crate::style::parse_css_color(part))
@@ -4229,11 +4229,8 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     else {
         return;
     };
-    let [top, right, bottom, left] = match parsed.len() {
-        1 => [parsed[0]; 4],
-        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
-        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
-        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    let Some([top, right, bottom, left]) = css_four_sides(&parsed) else {
+        return;
     };
     style.border_color = Some(top);
     style.border_top_color = Some(top);
@@ -4244,10 +4241,6 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
 
 fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
-    if parts.is_empty() {
-        return;
-    }
-    // Any unparsed token invalidates the whole shorthand (no 4→3 collapse).
     let Some(parsed) = parts
         .iter()
         .map(|part| BorderStyle::parse(part))
@@ -4255,11 +4248,8 @@ fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
     else {
         return;
     };
-    let [top, right, bottom, left] = match parsed.len() {
-        1 => [parsed[0]; 4],
-        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
-        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
-        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
+    let Some([top, right, bottom, left]) = css_four_sides(&parsed) else {
+        return;
     };
     style.border_style = Some(top);
     style.border_top_style = Some(top);
@@ -4398,15 +4388,7 @@ fn parse_border_radius_shorthand(input: &str) -> Option<[LengthSpec; 4]> {
         .iter()
         .filter_map(|part| parse_inset_length(part))
         .collect();
-    if parsed.is_empty() {
-        return None;
-    }
-    Some(match parsed.len() {
-        1 => [parsed[0], parsed[0], parsed[0], parsed[0]],
-        2 => [parsed[0], parsed[1], parsed[0], parsed[1]],
-        3 => [parsed[0], parsed[1], parsed[2], parsed[1]],
-        _ => [parsed[0], parsed[1], parsed[2], parsed[3]],
-    })
+    css_four_sides(&parsed)
 }
 
 /// Parse `box-shadow` layers (`inset` + comma list, GPU-capped).

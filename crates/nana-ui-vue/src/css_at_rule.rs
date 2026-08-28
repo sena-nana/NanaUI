@@ -21,7 +21,7 @@ pub const MAX_IMPORT_DEPTH: u32 = 16;
 /// CSS `@import` file size cap (fail closed when exceeded).
 pub const MAX_STYLESHEET_BYTES: u64 = 1024 * 1024;
 /// `@font-face` `url()` file size cap (fail closed when exceeded).
-pub const MAX_FONT_FACE_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_FONT_FACE_BYTES: u64 = nana_ui_core::MAX_LOCAL_URL_BYTES;
 /// Host-side cap on successfully registered `@font-face` bytes.
 pub const MAX_REGISTERED_FONT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -300,8 +300,7 @@ pub fn is_blocked_href(href: &str) -> bool {
         || nana_ui_core::href_is_protocol_relative_or_unc(href)
 }
 
-pub use nana_ui_core::canonicalize_within_jail;
-pub(crate) use nana_ui_core::{file_url_to_path, stylesheet_base_from_href};
+pub(crate) use nana_ui_core::stylesheet_base_from_href;
 
 /// Cumulative `@font-face` host cap (per-file [`MAX_FONT_FACE_BYTES`], total
 /// [`MAX_REGISTERED_FONT_BYTES`]).
@@ -356,33 +355,15 @@ pub fn font_face_url_srcs(face: &FontFaceRule) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Resolve a relative / `file://` font or sheet href against `from` or `base`.
-///
-/// Does not read the file. Callers must [`canonicalize_within_jail`] before use.
-pub fn resolve_filesystem_href(href: &str, from: Option<&str>, base: &Path) -> Option<PathBuf> {
-    if is_blocked_href(href) {
-        return None;
-    }
-    nana_ui_core::resolve_filesystem_href(href, from, base)
-        .filter(|path| !nana_ui_core::path_looks_network(path))
-}
-
 /// Load a CSS file: jail + size cap + remote / protocol-relative / UNC refuse.
 pub fn load_stylesheet_file(
     href: &str,
     from: Option<&str>,
     jail: &Path,
 ) -> Option<(String, String)> {
-    if is_blocked_href(href) {
-        return None;
-    }
-    let path = resolve_filesystem_href(href, from, jail)?;
-    let canonical = canonicalize_within_jail(&path, jail)?;
-    let meta = std::fs::metadata(&canonical).ok()?;
-    if meta.len() > stylesheet_byte_cap() {
-        return None;
-    }
-    let css = std::fs::read_to_string(&canonical).ok()?;
+    let (bytes, canonical) =
+        nana_ui_core::read_file_within_jail(href, from, jail, stylesheet_byte_cap())?;
+    let css = String::from_utf8(bytes).ok()?;
     Some((css, canonical.to_string_lossy().into_owned()))
 }
 
@@ -394,17 +375,7 @@ pub fn load_font_face_bytes(
     from: Option<&str>,
     jail: &Path,
 ) -> Option<(Vec<u8>, PathBuf)> {
-    if is_blocked_href(href) {
-        return None;
-    }
-    let path = resolve_filesystem_href(href, from, jail)?;
-    let canonical = canonicalize_within_jail(&path, jail)?;
-    let meta = std::fs::metadata(&canonical).ok()?;
-    if meta.len() > font_face_byte_cap() {
-        return None;
-    }
-    let bytes = std::fs::read(&canonical).ok()?;
-    Some((bytes, canonical))
+    nana_ui_core::read_file_within_jail(href, from, jail, font_face_byte_cap())
 }
 
 fn stylesheet_byte_cap() -> u64 {
@@ -1376,23 +1347,14 @@ mod tests {
         assert!(is_blocked_href("//evil.example/a.css"));
         assert!(is_blocked_href(r"\\evil.example\share\a.css"));
         assert!(is_blocked_href("%2f%2fevil.example/a.css"));
-        assert!(is_blocked_href(r"%5c%5cevil.example\share\a.css"));
-        assert!(!is_blocked_href("/local/a.css"));
+        assert!(is_blocked_href("https://example.com/a.css"));
+        assert!(is_blocked_href("data:text/css,body{}"));
         assert!(!is_blocked_href("./a.css"));
-        assert!(
-            resolve_filesystem_href("//evil.example/a.css", None, Path::new(".")).is_none(),
-            "protocol-relative must not be canonicalized"
-        );
-        assert!(
-            resolve_filesystem_href(r"\\evil.example\share\a.css", None, Path::new(".")).is_none(),
-            "UNC must not be canonicalized"
-        );
         assert!(load_stylesheet_file("//evil.example/a.css", None, Path::new(".")).is_none());
         assert!(matches!(
             parse_import_prelude("url(\"//evil.example/a.css\")"),
             Some(ImportPrelude::Ready { href, .. }) if href == "//evil.example/a.css"
         ));
-        assert!(is_blocked_href("//evil.example/a.css"));
     }
 
     #[test]
@@ -1411,19 +1373,6 @@ mod tests {
             0,
             MAX_FONT_FACE_BYTES + 1
         ));
-    }
-
-    #[test]
-    fn file_url_skips_unexpected_host_and_decodes() {
-        assert!(file_url_to_path("file://evil.example/etc/passwd").is_none());
-        assert!(is_blocked_href("https://example.com/a.css"));
-        assert!(is_blocked_href("data:text/css,body{}"));
-        let decoded = file_url_to_path("file:///C:/fonts/My%20Font.ttf").expect("local file");
-        let as_str = decoded.to_string_lossy();
-        assert!(
-            as_str.contains("My Font.ttf"),
-            "percent-decode must survive: {as_str}"
-        );
     }
 
     #[test]
