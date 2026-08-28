@@ -4191,7 +4191,7 @@ fn parse_box_edge_length_inner(input: &str, clamp_px_non_negative: bool) -> Opti
 }
 
 fn apply_border_width_shorthand(style: &mut LayoutStyle, val: &str) {
-    let parts: Vec<&str> = val.split_whitespace().collect();
+    let parts = split_css_space_tokens(val);
     if parts.is_empty() {
         return;
     }
@@ -6366,6 +6366,20 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             ),
             (None, None, None, None, None),
             "unknown style token must not collapse 4-value to 3-value (solid/dashed/dotted/dashed)"
+        );
+
+        let mut colors = LayoutStyle::default();
+        colors.apply_css_text("border-color: red blue bogus yellow", None, None);
+        assert_eq!(
+            (
+                colors.border_color,
+                colors.border_top_color,
+                colors.border_right_color,
+                colors.border_bottom_color,
+                colors.border_left_color,
+            ),
+            (None, None, None, None, None),
+            "unknown color token must not collapse 4-value to 3-value (red/blue/yellow/blue)"
         );
     }
 
