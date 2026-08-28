@@ -978,30 +978,25 @@ fn intrinsic_size_scoped(
         _ => max_content_w,
     };
     let default_height = content.height + chrome.height;
-    let mut width = resolve_axis(
+    let width_spec = resolve_axis(
         demote_fill_spec_if_indefinite(style.width, available.width),
         available.width,
         viewport,
         fonts,
-    )
-    .unwrap_or(default_width)
-    .max(style.resolved_min_width_fonts(
-        Some(available.width),
-        Some((viewport.width, viewport.height)),
-        fonts,
-    ));
-    let mut height = resolve_axis(
+    );
+    let height_spec = resolve_axis(
         demote_fill_spec_if_indefinite(style.height, available.height),
         available.height,
         viewport,
         fonts,
-    )
-    .unwrap_or(default_height)
-    .max(style.resolved_min_height_fonts(
-        Some(available.height),
-        Some((viewport.width, viewport.height)),
-        fonts,
-    ));
+    );
+    let width_from_spec = width_spec.is_some();
+    let height_from_spec = height_spec.is_some();
+    let vp = Some((viewport.width, viewport.height));
+    let min_width = style.resolved_min_width_fonts(Some(available.width), vp, fonts);
+    let min_height = style.resolved_min_height_fonts(Some(available.height), vp, fonts);
+    let mut width = width_spec.unwrap_or(default_width).max(min_width);
+    let mut height = height_spec.unwrap_or(default_height).max(min_height);
     if matches!(style.box_sizing, BoxSizing::ContentBox) {
         if style.width.is_some_and(LengthSpec::is_definite_declared) {
             width += chrome.width;
@@ -1010,18 +1005,39 @@ fn intrinsic_size_scoped(
             height += chrome.height;
         }
     }
-    if let Some(max) = style.resolved_max_width_fonts(
-        Some(available.width),
-        Some((viewport.width, viewport.height)),
-        fonts,
-    ) {
+    if style.aspect_ratio.is_some_and(|r| r.is_finite() && r > 0.0) {
+        let stretch_fit_width = !width_from_spec
+            && style.stretch_fit_inline()
+            && !matches!(parent_direction, Some(FlexDirection::Row))
+            && available.width > 0.5;
+        if stretch_fit_width {
+            width = available.width.max(min_width);
+        }
+        let mut content_w =
+            if width_from_spec || stretch_fit_width || (!height_from_spec && width > 0.0) {
+                Some((width - chrome.width).max(0.0))
+            } else {
+                None
+            };
+        let mut content_h = if height_from_spec {
+            Some((height - chrome.height).max(0.0))
+        } else {
+            None
+        };
+        style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
+        if let Some(content_w) = content_w {
+            width = content_w + chrome.width;
+        }
+        if let Some(content_h) = content_h {
+            height = content_h + chrome.height;
+        }
+        width = width.max(min_width);
+        height = height.max(min_height);
+    }
+    if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
         width = width.min(max);
     }
-    if let Some(max) = style.resolved_max_height_fonts(
-        Some(available.height),
-        Some((viewport.width, viewport.height)),
-        fonts,
-    ) {
+    if let Some(max) = style.resolved_max_height_fonts(Some(available.height), vp, fonts) {
         height = height.min(max);
     }
     let size = Size::new(width, height);
@@ -1473,6 +1489,12 @@ fn place_node_scoped(
                 if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
                     set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
                 }
+                fill_auto_height_from_aspect_ratio(
+                    child_style,
+                    &mut child_size,
+                    Some(content.width),
+                    child_fonts,
+                );
                 let cross_offset = match align {
                     AlignSpec::Start | AlignSpec::Stretch => {
                         cross_cursor + cross_start_margin(margin, direction)
@@ -2777,12 +2799,26 @@ fn place_grid_2d_items(
         let justify = child_style.resolved_justify_self(style.justify_items);
         let align = child_style.resolved_align_self(style.align_items);
         let stretch_x = justify == AlignSpec::Stretch && size_is_indefinite(child_style.width);
-        let stretch_y = align == AlignSpec::Stretch && size_is_indefinite(child_style.height);
+        let ratio_filled_height = aspect_ratio_is_usable(child_style)
+            && child_style
+                .width
+                .is_some_and(LengthSpec::is_definite_declared);
+        let stretch_y = align == AlignSpec::Stretch
+            && size_is_indefinite(child_style.height)
+            && !ratio_filled_height;
         let measured_w = used_in_grid_cell(child_style.width, item.intrinsic.width, cell_w);
         let measured_h = used_in_grid_cell(child_style.height, item.intrinsic.height, cell_h);
         let (off_x, used_w) = align_in_grid_cell(justify, measured_w, cell_w, stretch_x);
         let (off_y, used_h) = align_in_grid_cell(align, measured_h, cell_h, stretch_y);
-        let child_size = Size::new(used_w, used_h);
+        let mut child_size = Size::new(used_w, used_h);
+        if !stretch_y {
+            fill_auto_height_from_aspect_ratio(
+                child_style,
+                &mut child_size,
+                Some(content.width),
+                child_fonts,
+            );
+        }
         let child_origin = Point {
             x: content_origin.x + cell_x + off_x,
             y: content_origin.y + cell_y + off_y,
@@ -3785,9 +3821,36 @@ fn demote_fill_spec_if_indefinite(spec: Option<LengthSpec>, base: f32) -> Option
     }
 }
 
+fn aspect_ratio_is_usable(style: &nana_ui_core::LayoutStyle) -> bool {
+    style.aspect_ratio.is_some_and(|r| r.is_finite() && r > 0.0)
+}
+
+/// After stretch (or a flexed used width), fill `height:auto` from the used width.
+fn fill_auto_height_from_aspect_ratio(
+    style: &nana_ui_core::LayoutStyle,
+    size: &mut Size,
+    percent_base: Option<f32>,
+    fonts: FontSizeContext,
+) {
+    if !aspect_ratio_is_usable(style) || style.height.is_some() {
+        return;
+    }
+    let padding = style.resolved_padding_against_fonts(percent_base, fonts);
+    let border = style.resolved_border_edges();
+    let chrome_w = padding.left + padding.right + border.left + border.right;
+    let chrome_h = padding.top + padding.bottom + border.top + border.bottom;
+    let mut content_w = Some((size.width - chrome_w).max(0.0));
+    let mut content_h = None;
+    style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
+    if let Some(h) = content_h {
+        size.height = h + chrome_h;
+    }
+}
+
 fn cross_axis_is_definite(style: &nana_ui_core::LayoutStyle, direction: FlexDirection) -> bool {
     match direction {
-        FlexDirection::Row => style.height.is_some(),
+        // Transferred block size from a definite used width + `aspect-ratio`.
+        FlexDirection::Row => style.height.is_some() || aspect_ratio_is_usable(style),
         FlexDirection::Column => style.width.is_some(),
     }
 }
@@ -5296,6 +5359,185 @@ mod tests {
             (boxes["root"].height - 40.0).abs() < 0.01,
             "pre + 2 lines × 20px line-height must be 40, got {}",
             boxes["root"].height
+        );
+    }
+
+    #[test]
+    fn white_space_pre_wrap_keeps_newlines_and_wraps_long_lines() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                font_size: Some(16.0),
+                line_height: Some(LineHeightSpec::Absolute(20.0)),
+                white_space: WhiteSpaceSpec::PreWrap,
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: Some("ab\ncd".into()),
+        };
+        let boxes = box_map(&tree, 200.0, 120.0);
+        assert!(
+            (boxes["root"].height - 40.0).abs() < 0.01,
+            "pre-wrap must keep explicit newlines (not Normal), got {}",
+            boxes["root"].height
+        );
+    }
+
+    #[test]
+    fn measure_text_pre_wrap_wraps_long_line_against_max_width() {
+        let mut shaper = crate::MeasureTextShaper;
+        let style = ComputedStyle {
+            font_size: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..ComputedStyle::default()
+        };
+        let metrics = shaper.shape(
+            StableNodeId::new(1).unwrap(),
+            &crate::TextContent {
+                value: "abcdefghijklmnop\nq".into(),
+            },
+            &style,
+            crate::TextShapeConstraints {
+                max_width: Some(200.0),
+                wrap: true,
+                preserve_lines: true,
+                ..crate::TextShapeConstraints::default()
+            },
+        );
+        assert!(
+            (metrics.height - 60.0).abs() < 0.01,
+            "16em line in 200px + explicit second line → 60, got {}",
+            metrics.height
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_square_from_definite_width() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(80.0)),
+                aspect_ratio: Some(1.0),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let boxes = box_map(&tree, 400.0, 200.0);
+        assert!(
+            (boxes["root"].width - 80.0).abs() < 0.01 && (boxes["root"].height - 80.0).abs() < 0.01,
+            "80px width + aspect-ratio 1 must be square, got {:?}",
+            boxes["root"]
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_auto_width_uses_containing_block() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(400.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "block".into(),
+                style: LayoutStyle {
+                    height: Some(LengthSpec::Px(80.0)),
+                    aspect_ratio: Some(1.0),
+                    ..LayoutStyle::default()
+                },
+                children: vec![StyleLayoutNode {
+                    id: "pct".into(),
+                    style: LayoutStyle {
+                        width: Some(LengthSpec::Percent(50.0)),
+                        height: Some(LengthSpec::Px(10.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                }],
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 400.0, 200.0);
+        assert!(
+            (boxes["block"].width - 400.0).abs() < 0.01
+                && (boxes["block"].height - 80.0).abs() < 0.01,
+            "block width:auto + height 80 + aspect-ratio 1 uses CB, not 80×80, got {:?}",
+            boxes["block"]
+        );
+        assert!(
+            (boxes["pct"].width - 200.0).abs() < 0.01,
+            "% children resolve against the CB, not a shrink-wrapped 80, got {:?}",
+            boxes["pct"]
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_row_stretch_does_not_overwrite_transferred_height() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                align_items: AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "item".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Px(80.0)),
+                    aspect_ratio: Some(1.0),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 200.0);
+        assert!(
+            (boxes["item"].width - 80.0).abs() < 0.01 && (boxes["item"].height - 80.0).abs() < 0.01,
+            "row stretch must not overwrite height transferred from width + ratio, got {:?}",
+            boxes["item"]
+        );
+    }
+
+    #[test]
+    fn aspect_ratio_column_stretch_fills_auto_height() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Column),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                align_items: AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "item".into(),
+                style: LayoutStyle {
+                    aspect_ratio: Some(1.0),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 200.0);
+        assert!(
+            (boxes["item"].width - 200.0).abs() < 0.01
+                && (boxes["item"].height - 200.0).abs() < 0.01,
+            "column stretch width then ratio must fill auto height, got {:?}",
+            boxes["item"]
         );
     }
 

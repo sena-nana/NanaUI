@@ -2,13 +2,15 @@
 
 use nana_ui_core::box_layout::{
     BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition, BackgroundRepeat,
-    BorderImageSlice, BorderImageSpec, ClipInset, ClipPath, ClipPoint, ColorFilter, CssGradient,
-    FontFeatureSetting, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS,
-    MixBlendMode, OutlineStyle, OverflowSpec, PointerEventsSpec, RadialGradient,
-    TextDecorationLine,
+    BorderImageSlice, BorderImageSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint,
+    ClipShapeRadius, ColorFilter, CssGradient, FontFeatureSetting, GradientStop, LengthSpec,
+    LinearGradient, MAX_BACKGROUND_LAYERS, MaskImage, MixBlendMode, OutlineStyle, OverflowSpec,
+    PointerEventsSpec, RadialGradient, TextDecorationLine,
 };
 
-use crate::css_map::{CssLayoutParse, parse_css_length_px, resolve_paint_color};
+use crate::css_map::{
+    CssLayoutParse, parse_css_length_px, resolve_paint_color, split_css_space_tokens,
+};
 
 const MAX_GRADIENT_STOPS: usize = 8;
 
@@ -677,14 +679,18 @@ fn strip_first_linear_gradient_fn(input: &str) -> String {
     }
 }
 
-fn parse_mask_image(input: &str) -> Option<CssGradient> {
+fn parse_mask_image(input: &str) -> Option<MaskImage> {
     let trimmed = input.trim();
     if trimmed.eq_ignore_ascii_case("none") {
         return None;
     }
-    parse_linear_gradient(trimmed)
-        .map(CssGradient::Linear)
-        .or_else(|| parse_radial_gradient(trimmed).map(CssGradient::Radial))
+    if let Some(grad) = parse_linear_gradient(trimmed) {
+        return Some(MaskImage::Gradient(CssGradient::Linear(grad)));
+    }
+    if let Some(grad) = parse_radial_gradient(trimmed) {
+        return Some(MaskImage::Gradient(CssGradient::Radial(grad)));
+    }
+    parse_css_url(trimmed).map(MaskImage::Url)
 }
 
 pub fn parse_radial_gradient(input: &str) -> Option<RadialGradient> {
@@ -785,6 +791,12 @@ pub fn parse_clip_path(input: &str) -> Option<ClipPath> {
     if let Some(inner) = strip_function(trimmed, "polygon") {
         return parse_clip_polygon(inner);
     }
+    if let Some(inner) = strip_function(trimmed, "circle") {
+        return parse_clip_circle(inner);
+    }
+    if let Some(inner) = strip_function(trimmed, "ellipse") {
+        return parse_clip_ellipse(inner);
+    }
     None
 }
 
@@ -816,6 +828,10 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
             filter.saturate *= 1.0 - amount;
         } else if let Some(value) = strip_complete_function(&token, "hue-rotate") {
             filter.hue_rotate_deg = parse_hue_rotate(value).unwrap_or(0.0);
+        } else if let Some(value) = strip_complete_function(&token, "invert") {
+            filter.invert = parse_filter_scalar(value).unwrap_or(1.0).clamp(0.0, 1.0);
+        } else if let Some(value) = strip_complete_function(&token, "opacity") {
+            filter.opacity = parse_filter_scalar(value).unwrap_or(1.0).clamp(0.0, 1.0);
         } else if let Some(value) = strip_complete_function(&token, "blur") {
             let px = parse_blur_radius(value).unwrap_or(0.0);
             filter.blur_radius = px.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
@@ -1176,6 +1192,67 @@ fn parse_clip_polygon(input: &str) -> Option<ClipPath> {
         return None;
     }
     Some(ClipPath::Polygon(points))
+}
+
+fn parse_clip_circle(input: &str) -> Option<ClipPath> {
+    let (radius_src, position) = split_basic_shape_at(input);
+    let radius = if radius_src.is_empty() {
+        ClipShapeRadius::ClosestSide
+    } else {
+        parse_shape_radius(&radius_src)?
+    };
+    let [cx, cy] = position;
+    Some(ClipPath::Circle(ClipCircle { radius, cx, cy }))
+}
+
+fn parse_clip_ellipse(input: &str) -> Option<ClipPath> {
+    let (radius_src, position) = split_basic_shape_at(input);
+    let [cx, cy] = position;
+    let (rx, ry) = if radius_src.is_empty() {
+        (ClipShapeRadius::ClosestSide, ClipShapeRadius::ClosestSide)
+    } else {
+        let parts: Vec<&str> = radius_src.split_whitespace().collect();
+        match parts.as_slice() {
+            [one] => {
+                let r = parse_shape_radius(one)?;
+                (r, r)
+            }
+            [a, b] => (parse_shape_radius(a)?, parse_shape_radius(b)?),
+            _ => return None,
+        }
+    };
+    Some(ClipPath::Ellipse(ClipEllipse { rx, ry, cx, cy }))
+}
+
+fn split_basic_shape_at(input: &str) -> (String, [LengthSpec; 2]) {
+    let trimmed = input.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let (radii, pos_src) = if lower.starts_with("at ") {
+        (String::new(), trimmed[3..].trim())
+    } else if let Some(idx) = lower.find(" at ") {
+        (trimmed[..idx].trim().to_string(), trimmed[idx + 4..].trim())
+    } else {
+        return (
+            trimmed.to_string(),
+            [LengthSpec::Percent(50.0), LengthSpec::Percent(50.0)],
+        );
+    };
+    let pos = parse_radial_center(pos_src)
+        .unwrap_or([LengthSpec::Percent(50.0), LengthSpec::Percent(50.0)]);
+    (radii, pos)
+}
+
+fn parse_shape_radius(input: &str) -> Option<ClipShapeRadius> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "closest-side" => Some(ClipShapeRadius::ClosestSide),
+        "farthest-side" => Some(ClipShapeRadius::FarthestSide),
+        _ => LengthSpec::parse(trimmed).map(ClipShapeRadius::Length),
+    }
 }
 
 fn split_gradient_header(input: &str) -> Option<(f32, &str)> {
@@ -1576,17 +1653,19 @@ fn parse_background_position_list(input: &str) -> Vec<BackgroundPosition> {
 }
 
 fn parse_background_position_value(input: &str) -> Option<BackgroundPosition> {
-    let tokens: Vec<&str> = input
-        .split_whitespace()
-        .take_while(|token| *token != "/" && !is_repeat_token(token))
+    let tokens: Vec<String> = split_css_space_tokens(input)
+        .into_iter()
+        .take_while(|token| token.as_str() != "/" && !is_repeat_token(token))
         .collect();
     if tokens.is_empty() {
         return None;
     }
     match tokens.as_slice() {
         [one] => Some(position_from_one(one)),
-        [a, b, ..] => Some(position_from_two(a, b)),
-        [] => None,
+        [a, b] => Some(position_from_two(a, b)),
+        [a, b, c] => position_from_three(a, b, c),
+        [a, b, c, d] => position_from_four(a, b, c, d),
+        _ => None,
     }
 }
 
@@ -1667,6 +1746,113 @@ fn keyword_y(token: &str) -> LengthSpec {
     }
 }
 
+fn is_h_edge(token: &str) -> bool {
+    matches!(token, "left" | "right")
+}
+
+fn is_v_edge(token: &str) -> bool {
+    matches!(token, "top" | "bottom")
+}
+
+fn is_h_or_center(token: &str) -> bool {
+    is_h_edge(token) || token == "center"
+}
+
+fn is_v_or_center(token: &str) -> bool {
+    is_v_edge(token) || token == "center"
+}
+
+fn is_position_keyword(token: &str) -> bool {
+    is_h_or_center(token) || is_v_edge(token)
+}
+
+fn invert_from_end(spec: LengthSpec) -> Option<LengthSpec> {
+    match spec {
+        LengthSpec::Px(v) => Some(LengthSpec::CalcPercentOffset {
+            percent: 100.0,
+            offset_px: -v,
+        }),
+        LengthSpec::Percent(p) => Some(LengthSpec::Percent(100.0 - p)),
+        LengthSpec::CalcPercentOffset { percent, offset_px } => {
+            Some(LengthSpec::CalcPercentOffset {
+                percent: 100.0 - percent,
+                offset_px: -offset_px,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn offset_from_edge(edge: &str, offset: &str) -> Option<LengthSpec> {
+    let spec = parse_size_length(offset)?;
+    if matches!(spec, LengthSpec::Auto) {
+        return None;
+    }
+    match edge {
+        "left" | "top" => Some(spec),
+        "right" | "bottom" => invert_from_end(spec),
+        _ => None,
+    }
+}
+
+fn position_from_three(a: &str, b: &str, c: &str) -> Option<BackgroundPosition> {
+    let a = a.to_ascii_lowercase();
+    let b = b.to_ascii_lowercase();
+    let c = c.to_ascii_lowercase();
+    let a = a.as_str();
+    let b = b.as_str();
+    let c = c.as_str();
+    if is_h_edge(a) && is_v_or_center(c) && !is_position_keyword(b) {
+        return Some(BackgroundPosition {
+            x: offset_from_edge(a, b)?,
+            y: keyword_y(c),
+        });
+    }
+    if is_v_edge(a) && is_h_or_center(c) && !is_position_keyword(b) {
+        return Some(BackgroundPosition {
+            x: keyword_x(c),
+            y: offset_from_edge(a, b)?,
+        });
+    }
+    if is_h_or_center(a) && is_v_edge(b) && !is_position_keyword(c) {
+        return Some(BackgroundPosition {
+            x: keyword_x(a),
+            y: offset_from_edge(b, c)?,
+        });
+    }
+    if is_v_or_center(a) && is_h_edge(b) && !is_position_keyword(c) {
+        return Some(BackgroundPosition {
+            x: offset_from_edge(b, c)?,
+            y: keyword_y(a),
+        });
+    }
+    None
+}
+
+fn position_from_four(a: &str, b: &str, c: &str, d: &str) -> Option<BackgroundPosition> {
+    let a = a.to_ascii_lowercase();
+    let b = b.to_ascii_lowercase();
+    let c = c.to_ascii_lowercase();
+    let d = d.to_ascii_lowercase();
+    let a = a.as_str();
+    let b = b.as_str();
+    let c = c.as_str();
+    let d = d.as_str();
+    if is_h_edge(a) && is_v_edge(c) && !is_position_keyword(b) && !is_position_keyword(d) {
+        return Some(BackgroundPosition {
+            x: offset_from_edge(a, b)?,
+            y: offset_from_edge(c, d)?,
+        });
+    }
+    if is_v_edge(a) && is_h_edge(c) && !is_position_keyword(b) && !is_position_keyword(d) {
+        return Some(BackgroundPosition {
+            x: offset_from_edge(c, d)?,
+            y: offset_from_edge(a, b)?,
+        });
+    }
+    None
+}
+
 fn parse_background_repeat_list(input: &str) -> Vec<BackgroundRepeat> {
     split_top_level_commas(input)
         .into_iter()
@@ -1679,16 +1865,21 @@ fn parse_repeat_from_tokens(input: &str) -> Option<BackgroundRepeat> {
         .split_whitespace()
         .filter(|token| is_repeat_token(token))
         .collect();
+    if tokens
+        .iter()
+        .any(|token| token.eq_ignore_ascii_case("space"))
+    {
+        return Some(BackgroundRepeat::Unsupported);
+    }
     match tokens.as_slice() {
         ["repeat-x"] => Some(BackgroundRepeat::RepeatX),
         ["repeat-y"] => Some(BackgroundRepeat::RepeatY),
         ["no-repeat"] | ["no-repeat", "no-repeat"] => Some(BackgroundRepeat::NoRepeat),
-        ["repeat"]
-        | ["repeat", "repeat"]
-        | ["space"]
-        | ["round"]
-        | ["space", "space"]
-        | ["round", "round"] => Some(BackgroundRepeat::Repeat),
+        ["repeat"] | ["repeat", "repeat"] => Some(BackgroundRepeat::Repeat),
+        ["round"] | ["round", "round"] => Some(BackgroundRepeat::Round),
+        ["round", "no-repeat"] => Some(BackgroundRepeat::RoundX),
+        ["no-repeat", "round"] => Some(BackgroundRepeat::RoundY),
+        ["round", "repeat"] | ["repeat", "round"] => Some(BackgroundRepeat::Unsupported),
         ["repeat", "no-repeat"] => Some(BackgroundRepeat::RepeatX),
         ["no-repeat", "repeat"] => Some(BackgroundRepeat::RepeatY),
         _ => None,
@@ -1708,7 +1899,7 @@ fn parse_object_fit(input: &str) -> Option<BackgroundImageFit> {
         "cover" => BackgroundImageFit::Cover,
         "fill" => BackgroundImageFit::Stretch,
         "none" => BackgroundImageFit::Auto,
-        "scale-down" => BackgroundImageFit::Contain,
+        "scale-down" => BackgroundImageFit::ScaleDown,
         _ => return None,
     })
 }
@@ -1869,6 +2060,36 @@ mod tests {
         assert!(matches!(inset, ClipPath::Inset(_)));
         let poly = parse_clip_path("polygon(0% 0%, 100% 0%, 50% 100%)").unwrap();
         assert!(matches!(poly, ClipPath::Polygon(_)));
+        let circle = parse_clip_path("circle(50% at 25% 25%)").unwrap();
+        match circle {
+            ClipPath::Circle(c) => {
+                assert!(
+                    matches!(c.radius, ClipShapeRadius::Length(LengthSpec::Percent(p)) if (p - 50.0).abs() < 0.01)
+                );
+                assert_eq!(c.cx, LengthSpec::Percent(25.0));
+                assert_eq!(c.cy, LengthSpec::Percent(25.0));
+            }
+            other => panic!("expected circle, got {other:?}"),
+        }
+        assert!(matches!(
+            parse_clip_path("circle()").unwrap(),
+            ClipPath::Circle(_)
+        ));
+        let ellipse = parse_clip_path("ellipse(40% 20% at 10px 20px)").unwrap();
+        assert!(matches!(ellipse, ClipPath::Ellipse(_)));
+        assert!(parse_clip_path("path('M0 0')").is_none());
+    }
+
+    #[test]
+    fn mask_image_url_reuses_background_url_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("mask-image: url(\"hero.png\")", None, None);
+        match layout.paint.mask {
+            Some(MaskImage::Url(ref url)) => assert_eq!(url, "hero.png"),
+            other => panic!("expected mask url, got {other:?}"),
+        }
+        layout.apply_css_text("mask-image: none", None, None);
+        assert!(layout.paint.mask.is_none());
     }
 
     #[test]
@@ -1967,7 +2188,7 @@ mod tests {
             None,
         );
         match layout.paint.mask {
-            Some(CssGradient::Radial(ref radial)) => {
+            Some(MaskImage::Gradient(CssGradient::Radial(ref radial))) => {
                 assert_eq!(radial.center[0], LengthSpec::Px(10.0));
                 assert_eq!(radial.center[1], LengthSpec::Px(20.0));
             }
@@ -2061,6 +2282,82 @@ mod tests {
     }
 
     #[test]
+    fn background_position_three_value_with_calc_is_not_xy_pair() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: url(a.png); background-position: right calc(8px) center",
+            None,
+            None,
+        );
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url { position, .. }) => {
+                assert_eq!(
+                    position.x,
+                    LengthSpec::CalcPercentOffset {
+                        percent: 100.0,
+                        offset_px: -8.0,
+                    }
+                );
+                assert_eq!(position.y, LengthSpec::Percent(50.0));
+            }
+            other => panic!("expected positioned url, got {other:?}"),
+        }
+        assert_eq!(
+            layout.paint.background_position_list,
+            vec![BackgroundPosition {
+                x: LengthSpec::CalcPercentOffset {
+                    percent: 100.0,
+                    offset_px: -8.0,
+                },
+                y: LengthSpec::Percent(50.0),
+            }]
+        );
+    }
+
+    #[test]
+    fn background_position_four_value_and_fail_closed_five() {
+        let mut ok = LayoutStyle::default();
+        ok.apply_css_text(
+            "background-image: url(a.png); background-position: left 10px top 20px",
+            None,
+            None,
+        );
+        match ok.paint.background_image {
+            Some(BackgroundImage::Url { position, .. }) => {
+                assert_eq!(position.x, LengthSpec::Px(10.0));
+                assert_eq!(position.y, LengthSpec::Px(20.0));
+            }
+            other => panic!("expected 4-value position, got {other:?}"),
+        }
+
+        let mut stale = LayoutStyle::default();
+        stale.apply_css_text(
+            "background-image: url(a.png); background-position: 4px 8px",
+            None,
+            None,
+        );
+        stale.apply_css_text("background-position: left 1px top 2px extra", None, None);
+        match stale.paint.background_image {
+            Some(BackgroundImage::Url { position, .. }) => {
+                assert_eq!(
+                    position.x,
+                    LengthSpec::Px(4.0),
+                    "must not fake a 5-token xy"
+                );
+                assert_eq!(position.y, LengthSpec::Px(8.0));
+            }
+            other => panic!("expected previous layer position, got {other:?}"),
+        }
+        assert_eq!(
+            stale.paint.background_position_list,
+            vec![BackgroundPosition {
+                x: LengthSpec::Px(4.0),
+                y: LengthSpec::Px(8.0),
+            }]
+        );
+    }
+
+    #[test]
     fn object_fit_contain_and_img_src_bind() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("object-fit: contain; object-position: left top", None, None);
@@ -2080,6 +2377,20 @@ mod tests {
                 assert_eq!(repeat, BackgroundRepeat::NoRepeat);
             }
             other => panic!("expected img content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn object_fit_scale_down_is_not_silent_contain() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("object-fit: scale-down", None, None);
+        assert_eq!(layout.paint.object_fit, Some(BackgroundImageFit::ScaleDown));
+        apply_img_replaced_content(&mut layout, "photo.png");
+        match layout.paint.content_image {
+            Some(BackgroundImage::Url { fit, .. }) => {
+                assert_eq!(fit, BackgroundImageFit::ScaleDown);
+            }
+            other => panic!("expected scale-down img, got {other:?}"),
         }
     }
 
@@ -2155,6 +2466,29 @@ mod tests {
                 );
             }
             other => panic!("expected sized url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn background_repeat_space_is_not_silent_repeat() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "background-image: url(\"tile.png\"); background-repeat: space",
+            None,
+            None,
+        );
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url { repeat, .. }) => {
+                assert_eq!(repeat, BackgroundRepeat::Unsupported);
+            }
+            other => panic!("expected space url layer, got {other:?}"),
+        }
+        layout.apply_css_text("background-repeat: round", None, None);
+        match layout.paint.background_image {
+            Some(BackgroundImage::Url { repeat, .. }) => {
+                assert_eq!(repeat, BackgroundRepeat::Round);
+            }
+            other => panic!("expected round url layer, got {other:?}"),
         }
     }
 
@@ -2289,6 +2623,20 @@ mod tests {
         assert!(parse_color_filter("brightness(0.5)url(#svg-filter)").is_none());
         assert!(parse_color_filter("drop-shadow(0 0 4px black) sepia()").is_none());
         assert!(parse_color_filter("blur(200px) sepia()").is_none());
+    }
+
+    #[test]
+    fn filter_invert_and_opacity_use_existing_slots() {
+        let invert = parse_color_filter("invert()").unwrap();
+        assert!((invert.invert - 1.0).abs() < 0.01);
+        let half = parse_color_filter("invert(50%) brightness(0.8)").unwrap();
+        assert!((half.invert - 0.5).abs() < 0.01);
+        assert!((half.brightness - 0.8).abs() < 0.01);
+        let fade = parse_color_filter("opacity(0.25)").unwrap();
+        assert!((fade.opacity - 0.25).abs() < 0.01);
+        assert!(parse_color_filter("opacity()").is_none());
+        assert!(parse_color_filter("invert(0)").is_none());
+        assert!(parse_color_filter("grayscale() saturate(2)").is_none());
     }
 
     #[test]
