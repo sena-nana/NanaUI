@@ -447,50 +447,31 @@ fn list_document(item_count: usize, selected: usize) -> RuntimeDocument {
         .context_mut()
         .set_theme(ThemeMode::Dark)
         .expect("benchmark theme");
-    let root = document
-        .context_mut()
-        .create_component(document_id, List::new().style(fill_column_style(14.0, 8.0)))
-        .expect("list root");
-    let title = document
-        .context_mut()
-        .create_detached_component(document_id, Text::new(format!("{item_count} 个节点")))
-        .expect("list title");
-    let scroll = document
-        .context_mut()
-        .create_detached_component(
-            document_id,
-            ScrollView::new(ScrollAxes::Vertical).style(fill_style()),
-        )
-        .expect("list scroll");
-    let items = document
-        .context_mut()
-        .create_detached_component(document_id, List::new().style(fill_column_style(0.0, 4.0)))
-        .expect("list items");
     document
         .context_mut()
-        .append_child(root, title)
-        .expect("append title");
-    document
-        .context_mut()
-        .append_child(root, scroll)
-        .expect("append scroll");
-    document
-        .context_mut()
-        .append_child(scroll, items)
-        .expect("append items");
-    for index in 0..item_count {
-        let item = document
-            .context_mut()
-            .create_detached_component(
-                document_id,
-                ListItem::new(format!("节点 {}", index + 1)).selected(index == selected),
-            )
-            .expect("list item");
-        document
-            .context_mut()
-            .append_child(items, item)
-            .expect("append item");
-    }
+        .build(document_id, |ui| {
+            let root = ui.child("root", List::new().style(fill_column_style(14.0, 8.0)));
+            ui.nest(root, |ui| {
+                ui.child("title", Text::new(format!("{item_count} 个节点")));
+                let scroll = ui.child(
+                    "scroll",
+                    ScrollView::new(ScrollAxes::Vertical).style(fill_style()),
+                );
+                ui.nest(scroll, |ui| {
+                    let items = ui.child("items", List::new().style(fill_column_style(0.0, 4.0)));
+                    ui.nest(items, |ui| {
+                        for index in 0..item_count {
+                            ui.child(
+                                format!("item-{index}"),
+                                ListItem::new(format!("节点 {}", index + 1))
+                                    .selected(index == selected),
+                            );
+                        }
+                    });
+                });
+            });
+        })
+        .expect("list tree");
     document
 }
 
@@ -622,26 +603,25 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
         .context_mut()
         .set_theme(ThemeMode::Dark)
         .expect("benchmark theme");
-    let mut slots = Vec::with_capacity(state.region_ids.len());
-    let mut contents = Vec::with_capacity(state.region_ids.len());
-    for (index, id) in state.region_ids.iter().enumerate() {
-        let content = document
-            .context_mut()
-            .create_detached_component(document_id, Text::new(format!("区域 {}", index + 1)))
-            .expect("workspace region");
-        slots.push(WorkspaceRegionSlot::new(id.clone(), content.stable_id()));
-        contents.push(content);
-    }
     let workspace = document
         .context_mut()
-        .create_component(document_id, Workspace::from_model(&state.model, slots))
+        .build(document_id, |ui| {
+            let mut slots = Vec::with_capacity(state.region_ids.len());
+            let mut contents = Vec::with_capacity(state.region_ids.len());
+            for (index, id) in state.region_ids.iter().enumerate() {
+                let content = ui.leaf(Text::new(format!("区域 {}", index + 1)));
+                slots.push(WorkspaceRegionSlot::new(id.clone(), content.stable_id()));
+                contents.push(content);
+            }
+            let workspace = ui.child("workspace", Workspace::from_model(&state.model, slots));
+            ui.nest(workspace, |ui| {
+                for content in contents {
+                    ui.adopt(content);
+                }
+            });
+            workspace
+        })
         .expect("workspace");
-    for content in contents {
-        document
-            .context_mut()
-            .append_child(workspace, content)
-            .expect("append workspace region");
-    }
     document
         .context_mut()
         .assemble_workspace(workspace)

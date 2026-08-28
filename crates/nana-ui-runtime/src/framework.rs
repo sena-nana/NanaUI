@@ -39,8 +39,10 @@ use crate::{
 };
 
 mod assemble;
+mod build;
 mod overlay;
 pub use assemble::AssemblyScope;
+pub use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
 pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
@@ -6689,7 +6691,7 @@ impl AppContext {
             .map_err(FrameworkError::from)
     }
 
-    fn stamp_component_type<C: ComponentView>(
+    pub(super) fn stamp_component_type<C: ComponentView>(
         &mut self,
         id: StableNodeId,
         queue: &mut MutationQueue,
@@ -6708,7 +6710,7 @@ impl AppContext {
             });
     }
 
-    fn allocate_id(&mut self) -> StableNodeId {
+    pub(super) fn allocate_id(&mut self) -> StableNodeId {
         loop {
             let id = StableNodeId::new(self.next_id).expect("allocator never emits zero");
             self.next_id = self
@@ -6919,6 +6921,150 @@ mod tests {
             .unwrap();
         assert!(context.world().contains(title_id));
         assert!(!context.world().contains(save_id));
+    }
+
+    #[test]
+    fn build_commits_nested_tree_once_and_installs_handlers() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let before = context.world().generation();
+        let start = context
+            .build(document, |ui| {
+                ui.column(12.0, |ui| {
+                    ui.child("title", Text::new("你好"));
+                    let start = ui.child("start", Button::new("开始"));
+                    ui.on(start, |_, _: &Activate, cx| {
+                        cx.dispatch_program("start");
+                    });
+                    ui.row(8.0, |ui| {
+                        ui.child("open", Button::new("打开"));
+                        ui.child("float", Button::new("浮窗"));
+                    });
+                    start
+                })
+            })
+            .unwrap();
+        assert_eq!(context.world().generation(), before + 1);
+
+        let start_node = context.world().node(start.stable_id()).unwrap();
+        let column = start_node.parent.expect("start lives under column");
+        let column_children = context.world().node(column).unwrap().children;
+        assert_eq!(column_children.len(), 3);
+        assert_eq!(context.world().text(column_children[0]), Some("你好"));
+        assert_eq!(column_children[1], start.stable_id());
+        let row = column_children[2];
+        let row_children = context.world().node(row).unwrap().children;
+        assert_eq!(row_children.len(), 2);
+        assert_eq!(
+            context.read(start, |button| button.label.clone()).unwrap(),
+            "开始"
+        );
+        assert!(context.activate_button(start).unwrap());
+        let queued = context.take_program_messages();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].downcast_ref::<&str>().copied(), Some("start"));
+    }
+
+    #[test]
+    fn create_component_append_commits_once_per_call() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let before = context.world().generation();
+        let column = context
+            .create_component(document, Stack::column(12.0))
+            .unwrap();
+        let title = context
+            .create_component(document, Text::new("你好"))
+            .unwrap();
+        let start = context
+            .create_component(document, Button::new("开始"))
+            .unwrap();
+        context.append_child(column, title).unwrap();
+        context.append_child(column, start).unwrap();
+        assert_eq!(context.world().generation(), before + 5);
+    }
+
+    #[test]
+    fn build_rejects_duplicate_keys_without_committing() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let before = context.world().generation();
+        let error = context
+            .build(document, |ui| {
+                ui.column(8.0, |ui| {
+                    ui.child("save", Button::new("Save"));
+                    ui.child("save", Button::new("Saved"));
+                });
+            })
+            .unwrap_err();
+        assert!(matches!(error, FrameworkError::DuplicateAssemblyKey { .. }));
+        assert_eq!(context.world().generation(), before);
+        assert!(
+            context
+                .world()
+                .node(StableNodeId::new(1).unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn build_detached_parks_roots_until_inserted() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let (root, child) = context
+            .build_detached(document, |ui| {
+                let child = ui.leaf(Text::new("parked"));
+                let root = ui.child("root", Stack::column(8.0));
+                ui.nest(root, |ui| ui.adopt(child));
+                (root, child)
+            })
+            .unwrap();
+        assert_eq!(
+            context.world().mount_state(root.stable_id()),
+            Some(crate::MountState::Parked)
+        );
+        assert_eq!(
+            context.world().mount_state(child.stable_id()),
+            Some(crate::MountState::Parked)
+        );
+        let host = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap();
+        context.append_child(host, root).unwrap();
+        assert_eq!(
+            context.world().mount_state(root.stable_id()),
+            Some(crate::MountState::Mounted)
+        );
+        assert_eq!(
+            context.world().mount_state(child.stable_id()),
+            Some(crate::MountState::Mounted)
+        );
+        assert_eq!(
+            context.world().node(root.stable_id()).unwrap().children,
+            vec![child.stable_id()]
+        );
+    }
+
+    #[test]
+    fn build_child_keys_are_reused_by_mount() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let card = context.create_component(document, Card::new()).unwrap();
+        let save = context
+            .build_child(card, |ui| ui.child("save", Button::new("Save")))
+            .unwrap();
+        let save_id = save.stable_id();
+        context
+            .mount(card, |ui| {
+                ui.child("save", Button::new("Saved"))?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(save.stable_id(), save_id);
+        assert_eq!(
+            context.read(save, |button| button.label.clone()).unwrap(),
+            "Saved"
+        );
     }
 
     #[test]

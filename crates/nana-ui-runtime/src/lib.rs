@@ -101,7 +101,8 @@ pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
     OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription,
-    Task, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    Task, UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
+    VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{

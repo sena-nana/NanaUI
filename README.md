@@ -33,7 +33,7 @@ NanaUI 是一套 **保留式原生桌面 UI 运行时**。应用打开窗口、�
 
 ```text
 应用状态
-    │  create_component / on / 换纹理
+    │  build / on / 换纹理
     ▼
 RuntimeDocument  （UiWorld：树、样式、布局、命中、焦点）
     │  flush

@@ -1631,12 +1631,6 @@ fn create_segmented_fixture(
     fixture: Fixture,
 ) -> Result<SegmentedFixture, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let control = document.context_mut().create_component(
-        document_id,
-        RuntimeSegmentedControl::new()
-            .label("Editor mode")
-            .size(segmented_control_size(fixture.state)),
-    )?;
     let specs: &[(&str, Option<Icon>, bool)] = match fixture.state {
         "empty" => &[],
         "all-disabled" => &[
@@ -1655,18 +1649,23 @@ fn create_segmented_fixture(
             ("Preview", None, false),
         ],
     };
-    let mut options = Vec::with_capacity(specs.len());
-    for (label, icon, disabled) in specs {
-        let mut option = RuntimeSegmentedOption::new(*label).disabled(*disabled);
-        if let Some(icon) = icon {
-            option = option.icon(*icon);
-        }
-        options.push(
-            document
-                .context_mut()
-                .create_detached_component(document_id, option)?,
+    let (control, options) = document.context_mut().build(document_id, |ui| {
+        let control = ui.child(
+            "segmented",
+            RuntimeSegmentedControl::new()
+                .label("Editor mode")
+                .size(segmented_control_size(fixture.state)),
         );
-    }
+        let mut options = Vec::with_capacity(specs.len());
+        for (label, icon, disabled) in specs {
+            let mut option = RuntimeSegmentedOption::new(*label).disabled(*disabled);
+            if let Some(icon) = icon {
+                option = option.icon(*icon);
+            }
+            options.push(ui.leaf(option));
+        }
+        (control, options)
+    })?;
     let selected = match fixture.state {
         "empty" | "all-disabled" | "no-selection" => None,
         "disabled-selected" => options.get(1).copied(),
@@ -1698,14 +1697,16 @@ fn create_tabs_fixture(
     fixture: Fixture,
 ) -> Result<Entity<RuntimeTabs>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let tabs = document.context_mut().create_component(
-        document_id,
-        RuntimeTabs::new("code").label("Editor mode").options([
-            RuntimeTabOption::new("code", "Code"),
-            RuntimeTabOption::new("split", "Split").disabled(true),
-            RuntimeTabOption::new("preview", "Preview"),
-        ]),
-    )?;
+    let tabs = document.context_mut().build(document_id, |ui| {
+        ui.child(
+            "tabs",
+            RuntimeTabs::new("code").label("Editor mode").options([
+                RuntimeTabOption::new("code", "Code"),
+                RuntimeTabOption::new("split", "Split").disabled(true),
+                RuntimeTabOption::new("preview", "Preview"),
+            ]),
+        )
+    })?;
     if fixture.state == "focused"
         && let Some(first) = document
             .context()
@@ -1755,20 +1756,16 @@ fn runtime_fixture(
         } else {
             ("View revision", "Open revision", nana_ui::ButtonKind::Ghost)
         };
-        let action = document
-            .context_mut()
-            .create_detached_component(document_id, RuntimeButton::new(label).kind(kind))?;
-        let replacement = document.context_mut().create_detached_component(
-            document_id,
-            RuntimeButton::new(replacement_label).kind(kind),
-        )?;
         let activations = Arc::new(Mutex::new(0));
         let observed = Arc::clone(&activations);
-        document
-            .context_mut()
-            .on(action, move |_button, _event: &Activate, _context| {
+        let (action, replacement) = document.context_mut().build_detached(document_id, |ui| {
+            let action = ui.leaf(RuntimeButton::new(label).kind(kind));
+            let replacement = ui.leaf(RuntimeButton::new(replacement_label).kind(kind));
+            ui.on(action, move |_button, _event: &Activate, _context| {
                 *observed.lock().expect("feedback activation count") += 1;
-            })?;
+            });
+            (action, replacement)
+        })?;
         Some(FeedbackActionFixture {
             action,
             replacement,
@@ -2018,19 +2015,16 @@ fn runtime_fixture(
                 component = component.height(92.0);
             }
             set_full_width(&mut component.style);
-            let card = document
-                .context_mut()
-                .create_component(document_id, component)?;
-            let body = document.context_mut().create_component(
-                document_id,
-                RuntimeText::new(if fixture.state == "long-content" {
+            document.context_mut().build(document_id, |ui| {
+                let body = ui.leaf(RuntimeText::new(if fixture.state == "long-content" {
                     "A deliberately long body that must remain inside the card content region even when space is constrained."
                 } else {
                     "Build status: ready"
-                }),
-            )?;
-            document.context_mut().append_child(card, body)?;
-            card.stable_id()
+                }));
+                let card = ui.child("card", component);
+                ui.nest(card, |ui| ui.adopt(body));
+                card.stable_id()
+            })?
         }
         Component::ListItem => {
             let mut component = RuntimeListItem::new(if fixture.state == "auto-height" {
@@ -2044,24 +2038,22 @@ fn runtime_fixture(
             .auto_height(fixture.state == "auto-height");
             set_full_width(&mut component.style);
             if fixture.state == "three-slots" {
-                let leading = document
-                    .context_mut()
-                    .create_component(document_id, RuntimeText::new("●"))?;
-                let content = document
-                    .context_mut()
-                    .create_component(document_id, RuntimeText::new("Camera source"))?;
-                let trailing = document
-                    .context_mut()
-                    .create_component(document_id, RuntimeText::new("⌘1"))?;
-                let slots = ListItemSlots {
-                    leading: Some(leading.stable_id()),
-                    content: Some(content.stable_id()),
-                    trailing: Some(trailing.stable_id()),
-                };
-                let item = document
-                    .context_mut()
-                    .create_component(document_id, component)?;
-                document.context_mut().set_list_item_slots(item, slots)?;
+                let item = document.context_mut().build(document_id, |ui| {
+                    let leading = ui.leaf(RuntimeText::new("●"));
+                    let content = ui.leaf(RuntimeText::new("Camera source"));
+                    let trailing = ui.leaf(RuntimeText::new("⌘1"));
+                    let item = ui.child("item", component);
+                    (item, leading, content, trailing)
+                })?;
+                let (item, leading, content, trailing) = item;
+                document.context_mut().set_list_item_slots(
+                    item,
+                    ListItemSlots {
+                        leading: Some(leading.stable_id()),
+                        content: Some(content.stable_id()),
+                        trailing: Some(trailing.stable_id()),
+                    },
+                )?;
                 item.stable_id()
             } else {
                 document
@@ -2179,29 +2171,24 @@ fn runtime_fixture(
                 .stable_id()
         }
         Component::FormField => {
-            let field = document.context_mut().create_component(
-                document_id,
-                RuntimeFormField::new("Email").error("Required"),
-            )?;
-            let control = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
-            )?;
+            let (field, control) = document.context_mut().build(document_id, |ui| {
+                let control = ui.leaf(
+                    RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
+                );
+                let field = ui.child("field", RuntimeFormField::new("Email").error("Required"));
+                (field, control)
+            })?;
             document
                 .context_mut()
                 .set_form_field_control(field, Some(control.stable_id()))?;
             field.stable_id()
         }
-        Component::InteractiveCard => {
-            let card = document
-                .context_mut()
-                .create_component(document_id, RuntimeInteractiveCard::new().selected(true))?;
-            let label = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Interactive surface"))?;
-            document.context_mut().append_child(card, label)?;
+        Component::InteractiveCard => document.context_mut().build(document_id, |ui| {
+            let label = ui.leaf(RuntimeText::new("Interactive surface"));
+            let card = ui.child("card", RuntimeInteractiveCard::new().selected(true));
+            ui.nest(card, |ui| ui.adopt(label));
             card.stable_id()
-        }
+        })?,
         Component::Tooltip => {
             let component = RuntimeIconButton::new(Icon::Add, "Add source")
                 .tooltip("Add source", tooltip_fixture_config(fixture.state));
@@ -2211,19 +2198,17 @@ fn runtime_fixture(
                 .stable_id()
         }
         Component::Dialog => {
-            let dialog = document.context_mut().create_component(
-                document_id,
-                RuntimeDialog::new("Rename scene")
-                    .description("This updates the workspace label.")
-                    .size(DialogSize::Default),
-            )?;
-            let body = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Camera A"))?;
-            let close = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeIconButton::new(Icon::Close, "Close"),
-            )?;
+            let (dialog, body, close) = document.context_mut().build(document_id, |ui| {
+                let body = ui.leaf(RuntimeText::new("Camera A"));
+                let close = ui.leaf(RuntimeIconButton::new(Icon::Close, "Close"));
+                let dialog = ui.child(
+                    "dialog",
+                    RuntimeDialog::new("Rename scene")
+                        .description("This updates the workspace label.")
+                        .size(DialogSize::Default),
+                );
+                (dialog, body, close)
+            })?;
             document.context_mut().set_modal_slots(
                 dialog,
                 ModalSlots {
@@ -2238,34 +2223,27 @@ fn runtime_fixture(
             let mut confirm = RuntimeConfirmDialog::new("Delete take", "This cannot be undone.");
             confirm.danger = fixture.state == "danger";
             confirm.busy = fixture.state == "busy";
-            let confirm = document
-                .context_mut()
-                .create_component(document_id, confirm)?;
-            let cancel = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeButton::new("取消"))?;
-            let accept = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeButton::new(if fixture.state == "busy" {
-                    "处理中"
-                } else {
-                    "确认"
-                })
-                .kind(if fixture.state == "danger" {
-                    nana_ui::ButtonKind::Danger
-                } else {
-                    nana_ui::ButtonKind::Primary
-                })
-                .loading(fixture.state == "busy"),
-            )?;
-            let close = (fixture.state != "busy")
-                .then(|| {
-                    document.context_mut().create_detached_component(
-                        document_id,
-                        RuntimeIconButton::new(Icon::Close, "Close"),
-                    )
-                })
-                .transpose()?;
+            let (confirm, cancel, accept, close) =
+                document.context_mut().build(document_id, |ui| {
+                    let cancel = ui.leaf(RuntimeButton::new("取消"));
+                    let accept = ui.leaf(
+                        RuntimeButton::new(if fixture.state == "busy" {
+                            "处理中"
+                        } else {
+                            "确认"
+                        })
+                        .kind(if fixture.state == "danger" {
+                            nana_ui::ButtonKind::Danger
+                        } else {
+                            nana_ui::ButtonKind::Primary
+                        })
+                        .loading(fixture.state == "busy"),
+                    );
+                    let close = (fixture.state != "busy")
+                        .then(|| ui.leaf(RuntimeIconButton::new(Icon::Close, "Close")));
+                    let confirm = ui.child("confirm", confirm);
+                    (confirm, cancel, accept, close)
+                })?;
             document.context_mut().set_confirm_slots(
                 confirm,
                 ConfirmSlots {
@@ -2279,21 +2257,19 @@ fn runtime_fixture(
             confirm.stable_id()
         }
         Component::Drawer => {
-            let drawer = document.context_mut().create_component(
-                document_id,
-                RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
-                    DrawerSide::Left
-                } else {
-                    DrawerSide::Right
-                }),
-            )?;
-            let body = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Properties"))?;
-            let close = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeIconButton::new(Icon::Close, "Close"),
-            )?;
+            let (drawer, body, close) = document.context_mut().build(document_id, |ui| {
+                let body = ui.leaf(RuntimeText::new("Properties"));
+                let close = ui.leaf(RuntimeIconButton::new(Icon::Close, "Close"));
+                let drawer = ui.child(
+                    "drawer",
+                    RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
+                        DrawerSide::Left
+                    } else {
+                        DrawerSide::Right
+                    }),
+                );
+                (drawer, body, close)
+            })?;
             document.context_mut().set_modal_slots(
                 drawer,
                 ModalSlots {
@@ -2357,33 +2333,25 @@ fn runtime_fixture(
                     .opened(fixture.state == "opened"),
             )?
             .stable_id(),
-        Component::Popover => {
-            let popover = document.context_mut().create_component(
-                document_id,
-                RuntimePopover::new().trigger("Details").open(true),
-            )?;
-            let body = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Inspector content"))?;
-            document.context_mut().append_child(popover, body)?;
+        Component::Popover => document.context_mut().build(document_id, |ui| {
+            let body = ui.leaf(RuntimeText::new("Inspector content"));
+            let popover = ui.child("popover", RuntimePopover::new().trigger("Details").open(true));
+            ui.nest(popover, |ui| ui.adopt(body));
             popover.stable_id()
-        }
-        Component::ActionMenu => {
-            let menu = document.context_mut().create_component(
-                document_id,
+        })?,
+        Component::ActionMenu => document.context_mut().build(document_id, |ui| {
+            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let menu = ui.child(
+                "menu",
                 RuntimeActionMenu::new().trigger("Actions").open(true),
-            )?;
-            let rename = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
-            let delete = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeActionMenuItem::new("Delete").danger(true),
-            )?;
-            document.context_mut().append_child(menu, rename)?;
-            document.context_mut().append_child(menu, delete)?;
+            );
+            ui.nest(menu, |ui| {
+                ui.adopt(rename);
+                ui.adopt(delete);
+            });
             menu.stable_id()
-        }
+        })?,
         Component::ActionMenuItem => document
             .context_mut()
             .create_component(
@@ -2391,45 +2359,39 @@ fn runtime_fixture(
                 RuntimeActionMenuItem::new("Delete").hint("⌫").danger(true),
             )?
             .stable_id(),
-        Component::AnchoredActionMenu => {
-            let menu = document.context_mut().create_component(
-                document_id,
+        Component::AnchoredActionMenu => document.context_mut().build(document_id, |ui| {
+            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let menu = ui.child(
+                "menu",
                 RuntimeAnchoredActionMenu::new(24.0, 36.0)
                     .menu_size(200.0, 0.0)
                     .open(true),
-            )?;
-            let rename = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
-            let delete = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeActionMenuItem::new("Delete").danger(true),
-            )?;
-            document.context_mut().append_child(menu, rename)?;
-            document.context_mut().append_child(menu, delete)?;
+            );
+            ui.nest(menu, |ui| {
+                ui.adopt(rename);
+                ui.adopt(delete);
+            });
             menu.stable_id()
-        }
-        Component::ContextMenu => {
-            let menu = document.context_mut().create_component(
-                document_id,
+        })?,
+        Component::ContextMenu => document.context_mut().build(document_id, |ui| {
+            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let menu = ui.child(
+                "menu",
                 RuntimeContextMenu::new(24.0, 36.0)
                     .items([
                         RuntimeContextMenuItem::new("rename", "Rename"),
                         RuntimeContextMenuItem::new("delete", "Delete").danger(true),
                     ])
                     .open(true),
-            )?;
-            let rename = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeActionMenuItem::new("Rename"))?;
-            let delete = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeActionMenuItem::new("Delete").danger(true),
-            )?;
-            document.context_mut().append_child(menu, rename)?;
-            document.context_mut().append_child(menu, delete)?;
+            );
+            ui.nest(menu, |ui| {
+                ui.adopt(rename);
+                ui.adopt(delete);
+            });
             menu.stable_id()
-        }
+        })?,
         Component::SidebarFrame => mount_runtime_sidebar_frame(&mut document, fixture)?,
         Component::SidebarSection => mount_runtime_sidebar_section(
             &mut document,
@@ -2437,22 +2399,17 @@ fn runtime_fixture(
             &["外观", "工作区"],
             true,
         )?,
-        Component::SidebarFooter => {
-            let footer = document
-                .context_mut()
-                .create_component(document_id, RuntimeSidebarFooter::new())?;
-            let settings = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
-            )?;
-            let search = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeSidebarFooterButton::new("搜索", Icon::Search),
-            )?;
-            document.context_mut().append_child(footer, settings)?;
-            document.context_mut().append_child(footer, search)?;
+        Component::SidebarFooter => document.context_mut().build(document_id, |ui| {
+            let settings =
+                ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
+            let search = ui.leaf(RuntimeSidebarFooterButton::new("搜索", Icon::Search));
+            let footer = ui.child("footer", RuntimeSidebarFooter::new());
+            ui.nest(footer, |ui| {
+                ui.adopt(settings);
+                ui.adopt(search);
+            });
             footer.stable_id()
-        }
+        })?,
         Component::AppearanceSection => {
             let mut appearance = AppearanceSettings::default();
             if fixture.state != "solid" {
@@ -2479,19 +2436,16 @@ fn runtime_fixture(
             section.stable_id()
         }
         Component::SettingsCollapsibleCard => {
-            let summary = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("高级选项"))?;
-            let details = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeText::new("折叠后应隐藏这段说明。"),
-            )?;
-            let card = document.context_mut().create_component(
-                document_id,
-                RuntimeSettingsCollapsibleCard::new(fixture.state != "collapsed")
-                    .summary(summary.stable_id())
-                    .details(details.stable_id()),
-            )?;
+            let card = document.context_mut().build(document_id, |ui| {
+                let summary = ui.leaf(RuntimeText::new("高级选项"));
+                let details = ui.leaf(RuntimeText::new("折叠后应隐藏这段说明。"));
+                ui.child(
+                    "card",
+                    RuntimeSettingsCollapsibleCard::new(fixture.state != "collapsed")
+                        .summary(summary.stable_id())
+                        .details(details.stable_id()),
+                )
+            })?;
             document
                 .context_mut()
                 .assemble_settings_collapsible_card(card)?;
@@ -2510,16 +2464,12 @@ fn runtime_fixture(
                 ),
             )?
             .stable_id(),
-        Component::OverlayHost => {
-            let host = document
-                .context_mut()
-                .create_component(document_id, RuntimeOverlayHost::new())?;
-            let base = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Base surface"))?;
-            document.context_mut().append_child(host, base)?;
+        Component::OverlayHost => document.context_mut().build(document_id, |ui| {
+            let base = ui.leaf(RuntimeText::new("Base surface"));
+            let host = ui.child("host", RuntimeOverlayHost::new());
+            ui.nest(host, |ui| ui.adopt(base));
             host.stable_id()
-        }
+        })?,
         Component::Dropdown => document
             .context_mut()
             .create_component(
@@ -2563,13 +2513,10 @@ fn runtime_fixture(
                 ]),
             )?
             .stable_id(),
-        Component::SidebarRow => {
-            let leading = document.context_mut().create_detached_component(
-                document_id,
-                nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace),
-            )?;
-            let row = document.context_mut().create_component(
-                document_id,
+        Component::SidebarRow => document.context_mut().build(document_id, |ui| {
+            let leading = ui.leaf(nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace));
+            let row = ui.child(
+                "row",
                 RuntimeSidebarRow::new("工作区")
                     .state(nana_ui::runtime::SidebarRowState::Active)
                     .slots(nana_ui::runtime::ListItemSlots {
@@ -2577,65 +2524,60 @@ fn runtime_fixture(
                         content: None,
                         trailing: None,
                     }),
-            )?;
-            document.context_mut().append_child(row, leading)?;
+            );
+            ui.nest(row, |ui| ui.adopt(leading));
             row.stable_id()
-        }
+        })?,
         Component::Settings => {
-            let control = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("暗色"))?;
+            let control = document.context_mut().build_detached(document_id, |ui| {
+                ui.leaf(RuntimeText::new("暗色"))
+            })?;
             let row = document.context_mut().mount_settings_leaf_row(
                 document_id,
                 "主题",
                 Some("选择应用配色，立即生效"),
                 control.stable_id(),
             )?;
-            let card = document
-                .context_mut()
-                .create_component(document_id, RuntimeSettingsCard::new("外观"))?;
-            document.context_mut().append_child(card, row)?;
-            card.stable_id()
+            document.context_mut().build(document_id, |ui| {
+                let card = ui.child("card", RuntimeSettingsCard::new("外观"));
+                ui.nest(card, |ui| ui.adopt(row));
+                card.stable_id()
+            })?
         }
         Component::SettingsSidebar => mount_runtime_settings_sidebar(&mut document)?,
         Component::SettingsPage => mount_runtime_settings_page(&mut document, theme, fixture)?,
         Component::Workspace => mount_runtime_workspace(&mut document)?,
         Component::Dock => mount_runtime_dock(&mut document)?,
-        Component::DockPanel => {
-            let title = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new("Inspector"))?;
-            let hint = document.context_mut().create_detached_component(
-                document_id,
-                RuntimeText::new("Selection").style({
-                    let mut style = NodeStyle {
-                        foreground: Some(SemanticColorRole::Muted),
-                        ..NodeStyle::default()
-                    };
-                    Arc::make_mut(&mut style.layout).font_size = Some(10.0);
-                    style
-                }),
-            )?;
+        Component::DockPanel => document.context_mut().build(document_id, |ui| {
+            let title = ui.leaf(RuntimeText::new("Inspector"));
+            let hint = ui.leaf(RuntimeText::new("Selection").style({
+                let mut style = NodeStyle {
+                    foreground: Some(SemanticColorRole::Muted),
+                    ..NodeStyle::default()
+                };
+                Arc::make_mut(&mut style.layout).font_size = Some(10.0);
+                style
+            }));
             let mut body_style = NodeStyle::default();
             {
                 let layout = Arc::make_mut(&mut body_style.layout);
                 layout.direction = Some(nana_ui_core::FlexDirection::Column);
                 layout.gap = Some(LengthSpec::Px(4.0));
             }
-            let body = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeList::new().style(body_style))?;
-            document.context_mut().append_child(body, title)?;
-            document.context_mut().append_child(body, hint)?;
-            let panel = document.context_mut().create_component(
-                document_id,
+            let body = ui.leaf(RuntimeList::new().style(body_style));
+            ui.nest(body, |ui| {
+                ui.adopt(title);
+                ui.adopt(hint);
+            });
+            let panel = ui.child(
+                "panel",
                 RuntimeDockPanel::new()
                     .padding(10.0)
                     .content(body.stable_id()),
-            )?;
-            document.context_mut().append_child(panel, body)?;
+            );
+            ui.nest(panel, |ui| ui.adopt(body));
             panel.stable_id()
-        }
+        })?,
         Component::SplitPane => mount_runtime_split_pane(&mut document)?,
         Component::PaneChrome => mount_runtime_pane_chrome(&mut document)?,
         Component::PaneTree => mount_runtime_pane_tree(&mut document)?,
@@ -2762,52 +2704,43 @@ fn mount_runtime_sidebar_section(
         .count(3)
         .collapsible(collapsible)
         .expanded(expanded);
-    let disclosure = if collapsible {
-        Some(
-            document
-                .context_mut()
-                .create_detached_component(document_id, spec.disclosure_mark())?,
-        )
-    } else {
-        None
-    };
-    let title = document
+    Ok(document
         .context_mut()
-        .create_detached_component(document_id, spec.title_label())?;
-    let count = document
-        .context_mut()
-        .create_detached_component(document_id, spec.count_label())?;
-    let spec = spec
-        .title_slot(title.stable_id())
-        .count_slot(count.stable_id());
-    let spec = match &disclosure {
-        Some(disclosure) => spec.disclosure(disclosure.stable_id()),
-        None => spec,
-    };
-    let header = document
-        .context_mut()
-        .create_detached_component(document_id, spec.header_item())?;
-    let body = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeSidebarSection::body_port())?;
-    for label in labels {
-        let row = document
-            .context_mut()
-            .create_detached_component(document_id, RuntimeSidebarRow::new(*label))?;
-        document.context_mut().append_child(body, row)?;
-    }
-    if let Some(disclosure) = disclosure {
-        document.context_mut().append_child(header, disclosure)?;
-    }
-    document.context_mut().append_child(header, title)?;
-    document.context_mut().append_child(header, count)?;
-    let section = document.context_mut().create_component(
-        document_id,
-        spec.header(header.stable_id()).body(body.stable_id()),
-    )?;
-    document.context_mut().append_child(section, header)?;
-    document.context_mut().append_child(section, body)?;
-    Ok(section.stable_id())
+        .build(document_id, |ui| {
+            let disclosure = collapsible.then(|| ui.leaf(spec.disclosure_mark()));
+            let title = ui.leaf(spec.title_label());
+            let count = ui.leaf(spec.count_label());
+            let spec = spec
+                .title_slot(title.stable_id())
+                .count_slot(count.stable_id());
+            let spec = match &disclosure {
+                Some(disclosure) => spec.disclosure(disclosure.stable_id()),
+                None => spec,
+            };
+            let header = ui.leaf(spec.header_item());
+            ui.nest(header, |ui| {
+                if let Some(disclosure) = disclosure {
+                    ui.adopt(disclosure);
+                }
+                ui.adopt(title);
+                ui.adopt(count);
+            });
+            let body = ui.leaf(RuntimeSidebarSection::body_port());
+            ui.nest(body, |ui| {
+                for (index, label) in labels.iter().enumerate() {
+                    ui.child(format!("row-{index}"), RuntimeSidebarRow::new(*label));
+                }
+            });
+            let section = ui.child(
+                "section",
+                spec.header(header.stable_id()).body(body.stable_id()),
+            );
+            ui.nest(section, |ui| {
+                ui.adopt(header);
+                ui.adopt(body);
+            });
+            section.stable_id()
+        })?)
 }
 
 fn slot_label_style() -> NodeStyle {
@@ -2821,63 +2754,41 @@ fn slot_label_style() -> NodeStyle {
     style
 }
 
-fn mount_runtime_label(
-    document: &mut RuntimeDocument,
-    label: &str,
-) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
-    mount_runtime_label_styled(document, label, NodeStyle::default())
-}
-
-fn mount_runtime_slot_label(
-    document: &mut RuntimeDocument,
-    label: &str,
-) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
-    mount_runtime_label_styled(document, label, slot_label_style())
-}
-
-fn mount_runtime_label_styled(
-    document: &mut RuntimeDocument,
-    label: &str,
-    style: NodeStyle,
-) -> Result<nana_ui::runtime::Entity<RuntimeText>, Box<dyn std::error::Error>> {
-    let document_id = document.document();
-    Ok(document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeText::new(label).style(style))?)
-}
-
 fn mount_runtime_workspace(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let nav = mount_runtime_slot_label(document, "Nav")?;
-    let files = mount_runtime_slot_label(document, "Files")?;
-    let toolbar = mount_runtime_slot_label(document, "Toolbar")?;
-    let primary = mount_runtime_slot_label(document, "Primary")?;
-    let inspector = mount_runtime_slot_label(document, "Inspector")?;
-    let diagnostics = mount_runtime_slot_label(document, "Diagnostics")?;
-    let workspace = document.context_mut().create_component(
-        document_id,
-        RuntimeWorkspace::from_model(
-            &WorkspaceModel::new(),
-            [
-                WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
-                WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
-                WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
-                WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
-                WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
-                WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
-            ],
-        ),
-    )?;
-    document.context_mut().append_child(workspace, nav)?;
-    document.context_mut().append_child(workspace, files)?;
-    document.context_mut().append_child(workspace, toolbar)?;
-    document.context_mut().append_child(workspace, primary)?;
-    document.context_mut().append_child(workspace, inspector)?;
-    document
-        .context_mut()
-        .append_child(workspace, diagnostics)?;
+    let workspace = document.context_mut().build(document_id, |ui| {
+        let nav = ui.leaf(RuntimeText::new("Nav").style(slot_label_style()));
+        let files = ui.leaf(RuntimeText::new("Files").style(slot_label_style()));
+        let toolbar = ui.leaf(RuntimeText::new("Toolbar").style(slot_label_style()));
+        let primary = ui.leaf(RuntimeText::new("Primary").style(slot_label_style()));
+        let inspector = ui.leaf(RuntimeText::new("Inspector").style(slot_label_style()));
+        let diagnostics = ui.leaf(RuntimeText::new("Diagnostics").style(slot_label_style()));
+        let workspace = ui.child(
+            "workspace",
+            RuntimeWorkspace::from_model(
+                &WorkspaceModel::new(),
+                [
+                    WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
+                    WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
+                    WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
+                    WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
+                    WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
+                ],
+            ),
+        );
+        ui.nest(workspace, |ui| {
+            ui.adopt(nav);
+            ui.adopt(files);
+            ui.adopt(toolbar);
+            ui.adopt(primary);
+            ui.adopt(inspector);
+            ui.adopt(diagnostics);
+        });
+        workspace
+    })?;
     document.context_mut().assemble_workspace(workspace)?;
     Ok(workspace.stable_id())
 }
@@ -2886,31 +2797,36 @@ fn mount_runtime_dock(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let nav = mount_runtime_slot_label(document, "Nav")?;
-    let files = mount_runtime_slot_label(document, "Files")?;
-    let primary = mount_runtime_slot_label(document, "Primary")?;
-    let dock = document.context_mut().create_component(
-        document_id,
-        RuntimeDock::new(RuntimeDockNode::split(
-            nana_ui::runtime::DockAxis::Horizontal,
-            0.35,
-            RuntimeDockNode::tabs(
-                ["nav", "files"],
-                "nav",
-                [
-                    ("nav", Some(nav.stable_id())),
-                    ("files", Some(files.stable_id())),
-                ],
-            ),
-            RuntimeDockNode::item("primary", Some(primary.stable_id())),
-        ))
-        .title("nav", "Nav")
-        .title("files", "Files")
-        .title("primary", "Primary"),
-    )?;
-    document.context_mut().append_child(dock, nav)?;
-    document.context_mut().append_child(dock, files)?;
-    document.context_mut().append_child(dock, primary)?;
+    let dock = document.context_mut().build(document_id, |ui| {
+        let nav = ui.leaf(RuntimeText::new("Nav").style(slot_label_style()));
+        let files = ui.leaf(RuntimeText::new("Files").style(slot_label_style()));
+        let primary = ui.leaf(RuntimeText::new("Primary").style(slot_label_style()));
+        let dock = ui.child(
+            "dock",
+            RuntimeDock::new(RuntimeDockNode::split(
+                nana_ui::runtime::DockAxis::Horizontal,
+                0.35,
+                RuntimeDockNode::tabs(
+                    ["nav", "files"],
+                    "nav",
+                    [
+                        ("nav", Some(nav.stable_id())),
+                        ("files", Some(files.stable_id())),
+                    ],
+                ),
+                RuntimeDockNode::item("primary", Some(primary.stable_id())),
+            ))
+            .title("nav", "Nav")
+            .title("files", "Files")
+            .title("primary", "Primary"),
+        );
+        ui.nest(dock, |ui| {
+            ui.adopt(nav);
+            ui.adopt(files);
+            ui.adopt(primary);
+        });
+        dock
+    })?;
     document.context_mut().assemble_dock(dock)?;
     Ok(dock.stable_id())
 }
@@ -2919,27 +2835,28 @@ fn mount_runtime_split_pane(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let first = mount_runtime_slot_label(document, "First")?;
-    let second = mount_runtime_slot_label(document, "Second")?;
-    let handle = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeText::new(""))?;
-    let indicator = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeText::new(""))?;
-    let pane = document.context_mut().create_component(
-        document_id,
-        RuntimeSplitPane::from_model(
-            &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
-            first.stable_id(),
-            second.stable_id(),
-        )
-        .handle(handle.stable_id()),
-    )?;
-    document.context_mut().append_child(pane, first)?;
-    document.context_mut().append_child(handle, indicator)?;
-    document.context_mut().append_child(pane, handle)?;
-    document.context_mut().append_child(pane, second)?;
+    let pane = document.context_mut().build(document_id, |ui| {
+        let first = ui.leaf(RuntimeText::new("First").style(slot_label_style()));
+        let second = ui.leaf(RuntimeText::new("Second").style(slot_label_style()));
+        let indicator = ui.leaf(RuntimeText::new(""));
+        let handle = ui.leaf(RuntimeText::new(""));
+        ui.nest(handle, |ui| ui.adopt(indicator));
+        let pane = ui.child(
+            "pane",
+            RuntimeSplitPane::from_model(
+                &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
+                first.stable_id(),
+                second.stable_id(),
+            )
+            .handle(handle.stable_id()),
+        );
+        ui.nest(pane, |ui| {
+            ui.adopt(first);
+            ui.adopt(handle);
+            ui.adopt(second);
+        });
+        pane
+    })?;
     document.context_mut().update_component(pane, |_, _| {})?;
     Ok(pane.stable_id())
 }
@@ -2948,70 +2865,86 @@ fn mount_runtime_pane_chrome(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let header = document
+    Ok(document
         .context_mut()
-        .create_detached_component(document_id, RuntimeText::new(""))?;
-    let tabs = mount_runtime_label(document, "editor.rs")?;
-    let body = mount_runtime_label(document, "Body")?;
-    let close = mount_runtime_label(document, "关闭")?;
-    let chrome = document.context_mut().create_component(
-        document_id,
-        RuntimePaneChrome::new()
-            .header(header.stable_id())
-            .tabs(tabs.stable_id())
-            .body(body.stable_id())
-            .actions([nana_ui::runtime::PaneChromeAction::new(
-                nana_ui::runtime::PaneChromeActionKind::CloseItem,
-                "关闭",
-            )
-            .target(close.stable_id())])
-            .active(true),
-    )?;
-    document.context_mut().append_child(chrome, header)?;
-    document.context_mut().append_child(header, tabs)?;
-    document.context_mut().append_child(header, close)?;
-    document.context_mut().append_child(chrome, body)?;
-    Ok(chrome.stable_id())
+        .build(document_id, |ui| {
+            let header = ui.leaf(RuntimeText::new(""));
+            let tabs = ui.leaf(RuntimeText::new("editor.rs"));
+            let body = ui.leaf(RuntimeText::new("Body"));
+            let close = ui.leaf(RuntimeText::new("关闭"));
+            ui.nest(header, |ui| {
+                ui.adopt(tabs);
+                ui.adopt(close);
+            });
+            let chrome = ui.child(
+                "chrome",
+                RuntimePaneChrome::new()
+                    .header(header.stable_id())
+                    .tabs(tabs.stable_id())
+                    .body(body.stable_id())
+                    .actions([nana_ui::runtime::PaneChromeAction::new(
+                        nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                        "关闭",
+                    )
+                    .target(close.stable_id())])
+                    .active(true),
+            );
+            ui.nest(chrome, |ui| {
+                ui.adopt(header);
+                ui.adopt(body);
+            });
+            chrome.stable_id()
+        })?)
 }
 
 fn mount_runtime_pane_tree(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let left = mount_runtime_slot_label(document, "left")?;
-    let right = mount_runtime_slot_label(document, "right")?;
     let document_id = document.document();
-    let tree = document.context_mut().create_component(
-        document_id,
-        RuntimePaneTree::new(RuntimePaneTreeNode::split(
-            "root",
-            SplitAxis::Horizontal,
-            0.4,
-            RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
-            RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
-        )),
-    )?;
-    document.context_mut().append_child(tree, left)?;
-    document.context_mut().append_child(tree, right)?;
-    Ok(tree.stable_id())
+    Ok(document
+        .context_mut()
+        .build(document_id, |ui| {
+            let left = ui.leaf(RuntimeText::new("left").style(slot_label_style()));
+            let right = ui.leaf(RuntimeText::new("right").style(slot_label_style()));
+            let tree = ui.child(
+                "tree",
+                RuntimePaneTree::new(RuntimePaneTreeNode::split(
+                    "root",
+                    SplitAxis::Horizontal,
+                    0.4,
+                    RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
+                    RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
+                )),
+            );
+            ui.nest(tree, |ui| {
+                ui.adopt(left);
+                ui.adopt(right);
+            });
+            tree.stable_id()
+        })?)
 }
 
 fn mount_runtime_app_shell(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let title = document
+    Ok(document
         .context_mut()
-        .create_detached_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?;
-    let body = mount_runtime_label(document, "Workspace")?;
-    let shell = document.context_mut().create_component(
-        document_id,
-        RuntimeAppShell::new()
-            .title_bar(title.stable_id())
-            .body(body.stable_id()),
-    )?;
-    document.context_mut().append_child(shell, title)?;
-    document.context_mut().append_child(shell, body)?;
-    Ok(shell.stable_id())
+        .build(document_id, |ui| {
+            let title = ui.leaf(RuntimeAppTitleBar::new("NanaUI"));
+            let body = ui.leaf(RuntimeText::new("Workspace"));
+            let shell = ui.child(
+                "shell",
+                RuntimeAppShell::new()
+                    .title_bar(title.stable_id())
+                    .body(body.stable_id()),
+            );
+            ui.nest(shell, |ui| {
+                ui.adopt(title);
+                ui.adopt(body);
+            });
+            shell.stable_id()
+        })?)
 }
 
 fn snapshot_settings_model() -> &'static SettingsModel {
@@ -3065,10 +2998,12 @@ fn mount_runtime_appearance_section(
     theme: ThemeMode,
 ) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let section = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeAppearanceSection::new(theme, AppearanceSettings::default()),
-    )?;
+    let section = document.context_mut().build_detached(document_id, |ui| {
+        ui.leaf(RuntimeAppearanceSection::new(
+            theme,
+            AppearanceSettings::default(),
+        ))
+    })?;
     document
         .context_mut()
         .assemble_appearance_section(section)?;
@@ -3079,13 +3014,12 @@ fn mount_runtime_about_section(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::Entity<RuntimeAboutSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let section = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeAboutSection::new(
+    let section = document.context_mut().build_detached(document_id, |ui| {
+        ui.leaf(RuntimeAboutSection::new(
             RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
                 .description("Injected product metadata for the about card."),
-        ),
-    )?;
+        ))
+    })?;
     document.context_mut().assemble_about_section(section)?;
     Ok(section)
 }
@@ -3094,13 +3028,15 @@ fn mount_runtime_settings_sidebar(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let sidebar = document.context_mut().create_component(
-        document_id,
-        RuntimeSettingsSidebar::new(
-            snapshot_settings_model().clone(),
-            snapshot_settings_state().clone(),
-        ),
-    )?;
+    let sidebar = document.context_mut().build(document_id, |ui| {
+        ui.child(
+            "sidebar",
+            RuntimeSettingsSidebar::new(
+                snapshot_settings_model().clone(),
+                snapshot_settings_state().clone(),
+            ),
+        )
+    })?;
     document.context_mut().assemble_settings_sidebar(sidebar)?;
     Ok(sidebar.stable_id())
 }
@@ -3122,10 +3058,12 @@ fn mount_runtime_settings_page(
     } else {
         snapshot_settings_state().clone()
     };
-    let page = document.context_mut().create_component(
-        document_id,
-        RuntimeSettingsPage::new(snapshot_settings_model().clone(), state).content(content),
-    )?;
+    let page = document.context_mut().build(document_id, |ui| {
+        ui.child(
+            "page",
+            RuntimeSettingsPage::new(snapshot_settings_model().clone(), state).content(content),
+        )
+    })?;
     document.context_mut().assemble_settings_page(page)?;
     Ok(page.stable_id())
 }
@@ -3137,26 +3075,26 @@ fn mount_runtime_desktop_shell(
     let document_id = document.document();
     let model = snapshot_settings_model().clone();
     let state = snapshot_settings_state().clone();
-    let sidebar = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeSettingsSidebar::new(model.clone(), state.clone()),
-    )?;
+    let sidebar = document.context_mut().build_detached(document_id, |ui| {
+        ui.leaf(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
+    })?;
     document.context_mut().assemble_settings_sidebar(sidebar)?;
     let content = mount_runtime_appearance_section(document, theme)?;
-    let page = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeSettingsPage::new(model, state).content(content.stable_id()),
-    )?;
+    let page = document.context_mut().build_detached(document_id, |ui| {
+        ui.leaf(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
+    })?;
     document.context_mut().assemble_settings_page(page)?;
-    let shell = document.context_mut().create_component(
-        document_id,
-        RuntimeDesktopShell::from_model(WorkspaceModel::with_layout(
-            snapshot_desktop_workspace_layout(),
-        ))
-        .title("NanaUI")
-        .navigation(sidebar.stable_id())
-        .primary(page.stable_id()),
-    )?;
+    let shell = document.context_mut().build(document_id, |ui| {
+        ui.child(
+            "shell",
+            RuntimeDesktopShell::from_model(WorkspaceModel::with_layout(
+                snapshot_desktop_workspace_layout(),
+            ))
+            .title("NanaUI")
+            .navigation(sidebar.stable_id())
+            .primary(page.stable_id()),
+        )
+    })?;
     document.context_mut().assemble_desktop_shell(shell)?;
     Ok(shell.stable_id())
 }
@@ -3166,41 +3104,38 @@ fn mount_runtime_sidebar_frame(
     _fixture: Fixture,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let top = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeSidebarRow::new("返回"))?;
-    let body = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeSidebarFrame::vertical_body_scroll())?;
     let section = mount_runtime_sidebar_section(
         document,
         true,
         &["外观", "工作区", "设置", "关于", "日志", "调试"],
         false,
     )?;
-    document.context_mut().append_child(
-        body,
-        Entity::<RuntimeSidebarSection>::from_stable_id(section),
-    )?;
-    let footer = document
+    Ok(document
         .context_mut()
-        .create_detached_component(document_id, RuntimeSidebarFooter::new())?;
-    let settings = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true),
-    )?;
-    document.context_mut().append_child(footer, settings)?;
-    let frame = document.context_mut().create_component(
-        document_id,
-        RuntimeSidebarFrame::new()
-            .top(top.stable_id())
-            .body(body.stable_id())
-            .footer(footer.stable_id()),
-    )?;
-    document.context_mut().append_child(frame, top)?;
-    document.context_mut().append_child(frame, body)?;
-    document.context_mut().append_child(frame, footer)?;
-    Ok(frame.stable_id())
+        .build(document_id, |ui| {
+            let top = ui.leaf(RuntimeSidebarRow::new("返回"));
+            let body = ui.leaf(RuntimeSidebarFrame::vertical_body_scroll());
+            ui.nest(body, |ui| {
+                ui.adopt(Entity::<RuntimeSidebarSection>::from_stable_id(section));
+            });
+            let settings =
+                ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
+            let footer = ui.leaf(RuntimeSidebarFooter::new());
+            ui.nest(footer, |ui| ui.adopt(settings));
+            let frame = ui.child(
+                "frame",
+                RuntimeSidebarFrame::new()
+                    .top(top.stable_id())
+                    .body(body.stable_id())
+                    .footer(footer.stable_id()),
+            );
+            ui.nest(frame, |ui| {
+                ui.adopt(top);
+                ui.adopt(body);
+                ui.adopt(footer);
+            });
+            frame.stable_id()
+        })?)
 }
 
 fn exercise_segmented_contract(

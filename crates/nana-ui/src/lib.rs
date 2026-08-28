@@ -1,7 +1,7 @@
 //! NanaUI adapter and the Scene/WGPU paint of Runtime/UiScene.
 //!
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
-//! New applications should use [`runtime`] (`AppContext`, `mount`,
+//! New applications should use [`runtime`] (`AppContext`, `build`, `mount`,
 //! `ComponentView`, `register_component`). See
 //! [`docs/how-it-works.md`](../../../docs/how-it-works.md),
 //! [`docs/start.md`](../../../docs/start.md),

@@ -56,56 +56,46 @@ impl Fixture {
         let document_id = DocumentId::new(1).expect("fixture document id");
         let mut document = RuntimeDocument::new(document_id);
 
-        let editor = document
-            .context_mut()
-            .create_component(document_id, List::new().label("Editor"))?;
-        let name = document
-            .context_mut()
-            .create_component(document_id, TextInput::new("NanaUI").label("Name"))?;
-        let open_tool = document
-            .context_mut()
-            .create_component(document_id, Button::new("Open tool"))?;
-        let float_preview = document
-            .context_mut()
-            .create_component(document_id, Button::new("Float preview"))?;
-        document.context_mut().append_child(editor, name)?;
-        document.context_mut().append_child(editor, open_tool)?;
-        document.context_mut().append_child(editor, float_preview)?;
-
-        let preview = document
-            .context_mut()
-            .create_component(document_id, GpuTextureView::new(PREVIEW_SLOT))?;
-        let dock = document.context_mut().create_component(
-            document_id,
-            Dock::new(DockNode::split(
-                DockAxis::Horizontal,
-                0.46,
-                DockNode::item(EDITOR_PANE, Some(editor.stable_id())),
-                DockNode::item(PREVIEW_PANE, Some(preview.stable_id())),
-            ))
-            .title(EDITOR_PANE, "Editor")
-            .title(PREVIEW_PANE, "Preview")
-            .primary(EDITOR_PANE),
-        )?;
-        document.context_mut().append_child(dock, editor)?;
-        document.context_mut().append_child(dock, preview)?;
+        let pending_open_handler = Arc::clone(&pending_open);
+        let pending_float_handler = Arc::clone(&pending_float);
+        let (dock, name, open_tool, float_preview, preview) =
+            document.context_mut().build(document_id, |ui| {
+                let editor = ui.leaf(List::new().label("Editor"));
+                let (name, open_tool, float_preview) = ui.nest(editor, |ui| {
+                    let name = ui.child("name", TextInput::new("NanaUI").label("Name"));
+                    let open_tool = ui.child("open", Button::new("Open tool"));
+                    let float_preview = ui.child("float", Button::new("Float preview"));
+                    ui.on(open_tool, move |_button, _event: &Activate, _cx| {
+                        pending_open_handler.store(true, Ordering::SeqCst);
+                    });
+                    ui.on(float_preview, move |_button, _event: &Activate, _cx| {
+                        pending_float_handler.store(true, Ordering::SeqCst);
+                    });
+                    (name, open_tool, float_preview)
+                });
+                let preview = ui.leaf(GpuTextureView::new(PREVIEW_SLOT));
+                let dock = ui.child(
+                    "dock",
+                    Dock::new(DockNode::split(
+                        DockAxis::Horizontal,
+                        0.46,
+                        DockNode::item(EDITOR_PANE, Some(editor.stable_id())),
+                        DockNode::item(PREVIEW_PANE, Some(preview.stable_id())),
+                    ))
+                    .title(EDITOR_PANE, "Editor")
+                    .title(PREVIEW_PANE, "Preview")
+                    .primary(EDITOR_PANE),
+                );
+                ui.nest(dock, |ui| {
+                    ui.adopt(editor);
+                    ui.adopt(preview);
+                });
+                (dock, name, open_tool, float_preview, preview)
+            })?;
         document.context_mut().assemble_dock(dock)?;
         document
             .context_mut()
             .focus_node(document_id, name.stable_id())?;
-
-        let pending = Arc::clone(&pending_open);
-        document
-            .context_mut()
-            .on(open_tool, move |_button, _event: &Activate, _cx| {
-                pending.store(true, Ordering::SeqCst);
-            })?;
-        let pending = Arc::clone(&pending_float);
-        document
-            .context_mut()
-            .on(float_preview, move |_button, _event: &Activate, _cx| {
-                pending.store(true, Ordering::SeqCst);
-            })?;
 
         Ok(Self {
             documents: HashMap::from([(WindowId::PRIMARY, document)]),
@@ -430,32 +420,28 @@ impl RuntimeProgram for Fixture {
 
 fn tool_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkError> {
     let mut document = RuntimeDocument::new(document_id);
-    let list = document
-        .context_mut()
-        .create_component(document_id, List::new().label("Notes"))?;
-    let label = document
-        .context_mut()
-        .create_component(document_id, Text::new("Scratch pad"))?;
-    let button = document
-        .context_mut()
-        .create_component(document_id, Button::new("Done"))?;
-    document.context_mut().append_child(list, label)?;
-    document.context_mut().append_child(list, button)?;
+    document.context_mut().build(document_id, |ui| {
+        ui.with("notes", List::new().label("Notes"), |ui| {
+            ui.child("label", Text::new("Scratch pad"));
+            ui.child("done", Button::new("Done"));
+        });
+    })?;
     Ok(document)
 }
 
 fn floating_preview_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkError> {
     let mut document = RuntimeDocument::new(document_id);
-    let preview = document
-        .context_mut()
-        .create_component(document_id, GpuTextureView::new(PREVIEW_SLOT))?;
-    let dock = document.context_mut().create_component(
-        document_id,
-        Dock::new(DockNode::item(PREVIEW_PANE, Some(preview.stable_id())))
-            .title(PREVIEW_PANE, "Preview")
-            .primary(PREVIEW_PANE),
-    )?;
-    document.context_mut().append_child(dock, preview)?;
+    let dock = document.context_mut().build(document_id, |ui| {
+        let preview = ui.leaf(GpuTextureView::new(PREVIEW_SLOT));
+        let dock = ui.child(
+            "dock",
+            Dock::new(DockNode::item(PREVIEW_PANE, Some(preview.stable_id())))
+                .title(PREVIEW_PANE, "Preview")
+                .primary(PREVIEW_PANE),
+        );
+        ui.nest(dock, |ui| ui.adopt(preview));
+        dock
+    })?;
     document.context_mut().assemble_dock(dock)?;
     Ok(document)
 }

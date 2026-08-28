@@ -56,27 +56,17 @@ impl Smoke {
     ) -> Result<SmokeWindow, FrameworkError> {
         let document_id = DocumentId::new(id.0 + 1).expect("window document");
         let mut document = RuntimeDocument::new(document_id);
-        let root = document
-            .context_mut()
-            .create_component(document_id, List::new().label("Window chrome"))?;
-        let title = document
-            .context_mut()
-            .create_component(document_id, Text::new("NANA NanaUI Window"))?;
-        let body = document
-            .context_mut()
-            .create_component(document_id, Text::new(format!("窗口 {number}")))?;
-        let button = document
-            .context_mut()
-            .create_component(document_id, Button::new("新建窗口"))?;
-        document.context_mut().append_child(root, title)?;
-        document.context_mut().append_child(root, body)?;
-        document.context_mut().append_child(root, button)?;
         let pending = Arc::clone(open);
-        document
-            .context_mut()
-            .on(button, move |_button, _event: &Activate, _cx| {
-                pending.store(true, Ordering::SeqCst);
-            })?;
+        document.context_mut().build(document_id, |ui| {
+            ui.with("root", List::new().label("Window chrome"), |ui| {
+                ui.child("title", Text::new("NANA NanaUI Window"));
+                ui.child("body", Text::new(format!("窗口 {number}")));
+                let button = ui.child("open", Button::new("新建窗口"));
+                ui.on(button, move |_button, _event: &Activate, _cx| {
+                    pending.store(true, Ordering::SeqCst);
+                });
+            });
+        })?;
         Ok(SmokeWindow { document })
     }
 

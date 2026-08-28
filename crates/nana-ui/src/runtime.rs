@@ -1,6 +1,7 @@
 //! Canonical application API.
 //!
-//! Prefer this module over crate-root widget re-exports. See
+//! Prefer this module over crate-root widget re-exports. New trees use
+//! `AppContext::build`. See
 //! [`docs/how-it-works.md`](../../../docs/how-it-works.md) and
 //! [`docs/application-api.md`](../../../docs/application-api.md).
 //!

@@ -34,6 +34,7 @@
 | 主题 | 看 |
 | --- | --- |
 | 入口类型、feature、扩展控件 | [应用 API](application-api.md) |
+| L3 组成式建树（`build` / `mount`） | [L3 组成式建树](l3-authoring.md) |
 | crate 分层、所有权（改框架时） | [架构](architecture.md) |
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
 | Android（实验，非产品目标） | [Android](android.md) |

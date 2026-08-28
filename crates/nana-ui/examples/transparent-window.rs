@@ -34,40 +34,29 @@ impl TransparentWindow {
         let toggle_panel = Arc::new(AtomicBool::new(false));
         let document_id = DocumentId::new(1).expect("transparent window document");
         let mut document = RuntimeDocument::new(document_id);
-        let root = document
-            .context_mut()
-            .create_component(document_id, List::new().label("Transparent window"))?;
-        let title = document
-            .context_mut()
-            .create_component(document_id, Text::new("NANA 透明窗口预览"))?;
-        let theme_button = document.context_mut().create_component(
-            document_id,
-            Button::new(theme_label(theme)).kind(ButtonKind::Text),
-        )?;
-        let status = document
-            .context_mut()
-            .create_component(document_id, Text::new(status_copy(panel_visible)))?;
-        let panel_button = document.context_mut().create_component(
-            document_id,
-            Button::new(panel_label(panel_visible)).kind(ButtonKind::Primary),
-        )?;
-        document.context_mut().append_child(root, title)?;
-        document.context_mut().append_child(root, theme_button)?;
-        document.context_mut().append_child(root, status)?;
-        document.context_mut().append_child(root, panel_button)?;
-
         let pending_theme = Arc::clone(&toggle_theme);
-        document
-            .context_mut()
-            .on(theme_button, move |_button, _event: &Activate, _cx| {
-                pending_theme.store(true, Ordering::SeqCst);
-            })?;
         let pending_panel = Arc::clone(&toggle_panel);
-        document
-            .context_mut()
-            .on(panel_button, move |_button, _event: &Activate, _cx| {
-                pending_panel.store(true, Ordering::SeqCst);
-            })?;
+        let (theme_button, panel_button) = document.context_mut().build(document_id, |ui| {
+            ui.with("root", List::new().label("Transparent window"), |ui| {
+                ui.child("title", Text::new("NANA 透明窗口预览"));
+                let theme_button = ui.child(
+                    "theme",
+                    Button::new(theme_label(theme)).kind(ButtonKind::Text),
+                );
+                ui.child("status", Text::new(status_copy(panel_visible)));
+                let panel_button = ui.child(
+                    "panel",
+                    Button::new(panel_label(panel_visible)).kind(ButtonKind::Primary),
+                );
+                ui.on(theme_button, move |_button, _event: &Activate, _cx| {
+                    pending_theme.store(true, Ordering::SeqCst);
+                });
+                ui.on(panel_button, move |_button, _event: &Activate, _cx| {
+                    pending_panel.store(true, Ordering::SeqCst);
+                });
+                (theme_button, panel_button)
+            })
+        })?;
 
         Ok(Self {
             theme,

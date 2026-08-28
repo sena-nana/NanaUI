@@ -60,13 +60,19 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 
 ```text
 RuntimeDocument::new(DocumentId)
-AppContext::create_component(document, Button::new("…"))
-append_child / mount { scope.child("key", …) }
-on(button, |_, Activate, cx| { cx.dispatch_program(Msg); })
-update_component(entity, |view, _| { … })
+AppContext::build(document, |ui| {
+    ui.column(12.0, |ui| {
+        let save = ui.child("save", Button::new("…"));
+        ui.on(save, |_, Activate, cx| { cx.dispatch_program(Msg); });
+    })
+})
+mount { scope.child("key", …) }          // 动态区增删
+update_component(entity, |view, _| { … }) // 文案 / loading
 ```
 
-`mount` 是 keyed 子树协调，不是第二套渲染器。Vue 不得用 `create_component` 分配 ID，它绑定自己已有的节点。
+`build` 是初次整页（一次 commit）。`mount` 是 keyed 子树协调，不是第二套渲染器。点击 handler 不要再 `build` 一遍。Vue 不得用 `create_component` / `build` 分配 ID，它绑定自己已有的节点。细则见 [L3 组成式建树](l3-authoring.md)。
+
+`create_component` / `append_child` / `on` 仍是底层 primitive。
 
 对外身份是 `StableNodeId` / `Entity<V>`。不要依赖内部实体编码。
 
@@ -82,7 +88,7 @@ update_component(entity, |view, _| { … })
 
 ## 性能上你不用手写的
 
-mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。`dispatch_program` 按类型保留最后一条，在下一帧 `update`。
+`build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。`dispatch_program` 按类型保留最后一条，在下一帧 `update`。
 
 ## 非目标
 

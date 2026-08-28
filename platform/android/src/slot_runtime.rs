@@ -66,59 +66,34 @@ impl SlotRuntime {
         let mut document = RuntimeDocument::new(document_id);
         let state = Arc::new(Mutex::new(SlotStripState::default()));
 
-        let column = document
-            .context_mut()
-            .create_component(document_id, column_host())?;
-        let row = document
-            .context_mut()
-            .create_component(document_id, row_strip())?;
-        let icon = document
-            .context_mut()
-            .create_component(document_id, Text::new(SLOT_ICON_GLYPH))?;
-        let caption = document
-            .context_mut()
-            .create_component(document_id, Text::new(SLOT_TEXT_LABEL))?;
-        let field = document
-            .context_mut()
-            .create_component(document_id, slot_text_input())?;
-        let switch = document
-            .context_mut()
-            .create_component(document_id, Switch::new(SLOT_SWITCH_LABEL, false))?;
-        let button = document
-            .context_mut()
-            .create_component(document_id, Button::new(SLOT_BUTTON_LABEL))?;
-
-        document.context_mut().append_child(column, row)?;
-        document.context_mut().append_child(row, icon)?;
-        document.context_mut().append_child(row, caption)?;
-        document.context_mut().append_child(row, field)?;
-        document.context_mut().append_child(row, switch)?;
-        document.context_mut().append_child(row, button)?;
-
         let presses = Arc::clone(&state);
-        document
-            .context_mut()
-            .on(button, move |button, _event: &Activate, _cx| {
-                let mut slot = lock_state(&presses);
-                slot.press_count = slot.press_count.saturating_add(1);
-                button.label = format!("{SLOT_BUTTON_LABEL} · {}", slot.press_count);
-            })?;
-
         let toggles = Arc::clone(&state);
-        document
-            .context_mut()
-            .on(switch, move |switch, event: &ToggleChanged, _cx| {
-                switch.checked = event.checked;
-                lock_state(&toggles).switch_on = event.checked;
-            })?;
-
         let inputs = Arc::clone(&state);
-        document
-            .context_mut()
-            .on(field, move |field, event: &TextChanged, _cx| {
-                field.state.replace_value(event.value.clone());
-                lock_state(&inputs).input_value = event.value.clone();
-            })?;
+        let (button, field) = document.context_mut().build(document_id, |ui| {
+            ui.with("column", column_host(), |ui| {
+                ui.with("row", row_strip(), |ui| {
+                    ui.child("icon", Text::new(SLOT_ICON_GLYPH));
+                    ui.child("caption", Text::new(SLOT_TEXT_LABEL));
+                    let field = ui.child("field", slot_text_input());
+                    let switch = ui.child("switch", Switch::new(SLOT_SWITCH_LABEL, false));
+                    let button = ui.child("button", Button::new(SLOT_BUTTON_LABEL));
+                    ui.on(button, move |button, _event: &Activate, _cx| {
+                        let mut slot = lock_state(&presses);
+                        slot.press_count = slot.press_count.saturating_add(1);
+                        button.label = format!("{SLOT_BUTTON_LABEL} · {}", slot.press_count);
+                    });
+                    ui.on(switch, move |switch, event: &ToggleChanged, _cx| {
+                        switch.checked = event.checked;
+                        lock_state(&toggles).switch_on = event.checked;
+                    });
+                    ui.on(field, move |field, event: &TextChanged, _cx| {
+                        field.state.replace_value(event.value.clone());
+                        lock_state(&inputs).input_value = event.value.clone();
+                    });
+                    (button, field)
+                })
+            })
+        })?;
 
         let mut runtime = Self {
             document,
