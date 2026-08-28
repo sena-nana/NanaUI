@@ -1922,10 +1922,13 @@ impl VueHost {
                 id: target.0,
                 value: quantize_range_value(&widget.props, value),
             }),
-            WidgetKind::ListItem | WidgetKind::SidebarRow | WidgetKind::InteractiveCard => {
-                Some(BridgeEvent::Select { id: target.0 })
+            WidgetKind::ListItem
+            | WidgetKind::SidebarRow
+            | WidgetKind::InteractiveCard
+            | WidgetKind::TableRow => Some(BridgeEvent::Select { id: target.0 }),
+            WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Chip => {
+                Some(BridgeEvent::Press { id: target.0 })
             }
-            WidgetKind::Button | WidgetKind::Chip => Some(BridgeEvent::Press { id: target.0 }),
             _ => None,
         };
         if let Some(event) = event {
@@ -2416,10 +2419,12 @@ impl VueHost {
                 };
                 let activates = match widget.kind {
                     WidgetKind::Button
+                    | WidgetKind::IconButton
                     | WidgetKind::Chip
                     | WidgetKind::ListItem
                     | WidgetKind::SidebarRow
-                    | WidgetKind::InteractiveCard => {
+                    | WidgetKind::InteractiveCard
+                    | WidgetKind::TableRow => {
                         !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
                     }
                     WidgetKind::Switch | WidgetKind::Checkbox => {
@@ -2693,7 +2698,10 @@ impl VueHost {
                     widget.kind.is_choice_field()
                         || matches!(
                             widget.kind,
-                            WidgetKind::Input | WidgetKind::Textarea | WidgetKind::ContextMenu
+                            WidgetKind::Input
+                                | WidgetKind::NumberInput
+                                | WidgetKind::Textarea
+                                | WidgetKind::ContextMenu
                         )
                 });
             let document = self.document.lock().expect("vue doc");
@@ -2712,6 +2720,7 @@ impl VueHost {
                     "input"
                         | "textarea"
                         | "nana-input"
+                        | "nana-text-input"
                         | "nana-textarea"
                         | "nana-context-menu"
                         | "nana-search"
@@ -3221,10 +3230,16 @@ fn is_focusable_tag(tag: &str) -> bool {
             | "nana-switch"
             | "nana-sidebar-row"
             | "nana-input"
+            | "nana-text-input"
+            | "nana-number-input"
+            | "nana-icon-button"
             | "nana-textarea"
             | "nana-checkbox"
             | "nana-select"
             | "nana-range"
+            | "nana-range-field"
+            | "nana-list-item"
+            | "nana-scroll-view"
     )
 }
 

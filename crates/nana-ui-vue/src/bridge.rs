@@ -67,9 +67,13 @@ pub enum WidgetKind {
     Box,
     Text,
     Button,
+    /// Compact icon control → Runtime `IconButton` (`nana.icon-button`).
+    IconButton,
     /// Compact selectable chip — Button Selected/Subtle variant.
     Chip,
     Input,
+    /// Numeric stepper → Runtime `NumberInput` (`nana.number-input`).
+    NumberInput,
     Textarea,
     Checkbox,
     Switch,
@@ -82,7 +86,15 @@ pub enum WidgetKind {
     Segmented,
     Range,
     Card,
+    /// Horizontal or vertical rule → Runtime `Divider`.
+    Divider,
+    /// Image/file preview tile → Runtime `Thumbnail`.
+    Thumbnail,
+    /// Vertical item stack → Runtime `List`.
+    List,
     ListItem,
+    /// Scroll container with optional chrome → Runtime `ScrollView`.
+    ScrollView,
     EmptyState,
     StatusBadge,
     ValidationMessage,
@@ -139,73 +151,115 @@ pub enum WidgetKind {
     SplitPane,
     /// App shell chrome → Runtime `AppShell` (title bar + body + overlay slots).
     AppShell,
+    /// Desktop workspace chrome → Runtime `DesktopShell`.
+    DesktopShell,
+    /// Window title bar → Runtime `AppTitleBar`.
+    AppTitleBar,
+    /// Pane header / tabs / body chrome → Runtime `PaneChrome`.
+    PaneChrome,
+    /// Sidebar section header + body → Runtime `SidebarSection`.
+    SidebarSection,
+    /// Sidebar footer region → Runtime `SidebarFooter`.
+    SidebarFooter,
     /// Settings content chrome → Runtime `SettingsPage` (header + scroll).
     SettingsPage,
+    /// Collapsible settings card → Runtime `SettingsCollapsibleCard`.
+    SettingsCollapsibleCard,
+    /// Tabular grid → Runtime `Table`.
+    Table,
+    /// Table row → Runtime `TableRow`.
+    TableRow,
+    /// Table cell → Runtime `TableCell`.
+    TableCell,
+    /// Drag-reorder list → Runtime `ReorderList`.
+    ReorderList,
+    /// Sparkline / series leaf → Runtime `TimeSeriesChart`.
+    TimeSeriesChart,
+    /// Host-owned texture slot → Runtime `GpuTextureView`.
+    GpuTextureView,
+    /// In-pass GPU node → Runtime `GpuView`.
+    GpuView,
 }
 
 impl WidgetKind {
     /// Parse an explicit `nana-*` / createWidget kind string.
     pub fn parse(raw: &str) -> Option<Self> {
         let original = raw.trim().to_ascii_lowercase();
-        if original == "nana-form" {
-            return Some(Self::FormField);
-        }
         let s = original.strip_prefix("nana-").unwrap_or(&original);
         Some(match s {
-            "column" | "col" | "vstack" => Self::Column,
-            "row" | "hstack" => Self::Row,
-            "stack" | "box" | "container" | "layout" => Self::Box,
-            "text" | "label" => Self::Text,
-            "button" | "btn" => Self::Button,
+            "column" => Self::Column,
+            "row" => Self::Row,
+            "box" => Self::Box,
+            "text" => Self::Text,
+            "button" => Self::Button,
+            "icon-button" => Self::IconButton,
             "chip" => Self::Chip,
-            "input" | "text-field" | "textfield" => Self::Input,
+            "text-input" => Self::Input,
+            "number-input" => Self::NumberInput,
             "textarea" => Self::Textarea,
-            "checkbox" | "check" => Self::Checkbox,
-            "switch" | "toggle" => Self::Switch,
-            "select" | "pick-list" | "picklist" => Self::Select,
+            "checkbox" => Self::Checkbox,
+            "switch" => Self::Switch,
+            "select" => Self::Select,
             "dropdown" => Self::Dropdown,
-            "search" | "search-dropdown" | "searchdropdown" => Self::SearchDropdown,
-            "tabs" | "tab-list" | "tablist" => Self::Tabs,
-            "segmented" | "segmented-control" => Self::Segmented,
-            "range" | "range-field" | "slider" => Self::Range,
+            "search" => Self::SearchDropdown,
+            "tabs" => Self::Tabs,
+            "segmented" => Self::Segmented,
+            "range-field" => Self::Range,
             "card" => Self::Card,
-            "list-item" | "listitem" | "li" => Self::ListItem,
-            "empty" | "empty-state" | "emptystate" => Self::EmptyState,
-            "status" | "status-badge" | "statusbadge" => Self::StatusBadge,
-            "validation" | "validation-message" | "validationmessage" => Self::ValidationMessage,
-            "labeled-value" | "labeledvalue" => Self::LabeledValue,
+            "divider" => Self::Divider,
+            "thumbnail" => Self::Thumbnail,
+            "list" => Self::List,
+            "list-item" => Self::ListItem,
+            "scroll-view" => Self::ScrollView,
+            "empty-state" => Self::EmptyState,
+            "status-badge" => Self::StatusBadge,
+            "validation-message" => Self::ValidationMessage,
+            "labeled-value" => Self::LabeledValue,
             "progress" => Self::Progress,
-            "spinner" | "loading" => Self::Spinner,
-            "form-field" | "formfield" => Self::FormField,
-            "interactive-card" | "interactivecard" => Self::InteractiveCard,
+            "spinner" => Self::Spinner,
+            "form-field" => Self::FormField,
+            "interactive-card" => Self::InteractiveCard,
             "skeleton" => Self::Skeleton,
-            "level-meter" | "levelmeter" | "level" => Self::LevelMeter,
-            "sidebar-frame" | "sidebarframe" | "sidebar_frame" => Self::SidebarFrame,
-            "sidebar-row" | "sidebarrow" | "sidebar_row" => Self::SidebarRow,
-            "settings-row" | "settingsrow" => Self::SettingsRow,
-            "settings-card" | "settingscard" => Self::SettingsCard,
+            "level-meter" => Self::LevelMeter,
+            "sidebar-frame" => Self::SidebarFrame,
+            "sidebar-row" => Self::SidebarRow,
+            "settings-row" => Self::SettingsRow,
+            "settings-card" => Self::SettingsCard,
             "icon" => Self::Icon,
-            "dialog" | "modal" => Self::Dialog,
-            "drawer" | "sheet" => Self::Drawer,
+            "dialog" => Self::Dialog,
+            "drawer" => Self::Drawer,
             "popover" => Self::Popover,
-            "context-menu" | "contextmenu" => Self::ContextMenu,
+            "context-menu" => Self::ContextMenu,
             "toast" => Self::Toast,
             "tooltip" => Self::Tooltip,
-            "action-menu" | "actionmenu" => Self::ActionMenu,
-            "action-menu-item" | "actionmenuitem" => Self::ActionMenuItem,
-            "xy-pad" | "xypad" | "xy_pad" => Self::XYPad,
-            "qr-code" | "qr" | "qrcode" => Self::QrCode,
-            "command-palette" | "commandpalette" => Self::CommandPalette,
-            "tree-view" | "treeview" => Self::TreeView,
-            "calendar" | "calendar-heatmap" => Self::CalendarHeatmap,
-            "image-viewer" | "imageviewer" => Self::ImageViewer,
-            "markdown" | "native-markdown" | "nativemarkdown" => Self::NativeMarkdown,
-            "graph-canvas" | "graphcanvas" => Self::GraphCanvas,
+            "action-menu" => Self::ActionMenu,
+            "action-menu-item" => Self::ActionMenuItem,
+            "xy-pad" => Self::XYPad,
+            "qr-code" => Self::QrCode,
+            "command-palette" => Self::CommandPalette,
+            "tree-view" => Self::TreeView,
+            "calendar-heatmap" => Self::CalendarHeatmap,
+            "image-viewer" => Self::ImageViewer,
+            "native-markdown" => Self::NativeMarkdown,
+            "graph-canvas" => Self::GraphCanvas,
             "workspace" => Self::Workspace,
             "dock" => Self::Dock,
-            "split-pane" | "splitpane" => Self::SplitPane,
-            "app-shell" | "appshell" => Self::AppShell,
-            "settings-page" | "settingspage" => Self::SettingsPage,
+            "split-pane" => Self::SplitPane,
+            "app-shell" => Self::AppShell,
+            "desktop-shell" => Self::DesktopShell,
+            "app-title-bar" => Self::AppTitleBar,
+            "pane-chrome" => Self::PaneChrome,
+            "sidebar-section" => Self::SidebarSection,
+            "sidebar-footer" => Self::SidebarFooter,
+            "settings-page" => Self::SettingsPage,
+            "settings-collapsible-card" => Self::SettingsCollapsibleCard,
+            "table" => Self::Table,
+            "table-row" => Self::TableRow,
+            "table-cell" => Self::TableCell,
+            "reorder-list" => Self::ReorderList,
+            "time-series-chart" => Self::TimeSeriesChart,
+            "gpu" => Self::GpuTextureView,
+            "gpu-view" => Self::GpuView,
             _ => return None,
         })
     }
@@ -217,19 +271,25 @@ impl WidgetKind {
             Self::Box => "box",
             Self::Text => "text",
             Self::Button => "button",
+            Self::IconButton => "icon-button",
             Self::Chip => "chip",
-            Self::Input => "input",
+            Self::Input => "text-input",
+            Self::NumberInput => "number-input",
             Self::Textarea => "textarea",
             Self::Checkbox => "checkbox",
             Self::Switch => "switch",
             Self::Select => "select",
             Self::Dropdown => "dropdown",
-            Self::SearchDropdown => "search-dropdown",
+            Self::SearchDropdown => "search",
             Self::Tabs => "tabs",
             Self::Segmented => "segmented",
-            Self::Range => "range",
+            Self::Range => "range-field",
             Self::Card => "card",
+            Self::Divider => "divider",
+            Self::Thumbnail => "thumbnail",
+            Self::List => "list",
             Self::ListItem => "list-item",
+            Self::ScrollView => "scroll-view",
             Self::EmptyState => "empty-state",
             Self::StatusBadge => "status-badge",
             Self::ValidationMessage => "validation-message",
@@ -265,7 +325,20 @@ impl WidgetKind {
             Self::Dock => "dock",
             Self::SplitPane => "split-pane",
             Self::AppShell => "app-shell",
+            Self::DesktopShell => "desktop-shell",
+            Self::AppTitleBar => "app-title-bar",
+            Self::PaneChrome => "pane-chrome",
+            Self::SidebarSection => "sidebar-section",
+            Self::SidebarFooter => "sidebar-footer",
             Self::SettingsPage => "settings-page",
+            Self::SettingsCollapsibleCard => "settings-collapsible-card",
+            Self::Table => "table",
+            Self::TableRow => "table-row",
+            Self::TableCell => "table-cell",
+            Self::ReorderList => "reorder-list",
+            Self::TimeSeriesChart => "time-series-chart",
+            Self::GpuTextureView => "gpu",
+            Self::GpuView => "gpu-view",
         }
     }
 
@@ -276,19 +349,25 @@ impl WidgetKind {
             Self::Box => "nana-box",
             Self::Text => "nana-text",
             Self::Button => "nana-button",
+            Self::IconButton => "nana-icon-button",
             Self::Chip => "nana-chip",
-            Self::Input => "nana-input",
+            Self::Input => "nana-text-input",
+            Self::NumberInput => "nana-number-input",
             Self::Textarea => "nana-textarea",
             Self::Checkbox => "nana-checkbox",
             Self::Switch => "nana-switch",
             Self::Select => "nana-select",
             Self::Dropdown => "nana-dropdown",
-            Self::SearchDropdown => "nana-search-dropdown",
+            Self::SearchDropdown => "nana-search",
             Self::Tabs => "nana-tabs",
             Self::Segmented => "nana-segmented",
-            Self::Range => "nana-range",
+            Self::Range => "nana-range-field",
             Self::Card => "nana-card",
+            Self::Divider => "nana-divider",
+            Self::Thumbnail => "nana-thumbnail",
+            Self::List => "nana-list",
             Self::ListItem => "nana-list-item",
+            Self::ScrollView => "nana-scroll-view",
             Self::EmptyState => "nana-empty-state",
             Self::StatusBadge => "nana-status-badge",
             Self::ValidationMessage => "nana-validation-message",
@@ -316,15 +395,28 @@ impl WidgetKind {
             Self::QrCode => "nana-qr-code",
             Self::CommandPalette => "nana-command-palette",
             Self::TreeView => "nana-tree-view",
-            Self::CalendarHeatmap => "nana-calendar",
+            Self::CalendarHeatmap => "nana-calendar-heatmap",
             Self::ImageViewer => "nana-image-viewer",
-            Self::NativeMarkdown => "nana-markdown",
+            Self::NativeMarkdown => "nana-native-markdown",
             Self::GraphCanvas => "nana-graph-canvas",
             Self::Workspace => "nana-workspace",
             Self::Dock => "nana-dock",
             Self::SplitPane => "nana-split-pane",
             Self::AppShell => "nana-app-shell",
+            Self::DesktopShell => "nana-desktop-shell",
+            Self::AppTitleBar => "nana-app-title-bar",
+            Self::PaneChrome => "nana-pane-chrome",
+            Self::SidebarSection => "nana-sidebar-section",
+            Self::SidebarFooter => "nana-sidebar-footer",
             Self::SettingsPage => "nana-settings-page",
+            Self::SettingsCollapsibleCard => "nana-settings-collapsible-card",
+            Self::Table => "nana-table",
+            Self::TableRow => "nana-table-row",
+            Self::TableCell => "nana-table-cell",
+            Self::ReorderList => "nana-reorder-list",
+            Self::TimeSeriesChart => "nana-time-series-chart",
+            Self::GpuTextureView => "nana-gpu",
+            Self::GpuView => "nana-gpu-view",
         }
     }
 
@@ -340,8 +432,16 @@ impl WidgetKind {
                 | Self::Row
                 | Self::Box
                 | Self::SidebarFrame
+                | Self::SidebarSection
+                | Self::SidebarFooter
                 | Self::Card
+                | Self::List
+                | Self::ScrollView
+                | Self::Table
+                | Self::DesktopShell
+                | Self::PaneChrome
                 | Self::SettingsCard
+                | Self::SettingsCollapsibleCard
         )
     }
 
@@ -530,8 +630,8 @@ impl WidgetProps {
         }
         match key.as_str() {
             "data" | "nodes" | "edges" | "model" | "source" | "markdown" | "tree" | "items"
-            | "viewport" | "selection" | "layout" | "root" | "axis" | "size" | "default-size"
-            | "min" | "max" | "settings" | "tab" | "hide-header" => {
+            | "values" | "series" | "viewport" | "selection" | "layout" | "root" | "axis"
+            | "size" | "default-size" | "min" | "max" | "settings" | "tab" | "hide-header" => {
                 self.persist_native_payload(&key, value);
             }
             "options" => {
@@ -967,12 +1067,16 @@ impl WidgetProps {
                 self.attrs.insert("role".into(), self.role.clone());
             }
             "side" | "drawer-side" | "placement" => self.side = host_string(value),
-            "axis" => {
-                let axis = host_string(value);
-                if !axis.is_empty() {
-                    self.attrs.insert("axis".into(), axis);
+            "axis" | "axes" | "scrollbars" | "scrollbar" | "orientation" | "thickness"
+            | "inset" | "precision" | "aspect" | "header" | "column-header" | "columnheader"
+            | "tree-drop" | "treedrop" | "spacing" | "collapsible" | "expanded" | "count"
+            | "window-controls" | "windowcontrols" | "maximized" | "center-width"
+            | "centerwidth" => {
+                let raw = host_string(value);
+                if raw.is_empty() && !matches!(value, nana_js_engine::HostValue::Bool(true)) {
+                    self.attrs.remove(&key);
                 } else {
-                    self.attrs.remove("axis");
+                    self.attrs.insert(key, raw);
                 }
             }
             "options" => self.options = parse_options(value),
@@ -2959,8 +3063,10 @@ impl MessageBridge {
         {
             layout.inherit_typography_from(&parent.props.layout);
         }
-        if matches!(kind, WidgetKind::Input | WidgetKind::Textarea)
-            && !self.generated_pseudo_rules.is_empty()
+        if matches!(
+            kind,
+            WidgetKind::Input | WidgetKind::NumberInput | WidgetKind::Textarea
+        ) && !self.generated_pseudo_rules.is_empty()
         {
             let matched = crate::css_interactive::matched_generated_pseudo(
                 &self.generated_pseudo_rules,
@@ -4878,11 +4984,14 @@ impl MessageBridge {
             None => return Vec::new(),
         };
         match kind {
-            WidgetKind::Button | WidgetKind::Chip => {
+            WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Chip => {
                 self.push_event(BridgeEvent::Press { id });
                 vec!["press", "click"]
             }
-            WidgetKind::SidebarRow | WidgetKind::ListItem | WidgetKind::InteractiveCard => {
+            WidgetKind::SidebarRow
+            | WidgetKind::ListItem
+            | WidgetKind::InteractiveCard
+            | WidgetKind::TableRow => {
                 self.push_event(BridgeEvent::Select { id });
                 vec!["select", "click"]
             }
@@ -7164,28 +7273,19 @@ mod tests {
             WidgetKind::parse("command-palette"),
             Some(WidgetKind::CommandPalette)
         );
-        assert_eq!(
-            WidgetKind::parse("commandpalette"),
-            Some(WidgetKind::CommandPalette)
-        );
+        assert_eq!(WidgetKind::parse("commandpalette"), None);
         assert_eq!(
             WidgetKind::parse("nana-tree-view"),
             Some(WidgetKind::TreeView)
         );
         assert_eq!(WidgetKind::parse("tree-view"), Some(WidgetKind::TreeView));
-        assert_eq!(WidgetKind::parse("treeview"), Some(WidgetKind::TreeView));
-        assert_eq!(
-            WidgetKind::parse("nana-calendar"),
-            Some(WidgetKind::CalendarHeatmap)
-        );
+        assert_eq!(WidgetKind::parse("treeview"), None);
+        assert_eq!(WidgetKind::parse("nana-calendar"), None);
         assert_eq!(
             WidgetKind::parse("calendar-heatmap"),
             Some(WidgetKind::CalendarHeatmap)
         );
-        assert_eq!(
-            WidgetKind::parse("calendar"),
-            Some(WidgetKind::CalendarHeatmap)
-        );
+        assert_eq!(WidgetKind::parse("calendar"), None);
         assert_eq!(
             WidgetKind::parse("nana-image-viewer"),
             Some(WidgetKind::ImageViewer)
@@ -7194,18 +7294,12 @@ mod tests {
             WidgetKind::parse("image-viewer"),
             Some(WidgetKind::ImageViewer)
         );
-        assert_eq!(
-            WidgetKind::parse("nana-markdown"),
-            Some(WidgetKind::NativeMarkdown)
-        );
+        assert_eq!(WidgetKind::parse("nana-markdown"), None);
         assert_eq!(
             WidgetKind::parse("native-markdown"),
             Some(WidgetKind::NativeMarkdown)
         );
-        assert_eq!(
-            WidgetKind::parse("markdown"),
-            Some(WidgetKind::NativeMarkdown)
-        );
+        assert_eq!(WidgetKind::parse("markdown"), None);
         assert_eq!(
             WidgetKind::parse("nana-graph-canvas"),
             Some(WidgetKind::GraphCanvas)
@@ -7214,10 +7308,7 @@ mod tests {
             WidgetKind::parse("graph-canvas"),
             Some(WidgetKind::GraphCanvas)
         );
-        assert_eq!(
-            WidgetKind::parse("graphcanvas"),
-            Some(WidgetKind::GraphCanvas)
-        );
+        assert_eq!(WidgetKind::parse("graphcanvas"), None);
         assert_eq!(
             WidgetKind::parse("nana-workspace"),
             Some(WidgetKind::Workspace)
@@ -7241,14 +7332,11 @@ mod tests {
             WidgetKind::parse("settings-page"),
             Some(WidgetKind::SettingsPage)
         );
-        assert_eq!(
-            WidgetKind::parse("settingspage"),
-            Some(WidgetKind::SettingsPage)
-        );
+        assert_eq!(WidgetKind::parse("settingspage"), None);
         assert_eq!(WidgetKind::parse("form"), None);
-        assert_eq!(WidgetKind::parse("nana-form"), Some(WidgetKind::FormField));
+        assert_eq!(WidgetKind::parse("nana-form"), None);
         assert_eq!(WidgetKind::parse("form-field"), Some(WidgetKind::FormField));
-        assert_eq!(WidgetKind::parse("formfield"), Some(WidgetKind::FormField));
+        assert_eq!(WidgetKind::parse("formfield"), None);
         assert_eq!(
             WidgetKind::parse("nana-form-field"),
             Some(WidgetKind::FormField)
@@ -7262,15 +7350,94 @@ mod tests {
             WidgetKind::CommandPalette.element_tag(),
             "nana-command-palette"
         );
-        assert_eq!(WidgetKind::CalendarHeatmap.element_tag(), "nana-calendar");
+        assert_eq!(
+            WidgetKind::CalendarHeatmap.element_tag(),
+            "nana-calendar-heatmap"
+        );
         assert_eq!(WidgetKind::NativeMarkdown.as_str(), "native-markdown");
+        assert_eq!(
+            WidgetKind::NativeMarkdown.element_tag(),
+            "nana-native-markdown"
+        );
         assert_eq!(WidgetKind::GraphCanvas.element_tag(), "nana-graph-canvas");
         assert_eq!(WidgetKind::GraphCanvas.as_str(), "graph-canvas");
+        assert_eq!(
+            WidgetKind::parse("nana-icon-button"),
+            Some(WidgetKind::IconButton)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-number-input"),
+            Some(WidgetKind::NumberInput)
+        );
+        assert_eq!(WidgetKind::parse("nana-number"), None);
+        assert_eq!(WidgetKind::parse("nana-divider"), Some(WidgetKind::Divider));
+        assert_eq!(
+            WidgetKind::parse("nana-thumbnail"),
+            Some(WidgetKind::Thumbnail)
+        );
+        assert_eq!(WidgetKind::parse("nana-list"), Some(WidgetKind::List));
+        assert_eq!(
+            WidgetKind::parse("nana-scroll-view"),
+            Some(WidgetKind::ScrollView)
+        );
+        assert_eq!(WidgetKind::parse("nana-scroll"), None);
+        assert_eq!(WidgetKind::parse("nana-table"), Some(WidgetKind::Table));
+        assert_eq!(
+            WidgetKind::parse("nana-table-row"),
+            Some(WidgetKind::TableRow)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-table-cell"),
+            Some(WidgetKind::TableCell)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-reorder-list"),
+            Some(WidgetKind::ReorderList)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-time-series-chart"),
+            Some(WidgetKind::TimeSeriesChart)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-desktop-shell"),
+            Some(WidgetKind::DesktopShell)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-app-title-bar"),
+            Some(WidgetKind::AppTitleBar)
+        );
+        assert_eq!(WidgetKind::parse("title-bar"), None);
+        assert_eq!(
+            WidgetKind::parse("nana-pane-chrome"),
+            Some(WidgetKind::PaneChrome)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-sidebar-section"),
+            Some(WidgetKind::SidebarSection)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-sidebar-footer"),
+            Some(WidgetKind::SidebarFooter)
+        );
+        assert_eq!(
+            WidgetKind::parse("nana-settings-collapsible-card"),
+            Some(WidgetKind::SettingsCollapsibleCard)
+        );
+        assert_eq!(WidgetKind::ScrollView.element_tag(), "nana-scroll-view");
+        assert_eq!(
+            WidgetKind::parse("nana-gpu"),
+            Some(WidgetKind::GpuTextureView)
+        );
+        assert_eq!(WidgetKind::parse("gpu-view"), Some(WidgetKind::GpuView));
+        assert_eq!(WidgetKind::parse("nana-virtual-list"), None);
+        assert_eq!(WidgetKind::GpuTextureView.element_tag(), "nana-gpu");
+        assert_eq!(WidgetKind::IconButton.as_str(), "icon-button");
         assert!(WidgetKind::CommandPalette.is_overlay());
         assert!(WidgetKind::ImageViewer.is_overlay());
         assert!(!WidgetKind::GraphCanvas.is_overlay());
         assert!(!WidgetKind::Workspace.is_overlay());
         assert!(!WidgetKind::TreeView.is_overlay());
+        assert!(!WidgetKind::ScrollView.is_overlay());
     }
 
     #[test]
@@ -7408,15 +7575,12 @@ mod tests {
     #[test]
     fn select_dropdown_and_search_stay_distinct_kinds() {
         assert_eq!(WidgetKind::parse("nana-select"), Some(WidgetKind::Select));
-        assert_eq!(WidgetKind::parse("pick-list"), Some(WidgetKind::Select));
+        assert_eq!(WidgetKind::parse("pick-list"), None);
         assert_eq!(
             WidgetKind::parse("nana-dropdown"),
             Some(WidgetKind::Dropdown)
         );
-        assert_eq!(
-            WidgetKind::parse("nana-search-dropdown"),
-            Some(WidgetKind::SearchDropdown)
-        );
+        assert_eq!(WidgetKind::parse("nana-search-dropdown"), None);
         assert_eq!(
             WidgetKind::parse("nana-search"),
             Some(WidgetKind::SearchDropdown)

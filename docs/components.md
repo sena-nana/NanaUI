@@ -19,7 +19,7 @@ import { NanaButton, NanaInput, NanaDialog } from "@nanaui/nanavue-components";
 import "@nanaui/nanavue-components/controls.css";
 ```
 
-名称对照和 props 见该包 README。视觉与尺寸见 [视觉](look.md)。
+名称对照和 props 见该包 README（含 `NanaScrollView`、`NanaNumberInput`、`NanaTable`、`NanaDesktopShell` 等与本目录一一对应的包装）。视觉与尺寸见 [视觉](look.md)。
 
 ## 目录
 
@@ -51,7 +51,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。
 
-大列表、表格、树用 `AppContext::materialize_virtual_*`。可见窗口外不建 live 节点；滚动不重排整棵布局。
+大列表、表格、树：Rust 用 `AppContext::materialize_virtual_*`；Vue 用 `NanaVirtualList` / `NanaVirtualTable` / `NanaVirtualTree`（host tag 是唯一的 `nana-scroll-view`）。两边同一份窗口几何（`VirtualListLayout::window`），可见窗口外不建 live 节点；滚动不重排整棵布局。GPU 节点走同一张 `ComponentRegistry`：`nana-gpu` → `nana.gpu`，`nana-gpu-view` → `nana.gpu-view`。每个控件只保留一个 tag，等于 `ComponentTypeId` 去掉 `nana.` 前缀。
 
 ## 滚动与滚动条
 

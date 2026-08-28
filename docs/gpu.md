@@ -4,7 +4,7 @@
 
 先把一扇普通窗口跑通，见 [开始](start.md)，再把画面挂上去。心智模型见 [框架如何运行](how-it-works.md)。
 
-第一次接入：把画面画到可采样纹理，树上挂 `GpuTextureView`。Vue `<nana-gpu>`、Live2D 多层、预览视口都是这条。
+第一次接入：把画面画到可采样纹理，树上挂 `GpuTextureView`。Vue 用 `NanaGpu` / `<nana-gpu>`，Live2D 多层、预览视口都是这条。
 
 ```bash
 cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts

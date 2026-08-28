@@ -47,43 +47,56 @@ const HOST_TAGS = {
   NanaTextarea: "nana-textarea",
   NanaCommandPalette: "nana-command-palette",
   NanaTreeView: "nana-tree-view",
-  NanaCalendar: "nana-calendar",
+  NanaCalendar: "nana-calendar-heatmap",
   NanaImageViewer: "nana-image-viewer",
-  NanaMarkdown: "nana-markdown",
+  NanaMarkdown: "nana-native-markdown",
   NanaGraphCanvas: "nana-graph-canvas",
   NanaWorkspace: "nana-workspace",
   NanaDock: "nana-dock",
   NanaSplitPane: "nana-split-pane",
   NanaAppShell: "nana-app-shell",
   NanaSettingsPage: "nana-settings-page",
+  NanaIconButton: "nana-icon-button",
+  NanaIcon: "nana-icon",
+  NanaNumberInput: "nana-number-input",
+  NanaDivider: "nana-divider",
+  NanaThumbnail: "nana-thumbnail",
+  NanaCard: "nana-card",
+  NanaList: "nana-list",
+  NanaListItem: "nana-list-item",
+  NanaScrollView: "nana-scroll-view",
+  NanaProgress: "nana-progress",
+  NanaSpinner: "nana-spinner",
+  NanaEmptyState: "nana-empty-state",
+  NanaStatusBadge: "nana-status-badge",
+  NanaValidationMessage: "nana-validation-message",
+  NanaLabeledValue: "nana-labeled-value",
+  NanaFormField: "nana-form-field",
+  NanaInteractiveCard: "nana-interactive-card",
+  NanaSkeleton: "nana-skeleton",
+  NanaLevelMeter: "nana-level-meter",
+  NanaTable: "nana-table",
+  NanaTableRow: "nana-table-row",
+  NanaTableCell: "nana-table-cell",
+  NanaReorderList: "nana-reorder-list",
+  NanaTimeSeriesChart: "nana-time-series-chart",
+  NanaDesktopShell: "nana-desktop-shell",
+  NanaAppTitleBar: "nana-app-title-bar",
+  NanaPaneChrome: "nana-pane-chrome",
+  NanaSidebarSection: "nana-sidebar-section",
+  NanaSidebarFooter: "nana-sidebar-footer",
+  NanaSettingsCollapsibleCard: "nana-settings-collapsible-card",
+  NanaGpu: "nana-gpu",
+  NanaVirtualList: "nana-scroll-view",
+  NanaVirtualTable: "nana-scroll-view",
+  NanaVirtualTree: "nana-scroll-view",
 };
 
-const SOURCE_FILES = {
-  NanaDialog: "src/NanaDialog.js",
-  NanaDrawer: "src/NanaDrawer.js",
-  NanaPopover: "src/NanaPopover.js",
-  NanaContextMenu: "src/NanaContextMenu.js",
-  NanaToast: "src/NanaToast.js",
-  NanaTooltip: "src/NanaTooltip.js",
-  NanaActionMenu: "src/NanaActionMenu.js",
-  NanaXyPad: "src/NanaXyPad.js",
-  NanaQrCode: "src/NanaQrCode.js",
-  NanaSelect: "src/NanaSelect.js",
-  NanaDropdown: "src/NanaDropdown.js",
-  NanaSearch: "src/NanaSearch.js",
-  NanaTextarea: "src/NanaTextarea.js",
-  NanaCommandPalette: "src/NanaCommandPalette.js",
-  NanaTreeView: "src/NanaTreeView.js",
-  NanaCalendar: "src/NanaCalendar.js",
-  NanaImageViewer: "src/NanaImageViewer.js",
-  NanaMarkdown: "src/NanaMarkdown.js",
-  NanaGraphCanvas: "src/NanaGraphCanvas.js",
-  NanaWorkspace: "src/NanaWorkspace.js",
-  NanaDock: "src/NanaDock.js",
-  NanaSplitPane: "src/NanaSplitPane.js",
-  NanaAppShell: "src/NanaAppShell.js",
-  NanaSettingsPage: "src/NanaSettingsPage.js",
-};
+const SOURCE_FILES = Object.fromEntries(
+  Object.keys(HOST_TAGS).map((name) => [name, `src/${name}.js`]),
+);
+
+const CATALOG_EXPORTS = Object.keys(HOST_TAGS);
 
 /** Professional first-knife wrappers → Runtime CommandPalette / TreeView / CalendarHeatmap / ImageViewer / NativeMarkdown / GraphCanvas. */
 const PROFESSIONAL_EXPORTS = [
@@ -241,6 +254,63 @@ describe("L2 professional first-knife exports", () => {
       assert.doesNotMatch(src, /\bImage\s*\(/);
       assert.doesNotMatch(src, /createElementNS/);
     }
+  });
+});
+
+describe("Runtime catalog Vue wrappers", () => {
+  for (const name of CATALOG_EXPORTS) {
+    test(`index.js re-exports ${name}`, () => {
+      assert.match(
+        indexSrc,
+        new RegExp(`\\b${name}\\b`),
+        `${name} must be exported from src/index.js`,
+      );
+    });
+  }
+
+  test("package.json exports subpaths for catalog wrappers", () => {
+    for (const name of CATALOG_EXPORTS) {
+      assert.ok(pkg.exports[`./${name}`], `missing exports["./${name}"]`);
+    }
+  });
+
+  test("NanaScrollView forwards scrollbars and axes", () => {
+    const src = readFileSync(join(root, "src/NanaScrollView.js"), "utf8");
+    assert.match(src, /scrollbars:\s*props\.scrollbars/);
+    assert.match(src, /axes:\s*props\.axes/);
+  });
+
+  test("NanaNumberInput does not use HTML type=number", () => {
+    const src = readFileSync(join(root, "src/NanaNumberInput.js"), "utf8");
+    assert.match(src, /nana-number-input/);
+    assert.doesNotMatch(src, /type:\s*["']number["']/);
+  });
+
+  test("virtual wrappers and NanaGpu are exported", () => {
+    for (const name of ["NanaGpu", "NanaVirtualList", "NanaVirtualTable", "NanaVirtualTree"]) {
+      assert.match(indexSrc, new RegExp(`\\b${name}\\b`));
+      assert.ok(pkg.exports[`./${name}`], `missing exports["./${name}"]`);
+    }
+  });
+
+  test("virtual wrappers window through unique nana-scroll-view tag", () => {
+    const tags = {
+      "src/NanaVirtualList.js": "nana-scroll-view",
+      "src/NanaVirtualTable.js": "nana-scroll-view",
+      "src/NanaVirtualTree.js": "nana-scroll-view",
+    };
+    for (const [file, tag] of Object.entries(tags)) {
+      const src = readFileSync(join(root, file), "utf8");
+      assert.match(src, new RegExp(`h\\(\\s*["']${tag}["']`));
+      assert.match(src, /virtualWindow/);
+    }
+  });
+
+  test("NanaGpu forwards source onto nana-gpu", () => {
+    const src = readFileSync(join(root, "src/NanaGpu.js"), "utf8");
+    assert.match(src, /h\(\s*["']nana-gpu["']/);
+    assert.match(src, /source/);
+    assert.match(src, /data-nana-gpu/);
   });
 });
 

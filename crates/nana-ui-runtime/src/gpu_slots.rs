@@ -12,6 +12,7 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
     LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
+    component_registry::{RegisterableComponent, SemanticSpec},
 };
 
 /// Scene renderer key for [`GpuView`].
@@ -424,9 +425,87 @@ fn resource_key(id: u64) -> Arc<str> {
 fn fill_layout(style: &NodeStyle) -> NodeStyle {
     let mut style = style.clone();
     let layout = Arc::make_mut(&mut style.layout);
-    layout.width = Some(LengthSpec::Fill);
-    layout.height = Some(LengthSpec::Fill);
+    if layout.width.is_none() {
+        layout.width = Some(LengthSpec::Fill);
+    }
+    if layout.height.is_none() {
+        layout.height = Some(LengthSpec::Fill);
+    }
     style
+}
+
+impl RegisterableComponent for GpuTextureView {
+    const TYPE_ID: &'static str = "nana.gpu";
+    const TAGS: &'static [&'static str] = &["gpu"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let slot = spec
+            .attr("data-nana-gpu")
+            .or_else(|| spec.attr("source"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| spec.display_label());
+        let mut view = GpuTextureView::new(slot.trim());
+        view.style.layout = Arc::clone(spec.layout);
+        if let Some(opacity) = spec.layout.opacity {
+            view.opacity = finite_opacity(opacity);
+        }
+        if let Some(radius) = spec.layout.border_radius {
+            view.corner_radius = finite_radius(radius);
+        }
+        if let Some(fit) = spec.attr("fit") {
+            view.fit = parse_content_fit(fit);
+        }
+        if spec.attr("pointer-events").is_some_and(|value| {
+            let value = value.trim();
+            value.is_empty()
+                || value.eq_ignore_ascii_case("auto")
+                || value.eq_ignore_ascii_case("true")
+        }) {
+            view.pointer_events = true;
+        }
+        if let Some(generation) = spec.attr("generation").and_then(|raw| raw.parse().ok()) {
+            view.replace_view(generation);
+        }
+        if let Some(version) = spec.attr("version").and_then(|raw| raw.parse().ok()) {
+            view.version = version;
+        }
+        view
+    }
+}
+
+impl RegisterableComponent for GpuView {
+    const TYPE_ID: &'static str = "nana.gpu-view";
+    const TAGS: &'static [&'static str] = &["gpu-view"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let slot = spec
+            .attr("slot")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(spec.value)
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        let mut view = GpuView::new(slot);
+        view.style.layout = Arc::clone(spec.layout);
+        if spec
+            .attr("mode")
+            .is_some_and(|value| value.eq_ignore_ascii_case("standalone"))
+        {
+            view.mode = GpuViewMode::Standalone;
+        }
+        if spec.number.is_finite() && spec.number != 0.0 {
+            view.seed = finite_seed(spec.number);
+        }
+        if let Some(seed) = spec.attr("seed").and_then(|raw| raw.parse().ok()) {
+            view.seed = finite_seed(seed);
+        }
+        view
+    }
+}
+
+fn parse_content_fit(raw: &str) -> nana_ui_core::ContentFit {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "contain" => nana_ui_core::ContentFit::Contain,
+        _ => nana_ui_core::ContentFit::Fill,
+    }
 }
 
 fn sanitize_scale(scale: f32) -> f32 {
@@ -894,5 +973,25 @@ mod tests {
             overlap_candidates.contains(&gpu),
             "hittable GPU slot remains under the overlay: {overlap_candidates:?}"
         );
+    }
+
+    #[test]
+    fn gpu_nodes_bind_from_semantic_slots() {
+        let type_id = crate::ComponentTypeId::new("nana.gpu").unwrap();
+        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
+        let mut spec = SemanticSpec::from_parts(&type_id, &layout);
+        let attrs = [("data-nana-gpu", "preview"), ("fit", "contain")];
+        spec.attrs = &attrs;
+        let texture = GpuTextureView::from_semantic(&spec);
+        assert_eq!(texture.resource.as_ref(), "preview");
+        assert_eq!(texture.fit, nana_ui_core::ContentFit::Contain);
+
+        let view_id = crate::ComponentTypeId::new("nana.gpu-view").unwrap();
+        let mut view_spec = SemanticSpec::from_parts(&view_id, &layout);
+        let view_attrs = [("slot", "9"), ("mode", "standalone")];
+        view_spec.attrs = &view_attrs;
+        let view = GpuView::from_semantic(&view_spec);
+        assert_eq!(view.slot_id, 9);
+        assert_eq!(view.mode, GpuViewMode::Standalone);
     }
 }

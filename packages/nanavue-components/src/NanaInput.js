@@ -1,6 +1,6 @@
 /**
  * NanaInput — single-line text field.
- * Semantic peer of Rust `Input` (`nana-input` → Runtime / Scene host).
+ * Semantic peer of Rust `TextInput` (`nana-text-input`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -16,7 +16,7 @@ export const NanaInput = {
   emits: ["update:modelValue", "input"],
   setup(props, { emit, attrs }) {
     return () =>
-      h("nana-input", {
+      h("nana-text-input", {
         ...attrs,
         value: props.modelValue,
         "model-value": props.modelValue,
@@ -24,7 +24,7 @@ export const NanaInput = {
         disabled: props.disabled,
         invalid: props.invalid,
         size: props.size,
-        "data-agent-id": attrs["data-agent-id"] || "nana.input",
+        "data-agent-id": attrs["data-agent-id"] || "nana.text-input",
         onInput: (ev) => {
           const value = ev?.value ?? ev ?? "";
           emit("update:modelValue", String(value));

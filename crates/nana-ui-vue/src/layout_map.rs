@@ -16,9 +16,20 @@ pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
         WidgetKind::Column
         | WidgetKind::Box
         | WidgetKind::SidebarFrame
+        | WidgetKind::SidebarSection
+        | WidgetKind::SidebarFooter
         | WidgetKind::SettingsCard
-        | WidgetKind::Card => {
+        | WidgetKind::SettingsCollapsibleCard
+        | WidgetKind::Card
+        | WidgetKind::List
+        | WidgetKind::ScrollView
+        | WidgetKind::Table
+        | WidgetKind::DesktopShell
+        | WidgetKind::PaneChrome => {
             layout.direction = Some(FlexDirection::Column);
+        }
+        WidgetKind::TableRow => {
+            layout.direction = Some(FlexDirection::Row);
         }
         _ => {}
     }
@@ -28,11 +39,9 @@ pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
 /// 布局 tag → `WidgetKind`（不含控件）。`nana-stack` 是 L3 `Stack` 的通用盒。
 pub fn layout_kind_from_tag(tag: &str) -> Option<WidgetKind> {
     match tag.trim().to_ascii_lowercase().as_str() {
-        "nana-column" | "nana-col" | "nana-vstack" => Some(WidgetKind::Column),
-        "nana-row" | "nana-hstack" => Some(WidgetKind::Row),
-        "nana-stack" | "stack" | "nana-box" | "nana-container" | "nana-layout" => {
-            Some(WidgetKind::Box)
-        }
+        "nana-column" => Some(WidgetKind::Column),
+        "nana-row" => Some(WidgetKind::Row),
+        "nana-stack" | "stack" | "nana-box" => Some(WidgetKind::Box),
         "nana-card" => Some(WidgetKind::Card),
         "nana-sidebar-frame" => Some(WidgetKind::SidebarFrame),
         "nana-settings-card" => Some(WidgetKind::SettingsCard),

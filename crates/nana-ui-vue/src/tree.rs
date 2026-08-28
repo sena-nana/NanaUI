@@ -1414,6 +1414,7 @@ impl NanaTreeDocument {
                 || matches!(
                     widget.kind,
                     crate::WidgetKind::Input
+                        | crate::WidgetKind::NumberInput
                         | crate::WidgetKind::Textarea
                         | crate::WidgetKind::ContextMenu
                         | crate::WidgetKind::CommandPalette
@@ -1421,10 +1422,16 @@ impl NanaTreeDocument {
                 && matches!(
                     widget.kind,
                     crate::WidgetKind::Button
+                        | crate::WidgetKind::IconButton
                         | crate::WidgetKind::Checkbox
                         | crate::WidgetKind::Switch
+                        | crate::WidgetKind::NumberInput
                         | crate::WidgetKind::Card
+                        | crate::WidgetKind::Divider
+                        | crate::WidgetKind::Thumbnail
+                        | crate::WidgetKind::List
                         | crate::WidgetKind::ListItem
+                        | crate::WidgetKind::ScrollView
                         | crate::WidgetKind::Range
                         | crate::WidgetKind::StatusBadge
                         | crate::WidgetKind::ValidationMessage
@@ -1465,7 +1472,20 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::Dock
                         | crate::WidgetKind::SplitPane
                         | crate::WidgetKind::AppShell
+                        | crate::WidgetKind::DesktopShell
+                        | crate::WidgetKind::AppTitleBar
+                        | crate::WidgetKind::PaneChrome
+                        | crate::WidgetKind::SidebarSection
+                        | crate::WidgetKind::SidebarFooter
                         | crate::WidgetKind::SettingsPage
+                        | crate::WidgetKind::SettingsCollapsibleCard
+                        | crate::WidgetKind::Table
+                        | crate::WidgetKind::TableRow
+                        | crate::WidgetKind::TableCell
+                        | crate::WidgetKind::ReorderList
+                        | crate::WidgetKind::TimeSeriesChart
+                        | crate::WidgetKind::GpuTextureView
+                        | crate::WidgetKind::GpuView
                 )
                 && self.runtime.text_input(id).is_some()
             {
@@ -1519,14 +1539,19 @@ impl NanaTreeDocument {
                         || matches!(
                             widget.kind,
                             crate::WidgetKind::Button
+                                | crate::WidgetKind::IconButton
                                 | crate::WidgetKind::Chip
                                 | crate::WidgetKind::Input
+                                | crate::WidgetKind::NumberInput
                                 | crate::WidgetKind::Textarea
                                 | crate::WidgetKind::Checkbox
                                 | crate::WidgetKind::Switch
                                 | crate::WidgetKind::Tabs
                                 | crate::WidgetKind::Segmented
                                 | crate::WidgetKind::Range
+                                | crate::WidgetKind::ListItem
+                                | crate::WidgetKind::TableRow
+                                | crate::WidgetKind::InteractiveCard
                         )),
             };
             if self.runtime.interaction(id) != Some(interaction) {
@@ -1549,12 +1574,16 @@ impl NanaTreeDocument {
                     crate::WidgetKind::Chip
                         | crate::WidgetKind::ListItem
                         | crate::WidgetKind::SidebarRow
+                        | crate::WidgetKind::TableRow
+                        | crate::WidgetKind::InteractiveCard
                 )
                 .then_some(widget.props.active),
                 multiline: matches!(widget.kind, crate::WidgetKind::Textarea),
                 editable: matches!(
                     widget.kind,
-                    crate::WidgetKind::Input | crate::WidgetKind::Textarea
+                    crate::WidgetKind::Input
+                        | crate::WidgetKind::NumberInput
+                        | crate::WidgetKind::Textarea
                 ) && !widget.props.attrs.contains_key("readonly"),
                 modal: matches!(
                     widget.kind,
@@ -1580,7 +1609,9 @@ impl NanaTreeDocument {
             }
             if matches!(
                 widget.kind,
-                crate::WidgetKind::Input | crate::WidgetKind::Textarea
+                crate::WidgetKind::Input
+                    | crate::WidgetKind::NumberInput
+                    | crate::WidgetKind::Textarea
             ) {
                 let mut next = self
                     .runtime
@@ -2965,6 +2996,9 @@ fn resolve_widget_component_type(
     {
         return Some(id.clone());
     }
+    if widget.kind == crate::WidgetKind::Chip {
+        return context.resolve_component_tag("button").cloned();
+    }
     if widget.kind == crate::WidgetKind::Icon {
         if icon_consumed_by_parent(widget, snapshot) || glyph_name_icon(widget).is_none() {
             return None;
@@ -2987,24 +3021,34 @@ fn resolve_widget_component_type(
         let tag = if widget.kind == crate::WidgetKind::SearchDropdown
             || crate::widget_map::is_search_dropdown(&widget.props)
         {
-            Some("search-dropdown")
+            Some("search")
         } else if widget.kind == crate::WidgetKind::Dropdown
             || crate::widget_map::is_dropdown_field(&widget.props)
         {
             Some("dropdown")
         } else {
-            None
+            Some("select")
         };
         if let Some(id) = tag.and_then(|tag| context.resolve_component_tag(tag)) {
             return Some(id.clone());
         }
     }
-    let tag = if widget.props.element_tag.is_empty() {
-        widget.kind.as_str()
-    } else {
-        widget.props.element_tag.as_str()
+    let kind = widget.kind;
+    let element_tag = widget.props.element_tag.as_str();
+    let try_tag = |tag: &str| {
+        if tag.is_empty() {
+            return None;
+        }
+        context.resolve_component_tag(tag).cloned()
     };
-    context.resolve_component_tag(tag).cloned()
+    let html_search = kind.is_layout() && element_tag.eq_ignore_ascii_case("search");
+    if !html_search && let Some(id) = try_tag(element_tag) {
+        return Some(id);
+    }
+    if element_tag.starts_with("nana-") {
+        return None;
+    }
+    try_tag(kind.element_tag()).or_else(|| try_tag(kind.as_str()))
 }
 
 fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
@@ -3019,8 +3063,10 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
                 | crate::WidgetKind::Box
                 | crate::WidgetKind::Row
                 | crate::WidgetKind::Button
+                | crate::WidgetKind::IconButton
                 | crate::WidgetKind::Chip
                 | crate::WidgetKind::Input
+                | crate::WidgetKind::NumberInput
                 | crate::WidgetKind::Textarea
                 | crate::WidgetKind::Checkbox
                 | crate::WidgetKind::Range
@@ -3064,7 +3110,24 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
                 | crate::WidgetKind::Dock
                 | crate::WidgetKind::SplitPane
                 | crate::WidgetKind::AppShell
+                | crate::WidgetKind::DesktopShell
+                | crate::WidgetKind::AppTitleBar
+                | crate::WidgetKind::PaneChrome
+                | crate::WidgetKind::SidebarSection
+                | crate::WidgetKind::SidebarFooter
                 | crate::WidgetKind::SettingsPage
+                | crate::WidgetKind::SettingsCollapsibleCard
+                | crate::WidgetKind::Divider
+                | crate::WidgetKind::Thumbnail
+                | crate::WidgetKind::List
+                | crate::WidgetKind::ScrollView
+                | crate::WidgetKind::Table
+                | crate::WidgetKind::TableRow
+                | crate::WidgetKind::TableCell
+                | crate::WidgetKind::ReorderList
+                | crate::WidgetKind::TimeSeriesChart
+                | crate::WidgetKind::GpuTextureView
+                | crate::WidgetKind::GpuView
         )
 }
 
@@ -3363,6 +3426,53 @@ fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String
             push_json(&mut extras, "root", &["root"]);
             push_json(&mut extras, "layout", &["layout"]);
         }
+        crate::WidgetKind::ScrollView => {
+            push(&mut extras, "scrollbars", &["scrollbars", "scrollbar"]);
+            push(&mut extras, "axes", &["axes", "axis", "direction"]);
+        }
+        crate::WidgetKind::NumberInput => {
+            push(&mut extras, "precision", &["precision"]);
+        }
+        crate::WidgetKind::Divider => {
+            push(&mut extras, "orientation", &["orientation"]);
+            push(&mut extras, "thickness", &["thickness"]);
+            push(&mut extras, "inset", &["inset"]);
+        }
+        crate::WidgetKind::Thumbnail => {
+            push(&mut extras, "aspect", &["aspect"]);
+        }
+        crate::WidgetKind::TableCell => {
+            push(
+                &mut extras,
+                "header",
+                &["header", "column-header", "columnheader"],
+            );
+        }
+        crate::WidgetKind::ReorderList => {
+            push(&mut extras, "tree-drop", &["tree-drop", "treedrop"]);
+            push(&mut extras, "spacing", &["spacing", "gap"]);
+        }
+        crate::WidgetKind::TimeSeriesChart => {
+            push_json(&mut extras, "values", &["values", "data", "series"]);
+        }
+        crate::WidgetKind::AppTitleBar => {
+            push(&mut extras, "maximized", &["maximized"]);
+            push(
+                &mut extras,
+                "window-controls",
+                &["window-controls", "windowcontrols"],
+            );
+            push(
+                &mut extras,
+                "center-width",
+                &["center-width", "centerwidth"],
+            );
+        }
+        crate::WidgetKind::SidebarSection => {
+            push(&mut extras, "collapsible", &["collapsible"]);
+            push(&mut extras, "expanded", &["expanded", "data-expanded"]);
+            push(&mut extras, "count", &["count"]);
+        }
         crate::WidgetKind::SplitPane => {
             push(&mut extras, "axis", &["axis"]);
             push(&mut extras, "size", &["size"]);
@@ -3414,6 +3524,7 @@ fn is_shell_composer_kind(kind: crate::WidgetKind) -> bool {
             | crate::WidgetKind::Dock
             | crate::WidgetKind::SplitPane
             | crate::WidgetKind::AppShell
+            | crate::WidgetKind::DesktopShell
     )
 }
 
@@ -3561,6 +3672,60 @@ fn bind_semantic_slots(
             push(&mut slots, "body", body);
             push(&mut slots, "overlay", overlay);
         }
+        crate::WidgetKind::DesktopShell => {
+            push(
+                &mut slots,
+                "title-bar",
+                data_slot("title-bar").or_else(|| data_slot("title_bar")),
+            );
+            push(
+                &mut slots,
+                "primary",
+                data_slot("primary").or_else(|| data_slot("main")),
+            );
+            push(
+                &mut slots,
+                "navigation",
+                data_slot("navigation").or_else(|| data_slot("nav")),
+            );
+            push(
+                &mut slots,
+                "navigation-footer",
+                data_slot("navigation-footer").or_else(|| data_slot("navigation_footer")),
+            );
+            push(&mut slots, "inspector", data_slot("inspector"));
+            push(&mut slots, "bottom", data_slot("bottom"));
+            push(&mut slots, "overlay", data_slot("overlay"));
+        }
+        crate::WidgetKind::AppTitleBar => {
+            push(&mut slots, "leading", data_slot("leading"));
+            push(&mut slots, "center", data_slot("center"));
+            push(&mut slots, "trailing", data_slot("trailing"));
+            push(&mut slots, "controls", data_slot("controls"));
+        }
+        crate::WidgetKind::PaneChrome => {
+            push(&mut slots, "tabs", data_slot("tabs"));
+            push(&mut slots, "body", data_slot("body"));
+            push(&mut slots, "header", data_slot("header"));
+        }
+        crate::WidgetKind::SidebarSection => {
+            push(&mut slots, "tools", data_slot("tools"));
+            push(&mut slots, "header", data_slot("header"));
+            push(&mut slots, "body", data_slot("body"));
+        }
+        crate::WidgetKind::SettingsCollapsibleCard => {
+            push(
+                &mut slots,
+                "summary",
+                data_slot("summary").or_else(|| data_slot("header")),
+            );
+            push(
+                &mut slots,
+                "details",
+                data_slot("details").or_else(|| data_slot("body")),
+            );
+            push(&mut slots, "accessory", data_slot("accessory"));
+        }
         crate::WidgetKind::SplitPane => {
             let children = element_child_widgets(widget, snapshot);
             let handle = data_slot("handle")
@@ -3648,6 +3813,18 @@ fn bind_semantic_slots(
                     "title" => "title",
                     "title-bar" | "titlebar" | "title_bar" | "app-title-bar" => "title-bar",
                     "overlay" => "overlay",
+                    "primary" | "main" => "primary",
+                    "navigation" | "nav" => "navigation",
+                    "navigation-footer" | "navigation_footer" => "navigation-footer",
+                    "inspector" => "inspector",
+                    "bottom" => "bottom",
+                    "tabs" => "tabs",
+                    "header" => "header",
+                    "summary" => "summary",
+                    "details" => "details",
+                    "accessory" => "accessory",
+                    "center" => "center",
+                    "controls" => "controls",
                     "first" => "first",
                     "second" => "second",
                     "handle" | "split-handle" => "handle",
@@ -3817,7 +3994,7 @@ fn try_bind_registered_component(
     };
     let existing_input = matches!(
         widget.kind,
-        crate::WidgetKind::Input | crate::WidgetKind::Textarea
+        crate::WidgetKind::Input | crate::WidgetKind::NumberInput | crate::WidgetKind::Textarea
     )
     .then(|| context.world().text_input(id).cloned())
     .flatten();
@@ -4180,8 +4357,12 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
     }
     match kind {
         crate::WidgetKind::Text => AccessibilityRole::Text,
-        crate::WidgetKind::Button | crate::WidgetKind::Chip => AccessibilityRole::Button,
-        crate::WidgetKind::Input | crate::WidgetKind::Textarea => AccessibilityRole::TextInput,
+        crate::WidgetKind::Button | crate::WidgetKind::IconButton | crate::WidgetKind::Chip => {
+            AccessibilityRole::Button
+        }
+        crate::WidgetKind::Input | crate::WidgetKind::NumberInput | crate::WidgetKind::Textarea => {
+            AccessibilityRole::TextInput
+        }
         crate::WidgetKind::Checkbox => AccessibilityRole::Checkbox,
         crate::WidgetKind::Switch => AccessibilityRole::Switch,
         crate::WidgetKind::Range => AccessibilityRole::Slider,
@@ -4192,7 +4373,12 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
             AccessibilityRole::ProgressIndicator
         }
         crate::WidgetKind::InteractiveCard => AccessibilityRole::Button,
-        crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => AccessibilityRole::ListItem,
+        crate::WidgetKind::ListItem
+        | crate::WidgetKind::SidebarRow
+        | crate::WidgetKind::TableRow => AccessibilityRole::ListItem,
+        crate::WidgetKind::List | crate::WidgetKind::ReorderList | crate::WidgetKind::Table => {
+            AccessibilityRole::List
+        }
         crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
         crate::WidgetKind::StatusBadge | crate::WidgetKind::ValidationMessage => {
             AccessibilityRole::Text
@@ -4203,7 +4389,9 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::Tooltip => AccessibilityRole::Tooltip,
         crate::WidgetKind::XYPad => AccessibilityRole::Slider,
         crate::WidgetKind::QrCode => AccessibilityRole::Image,
-        crate::WidgetKind::Icon => AccessibilityRole::Image,
+        crate::WidgetKind::Icon
+        | crate::WidgetKind::GpuTextureView
+        | crate::WidgetKind::GpuView => AccessibilityRole::Image,
         crate::WidgetKind::CommandPalette | crate::WidgetKind::ImageViewer => {
             AccessibilityRole::Dialog
         }
@@ -7982,10 +8170,7 @@ mod tests {
             crate::WidgetKind::parse("settings-page"),
             Some(crate::WidgetKind::SettingsPage)
         );
-        assert_eq!(
-            crate::WidgetKind::parse("settingspage"),
-            Some(crate::WidgetKind::SettingsPage)
-        );
+        assert_eq!(crate::WidgetKind::parse("settingspage"), None);
         assert_eq!(
             crate::WidgetKind::SettingsPage.element_tag(),
             "nana-settings-page"
