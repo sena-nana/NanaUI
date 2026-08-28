@@ -2301,10 +2301,6 @@ impl PaintMat4 {
 
     /// Concatenates `rhs` on the right (CSS list order: `self` then `rhs`).
     pub fn then(self, rhs: Self) -> Self {
-        self.mul(rhs)
-    }
-
-    fn mul(self, rhs: Self) -> Self {
         let a = self.m;
         let b = rhs.m;
         let mut m = [0.0f32; 16];

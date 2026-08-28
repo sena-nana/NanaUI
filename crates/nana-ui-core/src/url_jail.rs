@@ -54,15 +54,29 @@ pub fn resolve_filesystem_href(href: &str, from: Option<&str>, base: &Path) -> O
     }
 }
 
-/// Read a local image/font-like URL only if it stays inside `jail` and under `max_bytes`.
-pub fn read_bytes_within_jail(href: &str, jail: &Path, max_bytes: u64) -> Option<Vec<u8>> {
-    let path = resolve_filesystem_href(href, None, jail)?;
+/// Read a local file if it stays inside `jail` and under `max_bytes`.
+///
+/// `from` is the importer / declaring-sheet href (same as [`resolve_filesystem_href`]).
+/// Returns `(bytes, canonical path)` so callers can dedupe by path.
+pub fn read_file_within_jail(
+    href: &str,
+    from: Option<&str>,
+    jail: &Path,
+    max_bytes: u64,
+) -> Option<(Vec<u8>, PathBuf)> {
+    let path = resolve_filesystem_href(href, from, jail)?;
     let canonical = canonicalize_within_jail(&path, jail)?;
     let meta = std::fs::metadata(&canonical).ok()?;
     if meta.len() > max_bytes {
         return None;
     }
-    std::fs::read(&canonical).ok()
+    let bytes = std::fs::read(&canonical).ok()?;
+    Some((bytes, canonical))
+}
+
+/// Read a local image/font-like URL only if it stays inside `jail` and under `max_bytes`.
+pub fn read_bytes_within_jail(href: &str, jail: &Path, max_bytes: u64) -> Option<Vec<u8>> {
+    read_file_within_jail(href, None, jail, max_bytes).map(|(bytes, _)| bytes)
 }
 
 /// Local directory jail for a Vue document / SFC / stylesheet href.
@@ -254,10 +268,11 @@ fn percent_decode_if_needed(input: &str) -> Option<String> {
     if !input.as_bytes().contains(&b'%') {
         return Some(input.to_string());
     }
-    percent_decode(input)
+    String::from_utf8(percent_decode_bytes(input)?).ok()
 }
 
-fn percent_decode(input: &str) -> Option<String> {
+/// Percent-decode to bytes (data URLs need this; hrefs then require UTF-8).
+pub fn percent_decode_bytes(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -275,7 +290,7 @@ fn percent_decode(input: &str) -> Option<String> {
             index += 1;
         }
     }
-    String::from_utf8(out).ok()
+    Some(out)
 }
 
 fn from_hex(b: u8) -> Option<u8> {
@@ -440,6 +455,8 @@ mod tests {
         assert!(stylesheet_base_from_href("%2f%2fcdn.example.com/npm/pkg/theme.css").is_none());
         assert!(stylesheet_base_from_href("file://evil.example/fonts/a.css").is_none());
         assert!(stylesheet_base_from_href("https://example.com/a.css").is_none());
+        assert!(stylesheet_base_from_href("nana://app/").is_none());
+        assert!(stylesheet_base_from_href("blob:uuid").is_none());
         assert!(stylesheet_base_from_href("theme.css").is_none());
         assert!(stylesheet_base_from_href(".").is_none());
         assert!(stylesheet_base_from_href("//cdn.example.com/x.css").is_none());

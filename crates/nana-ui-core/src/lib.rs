@@ -105,7 +105,8 @@ pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
     href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network,
-    read_bytes_within_jail, resolve_filesystem_href, stylesheet_base_from_href,
+    percent_decode_bytes, read_bytes_within_jail, read_file_within_jail,
+    resolve_filesystem_href, stylesheet_base_from_href,
 };
 pub use virtual_list::{
     VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
