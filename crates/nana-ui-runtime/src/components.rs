@@ -835,6 +835,10 @@ pub struct ComputedStyle {
     pub opacity: f32,
     /// CSS `visibility` after inheritance (`visible` / `hidden`).
     pub visibility: nana_ui_core::VisibilitySpec,
+    /// Self and every ancestor generate a layout box (`hidden` /
+    /// `display: none` anywhere up the chain makes this `false`). Unlike CSS
+    /// `visibility`, a descendant cannot override it back to `true`.
+    pub box_visible: bool,
     pub visible: bool,
     pub font_size: f32,
     pub font_weight: Option<u16>,
@@ -854,6 +858,7 @@ impl Default for ComputedStyle {
             border_color: None,
             opacity: 1.0,
             visibility: nana_ui_core::VisibilitySpec::Visible,
+            box_visible: true,
             visible: true,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,
