@@ -805,6 +805,8 @@ impl Card {
             kind: nana_ui_core::CardKind::Surface,
             loading: false,
             loading_phase: 0.0,
+            // 背景、边框、圆角不在此预填：project 按 kind 提供默认值，
+            // 用户经 `.style(...)` 显式给出的值优先于 kind。
             style: NodeStyle {
                 layout: Arc::new(nana_ui_core::LayoutStyle {
                     padding_left: Some(nana_ui_core::LengthSpec::Px(
@@ -819,12 +821,8 @@ impl Card {
                     padding_bottom: Some(nana_ui_core::LengthSpec::Px(
                         nana_ui_core::UI_METRICS.panel_padding_y,
                     )),
-                    border_width: Some(0.0),
-                    border_radius: Some(nana_ui_core::UI_METRICS.radius_md),
                     ..nana_ui_core::LayoutStyle::default()
                 }),
-                background: Some(nana_ui_core::SemanticColorRole::Surface),
-                border: None,
                 ..NodeStyle::default()
             },
         }
@@ -897,8 +895,7 @@ impl ComponentView for Card {
         }
         let mut effective_style = self.style.clone();
         let layout = Arc::make_mut(&mut effective_style.layout);
-        layout.border_radius = Some(world.theme_metrics().radius_md);
-        let (background, border, border_width) = match self.kind {
+        let (kind_background, kind_border, kind_border_width) = match self.kind {
             nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
                 (Some(nana_ui_core::SemanticColorRole::Surface), None, 0.0)
             }
@@ -912,9 +909,18 @@ impl ComponentView for Card {
                 1.0,
             ),
         };
-        effective_style.background = background;
-        effective_style.border = border;
-        layout.border_width = Some(border_width);
+        if effective_style.background.is_none() {
+            effective_style.background = kind_background;
+        }
+        if effective_style.border.is_none() {
+            effective_style.border = kind_border;
+        }
+        if layout.border_width.is_none() {
+            layout.border_width = Some(kind_border_width);
+        }
+        if layout.border_radius.is_none() {
+            layout.border_radius = Some(world.theme_metrics().radius_md);
+        }
         if self.title.is_some() {
             let base =
                 layout
@@ -2852,6 +2858,228 @@ impl ComponentView for List {
                 label: self.label.clone(),
                 ..AccessibilityState::default()
             },
+        );
+    }
+}
+
+/// 通用 flex 布局容器：按行或列排列子节点，替代手写 [`NodeStyle`] 布局字段。
+///
+/// 预设构造器覆盖常用排版，语义与布局引擎默认值对齐过的产物一致：
+/// - [`Stack::row`]：水平排列，宽度随内容（工具条、按钮组）。
+/// - [`Stack::fill_row`]：水平排列并占满父容器剩余宽度。
+/// - [`Stack::column`]：竖直排列，高度随内容（页面纵向结构）。
+/// - [`Stack::fill_column`]：竖直排列并占满父容器剩余高度（主内容区）。
+/// - [`Stack::bar`]：水平排列占满整行但不伸展（顶栏、底栏）。
+///
+/// 容器本身不参与命中测试；需要交互的内容放在子控件上。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stack {
+    style: NodeStyle,
+}
+
+impl Stack {
+    fn base(
+        direction: nana_ui_core::FlexDirection,
+        gap: f32,
+        align: nana_ui_core::AlignSpec,
+        justify: nana_ui_core::JustifySpec,
+    ) -> Self {
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.direction = Some(direction);
+        layout.gap = Some(nana_ui_core::LengthSpec::Px(gap.max(0.0)));
+        layout.align_items = align;
+        layout.justify_content = justify;
+        Self { style }
+    }
+
+    /// 水平排列，宽度随内容收缩，子项垂直居中。
+    pub fn row(gap: f32) -> Self {
+        Self::base(
+            nana_ui_core::FlexDirection::Row,
+            gap,
+            nana_ui_core::AlignSpec::Center,
+            nana_ui_core::JustifySpec::Start,
+        )
+        .width(nana_ui_core::LengthSpec::Shrink)
+    }
+
+    /// 水平排列并占满父容器剩余宽度，子项可收缩。
+    pub fn fill_row(gap: f32) -> Self {
+        Self::base(
+            nana_ui_core::FlexDirection::Row,
+            gap,
+            nana_ui_core::AlignSpec::Center,
+            nana_ui_core::JustifySpec::Start,
+        )
+        .width(nana_ui_core::LengthSpec::Fill)
+        .grow(1.0)
+        .shrink(1.0)
+    }
+
+    /// 竖直排列，高度随内容，宽度占满父容器。
+    pub fn column(gap: f32) -> Self {
+        Self::base(
+            nana_ui_core::FlexDirection::Column,
+            gap,
+            nana_ui_core::AlignSpec::Stretch,
+            nana_ui_core::JustifySpec::Start,
+        )
+        .width(nana_ui_core::LengthSpec::Fill)
+        .height(nana_ui_core::LengthSpec::Shrink)
+        .min_width(nana_ui_core::LengthSpec::Px(0.0))
+        .grow(0.0)
+        .shrink(0.0)
+    }
+
+    /// 竖直排列并占满父容器剩余高度，用于主内容区。
+    pub fn fill_column(gap: f32) -> Self {
+        Self::base(
+            nana_ui_core::FlexDirection::Column,
+            gap,
+            nana_ui_core::AlignSpec::Stretch,
+            nana_ui_core::JustifySpec::Start,
+        )
+        .width(nana_ui_core::LengthSpec::Fill)
+        .height(nana_ui_core::LengthSpec::Fill)
+        .min_width(nana_ui_core::LengthSpec::Px(0.0))
+        .min_height(nana_ui_core::LengthSpec::Px(0.0))
+        .grow(1.0)
+        .shrink(1.0)
+    }
+
+    /// 水平排列占满整行但不伸展（顶栏、底栏）。
+    pub fn bar(gap: f32) -> Self {
+        Self::base(
+            nana_ui_core::FlexDirection::Row,
+            gap,
+            nana_ui_core::AlignSpec::Center,
+            nana_ui_core::JustifySpec::Start,
+        )
+        .width(nana_ui_core::LengthSpec::Fill)
+        .grow(0.0)
+        .shrink(0.0)
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).gap =
+            Some(nana_ui_core::LengthSpec::Px(gap.max(0.0)));
+        self
+    }
+
+    pub fn align(mut self, align: nana_ui_core::AlignSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).align_items = align;
+        self
+    }
+
+    pub fn justify(mut self, justify: nana_ui_core::JustifySpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).justify_content = justify;
+        self
+    }
+
+    pub fn width(mut self, width: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).width = Some(width);
+        self
+    }
+
+    pub fn height(mut self, height: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).height = Some(height);
+        self
+    }
+
+    pub fn min_width(mut self, min_width: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).min_width = Some(min_width);
+        self
+    }
+
+    pub fn min_height(mut self, min_height: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).min_height = Some(min_height);
+        self
+    }
+
+    pub fn max_width(mut self, max_width: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).max_width =
+            Some(nana_ui_core::LengthSpec::Px(max_width.max(0.0)));
+        self
+    }
+
+    pub fn grow(mut self, grow: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).flex_grow = Some(grow);
+        self
+    }
+
+    pub fn shrink(mut self, shrink: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).flex_shrink = Some(shrink);
+        self
+    }
+
+    /// 四边统一内边距。
+    pub fn padding(mut self, padding: f32) -> Self {
+        let layout = Arc::make_mut(&mut self.style.layout);
+        let value = nana_ui_core::LengthSpec::Px(padding.max(0.0));
+        layout.padding = Some(value);
+        self
+    }
+
+    /// 水平与垂直内边距。
+    pub fn padding_xy(mut self, padding_x: f32, padding_y: f32) -> Self {
+        let layout = Arc::make_mut(&mut self.style.layout);
+        let x = nana_ui_core::LengthSpec::Px(padding_x.max(0.0));
+        let y = nana_ui_core::LengthSpec::Px(padding_y.max(0.0));
+        layout.padding_left = Some(x);
+        layout.padding_right = Some(x);
+        layout.padding_top = Some(y);
+        layout.padding_bottom = Some(y);
+        self
+    }
+
+    /// 取出容器样式，可复用到其他控件的 `.style(...)` 上。
+    pub fn node_style(&self) -> NodeStyle {
+        self.style.clone()
+    }
+
+    /// 语义背景色。
+    pub fn surface(mut self, role: nana_ui_core::SemanticColorRole) -> Self {
+        self.style.background = Some(role);
+        self
+    }
+
+    /// 一次性写全边框：语义色角色与宽度必须同时给出，缺一边框不会绘制。
+    pub fn outline(mut self, role: nana_ui_core::SemanticColorRole, width: f32) -> Self {
+        self.style = self.style.outline(role, width);
+        self
+    }
+
+    /// 圆角半径（物理 px）。
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.style = self.style.radius(radius);
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+impl ComponentView for Stack {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "stack".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState::default(),
         );
     }
 }

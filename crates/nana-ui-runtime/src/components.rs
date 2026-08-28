@@ -804,6 +804,26 @@ impl NodeStyle {
             text_vertical_alignment: TextVerticalAlignment::Top,
         }
     }
+
+    /// 设置语义背景色角色。
+    pub fn surface(mut self, role: SemanticColorRole) -> Self {
+        self.background = Some(role);
+        self
+    }
+
+    /// 一次性写全边框：语义色角色与宽度必须同时给出，缺一边框不会绘制。
+    pub fn outline(mut self, role: SemanticColorRole, width: f32) -> Self {
+        self.border = Some(role);
+        let layout = Arc::make_mut(&mut self.layout);
+        layout.border_width = Some(width.max(0.0));
+        self
+    }
+
+    /// 设置圆角半径（物理 px）。
+    pub fn radius(mut self, radius: f32) -> Self {
+        Arc::make_mut(&mut self.layout).border_radius = Some(radius.max(0.0));
+        self
+    }
 }
 
 #[derive(Component, Debug, Clone, PartialEq)]
