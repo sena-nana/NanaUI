@@ -20,6 +20,7 @@ struct GlyphKey {
     font_weight: u16,
     font_family: Option<Arc<str>>,
     letter_spacing_bits: u32,
+    italic: bool,
 }
 
 impl GlyphKey {
@@ -30,6 +31,7 @@ impl GlyphKey {
             font_weight: style.font_weight.unwrap_or(0),
             font_family: style.font_family.clone(),
             letter_spacing_bits: style.letter_spacing.to_bits(),
+            italic: style.italic,
         }
     }
 }

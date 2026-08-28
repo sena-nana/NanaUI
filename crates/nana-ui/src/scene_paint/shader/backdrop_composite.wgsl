@@ -136,7 +136,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     var alpha = clamp(0.5 - dist, 0.0, 1.0);
 
-    if ((paint.flags & PAINT_MASK) != 0u) {
+    if ((paint.flags & PAINT_MASK) != 0u && (paint.flags & PAINT_MASK_URL) == 0u) {
         alpha *= mask_alpha(local_uv, paint);
     }
 

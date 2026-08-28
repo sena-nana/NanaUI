@@ -25,6 +25,8 @@ pub(crate) struct TextLayoutKey {
     ellipsis: bool,
     max_lines: Option<u16>,
     preserve_lines: bool,
+    wrap_break: nana_ui_core::TextWrapBreak,
+    italic: bool,
     shaping: u8,
     max_width_bits: Option<u32>,
     max_height_bits: Option<u32>,
@@ -50,6 +52,8 @@ impl TextLayoutKey {
             ellipsis: constraints.ellipsis,
             max_lines: constraints.max_lines,
             preserve_lines: constraints.preserve_lines,
+            wrap_break: constraints.wrap_break,
+            italic: style.italic,
             shaping: match constraints.shaping {
                 TextShaping::Auto => 0,
                 TextShaping::Advanced => 1,

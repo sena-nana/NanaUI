@@ -81,6 +81,13 @@ fn inside_fragment_clip(
     }
     let local = clip_apply_affine(inv_abcd, inv_ef, world);
     let rel = local - rect.xy;
+    if (polygon_count == 1u) {
+        let half = rect.zw * 0.5;
+        let center = rel - half;
+        let nx = center.x / max(half.x, 0.0001);
+        let ny = center.y / max(half.y, 0.0001);
+        return nx * nx + ny * ny <= 1.0;
+    }
     if (polygon_count >= 3u) && !point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3) {
         return false;
     }
@@ -135,11 +142,14 @@ fn apply_color_filter_channels(
     saturate: f32,
     contrast: f32,
     hue_deg: f32,
+    invert: f32,
+    opacity: f32,
 ) -> vec4<f32> {
     var rgb = color.xyz * brightness;
     let lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
     rgb = mix(vec3(lum), rgb, saturate);
     rgb = (rgb - 0.5) * contrast + 0.5;
     rgb = apply_hue_rotate(clamp(rgb, vec3(0.0), vec3(1.0)), hue_deg);
-    return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a);
+    rgb = mix(rgb, vec3(1.0) - rgb, invert);
+    return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a * opacity);
 }

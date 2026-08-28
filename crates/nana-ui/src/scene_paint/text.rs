@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use cosmic_text::{
     Align, Attrs, Buffer, Color, FeatureTag, FontFeatures, Metrics, Shaping, SwashCache,
-    SwashContent, Wrap,
+    SwashContent,
 };
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
@@ -323,6 +323,8 @@ struct ShapeKey {
     font_size_bits: u32,
     line_height_bits: u32,
     wrap: bool,
+    wrap_break: nana_ui_core::TextWrapBreak,
+    italic: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
     shaping: u8,
@@ -345,6 +347,8 @@ struct ShapeKeyRef<'a> {
     font_size_bits: u32,
     line_height_bits: u32,
     wrap: bool,
+    wrap_break: nana_ui_core::TextWrapBreak,
+    italic: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
     shaping: u8,
@@ -366,6 +370,8 @@ impl ShapeKeyRef<'_> {
         self.font_size_bits.hash(&mut hasher);
         self.line_height_bits.hash(&mut hasher);
         self.wrap.hash(&mut hasher);
+        self.wrap_break.hash(&mut hasher);
+        self.italic.hash(&mut hasher);
         self.ellipsis.hash(&mut hasher);
         self.max_lines.hash(&mut hasher);
         self.shaping.hash(&mut hasher);
@@ -396,6 +402,8 @@ impl ShapeKeyRef<'_> {
             font_size_bits: self.font_size_bits,
             line_height_bits: self.line_height_bits,
             wrap: self.wrap,
+            wrap_break: self.wrap_break,
+            italic: self.italic,
             ellipsis: self.ellipsis,
             max_lines: self.max_lines,
             shaping: self.shaping,
@@ -422,6 +430,8 @@ impl ShapeKey {
             && self.font_size_bits == other.font_size_bits
             && self.line_height_bits == other.line_height_bits
             && self.wrap == other.wrap
+            && self.wrap_break == other.wrap_break
+            && self.italic == other.italic
             && self.ellipsis == other.ellipsis
             && self.max_lines == other.max_lines
             && self.shaping == other.shaping
@@ -557,6 +567,8 @@ impl TextPipeline {
         family: Option<&str>,
         line_height: Option<LineHeightSpec>,
         wrap: bool,
+        wrap_break: nana_ui_core::TextWrapBreak,
+        italic: bool,
         ellipsis: bool,
         max_lines: Option<u16>,
         shaping: TextShaping,
@@ -592,7 +604,7 @@ impl TextPipeline {
         let physical_width = bounds.width.max(0.0) * scale;
         let physical_height = bounds.height.max(line_height) * scale;
         let default_color = with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), opacity);
-        let attrs = text_attrs(family, weight, letter_spacing, size, font_features);
+        let attrs = text_attrs(family, weight, letter_spacing, size, font_features, italic);
         let shaping = match shaping {
             TextShaping::Auto if content.is_ascii() => Shaping::Basic,
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
@@ -611,6 +623,8 @@ impl TextPipeline {
             font_size_bits: physical_size.to_bits(),
             line_height_bits: physical_line_height.to_bits(),
             wrap,
+            wrap_break,
+            italic,
             ellipsis,
             max_lines,
             shaping: match shaping {
@@ -636,7 +650,7 @@ impl TextPipeline {
                 Metrics::new(physical_size, physical_line_height),
             );
             buffer.set_size(Some(physical_width), Some(physical_height));
-            buffer.set_wrap(if wrap { Wrap::Word } else { Wrap::None });
+            buffer.set_wrap(crate::nana_text::cosmic_wrap(wrap, wrap_break));
             buffer.set_ellipsize(if ellipsis {
                 let limit = max_lines
                     .map(|n| cosmic_text::EllipsizeHeightLimit::Lines(n.max(1) as usize))
@@ -1158,6 +1172,7 @@ fn text_attrs<'a>(
     letter_spacing: f32,
     font_size: f32,
     font_features: &[nana_ui_core::FontFeatureSetting],
+    italic: bool,
 ) -> Attrs<'a> {
     let mut attrs =
         Attrs::new()
@@ -1173,6 +1188,9 @@ fn text_attrs<'a>(
                 750..=849 => cosmic_text::Weight::EXTRA_BOLD,
                 _ => cosmic_text::Weight::BLACK,
             });
+    if italic {
+        attrs = attrs.style(cosmic_text::Style::Italic);
+    }
     let tracking = letter_spacing_em(letter_spacing, font_size);
     if tracking != 0.0 {
         attrs = attrs.letter_spacing(tracking);

@@ -218,11 +218,15 @@ impl FragmentClip {
             polygon_count: 0,
             polygon: [[0.0; 2]; 8],
         };
-        if let Some(points) = polygon.filter(|points| points.len() >= 3) {
-            let count = points.len().min(8);
-            clip.polygon_count = count as u8;
-            for (slot, point) in clip.polygon.iter_mut().zip(points.iter().take(8)) {
-                *slot = *point;
+        if let Some(points) = polygon {
+            if points.len() == 1 {
+                clip.polygon_count = 1;
+            } else if points.len() >= 3 {
+                let count = points.len().min(8);
+                clip.polygon_count = count as u8;
+                for (slot, point) in clip.polygon.iter_mut().zip(points.iter().take(8)) {
+                    *slot = *point;
+                }
             }
         }
         clip
@@ -292,7 +296,7 @@ pub(super) fn polygon_fragment_clips(
         .iter()
         .filter_map(|clip| {
             let points = clip.polygon_clip.as_ref()?;
-            if points.len() < 3 {
+            if points.len() != 1 && points.len() < 3 {
                 return None;
             }
             if clip.transform.is_projective() {
@@ -427,6 +431,15 @@ pub(super) fn point_in_fragment_clip(x: f32, y: f32, clip: FragmentClip) -> bool
         || local_y > clip.rect[1] + clip.rect[3]
     {
         return false;
+    }
+    if clip.polygon_count == 1 {
+        let rel_x = local_x - clip.rect[0];
+        let rel_y = local_y - clip.rect[1];
+        let half_w = clip.rect[2] * 0.5;
+        let half_h = clip.rect[3] * 0.5;
+        let nx = (rel_x - half_w) / half_w.max(1.0e-4);
+        let ny = (rel_y - half_h) / half_h.max(1.0e-4);
+        return nx * nx + ny * ny <= 1.0;
     }
     if clip.polygon_count >= 3 {
         let rel_x = local_x - clip.rect[0];

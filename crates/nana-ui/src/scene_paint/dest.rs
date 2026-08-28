@@ -18,6 +18,7 @@ pub(super) struct GroupSlot {
     pub mix_blend: u32,
     pub drop_shadow_offset: [f32; 2],
     pub drop_shadow_blur: f32,
+    pub filter_invert: f32,
     pub drop_shadow_color: [f32; 4],
 }
 
@@ -43,6 +44,7 @@ impl GroupSlot {
             mix_blend,
             drop_shadow_offset: [0.0, 0.0],
             drop_shadow_blur: 0.0,
+            filter_invert: 0.0,
             drop_shadow_color: [0.0, 0.0, 0.0, 0.0],
         }
     }
@@ -100,6 +102,7 @@ fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
     bytes[144..148].copy_from_slice(&slot.drop_shadow_offset[0].to_le_bytes());
     bytes[148..152].copy_from_slice(&slot.drop_shadow_offset[1].to_le_bytes());
     bytes[152..156].copy_from_slice(&slot.drop_shadow_blur.to_le_bytes());
+    bytes[156..160].copy_from_slice(&slot.filter_invert.to_le_bytes());
     for (index, value) in slot.drop_shadow_color.iter().enumerate() {
         let offset = 160 + index * 4;
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());

@@ -24,6 +24,8 @@ fn apply_color_filter(color: vec4<f32>, paint: QuadPaintData) -> vec4<f32> {
         paint.filter_s,
         paint.filter_c,
         paint.filter_hue,
+        paint.filter_invert,
+        paint.filter_opacity,
     );
 }
 
@@ -106,7 +108,18 @@ fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) ->
         color = source_over_premult(color, sampled_premult);
     }
     if ((paint.flags & PAINT_MASK) != 0u) {
-        let m = mask_alpha(local, paint);
+        var m: f32;
+        if ((paint.flags & PAINT_MASK_URL) != 0u) {
+            let sampled = textureSample(url_tex, url_sampler, local);
+            let lum = dot(sampled.xyz, vec3(0.2126, 0.7152, 0.0722));
+            if (sampled.a < 1.0) {
+                m = sampled.a;
+            } else {
+                m = lum;
+            }
+        } else {
+            m = mask_alpha(local, paint);
+        }
         color = vec4(color.rgb * m, color.a * m);
     }
     if ((paint.flags & PAINT_FILTER) != 0u) {

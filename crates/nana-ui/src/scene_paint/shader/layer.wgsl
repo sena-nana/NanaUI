@@ -23,7 +23,7 @@ struct LayerUniforms {
     _pad_blend: u32,
     drop_shadow_offset: vec2<f32>,
     drop_shadow_blur: f32,
-    _pad_drop: f32,
+    filter_invert: f32,
     drop_shadow_color: vec4<f32>,
 }
 
@@ -102,7 +102,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (layer.filter_b != 1.0
         || layer.filter_s != 1.0
         || layer.filter_c != 1.0
-        || abs(layer.filter_hue) > 0.0001)
+        || abs(layer.filter_hue) > 0.0001
+        || layer.filter_invert > 0.0001)
     {
         sampled = apply_color_filter_channels(
             sampled,
@@ -110,6 +111,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             layer.filter_s,
             layer.filter_c,
             layer.filter_hue,
+            layer.filter_invert,
+            1.0,
         );
     }
     return sampled;

@@ -1762,14 +1762,13 @@ impl UiWorld {
         let presentation = self.text_input_presentation_source(id);
         let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
         let is_text_input = presentation.is_some();
-        let wrap = if source.layout.resolved_line_clamp().is_some() {
-            true
-        } else if is_text_input {
-            text_input_multiline && !source.layout.white_space_nowrap
+        let wrap = if is_text_input {
+            text_input_multiline && source.layout.text_wraps()
         } else {
-            !source.layout.white_space_nowrap
+            source.layout.text_wraps()
         };
-        let preserve_lines = source.layout.white_space == nana_ui_core::WhiteSpaceSpec::Pre;
+        let preserve_lines = source.layout.white_space.preserve_newlines();
+        let wrap_break = source.layout.text_wrap_break();
         let ellipsis = !is_text_input && source.layout.uses_text_ellipsis();
         let max_lines = (!is_text_input)
             .then(|| source.layout.resolved_line_clamp())
@@ -1782,6 +1781,7 @@ impl UiWorld {
                 max_lines,
                 shaping: self.text_shaping(id),
                 preserve_lines,
+                wrap_break,
                 ..crate::TextShapeConstraints::default()
             };
         }
@@ -1823,6 +1823,7 @@ impl UiWorld {
             max_lines,
             shaping: self.text_shaping(id),
             preserve_lines,
+            wrap_break,
         }
     }
 
@@ -2641,6 +2642,7 @@ impl UiWorld {
                 let previous = self.component::<NodeStyle>(*id).clone();
                 let inherited_text_changed = previous.layout.font_size != style.layout.font_size
                     || previous.layout.font_weight != style.layout.font_weight
+                    || previous.layout.font_italic != style.layout.font_italic
                     || previous.layout.font_family != style.layout.font_family
                     || previous.layout.line_height != style.layout.line_height
                     || previous.layout.letter_spacing != style.layout.letter_spacing;
@@ -5521,6 +5523,7 @@ impl UiWorld {
                 && self.menu_branch_open(id),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
+            italic: layout.font_italic.unwrap_or(inherited.italic),
             font_family: layout
                 .font_family
                 .as_deref()
@@ -6303,6 +6306,7 @@ fn shape_text_input_presentation(
         max_lines: None,
         shaping: constraints.shaping,
         preserve_lines: constraints.preserve_lines,
+        wrap_break: constraints.wrap_break,
     };
     let (caret_x, caret_y, line_height) = shaper.text_position(
         id,
@@ -6715,6 +6719,10 @@ fn layout_semantics_changed(
         || previous.line_clamp != next.line_clamp
         || previous.white_space_nowrap != next.white_space_nowrap
         || previous.white_space != next.white_space
+        || previous.word_break != next.word_break
+        || previous.overflow_wrap != next.overflow_wrap
+        || previous.aspect_ratio != next.aspect_ratio
+        || previous.font_italic != next.font_italic
         || previous.text_align != next.text_align
         || previous.float != next.float
         || previous.clear != next.clear
@@ -10183,6 +10191,7 @@ mod tests {
             max_lines: None,
             shaping: crate::TextShaping::Advanced,
             preserve_lines: false,
+            wrap_break: nana_ui_core::TextWrapBreak::Word,
         };
         let style = ComputedStyle::default();
         let mut probe = ConstraintProbe::default();
@@ -10199,6 +10208,7 @@ mod tests {
                 max_lines: None,
                 shaping: crate::TextShaping::Advanced,
                 preserve_lines: false,
+                wrap_break: nana_ui_core::TextWrapBreak::Word,
             })
         );
 
@@ -10214,6 +10224,7 @@ mod tests {
                 max_lines: None,
                 shaping: crate::TextShaping::Advanced,
                 preserve_lines: false,
+                wrap_break: nana_ui_core::TextWrapBreak::Word,
             })
         );
     }

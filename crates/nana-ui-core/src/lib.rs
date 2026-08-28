@@ -43,17 +43,18 @@ pub use action::{
 pub use box_layout::{
     AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
     BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
-    BoxShadowSpec, BoxSizing, ClearSpec, ClipInset, ClipPath, ClipPoint, ColorFilter, CssGradient,
-    DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
-    FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
-    GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
-    LengthSpec, LineHeightSpec, LinearGradient, LogicalInlineEdges, MAX_BACKGROUND_LAYERS,
-    MAX_BOX_SHADOWS, MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec, PaddingSpec, PaintMat4,
-    PaintStyle, PaintTransform, ParentBox, PointerEventsSpec, PositionSpec, RadialGradient,
-    TEXT_APPROX_ASCENT_EM, TextAlignSpec, TextDecorationLine, TextShadowSpec, TransformBox,
-    TransformOrigin, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, glyph_box_center_from_line_top,
-    icon_y_on_text_glyph_center, resolve_grid_column_widths, resolve_grid_track_sizes,
-    text_line_box_height_px,
+    BoxShadowSpec, BoxSizing, ClearSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint,
+    ClipShapeRadius, ColorFilter, CssGradient, DirSpec, DisplaySpec, FilterDropShadow,
+    FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting, FontSizeContext, GradientStop,
+    GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
+    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
+    LinearGradient, LogicalInlineEdges, MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage,
+    MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaddingSpec,
+    PaintMat4, PaintStyle, PaintTransform, ParentBox, PointerEventsSpec, PositionSpec,
+    RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec, TextDecorationLine, TextShadowSpec,
+    TextWrapBreak, TransformBox, TransformOrigin, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    WordBreakSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;
@@ -105,8 +106,8 @@ pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
     href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network,
-    percent_decode_bytes, read_bytes_within_jail, read_file_within_jail,
-    resolve_filesystem_href, stylesheet_base_from_href,
+    percent_decode_bytes, read_bytes_within_jail, read_file_within_jail, resolve_filesystem_href,
+    stylesheet_base_from_href,
 };
 pub use virtual_list::{
     VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,

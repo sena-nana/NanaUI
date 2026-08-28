@@ -8,6 +8,7 @@ const PAINT_POLYGON: u32 = 16u;
 const PAINT_RADIAL: u32 = 32u;
 const PAINT_MASK_RADIAL: u32 = 64u;
 const PAINT_SHADOW_INSET: u32 = 128u;
+const PAINT_MASK_URL: u32 = 256u;
 
 struct QuadPaintData {
     flags: u32,
@@ -60,8 +61,8 @@ struct QuadPaintData {
     outline_width: f32,
     // Packed T/R/B/L 2-bit styles: 0 solid, 1 dashed, 2 dotted.
     border_styles: u32,
-    _pad_outline1: f32,
-    _pad_outline2: f32,
+    filter_invert: f32,
+    filter_opacity: f32,
     outline_color: vec4<f32>,
     border_color_right: vec4<f32>,
     border_color_bottom: vec4<f32>,

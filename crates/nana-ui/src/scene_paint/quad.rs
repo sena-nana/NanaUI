@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use nana_ui_core::{
     BackgroundImage, BackgroundImageFit, BackgroundRepeat, BorderImageSpec, BorderImageTile,
-    CssGradient, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS,
+    CssGradient, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS, MaskImage,
 };
 use nana_ui_runtime::ComponentElevation;
 use nana_ui_scene::QuadSurfacePaint;
@@ -24,6 +24,7 @@ const PAINT_POLYGON: u32 = 16;
 const PAINT_RADIAL: u32 = 32;
 const PAINT_MASK_RADIAL: u32 = 64;
 const PAINT_SHADOW_INSET: u32 = 128;
+const PAINT_MASK_URL: u32 = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -96,7 +97,8 @@ struct QuadPaintData {
     url_dest: [f32; 4],
     outline_width: f32,
     border_styles: u32,
-    _pad_outline: [f32; 2],
+    filter_invert: f32,
+    filter_opacity: f32,
     outline_color: [f32; 4],
     border_color_right: [f32; 4],
     border_color_bottom: [f32; 4],
@@ -413,12 +415,13 @@ impl QuadPipeline {
                 bounds.height,
                 None,
             );
+            let mask_url = packed_mask_url(&paint, surface);
             push_solid_instance(
                 &mut self.pending,
                 &mut self.pending_paint,
                 &mut self.pending_urls,
                 paint,
-                None,
+                mask_url,
                 position,
                 [bounds.width, bounds.height],
                 background,
@@ -877,9 +880,20 @@ fn pack_layer(
     let paint_url = if paint.flags & PAINT_URL != 0 {
         layer.url_str().map(str::to_string)
     } else {
-        None
+        packed_mask_url(&paint, surface)
     };
     (paint, paint_url)
+}
+
+fn packed_mask_url(paint: &QuadPaintData, surface: &QuadSurfacePaint) -> Option<String> {
+    if paint.flags & PAINT_MASK_URL != 0 {
+        surface
+            .mask
+            .as_ref()
+            .and_then(|mask| mask.url_str().map(str::to_string))
+    } else {
+        None
+    }
 }
 
 fn pack_shared(
@@ -912,12 +926,12 @@ fn pack_shared(
     }
     if let Some(mask) = surface.mask.as_ref() {
         match mask {
-            CssGradient::Linear(linear) => {
+            MaskImage::Gradient(CssGradient::Linear(linear)) => {
                 paint.flags |= PAINT_MASK;
                 paint.mask_angle = linear.angle_deg;
                 pack_mask_stops(&mut paint, &linear.stops);
             }
-            CssGradient::Radial(radial) => {
+            MaskImage::Gradient(CssGradient::Radial(radial)) => {
                 if let Some(center) = radial.resolved_center(width, height) {
                     paint.flags |= PAINT_MASK | PAINT_MASK_RADIAL;
                     paint.mask_center_x = center[0];
@@ -926,6 +940,7 @@ fn pack_shared(
                     pack_mask_stops(&mut paint, &radial.stops);
                 }
             }
+            MaskImage::Url(_) => {}
         }
     }
     if let Some(filter) = surface.filter {
@@ -935,6 +950,8 @@ fn pack_shared(
             paint.filter_s = filter.saturate;
             paint.filter_c = filter.contrast;
             paint.filter_hue = filter.hue_rotate_deg;
+            paint.filter_invert = filter.invert;
+            paint.filter_opacity = filter.opacity;
         }
     }
     if surface.outline_width > 0.0 {
@@ -966,25 +983,36 @@ fn pack_shared(
     }) = layer
     {
         if let Some((tex_w, tex_h)) = load_url_texture(device, queue, cache, url) {
-            paint.flags |= PAINT_URL;
-            paint.url_tex_index = repeat_bits(*repeat);
-            paint.url_fit = match fit {
-                BackgroundImageFit::Cover => 0,
-                BackgroundImageFit::Contain => 1,
-                BackgroundImageFit::Stretch => 2,
-                BackgroundImageFit::Auto => 3,
-                BackgroundImageFit::Length => 4,
-            };
-            paint.url_dest = url_dest_rect(
-                *fit,
-                *size_width,
-                *size_height,
-                *position,
-                width,
-                height,
-                tex_w as f32,
-                tex_h as f32,
-            );
+            if let Some(bits) = repeat_bits(*repeat) {
+                paint.flags |= PAINT_URL;
+                paint.url_tex_index = bits;
+                paint.url_fit = match fit {
+                    BackgroundImageFit::Cover => 0,
+                    BackgroundImageFit::Contain => 1,
+                    BackgroundImageFit::Stretch => 2,
+                    BackgroundImageFit::Auto => 3,
+                    BackgroundImageFit::Length => 4,
+                    BackgroundImageFit::ScaleDown => 5,
+                };
+                paint.url_dest = url_dest_rect(
+                    *fit,
+                    *size_width,
+                    *size_height,
+                    *position,
+                    *repeat,
+                    width,
+                    height,
+                    tex_w as f32,
+                    tex_h as f32,
+                );
+            }
+        }
+    }
+    if paint.flags & PAINT_URL == 0 {
+        if let Some(MaskImage::Url(url)) = surface.mask.as_ref() {
+            if load_url_texture(device, queue, cache, url).is_some() {
+                paint.flags |= PAINT_MASK | PAINT_MASK_URL;
+            }
         }
     }
     paint
@@ -1266,12 +1294,13 @@ fn url_dest_for_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [f32; 4] {
     [-u0 / du, -v0 / dv, 1.0 / du, 1.0 / dv]
 }
 
-fn repeat_bits(repeat: BackgroundRepeat) -> u32 {
+fn repeat_bits(repeat: BackgroundRepeat) -> Option<u32> {
     match repeat {
-        BackgroundRepeat::NoRepeat => 0,
-        BackgroundRepeat::Repeat => 1 | 2,
-        BackgroundRepeat::RepeatX => 1,
-        BackgroundRepeat::RepeatY => 2,
+        BackgroundRepeat::NoRepeat => Some(0),
+        BackgroundRepeat::Repeat | BackgroundRepeat::Round => Some(1 | 2),
+        BackgroundRepeat::RepeatX | BackgroundRepeat::RoundX => Some(1),
+        BackgroundRepeat::RepeatY | BackgroundRepeat::RoundY => Some(2),
+        BackgroundRepeat::Unsupported => None,
     }
 }
 
@@ -1280,12 +1309,13 @@ fn url_dest_rect(
     size_width: Option<LengthSpec>,
     size_height: Option<LengthSpec>,
     position: nana_ui_core::BackgroundPosition,
+    repeat: BackgroundRepeat,
     box_w: f32,
     box_h: f32,
     tex_w: f32,
     tex_h: f32,
 ) -> [f32; 4] {
-    let (drawn_w, drawn_h) = match fit {
+    let (mut drawn_w, mut drawn_h) = match fit {
         BackgroundImageFit::Stretch => (box_w, box_h),
         BackgroundImageFit::Cover => {
             let scale = (box_w / tex_w.max(1.0)).max(box_h / tex_h.max(1.0));
@@ -1296,10 +1326,30 @@ fn url_dest_rect(
             (tex_w * scale, tex_h * scale)
         }
         BackgroundImageFit::Auto => (tex_w, tex_h),
+        BackgroundImageFit::ScaleDown => {
+            let scale = (box_w / tex_w.max(1.0)).min(box_h / tex_h.max(1.0));
+            if scale < 1.0 {
+                (tex_w * scale, tex_h * scale)
+            } else {
+                (tex_w, tex_h)
+            }
+        }
         BackgroundImageFit::Length => {
             resolve_explicit_size(size_width, size_height, box_w, box_h, tex_w, tex_h)
         }
     };
+    match repeat {
+        BackgroundRepeat::Round | BackgroundRepeat::RoundX => {
+            drawn_w = round_tile_len(box_w, drawn_w);
+        }
+        _ => {}
+    }
+    match repeat {
+        BackgroundRepeat::Round | BackgroundRepeat::RoundY => {
+            drawn_h = round_tile_len(box_h, drawn_h);
+        }
+        _ => {}
+    }
     let origin_x = position_origin(position.x, box_w, drawn_w);
     let origin_y = position_origin(position.y, box_h, drawn_h);
     [
@@ -1308,6 +1358,14 @@ fn url_dest_rect(
         drawn_w / box_w.max(1.0),
         drawn_h / box_h.max(1.0),
     ]
+}
+
+fn round_tile_len(box_len: f32, image_len: f32) -> f32 {
+    if image_len <= 0.0 || box_len <= 0.0 {
+        return image_len;
+    }
+    let n = (box_len / image_len).round().max(1.0);
+    box_len / n
 }
 
 fn resolve_explicit_size(
@@ -1435,7 +1493,7 @@ fn pack_paint_sets_mask_flag() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
-        mask: Some(CssGradient::Linear(LinearGradient {
+        mask: Some(MaskImage::Gradient(CssGradient::Linear(LinearGradient {
             angle_deg: 90.0,
             stops: vec![
                 GradientStop {
@@ -1447,7 +1505,7 @@ fn pack_paint_sets_mask_flag() {
                     color: [1.0, 1.0, 1.0, 0.0],
                 },
             ],
-        })),
+        }))),
         ..Default::default()
     };
     let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
@@ -1463,7 +1521,7 @@ fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
-        mask: Some(CssGradient::Radial(RadialGradient {
+        mask: Some(MaskImage::Gradient(CssGradient::Radial(RadialGradient {
             circle: true,
             center: [LengthSpec::Px(10.0), LengthSpec::Px(20.0)],
             stops: vec![
@@ -1476,7 +1534,7 @@ fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
                     color: [1.0, 1.0, 1.0, 0.0],
                 },
             ],
-        })),
+        }))),
         ..Default::default()
     };
     let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 200.0, 100.0);
@@ -1504,6 +1562,27 @@ fn pack_paint_sets_hue_rotate() {
     let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
     assert_ne!(paint.flags & PAINT_FILTER, 0, "flags={}", paint.flags);
     assert!((paint.filter_hue - 90.0).abs() < 0.01);
+}
+
+#[cfg(test)]
+#[test]
+fn pack_paint_sets_invert_and_opacity() {
+    use nana_ui_core::ColorFilter;
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let surface = QuadSurfacePaint {
+        filter: Some(ColorFilter {
+            invert: 1.0,
+            opacity: 0.5,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    assert_ne!(paint.flags & PAINT_FILTER, 0);
+    assert!((paint.filter_invert - 1.0).abs() < 0.01);
+    assert!((paint.filter_opacity - 0.5).abs() < 0.01);
 }
 
 #[cfg(test)]

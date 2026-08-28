@@ -487,6 +487,8 @@ impl SceneWgpuPainter {
                     underline: _,
                     line_through: _,
                     font_features,
+                    italic,
+                    wrap_break,
                 } => {
                     let mut push_text =
                         |extra_offset: [f32; 2], color_override: Option<[f32; 4]>| {
@@ -504,6 +506,8 @@ impl SceneWgpuPainter {
                                 family.as_deref(),
                                 *line_height,
                                 *wrap,
+                                *wrap_break,
+                                *italic,
                                 *ellipsis,
                                 *max_lines,
                                 *shaping,
@@ -1032,13 +1036,14 @@ fn dest_group_slot(
         filter.blur_radius
     };
     let mut slot = GroupSlot::dest(
-        group.opacity,
+        group.opacity * filter.opacity,
         [filter.brightness, filter.saturate, filter.contrast],
         filter.hue_rotate_deg,
         physical_blur,
         group.mix_blend.gpu_index(),
         clip,
     );
+    slot.filter_invert = filter.invert;
     if let Some(shadow) = filter.drop_shadow {
         let (ox, oy, blur) = if scale.is_finite() && scale > 0.0 {
             (
@@ -4791,6 +4796,36 @@ mod tests {
         )
     }
 
+    fn clip_path_circle_parent(
+        value: u64,
+        children: &[u64],
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> ExtractedNode {
+        extracted_div(
+            value,
+            children,
+            x,
+            y,
+            width,
+            height,
+            nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    clip_path: Some(nana_ui_core::ClipPath::Circle(nana_ui_core::ClipCircle {
+                        radius: nana_ui_core::ClipShapeRadius::ClosestSide,
+                        cx: LengthSpec::Percent(50.0),
+                        cy: LengthSpec::Percent(50.0),
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        )
+    }
+
     fn clip_path_polygon_parent(
         value: u64,
         children: &[u64],
@@ -5138,6 +5173,49 @@ mod tests {
         assert!(
             center[0] > 200 && center[1] < 40,
             "sharp red child interior must stay opaque red under rounded FragmentClip, got {center:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn circle_clip_path_cuts_child_corners_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                clip_path_circle_parent(1, &[2], 0.0, 0.0, 64.0, 64.0),
+                colored_quad_child(2, 1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui circle clip"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let corner = pixel(&pixels, 64, 2, 2);
+        assert!(
+            corner[2] > 180 && corner[0] < 80,
+            "circle() must clip square corners to clear, not a silent AABB, got {corner:?}"
+        );
+        let center = pixel(&pixels, 64, 32, 32);
+        assert!(
+            center[0] > 200 && center[1] < 40,
+            "circle interior must stay child-red, got {center:?}"
         );
         drop(texture);
     }
@@ -5591,8 +5669,8 @@ mod tests {
                     }],
                 }),
             )),
-            mask: Some(nana_ui_core::CssGradient::Linear(
-                nana_ui_core::LinearGradient {
+            mask: Some(nana_ui_core::MaskImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                     angle_deg: 90.0,
                     stops: vec![
                         nana_ui_core::GradientStop {
@@ -5604,7 +5682,7 @@ mod tests {
                             color: [1.0, 1.0, 1.0, 0.0],
                         },
                     ],
-                },
+                }),
             )),
             ..Default::default()
         };
@@ -5680,8 +5758,8 @@ mod tests {
                     }],
                 }),
             )),
-            mask: Some(nana_ui_core::CssGradient::Linear(
-                nana_ui_core::LinearGradient {
+            mask: Some(nana_ui_core::MaskImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                     angle_deg: 180.0,
                     stops: vec![
                         nana_ui_core::GradientStop {
@@ -5709,7 +5787,7 @@ mod tests {
                             color: [1.0, 1.0, 1.0, 0.0],
                         },
                     ],
-                },
+                }),
             )),
             ..Default::default()
         };
@@ -6398,6 +6476,57 @@ mod tests {
         assert!(
             tiled[2] > 200 && tiled[0] < 80,
             "unspecified repeat + size 32px must tile, got {tiled:?}"
+        );
+    }
+
+    #[test]
+    fn background_repeat_space_does_not_paint_as_repeat() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Url {
+                url: png_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+                fit: nana_ui_core::BackgroundImageFit::Length,
+                size_width: Some(nana_ui_core::LengthSpec::Px(32.0)),
+                size_height: None,
+                position: nana_ui_core::BackgroundPosition::default(),
+                repeat: nana_ui_core::BackgroundRepeat::Unsupported,
+            }),
+            ..Default::default()
+        };
+        let first =
+            paint_surface_sample(surface, [64.0, 32.0], [64, 32], [1.0, 0.0, 0.0, 1.0], 8, 16);
+        super::image_url::reset_test_url_base();
+        assert!(
+            first[0] > 200 && first[2] < 80,
+            "space/unsupported must fail-closed the url layer (fill red), not tile blue, got {first:?}"
+        );
+    }
+
+    #[test]
+    fn mask_image_url_reuses_jail_texture() {
+        let (fixture_dir, png_path) = blue_tile_fixture_png();
+        super::set_background_image_url_base(fixture_dir);
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            mask: Some(nana_ui_core::MaskImage::Url(
+                png_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("blue-tile.png")
+                    .to_string(),
+            )),
+            ..Default::default()
+        };
+        let sample =
+            paint_surface_sample(surface, [16.0, 16.0], [16, 16], [1.0, 0.0, 0.0, 1.0], 8, 8);
+        super::image_url::reset_test_url_base();
+        assert!(
+            sample[0] > 200 && sample[2] < 80,
+            "opaque mask url must keep the fill, got {sample:?}"
         );
     }
 
