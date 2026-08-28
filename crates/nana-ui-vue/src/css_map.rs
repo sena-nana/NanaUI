@@ -181,7 +181,8 @@ const UNIT_VMIN: u16 = 1 << 6;
 const UNIT_VMAX: u16 = 1 << 7;
 
 /// 轻量 calc（非 AST）：线性组合折进既有 [`LengthSpec`]。
-/// `+` `-` `*` `/`、括号、嵌套 `calc`，以及可折成单一维度的 `min`/`max`/`clamp`。
+/// `+` `-` `*` `/`、括号、嵌套 `calc`，以及 `min`/`max`/`clamp`
+/// （同维折原子；混单位保留 Min2/Max2/Clamp3，无量纲系数可缩放各臂）。
 fn parse_calc_percent_offset(raw: &str) -> Option<LengthSpec> {
     let s = raw.trim();
     if !starts_with_ci(s, "calc(") {
@@ -200,7 +201,7 @@ fn parse_calc_expr_to_spec_at(raw: &str, depth: u8) -> Option<LengthSpec> {
             return Some(spec);
         }
     }
-    parse_calc_expr_to_sum_at(s, depth)?.to_length_spec()
+    parse_calc_expr_to_value_at(s, depth)?.to_length_spec()
 }
 
 fn strip_calc_wrapper(s: &str) -> Option<&str> {
@@ -211,7 +212,7 @@ fn strip_calc_wrapper(s: &str) -> Option<&str> {
     rest.trim().is_empty().then_some(inner)
 }
 
-fn parse_calc_expr_to_sum_at(raw: &str, depth: u8) -> Option<CalcSum> {
+fn parse_calc_expr_to_value_at(raw: &str, depth: u8) -> Option<CalcValue> {
     if depth >= MAX_CALC_DEPTH {
         return None;
     }
@@ -220,12 +221,12 @@ fn parse_calc_expr_to_sum_at(raw: &str, depth: u8) -> Option<CalcSum> {
         i: 0,
         depth,
     };
-    let sum = parser.parse_add()?;
+    let value = parser.parse_add()?;
     parser.skip_ws();
     if parser.i != parser.s.len() {
         return None;
     }
-    Some(sum)
+    Some(value)
 }
 
 /// Linear combination of CSS length units + a unitless number.
@@ -513,6 +514,160 @@ fn calc_sum_from_length_spec(spec: LengthSpec) -> Option<CalcSum> {
     })
 }
 
+fn calc_value_from_length_spec(spec: LengthSpec) -> Option<CalcValue> {
+    if let Some(sum) = calc_sum_from_length_spec(spec) {
+        return Some(CalcValue::Sum(sum));
+    }
+    matches!(
+        spec,
+        LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _)
+    )
+    .then_some(CalcValue::Cmp(spec))
+}
+
+/// Calc operand: linear [`CalcSum`], or mixed-unit min/max/clamp kept as Style Model.
+#[derive(Clone, Copy, Debug)]
+enum CalcValue {
+    Sum(CalcSum),
+    Cmp(LengthSpec),
+}
+
+impl CalcValue {
+    fn to_length_spec(self) -> Option<LengthSpec> {
+        match self {
+            Self::Sum(sum) => sum.to_length_spec(),
+            Self::Cmp(spec) => matches!(
+                spec,
+                LengthSpec::Min2(_, _) | LengthSpec::Max2(_, _) | LengthSpec::Clamp3(_, _, _)
+            )
+            .then_some(spec),
+        }
+    }
+
+    fn scale(self, k: f32) -> Option<Self> {
+        match self {
+            Self::Sum(sum) => sum.scale(k).map(Self::Sum),
+            Self::Cmp(spec) => scale_cmp_spec(spec, k).map(Self::Cmp),
+        }
+    }
+
+    fn neg(self) -> Option<Self> {
+        self.scale(-1.0)
+    }
+
+    fn add(self, rhs: Self) -> Option<Self> {
+        match (self, rhs) {
+            (Self::Sum(a), Self::Sum(b)) => a.add(b).map(Self::Sum),
+            (Self::Cmp(spec), Self::Sum(n)) | (Self::Sum(n), Self::Cmp(spec))
+                if n.is_pure_number() && n.number == 0.0 =>
+            {
+                Some(Self::Cmp(spec))
+            }
+            _ => None,
+        }
+    }
+
+    fn mul(self, rhs: Self) -> Option<Self> {
+        match (self, rhs) {
+            (Self::Sum(a), Self::Sum(b)) => a.mul(b).map(Self::Sum),
+            (Self::Sum(n), Self::Cmp(spec)) | (Self::Cmp(spec), Self::Sum(n))
+                if n.is_pure_number() =>
+            {
+                scale_cmp_spec(spec, n.number).map(Self::Cmp)
+            }
+            _ => None,
+        }
+    }
+
+    fn div(self, rhs: Self) -> Option<Self> {
+        match rhs {
+            Self::Sum(n) if n.is_pure_number() && n.number != 0.0 && n.number.is_finite() => {
+                self.scale(1.0 / n.number)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn scale_f32(v: f32, k: f32) -> Option<f32> {
+    let x = v * k;
+    x.is_finite().then_some(x)
+}
+
+fn scale_length_atom(atom: LengthAtom, k: f32) -> Option<LengthAtom> {
+    Some(match atom {
+        LengthAtom::Px(v) => LengthAtom::Px(scale_f32(v, k)?),
+        LengthAtom::Percent(p) => LengthAtom::Percent(scale_f32(p, k)?),
+        LengthAtom::Em(v) => LengthAtom::Em(scale_f32(v, k)?),
+        LengthAtom::Rem(v) => LengthAtom::Rem(scale_f32(v, k)?),
+        LengthAtom::Viewport { axis, value } => LengthAtom::Viewport {
+            axis,
+            value: scale_f32(value, k)?,
+        },
+        LengthAtom::CalcPercent { percent, offset_px } => LengthAtom::CalcPercent {
+            percent: scale_f32(percent, k)?,
+            offset_px: scale_f32(offset_px, k)?,
+        },
+        LengthAtom::CalcViewport {
+            axis,
+            value,
+            offset_px,
+        } => LengthAtom::CalcViewport {
+            axis,
+            value: scale_f32(value, k)?,
+            offset_px: scale_f32(offset_px, k)?,
+        },
+        LengthAtom::CalcEm { em, offset_px } => LengthAtom::CalcEm {
+            em: scale_f32(em, k)?,
+            offset_px: scale_f32(offset_px, k)?,
+        },
+        LengthAtom::CalcRem { rem, offset_px } => LengthAtom::CalcRem {
+            rem: scale_f32(rem, k)?,
+            offset_px: scale_f32(offset_px, k)?,
+        },
+    })
+}
+
+/// Scale every arm of Min2/Max2/Clamp3 by a unitless factor.
+/// Negative `k` swaps min↔max (and clamp low/high) so the comparison stays honest.
+fn scale_cmp_spec(spec: LengthSpec, k: f32) -> Option<LengthSpec> {
+    if !k.is_finite() {
+        return None;
+    }
+    let swap = k < 0.0;
+    match spec {
+        LengthSpec::Min2(a, b) => {
+            let a = scale_length_atom(a, k)?;
+            let b = scale_length_atom(b, k)?;
+            Some(if swap {
+                LengthSpec::Max2(a, b)
+            } else {
+                LengthSpec::Min2(a, b)
+            })
+        }
+        LengthSpec::Max2(a, b) => {
+            let a = scale_length_atom(a, k)?;
+            let b = scale_length_atom(b, k)?;
+            Some(if swap {
+                LengthSpec::Min2(a, b)
+            } else {
+                LengthSpec::Max2(a, b)
+            })
+        }
+        LengthSpec::Clamp3(lo, val, hi) => {
+            let lo = scale_length_atom(lo, k)?;
+            let val = scale_length_atom(val, k)?;
+            let hi = scale_length_atom(hi, k)?;
+            Some(if swap {
+                LengthSpec::Clamp3(hi, val, lo)
+            } else {
+                LengthSpec::Clamp3(lo, val, hi)
+            })
+        }
+        _ => None,
+    }
+}
+
 struct CalcParser<'a> {
     s: &'a str,
     i: usize,
@@ -556,7 +711,7 @@ impl<'a> CalcParser<'a> {
         self.depth = self.depth.saturating_sub(1);
     }
 
-    fn parse_add(&mut self) -> Option<CalcSum> {
+    fn parse_add(&mut self) -> Option<CalcValue> {
         let mut acc = self.parse_mul()?;
         loop {
             self.skip_ws();
@@ -581,7 +736,7 @@ impl<'a> CalcParser<'a> {
         Some(acc)
     }
 
-    fn parse_mul(&mut self) -> Option<CalcSum> {
+    fn parse_mul(&mut self) -> Option<CalcValue> {
         let mut acc = self.parse_unary()?;
         loop {
             self.skip_ws();
@@ -600,7 +755,7 @@ impl<'a> CalcParser<'a> {
         Some(acc)
     }
 
-    fn parse_unary(&mut self) -> Option<CalcSum> {
+    fn parse_unary(&mut self) -> Option<CalcValue> {
         self.skip_ws();
         let mut neg = false;
         let mut signs = 0u8;
@@ -622,7 +777,7 @@ impl<'a> CalcParser<'a> {
         if neg { value.neg() } else { Some(value) }
     }
 
-    fn parse_primary(&mut self) -> Option<CalcSum> {
+    fn parse_primary(&mut self) -> Option<CalcValue> {
         self.skip_ws();
         if self.eat(b'(') {
             if !self.enter() {
@@ -645,7 +800,7 @@ impl<'a> CalcParser<'a> {
                 _ => None,
             };
         }
-        self.parse_number_or_dimension()
+        self.parse_number_or_dimension().map(CalcValue::Sum)
     }
 
     fn peek_ident(&self) -> Option<&'a str> {
@@ -672,7 +827,7 @@ impl<'a> CalcParser<'a> {
         }
     }
 
-    fn parse_fn(&mut self, name: &str) -> Option<CalcSum> {
+    fn parse_fn(&mut self, name: &str) -> Option<CalcValue> {
         self.consume_ident();
         self.skip_ws();
         if !self.eat(b'(') {
@@ -705,12 +860,12 @@ impl<'a> CalcParser<'a> {
         None
     }
 
-    fn eval_fn(&self, name: &str, inner: &str) -> Option<CalcSum> {
+    fn eval_fn(&self, name: &str, inner: &str) -> Option<CalcValue> {
         match name {
-            "calc" => parse_calc_expr_to_sum_at(inner, self.depth),
+            "calc" => parse_calc_expr_to_value_at(inner, self.depth),
             "min" | "max" | "clamp" => {
                 let spec = parse_min_max_clamp_inner(name, inner, self.depth)?;
-                calc_sum_from_length_spec(spec)
+                calc_value_from_length_spec(spec)
             }
             _ => None,
         }
@@ -5041,6 +5196,52 @@ mod tests {
             LengthSpec::parse("min(calc(10px), max(1px, 2px))"),
             Some(LengthSpec::Px(2.0))
         );
+        assert_eq!(
+            LengthSpec::parse("calc(18 * min(10px, 20px))"),
+            Some(LengthSpec::Px(180.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(min(10px, 20px) * 18)"),
+            Some(LengthSpec::Px(180.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(2 * min(10px, 50vw))"),
+            Some(LengthSpec::Min2(
+                LengthAtom::Px(20.0),
+                LengthAtom::Viewport {
+                    axis: ViewportAxis::Width,
+                    value: 100.0
+                }
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(min(10px, 50vw) / 2)"),
+            Some(LengthSpec::Min2(
+                LengthAtom::Px(5.0),
+                LengthAtom::Viewport {
+                    axis: ViewportAxis::Width,
+                    value: 25.0
+                }
+            ))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(3 * min(50%, 200px))"),
+            Some(LengthSpec::Min2(
+                LengthAtom::Percent(150.0),
+                LengthAtom::Px(600.0)
+            )),
+            "scaled percent must not snap 150% to Fill/100"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(-2 * min(10px, 4vw))"),
+            Some(LengthSpec::Max2(
+                LengthAtom::Px(-20.0),
+                LengthAtom::Viewport {
+                    axis: ViewportAxis::Width,
+                    value: -8.0
+                }
+            ))
+        );
         // Unknown math functions fail closed (no pretend-success).
         assert_eq!(LengthSpec::parse("calc(tan(45deg) * 10px)"), None);
         assert_eq!(LengthSpec::parse("calc(atan2(1, 1) * 10px)"), None);
@@ -5065,6 +5266,37 @@ mod tests {
             );
             assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
             assert_eq!(layout.height, Some(LengthSpec::Px(24.0)));
+        });
+
+        let mut ds = std::collections::BTreeMap::new();
+        ds.insert("--ds-px".into(), "min(10px, 50vw)".into());
+        with_active_css_vars(&ds, || {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text("width: calc(2 * var(--ds-px))", None, None);
+            assert_eq!(
+                layout.width,
+                Some(LengthSpec::Min2(
+                    LengthAtom::Px(20.0),
+                    LengthAtom::Viewport {
+                        axis: ViewportAxis::Width,
+                        value: 100.0
+                    }
+                ))
+            );
+            with_active_viewport(400.0, 800.0, || {
+                assert_eq!(
+                    layout.width.unwrap().resolve_with(None, active_viewport()),
+                    Some(20.0),
+                    "min(10px, 50vw)*2 used value at 400vw"
+                );
+            });
+            with_active_viewport(10.0, 800.0, || {
+                assert_eq!(
+                    layout.width.unwrap().resolve_with(None, active_viewport()),
+                    Some(10.0),
+                    "min(10px, 50vw)*2 used value at 10vw"
+                );
+            });
         });
     }
 
