@@ -43,3 +43,8 @@ nana-svg-raster.workspace = true
 name = "nana-vue-runtime-benchmark"
 path = "src/bin/nana-vue-runtime-benchmark.rs"
 required-features = ["benchmark"]
+
+[[bin]]
+name = "nana-css-l1-benchmark"
+path = "src/bin/nana-css-l1-benchmark.rs"
+required-features = ["benchmark"]
