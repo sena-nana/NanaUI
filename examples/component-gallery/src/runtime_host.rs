@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use nana_ui::runtime::{
     AlignSpec, AppContext, ComponentView, DesktopShell, Entity, FlexDirection, FrameworkError,
     IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
-    RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, Workspace,
+    RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext, Workspace,
 };
 use nana_ui::{ButtonKind, ControlSize, Icon, LogicalPoint, ThemeMode, TitleBarDragTracker};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
@@ -169,6 +169,21 @@ pub(super) fn search_command_button() -> IconButton {
         .kind(ButtonKind::Text)
 }
 
+fn queue_gallery_message<V, E>(
+    pending: Arc<Mutex<Vec<GalleryMessage>>>,
+    map: impl Fn(&E) -> GalleryMessage + Send + 'static,
+) -> impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static
+where
+    V: View,
+    E: Send + 'static,
+{
+    move |_, event: &E, _| {
+        if let Ok(mut pending) = pending.lock() {
+            pending.push(map(event));
+        }
+    }
+}
+
 pub(super) fn bind_event<V, E>(
     context: &mut AppContext,
     entity: Entity<V>,
@@ -179,11 +194,19 @@ where
     V: View,
     E: Send + 'static,
 {
-    context.on(entity, move |_, event: &E, _| {
-        if let Ok(mut pending) = pending.lock() {
-            pending.push(map(event));
-        }
-    })
+    context.on(entity, queue_gallery_message(pending, map))
+}
+
+pub(super) fn bind_event_ui<V, E>(
+    ui: &mut nana_ui::runtime::UiBuilder<'_>,
+    entity: Entity<V>,
+    pending: Arc<Mutex<Vec<GalleryMessage>>>,
+    map: impl Fn(&E) -> GalleryMessage + Send + 'static,
+) where
+    V: View,
+    E: Send + 'static,
+{
+    ui.on(entity, queue_gallery_message(pending, map));
 }
 
 pub(super) fn take_pending(pending: &Arc<Mutex<Vec<GalleryMessage>>>) -> Vec<GalleryMessage> {

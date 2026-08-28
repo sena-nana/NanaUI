@@ -281,196 +281,226 @@ fn remount(
 ) -> Result<Option<nana_ui::runtime::StableNodeId>, FrameworkError> {
     let document_id = document.document();
     document.context_mut().set_theme(theme)?;
-    let label = |document: &mut RuntimeDocument, value: &str| {
-        document
-            .context_mut()
-            .create_detached_component(document_id, runtime_slot_text(value))
-    };
-    let bare = |document: &mut RuntimeDocument, value: &str| {
-        document
-            .context_mut()
-            .create_detached_component(document_id, RuntimeText::new(value))
-    };
     let target = match case {
         Case::GraphCanvas => {
-            let canvas = document.context_mut().create_component(
-                document_id,
-                RuntimeGraphCanvas::new("ab", graph.clone())
-                    .viewport(graph_viewport)
-                    .selection(graph_selection.cloned()),
-            )?;
-            let observed = Arc::clone(graph_events);
-            document
-                .context_mut()
-                .on(canvas, move |_canvas, event: &GraphCanvasEvent, _cx| {
+            let canvas = document.context_mut().build(document_id, |ui| {
+                let canvas = ui.child(
+                    "graph",
+                    RuntimeGraphCanvas::new("ab", graph.clone())
+                        .viewport(graph_viewport)
+                        .selection(graph_selection.cloned()),
+                );
+                let observed = Arc::clone(graph_events);
+                ui.on(canvas, move |_canvas, event: &GraphCanvasEvent, _cx| {
                     observed.lock().expect("graph events").push(event.clone());
-                })?;
+                });
+                canvas
+            })?;
             canvas.stable_id()
         }
         Case::Workspace => {
-            let nav = label(document, "Nav")?;
-            let files = label(document, "Files")?;
-            let toolbar = label(document, "Toolbar")?;
-            let primary = label(document, "Primary")?;
-            let inspector = label(document, "Inspector")?;
-            let diagnostics = label(document, "Diagnostics")?;
-            let workspace = document.context_mut().create_component(
-                document_id,
-                Workspace::from_model(
-                    &WorkspaceModel::new(),
-                    [
-                        WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
-                        WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
-                        WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
-                        WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
-                        WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
-                        WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
-                    ],
-                ),
-            )?;
-            document.context_mut().append_child(workspace, nav)?;
-            document.context_mut().append_child(workspace, files)?;
-            document.context_mut().append_child(workspace, toolbar)?;
-            document.context_mut().append_child(workspace, primary)?;
-            document.context_mut().append_child(workspace, inspector)?;
-            document
-                .context_mut()
-                .append_child(workspace, diagnostics)?;
+            let workspace = document.context_mut().build(document_id, |ui| {
+                let nav = ui.leaf(runtime_slot_text("Nav"));
+                let files = ui.leaf(runtime_slot_text("Files"));
+                let toolbar = ui.leaf(runtime_slot_text("Toolbar"));
+                let primary = ui.leaf(runtime_slot_text("Primary"));
+                let inspector = ui.leaf(runtime_slot_text("Inspector"));
+                let diagnostics = ui.leaf(runtime_slot_text("Diagnostics"));
+                let workspace = ui.child(
+                    "workspace",
+                    Workspace::from_model(
+                        &WorkspaceModel::new(),
+                        [
+                            WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
+                            WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
+                            WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
+                            WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
+                            WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
+                            WorkspaceRegionSlot::new(
+                                RegionId::Diagnostics,
+                                diagnostics.stable_id(),
+                            ),
+                        ],
+                    ),
+                );
+                ui.nest(workspace, |ui| {
+                    ui.adopt(nav);
+                    ui.adopt(files);
+                    ui.adopt(toolbar);
+                    ui.adopt(primary);
+                    ui.adopt(inspector);
+                    ui.adopt(diagnostics);
+                });
+                workspace
+            })?;
             document.context_mut().assemble_workspace(workspace)?;
             workspace.stable_id()
         }
         Case::Dock => {
-            let nav = label(document, "Nav")?;
-            let files = label(document, "Files")?;
-            let primary = label(document, "Primary")?;
-            let dock = document.context_mut().create_component(
-                document_id,
-                Dock::new(DockNode::split(
-                    DockAxis::Horizontal,
-                    0.35,
-                    DockNode::tabs(
-                        ["nav", "files"],
-                        "nav",
-                        [
-                            ("nav", Some(nav.stable_id())),
-                            ("files", Some(files.stable_id())),
-                        ],
-                    ),
-                    DockNode::item("primary", Some(primary.stable_id())),
-                ))
-                .title("nav", "Nav")
-                .title("files", "Files")
-                .title("primary", "Primary"),
-            )?;
-            document.context_mut().append_child(dock, nav)?;
-            document.context_mut().append_child(dock, files)?;
-            document.context_mut().append_child(dock, primary)?;
+            let dock = document.context_mut().build(document_id, |ui| {
+                let nav = ui.leaf(runtime_slot_text("Nav"));
+                let files = ui.leaf(runtime_slot_text("Files"));
+                let primary = ui.leaf(runtime_slot_text("Primary"));
+                let dock = ui.child(
+                    "dock",
+                    Dock::new(DockNode::split(
+                        DockAxis::Horizontal,
+                        0.35,
+                        DockNode::tabs(
+                            ["nav", "files"],
+                            "nav",
+                            [
+                                ("nav", Some(nav.stable_id())),
+                                ("files", Some(files.stable_id())),
+                            ],
+                        ),
+                        DockNode::item("primary", Some(primary.stable_id())),
+                    ))
+                    .title("nav", "Nav")
+                    .title("files", "Files")
+                    .title("primary", "Primary"),
+                );
+                ui.nest(dock, |ui| {
+                    ui.adopt(nav);
+                    ui.adopt(files);
+                    ui.adopt(primary);
+                });
+                dock
+            })?;
             document.context_mut().assemble_dock(dock)?;
             dock.stable_id()
         }
         Case::DockPanel => {
-            let body = bare(document, "Inspector")?;
-            let panel = document.context_mut().create_component(
-                document_id,
-                DockPanel::new().padding(10.0).content(body.stable_id()),
-            )?;
-            document.context_mut().append_child(panel, body)?;
+            let panel = document.context_mut().build(document_id, |ui| {
+                let body = ui.leaf(RuntimeText::new("Inspector"));
+                let panel = ui.child(
+                    "panel",
+                    DockPanel::new().padding(10.0).content(body.stable_id()),
+                );
+                ui.nest(panel, |ui| ui.adopt(body));
+                panel
+            })?;
             panel.stable_id()
         }
         Case::SplitPane => {
-            let first = label(document, "First")?;
-            let second = label(document, "Second")?;
-            let pane = document.context_mut().create_component(
-                document_id,
-                SplitPane::from_model(
-                    &SplitPaneModel::new(SplitAxis::Horizontal, 180.0, 80.0, 320.0),
-                    first.stable_id(),
-                    second.stable_id(),
-                ),
-            )?;
-            document.context_mut().append_child(pane, first)?;
-            document.context_mut().append_child(pane, second)?;
+            let pane = document.context_mut().build(document_id, |ui| {
+                let first = ui.leaf(runtime_slot_text("First"));
+                let second = ui.leaf(runtime_slot_text("Second"));
+                let pane = ui.child(
+                    "pane",
+                    SplitPane::from_model(
+                        &SplitPaneModel::new(SplitAxis::Horizontal, 180.0, 80.0, 320.0),
+                        first.stable_id(),
+                        second.stable_id(),
+                    ),
+                );
+                ui.nest(pane, |ui| {
+                    ui.adopt(first);
+                    ui.adopt(second);
+                });
+                pane
+            })?;
             document.context_mut().assemble_split_pane(pane)?;
             pane.stable_id()
         }
         Case::PaneChrome => {
-            let header = document
-                .context_mut()
-                .create_detached_component(document_id, RuntimeText::new(""))?;
-            let tabs = bare(document, "editor.rs")?;
-            let body = bare(document, "Body")?;
-            let close = bare(document, "关闭")?;
-            let chrome = document.context_mut().create_component(
-                document_id,
-                PaneChrome::new()
-                    .header(header.stable_id())
-                    .tabs(tabs.stable_id())
-                    .body(body.stable_id())
-                    .actions([
-                        PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭")
-                            .target(close.stable_id()),
-                    ]),
-            )?;
-            document.context_mut().append_child(chrome, header)?;
-            document.context_mut().append_child(header, tabs)?;
-            document.context_mut().append_child(header, close)?;
-            document.context_mut().append_child(chrome, body)?;
+            let chrome = document.context_mut().build(document_id, |ui| {
+                let header = ui.leaf(RuntimeText::new(""));
+                let tabs = ui.leaf(RuntimeText::new("editor.rs"));
+                let body = ui.leaf(RuntimeText::new("Body"));
+                let close = ui.leaf(RuntimeText::new("关闭"));
+                ui.nest(header, |ui| {
+                    ui.adopt(tabs);
+                    ui.adopt(close);
+                });
+                let chrome = ui.child(
+                    "chrome",
+                    PaneChrome::new()
+                        .header(header.stable_id())
+                        .tabs(tabs.stable_id())
+                        .body(body.stable_id())
+                        .actions([
+                            PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭")
+                                .target(close.stable_id()),
+                        ]),
+                );
+                ui.nest(chrome, |ui| {
+                    ui.adopt(header);
+                    ui.adopt(body);
+                });
+                chrome
+            })?;
             chrome.stable_id()
         }
         Case::PaneTree => {
-            let left = label(document, "left")?;
-            let right = label(document, "right")?;
-            let tree = document.context_mut().create_component(
-                document_id,
-                PaneTree::new(PaneTreeNode::split(
-                    "root",
-                    SplitAxis::Horizontal,
-                    0.4,
-                    PaneTreeNode::leaf_content("left", left.stable_id()),
-                    PaneTreeNode::leaf_content("right", right.stable_id()),
-                )),
-            )?;
-            document.context_mut().append_child(tree, left)?;
-            document.context_mut().append_child(tree, right)?;
+            let tree = document.context_mut().build(document_id, |ui| {
+                let left = ui.leaf(runtime_slot_text("left"));
+                let right = ui.leaf(runtime_slot_text("right"));
+                let tree = ui.child(
+                    "tree",
+                    PaneTree::new(PaneTreeNode::split(
+                        "root",
+                        SplitAxis::Horizontal,
+                        0.4,
+                        PaneTreeNode::leaf_content("left", left.stable_id()),
+                        PaneTreeNode::leaf_content("right", right.stable_id()),
+                    )),
+                );
+                ui.nest(tree, |ui| {
+                    ui.adopt(left);
+                    ui.adopt(right);
+                });
+                tree
+            })?;
             tree.stable_id()
         }
         Case::AppShell => {
-            let title = document
-                .context_mut()
-                .create_detached_component(document_id, AppTitleBar::new("NanaUI"))?;
-            let body = bare(document, "Workspace")?;
-            let shell = document.context_mut().create_component(
-                document_id,
-                AppShell::new()
-                    .title_bar(title.stable_id())
-                    .body(body.stable_id()),
-            )?;
-            document.context_mut().append_child(shell, title)?;
-            document.context_mut().append_child(shell, body)?;
+            let shell = document.context_mut().build(document_id, |ui| {
+                let title = ui.leaf(AppTitleBar::new("NanaUI"));
+                let body = ui.leaf(RuntimeText::new("Workspace"));
+                let shell = ui.child(
+                    "shell",
+                    AppShell::new()
+                        .title_bar(title.stable_id())
+                        .body(body.stable_id()),
+                );
+                ui.nest(shell, |ui| {
+                    ui.adopt(title);
+                    ui.adopt(body);
+                });
+                shell
+            })?;
             document.context_mut().assemble_app_shell(shell)?;
             shell.stable_id()
         }
         Case::AppTitleBar => document
             .context_mut()
-            .create_component(document_id, AppTitleBar::new("NanaUI"))?
+            .build(document_id, |ui| {
+                ui.child("title", AppTitleBar::new("NanaUI"))
+            })?
             .stable_id(),
         Case::SettingsPage => {
-            let content = bare(document, "Appearance content")?;
             let (model, state) = ab_settings();
-            let page = document.context_mut().create_component(
-                document_id,
-                SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),
-            )?;
-            document.context_mut().append_child(page, content)?;
+            let page = document.context_mut().build(document_id, |ui| {
+                let content = ui.leaf(RuntimeText::new("Appearance content"));
+                let page = ui.child(
+                    "page",
+                    SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),
+                );
+                ui.nest(page, |ui| ui.adopt(content));
+                page
+            })?;
             document.context_mut().assemble_settings_page(page)?;
             page.stable_id()
         }
         Case::Calendar => document
             .context_mut()
-            .create_component(
-                document_id,
-                RuntimeCalendarHeatmap::new(ab_calendar_data()).label("活动"),
-            )?
+            .build(document_id, |ui| {
+                ui.child(
+                    "calendar",
+                    RuntimeCalendarHeatmap::new(ab_calendar_data()).label("活动"),
+                )
+            })?
             .stable_id(),
     };
     Ok(Some(target))

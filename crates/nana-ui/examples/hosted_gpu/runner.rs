@@ -51,42 +51,26 @@ impl DemoProgram {
     ) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("hosted gpu document");
         let mut document = RuntimeDocument::new(document_id);
-        let root = document
-            .context_mut()
-            .create_component(document_id, List::new().label("Hosted GPU"))?;
-        let title = document
-            .context_mut()
-            .create_component(document_id, Text::new("NANA 实时预览"))?;
-        let theme_button = document.context_mut().create_component(
-            document_id,
-            Button::new(panel.theme_label()).kind(ButtonKind::Text),
-        )?;
-        let preview = document
-            .context_mut()
-            .create_component(document_id, GpuTextureView::new(PREVIEW_SLOT))?;
-        let version = document
-            .context_mut()
-            .create_component(document_id, Text::new(panel.version_label()))?;
-        let refresh_button = document.context_mut().create_component(
-            document_id,
-            Button::new("刷新预览").kind(ButtonKind::Primary),
-        )?;
-        document.context_mut().append_child(root, title)?;
-        document.context_mut().append_child(root, theme_button)?;
-        document.context_mut().append_child(root, preview)?;
-        document.context_mut().append_child(root, version)?;
-        document.context_mut().append_child(root, refresh_button)?;
-
-        document
-            .context_mut()
-            .on(refresh_button, move |_button, _event: &Activate, cx| {
-                cx.dispatch_program(Message::Refresh);
-            })?;
-        document
-            .context_mut()
-            .on(theme_button, move |_button, _event: &Activate, cx| {
-                cx.dispatch_program(Message::ToggleTheme);
-            })?;
+        let (preview, version, theme_button) = document.context_mut().build(document_id, |ui| {
+            ui.with("root", List::new().label("Hosted GPU"), |ui| {
+                ui.child("title", Text::new("NANA 实时预览"));
+                let theme_button = ui.child(
+                    "theme",
+                    Button::new(panel.theme_label()).kind(ButtonKind::Text),
+                );
+                let preview = ui.child("preview", GpuTextureView::new(PREVIEW_SLOT));
+                let version = ui.child("version", Text::new(panel.version_label()));
+                let refresh =
+                    ui.child("refresh", Button::new("刷新预览").kind(ButtonKind::Primary));
+                ui.on(refresh, move |_button, _event: &Activate, cx| {
+                    cx.dispatch_program(Message::Refresh);
+                });
+                ui.on(theme_button, move |_button, _event: &Activate, cx| {
+                    cx.dispatch_program(Message::ToggleTheme);
+                });
+                (preview, version, theme_button)
+            })
+        })?;
 
         let textures = HostTextureRegistry::new();
         let (width, height) = scene.size();

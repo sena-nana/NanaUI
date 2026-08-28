@@ -281,7 +281,7 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         let button = runtime
             .context_mut()
-            .create_component(document, Button::new("Build"))
+            .build(document, |ui| ui.child("build", Button::new("Build")))
             .unwrap();
         struct TestShaper;
         impl nana_ui_runtime::TextShaper for TestShaper {
@@ -419,10 +419,12 @@ mod tests {
         };
         let button = runtime
             .context_mut()
-            .create_component(
-                document,
-                Button::new("Build").layout(Arc::new(half_viewport)),
-            )
+            .build(document, |ui| {
+                ui.child(
+                    "build",
+                    Button::new("Build").layout(Arc::new(half_viewport)),
+                )
+            })
             .unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -486,31 +488,22 @@ mod tests {
 
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);
-        let navigation = runtime
+        let (primary, _first, second, shell) = runtime
             .context_mut()
-            .create_detached_component(document, SidebarFrame::new())
-            .unwrap();
-        let primary = runtime
-            .context_mut()
-            .create_detached_component(document, Text::new("stage"))
-            .unwrap();
-        let first = runtime
-            .context_mut()
-            .create_detached_component(document, Text::new("inspector-a"))
-            .unwrap();
-        let second = runtime
-            .context_mut()
-            .create_detached_component(document, Text::new("inspector-b"))
-            .unwrap();
-        let shell = runtime
-            .context_mut()
-            .create_component(
-                document,
-                DesktopShell::new()
-                    .navigation(navigation.stable_id())
-                    .primary(primary.stable_id())
-                    .inspector(first.stable_id()),
-            )
+            .build(document, |ui| {
+                let navigation = ui.leaf(SidebarFrame::new());
+                let primary = ui.leaf(Text::new("stage"));
+                let first = ui.leaf(Text::new("inspector-a"));
+                let second = ui.leaf(Text::new("inspector-b"));
+                let shell = ui.child(
+                    "shell",
+                    DesktopShell::new()
+                        .navigation(navigation.stable_id())
+                        .primary(primary.stable_id())
+                        .inspector(first.stable_id()),
+                );
+                (primary, first, second, shell)
+            })
             .unwrap();
         runtime.context_mut().assemble_desktop_shell(shell).unwrap();
         runtime
@@ -561,7 +554,9 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         let empty = runtime
             .context_mut()
-            .create_component(document, EmptyState::new("Nothing here yet"))
+            .build(document, |ui| {
+                ui.child("empty", EmptyState::new("Nothing here yet"))
+            })
             .unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -636,27 +631,21 @@ mod tests {
 
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);
-        let navigation = runtime
+        let (inspector, shell) = runtime
             .context_mut()
-            .create_detached_component(document, SidebarFrame::new())
-            .unwrap();
-        let primary = runtime
-            .context_mut()
-            .create_detached_component(document, Text::new("stage"))
-            .unwrap();
-        let inspector = runtime
-            .context_mut()
-            .create_detached_component(document, Text::new("inspector"))
-            .unwrap();
-        let shell = runtime
-            .context_mut()
-            .create_component(
-                document,
-                DesktopShell::new()
-                    .navigation(navigation.stable_id())
-                    .primary(primary.stable_id())
-                    .inspector(inspector.stable_id()),
-            )
+            .build(document, |ui| {
+                let navigation = ui.leaf(SidebarFrame::new());
+                let primary = ui.leaf(Text::new("stage"));
+                let inspector = ui.leaf(Text::new("inspector"));
+                let shell = ui.child(
+                    "shell",
+                    DesktopShell::new()
+                        .navigation(navigation.stable_id())
+                        .primary(primary.stable_id())
+                        .inspector(inspector.stable_id()),
+                );
+                (inspector, shell)
+            })
             .unwrap();
         runtime.context_mut().assemble_desktop_shell(shell).unwrap();
 
@@ -775,7 +764,7 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         runtime
             .context_mut()
-            .create_component(document, Button::new("Retry"))
+            .build(document, |ui| ui.child("retry", Button::new("Retry")))
             .unwrap();
 
         struct RetryShaper(bool);

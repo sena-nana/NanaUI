@@ -73,118 +73,128 @@ impl GallerySettingsRuntime {
         let context = document.context_mut();
         let _ = context.set_theme(state.theme);
 
-        let sidebar = context.create_detached_component(
-            document_id,
-            SettingsSidebar::new(state.settings_model.clone(), state.settings.clone()),
-        )?;
-        let appearance = context.create_detached_component(
-            document_id,
-            AppearanceSection::new(state.theme, state.appearance)
-                .platform_hint(nana_ui::hosted_platform_material_support().hint())
-                .material_status(state.material_outcome.status_label()),
-        )?;
-        let about = context.create_detached_component(
-            document_id,
-            AboutSection::new(settings_view::gallery_about_metadata()),
-        )?;
-
-        let summary_title = context.create_detached_component(
-            document_id,
-            styled_text(
-                settings_view::WORKSPACE_SETTINGS_TITLE,
-                SemanticColorRole::Text,
-                13.0,
-                400,
-            ),
-        )?;
-        let summary_hint = context.create_detached_component(
-            document_id,
-            styled_text(
-                settings_view::WORKSPACE_SETTINGS_HINT,
-                SemanticColorRole::Muted,
-                11.0,
-                400,
-            ),
-        )?;
-        let summary = context.create_detached_component(document_id, HostStack::column(2.0))?;
-        context.append_child(summary, summary_title)?;
-        context.append_child(summary, summary_hint)?;
-
-        let details_copy = context.create_detached_component(
-            document_id,
-            styled_text(
-                settings_view::WORKSPACE_SETTINGS_DETAILS,
-                SemanticColorRole::Muted,
-                12.0,
-                400,
-            ),
-        )?;
-        let reset_workspace =
-            context.create_detached_component(document_id, workspace_reset_button())?;
-        let details = context.create_detached_component(document_id, HostStack::column(10.0))?;
-        context.append_child(details, details_copy)?;
-        context.append_child(details, reset_workspace)?;
-
-        let workspace_card = context.create_detached_component(
-            document_id,
-            SettingsCollapsibleCard::new(state.workspace_settings_expanded)
-                .summary(summary.stable_id())
-                .details(details.stable_id()),
-        )?;
-
-        let page = context.create_detached_component(
-            document_id,
-            SettingsPage::new(state.settings_model.clone(), state.settings.clone()).content(
-                page_content_id(
-                    &state.settings,
-                    appearance.stable_id(),
-                    workspace_card.stable_id(),
-                    about.stable_id(),
-                ),
-            ),
-        )?;
-
         let sidebar_collapsed = state
             .settings_workspace
             .layout()
             .region(&RegionId::Resources)
             .is_some_and(nana_ui::RegionState::collapsed_value);
-        let sidebar_toggle = context
-            .create_detached_component(document_id, sidebar_toggle_button(sidebar_collapsed))?;
-        let search_button = context.create_detached_component(
-            document_id,
-            IconButton::new(Icon::Search, "搜索命令")
-                .size(ControlSize::Small)
-                .kind(ButtonKind::Text),
-        )?;
-        let theme_button =
-            context.create_detached_component(document_id, theme_toggle_button(state.theme))?;
-        let context_label = context.create_detached_component(
-            document_id,
-            hugging_text("设置", SemanticColorRole::Muted, 11.0, 400),
-        )?;
-        let title_center = context.create_detached_component(
-            document_id,
-            hugging_text("NanaUI Gallery", SemanticColorRole::Text, 13.0, 600),
-        )?;
-        let title_leading =
-            context.create_detached_component(document_id, HostStack::leading_row(0.0))?;
-        context.append_child(title_leading, sidebar_toggle)?;
-        let title_trailing = context.create_detached_component(document_id, HostStack::row(6.0))?;
-        context.append_child(title_trailing, context_label)?;
-        context.append_child(title_trailing, search_button)?;
-        context.append_child(title_trailing, theme_button)?;
-
-        let shell = context.create_component(
-            document_id,
-            DesktopShell::from_model(state.settings_workspace.model().clone())
-                .title("NanaUI Gallery")
-                .title_leading(title_leading.stable_id())
-                .title_center(title_center.stable_id())
-                .title_trailing(title_trailing.stable_id())
-                .navigation(sidebar.stable_id())
-                .primary(page.stable_id()),
-        )?;
+        let (
+            sidebar,
+            appearance,
+            about,
+            workspace_card,
+            page,
+            sidebar_toggle,
+            search_button,
+            theme_button,
+            reset_workspace,
+            title_leading,
+            title_center,
+            title_trailing,
+            shell,
+        ) = context.build(document_id, |ui| {
+            let sidebar = ui.leaf(SettingsSidebar::new(
+                state.settings_model.clone(),
+                state.settings.clone(),
+            ));
+            let appearance = ui.leaf(
+                AppearanceSection::new(state.theme, state.appearance)
+                    .platform_hint(nana_ui::hosted_platform_material_support().hint())
+                    .material_status(state.material_outcome.status_label()),
+            );
+            let about = ui.leaf(AboutSection::new(settings_view::gallery_about_metadata()));
+            let summary_title = ui.leaf(styled_text(
+                settings_view::WORKSPACE_SETTINGS_TITLE,
+                SemanticColorRole::Text,
+                13.0,
+                400,
+            ));
+            let summary_hint = ui.leaf(styled_text(
+                settings_view::WORKSPACE_SETTINGS_HINT,
+                SemanticColorRole::Muted,
+                11.0,
+                400,
+            ));
+            let summary = ui.leaf(HostStack::column(2.0));
+            ui.nest(summary, |ui| {
+                ui.adopt(summary_title);
+                ui.adopt(summary_hint);
+            });
+            let details_copy = ui.leaf(styled_text(
+                settings_view::WORKSPACE_SETTINGS_DETAILS,
+                SemanticColorRole::Muted,
+                12.0,
+                400,
+            ));
+            let reset_workspace = ui.leaf(workspace_reset_button());
+            let details = ui.leaf(HostStack::column(10.0));
+            ui.nest(details, |ui| {
+                ui.adopt(details_copy);
+                ui.adopt(reset_workspace);
+            });
+            let workspace_card = ui.leaf(
+                SettingsCollapsibleCard::new(state.workspace_settings_expanded)
+                    .summary(summary.stable_id())
+                    .details(details.stable_id()),
+            );
+            let page = ui.leaf(
+                SettingsPage::new(state.settings_model.clone(), state.settings.clone()).content(
+                    page_content_id(
+                        &state.settings,
+                        appearance.stable_id(),
+                        workspace_card.stable_id(),
+                        about.stable_id(),
+                    ),
+                ),
+            );
+            let sidebar_toggle = ui.leaf(sidebar_toggle_button(sidebar_collapsed));
+            let search_button = ui.leaf(
+                IconButton::new(Icon::Search, "搜索命令")
+                    .size(ControlSize::Small)
+                    .kind(ButtonKind::Text),
+            );
+            let theme_button = ui.leaf(theme_toggle_button(state.theme));
+            let context_label = ui.leaf(hugging_text("设置", SemanticColorRole::Muted, 11.0, 400));
+            let title_center = ui.leaf(hugging_text(
+                "NanaUI Gallery",
+                SemanticColorRole::Text,
+                13.0,
+                600,
+            ));
+            let title_leading = ui.leaf(HostStack::leading_row(0.0));
+            ui.nest(title_leading, |ui| ui.adopt(sidebar_toggle));
+            let title_trailing = ui.leaf(HostStack::row(6.0));
+            ui.nest(title_trailing, |ui| {
+                ui.adopt(context_label);
+                ui.adopt(search_button);
+                ui.adopt(theme_button);
+            });
+            let shell = ui.child(
+                "shell",
+                DesktopShell::from_model(state.settings_workspace.model().clone())
+                    .title("NanaUI Gallery")
+                    .title_leading(title_leading.stable_id())
+                    .title_center(title_center.stable_id())
+                    .title_trailing(title_trailing.stable_id())
+                    .navigation(sidebar.stable_id())
+                    .primary(page.stable_id()),
+            );
+            (
+                sidebar,
+                appearance,
+                about,
+                workspace_card,
+                page,
+                sidebar_toggle,
+                search_button,
+                theme_button,
+                reset_workspace,
+                title_leading,
+                title_center,
+                title_trailing,
+                shell,
+            )
+        })?;
 
         context.assemble_settings_sidebar(sidebar)?;
         context.assemble_appearance_section(appearance)?;

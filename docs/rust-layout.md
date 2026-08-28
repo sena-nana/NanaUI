@@ -25,7 +25,7 @@ let card = Stack::column(7.0)
     .radius(16.0);
 ```
 
-子节点经 [`AppContext`](start.md) 挂到容器节点下（`create_component` + `append_child`，或在 `mount` 里 `ui.child`），容器只负责排列。
+子节点经 [`AppContext::build`](l3-authoring.md) 挂到容器下（`ui.column` / `ui.child`），容器只负责排列。不要给 `Stack` 加子节点字段。动态区用 `mount`。
 
 | 预设 | 方向 | 尺寸 | 典型用途 |
 | --- | --- | --- | --- |

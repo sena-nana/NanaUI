@@ -6,7 +6,7 @@ use crate::{ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, View
 use super::{AppContext, FrameworkError};
 
 #[derive(Clone, Copy)]
-pub(super) struct AssembledChild {
+pub(crate) struct AssembledChild {
     pub id: StableNodeId,
     pub type_id: TypeId,
 }

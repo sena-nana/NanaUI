@@ -34,7 +34,7 @@ nana-window
 新应用实现 `RuntimeProgram`，调用 `run_runtime`。
 
 ```text
-initialize     建 RuntimeDocument，create_component，on(...)
+initialize     建 RuntimeDocument，build { child / on }
 document()     按 WindowId 交出那棵树
 update         只处理宿主级消息（开窗、换 GPU、持久化）
                按钮点击不要走这里，用 on / observe
@@ -80,9 +80,9 @@ scene_gpu_renderers / scene_resource_producers
 Rust 控件、Vue 的 `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。
 
 ```text
-Rust  create_component  ──┐
-Vue   nana-* props      ──┼─► UiWorld ─► UiScene ─► SceneWgpuPainter
-Vue   div + CSS 子集    ──┘
+Rust  build / create_component ──┐
+Vue   nana-* props             ─┼─► UiWorld ─► UiScene ─► SceneWgpuPainter
+Vue   div + CSS 子集           ─┘
 ```
 
 没有 WebView。`createNanaApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。

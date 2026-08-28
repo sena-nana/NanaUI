@@ -850,26 +850,15 @@ mod tests {
     fn runtime_session_click_node_and_optional_preview() {
         let document_id = DocumentId::new(1).expect("document");
         let mut document = RuntimeDocument::new(document_id);
-        let root = document
-            .context_mut()
-            .create_component(document_id, List::new().label("Agent"))
-            .expect("root");
-        let label = document
-            .context_mut()
-            .create_component(document_id, Text::new("idle"))
-            .expect("label");
         let button = document
             .context_mut()
-            .create_component(document_id, Button::new("Go"))
-            .expect("button");
-        document
-            .context_mut()
-            .append_child(root, label)
-            .expect("append label");
-        document
-            .context_mut()
-            .append_child(root, button)
-            .expect("append button");
+            .build(document_id, |ui| {
+                ui.with("root", List::new().label("Agent"), |ui| {
+                    ui.child("label", Text::new("idle"));
+                    ui.child("go", Button::new("Go"))
+                })
+            })
+            .expect("root");
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("runtime session");
         assert!(
             session
@@ -904,13 +893,15 @@ mod tests {
         let mut document = RuntimeDocument::new(document_id);
         let view = document
             .context_mut()
-            .create_component(
-                document_id,
-                GpuView::new(1).palette(GpuViewPalette {
-                    background: [1.0, 0.0, 0.0, 1.0],
-                    accent: [1.0, 0.0, 0.0, 1.0],
-                }),
-            )
+            .build(document_id, |ui| {
+                ui.child(
+                    "view",
+                    GpuView::new(1).palette(GpuViewPalette {
+                        background: [1.0, 0.0, 0.0, 1.0],
+                        accent: [1.0, 0.0, 0.0, 1.0],
+                    }),
+                )
+            })
             .expect("gpu view");
         let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
 
@@ -982,26 +973,30 @@ mod tests {
         }
         let scroll = document
             .context_mut()
-            .create_component(
-                document_id,
-                ScrollView::new(ScrollAxes::Vertical)
-                    .scrollbars(ScrollbarVisibility::Always)
-                    .style(viewport),
-            )
+            .build(document_id, |ui| {
+                let scroll = ui.child(
+                    "scroll",
+                    ScrollView::new(ScrollAxes::Vertical)
+                        .scrollbars(ScrollbarVisibility::Always)
+                        .style(viewport),
+                );
+                ui.nest(scroll, |ui| {
+                    for index in 0..8 {
+                        let mut row = NodeStyle::default();
+                        {
+                            let layout = std::sync::Arc::make_mut(&mut row.layout);
+                            layout.width = Some(LengthSpec::Fill);
+                            layout.height = Some(LengthSpec::Px(40.0));
+                        }
+                        ui.child(
+                            format!("row-{index}"),
+                            Text::new(format!("Row {index}")).style(row),
+                        );
+                    }
+                });
+                scroll
+            })
             .expect("scroll view");
-        for index in 0..8 {
-            let mut row = NodeStyle::default();
-            {
-                let layout = std::sync::Arc::make_mut(&mut row.layout);
-                layout.width = Some(LengthSpec::Fill);
-                layout.height = Some(LengthSpec::Px(40.0));
-            }
-            let row = document
-                .context_mut()
-                .create_component(document_id, Text::new(format!("Row {index}")).style(row))
-                .expect("row");
-            document.context_mut().append_child(scroll, row).unwrap();
-        }
         let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
 
         // Brightness of the rightmost track-thick band versus the same band on
@@ -1081,30 +1076,21 @@ mod tests {
             layout.gap = Some(LengthSpec::Px(12.0));
             layout.padding = Some(LengthSpec::Px(16.0));
         }
-        let root = document
+        let (radios, first, second) = document
             .context_mut()
-            .create_component(document_id, Card::new().style(column))
+            .build(document_id, |ui| {
+                ui.with("root", Card::new().style(column), |ui| {
+                    let radios = ui.child("radios", SegmentedControl::radio_group());
+                    let (first, second) = ui.nest(radios, |ui| {
+                        let first = ui.child("auto", SegmentedOption::new("Automatic"));
+                        let second = ui.child("manual", SegmentedOption::new("Manual"));
+                        (first, second)
+                    });
+                    ui.child("divider", Divider::horizontal());
+                    (radios, first, second)
+                })
+            })
             .expect("root");
-        let radios = document
-            .context_mut()
-            .create_component(document_id, SegmentedControl::radio_group())
-            .expect("radios");
-        let first = document
-            .context_mut()
-            .create_component(document_id, SegmentedOption::new("Automatic"))
-            .expect("first");
-        let second = document
-            .context_mut()
-            .create_component(document_id, SegmentedOption::new("Manual"))
-            .expect("second");
-        let divider = document
-            .context_mut()
-            .create_component(document_id, Divider::horizontal())
-            .expect("divider");
-        document.context_mut().append_child(root, radios).unwrap();
-        document.context_mut().append_child(radios, first).unwrap();
-        document.context_mut().append_child(radios, second).unwrap();
-        document.context_mut().append_child(root, divider).unwrap();
         document
             .context_mut()
             .set_segmented_options(radios, vec![first, second], Some(second))

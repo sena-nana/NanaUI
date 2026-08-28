@@ -48,53 +48,39 @@ impl GpuViewDemo {
     fn mount(theme: ThemeMode, revision: u32) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("gpu view document");
         let mut document = RuntimeDocument::new(document_id);
-        let root = document
-            .context_mut()
-            .create_component(document_id, List::new().label("GPU View"))?;
-        let title = document
-            .context_mut()
-            .create_component(document_id, Text::new("NANA 实时预览"))?;
-        let theme_button = document.context_mut().create_component(
-            document_id,
-            Button::new(theme_label(theme)).kind(ButtonKind::Text),
-        )?;
-        let preview = document.context_mut().create_component(
-            document_id,
-            GpuView::new(1)
-                .mode(GpuViewMode::Standalone)
-                .palette(Self::palette(theme, true))
-                .seed(revision as f32),
-        )?;
-        let thumbnail = document.context_mut().create_component(
-            document_id,
-            GpuView::new(2)
-                .mode(GpuViewMode::Inline)
-                .palette(Self::palette(theme, false))
-                .seed((revision.saturating_add(2)) as f32),
-        )?;
-        let version = document
-            .context_mut()
-            .create_component(document_id, Text::new(format!("版本 {}", revision + 1)))?;
-        let refresh_button = document.context_mut().create_component(
-            document_id,
-            Button::new("刷新预览").kind(ButtonKind::Primary),
-        )?;
-        document.context_mut().append_child(root, title)?;
-        document.context_mut().append_child(root, theme_button)?;
-        document.context_mut().append_child(root, preview)?;
-        document.context_mut().append_child(root, version)?;
-        document.context_mut().append_child(root, thumbnail)?;
-        document.context_mut().append_child(root, refresh_button)?;
-
-        document
-            .context_mut()
-            .on(refresh_button, move |_button, _event: &Activate, cx| {
-                cx.dispatch_program(Message::Refresh);
-            })?;
-        document
-            .context_mut()
-            .on(theme_button, move |_button, _event: &Activate, cx| {
-                cx.dispatch_program(Message::ToggleTheme);
+        let (preview, thumbnail, version, theme_button) =
+            document.context_mut().build(document_id, |ui| {
+                ui.with("root", List::new().label("GPU View"), |ui| {
+                    ui.child("title", Text::new("NANA 实时预览"));
+                    let theme_button = ui.child(
+                        "theme",
+                        Button::new(theme_label(theme)).kind(ButtonKind::Text),
+                    );
+                    let preview = ui.child(
+                        "preview",
+                        GpuView::new(1)
+                            .mode(GpuViewMode::Standalone)
+                            .palette(Self::palette(theme, true))
+                            .seed(revision as f32),
+                    );
+                    let version = ui.child("version", Text::new(format!("版本 {}", revision + 1)));
+                    let thumbnail = ui.child(
+                        "thumbnail",
+                        GpuView::new(2)
+                            .mode(GpuViewMode::Inline)
+                            .palette(Self::palette(theme, false))
+                            .seed((revision.saturating_add(2)) as f32),
+                    );
+                    let refresh =
+                        ui.child("refresh", Button::new("刷新预览").kind(ButtonKind::Primary));
+                    ui.on(refresh, move |_button, _event: &Activate, cx| {
+                        cx.dispatch_program(Message::Refresh);
+                    });
+                    ui.on(theme_button, move |_button, _event: &Activate, cx| {
+                        cx.dispatch_program(Message::ToggleTheme);
+                    });
+                    (preview, thumbnail, version, theme_button)
+                })
             })?;
 
         Ok(Self {

@@ -573,39 +573,36 @@ fn migration_runtime_document(
         layout.padding_bottom = Some(LengthSpec::Px(24.0));
         layout.gap = Some(LengthSpec::Px(12.0));
     }
-    let root = document
-        .context_mut()
-        .create_component(document_id, RuntimeList::new().style(root_style))?;
-    let title = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeText::new("Migration fixture").style(NodeStyle {
-            foreground: Some(SemanticColorRole::Text),
-            layout: Arc::new(LayoutStyle {
-                font_size: Some(20.0),
-                font_weight: Some(400),
-                width: Some(LengthSpec::Fill),
-                height: Some(LengthSpec::Px(28.0)),
-                ..LayoutStyle::default()
-            }),
-            text_vertical_alignment: TextVerticalAlignment::Center,
-            ..NodeStyle::default()
-        }),
-    )?;
-    let input = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeTextInput::new("release/issue-7").label("Branch"),
-    )?;
-    let button = document.context_mut().create_detached_component(
-        document_id,
-        RuntimeButton::new("Run build").kind(ButtonKind::Primary),
-    )?;
-    let checkbox = document
-        .context_mut()
-        .create_detached_component(document_id, RuntimeCheckbox::new("Notifications", true))?;
-    document.context_mut().append_child(root, title)?;
-    document.context_mut().append_child(root, input)?;
-    document.context_mut().append_child(root, button)?;
-    document.context_mut().append_child(root, checkbox)?;
+    let (title, input, button, checkbox) = document.context_mut().build(document_id, |ui| {
+        let root = ui.child("root", RuntimeList::new().style(root_style));
+        ui.nest(root, |ui| {
+            let title = ui.child(
+                "title",
+                RuntimeText::new("Migration fixture").style(NodeStyle {
+                    foreground: Some(SemanticColorRole::Text),
+                    layout: Arc::new(LayoutStyle {
+                        font_size: Some(20.0),
+                        font_weight: Some(400),
+                        width: Some(LengthSpec::Fill),
+                        height: Some(LengthSpec::Px(28.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    text_vertical_alignment: TextVerticalAlignment::Center,
+                    ..NodeStyle::default()
+                }),
+            );
+            let input = ui.child(
+                "input",
+                RuntimeTextInput::new("release/issue-7").label("Branch"),
+            );
+            let button = ui.child(
+                "button",
+                RuntimeButton::new("Run build").kind(ButtonKind::Primary),
+            );
+            let checkbox = ui.child("checkbox", RuntimeCheckbox::new("Notifications", true));
+            (title, input, button, checkbox)
+        })
+    })?;
     document.flush(
         LayoutViewport::new(MIGRATION_SIZE.width as f32, MIGRATION_SIZE.height as f32),
         &mut NanaTextShaper::default(),
@@ -704,41 +701,167 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
     let document_id = DocumentId::new(1).expect("snapshot document ID is non-zero");
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
-    let context = document.context_mut();
-    let title = context.create_component(
-        document_id,
-        RuntimeText::new("Build queue").style(NodeStyle {
-            foreground: Some(SemanticColorRole::Text),
-            layout: Arc::new(LayoutStyle {
-                font_size: Some(20.0),
-                font_weight: Some(600),
-                ..LayoutStyle::default()
+    let slider_component = RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0)?.label("Volume");
+    let (
+        title,
+        input,
+        button,
+        table,
+        checkbox,
+        toggle,
+        slider,
+        tabs,
+        activity,
+        activity_lines,
+        card,
+        add_source,
+        notes,
+        source_list,
+        source_items,
+        cells,
+    ) = document.context_mut().build(document_id, |ui| {
+        let title = ui.child(
+            "title",
+            RuntimeText::new("Build queue").style(NodeStyle {
+                foreground: Some(SemanticColorRole::Text),
+                layout: Arc::new(LayoutStyle {
+                    font_size: Some(20.0),
+                    font_weight: Some(600),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
             }),
-            ..NodeStyle::default()
-        }),
-    )?;
-    let input = context.create_component(
-        document_id,
-        RuntimeTextInput::new("release/issue-7").label("Branch"),
-    )?;
-    let button = context.create_component(document_id, RuntimeButton::new("Run build"))?;
-    let table =
-        context.create_component(document_id, RuntimeTable::new().label("Recent builds"))?;
-    let checkbox =
-        context.create_component(document_id, RuntimeCheckbox::new("Notifications", true))?;
-    let toggle = context.create_component(document_id, RuntimeSwitch::new("Auto build", true))?;
-    let slider = context.create_component(
-        document_id,
-        RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0)?.label("Volume"),
-    )?;
-    let tabs = context.create_component(
-        document_id,
-        RuntimeTabs::new("preview").label("Output").options([
-            RuntimeTabOption::new("preview", "Preview"),
-            RuntimeTabOption::new("program", "Program"),
-        ]),
-    )?;
-    let option_ids = context.read(tabs, |tabs| {
+        );
+        let input = ui.child(
+            "input",
+            RuntimeTextInput::new("release/issue-7").label("Branch"),
+        );
+        let button = ui.child("button", RuntimeButton::new("Run build"));
+        let table = ui.child("table", RuntimeTable::new().label("Recent builds"));
+        let checkbox = ui.child("checkbox", RuntimeCheckbox::new("Notifications", true));
+        let toggle = ui.child("toggle", RuntimeSwitch::new("Auto build", true));
+        let slider = ui.child("slider", slider_component);
+        let tabs = ui.child(
+            "tabs",
+            RuntimeTabs::new("preview").label("Output").options([
+                RuntimeTabOption::new("preview", "Preview"),
+                RuntimeTabOption::new("program", "Program"),
+            ]),
+        );
+        let activity = ui.child(
+            "activity",
+            RuntimeScrollView::new(ScrollAxes::Vertical)
+                .label("Activity")
+                .style(NodeStyle {
+                    background: Some(SemanticColorRole::Surface),
+                    border: Some(SemanticColorRole::Border),
+                    layout: Arc::new(LayoutStyle {
+                        border_width: Some(1.0),
+                        border_radius: Some(6.0),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                }),
+        );
+        let activity_lines = ui.nest(activity, |ui| {
+            [
+                ui.child("queued", RuntimeText::new("Queued #1043")),
+                ui.child("built", RuntimeText::new("Built #1042")),
+                ui.child("published", RuntimeText::new("Published artifacts")),
+            ]
+        });
+        let card = ui.child("card", RuntimeCard::new().label("Source inspector"));
+        let (add_source, notes, source_list, source_items) = ui.nest(card, |ui| {
+            let add_source = ui.child(
+                "add-source",
+                RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"),
+            );
+            let notes = ui.child(
+                "notes",
+                RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
+                    .label("Source notes"),
+            );
+            let source_list = ui.child("sources", RuntimeList::new().label("Scene sources"));
+            let source_items = ui.nest(source_list, |ui| {
+                [
+                    ui.child("camera", RuntimeListItem::new("Camera").selected(true)),
+                    ui.child("actor", RuntimeListItem::new("Live2D actor")),
+                    ui.child(
+                        "lower-third",
+                        RuntimeListItem::new("Lower third").disabled(true),
+                    ),
+                ]
+            });
+            (add_source, notes, source_list, source_items)
+        });
+        let rows = [
+            ["Build", "Status", "Duration"],
+            ["#1042", "Succeeded", "1m 18s"],
+            ["#1041", "Succeeded", "1m 21s"],
+            ["#1040", "Failed", "42s"],
+        ];
+        let mut cells = Vec::new();
+        ui.nest(table, |ui| {
+            for (row_index, values) in rows.into_iter().enumerate() {
+                let row = ui.child(format!("row-{row_index}"), RuntimeTableRow::new());
+                ui.nest(row, |ui| {
+                    for (column, value) in values.into_iter().enumerate() {
+                        let style = NodeStyle {
+                            foreground: Some(if row_index == 0 {
+                                SemanticColorRole::Muted
+                            } else {
+                                SemanticColorRole::Text
+                            }),
+                            background: Some(if row_index == 0 {
+                                SemanticColorRole::Subtle
+                            } else {
+                                SemanticColorRole::Surface
+                            }),
+                            border: Some(SemanticColorRole::Border),
+                            layout: Arc::new(LayoutStyle {
+                                padding_left: Some(LengthSpec::Px(10.0)),
+                                padding_right: Some(LengthSpec::Px(10.0)),
+                                border_width: Some(1.0),
+                                font_weight: (row_index == 0).then_some(600),
+                                ..LayoutStyle::default()
+                            }),
+                            text_vertical_alignment: TextVerticalAlignment::Center,
+                            ..NodeStyle::default()
+                        };
+                        let cell = ui.child(
+                            format!("cell-{column}"),
+                            RuntimeTableCell::new(value)
+                                .column_header(row_index == 0)
+                                .style(style),
+                        );
+                        cells.push(cell.stable_id());
+                    }
+                });
+            }
+        });
+        (
+            title,
+            input,
+            button,
+            table,
+            checkbox,
+            toggle,
+            slider,
+            tabs,
+            activity,
+            activity_lines,
+            card,
+            add_source,
+            notes,
+            source_list,
+            source_items,
+            cells,
+        )
+    })?;
+    document
+        .context_mut()
+        .scroll_to(activity, ScrollOffset { x: 0.0, y: 8.0 })?;
+    let option_ids = document.context().read(tabs, |tabs| {
         tabs.option_nodes()
             .iter()
             .map(|(_, id)| *id)
@@ -746,99 +869,6 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
     })?;
     let preview = option_ids[0];
     let program = option_ids[1];
-    let scroll_component = RuntimeScrollView::new(ScrollAxes::Vertical)
-        .label("Activity")
-        .style(NodeStyle {
-            background: Some(SemanticColorRole::Surface),
-            border: Some(SemanticColorRole::Border),
-            layout: Arc::new(LayoutStyle {
-                border_width: Some(1.0),
-                border_radius: Some(6.0),
-                ..LayoutStyle::default()
-            }),
-            ..NodeStyle::default()
-        });
-    let activity = context.create_component(document_id, scroll_component)?;
-    context.scroll_to(activity, ScrollOffset { x: 0.0, y: 8.0 })?;
-    let activity_lines = [
-        context.create_component(document_id, RuntimeText::new("Queued #1043"))?,
-        context.create_component(document_id, RuntimeText::new("Built #1042"))?,
-        context.create_component(document_id, RuntimeText::new("Published artifacts"))?,
-    ];
-    for line in activity_lines {
-        context.append_child(activity, line)?;
-    }
-    let card =
-        context.create_component(document_id, RuntimeCard::new().label("Source inspector"))?;
-    let add_source = context.create_component(
-        document_id,
-        RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"),
-    )?;
-    let notes = context.create_component(
-        document_id,
-        RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
-            .label("Source notes"),
-    )?;
-    let source_list =
-        context.create_component(document_id, RuntimeList::new().label("Scene sources"))?;
-    let source_items = [
-        context.create_component(document_id, RuntimeListItem::new("Camera").selected(true))?,
-        context.create_component(document_id, RuntimeListItem::new("Live2D actor"))?,
-        context.create_component(
-            document_id,
-            RuntimeListItem::new("Lower third").disabled(true),
-        )?,
-    ];
-    context.append_child(card, add_source)?;
-    context.append_child(card, notes)?;
-    context.append_child(card, source_list)?;
-    for item in source_items {
-        context.append_child(source_list, item)?;
-    }
-
-    let rows = [
-        ["Build", "Status", "Duration"],
-        ["#1042", "Succeeded", "1m 18s"],
-        ["#1041", "Succeeded", "1m 21s"],
-        ["#1040", "Failed", "42s"],
-    ];
-    let mut cells = Vec::new();
-    for (row_index, values) in rows.into_iter().enumerate() {
-        let row = context.create_component(document_id, RuntimeTableRow::new())?;
-        context.append_child(table, row)?;
-        for value in values {
-            let style = NodeStyle {
-                foreground: Some(if row_index == 0 {
-                    SemanticColorRole::Muted
-                } else {
-                    SemanticColorRole::Text
-                }),
-                background: Some(if row_index == 0 {
-                    SemanticColorRole::Subtle
-                } else {
-                    SemanticColorRole::Surface
-                }),
-                border: Some(SemanticColorRole::Border),
-                layout: Arc::new(LayoutStyle {
-                    padding_left: Some(LengthSpec::Px(10.0)),
-                    padding_right: Some(LengthSpec::Px(10.0)),
-                    border_width: Some(1.0),
-                    font_weight: (row_index == 0).then_some(600),
-                    ..LayoutStyle::default()
-                }),
-                text_vertical_alignment: TextVerticalAlignment::Center,
-                ..NodeStyle::default()
-            };
-            let cell = context.create_component(
-                document_id,
-                RuntimeTableCell::new(value)
-                    .column_header(row_index == 0)
-                    .style(style),
-            )?;
-            context.append_child(row, cell)?;
-            cells.push(cell.stable_id());
-        }
-    }
 
     let mut layout = MutationQueue::new();
     for (id, bounds) in [
@@ -1088,58 +1118,54 @@ fn titlebar_document(
     let document_id = DocumentId::new(3).expect("titlebar document");
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
-    let leading = document.context_mut().create_detached_component(
-        document_id,
-        labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600),
-    )?;
-    let center = document.context_mut().create_detached_component(
-        document_id,
-        labeled_text(
+    let title = document.context_mut().build(document_id, |ui| {
+        let leading = ui.leaf(labeled_text(
+            "NANA",
+            SemanticColorRole::Accent,
+            12.0,
+            600,
+        ));
+        let center = ui.leaf(labeled_text(
             "LiliaCode › 恢复 Native 侧边栏交互与主界面布局",
             SemanticColorRole::Text,
             13.0,
             400,
-        ),
-    )?;
-    let trailing = document.context_mut().create_detached_component(
-        document_id,
-        labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400),
-    )?;
-    let minimize = document
-        .context_mut()
-        .create_detached_component(document_id, window_control(Icon::Minimize, "Minimize"))?;
-    let maximize = document
-        .context_mut()
-        .create_detached_component(document_id, window_control(Icon::Maximize, "Maximize"))?;
-    let close = document
-        .context_mut()
-        .create_detached_component(document_id, window_control(Icon::Close, "Close"))?;
-    let controls = document.context_mut().create_detached_component(
-        document_id,
-        AppTitleBarControls::new(false)
-            .minimize(minimize.stable_id())
-            .maximize(maximize.stable_id())
-            .close(close.stable_id()),
-    )?;
-    document.context_mut().append_child(controls, minimize)?;
-    document.context_mut().append_child(controls, maximize)?;
-    document.context_mut().append_child(controls, close)?;
-    let title = document.context_mut().create_component(
-        document_id,
-        AppTitleBar::new("NanaUI")
-            .leading(leading.stable_id())
-            .center(center.stable_id())
-            .trailing(trailing.stable_id())
-            .controls(controls.stable_id())
-            .center_width(420.0)
-            .leading_inset(chrome.leading_inset)
-            .trailing_inset(chrome.trailing_inset)
-            .show_window_controls(chrome.uses_custom_controls()),
-    )?;
-    document.context_mut().append_child(title, leading)?;
-    document.context_mut().append_child(title, center)?;
-    document.context_mut().append_child(title, trailing)?;
-    document.context_mut().append_child(title, controls)?;
+        ));
+        let trailing = ui.leaf(labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400));
+        let minimize = ui.leaf(window_control(Icon::Minimize, "Minimize"));
+        let maximize = ui.leaf(window_control(Icon::Maximize, "Maximize"));
+        let close = ui.leaf(window_control(Icon::Close, "Close"));
+        let controls = ui.leaf(
+            AppTitleBarControls::new(false)
+                .minimize(minimize.stable_id())
+                .maximize(maximize.stable_id())
+                .close(close.stable_id()),
+        );
+        ui.nest(controls, |ui| {
+            ui.adopt(minimize);
+            ui.adopt(maximize);
+            ui.adopt(close);
+        });
+        let title = ui.child(
+            "title",
+            AppTitleBar::new("NanaUI")
+                .leading(leading.stable_id())
+                .center(center.stable_id())
+                .trailing(trailing.stable_id())
+                .controls(controls.stable_id())
+                .center_width(420.0)
+                .leading_inset(chrome.leading_inset)
+                .trailing_inset(chrome.trailing_inset)
+                .show_window_controls(chrome.uses_custom_controls()),
+        );
+        ui.nest(title, |ui| {
+            ui.adopt(leading);
+            ui.adopt(center);
+            ui.adopt(trailing);
+            ui.adopt(controls);
+        });
+        title
+    })?;
     document.context_mut().assemble_app_title_bar(title)?;
     document.flush(
         LayoutViewport::new(900.0, 120.0),
@@ -1192,23 +1218,27 @@ fn dock_window_document(
         .title("console", "控制台")
         .title("output", "输出")
         .title("editor", "Editor");
-    let dock = document.context_mut().create_component(document_id, dock)?;
+    let (shell, dock) = document.context_mut().build(document_id, |ui| {
+        let dock = ui.leaf(dock);
+        let title = ui.leaf(
+            AppTitleBar::new("NanaUI Gallery")
+                .leading_inset(chrome.leading_inset)
+                .trailing_inset(chrome.trailing_inset)
+                .show_window_controls(chrome.uses_custom_controls()),
+        );
+        let shell = ui.child(
+            "shell",
+            AppShell::new()
+                .title_bar(title.stable_id())
+                .body(dock.stable_id()),
+        );
+        ui.nest(shell, |ui| {
+            ui.adopt(title);
+            ui.adopt(dock);
+        });
+        (shell, dock)
+    })?;
     document.context_mut().assemble_dock(dock)?;
-    let title = document.context_mut().create_detached_component(
-        document_id,
-        AppTitleBar::new("NanaUI Gallery")
-            .leading_inset(chrome.leading_inset)
-            .trailing_inset(chrome.trailing_inset)
-            .show_window_controls(chrome.uses_custom_controls()),
-    )?;
-    let shell = document.context_mut().create_component(
-        document_id,
-        AppShell::new()
-            .title_bar(title.stable_id())
-            .body(dock.stable_id()),
-    )?;
-    document.context_mut().append_child(shell, title)?;
-    document.context_mut().append_child(shell, dock)?;
     document.context_mut().assemble_app_shell(shell)?;
     document.flush(
         LayoutViewport::new(size.width as f32, size.height as f32),

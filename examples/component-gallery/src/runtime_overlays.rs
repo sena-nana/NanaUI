@@ -16,8 +16,8 @@ use nana_ui::{
 use nana_ui_platform::{InputEvent, PointerPhase};
 
 use super::runtime_host::{
-    HostStack, RuntimeSceneInput, bind_event, hugging_text, runtime_input_event, styled_text,
-    take_pending,
+    HostStack, RuntimeSceneInput, bind_event, bind_event_ui, hugging_text, runtime_input_event,
+    styled_text, take_pending,
 };
 use super::{
     ContextAction, DialogCloseTrigger, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
@@ -86,42 +86,51 @@ impl GalleryOverlaysRuntime {
         let mut menu = None;
         let overlay_id = match kind {
             GalleryOverlay::CommandPalette => {
-                let overlay = context
-                    .create_detached_component(document_id, gallery_command_palette(state))?;
-                bind_event(
-                    context,
-                    overlay,
-                    Arc::clone(pending),
-                    |event: &CommandPaletteEvent| match event {
-                        CommandPaletteEvent::Navigate(_) => GalleryMessage::OverlayInteraction,
-                        event => GalleryMessage::CommandPalette(event.clone()),
-                    },
-                )?;
-                context.append_child(host, overlay)?;
+                let overlay = context.build_child(host, |ui| {
+                    let overlay = ui.child("overlay", gallery_command_palette(state));
+                    bind_event_ui(
+                        ui,
+                        overlay,
+                        Arc::clone(pending),
+                        |event: &CommandPaletteEvent| match event {
+                            CommandPaletteEvent::Navigate(_) => GalleryMessage::OverlayInteraction,
+                            event => GalleryMessage::CommandPalette(event.clone()),
+                        },
+                    );
+                    overlay
+                })?;
                 context.activate_overlay(host, overlay)?;
                 palette = Some(overlay);
                 overlay.stable_id()
             }
             GalleryOverlay::Dialog => {
-                let overlay = context.create_detached_component(
-                    document_id,
-                    ConfirmDialog::new(DIALOG_TITLE, DIALOG_DESCRIPTION),
-                )?;
-                let body = context.create_detached_component(document_id, dialog_body_text())?;
-                let close = context.create_detached_component(
-                    document_id,
-                    IconButton::new(Icon::Close, "关闭")
-                        .size(ControlSize::Small)
-                        .kind(ButtonKind::Text),
-                )?;
-                let cancel = context.create_detached_component(
-                    document_id,
-                    Button::new("取消").kind(ButtonKind::Ghost),
-                )?;
-                let confirm = context.create_detached_component(
-                    document_id,
-                    Button::new("确认").kind(ButtonKind::Primary),
-                )?;
+                let overlay = context.build_child(host, |ui| {
+                    let body = ui.leaf(dialog_body_text());
+                    let close = ui.leaf(
+                        IconButton::new(Icon::Close, "关闭")
+                            .size(ControlSize::Small)
+                            .kind(ButtonKind::Text),
+                    );
+                    let cancel = ui.leaf(Button::new("取消").kind(ButtonKind::Ghost));
+                    let confirm = ui.leaf(Button::new("确认").kind(ButtonKind::Primary));
+                    let overlay = ui.child(
+                        "overlay",
+                        ConfirmDialog::new(DIALOG_TITLE, DIALOG_DESCRIPTION),
+                    );
+                    bind_event_ui(
+                        ui,
+                        overlay,
+                        Arc::clone(pending),
+                        |intent: &ConfirmIntent| match intent {
+                            ConfirmIntent::Confirm { .. } => GalleryMessage::ConfirmDialog,
+                            ConfirmIntent::Cancel | ConfirmIntent::Secondary => {
+                                GalleryMessage::RequestDialogClose(DialogCloseTrigger::CloseButton)
+                            }
+                        },
+                    );
+                    (overlay, body, close, cancel, confirm)
+                })?;
+                let (overlay, body, close, cancel, confirm) = overlay;
                 context.set_confirm_slots(
                     overlay,
                     ConfirmSlots {
@@ -132,85 +141,77 @@ impl GalleryOverlaysRuntime {
                         confirm: confirm.stable_id(),
                     },
                 )?;
-                bind_event(
-                    context,
-                    overlay,
-                    Arc::clone(pending),
-                    |intent: &ConfirmIntent| match intent {
-                        ConfirmIntent::Confirm { .. } => GalleryMessage::ConfirmDialog,
-                        ConfirmIntent::Cancel | ConfirmIntent::Secondary => {
-                            GalleryMessage::RequestDialogClose(DialogCloseTrigger::CloseButton)
-                        }
-                    },
-                )?;
-                context.append_child(host, overlay)?;
                 context.activate_overlay(host, overlay)?;
                 dialog = Some(overlay);
                 overlay.stable_id()
             }
             GalleryOverlay::ImageViewer => {
                 let preview = mount_image_preview(context, document_id)?;
-                let overlay = context.create_detached_component(
-                    document_id,
-                    ImageViewer::new(ImageViewerContent::child(preview.stable_id()))
-                        .name(IMAGE_PREVIEW_NAME)
-                        .metadata(IMAGE_PREVIEW_METADATA),
-                )?;
-                context.append_child(overlay, preview)?;
-                bind_event(
-                    context,
-                    overlay,
-                    Arc::clone(pending),
-                    |event: &ImageViewerEvent| match event {
-                        ImageViewerEvent::Close => {
-                            GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::CloseButton)
-                        }
-                        ImageViewerEvent::Outside => {
-                            GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::Outside)
-                        }
-                        ImageViewerEvent::Interaction => GalleryMessage::OverlayInteraction,
-                    },
-                )?;
-                context.append_child(host, overlay)?;
+                let overlay = context.build_child(host, |ui| {
+                    let overlay = ui.child(
+                        "overlay",
+                        ImageViewer::new(ImageViewerContent::child(preview.stable_id()))
+                            .name(IMAGE_PREVIEW_NAME)
+                            .metadata(IMAGE_PREVIEW_METADATA),
+                    );
+                    ui.nest(overlay, |ui| ui.adopt(preview));
+                    bind_event_ui(
+                        ui,
+                        overlay,
+                        Arc::clone(pending),
+                        |event: &ImageViewerEvent| match event {
+                            ImageViewerEvent::Close => GalleryMessage::RequestImageViewerClose(
+                                DialogCloseTrigger::CloseButton,
+                            ),
+                            ImageViewerEvent::Outside => {
+                                GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::Outside)
+                            }
+                            ImageViewerEvent::Interaction => GalleryMessage::OverlayInteraction,
+                        },
+                    );
+                    overlay
+                })?;
                 context.activate_overlay(host, overlay)?;
                 image = Some(overlay);
                 overlay.stable_id()
             }
             GalleryOverlay::ContextMenu => {
                 let (anchor_x, anchor_y) = context_menu_anchor(state);
-                let overlay = context.create_detached_component(
-                    document_id,
-                    ContextMenu::new(anchor_x, anchor_y)
-                        .items(runtime_context_items(state.context_items()))
-                        .query(state.context_query.as_str())
-                        .searchable(true)
-                        .active_path(runtime_menu_path(&state.context_path))
-                        .open(true),
-                )?;
-                bind_event(
-                    context,
-                    overlay,
-                    Arc::clone(pending),
-                    |event: &RuntimeContextMenuEvent| match event {
-                        RuntimeContextMenuEvent::Search(query) => GalleryMessage::ContextMenu(
-                            GalleryContextMenuEvent::Search(query.to_string()),
-                        ),
-                        RuntimeContextMenuEvent::Select(value) => {
-                            match context_action_from_value(value) {
-                                Some(action) => {
-                                    GalleryMessage::ContextMenu(GalleryContextMenuEvent::Select(
-                                        context_action_key(action).to_string(),
-                                    ))
+                let overlay = context.build_child(host, |ui| {
+                    let overlay = ui.child(
+                        "overlay",
+                        ContextMenu::new(anchor_x, anchor_y)
+                            .items(runtime_context_items(state.context_items()))
+                            .query(state.context_query.as_str())
+                            .searchable(true)
+                            .active_path(runtime_menu_path(&state.context_path))
+                            .open(true),
+                    );
+                    bind_event_ui(
+                        ui,
+                        overlay,
+                        Arc::clone(pending),
+                        |event: &RuntimeContextMenuEvent| match event {
+                            RuntimeContextMenuEvent::Search(query) => GalleryMessage::ContextMenu(
+                                GalleryContextMenuEvent::Search(query.to_string()),
+                            ),
+                            RuntimeContextMenuEvent::Select(value) => {
+                                match context_action_from_value(value) {
+                                    Some(action) => GalleryMessage::ContextMenu(
+                                        GalleryContextMenuEvent::Select(
+                                            context_action_key(action).to_string(),
+                                        ),
+                                    ),
+                                    None => GalleryMessage::OverlayInteraction,
                                 }
-                                None => GalleryMessage::OverlayInteraction,
                             }
-                        }
-                        RuntimeContextMenuEvent::Dismiss => {
-                            GalleryMessage::ContextMenu(GalleryContextMenuEvent::Dismiss)
-                        }
-                    },
-                )?;
-                context.append_child(host, overlay)?;
+                            RuntimeContextMenuEvent::Dismiss => {
+                                GalleryMessage::ContextMenu(GalleryContextMenuEvent::Dismiss)
+                            }
+                        },
+                    );
+                    overlay
+                })?;
                 context.activate_overlay(host, overlay)?;
                 menu = Some(overlay);
                 overlay.stable_id()
@@ -792,40 +793,34 @@ fn mount_image_preview(
     context: &mut AppContext,
     document_id: DocumentId,
 ) -> Result<Entity<HostStack>, FrameworkError> {
-    let stage = context.create_detached_component(
-        document_id,
-        HostStack::fill_column(0.0).padding(IMAGE_PREVIEW_INSET),
-    )?;
-    let preview = context.create_detached_component(
-        document_id,
-        HostStack::fill_column(6.0)
-            .align(AlignSpec::Center)
-            .background(SemanticColorRole::AccentStrong),
-    )?;
-    let top = context.create_detached_component(document_id, HostStack::spacer())?;
-    let title = context.create_detached_component(
-        document_id,
-        hugging_text(
+    context.build_detached(document_id, |ui| {
+        let top = ui.leaf(HostStack::spacer());
+        let title = ui.leaf(hugging_text(
             IMAGE_PREVIEW_TITLE,
             SemanticColorRole::AccentText,
             48.0,
             600,
-        ),
-    )?;
-    let caption = context.create_detached_component(
-        document_id,
-        hugging_text(
+        ));
+        let caption = ui.leaf(hugging_text(
             IMAGE_PREVIEW_CAPTION,
             SemanticColorRole::AccentText,
             14.0,
             400,
-        ),
-    )?;
-    let bottom = context.create_detached_component(document_id, HostStack::spacer())?;
-    context.append_child(preview, top)?;
-    context.append_child(preview, title)?;
-    context.append_child(preview, caption)?;
-    context.append_child(preview, bottom)?;
-    context.append_child(stage, preview)?;
-    Ok(stage)
+        ));
+        let bottom = ui.leaf(HostStack::spacer());
+        let preview = ui.leaf(
+            HostStack::fill_column(6.0)
+                .align(AlignSpec::Center)
+                .background(SemanticColorRole::AccentStrong),
+        );
+        ui.nest(preview, |ui| {
+            ui.adopt(top);
+            ui.adopt(title);
+            ui.adopt(caption);
+            ui.adopt(bottom);
+        });
+        let stage = ui.leaf(HostStack::fill_column(0.0).padding(IMAGE_PREVIEW_INSET));
+        ui.nest(stage, |ui| ui.adopt(preview));
+        stage
+    })
 }
