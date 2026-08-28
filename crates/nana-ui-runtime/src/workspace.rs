@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -93,16 +93,15 @@ impl ComponentView for WorkspaceResizeHandle {
 }
 
 /// Backend-neutral workspace chrome. Snapshot the model; `project` never owns a clock.
+///
+/// Region visibility / overlay / extent / resize-highlight are queried through
+/// [`Self::model`] directly — no mirrored caches (`WorkspaceModel` is the
+/// single authority for that derived state).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Workspace {
     pub slots: Vec<WorkspaceRegionSlot>,
     pub style: NodeStyle,
     pub layout: WorkspaceLayout,
-    pub extents: HashMap<RegionId, f32>,
-    pub hovered_resize: Option<RegionId>,
-    pub transitioning: HashSet<RegionId>,
-    pub overlays: HashSet<RegionId>,
-    pub inline_size: f32,
     pub workspace_corners: bool,
     pub handles: HashMap<RegionId, StableNodeId>,
     pub middle: Option<StableNodeId>,
@@ -121,33 +120,10 @@ impl Workspace {
         model: &WorkspaceModel,
         slots: impl IntoIterator<Item = WorkspaceRegionSlot>,
     ) -> Self {
-        let layout = model.layout().clone();
-        let mut extents = HashMap::with_capacity(layout.regions().len());
-        let mut transitioning = HashSet::new();
-        let mut overlays = HashSet::new();
-        let mut hovered_resize = None;
-        for state in layout.regions() {
-            let id = state.id().clone();
-            extents.insert(id.clone(), model.region_extent(&id));
-            if model.region_transitioning(&id) {
-                transitioning.insert(id.clone());
-            }
-            if model.region_overlay(state) {
-                overlays.insert(id.clone());
-            }
-            if hovered_resize.is_none() && model.resize_highlighted(&id) {
-                hovered_resize = Some(id);
-            }
-        }
         Self {
             slots: slots.into_iter().collect(),
             style: NodeStyle::default(),
-            layout,
-            extents,
-            hovered_resize,
-            transitioning,
-            overlays,
-            inline_size: model.inline_size(),
+            layout: model.layout().clone(),
             workspace_corners: true,
             handles: HashMap::new(),
             middle: None,
@@ -160,30 +136,15 @@ impl Workspace {
 
     /// Refresh model-derived fields without replacing host slots or chrome.
     pub fn refresh_from_model(&mut self, model: &WorkspaceModel) {
-        let slots = std::mem::take(&mut self.slots);
-        let style = self.style.clone();
-        let handles = std::mem::take(&mut self.handles);
-        let workspace_corners = self.workspace_corners;
-        let middle = self.middle;
-        let primary_column = self.primary_column;
-        let primary_row = self.primary_row;
-        let editor_stack = self.editor_stack;
-        *self = Self::from_model(model, slots);
-        self.style = style;
-        self.handles = handles;
-        self.workspace_corners = workspace_corners;
-        self.middle = middle;
-        self.primary_column = primary_column;
-        self.primary_row = primary_row;
-        self.editor_stack = editor_stack;
+        self.model = model.clone();
+        self.layout = model.layout().clone();
     }
 
     pub fn apply(&mut self, mutation: WorkspaceMutation, now: Duration) -> bool {
         if !self.model.update(mutation, now) {
             return false;
         }
-        let model = self.model.clone();
-        self.refresh_from_model(&model);
+        self.layout = self.model.layout().clone();
         true
     }
 
@@ -243,41 +204,24 @@ impl Workspace {
     }
 
     pub fn region_extent(&self, id: &RegionId) -> f32 {
-        self.extents.get(id).copied().unwrap_or_else(|| {
-            self.layout
-                .region(id)
-                .map(|state| {
-                    if state.collapsed_value() {
-                        0.0
-                    } else {
-                        state.extent()
-                    }
-                })
-                .unwrap_or(0.0)
-        })
+        self.model.region_extent(id)
     }
 
     pub fn shows_resize_handle(&self, id: &RegionId) -> bool {
         let Some(state) = self.layout.region(id) else {
             return false;
         };
-        state.resizable_value()
-            && !state.disabled_value()
-            && state.fill_priority_value() == 0
-            && !self.transitioning.contains(id)
+        wants_resize_handle(state)
+            && !self.model.region_transitioning(id)
             && self.region_visible(state)
     }
 
     fn region_visible(&self, state: &RegionState) -> bool {
-        if self.transitioning.contains(state.id()) {
-            !state.hidden_value() && !state.responsive_collapsed(self.inline_size)
-        } else {
-            state.visible_at(self.inline_size)
-        }
+        self.model.region_visible(state)
     }
 
     fn region_overlay(&self, state: &RegionState) -> bool {
-        self.overlays.contains(state.id())
+        self.model.region_overlay(state)
     }
 
     fn slot_content(&self, id: &RegionId) -> Option<StableNodeId> {
@@ -1528,7 +1472,7 @@ mod tests {
             collapsing.region_extent(&RegionId::Resources),
             model.region_extent(&RegionId::Resources)
         );
-        assert!(collapsing.transitioning.contains(&RegionId::Resources));
+        assert!(collapsing.model.region_transitioning(&RegionId::Resources));
         assert!(collapsing.region_extent(&RegionId::Resources) > 0.0);
 
         assert!(model.update(
@@ -1537,7 +1481,7 @@ mod tests {
         ));
         let collapsed = Workspace::from_model(&model, []);
         assert_eq!(collapsed.region_extent(&RegionId::Resources), 0.0);
-        assert!(!collapsed.transitioning.contains(&RegionId::Resources));
+        assert!(!collapsed.model.region_transitioning(&RegionId::Resources));
         assert!(
             !collapsed.region_visible(
                 collapsed
@@ -1567,6 +1511,39 @@ mod tests {
         let view = Workspace::from_model(&model, []);
         assert_eq!(model.layout_json().expect("layout json after view"), json);
         assert_eq!(view.layout.to_json().expect("cloned layout"), json);
+    }
+
+    #[test]
+    fn workspace_region_queries_match_model_during_transitions() {
+        // The view holds no mirrored caches: every region query must agree
+        // with the model mid-transition (collapsing) and after it settles.
+        let mut model = WorkspaceModel::new();
+        assert!(model.update(
+            WorkspaceMutation::SetRegionCollapsed(RegionId::Resources, true),
+            Duration::ZERO,
+        ));
+        let view = Workspace::from_model(&model, []);
+        for state in view.layout.regions() {
+            let id = state.id();
+            assert_eq!(view.region_visible(state), model.region_visible(state));
+            assert_eq!(view.region_overlay(state), model.region_overlay(state));
+            assert_eq!(view.region_extent(id), model.region_extent(id));
+            assert_eq!(
+                view.shows_resize_handle(id),
+                wants_resize_handle(state)
+                    && !model.region_transitioning(id)
+                    && model.region_visible(state)
+            );
+        }
+        assert!(model.update(
+            WorkspaceMutation::AdvanceAnimations,
+            Duration::ZERO + nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION,
+        ));
+        let settled = Workspace::from_model(&model, []);
+        for state in settled.layout.regions() {
+            assert_eq!(settled.region_visible(state), model.region_visible(state));
+            assert_eq!(settled.region_overlay(state), model.region_overlay(state));
+        }
     }
 
     #[test]
@@ -1653,7 +1630,7 @@ mod tests {
         assert!(
             context
                 .read(entity, |workspace| {
-                    workspace.transitioning.contains(&RegionId::Resources)
+                    workspace.model.region_transitioning(&RegionId::Resources)
                         && !workspace.shows_resize_handle(&RegionId::Resources)
                 })
                 .unwrap()

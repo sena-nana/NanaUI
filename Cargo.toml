@@ -11,7 +11,7 @@ members = [
     "crates/nana-ui-web-api",
     "crates/nana-svg-raster",
     "crates/nana-ui-vue",
-    "crates/nana-css-parity",
+    "tools/css-parity",
     "crates/nana-ui-platform",
     "crates/nana-ui-devtools",
     "platform/android",
@@ -57,3 +57,5 @@ resvg = { version = "0.45.1", default-features = false, features = ["text"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 fontdue = "0.9"
 unicode-segmentation = "1.13.0"
+raw-window-handle = "0.6.2"
+windows-sys = "0.61.2"
