@@ -49,7 +49,7 @@ use crate::css_interactive_apply::{
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
 };
-use crate::layout_map::{apply_display_to_kind, default_layout_for_kind};
+use crate::layout_map::default_layout_for_kind;
 use crate::tree::NodeHandle;
 pub use crate::widget_map::resolve_kind_from_hints;
 
@@ -154,7 +154,7 @@ impl WidgetKind {
         Some(match s {
             "column" | "col" | "vstack" => Self::Column,
             "row" | "hstack" => Self::Row,
-            "box" | "container" | "layout" => Self::Box,
+            "stack" | "box" | "container" | "layout" => Self::Box,
             "text" | "label" => Self::Text,
             "button" | "btn" => Self::Button,
             "chip" => Self::Chip,
@@ -3001,7 +3001,6 @@ impl MessageBridge {
                 widget.props.layout = layout;
             }
             pin_svg_chart_min_height(&mut widget.props);
-            widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
     }
 
@@ -3947,7 +3946,6 @@ impl MessageBridge {
         if props.layout.padding.is_none() {
             props.layout.padding = defaults.padding;
         }
-        let kind = apply_display_to_kind(kind, &props.layout);
         if kind.is_overlay() {
             apply_overlay_presence_open(&mut props);
             // Product floats use Nana Overlay — strip companion CSS fixed/sticky.
@@ -4579,7 +4577,6 @@ impl MessageBridge {
         // 1) nanavue NanaWorkspaceShell body
         if let Some(id) = self.widgets.iter().find_map(|(&id, w)| {
             (reachable.contains(&id)
-                && w.kind == WidgetKind::Row
                 && w.props
                     .class_names
                     .iter()
@@ -4619,25 +4616,9 @@ impl MessageBridge {
             return Some(id);
         }
         // 3) reachable resources aside
-        if let Some(id) = self
-            .widgets
+        self.widgets
             .iter()
             .find_map(|(&id, w)| (reachable.contains(&id) && is_resources_shell(w)).then_some(id))
-        {
-            return Some(id);
-        }
-        // 4) Fallback: reachable workspace shell body (Row) when resources remount
-        // left no content host — better a direct SidebarFrame sibling of Primary
-        // than an invisible orphan.
-        self.widgets.iter().find_map(|(&id, w)| {
-            (reachable.contains(&id)
-                && w.kind == WidgetKind::Row
-                && w.props
-                    .class_names
-                    .iter()
-                    .any(|c| c == "nana-workspace-shell__body"))
-            .then_some(id)
-        })
     }
 
     fn collect_reachable(&self, id: WidgetId, out: &mut std::collections::HashSet<WidgetId>) {
@@ -4706,6 +4687,7 @@ impl MessageBridge {
                 }
             }
             // Re-resolve kind from class / role / type after attribute patches.
+            // Layout props (`style` / flex / gap / size) write `LayoutStyle` only.
             if matches!(
                 key_n.as_str(),
                 "class"
@@ -4716,13 +4698,6 @@ impl MessageBridge {
                     | "aria-selected"
                     | "aria-modal"
                     | "aria-expanded"
-                    | "style"
-                    | "flex-direction"
-                    | "flexdirection"
-                    | "gap"
-                    | "padding"
-                    | "width"
-                    | "height"
                     | "id"
                     | "data-region-id"
             ) {
@@ -4736,7 +4711,10 @@ impl MessageBridge {
                 if let Some(next) =
                     resolve_kind_from_hints("div", Some(&class), Some(&role), Some(&input_type))
                 {
-                    let allow = next != prev_kind && (!next.is_layout() || prev_kind.is_layout());
+                    // Layout identity is LayoutStyle. Do not flip Column/Row/Box
+                    // from a synthetic `div` re-resolve; class may still promote
+                    // a layout box to a control (chip / dialog).
+                    let allow = next != prev_kind && !next.is_layout();
                     if allow {
                         widget.kind = next;
                         if next.is_overlay() && !prev_kind.is_overlay() {
@@ -4744,14 +4722,14 @@ impl MessageBridge {
                         }
                     }
                 }
-                if widget.kind.is_overlay()
-                    && matches!(
-                        widget.props.layout.position,
-                        crate::css_map::PositionSpec::Fixed | crate::css_map::PositionSpec::Sticky
-                    )
-                {
-                    widget.props.layout.position = crate::css_map::PositionSpec::Static;
-                }
+            }
+            if widget.kind.is_overlay()
+                && matches!(
+                    widget.props.layout.position,
+                    crate::css_map::PositionSpec::Fixed | crate::css_map::PositionSpec::Sticky
+                )
+            {
+                widget.props.layout.position = crate::css_map::PositionSpec::Static;
             }
         }
         // Rebuild LayoutStyle from stylesheet + class hints + inline/prop style.
@@ -4809,7 +4787,6 @@ impl MessageBridge {
             self.reapply_layout_for(id);
         } else if let Some(widget) = self.widgets.get_mut(&id) {
             pin_svg_chart_min_height(&mut widget.props);
-            widget.kind = apply_display_to_kind(widget.kind, &widget.props.layout);
         }
         if let Some(root) = crate::svg_inline::nearest_svg_root(self, id)
             && !(full_rebuild && root == id)
@@ -5813,7 +5790,7 @@ mod tests {
     }
 
     #[test]
-    fn display_block_remains_column_when_stale_flex_direction_is_row() {
+    fn display_block_does_not_rewrite_row_widget_kind() {
         let mut bridge = MessageBridge::new();
         bridge.register(1, WidgetKind::Row, WidgetProps::default());
 
@@ -5824,9 +5801,11 @@ mod tests {
             &HostValue::string("display:block;flex-direction:row"),
         );
 
+        let widget = bridge.get(1).expect("row widget");
+        assert_eq!(widget.kind, WidgetKind::Row);
         assert_eq!(
-            bridge.get(1).map(|widget| widget.kind),
-            Some(WidgetKind::Column)
+            widget.props.layout.display,
+            Some(nana_ui_core::DisplaySpec::Block)
         );
     }
 
@@ -6228,7 +6207,11 @@ mod tests {
         assert_eq!(grid_layout.direction, Some(FlexDirection::Row));
         assert_eq!(grid_layout.gap, Some(LengthSpec::Px(12.0)));
         assert_eq!(grid_layout.height, Some(LengthSpec::Fill));
-        assert_eq!(bridge.get(2).unwrap().kind, WidgetKind::Row);
+        assert_eq!(
+            bridge.get(2).unwrap().kind,
+            WidgetKind::Column,
+            "CSS flex-direction must not rewrite WidgetKind"
+        );
 
         // Late stylesheet injection re-applies onto existing nodes.
         bridge.inject_stylesheet(".anon-shell { padding: 20px; }");
@@ -6295,7 +6278,7 @@ mod tests {
     }
 
     #[test]
-    fn style_patch_sets_gap_padding_and_flips_to_row() {
+    fn style_patch_sets_gap_padding_and_row_direction() {
         let mut bridge = MessageBridge::new();
         bridge.register(1, WidgetKind::Column, WidgetProps::default());
         bridge.patch_prop(
@@ -6306,7 +6289,8 @@ mod tests {
             ),
         );
         let w = bridge.get(1).unwrap();
-        assert_eq!(w.kind, WidgetKind::Row);
+        assert_eq!(w.kind, WidgetKind::Column);
+        assert_eq!(w.props.layout.direction, Some(FlexDirection::Row));
         assert_eq!(w.props.layout.gap, Some(LengthSpec::Px(12.0)));
         assert_eq!(w.props.layout.padding, Some(LengthSpec::Px(8.0)));
         assert_eq!(w.props.layout.width, Some(LengthSpec::Fill));

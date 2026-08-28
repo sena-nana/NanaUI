@@ -20,7 +20,7 @@ use nana_ui_core::{
 use crate::Dialog;
 use crate::component_registry::{
     ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
-    RegisterableComponent, SemanticSpec, registerable_entry, tag_entry,
+    RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
 };
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
@@ -424,6 +424,16 @@ impl ExtensionRegistrar {
         tags: &'static [&'static str],
     ) -> Result<(), FrameworkError> {
         let (entry, tags) = tag_entry(type_id, tags)?;
+        self.components.insert_with_tags(entry, tags)
+    }
+
+    /// Register extra type ids / tags that bind through `C::from_semantic`.
+    pub fn register_component_alias<C: RegisterableComponent>(
+        &mut self,
+        type_id: &'static str,
+        tags: &'static [&'static str],
+    ) -> Result<(), FrameworkError> {
+        let (entry, tags) = alias_entry::<C>(type_id, tags)?;
         self.components.insert_with_tags(entry, tags)
     }
 }

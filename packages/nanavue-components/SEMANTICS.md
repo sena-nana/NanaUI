@@ -46,7 +46,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-segmented` / class `nana-segmented` | Segmented | `nana_ui::SegmentedControl` |
 | `nana-range` / role=slider | Range | `nana_ui::RangeField` |
 | `nana-sidebar-row` / class sidebar-row | SidebarRow | `nana_ui::SidebarRow` |
-| `div` / `section` / `main` / … | Column / Row | Nana Column / Row 布局盒 |
+| `div` / `section` / `main` / `nana-stack` / `nana-column` / `nana-row` / `nana-box` | 初始 tag（Column / Row / Box） | L3 `Stack`（`nana.stack`；column/row/box 为标签别名）。方向与网格写在 `LayoutStyle`，不按 CSS 改 `WidgetKind` |
 | `#text` / `span` / `p` / `h*` | Text | `nana_ui::Text` |
 | `li` | ListItem | `nana_ui::ListItem` |
 | class `card` / `nana-card` | Card | `nana_ui::Card` |

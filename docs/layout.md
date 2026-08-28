@@ -70,4 +70,4 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 
 ## 和 Rust 布局的关系
 
-Vue 侧解析出的是同一份 `LayoutStyle`。真正算盒子的是 Runtime 的 `RuntimeLayoutEngine`，产品帧走 `RuntimeDocument::flush`。JavaScript 查询到的盒子是绘制阶段的投影，滚动不写回 Runtime 的布局权威。
+Vue 侧 CSS 解析出的是同一份 `LayoutStyle`。L3 用 [`Stack`](rust-layout.md) 表达这份合同（`from_layout` / 字段 builder）；L2 `nana-*` 只解析到同一 `ComponentTypeId`，不按 `display` / `flex-direction` 改布局身份。真正算盒子的是 Runtime 的 `RuntimeLayoutEngine`，产品帧走 `RuntimeDocument::flush`。JavaScript 查询到的盒子是绘制阶段的投影，滚动不写回 Runtime 的布局权威。

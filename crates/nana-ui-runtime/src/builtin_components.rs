@@ -21,8 +21,8 @@ use crate::{
     QrCode, RangeField, ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption,
     SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow,
     SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
-    Skeleton, Spinner, SplitPane, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text,
-    TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast,
+    Skeleton, Spinner, SplitPane, Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs,
+    Text, TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast,
     ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace,
     WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
@@ -36,15 +36,16 @@ impl UiExtension for NanaBuiltinComponents {
     }
 
     fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
-        registrar.register_tags(
+        registrar.register_component::<Stack>()?;
+        registrar.register_component_alias::<Stack>(
             "nana.column",
             &[
                 "column", "col", "vstack", "div", "section", "article", "main", "nav", "header",
                 "footer", "ul", "ol",
             ],
         )?;
-        registrar.register_tags("nana.row", &["row", "hstack"])?;
-        registrar.register_tags("nana.box", &["box", "container", "layout"])?;
+        registrar.register_component_alias::<Stack>("nana.row", &["row", "hstack"])?;
+        registrar.register_component_alias::<Stack>("nana.box", &["box", "container", "layout"])?;
         registrar.register_component::<Text>()?;
         registrar.register_component::<Button>()?;
         registrar.register_component::<IconButton>()?;
@@ -115,6 +116,23 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<SidebarSection>()?;
         registrar.register_component::<SidebarFooter>()?;
         Ok(())
+    }
+}
+
+impl RegisterableComponent for Stack {
+    const TYPE_ID: &'static str = "nana.stack";
+    const TAGS: &'static [&'static str] = &["stack"];
+    const BIND_KIND: crate::ComponentBindKind = crate::ComponentBindKind::Layout;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut layout = spec.layout.as_ref().clone();
+        if layout.direction.is_none() {
+            match spec.type_id.as_str() {
+                "nana.row" => layout.direction = Some(nana_ui_core::FlexDirection::Row),
+                "nana.column" => layout.direction = Some(nana_ui_core::FlexDirection::Column),
+                _ => {}
+            }
+        }
+        Stack::from_layout(layout)
     }
 }
 
@@ -3003,6 +3021,42 @@ mod tests {
         let glyph = IconGlyph::from_semantic(&spec);
         assert_eq!(glyph.icon, Icon::Search);
         assert_eq!(glyph.size, 24.0);
+    }
+
+    #[test]
+    fn stack_tags_resolve_to_stack_and_aliases() {
+        let context = AppContext::new();
+        assert_eq!(
+            context
+                .resolve_component_tag("stack")
+                .map(ComponentTypeId::as_str),
+            Some("nana.stack")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("div")
+                .map(ComponentTypeId::as_str),
+            Some("nana.column")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("row")
+                .map(ComponentTypeId::as_str),
+            Some("nana.row")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("box")
+                .map(ComponentTypeId::as_str),
+            Some("nana.box")
+        );
+        let type_id = ComponentTypeId::new("nana.row").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let stack = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, &layout));
+        assert_eq!(
+            stack.node_style().layout.direction,
+            Some(nana_ui_core::FlexDirection::Row)
+        );
     }
 
     #[test]

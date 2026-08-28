@@ -4,7 +4,9 @@ Rust 应用怎么排行与列、怎么写字段样式。Vue 兼容路径的 CSS 
 
 ## 先用 `Stack`，不要手写布局字段
 
-[`Stack`](../crates/nana-ui-runtime/src/view_components.rs) 是通用 flex 容器，预设构造器覆盖绝大多数排版，不要从零写 `LayoutStyle`：
+[`Stack`](../crates/nana-ui-runtime/src/view_components.rs) 是 L3 布局容器：预设覆盖常用 flex；grid / position / overflow / paint 写同一份 [`LayoutStyle`](../crates/nana-ui-core/src/box_layout.rs)（`with_layout` / `from_layout`）。不要另造布局控件。
+
+常用入口仍是预设：
 
 ```rust
 use nana_ui::runtime::{JustifySpec, SemanticColorRole, Stack};
@@ -35,7 +37,9 @@ let card = Stack::column(7.0)
 
 `column` 与 `fill_column` 的区别最常见的出错点：主区没伸展、底部输入区不贴底，几乎都是该用 `fill_column` 的地方写成了 `column`。
 
-容器本身不参与命中测试；需要交互的内容放在子控件上。语义容器（列表、表格）用 [`List`](components.md) / `Table`，`Stack` 只管排版。
+需要 CSS 能表达的其余字段时，用 `with_layout` 写 `LayoutStyle`。Vue 解析结果用 `Stack::from_layout` 承接，不套用预设默认。
+
+Rust 预设容器默认不参与命中测试；`from_layout`（Vue 布局盒）默认可点。语义容器（列表、表格）用 [`List`](components.md) / `Table`，`Stack` 只管排版。
 
 ## 样式：`NodeStyle` 与 builder
 

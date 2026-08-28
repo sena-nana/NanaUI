@@ -158,6 +158,8 @@ pub(crate) struct RegisteredComponentType {
 pub trait RegisterableComponent: ComponentView {
     const TYPE_ID: &'static str;
     const TAGS: &'static [&'static str];
+    /// Layout primitives keep Vue generic style writeback (`Layout`).
+    const BIND_KIND: ComponentBindKind = ComponentBindKind::Projected;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self;
 }
 
@@ -265,17 +267,21 @@ fn normalized_tags(tags: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn bind_registerable<C: RegisterableComponent>() -> Binder {
+    Arc::new(|request| {
+        let component = C::from_semantic(request.spec);
+        component.project(request.id, request.world, request.mutations);
+        Ok(C::BIND_KIND)
+    })
+}
+
 pub(crate) fn registerable_entry<C: RegisterableComponent>()
 -> Result<(RegisteredComponentType, Vec<String>), FrameworkError> {
     Ok((
         RegisteredComponentType {
             id: ComponentTypeId::new(C::TYPE_ID)?,
             rust_type: Some(TypeId::of::<C>()),
-            binder: Arc::new(|request| {
-                let component = C::from_semantic(request.spec);
-                component.project(request.id, request.world, request.mutations);
-                Ok(ComponentBindKind::Projected)
-            }),
+            binder: bind_registerable::<C>(),
         },
         normalized_tags(C::TAGS),
     ))
@@ -290,6 +296,21 @@ pub(crate) fn tag_entry(
             id: ComponentTypeId::new(type_id)?,
             rust_type: None,
             binder: Arc::new(|_| Ok(ComponentBindKind::Layout)),
+        },
+        normalized_tags(tags),
+    ))
+}
+
+/// Same binder as [`registerable_entry`], different type id / tags (layout aliases).
+pub(crate) fn alias_entry<C: RegisterableComponent>(
+    type_id: &'static str,
+    tags: &'static [&'static str],
+) -> Result<(RegisteredComponentType, Vec<String>), FrameworkError> {
+    Ok((
+        RegisteredComponentType {
+            id: ComponentTypeId::new(type_id)?,
+            rust_type: None,
+            binder: bind_registerable::<C>(),
         },
         normalized_tags(tags),
     ))

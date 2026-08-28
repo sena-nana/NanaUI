@@ -2862,7 +2862,7 @@ impl ComponentView for List {
     }
 }
 
-/// 通用 flex 布局容器：按行或列排列子节点，替代手写 [`NodeStyle`] 布局字段。
+/// 通用布局容器：预设覆盖常用 flex；完整字段走 [`nana_ui_core::LayoutStyle`]。
 ///
 /// 预设构造器覆盖常用排版，语义与布局引擎默认值对齐过的产物一致：
 /// - [`Stack::row`]：水平排列，宽度随内容（工具条、按钮组）。
@@ -2871,10 +2871,14 @@ impl ComponentView for List {
 /// - [`Stack::fill_column`]：竖直排列并占满父容器剩余高度（主内容区）。
 /// - [`Stack::bar`]：水平排列占满整行但不伸展（顶栏、底栏）。
 ///
-/// 容器本身不参与命中测试；需要交互的内容放在子控件上。
+/// Vue / CSS 路径用 [`Stack::from_layout`] 写入已解析的 [`nana_ui_core::LayoutStyle`]。
+/// grid / position / overflow / paint 用 [`Self::with_layout`]，不要另造布局控件。
+///
+/// Rust 预设容器默认不参与命中测试；[`Self::from_layout`] 与 Vue 布局盒默认可点。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stack {
     style: NodeStyle,
+    hittable: bool,
 }
 
 impl Stack {
@@ -2890,7 +2894,28 @@ impl Stack {
         layout.gap = Some(nana_ui_core::LengthSpec::Px(gap.max(0.0)));
         layout.align_items = align;
         layout.justify_content = justify;
-        Self { style }
+        Self {
+            style,
+            hittable: false,
+        }
+    }
+
+    /// 承接已解析的 [`nana_ui_core::LayoutStyle`]（Vue CSS / 直写字段）。
+    ///
+    /// 不套用 [`Self::row`] 一类预设默认。默认可点，与 Vue 布局盒一致。
+    pub fn from_layout(layout: impl Into<Arc<nana_ui_core::LayoutStyle>>) -> Self {
+        let mut style = NodeStyle::default();
+        style.layout = layout.into();
+        Self {
+            style,
+            hittable: true,
+        }
+    }
+
+    /// 就地改 [`nana_ui_core::LayoutStyle`] 全字段。
+    pub fn with_layout(mut self, f: impl FnOnce(&mut nana_ui_core::LayoutStyle)) -> Self {
+        f(Arc::make_mut(&mut self.style.layout));
+        self
     }
 
     /// 水平排列，宽度随内容收缩，子项垂直居中。
@@ -3056,6 +3081,12 @@ impl Stack {
         self
     }
 
+    /// Vue / CSS 布局盒：参与命中。Rust 预设默认可点关闭。
+    pub fn hittable(mut self) -> Self {
+        self.hittable = true;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
@@ -3070,13 +3101,16 @@ impl ComponentView for Stack {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let hittable = self.hittable
+            && !self.style.layout.hidden
+            && self.style.layout.pointer_events != Some(nana_ui_core::PointerEventsSpec::None);
         project_common(
             id,
             world,
             mutations,
             &self.style,
             InteractionState {
-                pointer_events: false,
+                pointer_events: hittable,
                 focusable: false,
             },
             AccessibilityState::default(),
