@@ -906,6 +906,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
         let motion = resolve_computed_motion(&sheet.motion_rules, None, None, &ctx);
         assert!(motion.has_transition());
@@ -933,6 +934,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
         let mut base = LayoutStyle::default();
         crate::css_cascade::apply_stylesheet_to_layout(
@@ -987,6 +989,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
         let mut layout = LayoutStyle::default();
         apply_interactive_layers(

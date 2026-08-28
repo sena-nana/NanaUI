@@ -735,6 +735,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
 
         let card_hovered = [InteractivePseudoFlags {
@@ -799,6 +800,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
 
         // Inner card not hovered; outer card hovered — must still match.
@@ -862,6 +864,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
         let hover = matched_interactive_rules(
             &sheet.interactive_rules,
@@ -879,5 +882,72 @@ mod tests {
         let pseudo = matched_generated_pseudo(&sheet.generated_pseudo_rules, &ctx);
         assert_eq!(pseudo.before.len(), 1);
         assert!(pseudo.before[0].iter().any(|e| e.property == "content"));
+    }
+
+    #[test]
+    fn hover_not_disabled_skips_disabled_button() {
+        let (sheet, report) =
+            parse_stylesheet_full("button:hover:not(:disabled) { background: red; }", 0);
+        assert_eq!(report.skipped_selectors, 0);
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        let empty = BTreeMap::new();
+        let mut disabled = BTreeMap::new();
+        disabled.insert("disabled".into(), String::new());
+        let enabled_ctx = MatchContext {
+            tag: "button",
+            id: "",
+            classes: &[],
+            attrs: &empty,
+            ancestors: &[],
+            preceding_siblings: &[],
+            sibling_index: 0,
+            sibling_count: 1,
+            of_type_index: 0,
+            of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
+            focus_within: false,
+        };
+        let hovered = InteractiveMatchState {
+            subject: InteractivePseudoFlags {
+                hover: true,
+                ..Default::default()
+            },
+            ancestors: &[],
+        };
+        assert_eq!(
+            matched_interactive_rules(
+                &sheet.interactive_rules,
+                &enabled_ctx,
+                &hovered,
+                InteractivePseudo::Hover,
+            )
+            .len(),
+            1
+        );
+        let disabled_ctx = MatchContext {
+            tag: "button",
+            id: "",
+            classes: &[],
+            attrs: &disabled,
+            ancestors: &[],
+            preceding_siblings: &[],
+            sibling_index: 0,
+            sibling_count: 1,
+            of_type_index: 0,
+            of_type_count: 1,
+            has_bits: 0,
+            has_args: &[],
+            focus_within: false,
+        };
+        assert!(
+            matched_interactive_rules(
+                &sheet.interactive_rules,
+                &disabled_ctx,
+                &hovered,
+                InteractivePseudo::Hover,
+            )
+            .is_empty()
+        );
     }
 }

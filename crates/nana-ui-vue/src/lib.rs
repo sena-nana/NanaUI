@@ -1573,8 +1573,7 @@ impl VueHost {
         paths: &[PathBuf],
         position: Option<(f32, f32)>,
     ) -> Result<bool, JsEngineError> {
-        let target_at_position =
-            position.and_then(|(x, y)| self.hit_test_client_point(x, y));
+        let target_at_position = position.and_then(|(x, y)| self.hit_test_client_point(x, y));
         let mount_root = self.document.lock().expect("vue doc").mount_root();
         let target = target_at_position
             .or(self.file_drag_target)
@@ -1780,6 +1779,21 @@ impl VueHost {
         }
         let mut doc = self.document.lock().expect("vue doc");
         bridge.reapply_interactive_cascade(&mut doc);
+        bridge.sync_cascaded_layout_into_runtime(&mut doc);
+        doc.flush_host_frame();
+    }
+
+    fn flush_focus_cascade(&self, previous: Option<NodeHandle>, next: Option<NodeHandle>) {
+        let mut bridge = self.bridge.lock().expect("vue bridge");
+        if !bridge.has_interactive_css() && !bridge.has_focus_within_css() {
+            return;
+        }
+        let mut doc = self.document.lock().expect("vue doc");
+        bridge.on_runtime_focus_change(
+            &mut doc,
+            previous.map(|node| node.0),
+            next.map(|node| node.0),
+        );
         bridge.sync_cascaded_layout_into_runtime(&mut doc);
         doc.flush_host_frame();
     }
@@ -2110,7 +2124,7 @@ impl VueHost {
                         self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
                     }
                     if commit_runtime {
-                        self.flush_interactive_css_if_needed();
+                        self.flush_focus_cascade(previous, next);
                     }
                 }
                 self.js_focus = next;
@@ -2448,7 +2462,7 @@ impl VueHost {
             }
             self.js_focus = next;
             if commit_runtime {
-                self.flush_interactive_css_if_needed();
+                self.flush_focus_cascade(previous, next);
             }
         } else if !commit_runtime {
             self.js_focus = self.document.lock().expect("vue doc").focused();
@@ -2481,7 +2495,7 @@ impl VueHost {
         }
         self.fire_dom_event(engine, target, "focus", BTreeMap::new())?;
         self.js_focus = Some(target);
-        self.flush_interactive_css_if_needed();
+        self.flush_focus_cascade(previous, Some(target));
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)

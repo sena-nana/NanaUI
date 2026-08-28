@@ -20,6 +20,10 @@
 //! `::before`/`::after`, `@keyframes`, and transition/animation longhands — see
 //! [`crate::css_interactive::ParsedStylesheet`].
 //!
+//! Cheap `:not(:disabled)` is the same present-check as `[disabled]` (HTML
+//! `disabled` attr / form-control disabled). Other `:not()` args stay simple
+//! compounds. Cheap subject `:focus-within` matches when the subject or a
+//! descendant is focused; ancestor `:focus-within` is skipped.
 //! Still deferred (skipped at parse): combinators inside `:has()`,
 //! `:nth-child(… of …)`, nested / complex `:not()` args, unknown at-rules,
 //! unknown `@supports` predicates, `@import … layer()` / `supports()`,
@@ -139,6 +143,8 @@ pub struct CompoundSelector {
     /// Cheap `:has()` descendant-present queries (OR inside each list, AND across
     /// lists). Combinators inside `:has()` fail parse.
     pub has_queries: Vec<Vec<SimpleCompound>>,
+    /// Subject `:focus-within` — the element or a descendant has focus.
+    pub focus_within: bool,
 }
 
 /// CSS An+B microsyntax (`odd`/`even`/`2n+1`/…) for `:nth-child` / `:nth-of-type`.
@@ -265,6 +271,8 @@ pub struct MatchContext<'a> {
     /// Unique simple compounds used by subject `:has()` in the current sheet.
     /// Empty ⇒ every `:has()` fails closed.
     pub has_args: &'a [SimpleCompound],
+    /// Subject or a descendant is the focused element (`:focus-within`).
+    pub focus_within: bool,
 }
 
 impl<'a> MatchContext<'a> {
@@ -1208,6 +1216,9 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
             }
         }
     }
+    if compound.focus_within && !ctx.focus_within {
+        return false;
+    }
     true
 }
 
@@ -1359,7 +1370,10 @@ fn parse_interactive_selector(raw: &str) -> Option<InteractiveSelector> {
         i += 1;
     }
     let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Interactive)?;
-    if ancestors.iter().any(|(_, c)| !c.has_queries.is_empty()) {
+    if ancestors
+        .iter()
+        .any(|(_, c)| !c.has_queries.is_empty() || c.focus_within)
+    {
         return None;
     }
     let mut interactive_count = 0usize;
@@ -1439,9 +1453,12 @@ fn parse_selector_chain(s: &str) -> Option<Selector> {
         i += 1;
     }
     let subject = parse_compound(&tokens[i].0, ParseCompoundMode::Static)?;
-    // Cheap subset: `:has()` only on the subject. Ancestor `:has()` would need
-    // per-ancestor bitsets and is skipped (counted as unsupported).
-    if ancestors.iter().any(|(_, c)| !c.has_queries.is_empty()) {
+    // Cheap subset: `:has()` / `:focus-within` only on the subject. Ancestor
+    // forms would need per-ancestor bits/flags and are skipped.
+    if ancestors
+        .iter()
+        .any(|(_, c)| !c.has_queries.is_empty() || c.focus_within)
+    {
         return None;
     }
     let mut specificity = Specificity::default();
@@ -1489,7 +1506,7 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
         }
         match name {
             "where" | "is" | "not" | "nth-child" | "nth-of-type" | "has" => false,
-            "root" | "first-child" | "last-child" => false,
+            "root" | "first-child" | "last-child" | "focus-within" => false,
             _ => true,
         }
     }) || s.to_ascii_lowercase().contains("::")
@@ -1534,7 +1551,7 @@ fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> boo
                     rest = &rem[close + 1..];
                     continue;
                 }
-                "root" | "first-child" | "last-child" => {
+                "root" | "first-child" | "last-child" | "focus-within" => {
                     rest = rem;
                     continue;
                 }
@@ -1775,6 +1792,7 @@ fn parse_compound(raw: &str, mode: ParseCompoundMode) -> Option<CompoundSelector
                     "first-child" => out.first_child = true,
                     "last-child" => out.last_child = true,
                     "root" => out.root = true,
+                    "focus-within" => out.focus_within = true,
                     "nth-child" | "nth-of-type" => {
                         if i >= chars.len() || chars[i] != '(' {
                             return None;
@@ -1900,6 +1918,7 @@ fn compound_is_empty(out: &CompoundSelector) -> bool {
         && out.nth_child.is_none()
         && out.nth_of_type.is_none()
         && out.has_queries.is_empty()
+        && !out.focus_within
 }
 
 fn parse_attr_inner(inner: &str) -> Option<AttrSelector> {
@@ -1976,7 +1995,8 @@ fn attr_matches(attr: &AttrSelector, attrs: &std::collections::BTreeMap<String, 
 
 /// Parse a forgiving-ish list of **simple** compounds for `:is`/`:where`/`:not`.
 /// Combinators / nested functional pseudos inside an alt ⇒ whole list rejected
-/// (honest defer — do not partially match).
+/// (honest defer — do not partially match). Cheap `:disabled` is allowed and
+/// stored as `[disabled]` presence.
 fn parse_simple_selector_list(inner: &str) -> Option<Vec<SimpleCompound>> {
     let mut out = Vec::new();
     for part in split_selector_list(inner) {
@@ -1998,14 +2018,32 @@ fn parse_simple_selector_list(inner: &str) -> Option<Vec<SimpleCompound>> {
 
 fn simple_alt_has_combinator_or_pseudo(s: &str) -> bool {
     let mut depth_br = 0i32;
-    for b in s.bytes() {
-        match b {
-            b'[' => depth_br += 1,
-            b']' => depth_br -= 1,
-            b':' | b'>' | b'+' if depth_br == 0 => return true,
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                depth_br += 1;
+                i += 1;
+            }
+            b']' => {
+                depth_br -= 1;
+                i += 1;
+            }
+            b':' if depth_br == 0 => {
+                let rest = &s[i + 1..];
+                let Some(end) = skip_ident(rest) else {
+                    return true;
+                };
+                if !rest[..end].eq_ignore_ascii_case("disabled") {
+                    return true;
+                }
+                i += 1 + end;
+            }
+            b'>' | b'+' if depth_br == 0 => return true,
             b'~' if depth_br == 0 => return true,
             c if c.is_ascii_whitespace() && depth_br == 0 => return true,
-            _ => {}
+            _ => i += 1,
         }
     }
     false
@@ -2071,6 +2109,26 @@ fn parse_simple_compound(raw: &str) -> Option<SimpleCompound> {
                 i = close + 1;
                 out.attrs.push(parse_attr_inner(inner.trim())?);
             }
+            ':' => {
+                i += 1;
+                let start = i;
+                while i < chars.len()
+                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '-' || chars[i] == '_')
+                {
+                    i += 1;
+                }
+                if start == i {
+                    return None;
+                }
+                let name: String = chars[start..i]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if name != "disabled" {
+                    return None;
+                }
+                out.attrs.push(disabled_present_attr());
+            }
             _ => return None,
         }
     }
@@ -2079,6 +2137,15 @@ fn parse_simple_compound(raw: &str) -> Option<SimpleCompound> {
         return None;
     }
     Some(out)
+}
+
+fn disabled_present_attr() -> AttrSelector {
+    AttrSelector {
+        name: "disabled".into(),
+        op: AttrOperator::Present,
+        value: None,
+        case: AttrCase::Default,
+    }
 }
 
 fn add_simple_specificity(spec: &mut Specificity, simple: &SimpleCompound) {
@@ -2115,7 +2182,8 @@ fn add_specificity(spec: &mut Specificity, compound: &CompoundSelector) {
         + u16::from(compound.root)
         + u16::from(compound.nth_child.is_some())
         + u16::from(compound.nth_of_type.is_some())
-        + u16::from(compound.interactive.is_some());
+        + u16::from(compound.interactive.is_some())
+        + u16::from(compound.focus_within);
     spec.classes_attrs = spec
         .classes_attrs
         .saturating_add(compound.classes.len() as u16)
@@ -2355,6 +2423,7 @@ mod tests {
             of_type_count: 1,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         }
     }
 
@@ -2381,6 +2450,7 @@ mod tests {
             of_type_count: sibling_count,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         }
     }
 
@@ -2408,6 +2478,7 @@ mod tests {
             of_type_count,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         }
     }
 
@@ -2863,7 +2934,56 @@ mod tests {
         );
         assert!(disabled.height.is_none());
         let complex = parse_stylesheet("button:not(:disabled) { width: 10px; }", 0);
-        assert!(complex.is_empty());
+        assert_eq!(complex.len(), 1);
+        let mut enabled_not = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut enabled_not,
+            &complex,
+            &ctx("button", "", &[], &attrs, &[]),
+            None,
+            None,
+        );
+        assert_eq!(enabled_not.width, Some(LengthSpec::Px(10.0)));
+        let mut disabled_not = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut disabled_not,
+            &complex,
+            &ctx("button", "", &[], &disabled_attrs, &[]),
+            None,
+            None,
+        );
+        assert!(disabled_not.width.is_none());
+    }
+
+    #[test]
+    fn focus_within_subject_matches_when_flag_set() {
+        let rules = parse_stylesheet(".field:focus-within { width: 12px; }", 0);
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].selectors[0].subject.focus_within);
+        let classes = vec!["field".into()];
+        let attrs = BTreeMap::new();
+        let mut hit = ctx("div", "", &classes, &attrs, &[]);
+        hit.focus_within = true;
+        let mut layout = LayoutStyle::default();
+        apply_stylesheet_to_layout(&mut layout, &rules, &hit, None, None);
+        assert_eq!(layout.width, Some(LengthSpec::Px(12.0)));
+        let mut miss = LayoutStyle::default();
+        apply_stylesheet_to_layout(
+            &mut miss,
+            &rules,
+            &ctx("div", "", &classes, &attrs, &[]),
+            None,
+            None,
+        );
+        assert!(miss.width.is_none());
+    }
+
+    #[test]
+    fn ancestor_focus_within_is_skipped() {
+        let (_, report) =
+            parse_stylesheet_with_report(".field:focus-within .child { color: red }", 0);
+        assert_eq!(report.skipped_selectors, 1);
+        assert_eq!(report.rules, 0);
     }
 
     #[test]
@@ -3146,6 +3266,7 @@ mod tests {
             of_type_count: 3,
             has_bits: 0,
             has_args: &[],
+            focus_within: false,
         };
         let mut layout = LayoutStyle::default();
         apply_stylesheet_to_layout(&mut layout, &rules, &first, None, None);

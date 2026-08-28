@@ -601,7 +601,14 @@ impl WidgetProps {
                 };
             }
             "auto-height" | "autoheight" => self.auto_height = host_truthy(value),
-            "disabled" => self.disabled = host_truthy(value),
+            "disabled" => {
+                self.disabled = host_truthy(value);
+                if self.disabled {
+                    self.attrs.insert("disabled".into(), String::new());
+                } else {
+                    self.attrs.remove("disabled");
+                }
+            }
             "loading" => self.loading = host_truthy(value),
             "readonly" | "read-only" => self.read_only = host_truthy(value),
             "toggled" | "model-value" | "checked" => {
@@ -1970,6 +1977,10 @@ pub struct MessageBridge {
     has_descendant_bits: HashMap<WidgetId, u64>,
     /// When true, [`Self::has_descendant_bits`] is valid for the current tree.
     has_index_ready: bool,
+    /// Last focused widget for cheap subject `:focus-within` (not a second engine).
+    cascade_focused: Option<WidgetId>,
+    /// Author sheet contains subject `:focus-within`.
+    uses_focus_within: bool,
     /// Resolved motion longhands for `getComputedStyle` / Vue `<Transition>`.
     computed_motion: HashMap<WidgetId, CssComputedMotion>,
     /// Active CSS transition timelines keyed by widget id.
@@ -2060,6 +2071,8 @@ impl MessageBridge {
             has_args: Vec::new(),
             has_descendant_bits: HashMap::new(),
             has_index_ready: false,
+            cascade_focused: None,
+            uses_focus_within: false,
             computed_motion: HashMap::new(),
             css_transitions: HashMap::new(),
             css_transition_base: HashMap::new(),
@@ -2082,6 +2095,87 @@ impl MessageBridge {
             || !self.generated_pseudo_rules.is_empty()
             || !self.motion_rules.is_empty()
             || !self.keyframes.is_empty()
+    }
+
+    pub fn has_focus_within_css(&self) -> bool {
+        self.uses_focus_within
+    }
+
+    fn focused_for_cascade(&self) -> Option<WidgetId> {
+        // `:focus-within` follows the last written focus (`doc.focused()` via
+        // [`Self::on_runtime_focus_change`] / interactive collect). The hover
+        // snapshot is not a competing authority — it can go stale when media
+        // flatten drops the interactive bucket.
+        self.cascade_focused
+    }
+
+    fn discard_interactive_runtime_if_unused(&mut self) {
+        if !self.has_interactive_css() {
+            self.interactive_runtime = None;
+        }
+    }
+
+    fn focus_within_of(&self, id: WidgetId) -> bool {
+        let Some(focused) = self.focused_for_cascade() else {
+            return false;
+        };
+        if focused == id {
+            return true;
+        }
+        let mut cur = self.widgets.get(&focused).and_then(|w| w.parent);
+        while let Some(pid) = cur {
+            if pid == id {
+                return true;
+            }
+            cur = self.widgets.get(&pid).and_then(|w| w.parent);
+        }
+        false
+    }
+
+    /// Focus change: `:focus-within` restyles the old/new focus ancestor chains
+    /// only. Interactive `:hover`/`:focus`/`:active` still recascade through
+    /// [`Self::reapply_interactive_cascade`].
+    pub(crate) fn on_runtime_focus_change(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        previous: Option<WidgetId>,
+        next: Option<WidgetId>,
+    ) {
+        self.cascade_focused = next;
+        if self.has_interactive_css() {
+            self.reapply_interactive_cascade(doc);
+            return;
+        }
+        self.discard_interactive_runtime_if_unused();
+        if self.has_focus_within_css() {
+            self.reapply_focus_within_ancestors(previous, next);
+        }
+    }
+
+    fn reapply_focus_within_ancestors(
+        &mut self,
+        previous: Option<WidgetId>,
+        next: Option<WidgetId>,
+    ) {
+        if !self.uses_focus_within {
+            return;
+        }
+        let mut dirty = HashSet::new();
+        for start in [previous, next].into_iter().flatten() {
+            let mut walk = Some(start);
+            while let Some(id) = walk {
+                if !dirty.insert(id) {
+                    break;
+                }
+                walk = self.widgets.get(&id).and_then(|w| w.parent);
+            }
+        }
+        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
+        ordered.sort_by_cached_key(|id| self.widget_depth(*id));
+        for id in ordered {
+            self.reapply_layout_for(id);
+        }
+        self.bump();
     }
 
     pub fn computed_motion_for(&self, id: WidgetId) -> Option<&CssComputedMotion> {
@@ -2152,6 +2246,9 @@ impl MessageBridge {
         self.reapply_layout_cascade_matching(&new_static);
         if self.has_interactive_css() {
             self.reapply_layout_cascade_all();
+        } else if self.has_focus_within_css() {
+            let focused = self.focused_for_cascade();
+            self.reapply_focus_within_ancestors(None, focused);
         }
     }
 
@@ -2264,6 +2361,12 @@ impl MessageBridge {
         self.generated_pseudo_rules = combined.generated_pseudo_rules;
         self.motion_rules = combined.motion_rules;
         self.keyframes = combined.keyframes;
+        self.uses_focus_within = stylesheet_uses_focus_within(
+            &self.stylesheet_rules,
+            &self.interactive_rules,
+            &self.generated_pseudo_rules,
+        );
+        self.discard_interactive_runtime_if_unused();
     }
 
     /// Accumulated stylesheet skipped-content counters, so hosts can surface
@@ -2363,11 +2466,12 @@ impl MessageBridge {
         let Some(widget) = self.widgets.get(&id) else {
             return 0;
         };
+        let attrs = cascade_attrs_from_props(&widget.props);
         let node = MatchNode {
             tag: widget.props.element_tag.as_str(),
             id: widget.props.element_id.as_str(),
             classes: widget.props.class_names.as_slice(),
-            attrs: &widget.props.attrs,
+            attrs: &attrs,
         };
         let mut bits = 0u64;
         for (i, arg) in self.has_args.iter().enumerate() {
@@ -2451,7 +2555,7 @@ impl MessageBridge {
             return false;
         };
         let leaf_classes = widget.props.class_names.clone();
-        let leaf_attrs = widget.props.attrs.clone();
+        let leaf_attrs = cascade_attrs_from_props(&widget.props);
         let leaf_id = widget.props.element_id.clone();
         let (sibling_index, sibling_count) = self.sibling_position(id);
         let (of_type_index, of_type_count) = self.of_type_position(id);
@@ -2488,6 +2592,7 @@ impl MessageBridge {
             of_type_count,
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
+            focus_within: self.focus_within_of(id),
         };
         stylesheet_matches(rules, &ctx)
     }
@@ -2601,7 +2706,7 @@ impl MessageBridge {
             return BTreeMap::new();
         };
         let leaf_classes = widget.props.class_names.clone();
-        let leaf_attrs = widget.props.attrs.clone();
+        let leaf_attrs = cascade_attrs_from_props(&widget.props);
         let leaf_tag = widget.props.element_tag.clone();
         let leaf_id = widget.props.element_id.clone();
         let prop_style = widget.props.prop_style.clone();
@@ -2641,6 +2746,7 @@ impl MessageBridge {
             of_type_count,
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
+            focus_within: self.focus_within_of(id),
         };
         let mut map = crate::css_cascade::matched_custom_properties(&self.stylesheet_rules, &ctx);
         for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&prop_style) {
@@ -2667,7 +2773,7 @@ impl MessageBridge {
         let class_names = widget.props.class_names.clone();
         let element_tag = widget.props.element_tag.clone();
         let element_id = widget.props.element_id.clone();
-        let attrs = widget.props.attrs.clone();
+        let attrs = cascade_attrs_from_props(&widget.props);
         let inline_style = widget.props.inline_style.clone();
         let prop_style = widget.props.prop_style.clone();
         let hidden = widget.props.layout.hidden;
@@ -2719,6 +2825,7 @@ impl MessageBridge {
             of_type_count,
             has_bits: self.has_descendant_bits.get(&id).copied().unwrap_or(0),
             has_args: self.has_args.as_slice(),
+            focus_within: self.focus_within_of(id),
         };
 
         // Layer order: kind default → stylesheet → class hints → prop → inline
@@ -2927,6 +3034,7 @@ impl MessageBridge {
             return;
         }
         let snapshot = Self::collect_interactive_runtime_snapshot(doc);
+        self.cascade_focused = snapshot.focused;
         let from_snapshots: HashMap<WidgetId, CssPaintSnapshot> = self
             .widgets
             .iter()
@@ -3124,7 +3232,7 @@ impl MessageBridge {
                 return;
             };
             let leaf_classes = widget.props.class_names.clone();
-            let leaf_attrs = widget.props.attrs.clone();
+            let leaf_attrs = cascade_attrs_from_props(&widget.props);
             let leaf_tag = if widget.props.element_tag.is_empty() {
                 widget.kind.element_tag().to_string()
             } else {
@@ -3166,6 +3274,7 @@ impl MessageBridge {
                 of_type_count,
                 has_bits: self.has_descendant_bits.get(&origin).copied().unwrap_or(0),
                 has_args: self.has_args.as_slice(),
+                focus_within: self.focus_within_of(origin),
             };
             crate::css_interactive::matched_generated_pseudo(&self.generated_pseudo_rules, &ctx)
         };
@@ -3381,16 +3490,7 @@ impl MessageBridge {
         let mut cur = Some(id);
         while let Some(cid) = cur {
             let w = self.widgets.get(&cid)?;
-            out.push(MatchNodeSnap {
-                tag: if w.props.element_tag.is_empty() {
-                    w.kind.element_tag().to_string()
-                } else {
-                    w.props.element_tag.clone()
-                },
-                id: w.props.element_id.clone(),
-                classes: w.props.class_names.clone(),
-                attrs: w.props.attrs.clone(),
-            });
+            out.push(match_snap_from_widget(w));
             cur = w.parent;
         }
         Some(out)
@@ -3472,16 +3572,7 @@ impl MessageBridge {
             .rev()
             .filter_map(|&cid| {
                 let w = self.widgets.get(&cid)?;
-                Some(MatchNodeSnap {
-                    tag: if w.props.element_tag.is_empty() {
-                        w.kind.element_tag().to_string()
-                    } else {
-                        w.props.element_tag.clone()
-                    },
-                    id: w.props.element_id.clone(),
-                    classes: w.props.class_names.clone(),
-                    attrs: w.props.attrs.clone(),
-                })
+                Some(match_snap_from_widget(w))
             })
             .collect()
     }
@@ -4027,6 +4118,8 @@ impl MessageBridge {
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
         if self.has_interactive_css() {
             self.reapply_interactive_cascade(doc);
+        } else {
+            self.discard_interactive_runtime_if_unused();
         }
         self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
@@ -4535,6 +4628,7 @@ impl MessageBridge {
                 | "id"
                 | "data-region-id"
                 | "hidden"
+                | "disabled"
                 | "dir"
                 | "src"
                 | "data-src"
@@ -4560,8 +4654,8 @@ impl MessageBridge {
         ) || key_n.starts_with("data-")
             || is_common_svg_attr(key_n.as_str());
         let prev_dir = self.widgets.get(&id).map(|w| w.props.layout.dir);
-        let restyle_has_ancestors = matches!(key_n.as_str(), "class" | "classname" | "id")
-            && !self.has_args.is_empty();
+        let restyle_has_ancestors =
+            matches!(key_n.as_str(), "class" | "classname" | "id") && !self.has_args.is_empty();
         if restyle_has_ancestors {
             self.has_index_ready = false;
         }
@@ -5052,6 +5146,43 @@ struct MatchNodeSnap {
     id: String,
     classes: Vec<String>,
     attrs: BTreeMap<String, String>,
+}
+
+fn cascade_attrs_from_props(props: &WidgetProps) -> BTreeMap<String, String> {
+    let mut attrs = props.attrs.clone();
+    if props.disabled {
+        attrs.entry("disabled".into()).or_insert_with(String::new);
+    }
+    attrs
+}
+
+fn match_snap_from_widget(w: &SemanticWidget) -> MatchNodeSnap {
+    MatchNodeSnap {
+        tag: if w.props.element_tag.is_empty() {
+            w.kind.element_tag().to_string()
+        } else {
+            w.props.element_tag.clone()
+        },
+        id: w.props.element_id.clone(),
+        classes: w.props.class_names.clone(),
+        attrs: cascade_attrs_from_props(&w.props),
+    }
+}
+
+fn stylesheet_uses_focus_within(
+    static_rules: &[StyleRule],
+    interactive: &[InteractiveStyleRule],
+    generated: &[GeneratedPseudoRule],
+) -> bool {
+    static_rules
+        .iter()
+        .any(|rule| rule.selectors.iter().any(|sel| sel.subject.focus_within))
+        || interactive
+            .iter()
+            .any(|rule| rule.selector.subject.focus_within)
+        || generated
+            .iter()
+            .any(|rule| rule.originating_selector.subject.focus_within)
 }
 
 fn host_style_to_css_text(value: &nana_js_engine::HostValue) -> String {
@@ -8821,6 +8952,220 @@ mod tests {
             .node_style(StableNodeId::new(field.0).unwrap())
             .expect("field runtime style");
         assert_eq!(style.layout.background, Some([0.0, 1.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn not_disabled_matches_enabled_button_and_skips_disabled() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                element_tag: "button".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet("button:not(:disabled) { width: 24px; }");
+        assert_eq!(
+            bridge.get(1).expect("btn").props.layout.width,
+            Some(LengthSpec::Px(24.0))
+        );
+        bridge.patch_prop(1, "disabled", &HostValue::Bool(true));
+        assert!(bridge.get(1).expect("btn").props.layout.width.is_none());
+    }
+
+    #[test]
+    fn hover_not_disabled_does_not_apply_when_disabled() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Button,
+            WidgetProps {
+                class_names: vec!["btn".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".btn { background: rgb(0, 0, 255); } .btn:hover:not(:disabled) { background: red; }",
+        );
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            hovered: BTreeMap::from([(1, ())]),
+            ..Default::default()
+        });
+        bridge.reapply_layout_for(1);
+        assert_eq!(
+            bridge.get(1).expect("btn").props.layout.background,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        bridge.patch_prop(1, "disabled", &HostValue::Bool(true));
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            hovered: BTreeMap::from([(1, ())]),
+            ..Default::default()
+        });
+        bridge.reapply_layout_for(1);
+        assert_eq!(
+            bridge.get(1).expect("disabled").props.layout.background,
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn focus_within_parent_restyles_when_child_focused() {
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let parent = doc.create_element("div");
+        let child = doc.create_element("input");
+        doc.insert(parent, root, None);
+        doc.insert(child, parent, None);
+        bridge.register(
+            parent.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["field".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            child.0,
+            WidgetKind::Input,
+            WidgetProps {
+                class_names: vec!["inner".into()],
+                element_tag: "input".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(child.0, parent.0, None);
+        bridge.inject_stylesheet(
+            ".field { background: rgb(0, 0, 255); } .field:focus-within { background: rgb(0, 255, 0); }",
+        );
+        assert_eq!(
+            bridge
+                .get(parent.0)
+                .expect("parent")
+                .props
+                .layout
+                .background,
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
+        doc.set_focus(child);
+        bridge.on_runtime_focus_change(&mut doc, None, Some(child.0));
+        bridge.sync_cascaded_layout_into_runtime(&mut doc);
+        doc.flush_host_frame();
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(parent.0).unwrap())
+            .expect("parent runtime style");
+        assert_eq!(style.layout.background, Some([0.0, 1.0, 0.0, 1.0]));
+        assert!(
+            !bridge.has_interactive_css(),
+            "focus-within must stay on the static cascade, not the hover recascade bucket"
+        );
+        doc.clear_focus();
+        bridge.on_runtime_focus_change(&mut doc, Some(child.0), None);
+        bridge.sync_cascaded_layout_into_runtime(&mut doc);
+        doc.flush_host_frame();
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(parent.0).unwrap())
+            .expect("parent runtime style after blur");
+        assert_eq!(
+            style.layout.background,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "blur must drop :focus-within on the parent"
+        );
+    }
+
+    #[test]
+    fn focus_within_ignores_stale_snapshot_after_interactive_bucket_drops() {
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let parent = doc.create_element("div");
+        let child = doc.create_element("input");
+        doc.insert(parent, root, None);
+        doc.insert(child, parent, None);
+        bridge.register(
+            parent.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["field".into()],
+                element_tag: "div".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            child.0,
+            WidgetKind::Input,
+            WidgetProps {
+                class_names: vec!["inner".into()],
+                element_tag: "input".into(),
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(child.0, parent.0, None);
+        bridge.inject_stylesheet(
+            ".field { background: rgb(0, 0, 255); } \
+             .field:focus-within { background: rgb(0, 255, 0); } \
+             @media (min-width: 800px) { .btn:hover { background: red; } }",
+        );
+        assert!(
+            bridge.has_interactive_css(),
+            "wide default viewport must keep the hover bucket"
+        );
+        doc.set_focus(child);
+        bridge.on_runtime_focus_change(&mut doc, None, Some(child.0));
+        assert_eq!(
+            bridge
+                .get(parent.0)
+                .expect("parent")
+                .props
+                .layout
+                .background,
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
+        // Narrow viewport drops the hover rule; static :focus-within remains.
+        bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+        assert!(
+            !bridge.has_interactive_css(),
+            "media flatten must drop the interactive bucket"
+        );
+        assert!(
+            bridge.interactive_runtime.is_none(),
+            "unused hover snapshot must not outlive the interactive bucket"
+        );
+        assert_eq!(
+            bridge
+                .get(parent.0)
+                .expect("parent")
+                .props
+                .layout
+                .background,
+            Some([0.0, 1.0, 0.0, 1.0]),
+            "live focus must still match :focus-within after the hover bucket drops"
+        );
+        // Plant a stale snapshot the way a missed clear used to leave focused=child.
+        bridge.interactive_runtime = Some(InteractiveRuntimeSnapshot {
+            focused: Some(child.0),
+            ..Default::default()
+        });
+        doc.clear_focus();
+        bridge.on_runtime_focus_change(&mut doc, Some(child.0), None);
+        assert_eq!(
+            bridge
+                .get(parent.0)
+                .expect("parent")
+                .props
+                .layout
+                .background,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "blur must follow cascade_focused, not a leftover snapshot.focused"
+        );
+        assert!(bridge.interactive_runtime.is_none());
     }
 
     #[test]
