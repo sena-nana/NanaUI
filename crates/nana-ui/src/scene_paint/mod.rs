@@ -5765,7 +5765,7 @@ mod tests {
             background_image: Some(nana_ui_core::BackgroundImage::Gradient(
                 nana_ui_core::CssGradient::Radial(nana_ui_core::RadialGradient {
                     circle: true,
-                    center: [0.5, 0.5],
+                    center: [nana_ui_core::LengthSpec::Percent(50.0); 2],
                     stops: vec![
                         nana_ui_core::GradientStop {
                             position: 0.0,

@@ -893,34 +893,38 @@ fn pack_shared(
 ) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
     if let Some(BackgroundImage::Gradient(grad)) = layer {
-        paint.flags |= PAINT_GRADIENT;
         match grad {
             CssGradient::Linear(linear) => {
+                paint.flags |= PAINT_GRADIENT;
                 paint.grad_angle = linear.angle_deg;
                 pack_gradient_stops(&mut paint, &linear.stops);
             }
             CssGradient::Radial(radial) => {
-                paint.flags |= PAINT_RADIAL;
-                paint.grad_center_x = radial.center[0];
-                paint.grad_center_y = radial.center[1];
-                paint.grad_radial_shape = if radial.circle { 0 } else { 1 };
-                pack_gradient_stops(&mut paint, &radial.stops);
+                if let Some(center) = radial.resolved_center(width, height) {
+                    paint.flags |= PAINT_GRADIENT | PAINT_RADIAL;
+                    paint.grad_center_x = center[0];
+                    paint.grad_center_y = center[1];
+                    paint.grad_radial_shape = if radial.circle { 0 } else { 1 };
+                    pack_gradient_stops(&mut paint, &radial.stops);
+                }
             }
         }
     }
     if let Some(mask) = surface.mask.as_ref() {
-        paint.flags |= PAINT_MASK;
         match mask {
             CssGradient::Linear(linear) => {
+                paint.flags |= PAINT_MASK;
                 paint.mask_angle = linear.angle_deg;
                 pack_mask_stops(&mut paint, &linear.stops);
             }
             CssGradient::Radial(radial) => {
-                paint.flags |= PAINT_MASK_RADIAL;
-                paint.mask_center_x = radial.center[0];
-                paint.mask_center_y = radial.center[1];
-                paint.mask_radial_shape = if radial.circle { 0 } else { 1 };
-                pack_mask_stops(&mut paint, &radial.stops);
+                if let Some(center) = radial.resolved_center(width, height) {
+                    paint.flags |= PAINT_MASK | PAINT_MASK_RADIAL;
+                    paint.mask_center_x = center[0];
+                    paint.mask_center_y = center[1];
+                    paint.mask_radial_shape = if radial.circle { 0 } else { 1 };
+                    pack_mask_stops(&mut paint, &radial.stops);
+                }
             }
         }
     }
@@ -1449,6 +1453,38 @@ fn pack_paint_sets_mask_flag() {
     let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
     assert_ne!(paint.flags & PAINT_MASK, 0, "flags={}", paint.flags);
     assert_eq!(paint.mask_stop_count, 2);
+}
+
+#[cfg(test)]
+#[test]
+fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
+    use nana_ui_core::{CssGradient, GradientStop, LengthSpec, RadialGradient};
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let surface = QuadSurfacePaint {
+        mask: Some(CssGradient::Radial(RadialGradient {
+            circle: true,
+            center: [LengthSpec::Px(10.0), LengthSpec::Px(20.0)],
+            stops: vec![
+                GradientStop {
+                    position: 0.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: [1.0, 1.0, 1.0, 0.0],
+                },
+            ],
+        })),
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 200.0, 100.0);
+    assert_ne!(paint.flags & PAINT_MASK_RADIAL, 0, "flags={}", paint.flags);
+    assert!((paint.mask_center_x - 0.05).abs() < 1e-5);
+    assert!((paint.mask_center_y - 0.20).abs() < 1e-5);
+    let missing = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 0.0, 100.0);
+    assert_eq!(missing.flags & PAINT_MASK, 0, "zero width must fail closed");
 }
 
 #[cfg(test)]
