@@ -55,7 +55,8 @@ pub(crate) fn parse_css_transform(raw: &str) -> Option<ParsedPaintTransform> {
 }
 
 /// Parse a CSS transform list into one 2×3 paint matrix (function order preserved).
-pub(crate) fn parse_paint_transform(raw: &str) -> Option<PaintTransform> {
+#[cfg(test)]
+fn parse_paint_transform(raw: &str) -> Option<PaintTransform> {
     match parse_css_transform(raw)? {
         ParsedPaintTransform::Affine(transform) => Some(transform),
         ParsedPaintTransform::Mat4(mat) => mat.as_affine(),
@@ -470,10 +471,6 @@ mod tests {
         assert!(layout.transform_3d.is_some());
         assert_eq!(layout.transform, None);
         assert!(parse_css_transform("rotateY(0deg)").is_some());
-    }
-
-    #[test]
-    fn rotate_x_without_perspective_is_orthographic() {
         assert!(parse_css_transform("rotateX(45deg)").is_some());
     }
 
