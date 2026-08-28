@@ -2197,8 +2197,11 @@ fn apply_scene_window_icon(
 
 fn apply_application_icon(icon: &WindowIcon) {
     #[cfg(target_os = "macos")]
-    if let Ok(png) = nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba) {
-        set_application_icon_png(&png);
+    {
+        let icon = nana_app_icon::with_system_grid(icon);
+        if let Ok(png) = nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba) {
+            set_application_icon_png(&png);
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = icon;
