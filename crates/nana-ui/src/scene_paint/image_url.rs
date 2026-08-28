@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use nana_ui_core::{
     MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, path_looks_network,
-    read_bytes_within_jail, resolve_filesystem_href,
+    percent_decode_bytes, read_bytes_within_jail, resolve_filesystem_href,
 };
 
 static BACKGROUND_IMAGE_URL_BASE: OnceLock<PathBuf> = OnceLock::new();
@@ -110,26 +110,6 @@ fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
         percent_decode_bytes(payload)?
     };
     decode_image_bytes_with_hint(&bytes, meta_l.contains("svg"))
-}
-
-fn percent_decode_bytes(input: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            if index + 2 >= bytes.len() {
-                return None;
-            }
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    Some(out)
 }
 
 fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {

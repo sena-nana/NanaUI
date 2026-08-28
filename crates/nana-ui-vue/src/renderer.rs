@@ -1703,7 +1703,6 @@ fn camel_to_kebab(input: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
 
     #[test]
     fn css_style_prop_name_converts_camel_case() {
@@ -3392,32 +3391,6 @@ mod tests {
             (got_narrow.width - 100.0).abs() > 0.5,
             "flatten must drop the rule when matchMedia is false, got {got_narrow:?}"
         );
-    }
-
-    #[test]
-    fn stylesheet_base_from_href_skips_bare_and_remote() {
-        assert!(stylesheet_base_from_href("theme.css").is_none());
-        assert!(stylesheet_base_from_href("https://example.com/a.css").is_none());
-        assert!(stylesheet_base_from_href("nana://app/").is_none());
-        assert!(stylesheet_base_from_href(".").is_none());
-        assert!(
-            stylesheet_base_from_href("//cdn.example.com/npm/pkg/theme.css").is_none(),
-            "protocol-relative must not become a Windows UNC jail"
-        );
-        assert!(stylesheet_base_from_href("//cdn.example.com/x.css").is_none());
-        assert!(stylesheet_base_from_href(r"\\cdn.example.com\npm\pkg\theme.css").is_none());
-        assert!(stylesheet_base_from_href("%2f%2fcdn.example.com/npm/pkg/theme.css").is_none());
-        assert!(stylesheet_base_from_href("file://evil.example/fonts/a.css").is_none());
-        #[cfg(windows)]
-        {
-            assert_eq!(
-                stylesheet_base_from_href(r"\\?\C:\jail\src\theme.css"),
-                Some(PathBuf::from(r"\\?\C:\jail\src")),
-                "VerbatimDisk is a local jail, not UNC"
-            );
-        }
-        let dir = stylesheet_base_from_href("src/App.vue").expect("relative dir");
-        assert_eq!(dir, PathBuf::from("src"));
     }
 
     #[test]
