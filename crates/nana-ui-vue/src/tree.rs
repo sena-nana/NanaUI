@@ -1559,15 +1559,16 @@ impl NanaTreeDocument {
             if self.runtime.interaction(id) != Some(interaction) {
                 mutations.set_interaction(id, interaction);
             }
+            let accessible_name = self.semantic_accessible_name(widget);
             let accessibility = AccessibilityState {
                 role: accessibility_role(
                     widget.kind,
                     &widget.props.role,
                     &widget.props.element_tag,
-                    !widget.props.label.is_empty(),
+                    accessible_name.as_deref(),
+                    self.landmark_is_top_level(NodeHandle(widget.id), &widget.props.element_tag),
                 ),
-                label: (!widget.props.label.is_empty())
-                    .then(|| Arc::<str>::from(widget.props.label.as_str())),
+                label: accessible_name.map(Arc::<str>::from),
                 value: (!widget.props.value.is_empty())
                     .then(|| Arc::<str>::from(widget.props.value.as_str())),
                 disabled: widget.props.disabled,
@@ -2415,6 +2416,92 @@ impl NanaTreeDocument {
             }
             _ => None,
         }
+    }
+
+    /// AccName for the semantic-sync path: author label, `aria-labelledby`
+    /// (resolved against element `id`s in this document), or — for `section`/
+    /// `form` landmarks only — name-from-content.
+    fn semantic_accessible_name(&self, widget: &crate::SemanticWidget) -> Option<String> {
+        if !widget.props.label.is_empty() {
+            return Some(widget.props.label.clone());
+        }
+        let handle = NodeHandle(widget.id);
+        if let Some(referred) = widget
+            .props
+            .attrs
+            .get("aria-labelledby")
+            .map(|ids| ids.trim())
+            .filter(|ids| !ids.is_empty())
+        {
+            let names: Vec<String> = referred
+                .split_whitespace()
+                .filter_map(|id| self.element_with_id(id))
+                .filter_map(|node| {
+                    let attr_name = self.nodes.get(&node.0).and_then(|n| match &n.data {
+                        NodeData::Element { attrs, .. } => attrs
+                            .get("aria-label")
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                        _ => None,
+                    });
+                    attr_name.or_else(|| {
+                        self.text_content(node)
+                            .map(|text| text.trim().to_string())
+                            .filter(|text| !text.is_empty())
+                    })
+                })
+                .collect();
+            if !names.is_empty() {
+                return Some(names.join(" "));
+            }
+        }
+        if matches!(
+            widget
+                .props
+                .element_tag
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "section" | "form"
+        ) {
+            let text = self.text_content(handle)?;
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
+    }
+
+    fn element_with_id(&self, id: &str) -> Option<NodeHandle> {
+        self.nodes.iter().find_map(|(raw, node)| match &node.data {
+            NodeData::Element { attrs, .. } if attrs.get("id").map(String::as_str) == Some(id) => {
+                Some(NodeHandle(*raw))
+            }
+            _ => None,
+        })
+    }
+
+    /// ARIA in HTML: `header`/`footer` are only banner/contentinfo when they
+    /// are not descendants of `article`/`aside`/`main`/`nav`/`section`.
+    fn landmark_is_top_level(&self, node: NodeHandle, tag: &str) -> bool {
+        if !matches!(
+            tag.trim().to_ascii_lowercase().as_str(),
+            "header" | "footer"
+        ) {
+            return true;
+        }
+        let mut current = self.parent_element(node);
+        while let Some(parent) = current {
+            if matches!(
+                self.element_tag(parent).as_deref(),
+                Some("article" | "aside" | "main" | "nav" | "section")
+            ) {
+                return false;
+            }
+            current = self.parent_element(parent);
+        }
+        true
     }
 
     fn reset_layout_roots(&mut self) {
@@ -4479,7 +4566,8 @@ fn accessibility_role(
     kind: crate::WidgetKind,
     explicit_role: &str,
     element_tag: &str,
-    has_accessible_name: bool,
+    accessible_name: Option<&str>,
+    is_top_level: bool,
 ) -> AccessibilityRole {
     match explicit_role.trim().to_ascii_lowercase().as_str() {
         "document" => return AccessibilityRole::Document,
@@ -4513,13 +4601,11 @@ fn accessibility_role(
         _ => {}
     }
     // HTML landmark tags carry their landmark role without becoming widgets:
-    // `<search>` stays a Column, it never resolves to SearchDropdown.
-    if kind.is_layout() {
-        if let Some(role) = landmark_role_from_tag(element_tag, has_accessible_name) {
-            return role;
-        }
-    }
-    match kind {
+    // `<search>` stays a Column, it never resolves to SearchDropdown. Hints
+    // that repurpose the tag into a concrete control (`<nav role="tablist">`,
+    // `<footer class="nana-search">`) keep the control role; layout kinds and
+    // kinds without their own role still yield to the landmark.
+    let kind_role = match kind {
         crate::WidgetKind::Text => AccessibilityRole::Text,
         crate::WidgetKind::Button | crate::WidgetKind::IconButton | crate::WidgetKind::Chip => {
             AccessibilityRole::Button
@@ -4565,21 +4651,31 @@ fn accessibility_role(
         crate::WidgetKind::NativeMarkdown => AccessibilityRole::Document,
         crate::WidgetKind::GraphCanvas => AccessibilityRole::Generic,
         _ => AccessibilityRole::Generic,
+    };
+    if (kind.is_layout() || matches!(kind_role, AccessibilityRole::Generic))
+        && let Some(role) =
+            landmark_role_from_tag(element_tag, accessible_name.is_some(), is_top_level)
+    {
+        return role;
     }
+    kind_role
 }
 
 /// HTML landmark tags map to landmark roles per HTML-AAM. `section` and
 /// `form` are only landmarks when they carry an accessible name; `header`
-/// and `footer` map unconditionally (the top-level-only refinement is not
-/// implemented).
-fn landmark_role_from_tag(tag: &str, has_accessible_name: bool) -> Option<AccessibilityRole> {
+/// and `footer` only outside sectioning ancestors (ARIA in HTML).
+fn landmark_role_from_tag(
+    tag: &str,
+    has_accessible_name: bool,
+    is_top_level: bool,
+) -> Option<AccessibilityRole> {
     match tag.trim().to_ascii_lowercase().as_str() {
         "main" => Some(AccessibilityRole::Main),
         "nav" => Some(AccessibilityRole::Navigation),
         "aside" => Some(AccessibilityRole::Complementary),
         "search" => Some(AccessibilityRole::Search),
-        "header" => Some(AccessibilityRole::Banner),
-        "footer" => Some(AccessibilityRole::ContentInfo),
+        "header" if is_top_level => Some(AccessibilityRole::Banner),
+        "footer" if is_top_level => Some(AccessibilityRole::ContentInfo),
         "section" if has_accessible_name => Some(AccessibilityRole::Region),
         "form" if has_accessible_name => Some(AccessibilityRole::Form),
         _ => None,
