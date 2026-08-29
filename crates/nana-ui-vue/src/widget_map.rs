@@ -150,25 +150,33 @@ pub fn resolve_kind_from_hints(
         "meter" => WidgetKind::LevelMeter,
         "dialog" => WidgetKind::Dialog,
         "details" => WidgetKind::SettingsCollapsibleCard,
-        "summary" | "legend" | "caption" => WidgetKind::Text,
+        "summary" | "legend" | "caption" | "figcaption" | "address" => WidgetKind::Text,
         "hr" => WidgetKind::Divider,
         "br" => WidgetKind::Text,
         "table" => WidgetKind::Table,
         "tr" => WidgetKind::TableRow,
         "td" | "th" => WidgetKind::TableCell,
         "thead" | "tbody" | "tfoot" => WidgetKind::Column,
-        "ul" | "ol" => WidgetKind::List,
+        "ul" | "ol" | "menu" => WidgetKind::List,
         "li" => WidgetKind::ListItem,
         // Lucide / <i> glyphs stay Icon; structural <svg> is rasterized via
         // the shared image_url cache (see `svg_inline`). Raster <img> binds
         // `src` onto PaintStyle.content_image. `<canvas>` is a HostTexture slot
         // (`canvas:{id}`), not a fake 2D context. `<video>` samples the
         // `video:{id}` host-texture slot via the Runtime Video control; poster
-        // stays the pre-first-frame fallback. `<iframe>` is an explicit L1 skip.
+        // stays the pre-first-frame fallback. `<iframe>`, `<audio>`,
+        // `<embed>` and `<object>` are explicit L1 skips: there is no host
+        // pipeline behind them yet (audio can follow the video host-feed path
+        // when one exists), so they stay invisible layout boxes instead of
+        // faking a player.
         "img" => WidgetKind::Box,
         "canvas" => WidgetKind::Box,
         "video" => WidgetKind::Video,
-        "iframe" => WidgetKind::Box,
+        "iframe" | "audio" | "embed" | "object" => WidgetKind::Box,
+        // Media sub-resources and image-map hotspots have no visual of their
+        // own; Runtime `Table` has no column definitions, so `col`/`colgroup`
+        // skip the same way.
+        "source" | "track" | "area" | "col" | "colgroup" => WidgetKind::Box,
         "i" => WidgetKind::Icon,
         "svg" | "g" => {
             // Lucide Vue stamps `lucide lucide-<name>` on the root <svg>.
@@ -195,6 +203,12 @@ pub fn resolve_kind_from_hints(
             // Direction is LayoutStyle only (CSS / class hints). Tag stays Column.
             WidgetKind::Column
         }
+        // Block containers and slots: `<picture>` wraps `<source>`/`<img>` (the
+        // img child still binds `src`), `<datalist>` is a data container whose
+        // suggestions surface through the associated `input`, `<slot>` is
+        // already expanded by the Vue runtime before it reaches the host, and
+        // `<map>` only positions hotspots this renderer does not support.
+        "figure" | "hgroup" | "picture" | "datalist" | "slot" | "map" => WidgetKind::Column,
         _ if tag.is_empty() => WidgetKind::Column,
         _ => WidgetKind::Column,
     })
@@ -253,6 +267,23 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "option"
             | "optgroup"
             | "caption"
+            | "figcaption"
+            | "figure"
+            | "hgroup"
+            | "address"
+            | "menu"
+            | "datalist"
+            | "col"
+            | "colgroup"
+            | "slot"
+            | "picture"
+            | "audio"
+            | "source"
+            | "track"
+            | "embed"
+            | "object"
+            | "map"
+            | "area"
             | "br"
             | "pre"
             | "blockquote"
@@ -1029,6 +1060,50 @@ mod tests {
         assert_eq!(
             resolve_kind_from_hints("iframe", None, None, None),
             Some(WidgetKind::Box)
+        );
+        // No host pipeline behind these yet: they stay layout boxes instead
+        // of faking a player or external-content frame.
+        for tag in ["iframe", "audio", "embed", "object"] {
+            assert_eq!(
+                resolve_kind_from_hints(tag, None, None, None),
+                Some(WidgetKind::Box),
+                "{tag} is an explicit L1 skip"
+            );
+        }
+        for tag in ["source", "track", "area", "col", "colgroup"] {
+            assert_eq!(
+                resolve_kind_from_hints(tag, None, None, None),
+                Some(WidgetKind::Box),
+                "{tag} has no visual of its own"
+            );
+        }
+    }
+
+    #[test]
+    fn html_structure_tags_map_to_layout_and_text() {
+        for tag in ["figure", "hgroup", "picture", "datalist", "slot", "map"] {
+            assert_eq!(
+                resolve_kind_from_hints(tag, None, None, None),
+                Some(WidgetKind::Column),
+                "{tag} is a block container"
+            );
+        }
+        for tag in ["figcaption", "address"] {
+            assert_eq!(
+                resolve_kind_from_hints(tag, None, None, None),
+                Some(WidgetKind::Text),
+                "{tag} is block text"
+            );
+        }
+        // HTML-AAM: <menu> is equivalent to <ul>.
+        assert_eq!(
+            resolve_kind_from_hints("menu", None, None, None),
+            Some(WidgetKind::List)
+        );
+        // An explicit menu role still wins over the tag.
+        assert_eq!(
+            resolve_kind_from_hints("div", None, Some("menu"), None),
+            Some(WidgetKind::ContextMenu)
         );
     }
 

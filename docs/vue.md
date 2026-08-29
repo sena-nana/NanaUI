@@ -28,9 +28,9 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 **普通标签和 CSS。** `div`、flex、间距、字号这一类网页习惯可用，但只覆盖 [布局](layout.md) 列出的子集。适合结构骨架，不适合冒充完整浏览器。
 
-和 Runtime 同语义的 Vue 标签会落到对应控件：`button`、`a`、`input`（含 `checkbox` / `radio` / `range` / `number`）、`textarea`、`select` + `option`、`ul`/`ol`/`li`、`table`/`tr`/`td`/`th`、`progress`、`meter`、`hr`、`dialog`、`details`/`summary`。`v-html` 会把片段解析成子节点。`Teleport to="body|html"`、`Transition`、`KeepAlive`、`Suspense` 走同一套 host ops，没有第二棵树。
+和 Runtime 同语义的 Vue 标签会落到对应控件：`button`、`a`、`input`（含 `checkbox` / `radio` / `range` / `number`）、`textarea`、`select` + `option`、`ul`/`ol`/`menu`/`li`、`table`/`tr`/`td`/`th`、`progress`、`meter`、`hr`、`dialog`、`details`/`summary`。布局与文本骨架标签（`div`、`section`、`figure`、`figcaption`、`hgroup`、`address`、`picture`、`datalist`、`slot`、`map` 等）落到 Column / Text。`v-html` 会把片段解析成子节点。`Teleport to="body|html"`、`Transition`、`KeepAlive`、`Suspense` 走同一套 host ops，没有第二棵树。
 
-语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<video>` 播放、未接槽的 `<canvas>` 2D 不伪造浏览器。
+语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<audio>`、`<embed>`、`<object>` 不伪造浏览器，落为不可见布局盒——`<video>` 走宿主推帧（`nana.video`），音频等宿主管线出现后再按同一路径打通。`<source>` / `<track>` / `<area>` 没有自身视觉，`<col>` / `<colgroup>` 在 Runtime Table 里没有列定义，都显式跳过。
 
 地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo（`header` / `footer` 是 `article` / `aside` / `main` / `nav` / `section` 后代时除外）；`section` / `form` 只有带可访问名时才是 region / form——名字可以来自 `aria-label`、`aria-labelledby` 或自身文本内容。class / role hints 把地标标签改成具体控件（如 `<nav role="tablist">`）时保留控件角色。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。
 

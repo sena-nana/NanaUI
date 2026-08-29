@@ -2265,6 +2265,36 @@ mod tests {
     }
 
     #[test]
+    fn html_menu_tag_maps_to_list_role_not_menu() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        let menu = seeded_element(&mut api, root, "menu", &[]);
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        let entry = roles
+            .iter()
+            .find(|entry| entry.id.get() == menu)
+            .unwrap_or_else(|| panic!("menu element must enter Runtime accessibility"));
+        assert_eq!(
+            entry.role,
+            nana_ui_runtime::AccessibilityRole::List,
+            "<menu> is a list per HTML-AAM, not a menu widget"
+        );
+    }
+
+    #[test]
     fn html_landmark_tags_project_landmark_roles() {
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
         let bridge = Arc::new(Mutex::new(MessageBridge::new()));
