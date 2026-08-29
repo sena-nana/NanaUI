@@ -757,7 +757,7 @@ impl VueHost {
             .lock()
             .map(|bridge| {
                 bridge
-                    .snapshot()
+                    .peek_snapshot()
                     .widgets
                     .iter()
                     .filter_map(|widget| {
@@ -969,7 +969,7 @@ impl VueHost {
             .lock()
             .map(|bridge| {
                 bridge
-                    .snapshot()
+                    .peek_snapshot()
                     .widgets
                     .into_iter()
                     .filter_map(|widget| {

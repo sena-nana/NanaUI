@@ -522,9 +522,22 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             document.flush_host_frame();
             host.report_commit_rejections(&mut document);
         }
-        let snapshot = host.semantic_snapshot();
-        if let Ok(mut document) = host.document().lock() {
-            document.sync_semantic_styles(&snapshot);
+        // Build the O(widgets) snapshot only when the bridge moved past the
+        // document's synced revision; steady frames skip the clone entirely.
+        let synced = host
+            .document()
+            .lock()
+            .ok()
+            .and_then(|document| document.synced_semantic_revision());
+        let needs_snapshot = match host.bridge().lock() {
+            Ok(bridge) => synced != Some(bridge.revision()),
+            Err(_) => true,
+        };
+        if needs_snapshot {
+            let snapshot = host.semantic_snapshot();
+            if let Ok(mut document) = host.document().lock() {
+                document.sync_semantic_styles(&snapshot);
+            }
         }
         host.resolve_layout();
     }

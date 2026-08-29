@@ -71,7 +71,7 @@ pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use command_palette::CommandPalette;
 pub use component_registry::{
     ComponentBindKind, ComponentRegistry, ComponentTypeId, RegisterableComponent, SemanticOption,
-    SemanticSpec,
+    SemanticSpec, normalize_tag,
 };
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,

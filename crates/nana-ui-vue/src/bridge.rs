@@ -186,255 +186,130 @@ pub enum WidgetKind {
     Video,
 }
 
+/// Single source of truth for [`WidgetKind`]'s three string projections.
+///
+/// `as_str` is the canonical kind identifier; `aliases` are additional
+/// `parse`-accepted spellings (retired names or shared HTML tags); `tag` is
+/// the DOM element tag mirrored into Vue. The macro generates `parse`,
+/// `as_str`, `element_tag` and [`WidgetKind::ALL`] from one table, so an
+/// enum variant without a table row — or a row without a variant — fails to
+/// compile instead of silently returning `None` from `parse`.
+macro_rules! widget_kind_table {
+    ( $(
+        $variant:ident => {
+            aliases: [$($alias:literal),* $(,)?],
+            as_str: $kind:literal,
+            tag: $tag:literal
+        }
+    ),* $(,)? ) => {
+        impl WidgetKind {
+            /// Parse an explicit `nana-*` / createWidget kind string.
+            pub fn parse(raw: &str) -> Option<Self> {
+                let original = raw.trim().to_ascii_lowercase();
+                let s = original.strip_prefix("nana-").unwrap_or(&original);
+                Some(match s {
+                    $($($alias)|* | $kind => Self::$variant,)*
+                    _ => return None,
+                })
+            }
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $kind,)*
+                }
+            }
+
+            pub fn element_tag(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $tag,)*
+                }
+            }
+
+            /// Every variant, in declaration order.
+            pub const ALL: &'static [WidgetKind] = &[$(Self::$variant),*];
+        }
+    };
+}
+
+widget_kind_table! {
+    Column => { aliases: [], as_str: "column", tag: "nana-column" },
+    Row => { aliases: [], as_str: "row", tag: "nana-row" },
+    Box => { aliases: [], as_str: "box", tag: "nana-box" },
+    Text => { aliases: [], as_str: "text", tag: "nana-text" },
+    Button => { aliases: [], as_str: "button", tag: "button" },
+    IconButton => { aliases: [], as_str: "icon-button", tag: "nana-icon-button" },
+    Chip => { aliases: [], as_str: "chip", tag: "nana-chip" },
+    Input => { aliases: ["input"], as_str: "text-input", tag: "input" },
+    NumberInput => { aliases: [], as_str: "number-input", tag: "input" },
+    Textarea => { aliases: [], as_str: "textarea", tag: "textarea" },
+    Checkbox => { aliases: [], as_str: "checkbox", tag: "checkbox" },
+    Radio => { aliases: [], as_str: "radio", tag: "input" },
+    Switch => { aliases: [], as_str: "switch", tag: "nana-switch" },
+    Select => { aliases: [], as_str: "select", tag: "select" },
+    Dropdown => { aliases: [], as_str: "dropdown", tag: "nana-dropdown" },
+    SearchDropdown => { aliases: [], as_str: "search-dropdown", tag: "search-dropdown" },
+    Tabs => { aliases: [], as_str: "tabs", tag: "nana-tabs" },
+    Segmented => { aliases: [], as_str: "segmented", tag: "nana-segmented" },
+    Range => { aliases: [], as_str: "range-field", tag: "range-field" },
+    Card => { aliases: [], as_str: "card", tag: "nana-card" },
+    Divider => { aliases: ["hr"], as_str: "divider", tag: "hr" },
+    Thumbnail => { aliases: [], as_str: "thumbnail", tag: "nana-thumbnail" },
+    List => { aliases: [], as_str: "list", tag: "ul" },
+    ListItem => { aliases: [], as_str: "list-item", tag: "li" },
+    ScrollView => { aliases: [], as_str: "scroll-view", tag: "nana-scroll-view" },
+    EmptyState => { aliases: [], as_str: "empty-state", tag: "nana-empty-state" },
+    StatusBadge => { aliases: [], as_str: "status-badge", tag: "nana-status-badge" },
+    ValidationMessage => { aliases: [], as_str: "validation-message", tag: "nana-validation-message" },
+    LabeledValue => { aliases: [], as_str: "labeled-value", tag: "nana-labeled-value" },
+    Progress => { aliases: [], as_str: "progress", tag: "progress" },
+    Spinner => { aliases: [], as_str: "spinner", tag: "nana-spinner" },
+    FormField => { aliases: [], as_str: "form-field", tag: "nana-form-field" },
+    InteractiveCard => { aliases: [], as_str: "interactive-card", tag: "nana-interactive-card" },
+    Skeleton => { aliases: [], as_str: "skeleton", tag: "nana-skeleton" },
+    LevelMeter => { aliases: [], as_str: "level-meter", tag: "meter" },
+    SidebarFrame => { aliases: [], as_str: "sidebar-frame", tag: "nana-sidebar-frame" },
+    SidebarRow => { aliases: [], as_str: "sidebar-row", tag: "nana-sidebar-row" },
+    SettingsRow => { aliases: [], as_str: "settings-row", tag: "nana-settings-row" },
+    SettingsCard => { aliases: [], as_str: "settings-card", tag: "nana-settings-card" },
+    Icon => { aliases: [], as_str: "icon", tag: "nana-icon" },
+    Dialog => { aliases: [], as_str: "dialog", tag: "dialog" },
+    Drawer => { aliases: [], as_str: "drawer", tag: "nana-drawer" },
+    Popover => { aliases: [], as_str: "popover", tag: "nana-popover" },
+    ContextMenu => { aliases: [], as_str: "context-menu", tag: "nana-context-menu" },
+    Toast => { aliases: [], as_str: "toast", tag: "nana-toast" },
+    Tooltip => { aliases: [], as_str: "tooltip", tag: "nana-tooltip" },
+    ActionMenu => { aliases: [], as_str: "action-menu", tag: "nana-action-menu" },
+    ActionMenuItem => { aliases: [], as_str: "action-menu-item", tag: "nana-action-menu-item" },
+    XYPad => { aliases: [], as_str: "xy-pad", tag: "nana-xy-pad" },
+    QrCode => { aliases: [], as_str: "qr-code", tag: "nana-qr-code" },
+    CommandPalette => { aliases: [], as_str: "command-palette", tag: "nana-command-palette" },
+    TreeView => { aliases: [], as_str: "tree-view", tag: "nana-tree-view" },
+    CalendarHeatmap => { aliases: [], as_str: "calendar-heatmap", tag: "nana-calendar-heatmap" },
+    ImageViewer => { aliases: [], as_str: "image-viewer", tag: "nana-image-viewer" },
+    NativeMarkdown => { aliases: [], as_str: "native-markdown", tag: "nana-native-markdown" },
+    GraphCanvas => { aliases: [], as_str: "graph-canvas", tag: "nana-graph-canvas" },
+    Workspace => { aliases: [], as_str: "workspace", tag: "nana-workspace" },
+    Dock => { aliases: [], as_str: "dock", tag: "nana-dock" },
+    SplitPane => { aliases: [], as_str: "split-pane", tag: "nana-split-pane" },
+    AppShell => { aliases: [], as_str: "app-shell", tag: "nana-app-shell" },
+    DesktopShell => { aliases: [], as_str: "desktop-shell", tag: "nana-desktop-shell" },
+    AppTitleBar => { aliases: [], as_str: "app-title-bar", tag: "nana-app-title-bar" },
+    PaneChrome => { aliases: [], as_str: "pane-chrome", tag: "nana-pane-chrome" },
+    SidebarSection => { aliases: [], as_str: "sidebar-section", tag: "nana-sidebar-section" },
+    SidebarFooter => { aliases: [], as_str: "sidebar-footer", tag: "nana-sidebar-footer" },
+    SettingsPage => { aliases: [], as_str: "settings-page", tag: "nana-settings-page" },
+    SettingsCollapsibleCard => { aliases: [], as_str: "settings-collapsible-card", tag: "details" },
+    Table => { aliases: [], as_str: "table", tag: "table" },
+    TableRow => { aliases: ["table-row"], as_str: "tr", tag: "tr" },
+    TableCell => { aliases: ["th", "table-cell"], as_str: "td", tag: "td" },
+    ReorderList => { aliases: [], as_str: "reorder-list", tag: "nana-reorder-list" },
+    TimeSeriesChart => { aliases: [], as_str: "time-series-chart", tag: "nana-time-series-chart" },
+    GpuTextureView => { aliases: [], as_str: "gpu", tag: "nana-gpu" },
+    GpuView => { aliases: [], as_str: "gpu-view", tag: "nana-gpu-view" },
+    Video => { aliases: [], as_str: "video", tag: "nana-video" },
+}
+
 impl WidgetKind {
-    /// Parse an explicit `nana-*` / createWidget kind string.
-    pub fn parse(raw: &str) -> Option<Self> {
-        let original = raw.trim().to_ascii_lowercase();
-        let s = original.strip_prefix("nana-").unwrap_or(&original);
-        Some(match s {
-            "column" => Self::Column,
-            "row" => Self::Row,
-            "box" => Self::Box,
-            "text" => Self::Text,
-            "button" => Self::Button,
-            "input" => Self::Input,
-            "hr" => Self::Divider,
-            "icon-button" => Self::IconButton,
-            "chip" => Self::Chip,
-            "text-input" => Self::Input,
-            "number-input" => Self::NumberInput,
-            "textarea" => Self::Textarea,
-            "checkbox" => Self::Checkbox,
-            "radio" => Self::Radio,
-            "switch" => Self::Switch,
-            "select" => Self::Select,
-            "dropdown" => Self::Dropdown,
-            "search-dropdown" => Self::SearchDropdown,
-            "tr" => Self::TableRow,
-            "td" | "th" => Self::TableCell,
-            "tabs" => Self::Tabs,
-            "segmented" => Self::Segmented,
-            "range-field" => Self::Range,
-            "card" => Self::Card,
-            "divider" => Self::Divider,
-            "thumbnail" => Self::Thumbnail,
-            "list" => Self::List,
-            "list-item" => Self::ListItem,
-            "scroll-view" => Self::ScrollView,
-            "empty-state" => Self::EmptyState,
-            "status-badge" => Self::StatusBadge,
-            "validation-message" => Self::ValidationMessage,
-            "labeled-value" => Self::LabeledValue,
-            "progress" => Self::Progress,
-            "spinner" => Self::Spinner,
-            "form-field" => Self::FormField,
-            "interactive-card" => Self::InteractiveCard,
-            "skeleton" => Self::Skeleton,
-            "level-meter" => Self::LevelMeter,
-            "sidebar-frame" => Self::SidebarFrame,
-            "sidebar-row" => Self::SidebarRow,
-            "settings-row" => Self::SettingsRow,
-            "settings-card" => Self::SettingsCard,
-            "icon" => Self::Icon,
-            "dialog" => Self::Dialog,
-            "drawer" => Self::Drawer,
-            "popover" => Self::Popover,
-            "context-menu" => Self::ContextMenu,
-            "toast" => Self::Toast,
-            "tooltip" => Self::Tooltip,
-            "action-menu" => Self::ActionMenu,
-            "action-menu-item" => Self::ActionMenuItem,
-            "xy-pad" => Self::XYPad,
-            "qr-code" => Self::QrCode,
-            "command-palette" => Self::CommandPalette,
-            "tree-view" => Self::TreeView,
-            "calendar-heatmap" => Self::CalendarHeatmap,
-            "image-viewer" => Self::ImageViewer,
-            "native-markdown" => Self::NativeMarkdown,
-            "graph-canvas" => Self::GraphCanvas,
-            "workspace" => Self::Workspace,
-            "dock" => Self::Dock,
-            "split-pane" => Self::SplitPane,
-            "app-shell" => Self::AppShell,
-            "desktop-shell" => Self::DesktopShell,
-            "app-title-bar" => Self::AppTitleBar,
-            "pane-chrome" => Self::PaneChrome,
-            "sidebar-section" => Self::SidebarSection,
-            "sidebar-footer" => Self::SidebarFooter,
-            "settings-page" => Self::SettingsPage,
-            "settings-collapsible-card" => Self::SettingsCollapsibleCard,
-            "table" => Self::Table,
-            "table-row" => Self::TableRow,
-            "table-cell" => Self::TableCell,
-            "reorder-list" => Self::ReorderList,
-            "time-series-chart" => Self::TimeSeriesChart,
-            "gpu" => Self::GpuTextureView,
-            "gpu-view" => Self::GpuView,
-            "video" => Self::Video,
-            _ => return None,
-        })
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Column => "column",
-            Self::Row => "row",
-            Self::Box => "box",
-            Self::Text => "text",
-            Self::Button => "button",
-            Self::IconButton => "icon-button",
-            Self::Chip => "chip",
-            Self::Input => "text-input",
-            Self::NumberInput => "number-input",
-            Self::Textarea => "textarea",
-            Self::Checkbox => "checkbox",
-            Self::Radio => "radio",
-            Self::Switch => "switch",
-            Self::Select => "select",
-            Self::Dropdown => "dropdown",
-            Self::SearchDropdown => "search-dropdown",
-            Self::Tabs => "tabs",
-            Self::Segmented => "segmented",
-            Self::Range => "range-field",
-            Self::Card => "card",
-            Self::Divider => "divider",
-            Self::Thumbnail => "thumbnail",
-            Self::List => "list",
-            Self::ListItem => "list-item",
-            Self::ScrollView => "scroll-view",
-            Self::EmptyState => "empty-state",
-            Self::StatusBadge => "status-badge",
-            Self::ValidationMessage => "validation-message",
-            Self::LabeledValue => "labeled-value",
-            Self::Progress => "progress",
-            Self::Spinner => "spinner",
-            Self::FormField => "form-field",
-            Self::InteractiveCard => "interactive-card",
-            Self::Skeleton => "skeleton",
-            Self::LevelMeter => "level-meter",
-            Self::SidebarFrame => "sidebar-frame",
-            Self::SidebarRow => "sidebar-row",
-            Self::SettingsRow => "settings-row",
-            Self::SettingsCard => "settings-card",
-            Self::Icon => "icon",
-            Self::Dialog => "dialog",
-            Self::Drawer => "drawer",
-            Self::Popover => "popover",
-            Self::ContextMenu => "context-menu",
-            Self::Toast => "toast",
-            Self::Tooltip => "tooltip",
-            Self::ActionMenu => "action-menu",
-            Self::ActionMenuItem => "action-menu-item",
-            Self::XYPad => "xy-pad",
-            Self::QrCode => "qr-code",
-            Self::CommandPalette => "command-palette",
-            Self::TreeView => "tree-view",
-            Self::CalendarHeatmap => "calendar-heatmap",
-            Self::ImageViewer => "image-viewer",
-            Self::NativeMarkdown => "native-markdown",
-            Self::GraphCanvas => "graph-canvas",
-            Self::Workspace => "workspace",
-            Self::Dock => "dock",
-            Self::SplitPane => "split-pane",
-            Self::AppShell => "app-shell",
-            Self::DesktopShell => "desktop-shell",
-            Self::AppTitleBar => "app-title-bar",
-            Self::PaneChrome => "pane-chrome",
-            Self::SidebarSection => "sidebar-section",
-            Self::SidebarFooter => "sidebar-footer",
-            Self::SettingsPage => "settings-page",
-            Self::SettingsCollapsibleCard => "settings-collapsible-card",
-            Self::Table => "table",
-            Self::TableRow => "tr",
-            Self::TableCell => "td",
-            Self::ReorderList => "reorder-list",
-            Self::TimeSeriesChart => "time-series-chart",
-            Self::GpuTextureView => "gpu",
-            Self::GpuView => "gpu-view",
-            Self::Video => "video",
-        }
-    }
-
-    pub fn element_tag(self) -> &'static str {
-        match self {
-            Self::Column => "nana-column",
-            Self::Row => "nana-row",
-            Self::Box => "nana-box",
-            Self::Text => "nana-text",
-            Self::Button => "button",
-            Self::IconButton => "nana-icon-button",
-            Self::Chip => "nana-chip",
-            Self::Input => "input",
-            Self::NumberInput => "input",
-            Self::Textarea => "textarea",
-            Self::Checkbox => "checkbox",
-            Self::Radio => "input",
-            Self::Switch => "nana-switch",
-            Self::Select => "select",
-            Self::Dropdown => "nana-dropdown",
-            Self::SearchDropdown => "search-dropdown",
-            Self::Tabs => "nana-tabs",
-            Self::Segmented => "nana-segmented",
-            Self::Range => "range-field",
-            Self::Card => "nana-card",
-            Self::Divider => "hr",
-            Self::Thumbnail => "nana-thumbnail",
-            Self::List => "ul",
-            Self::ListItem => "li",
-            Self::ScrollView => "nana-scroll-view",
-            Self::EmptyState => "nana-empty-state",
-            Self::StatusBadge => "nana-status-badge",
-            Self::ValidationMessage => "nana-validation-message",
-            Self::LabeledValue => "nana-labeled-value",
-            Self::Progress => "progress",
-            Self::Spinner => "nana-spinner",
-            Self::FormField => "nana-form-field",
-            Self::InteractiveCard => "nana-interactive-card",
-            Self::Skeleton => "nana-skeleton",
-            Self::LevelMeter => "meter",
-            Self::SidebarFrame => "nana-sidebar-frame",
-            Self::SidebarRow => "nana-sidebar-row",
-            Self::SettingsRow => "nana-settings-row",
-            Self::SettingsCard => "nana-settings-card",
-            Self::Icon => "nana-icon",
-            Self::Dialog => "dialog",
-            Self::Drawer => "nana-drawer",
-            Self::Popover => "nana-popover",
-            Self::ContextMenu => "nana-context-menu",
-            Self::Toast => "nana-toast",
-            Self::Tooltip => "nana-tooltip",
-            Self::ActionMenu => "nana-action-menu",
-            Self::ActionMenuItem => "nana-action-menu-item",
-            Self::XYPad => "nana-xy-pad",
-            Self::QrCode => "nana-qr-code",
-            Self::CommandPalette => "nana-command-palette",
-            Self::TreeView => "nana-tree-view",
-            Self::CalendarHeatmap => "nana-calendar-heatmap",
-            Self::ImageViewer => "nana-image-viewer",
-            Self::NativeMarkdown => "nana-native-markdown",
-            Self::GraphCanvas => "nana-graph-canvas",
-            Self::Workspace => "nana-workspace",
-            Self::Dock => "nana-dock",
-            Self::SplitPane => "nana-split-pane",
-            Self::AppShell => "nana-app-shell",
-            Self::DesktopShell => "nana-desktop-shell",
-            Self::AppTitleBar => "nana-app-title-bar",
-            Self::PaneChrome => "nana-pane-chrome",
-            Self::SidebarSection => "nana-sidebar-section",
-            Self::SidebarFooter => "nana-sidebar-footer",
-            Self::SettingsPage => "nana-settings-page",
-            Self::SettingsCollapsibleCard => "details",
-            Self::Table => "table",
-            Self::TableRow => "tr",
-            Self::TableCell => "td",
-            Self::ReorderList => "nana-reorder-list",
-            Self::TimeSeriesChart => "nana-time-series-chart",
-            Self::GpuTextureView => "nana-gpu",
-            Self::GpuView => "nana-gpu-view",
-            Self::Video => "nana-video",
-        }
-    }
-
     /// Select / Dropdown / SearchDropdown — one option list, three Runtime types.
     pub fn is_choice_field(self) -> bool {
         matches!(self, Self::Select | Self::Dropdown | Self::SearchDropdown)
@@ -1457,6 +1332,28 @@ fn is_framework_native_prop(key: &str) -> bool {
         || key.starts_with("on")
 }
 
+/// Mutation footprint accumulated since the previous
+/// [`MessageBridge::snapshot`] — the unit of incremental semantic sync.
+///
+/// Empty changes with a bumped revision mean a consumer took the footprint
+/// already; the sync side answers that defensively with a full pass.
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct SnapshotChanges {
+    /// Widgets whose props/kind/label changed, plus affected subtrees.
+    pub(crate) dirty: std::collections::BTreeSet<WidgetId>,
+    /// Tree shape changed (insert / remove / reparent / roots).
+    pub(crate) structure_changed: bool,
+    /// Whole-document invalidation (theme, global cascade, viewport CB).
+    pub(crate) all: bool,
+}
+
+impl SnapshotChanges {
+    /// `true` when the sync must project every widget.
+    pub fn needs_full_pass(&self) -> bool {
+        self.all || self.structure_changed
+    }
+}
+
 /// Flat snapshot for Scene host view (pre-order under each root).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticSnapshot {
@@ -1466,6 +1363,8 @@ pub struct SemanticSnapshot {
     pub appearance: AppearanceSettings,
     pub roots: Vec<WidgetId>,
     pub widgets: Vec<SemanticWidget>,
+    /// Mutations accumulated since the previous snapshot of this bridge.
+    pub changes: SnapshotChanges,
 }
 
 impl SemanticSnapshot {
@@ -1520,6 +1419,7 @@ impl SemanticSnapshot {
                 .filter(|id| keep.contains(id) && by_id.contains_key(id))
                 .collect(),
             widgets,
+            changes: SnapshotChanges::default(),
         }
     }
 
@@ -1718,6 +1618,7 @@ impl SemanticSnapshot {
                 .filter(|id| keep.contains(id) && index.get(*id).is_some())
                 .collect(),
             widgets,
+            changes: SnapshotChanges::default(),
         }
     }
 
@@ -1750,6 +1651,7 @@ impl SemanticSnapshot {
                 .filter(|id| keep.contains(id))
                 .collect(),
             widgets,
+            changes: SnapshotChanges::default(),
         };
         out.collapse_stale_grid_tracks_after_child_removal();
         out
@@ -2094,6 +1996,8 @@ pub struct MessageBridge {
     roots: Vec<WidgetId>,
     pending: VecDeque<BridgeEvent>,
     revision: u64,
+    /// Mutation footprint since the previous snapshot (incremental sync).
+    changes: SnapshotChanges,
     theme: ThemeMode,
     appearance: AppearanceSettings,
     /// When true, html/body scaffold owns roots — createElement must not promote.
@@ -2201,6 +2105,7 @@ impl MessageBridge {
             roots: Vec::new(),
             pending: VecDeque::new(),
             revision: 0,
+            changes: SnapshotChanges::default(),
             theme: ThemeMode::Light,
             appearance: AppearanceSettings::default(),
             scaffolded: false,
@@ -2317,10 +2222,10 @@ impl MessageBridge {
         }
         let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
         ordered.sort_by_cached_key(|id| self.widget_depth(*id));
-        for id in ordered {
-            self.reapply_layout_for(id);
+        for id in &ordered {
+            self.reapply_layout_for(*id);
         }
-        self.bump();
+        self.changed_widgets(ordered);
     }
 
     pub fn computed_motion_for(&self, id: WidgetId) -> Option<&CssComputedMotion> {
@@ -2552,7 +2457,7 @@ impl MessageBridge {
         };
         widget.props.attrs.insert(name, String::new());
         self.reapply_layout_for(id);
-        self.bump();
+        self.changed_widget(id);
     }
 
     fn ensure_has_index(&mut self) {
@@ -2637,10 +2542,10 @@ impl MessageBridge {
         // computed ancestor `font-size` (CSS inheritance + rem root).
         ids.sort_by_cached_key(|id| self.widget_depth(*id));
         self.refresh_has_descendant_index();
-        for id in ids {
-            self.reapply_layout_for(id);
+        for id in &ids {
+            self.reapply_layout_for(*id);
         }
-        self.bump();
+        self.changed_all();
     }
 
     fn reapply_layout_cascade_matching(&mut self, new_rules: &[StyleRule]) {
@@ -2660,10 +2565,10 @@ impl MessageBridge {
         }
         let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
         ordered.sort_by_cached_key(|id| self.widget_depth(*id));
-        for id in ordered {
-            self.reapply_layout_for(id);
+        for id in &ordered {
+            self.reapply_layout_for(*id);
         }
-        self.bump();
+        self.changed_widgets(ordered);
     }
 
     fn collect_subtree_ids(&self, id: WidgetId, out: &mut HashSet<WidgetId>) {
@@ -2772,6 +2677,9 @@ impl MessageBridge {
     }
 
     fn reapply_layout_for(&mut self, id: WidgetId) {
+        // Cascaded props/layout for this widget may change: record it for the
+        // incremental semantic sync (a no-op reapply costs one set insert).
+        self.changes.dirty.insert(id);
         // Refresh once per cascade pass. `bump()` clears the flag so a loop of
         // `reapply_layout_for` never rebuilds the index per node (O(n²)).
         self.ensure_has_index();
@@ -3180,6 +3088,12 @@ impl MessageBridge {
                 Some((*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
             })
             .collect();
+        // Steady-state frames recascade nothing and must not bump the
+        // revision — an unconditional bump here used to force a full semantic
+        // resync on every hover frame.
+        if !ids.is_empty() {
+            self.changed_widgets(ids.iter().copied());
+        }
         self.interactive_runtime = Some(snapshot);
         self.refresh_has_descendant_index();
         for id in &ids {
@@ -3249,7 +3163,6 @@ impl MessageBridge {
         if doc.host_animation_epoch().is_none() {
             self.tick_css_animations(doc);
         }
-        self.bump();
     }
 
     /// Widgets whose interactive CSS result can differ from the previous pass.
@@ -3867,7 +3780,7 @@ impl MessageBridge {
     pub fn set_appearance(&mut self, appearance: AppearanceSettings) {
         if self.appearance != appearance {
             self.appearance = appearance;
-            self.bump();
+            self.changed_all();
         }
     }
 
@@ -4027,7 +3940,7 @@ impl MessageBridge {
         // Paint from body — html is scaffolding only.
         self.roots.push(body_id);
         self.scaffolded = true;
-        self.bump();
+        self.changed_structure();
     }
 
     /// Drop mounted app widgets under body; keep html/body scaffold.
@@ -4035,7 +3948,7 @@ impl MessageBridge {
         if !self.scaffolded {
             self.widgets.clear();
             self.roots.clear();
-            self.bump();
+            self.changed_structure();
             return;
         }
         let body_id = self
@@ -4071,7 +3984,7 @@ impl MessageBridge {
         for id in orphans {
             self.unregister(id);
         }
-        self.bump();
+        self.changed_structure();
     }
 
     pub fn register(&mut self, id: WidgetId, kind: WidgetKind, mut props: WidgetProps) {
@@ -4146,7 +4059,7 @@ impl MessageBridge {
                     w.props.role = props.role;
                 }
             }
-            self.bump();
+            self.changed_subtree(id);
         } else {
             self.register(id, kind, props);
         }
@@ -4157,7 +4070,7 @@ impl MessageBridge {
             && w.kind != kind
         {
             w.kind = kind;
-            self.bump();
+            self.changed_subtree(id);
         }
     }
 
@@ -4218,7 +4131,7 @@ impl MessageBridge {
                 walk = self.widgets.get(&pid).and_then(|w| w.parent);
             }
         }
-        self.bump();
+        self.changed_structure();
     }
 
     pub fn purge_generated_pseudo_runtime(
@@ -4270,7 +4183,7 @@ impl MessageBridge {
                 if !self.roots.contains(&child) {
                     self.roots.push(child);
                 }
-                self.bump();
+                self.changed_structure();
             }
             return;
         }
@@ -4298,7 +4211,7 @@ impl MessageBridge {
             }
         }
         self.recascade_inline_svg(parent);
-        self.bump();
+        self.changed_structure();
     }
 
     fn recascade_inline_svg(&mut self, id: WidgetId) {
@@ -4355,7 +4268,7 @@ impl MessageBridge {
             }
             self.reapply_layout_cascade_all();
         } else if changed {
-            self.bump();
+            self.changed_all();
         }
     }
 
@@ -4444,6 +4357,7 @@ impl MessageBridge {
         }
         w.props.containing_block_width = next_w;
         w.props.containing_block_height = next_h;
+        self.changes.dirty.insert(id);
         true
     }
 
@@ -4586,7 +4500,7 @@ impl MessageBridge {
             self.sync_layout_containing_blocks(ParentBox::from_viewport(vw, vh));
         }
         self.reparent_sidebar_footer_slots();
-        self.bump();
+        self.changed_structure();
     }
 
     /// Reattach orphaned `nana-sidebar-frame__footer` slots (and their content)
@@ -4982,7 +4896,7 @@ impl MessageBridge {
             self.reapply_layout_for(pid);
         }
         self.strip_deferred_position_on_overlay(id);
-        self.bump();
+        self.changed_widget(id);
     }
 
     pub fn set_label(&mut self, id: WidgetId, label: impl Into<String>) {
@@ -4996,7 +4910,7 @@ impl MessageBridge {
         if let Some(pid) = parent {
             self.reapply_layout_for(pid);
         }
-        self.bump();
+        self.changed_widget(id);
     }
 
     pub fn push_event(&mut self, event: BridgeEvent) {
@@ -5092,7 +5006,7 @@ impl MessageBridge {
             } else {
                 w.props.active = true;
             }
-            self.bump();
+            self.changed_widget(id);
         } else {
             return Vec::new();
         }
@@ -5105,7 +5019,7 @@ impl MessageBridge {
         if let Some(w) = self.widgets.get_mut(&id) {
             w.props.value = value.clone();
             w.props.label = value.clone();
-            self.bump();
+            self.changed_widget(id);
         } else {
             return Vec::new();
         }
@@ -5118,7 +5032,7 @@ impl MessageBridge {
             w.props.number = value as f32;
             w.props.progress = value as f32;
             w.props.value = value.to_string();
-            self.bump();
+            self.changed_widget(id);
         } else {
             return Vec::new();
         }
@@ -5126,7 +5040,18 @@ impl MessageBridge {
         vec!["change", "update:modelValue"]
     }
 
-    pub fn snapshot(&self) -> SemanticSnapshot {
+    pub fn snapshot(&mut self) -> SemanticSnapshot {
+        let changes = std::mem::take(&mut self.changes);
+        self.peek_snapshot_with(changes)
+    }
+
+    /// Read-only snapshot for scans that must not consume the mutation
+    /// footprint (only the sync path may consume it).
+    pub fn peek_snapshot(&self) -> SemanticSnapshot {
+        self.peek_snapshot_with(self.changes.clone())
+    }
+
+    fn peek_snapshot_with(&self, changes: SnapshotChanges) -> SemanticSnapshot {
         let mut widgets = Vec::with_capacity(self.widgets.len());
         let mut seen = std::collections::HashSet::new();
         for &root in &self.roots {
@@ -5143,6 +5068,7 @@ impl MessageBridge {
             appearance: self.appearance,
             roots: self.roots.clone(),
             widgets,
+            changes,
         }
     }
 
@@ -5170,9 +5096,48 @@ impl MessageBridge {
         }
     }
 
+    /// Every revision bump must go through one of the `changed_*` helpers so
+    /// the semantic sync can project only what mutated. Calling [`Self::bump`]
+    /// directly silently loses the footprint and degrades to a full pass.
     fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
         self.has_index_ready = false;
+    }
+
+    fn changed_widget(&mut self, id: WidgetId) {
+        self.changes.dirty.insert(id);
+        self.bump();
+    }
+
+    fn changed_widgets(&mut self, ids: impl IntoIterator<Item = WidgetId>) {
+        self.changes.dirty.extend(ids);
+        self.bump();
+    }
+
+    /// A widget changed in a way that can cascade onto its descendants
+    /// (layout, kind, cascaded props): dirty the whole subtree.
+    fn changed_subtree(&mut self, id: WidgetId) {
+        let mut walk = vec![id];
+        while let Some(current) = walk.pop() {
+            self.changes.dirty.insert(current);
+            if let Some(widget) = self.widgets.get(&current) {
+                walk.extend(widget.children.iter().copied());
+            }
+        }
+        self.bump();
+    }
+
+    /// Tree shape changed; the sync must reproject from the roots.
+    fn changed_structure(&mut self) {
+        self.changes.structure_changed = true;
+        self.bump();
+    }
+
+    /// Whole-document invalidation (theme, global cascade, viewport).
+    fn changed_all(&mut self) {
+        self.changes.all = true;
+        self.changes.dirty.clear();
+        self.bump();
     }
 }
 
@@ -5782,7 +5747,69 @@ mod tests {
     use super::*;
     use crate::css_map::JustifySpec;
     use nana_js_engine::HostValue;
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+
+    /// Every canonical `as_str` must parse back to its kind. This is the
+    /// compiler-unreachable seam the macro cannot enforce: a kind row whose
+    /// `as_str` is not a `parse` key would silently return `None` at runtime.
+    #[test]
+    fn kind_table_roundtrips_every_as_str() {
+        let mut seen = BTreeSet::new();
+        for kind in WidgetKind::ALL {
+            assert_eq!(
+                WidgetKind::parse(kind.as_str()),
+                Some(*kind),
+                "as_str {:?} does not parse back",
+                kind.as_str()
+            );
+            assert!(seen.insert(kind.as_str()), "duplicate as_str {:?}", kind.as_str());
+        }
+    }
+
+    /// Every `element_tag` must map back to *some* widget kind through the
+    /// facade's tag resolution (HTML downlevel table or `nana-` prefix parse).
+    #[test]
+    fn kind_element_tags_resolve_back_to_a_kind() {
+        for kind in WidgetKind::ALL {
+            assert!(
+                crate::widget_map::resolve_kind_from_hints(kind.element_tag(), None, None, None)
+                    .is_some(),
+                "element_tag {:?} (kind {}) no longer resolves to any WidgetKind",
+                kind.element_tag(),
+                kind.as_str()
+            );
+        }
+    }
+
+    /// Every kind's tag must land on a Runtime component unless it is pure
+    /// facade layout with no Runtime-qualified projection. Keep this list
+    /// explicit: adding a kind without a Runtime landing spot is a decision,
+    /// not an accident.
+    #[test]
+    fn kind_tags_resolve_in_builtin_runtime_registry() {
+        // Vue-only kinds with no Runtime component of their own: the assembly
+        // rules in tree.rs downgrade them (Chip → `nana.button` variant, Radio
+        // → SegmentedControl radio chrome), so their element_tag intentionally
+        // does not resolve on its own.
+        const FACADE_ONLY: &[WidgetKind] = &[WidgetKind::Chip, WidgetKind::Radio];
+        let context = nana_ui_runtime::AppContext::new();
+        let mut unresolved: Vec<String> = Vec::new();
+        for kind in WidgetKind::ALL {
+            if FACADE_ONLY.contains(kind) {
+                continue;
+            }
+            let resolved = context
+                .resolve_component_tag(kind.element_tag())
+                .or_else(|| context.resolve_component_tag(kind.as_str()));
+            if resolved.is_none() {
+                unresolved.push(format!("{} (tag {:?})", kind.as_str(), kind.element_tag()));
+            }
+        }
+        assert!(
+            unresolved.is_empty(),
+            "kinds without a builtin Runtime landing spot — add them to FACADE_ONLY or register a component: {unresolved:?}"
+        );
+    }
 
     #[test]
     fn img_src_cascades_onto_content_image() {

@@ -179,6 +179,13 @@ impl ComponentRegistry {
         self.by_tag.get(&normalize_tag(tag))
     }
 
+    /// Resolve an already-normalized tag (see [`normalize_tag`]). Callers that
+    /// probe several candidate spellings can normalize each candidate once and
+    /// dedupe before looking up.
+    pub fn resolve_normalized(&self, normalized_tag: &str) -> Option<&ComponentTypeId> {
+        self.by_tag.get(normalized_tag)
+    }
+
     pub(crate) fn insert(&mut self, entry: RegisteredComponentType) -> Result<(), FrameworkError> {
         if self.by_id.contains_key(&entry.id) {
             return Err(FrameworkError::DuplicateComponentType(

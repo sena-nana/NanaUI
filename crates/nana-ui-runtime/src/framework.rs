@@ -363,18 +363,7 @@ impl ExtensionRegistrar {
         when: ContextPredicate,
         handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
     ) -> Result<(), FrameworkError> {
-        let id = normalized_action_id(id)?;
-        if self.actions.contains_key(&id) {
-            return Err(FrameworkError::DuplicateAction(id));
-        }
-        self.actions.insert(
-            id,
-            RegisteredAction {
-                when,
-                handler: Box::new(handler),
-            },
-        );
-        Ok(())
+        insert_action(&mut self.actions, id, when, handler)
     }
 
     pub fn register_presenter(
@@ -840,6 +829,11 @@ impl AppContext {
 
     pub fn resolve_component_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
         self.components.resolve_tag(tag)
+    }
+
+    /// Resolve an already-normalized tag (see [`normalize_tag`]).
+    pub fn resolve_component_tag_normalized(&self, normalized_tag: &str) -> Option<&ComponentTypeId> {
+        self.components.resolve_normalized(normalized_tag)
     }
 
     pub fn bind_semantic(
@@ -6575,18 +6569,7 @@ impl AppContext {
         when: ContextPredicate,
         handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
     ) -> Result<(), FrameworkError> {
-        let id = normalized_action_id(id)?;
-        if self.actions.contains_key(&id) {
-            return Err(FrameworkError::DuplicateAction(id));
-        }
-        self.actions.insert(
-            id,
-            RegisteredAction {
-                when,
-                handler: Box::new(handler),
-            },
-        );
-        Ok(())
+        insert_action(&mut self.actions, id, when, handler)
     }
 
     pub fn dispatch_action(
@@ -6777,6 +6760,26 @@ fn normalized_action_id(id: impl Into<ActionId>) -> Result<ActionId, FrameworkEr
     } else {
         Ok(id)
     }
+}
+
+fn insert_action(
+    actions: &mut HashMap<ActionId, RegisteredAction>,
+    id: impl Into<ActionId>,
+    when: ContextPredicate,
+    handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
+) -> Result<(), FrameworkError> {
+    let id = normalized_action_id(id)?;
+    if actions.contains_key(&id) {
+        return Err(FrameworkError::DuplicateAction(id));
+    }
+    actions.insert(
+        id,
+        RegisteredAction {
+            when,
+            handler: Box::new(handler),
+        },
+    );
+    Ok(())
 }
 
 #[must_use = "tasks do nothing until a host executor runs them"]

@@ -3770,7 +3770,7 @@ mod tests {
         .unwrap();
 
         {
-            let b = bridge.lock().unwrap();
+            let mut b = bridge.lock().unwrap();
             assert!(b.contains(dialog as u64));
             assert!(b.contains(pin as u64));
             let snap = b.snapshot();
