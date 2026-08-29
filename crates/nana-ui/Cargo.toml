@@ -82,7 +82,7 @@ android-activity = { version = "0.6", features = ["native-activity"], optional =
 accesskit_winit = { version = "0.33.2", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
