@@ -32,7 +32,7 @@ const L2_OVERLAY_EXPORTS = [
 ];
 
 const HOST_TAGS = {
-  NanaDialog: "nana-dialog",
+  NanaDialog: "dialog",
   NanaDrawer: "nana-drawer",
   NanaPopover: "nana-popover",
   NanaContextMenu: "nana-context-menu",
@@ -41,10 +41,10 @@ const HOST_TAGS = {
   NanaActionMenu: "nana-action-menu",
   NanaXyPad: "nana-xy-pad",
   NanaQrCode: "nana-qr-code",
-  NanaSelect: "nana-select",
+  NanaSelect: "select",
   NanaDropdown: "nana-dropdown",
-  NanaSearch: "nana-search",
-  NanaTextarea: "nana-textarea",
+  NanaSearch: "search-dropdown",
+  NanaTextarea: "textarea",
   NanaCommandPalette: "nana-command-palette",
   NanaTreeView: "nana-tree-view",
   NanaCalendar: "nana-calendar-heatmap",
@@ -58,14 +58,14 @@ const HOST_TAGS = {
   NanaSettingsPage: "nana-settings-page",
   NanaIconButton: "nana-icon-button",
   NanaIcon: "nana-icon",
-  NanaNumberInput: "nana-number-input",
-  NanaDivider: "nana-divider",
+  NanaNumberInput: "input",
+  NanaDivider: "hr",
   NanaThumbnail: "nana-thumbnail",
   NanaCard: "nana-card",
-  NanaList: "nana-list",
-  NanaListItem: "nana-list-item",
+  NanaList: "ul",
+  NanaListItem: "li",
   NanaScrollView: "nana-scroll-view",
-  NanaProgress: "nana-progress",
+  NanaProgress: "progress",
   NanaSpinner: "nana-spinner",
   NanaEmptyState: "nana-empty-state",
   NanaStatusBadge: "nana-status-badge",
@@ -74,10 +74,10 @@ const HOST_TAGS = {
   NanaFormField: "nana-form-field",
   NanaInteractiveCard: "nana-interactive-card",
   NanaSkeleton: "nana-skeleton",
-  NanaLevelMeter: "nana-level-meter",
-  NanaTable: "nana-table",
-  NanaTableRow: "nana-table-row",
-  NanaTableCell: "nana-table-cell",
+  NanaLevelMeter: "meter",
+  NanaTable: "table",
+  NanaTableRow: "tr",
+  NanaTableCell: "td",
   NanaReorderList: "nana-reorder-list",
   NanaTimeSeriesChart: "nana-time-series-chart",
   NanaDesktopShell: "nana-desktop-shell",
@@ -85,7 +85,7 @@ const HOST_TAGS = {
   NanaPaneChrome: "nana-pane-chrome",
   NanaSidebarSection: "nana-sidebar-section",
   NanaSidebarFooter: "nana-sidebar-footer",
-  NanaSettingsCollapsibleCard: "nana-settings-collapsible-card",
+  NanaSettingsCollapsibleCard: "details",
   NanaGpu: "nana-gpu",
   NanaVirtualList: "nana-scroll-view",
   NanaVirtualTable: "nana-scroll-view",
@@ -126,6 +126,10 @@ describe("L2 overlay / form exports", () => {
   for (const [name, file] of Object.entries(SOURCE_FILES)) {
     test(`${name} host tag is ${HOST_TAGS[name]}`, () => {
       const src = readFileSync(join(root, file), "utf8");
+      if (name === "NanaTableCell") {
+        assert.match(src, /"th"\s*:\s*"td"/);
+        return;
+      }
       assert.match(
         src,
         new RegExp(`h\\(\\s*["']${HOST_TAGS[name]}["']`),
@@ -280,10 +284,10 @@ describe("Runtime catalog Vue wrappers", () => {
     assert.match(src, /axes:\s*props\.axes/);
   });
 
-  test("NanaNumberInput does not use HTML type=number", () => {
+  test("NanaNumberInput maps onto input type=number", () => {
     const src = readFileSync(join(root, "src/NanaNumberInput.js"), "utf8");
-    assert.match(src, /nana-number-input/);
-    assert.doesNotMatch(src, /type:\s*["']number["']/);
+    assert.match(src, /h\(\s*["']input["']/);
+    assert.match(src, /type:\s*["']number["']/);
   });
 
   test("virtual wrappers and NanaGpu are exported", () => {
@@ -311,6 +315,29 @@ describe("Runtime catalog Vue wrappers", () => {
     assert.match(src, /h\(\s*["']nana-gpu["']/);
     assert.match(src, /source/);
     assert.match(src, /data-nana-gpu/);
+  });
+
+  test("1:1 HTML wrappers emit native tags", () => {
+    const tags = {
+      "src/NanaButton.js": "button",
+      "src/NanaInput.js": "input",
+      "src/NanaCheckbox.js": "input",
+      "src/NanaRangeField.js": "input",
+      "src/NanaList.js": "ul",
+      "src/NanaListItem.js": "li",
+      "src/NanaNumberInput.js": "input",
+      "src/NanaLevelMeter.js": "meter",
+      "src/NanaSettingsCollapsibleCard.js": "details",
+    };
+    for (const [file, tag] of Object.entries(tags)) {
+      const src = readFileSync(join(root, file), "utf8");
+      assert.match(src, new RegExp(`h\\(\\s*["']${tag}["']`));
+      assert.doesNotMatch(src, /h\(\s*["']nana-/);
+    }
+    const checkbox = readFileSync(join(root, "src/NanaCheckbox.js"), "utf8");
+    assert.match(checkbox, /type:\s*["']checkbox["']/);
+    const range = readFileSync(join(root, "src/NanaRangeField.js"), "utf8");
+    assert.match(range, /type:\s*["']range["']/);
   });
 });
 

@@ -45,8 +45,8 @@ pub fn layout_kind_from_tag(tag: &str) -> Option<WidgetKind> {
         "nana-card" => Some(WidgetKind::Card),
         "nana-sidebar-frame" => Some(WidgetKind::SidebarFrame),
         "nana-settings-card" => Some(WidgetKind::SettingsCard),
-        "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "ul"
-        | "ol" | "form" | "fieldset" | "body" | "template" | "fragment" => Some(WidgetKind::Column),
+        "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "form"
+        | "fieldset" | "body" | "template" | "fragment" => Some(WidgetKind::Column),
         _ => None,
     }
 }

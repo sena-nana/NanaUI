@@ -10,7 +10,7 @@
 | 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowSettings`、`WindowCommand`、`InputEvent` |
 | Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
 | Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
-| Vue renderer | `@nanaui/nanavue-runtime` | `createNanaApp()` |
+| Vue renderer | `@nanaui/nanavue-runtime` | `createApp()` |
 
 不要直接依赖 `nana-ui-devtools`、`nana-css-parity` 来画产品界面。前者是无头调试，后者是 CSS 对照测试。
 
@@ -80,7 +80,7 @@ update_component(entity, |view, _| { … }) // 文案 / loading
 
 | 目标 | 路径 |
 | --- | --- |
-| 进入布局、命中、Scene | `UiExtension` + `register_component`；Vue 再加 `nana-*` |
+| 进入布局、命中、Scene | `UiExtension` + `register_component`；Vue tag 为 `ComponentTypeId` 去掉 `nana.`（与 HTML 同语义用原生标签；不同语义换名） |
 | 仅 JS 命令 / props 白名单 | `NativeComponentRegistry` + `Nana.components.call` |
 | GPU 内容 | `GpuTextureView` + 宿主纹理；直写见 `GpuView` |
 

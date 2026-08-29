@@ -11,9 +11,14 @@
  * - VueHost::pump_frame drains nested rAF (Transition `nextFrame` is double-rAF)
  *   so `@after-leave` fires for LiliaUI Dialog / Drawer / Dropdown
  *
- * Deferred (no WAAPI / TransitionGroup move):
+ * Vue runtime constructs that reuse the same host ops:
+ * - KeepAlive moves via insert into an unparented storage node (not a second tree)
+ * - Suspense fallback/default are ordinary vnodes
+ * - v-html parses a fragment into live host children (not markup-as-text)
+ *
+ * Deferred (no WAAPI / browser portal):
  * - `transitionend` / `animationend` event fidelity
- * - TransitionGroup move transitions
+ * - TransitionGroup move *animation* (reorder still uses insert)
  * - appear/enter visual class timing beyond cascade-resolved durations
  * - Full DOM / ARIA Teleport portal (product floats use Nana Overlay)
  */

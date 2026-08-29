@@ -1,5 +1,5 @@
 /**
- * NanaListItem — semantic peer of Runtime `ListItem` (`nana-list-item`).
+ * NanaListItem — semantic peer of Runtime `ListItem` (`li`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -35,7 +35,7 @@ export const NanaListItem = {
         children.push(h("div", { "data-slot": "trailing" }, slots.trailing()));
       }
       return h(
-        "nana-list-item",
+        "li",
         {
           ...attrs,
           class: ["nana-list-item", attrs.class].flat().filter(Boolean).join(" "),

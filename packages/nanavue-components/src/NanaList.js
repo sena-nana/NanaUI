@@ -1,6 +1,6 @@
 /**
- * NanaList — semantic peer of Runtime `List` (`nana-list`).
- * Children are typically `NanaListItem`. HTML `ul`/`ol` stay layout boxes.
+ * NanaList — semantic peer of Runtime `List` (`ul` / `ol`).
+ * Children are typically `NanaListItem` / `<li>`.
  */
 import { h } from "@vue/runtime-core";
 
@@ -12,7 +12,7 @@ export const NanaList = {
   setup(props, { slots, attrs }) {
     return () =>
       h(
-        "nana-list",
+        "ul",
         {
           ...attrs,
           class: ["nana-list", attrs.class].flat().filter(Boolean).join(" "),

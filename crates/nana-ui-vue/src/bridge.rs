@@ -76,11 +76,13 @@ pub enum WidgetKind {
     NumberInput,
     Textarea,
     Checkbox,
+    /// Exclusive choice → Runtime `SegmentedControl` radio chrome.
+    Radio,
     Switch,
     Select,
     /// Multi-select capable field → Runtime `Dropdown` (`nana.dropdown`).
     Dropdown,
-    /// Query-filtered field → Runtime `SearchDropdown` (`nana.search`).
+    /// Query-filtered field → Runtime `SearchDropdown` (`nana.search-dropdown`).
     SearchDropdown,
     Tabs,
     Segmented,
@@ -192,16 +194,21 @@ impl WidgetKind {
             "box" => Self::Box,
             "text" => Self::Text,
             "button" => Self::Button,
+            "input" => Self::Input,
+            "hr" => Self::Divider,
             "icon-button" => Self::IconButton,
             "chip" => Self::Chip,
             "text-input" => Self::Input,
             "number-input" => Self::NumberInput,
             "textarea" => Self::Textarea,
             "checkbox" => Self::Checkbox,
+            "radio" => Self::Radio,
             "switch" => Self::Switch,
             "select" => Self::Select,
             "dropdown" => Self::Dropdown,
-            "search" => Self::SearchDropdown,
+            "search-dropdown" => Self::SearchDropdown,
+            "tr" => Self::TableRow,
+            "td" | "th" => Self::TableCell,
             "tabs" => Self::Tabs,
             "segmented" => Self::Segmented,
             "range-field" => Self::Range,
@@ -277,10 +284,11 @@ impl WidgetKind {
             Self::NumberInput => "number-input",
             Self::Textarea => "textarea",
             Self::Checkbox => "checkbox",
+            Self::Radio => "radio",
             Self::Switch => "switch",
             Self::Select => "select",
             Self::Dropdown => "dropdown",
-            Self::SearchDropdown => "search",
+            Self::SearchDropdown => "search-dropdown",
             Self::Tabs => "tabs",
             Self::Segmented => "segmented",
             Self::Range => "range-field",
@@ -333,8 +341,8 @@ impl WidgetKind {
             Self::SettingsPage => "settings-page",
             Self::SettingsCollapsibleCard => "settings-collapsible-card",
             Self::Table => "table",
-            Self::TableRow => "table-row",
-            Self::TableCell => "table-cell",
+            Self::TableRow => "tr",
+            Self::TableCell => "td",
             Self::ReorderList => "reorder-list",
             Self::TimeSeriesChart => "time-series-chart",
             Self::GpuTextureView => "gpu",
@@ -348,42 +356,43 @@ impl WidgetKind {
             Self::Row => "nana-row",
             Self::Box => "nana-box",
             Self::Text => "nana-text",
-            Self::Button => "nana-button",
+            Self::Button => "button",
             Self::IconButton => "nana-icon-button",
             Self::Chip => "nana-chip",
-            Self::Input => "nana-text-input",
-            Self::NumberInput => "nana-number-input",
-            Self::Textarea => "nana-textarea",
-            Self::Checkbox => "nana-checkbox",
+            Self::Input => "input",
+            Self::NumberInput => "input",
+            Self::Textarea => "textarea",
+            Self::Checkbox => "checkbox",
+            Self::Radio => "input",
             Self::Switch => "nana-switch",
-            Self::Select => "nana-select",
+            Self::Select => "select",
             Self::Dropdown => "nana-dropdown",
-            Self::SearchDropdown => "nana-search",
+            Self::SearchDropdown => "search-dropdown",
             Self::Tabs => "nana-tabs",
             Self::Segmented => "nana-segmented",
-            Self::Range => "nana-range-field",
+            Self::Range => "range-field",
             Self::Card => "nana-card",
-            Self::Divider => "nana-divider",
+            Self::Divider => "hr",
             Self::Thumbnail => "nana-thumbnail",
-            Self::List => "nana-list",
-            Self::ListItem => "nana-list-item",
+            Self::List => "ul",
+            Self::ListItem => "li",
             Self::ScrollView => "nana-scroll-view",
             Self::EmptyState => "nana-empty-state",
             Self::StatusBadge => "nana-status-badge",
             Self::ValidationMessage => "nana-validation-message",
             Self::LabeledValue => "nana-labeled-value",
-            Self::Progress => "nana-progress",
+            Self::Progress => "progress",
             Self::Spinner => "nana-spinner",
             Self::FormField => "nana-form-field",
             Self::InteractiveCard => "nana-interactive-card",
             Self::Skeleton => "nana-skeleton",
-            Self::LevelMeter => "nana-level-meter",
+            Self::LevelMeter => "meter",
             Self::SidebarFrame => "nana-sidebar-frame",
             Self::SidebarRow => "nana-sidebar-row",
             Self::SettingsRow => "nana-settings-row",
             Self::SettingsCard => "nana-settings-card",
             Self::Icon => "nana-icon",
-            Self::Dialog => "nana-dialog",
+            Self::Dialog => "dialog",
             Self::Drawer => "nana-drawer",
             Self::Popover => "nana-popover",
             Self::ContextMenu => "nana-context-menu",
@@ -409,10 +418,10 @@ impl WidgetKind {
             Self::SidebarSection => "nana-sidebar-section",
             Self::SidebarFooter => "nana-sidebar-footer",
             Self::SettingsPage => "nana-settings-page",
-            Self::SettingsCollapsibleCard => "nana-settings-collapsible-card",
-            Self::Table => "nana-table",
-            Self::TableRow => "nana-table-row",
-            Self::TableCell => "nana-table-cell",
+            Self::SettingsCollapsibleCard => "details",
+            Self::Table => "table",
+            Self::TableRow => "tr",
+            Self::TableCell => "td",
             Self::ReorderList => "nana-reorder-list",
             Self::TimeSeriesChart => "nana-time-series-chart",
             Self::GpuTextureView => "nana-gpu",
@@ -1093,8 +1102,26 @@ impl WidgetProps {
                 // input type=checkbox upgrades handled by resolve layer.
                 let t = host_string(value).to_ascii_lowercase();
                 self.secure = t == "password";
+                if t.is_empty() {
+                    self.attrs.remove("type");
+                } else {
+                    self.attrs.insert("type".into(), t.clone());
+                }
                 if t == "checkbox" {
                     self.toggled = self.toggled || host_truthy(value);
+                }
+            }
+            "name" | "for" | "html-for" | "htmlfor" | "href" => {
+                let s = host_string(value);
+                let attr = if key == "html-for" || key == "htmlfor" {
+                    "for"
+                } else {
+                    key.as_str()
+                };
+                if s.is_empty() {
+                    self.attrs.remove(attr);
+                } else {
+                    self.attrs.insert(attr.to_string(), s);
                 }
             }
             "style" => {
@@ -3922,6 +3949,10 @@ impl MessageBridge {
 
     pub fn get_mut(&mut self, id: WidgetId) -> Option<&mut SemanticWidget> {
         self.widgets.get_mut(&id)
+    }
+
+    pub fn widgets(&self) -> impl Iterator<Item = &SemanticWidget> {
+        self.widgets.values()
     }
 
     pub(crate) fn root_ids(&self) -> &[WidgetId] {
@@ -7570,7 +7601,7 @@ mod tests {
         assert_eq!(bridge.get(14).unwrap().kind, WidgetKind::Select);
     }
 
-    /// Runtime keeps `nana.select`, `nana.dropdown` and `nana.search` apart, so
+    /// Runtime keeps `nana.select`, `nana.dropdown` and `nana.search-dropdown` apart, so
     /// the bridge must not fold three option fields into one kind.
     #[test]
     fn select_dropdown_and_search_stay_distinct_kinds() {
@@ -7580,11 +7611,12 @@ mod tests {
             WidgetKind::parse("nana-dropdown"),
             Some(WidgetKind::Dropdown)
         );
-        assert_eq!(WidgetKind::parse("nana-search-dropdown"), None);
+        assert_eq!(WidgetKind::parse("nana-search"), None);
         assert_eq!(
-            WidgetKind::parse("nana-search"),
+            WidgetKind::parse("nana-search-dropdown"),
             Some(WidgetKind::SearchDropdown)
         );
+        assert_eq!(WidgetKind::parse("search"), None);
         for kind in [
             WidgetKind::Select,
             WidgetKind::Dropdown,

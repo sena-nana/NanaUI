@@ -42,7 +42,10 @@ pub fn is_checked_match_host(
     tag: &str,
     attrs: &BTreeMap<String, String>,
 ) -> bool {
-    if matches!(kind, WidgetKind::Checkbox | WidgetKind::Switch) {
+    if matches!(
+        kind,
+        WidgetKind::Checkbox | WidgetKind::Switch | WidgetKind::Radio
+    ) {
         return true;
     }
     let ty = attrs
@@ -69,6 +72,11 @@ pub fn resolve_kind_from_hints(
     let role = role.unwrap_or("").to_ascii_lowercase();
     let input_type = input_type.unwrap_or("").to_ascii_lowercase();
 
+    // Retired `nana-*` aliases of HTML widgets. Vue uses the native tag.
+    if is_retired_html_alias_tag(&tag) {
+        return Some(WidgetKind::Column);
+    }
+
     if tag.starts_with("nana-")
         && let Some(kind) = WidgetKind::parse(&tag)
     {
@@ -90,12 +98,17 @@ pub fn resolve_kind_from_hints(
 
     match role.as_str() {
         "button" => return Some(WidgetKind::Button),
+        "link" => return Some(WidgetKind::Button),
         "switch" => return Some(WidgetKind::Switch),
         "checkbox" => return Some(WidgetKind::Checkbox),
+        "radio" => return Some(WidgetKind::Radio),
+        "radiogroup" => return Some(WidgetKind::Segmented),
         "tablist" => return Some(WidgetKind::Tabs),
         "tab" => return Some(WidgetKind::Chip),
         "slider" => return Some(WidgetKind::Range),
         "progressbar" => return Some(WidgetKind::Progress),
+        "meter" => return Some(WidgetKind::LevelMeter),
+        "list" => return Some(WidgetKind::List),
         "listitem" => return Some(WidgetKind::ListItem),
         "dialog" | "alertdialog" => return Some(WidgetKind::Dialog),
         "complementary"
@@ -123,20 +136,28 @@ pub fn resolve_kind_from_hints(
 
     Some(match tag.as_str() {
         "button" => WidgetKind::Button,
-        "input" => {
-            if input_type == "checkbox" {
-                WidgetKind::Checkbox
-            } else if input_type == "range" {
-                WidgetKind::Range
-            } else {
-                WidgetKind::Input
-            }
-        }
+        "a" => WidgetKind::Button,
+        "input" => match input_type.as_str() {
+            "checkbox" => WidgetKind::Checkbox,
+            "radio" => WidgetKind::Radio,
+            "range" => WidgetKind::Range,
+            "number" => WidgetKind::NumberInput,
+            _ => WidgetKind::Input,
+        },
         "textarea" | "hosted-textarea" | "nana-hosted-textarea" => WidgetKind::Textarea,
         "select" => WidgetKind::Select,
         "progress" => WidgetKind::Progress,
+        "meter" => WidgetKind::LevelMeter,
+        "dialog" => WidgetKind::Dialog,
+        "details" => WidgetKind::SettingsCollapsibleCard,
+        "summary" | "legend" | "caption" => WidgetKind::Text,
         "hr" => WidgetKind::Divider,
-        "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" => WidgetKind::Column,
+        "br" => WidgetKind::Text,
+        "table" => WidgetKind::Table,
+        "tr" => WidgetKind::TableRow,
+        "td" | "th" => WidgetKind::TableCell,
+        "thead" | "tbody" | "tfoot" => WidgetKind::Column,
+        "ul" | "ol" => WidgetKind::List,
         "li" => WidgetKind::ListItem,
         // Lucide / <i> glyphs stay Icon; structural <svg> is rasterized via
         // the shared image_url cache (see `svg_inline`). Raster <img> binds
@@ -165,9 +186,11 @@ pub fn resolve_kind_from_hints(
         }
         "text" => WidgetKind::Text,
         "span" | "p" | "label" | "strong" | "em" | "code" | "small" | "b" | "h1" | "h2" | "h3"
-        | "h4" | "h5" | "h6" | "output" | "#text" => WidgetKind::Text,
-        "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "ul"
-        | "ol" | "form" | "search" | "fieldset" | "body" | "template" | "fragment" => {
+        | "h4" | "h5" | "h6" | "output" | "pre" | "blockquote" | "dt" | "dd" | "#text" => {
+            WidgetKind::Text
+        }
+        "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "form"
+        | "search" | "fieldset" | "dl" | "body" | "template" | "fragment" => {
             // Direction is LayoutStyle only (CSS / class hints). Tag stays Column.
             WidgetKind::Column
         }
@@ -218,7 +241,20 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "form"
             | "search"
             | "fieldset"
+            | "legend"
+            | "dl"
+            | "dt"
+            | "dd"
             | "a"
+            | "details"
+            | "summary"
+            | "meter"
+            | "option"
+            | "optgroup"
+            | "caption"
+            | "br"
+            | "pre"
+            | "blockquote"
             | "img"
             | "canvas"
             | "video"
@@ -264,6 +300,7 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "textarea"
             | "select"
             | "progress"
+            | "dialog"
             | "hr"
             | "table"
             | "thead"
@@ -272,6 +309,33 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "tr"
             | "td"
             | "th"
+    )
+}
+
+/// `nana-*` tags that used to alias HTML widgets. They are not Runtime tags.
+fn is_retired_html_alias_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "nana-button"
+            | "nana-text-input"
+            | "nana-input"
+            | "nana-textarea"
+            | "nana-select"
+            | "nana-progress"
+            | "nana-divider"
+            | "nana-dialog"
+            | "nana-checkbox"
+            | "nana-range-field"
+            | "nana-range"
+            | "nana-table"
+            | "nana-table-row"
+            | "nana-table-cell"
+            | "nana-search"
+            | "nana-list"
+            | "nana-list-item"
+            | "nana-number-input"
+            | "nana-level-meter"
+            | "nana-settings-collapsible-card"
     )
 }
 
@@ -310,6 +374,7 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "nana-markdown" => WidgetKind::NativeMarkdown,
         "graphcanvas" => WidgetKind::GraphCanvas,
         "ui-dropdown" => WidgetKind::Dropdown,
+        "nana-search" | "search-dropdown" => WidgetKind::SearchDropdown,
         _ if t == "lucide" || t.starts_with("lucide-") => WidgetKind::Icon,
         _ if t.contains("sidebar") && t.contains("row") => WidgetKind::SidebarRow,
         _ => return None,
@@ -335,6 +400,7 @@ fn is_input_like_kind(kind: WidgetKind) -> bool {
                 | WidgetKind::NumberInput
                 | WidgetKind::Textarea
                 | WidgetKind::Checkbox
+                | WidgetKind::Radio
                 | WidgetKind::Switch
                 | WidgetKind::Range
         )
@@ -664,7 +730,7 @@ pub(crate) fn progress_cancellable(props: &WidgetProps) -> bool {
 }
 
 pub(crate) fn is_search_dropdown(props: &WidgetProps) -> bool {
-    tag_or_class_contains(props, &["nana-search", "search-dropdown", "searchdropdown"])
+    tag_or_class_contains(props, &["search-dropdown", "nana-search", "searchdropdown"])
 }
 
 pub(crate) fn is_dropdown_field(props: &WidgetProps) -> bool {
@@ -762,6 +828,11 @@ pub(crate) fn html_dir_spec_from_map(
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("dir"))
         .and_then(|(_, value)| crate::css_map::dir_spec_from_html_attr(value))
+}
+
+pub(crate) fn is_radio_group(props: &WidgetProps) -> bool {
+    props.role.eq_ignore_ascii_case("radiogroup")
+        || attr_value(props, &["chrome"]).is_some_and(|value| value.eq_ignore_ascii_case("radio"))
 }
 
 pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&'a str> {
@@ -1011,6 +1082,20 @@ mod tests {
             Some(WidgetKind::Button)
         );
         assert_eq!(
+            resolve_kind_from_hints("nana-button", None, None, None),
+            Some(WidgetKind::Column),
+            "retired nana-button alias is not a Button"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("dialog", None, None, None),
+            Some(WidgetKind::Dialog)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("nana-dialog", None, None, None),
+            Some(WidgetKind::Column),
+            "retired nana-dialog alias is not a Dialog"
+        );
+        assert_eq!(
             resolve_kind_from_hints("input", None, None, Some("checkbox")),
             Some(WidgetKind::Checkbox)
         );
@@ -1132,6 +1217,11 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-search", None, None, None),
+            Some(WidgetKind::Column),
+            "retired nana-search alias is not SearchDropdown"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("search-dropdown", None, None, None),
             Some(WidgetKind::SearchDropdown)
         );
         assert_eq!(
@@ -1148,6 +1238,11 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-level-meter", None, None, None),
+            Some(WidgetKind::Column),
+            "retired nana-level-meter alias is not LevelMeter"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("meter", None, None, None),
             Some(WidgetKind::LevelMeter)
         );
         assert_eq!(
@@ -1240,7 +1335,36 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-number-input", None, None, None),
+            Some(WidgetKind::Column),
+            "retired nana-number-input alias is not NumberInput"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("input", None, None, Some("number")),
             Some(WidgetKind::NumberInput)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("input", None, None, Some("radio")),
+            Some(WidgetKind::Radio)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("ul", None, None, None),
+            Some(WidgetKind::List)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("ol", None, None, None),
+            Some(WidgetKind::List)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("a", None, None, None),
+            Some(WidgetKind::Button)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("details", None, None, None),
+            Some(WidgetKind::SettingsCollapsibleCard)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("div", None, Some("radiogroup"), None),
+            Some(WidgetKind::Segmented)
         );
         assert_eq!(
             resolve_kind_from_hints("hr", None, None, None),
@@ -1252,12 +1376,28 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("table", None, None, None),
-            Some(WidgetKind::Column),
-            "HTML table stays a layout box"
+            Some(WidgetKind::Table)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("tr", None, None, None),
+            Some(WidgetKind::TableRow)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("td", None, None, None),
+            Some(WidgetKind::TableCell)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("th", None, None, None),
+            Some(WidgetKind::TableCell)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("thead", None, None, None),
+            Some(WidgetKind::Column)
         );
         assert_eq!(
             resolve_kind_from_hints("nana-table", None, None, None),
-            Some(WidgetKind::Table)
+            Some(WidgetKind::Column),
+            "retired nana-table alias is not Table"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-desktop-shell", None, None, None),
@@ -1273,7 +1413,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-settings-collapsible-card", None, None, None),
-            Some(WidgetKind::SettingsCollapsibleCard)
+            Some(WidgetKind::Column),
+            "retired nana-settings-collapsible-card alias is not the disclosure"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-gpu", None, None, None),
@@ -1331,6 +1472,7 @@ mod tests {
             &checkbox
         ));
         assert!(is_checked_match_host(WidgetKind::Input, "input", &radio));
+        assert!(is_checked_match_host(WidgetKind::Radio, "input", &radio));
         assert!(is_checked_match_host(
             WidgetKind::Switch,
             "button",

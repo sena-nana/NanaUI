@@ -1,6 +1,6 @@
 /**
  * NanaTextarea — multi-line text field.
- * Semantic peer of Rust `Textarea` (`nana-textarea` → Runtime Textarea / EditorStore).
+ * Semantic peer of Rust `Textarea` (`<textarea>` → Runtime Textarea / EditorStore).
  */
 import { h } from "@vue/runtime-core";
 
@@ -28,7 +28,7 @@ export const NanaTextarea = {
                 typeof props.height === "number" ? `${props.height}px` : String(props.height),
             }
           : attrs.style;
-      return h("nana-textarea", {
+      return h("textarea", {
         ...attrs,
         style,
         value: props.modelValue,

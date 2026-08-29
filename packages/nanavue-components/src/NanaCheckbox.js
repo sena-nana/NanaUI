@@ -36,8 +36,9 @@ export const NanaCheckbox = {
               .map((vnode) => (typeof vnode.children === "string" ? vnode.children : ""))
               .join("")
           : "");
-      return h("nana-checkbox", {
+      return h("input", {
         ...attrs,
+        type: "checkbox",
         label,
         disabled: props.disabled,
         invalid: props.invalid,

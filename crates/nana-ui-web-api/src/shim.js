@@ -2218,11 +2218,52 @@
     this.alert = function () {
       throw new DOMException("Synchronous alert is unavailable; use Nana.dialogs.alert", "NotSupportedError");
     };
+    this.open = function (url, name, features) {
+      const href = url == null || url === "" ? "" : String(url);
+      if (href && href !== "about:blank") {
+        throw new DOMException(
+          "window.open(url) is unavailable; use Nana.windows.create",
+          "NotSupportedError",
+        );
+      }
+      if (!globalThis.Nana || !globalThis.Nana.windows || typeof globalThis.Nana.windows.create !== "function") {
+        throw new DOMException("Nana.windows.create is required for window.open", "NotSupportedError");
+      }
+      const options = parseWindowOpenFeatures(features);
+      if (name != null && name !== "" && name !== "_blank") {
+        options.title = String(name);
+      }
+      return globalThis.Nana.windows.create(options);
+    };
     // Host pumps FocusChanged → true/false; seed as focused like a newly shown window.
     this.__nanaFocused = true;
   }
   WindowShim.prototype = Object.create(EventTargetShim.prototype);
   WindowShim.prototype.constructor = WindowShim;
+
+  function parseWindowOpenFeatures(features) {
+    const options = {};
+    if (features == null || features === "") return options;
+    if (typeof features !== "string") {
+      throw new DOMException("window.open features must be a string", "NotSupportedError");
+    }
+    const allowed = { width: "width", height: "height", left: "x", top: "y" };
+    for (const part of features.split(",")) {
+      const split = part.split("=");
+      const key = String(split[0] || "").trim().toLowerCase();
+      if (!key) continue;
+      const mapped = allowed[key];
+      if (!mapped) {
+        throw new DOMException(`window.open feature "${key}" is not supported`, "NotSupportedError");
+      }
+      const n = Number(split[1]);
+      if (!Number.isFinite(n)) {
+        throw new DOMException(`window.open feature "${key}" must be a number`, "NotSupportedError");
+      }
+      options[mapped] = n;
+    }
+    return options;
+  }
 
   function evaluateMediaQuery(win, query) {
     try {

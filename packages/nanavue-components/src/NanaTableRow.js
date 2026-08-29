@@ -1,5 +1,5 @@
 /**
- * NanaTableRow — semantic peer of Runtime `TableRow` (`nana-table-row`).
+ * NanaTableRow — semantic peer of Runtime `TableRow` (`<tr>`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -15,7 +15,7 @@ export const NanaTableRow = {
     }
     return () =>
       h(
-        "nana-table-row",
+        "tr",
         {
           ...attrs,
           class: ["nana-table-row", attrs.class].flat().filter(Boolean).join(" "),

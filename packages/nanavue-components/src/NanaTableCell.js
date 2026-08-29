@@ -1,6 +1,6 @@
 /**
- * NanaTableCell — semantic peer of Runtime `TableCell` (`nana-table-cell`).
- * `header` marks a column header (`th` is not a separate Runtime type).
+ * NanaTableCell — semantic peer of Runtime `TableCell` (`<td>` / `<th>`).
+ * `header` renders `<th>` (not a separate Runtime type).
  */
 import { h } from "@vue/runtime-core";
 
@@ -22,7 +22,7 @@ export const NanaTableCell = {
               .join("")
           : "");
       return h(
-        "nana-table-cell",
+        props.header ? "th" : "td",
         {
           ...attrs,
           class: ["nana-table-cell", attrs.class].flat().filter(Boolean).join(" "),

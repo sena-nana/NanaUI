@@ -1,6 +1,6 @@
 /**
  * NanaDialog — modal overlay.
- * Semantic peer of Rust `Dialog` / `ConfirmDialog` (`nana-dialog`).
+ * Semantic peer of Rust `Dialog` / `ConfirmDialog` (`<dialog>`).
  *
  * Open via `open` or boolean `modelValue` (`active`/`open`/`toggled` on host).
  * Set `role="alertdialog"` (or class `confirm`) for ConfirmDialog; `kind="danger"`
@@ -76,7 +76,7 @@ export const NanaDialog = {
         .join(" ");
 
       return h(
-        "nana-dialog",
+        "dialog",
         {
           ...attrs,
           class: classNames,

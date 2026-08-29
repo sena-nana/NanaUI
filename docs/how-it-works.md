@@ -77,15 +77,15 @@ scene_gpu_renderers / scene_resource_producers
 
 ## Vue 是输入，不是另一套窗口
 
-Rust 控件、Vue 的 `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。
+Rust 控件、Vue 的 HTML 1:1 控件 / `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。
 
 ```text
 Rust  build / create_component ──┐
-Vue   nana-* props             ─┼─► UiWorld ─► UiScene ─► SceneWgpuPainter
-Vue   div + CSS 子集           ─┘
+Vue   button / input / ul / table / nana-*  ─┼─► UiWorld ─► UiScene ─► SceneWgpuPainter
+Vue   div + CSS 子集                         ─┘
 ```
 
-没有 WebView。`createNanaApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。
+没有 WebView。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。
 
 ## 不要做的
 

@@ -1,9 +1,7 @@
-import { createNanaApp, mountRootHandle } from "@nanaui/nanavue-runtime";
+import { createApp } from "@nanaui/nanavue-runtime";
 import ChromeProbe from "./ChromeProbe.vue";
 import CompatFixture from "./CompatFixture.vue";
 import HostedAcceptance from "./HostedAcceptance.vue";
-
-const { createApp } = createNanaApp();
 let acceptanceMode = "";
 try {
   acceptanceMode = String(globalThis.__nanaHost.call("acceptanceMode", []));
@@ -19,13 +17,13 @@ if (acceptanceMode) {
               hybrid: acceptanceMode.startsWith("hybrid"),
               autoWindows: acceptanceMode.endsWith("-windows"),
             });
-      app.mount(mountRootHandle());
+      app.mount();
       return { mounted: true, mode: acceptanceMode };
     },
   };
 } else {
   const app = createApp(CompatFixture);
-  app.mount(mountRootHandle());
+  app.mount();
   const applicationValue = globalThis.__nanaHost.call("fixtureApplicationApi", []);
 
   (globalThis as typeof globalThis & { __nanaSfcFixture?: unknown }).__nanaSfcFixture = {

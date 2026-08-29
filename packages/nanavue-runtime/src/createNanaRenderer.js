@@ -2,7 +2,8 @@
  * Nana custom renderer hostOps — **L1 + L2** entry into the Nana Style Model.
  *
  * - L1: `createElement` + class/inline style → Rust `css_map` / `widget_map`
- * - L2: `createWidget` / `nana-*` semantic props → same MessageBridge (skip CSS)
+ * - L2: HTML 1:1 tags (`button`, `input`, …) seed WidgetProps via createElement;
+ *   colliding / Nana-only controls still use `createWidget` / `nana-*`
  * Both share one forest; draw path is Runtime/UiScene via the Scene host
  * (`scene-view`; no Iced widget tree, no WebView paint).
  *
@@ -1339,9 +1340,84 @@ function bindImageSource(el, nid, source) {
  * Create a semantic Nana widget (button / switch / text / …) without DOM paint.
  * Returns a host node whose id is tracked by Rust `MessageBridge`.
  */
+const RETIRED_HTML_ALIAS_TAGS = new Set([
+  "nana-button",
+  "nana-text-input",
+  "nana-input",
+  "nana-textarea",
+  "nana-select",
+  "nana-progress",
+  "nana-divider",
+  "nana-dialog",
+  "nana-checkbox",
+  "nana-range-field",
+  "nana-range",
+  "nana-table",
+  "nana-table-row",
+  "nana-table-cell",
+  "nana-search",
+  "nana-list",
+  "nana-list-item",
+  "nana-number-input",
+  "nana-level-meter",
+  "nana-settings-collapsible-card",
+]);
+
 export function createWidget(kind, props) {
-  const id = hostCall("createWidget", [String(kind), props && typeof props === "object" ? { ...props } : {}]);
-  return markCreatedNode(wrapNode(id, "element", `nana-${String(kind).replace(/^nana-/i, "")}`));
+  const raw = String(kind);
+  const normalized = raw.replace(/^nana-/i, "");
+  const tag = RETIRED_HTML_ALIAS_TAGS.has(`nana-${normalized}`)
+    ? htmlTagForKind(normalized)
+    : `nana-${normalized}`;
+  const id = hostCall("createWidget", [raw, props && typeof props === "object" ? { ...props } : {}]);
+  return markCreatedNode(wrapNode(id, "element", tag));
+}
+
+function htmlTagForKind(kind) {
+  switch (String(kind).toLowerCase()) {
+    case "button":
+      return "button";
+    case "text-input":
+    case "input":
+    case "checkbox":
+    case "radio":
+    case "range-field":
+    case "range":
+    case "number-input":
+      return "input";
+    case "textarea":
+      return "textarea";
+    case "select":
+      return "select";
+    case "progress":
+      return "progress";
+    case "divider":
+      return "hr";
+    case "dialog":
+      return "dialog";
+    case "table":
+      return "table";
+    case "table-row":
+    case "tr":
+      return "tr";
+    case "table-cell":
+    case "td":
+      return "td";
+    case "th":
+      return "th";
+    case "search-dropdown":
+      return "search-dropdown";
+    case "list":
+      return "ul";
+    case "list-item":
+      return "li";
+    case "level-meter":
+      return "meter";
+    case "settings-collapsible-card":
+      return "details";
+    default:
+      return `nana-${kind}`;
+  }
 }
 
 export const hostOps = {
@@ -1530,7 +1606,12 @@ export const hostOps = {
         : String(isCustomizedBuiltIn);
     const seed = seedHostProps(vnodeProps);
     // Prefer createWidget for nana-* semantic controls so props seed the bridge.
-    if (lower.startsWith("nana-") && lower !== "nana-gpu") {
+    // Retired HTML aliases (`nana-button`, …) fall through to createElement.
+    if (
+      lower.startsWith("nana-") &&
+      lower !== "nana-gpu" &&
+      !RETIRED_HTML_ALIAS_TAGS.has(lower)
+    ) {
       const kind = lower.slice("nana-".length);
       const id = hostCall("createWidget", [kind, seed || {}]);
       const node = markCreatedNode(wrapNode(id, "element", tagName));
@@ -1669,7 +1750,7 @@ function hostOpsForWindow(windowId) {
   return scoped;
 }
 
-export function createNanaApp(windowId = 0) {
+function createRendererForWindow(windowId = 0) {
   const scopedHostOps = hostOpsForWindow(windowId);
   const { createApp, render } = createRenderer({
     ...scopedHostOps,
@@ -1703,15 +1784,28 @@ export function createNanaApp(windowId = 0) {
         if (typeof priorError === "function") priorError(error, instance, info);
       };
     }
+    const origMount = app && typeof app.mount === "function" ? app.mount.bind(app) : null;
+    if (origMount) {
+      app.mount = function (container) {
+        if (container == null || container === "") {
+          container = defaultMountContainer(windowId);
+        }
+        return origMount(container);
+      };
+    }
     return app;
   };
   return { createApp: createAppWithDiagnostics, render, hostOps: scopedHostOps, windowId: Number(windowId || 0) };
 }
 
-export function mountRootHandle(windowId = 0) {
+function defaultMountContainer(windowId = 0) {
   return withNanaWindowContext(windowId, () =>
     wrapNode(hostCall("mountRoot", []), "element", "body"),
   );
+}
+
+export function createApp(rootComponent, rootProps) {
+  return createRendererForWindow(0).createApp(rootComponent, rootProps);
 }
 
 export function installEventBridge() {
@@ -1823,8 +1917,8 @@ function createWindowHandle(descriptor) {
     typeof globalThis.__nanaCreateWindowContext === "function"
       ? globalThis.__nanaCreateWindowContext(id, width, height, 1)
       : contextForWindow(id);
-  const renderer = createNanaApp(id);
-  const root = mountRootHandle(id);
+  const renderer = createRendererForWindow(id);
+  const root = defaultMountContainer(id);
   let app = null;
   let resolveReady;
   let rejectReady;
