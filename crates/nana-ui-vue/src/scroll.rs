@@ -181,6 +181,9 @@ pub(crate) fn wheel_scroll_delta(input: &WheelInput) -> ScrollOffset {
 /// Matches projected `ScrollView` bodies (sidebar-frame) and L1
 /// `overflow: auto|scroll`. Does not enqueue pending scroll Tasks; Runtime
 /// `scroll_offset` is authoritative. No L1 scrollbar chrome.
+/// Production callers use [`apply_runtime_wheel_from`] with a pre-`pump_frame`
+/// hit target.
+#[cfg(test)]
 pub(crate) fn apply_runtime_wheel(
     doc: &mut NanaTreeDocument,
     bridge: &MessageBridge,

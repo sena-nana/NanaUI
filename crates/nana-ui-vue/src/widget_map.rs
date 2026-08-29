@@ -849,6 +849,8 @@ pub(crate) fn math_renderer(props: &WidgetProps) -> Option<&str> {
 /// HTML `dir="rtl"|"ltr"|"auto"` → [`nana_ui_core::DirSpec`].
 ///
 /// `auto` / unknown stay `None` (no first-strong bidi; do not fake `ltr`).
+/// Production callers use [`html_dir_spec_from_map`] directly.
+#[cfg(test)]
 pub(crate) fn html_dir_spec(props: &WidgetProps) -> Option<nana_ui_core::DirSpec> {
     html_dir_spec_from_map(&props.attrs)
 }
@@ -884,6 +886,7 @@ pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&
 }
 
 /// Bind `<img src>` / `data-src` onto the replaced-content paint slot.
+#[cfg(test)]
 pub(crate) fn apply_img_content_image(style: &mut nana_ui_core::LayoutStyle, props: &WidgetProps) {
     if !props.element_tag.eq_ignore_ascii_case("img") {
         return;

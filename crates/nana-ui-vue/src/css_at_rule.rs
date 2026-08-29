@@ -10,6 +10,7 @@
 //! order with names recorded — full cascade-layer priority is not implemented.
 //! `@import … layer()` / `supports()` stay fail-closed (do not load).
 
+#[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -357,6 +358,7 @@ where
 }
 
 /// First `url(...)` in `src` suitable for host font loading.
+#[cfg(test)]
 pub fn font_face_url_src(face: &FontFaceRule) -> Option<&str> {
     font_face_url_srcs(face).next()
 }
@@ -364,6 +366,7 @@ pub fn font_face_url_src(face: &FontFaceRule) -> Option<&str> {
 /// `url(...)` entries in declaration order. `local()` is omitted here
 /// (host registration walks [`FontFaceRule::src`] including `local()`);
 /// `format()` / `tech()` were dropped while parsing `src`.
+#[cfg(test)]
 pub fn font_face_url_srcs(face: &FontFaceRule) -> impl Iterator<Item = &str> {
     face.src.iter().filter_map(|src| match src {
         FontFaceSrc::Url(url) => Some(url.as_str()),

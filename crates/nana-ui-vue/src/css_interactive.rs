@@ -11,9 +11,11 @@ use crate::css_at_rule::{
     FontFaceRule, MediaEnvironment, MediaQueryList, evaluate_media_query_list,
 };
 use crate::css_cascade::{
-    Combinator, CompoundSelector, DeclarationEntry, MatchContext, MatchNode, Selector, Specificity,
-    StyleRule, compound_matches, parse_declaration_entries,
+    Combinator, CompoundSelector, DeclarationEntry, MatchContext, Selector, Specificity, StyleRule,
+    compound_matches, parse_declaration_entries,
 };
+#[cfg(test)]
+use crate::css_cascade::MatchNode;
 
 /// Interactive pseudo-class supported at parse time.
 ///
