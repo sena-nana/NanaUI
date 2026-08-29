@@ -13,7 +13,7 @@
 use std::{
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Instant,
 };
 
@@ -34,6 +34,20 @@ use nana_ui_runtime::{
     Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
+
+mod component_binding;
+mod gpu_slots;
+mod kits;
+mod layout;
+
+pub(crate) use component_binding::*;
+pub(crate) use gpu_slots::*;
+pub(crate) use kits::*;
+
+pub use layout::{
+    BoxSnapshot, DomNodeKind, LayoutBox, LayoutBoxStore, get_layout_box, get_layout_box_from,
+    query_scroll_content_size,
+};
 
 /// Opaque handle returned to the Vue custom renderer (JSON-safe number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,330 +111,6 @@ impl DocumentId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomNodeKind {
-    Element,
-    Text,
-    Comment,
-    Document,
-    Other,
-}
-
-/// Layout box in logical CSS px (viewport / Scene absolute coordinates).
-///
-/// Sources, in preference order for JS `getBoundingClientRect` / `layoutBox`:
-/// 1. Scene paint writeback ([`LayoutBoxStore`])
-/// 2. Style-Model [`crate::measure_layout`] applied via [`NanaTreeDocument::apply_layout_boxes`]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LayoutBox {
-    pub handle: NodeHandle,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-/// Per-window JS paint-phase geometry. Not layout authority.
-///
-/// Incremental Scene paint via [`Self::record`]; scroll lives in a JS overlay
-/// and is not written back to Runtime `LayoutBox`.
-#[derive(Debug, Default)]
-pub struct LayoutBoxStore {
-    boxes: Mutex<HashMap<u64, LayoutBox>>,
-    views: Mutex<HashMap<u64, LayoutBox>>,
-    transforms: Mutex<HashMap<u64, (LayoutBox, [f32; 6])>>,
-}
-
-impl LayoutBoxStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Drop JS scroll overlays; keep last Scene paint boxes.
-    pub fn begin_frame(&self) {
-        if let Ok(mut guard) = self.views.lock() {
-            guard.clear();
-        }
-    }
-
-    pub fn record(&self, handle: NodeHandle, x: f32, y: f32, width: f32, height: f32) {
-        if let Ok(mut guard) = self.boxes.lock() {
-            guard.insert(
-                handle.0,
-                LayoutBox {
-                    handle,
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            );
-        }
-        self.clear_view(handle);
-        if let Ok(mut guard) = self.transforms.lock() {
-            guard.remove(&handle.0);
-        }
-    }
-
-    pub fn record_transformed(
-        &self,
-        handle: NodeHandle,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        affine: [f32; 6],
-    ) {
-        let source = LayoutBox {
-            handle,
-            x,
-            y,
-            width,
-            height,
-        };
-        let transformed = transform_layout_box(source, affine);
-        if let Ok(mut guard) = self.boxes.lock() {
-            guard.insert(handle.0, transformed);
-        }
-        self.clear_view(handle);
-        if let Ok(mut guard) = self.transforms.lock() {
-            guard.insert(handle.0, (source, affine));
-        }
-    }
-
-    pub fn remove(&self, handle: NodeHandle) {
-        if let Ok(mut guard) = self.boxes.lock() {
-            guard.remove(&handle.0);
-        }
-        self.clear_view(handle);
-        if let Ok(mut guard) = self.transforms.lock() {
-            guard.remove(&handle.0);
-        }
-    }
-
-    pub fn retain(&self, mut live: impl FnMut(u64) -> bool) {
-        if let Ok(mut guard) = self.boxes.lock() {
-            guard.retain(|&id, _| live(id));
-        }
-        if let Ok(mut guard) = self.views.lock() {
-            guard.retain(|&id, _| live(id));
-        }
-        if let Ok(mut guard) = self.transforms.lock() {
-            guard.retain(|&id, _| live(id));
-        }
-    }
-
-    fn clear_view(&self, handle: NodeHandle) {
-        if let Ok(mut guard) = self.views.lock() {
-            guard.remove(&handle.0);
-        }
-    }
-
-    pub fn contains_point(&self, handle: NodeHandle, x: f32, y: f32) -> bool {
-        if self.view_box(handle).is_some() {
-            return self.get(handle).is_some_and(|box_| {
-                x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height
-            });
-        }
-        let transformed = self
-            .transforms
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(&handle.0).copied());
-        let Some((source, affine)) = transformed else {
-            return self.get(handle).is_some_and(|box_| {
-                x >= box_.x && y >= box_.y && x < box_.x + box_.width && y < box_.y + box_.height
-            });
-        };
-        inverse_affine_point(x, y, affine).is_some_and(|(local_x, local_y)| {
-            local_x >= source.x
-                && local_y >= source.y
-                && local_x < source.x + source.width
-                && local_y < source.y + source.height
-        })
-    }
-
-    pub fn local_point(&self, handle: NodeHandle, x: f32, y: f32) -> Option<(f32, f32)> {
-        if let Some(box_) = self.view_box(handle) {
-            return Some((x - box_.x, y - box_.y));
-        }
-        let transformed = self
-            .transforms
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(&handle.0).copied());
-        match transformed {
-            Some((source, affine)) => {
-                inverse_affine_point(x, y, affine).map(|(px, py)| (px - source.x, py - source.y))
-            }
-            None => self.get(handle).map(|box_| (x - box_.x, y - box_.y)),
-        }
-    }
-
-    pub fn translate(&self, handle: NodeHandle, dx: f32, dy: f32) -> Option<LayoutBox> {
-        let mut box_ = self.get(handle)?;
-        box_.x += dx;
-        box_.y += dy;
-        self.overlay_view(box_);
-        Some(box_)
-    }
-
-    pub(crate) fn overlay_view(&self, box_: LayoutBox) {
-        if let Ok(mut views) = self.views.lock() {
-            views.insert(box_.handle.0, box_);
-        }
-    }
-
-    fn view_box(&self, handle: NodeHandle) -> Option<LayoutBox> {
-        self.views
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(&handle.0).copied())
-    }
-
-    pub fn get(&self, handle: NodeHandle) -> Option<LayoutBox> {
-        self.view_box(handle).or_else(|| self.source_box(handle))
-    }
-
-    /// Scene paint box, ignoring JS scroll / sticky overlays.
-    pub fn source_box(&self, handle: NodeHandle) -> Option<LayoutBox> {
-        self.boxes
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&handle.0).copied())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.boxes.lock().map(|g| g.is_empty()).unwrap_or(true)
-    }
-
-    pub fn len(&self) -> usize {
-        self.boxes.lock().map(|g| g.len()).unwrap_or(0)
-    }
-
-    pub fn snapshot(&self) -> Vec<(NodeHandle, LayoutBox)> {
-        let Ok(guard) = self.boxes.lock() else {
-            return Vec::new();
-        };
-        let mut out: Vec<(NodeHandle, LayoutBox)> =
-            guard.iter().map(|(&id, b)| (NodeHandle(id), *b)).collect();
-        out.sort_by_key(|(h, _)| h.0);
-        out
-    }
-}
-
-fn inverse_affine_point(x: f32, y: f32, [a, b, c, d, e, f]: [f32; 6]) -> Option<(f32, f32)> {
-    let determinant = a * d - b * c;
-    if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-        return None;
-    }
-    let px = x - e;
-    let py = y - f;
-    Some((
-        (d * px - c * py) / determinant,
-        (-b * px + a * py) / determinant,
-    ))
-}
-
-fn transform_layout_box(source: LayoutBox, [a, b, c, d, e, f]: [f32; 6]) -> LayoutBox {
-    let corners = [
-        (source.x, source.y),
-        (source.x + source.width, source.y),
-        (source.x, source.y + source.height),
-        (source.x + source.width, source.y + source.height),
-    ];
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for (x, y) in corners {
-        let tx = a * x + c * y + e;
-        let ty = b * x + d * y + f;
-        min_x = min_x.min(tx);
-        min_y = min_y.min(ty);
-        max_x = max_x.max(tx);
-        max_y = max_y.max(ty);
-    }
-    LayoutBox {
-        handle: source.handle,
-        x: min_x,
-        y: min_y,
-        width: (max_x - min_x).max(0.0),
-        height: (max_y - min_y).max(0.0),
-    }
-}
-
-/// Prefer `store` writeback, else the document's pre-paint measure cache.
-pub fn get_layout_box_from(
-    store: &LayoutBoxStore,
-    doc: &NanaTreeDocument,
-    handle: NodeHandle,
-) -> Option<LayoutBox> {
-    store.get(handle).or_else(|| doc.layout_box(handle))
-}
-
-/// JS `scrollWidth` / `scrollHeight`: Runtime metrics, else descendant union.
-pub(crate) fn query_scroll_content_size(
-    store: &LayoutBoxStore,
-    doc: &NanaTreeDocument,
-    node: NodeHandle,
-    client_width: f32,
-    client_height: f32,
-) -> (f32, f32) {
-    if let Some(metrics) = doc.scroll_metrics(node) {
-        return (
-            metrics.content_width.max(client_width).max(0.0),
-            metrics.content_height.max(client_height).max(0.0),
-        );
-    }
-    let Some(viewport) = get_layout_box_from(store, doc, node) else {
-        return (client_width.max(0.0), client_height.max(0.0));
-    };
-    let (content_width, content_height) =
-        union_descendant_content(doc, node, viewport, |doc, child| {
-            get_layout_box_from(store, doc, child)
-        });
-    (
-        content_width.max(client_width),
-        content_height.max(client_height),
-    )
-}
-
-fn union_descendant_content(
-    doc: &NanaTreeDocument,
-    node: NodeHandle,
-    viewport: LayoutBox,
-    mut box_of: impl FnMut(&NanaTreeDocument, NodeHandle) -> Option<LayoutBox>,
-) -> (f32, f32) {
-    let mut content_width = viewport.width;
-    let mut content_height = viewport.height;
-    let mut stack = doc.children_of(node);
-    while let Some(child) = stack.pop() {
-        if let Some(box_) = box_of(doc, child) {
-            content_width = content_width.max(box_.x + box_.width - viewport.x);
-            content_height = content_height.max(box_.y + box_.height - viewport.y);
-        }
-        stack.extend(doc.children_of(child));
-    }
-    (content_width.max(0.0), content_height.max(0.0))
-}
-
-/// Document layout cache (pre-paint measure or last [`NanaTreeDocument::apply_layout_boxes`]).
-///
-/// Live Scene writeback is on the per-window [`LayoutBoxStore`]; use [`get_layout_box_from`].
-pub fn get_layout_box(doc: &NanaTreeDocument, handle: NodeHandle) -> Option<LayoutBox> {
-    doc.layout_box(handle)
-}
-
-/// Compact dump used by headless probes.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BoxSnapshot {
-    pub boxes: Vec<LayoutBox>,
-    pub texts: Vec<(NodeHandle, String)>,
-    pub tags: Vec<(NodeHandle, String)>,
-    pub event_targets: HashSet<(u64, String)>,
-    pub gpu_slots: Vec<(NodeHandle, String)>,
-}
 
 /// Vue / DOM element namespace (`svg` | `mathml` | HTML/`None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -613,7 +303,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
 }
 
 #[derive(Default)]
-struct PendingAssembly {
+pub(crate) struct PendingAssembly {
     workspaces: Vec<(StableNodeId, RuntimeWorkspace)>,
     docks: Vec<(StableNodeId, RuntimeDock)>,
     split_panes: Vec<(StableNodeId, RuntimeSplitPane)>,
@@ -1394,6 +1084,12 @@ impl NanaTreeDocument {
             }
             return;
         }
+        // Incremental pass: project only the widgets the bridge marked dirty.
+        // A structural change, a whole-document invalidation, or an empty
+        // footprint with a bumped revision (footprint drained by another
+        // consumer) falls back to the full preorder pass.
+        let full_pass =
+            snapshot.changes.needs_full_pass() || snapshot.changes.dirty.is_empty();
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashSet::new();
@@ -1401,6 +1097,9 @@ impl NanaTreeDocument {
             mutations.set_theme(snapshot.theme);
         }
         for widget in &snapshot.widgets {
+            if !full_pass && !snapshot.changes.dirty.contains(&widget.id) {
+                continue;
+            }
             let Some(id) = StableNodeId::new(widget.id)
                 .filter(|id| self.runtime.contains(*id) || self.nodes.contains_key(&id.get()))
             else {
@@ -1638,12 +1337,25 @@ impl NanaTreeDocument {
                 mutations.set_text_input(id, None);
             }
         }
-        self.component_owned_layout = component_owned_layout;
+        if full_pass {
+            self.component_owned_layout = component_owned_layout;
+        } else {
+            // Untouched widgets keep their ownership; dirty widgets re-decide.
+            for id in &snapshot.changes.dirty {
+                self.component_owned_layout.remove(id);
+            }
+            self.component_owned_layout.extend(component_owned_layout);
+        }
         self.commit_extra(mutations).ok();
         pending.apply(self.runtime.context_mut());
         self.adopt_runtime_allocated_ids();
         self.flush_runtime_systems();
         self.synced_semantic_revision = Some(snapshot.revision);
+    }
+
+    /// Revision of the last fully or incrementally applied semantic snapshot.
+    pub fn synced_semantic_revision(&self) -> Option<u64> {
+        self.synced_semantic_revision
     }
 
     fn adopt_runtime_allocated_ids(&mut self) {
@@ -3083,2920 +2795,7 @@ impl NanaTreeDocument {
     }
 }
 
-fn host_texture_content(slot: String, revision: u64) -> CustomRenderNode {
-    CustomRenderNode::new(HOST_TEXTURE_RENDERER, slot, revision)
-}
 
-fn canvas_host_texture_slot(id: &str) -> Option<String> {
-    // Slot contract: `data-nana-canvas="{id}"` → CustomRenderNode
-    // renderer `"nana.host-texture"` / resource `"canvas:{id}"`.
-    // Canvas 2D pixels come from nana-ui-web-api (tiny-skia), uploaded by
-    // CanvasGpuBridge. This is not a browser `<canvas>` and does not imply
-    // a working 2D context on the node by itself.
-    id.parse::<u64>()
-        .ok()
-        .filter(|id| *id > 0)
-        .map(|id| format!("canvas:{id}"))
-}
-
-fn video_host_texture_slot(id: &str) -> Option<String> {
-    // Slot contract: `data-nana-video="{id}"` → CustomRenderNode
-    // renderer `"nana.host-texture"` / resource `"video:{id}"`. Video
-    // pixels are pushed by the host through the shared video surface API
-    // and uploaded by VideoGpuBridge. This is not a browser `<video>`;
-    // playback truth (decoder, clock) stays with the host.
-    id.parse::<u64>()
-        .ok()
-        .filter(|id| *id > 0)
-        .map(|id| format!("video:{id}"))
-}
-
-fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
-    crate::scroll::is_runtime_scroll_body(&widget.props)
-}
-
-fn widget_icon(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Option<nana_ui_core::Icon> {
-    widget
-        .children
-        .iter()
-        .filter_map(|child| snapshot.get(*child))
-        .find(|child| child.kind == crate::WidgetKind::Icon)
-        .and_then(glyph_name_icon)
-        .or_else(|| glyph_name_icon(widget))
-}
-
-fn glyph_name_icon(widget: &crate::SemanticWidget) -> Option<nana_ui_core::Icon> {
-    nana_ui_core::Icon::parse_name(widget.props.display_label())
-        .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
-        .or_else(|| {
-            widget
-                .props
-                .class_names
-                .iter()
-                .find_map(|class| nana_ui_core::Icon::parse_name(class))
-        })
-}
-
-fn icon_consumed_by_parent(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> bool {
-    let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
-        return false;
-    };
-    match parent.kind {
-        crate::WidgetKind::Button => widget_icon(parent, snapshot).is_some(),
-        crate::WidgetKind::EmptyState => true,
-        _ => false,
-    }
-}
-
-fn resolve_widget_component_type(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    context: &AppContext,
-) -> Option<ComponentTypeId> {
-    if widget.kind == crate::WidgetKind::Button
-        && widget_icon(widget, snapshot).is_some()
-        && let Some(id) = context.resolve_component_tag("icon-button")
-    {
-        return Some(id.clone());
-    }
-    if widget.kind == crate::WidgetKind::Chip {
-        return context.resolve_component_tag("button").cloned();
-    }
-    if widget.kind == crate::WidgetKind::Icon {
-        if icon_consumed_by_parent(widget, snapshot) || glyph_name_icon(widget).is_none() {
-            return None;
-        }
-        return context.resolve_component_tag("icon").cloned();
-    }
-    if widget.kind == crate::WidgetKind::Dialog
-        && vue_confirm_dialog(&widget.props)
-        && let Some(id) = context.resolve_component_tag("confirm-dialog")
-    {
-        return Some(id.clone());
-    }
-    if widget.kind == crate::WidgetKind::Textarea
-        && crate::widget_map::highlight_language(&widget.props).is_some()
-        && let Some(id) = context.resolve_component_tag("hosted-textarea")
-    {
-        return Some(id.clone());
-    }
-    if widget.kind.is_choice_field() {
-        let tag = if widget.kind == crate::WidgetKind::SearchDropdown
-            || crate::widget_map::is_search_dropdown(&widget.props)
-        {
-            Some("search-dropdown")
-        } else if widget.kind == crate::WidgetKind::Dropdown
-            || crate::widget_map::is_dropdown_field(&widget.props)
-        {
-            Some("dropdown")
-        } else {
-            Some("select")
-        };
-        if let Some(id) = tag.and_then(|tag| context.resolve_component_tag(tag)) {
-            return Some(id.clone());
-        }
-    }
-    let kind = widget.kind;
-    let element_tag = widget.props.element_tag.as_str();
-    let try_tag = |tag: &str| {
-        if tag.is_empty() {
-            return None;
-        }
-        context.resolve_component_tag(tag).cloned()
-    };
-    let html_layout_collision =
-        kind.is_layout() && matches!(element_tag.to_ascii_lowercase().as_str(), "search");
-    if !html_layout_collision && let Some(id) = try_tag(element_tag) {
-        return Some(id);
-    }
-    if element_tag.starts_with("nana-") {
-        return None;
-    }
-    try_tag(kind.element_tag()).or_else(|| try_tag(kind.as_str()))
-}
-
-fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
-    if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
-        return false;
-    }
-    let kind = effective_kind(widget);
-    kind.is_choice_field()
-        || matches!(
-            kind,
-            crate::WidgetKind::Column
-                | crate::WidgetKind::Box
-                | crate::WidgetKind::Row
-                | crate::WidgetKind::Button
-                | crate::WidgetKind::IconButton
-                | crate::WidgetKind::Chip
-                | crate::WidgetKind::Input
-                | crate::WidgetKind::NumberInput
-                | crate::WidgetKind::Textarea
-                | crate::WidgetKind::Checkbox
-                | crate::WidgetKind::Range
-                | crate::WidgetKind::Spinner
-                | crate::WidgetKind::InteractiveCard
-                | crate::WidgetKind::Skeleton
-                | crate::WidgetKind::Tooltip
-                | crate::WidgetKind::ActionMenu
-                | crate::WidgetKind::ActionMenuItem
-                | crate::WidgetKind::Dialog
-                | crate::WidgetKind::Popover
-                | crate::WidgetKind::Switch
-                | crate::WidgetKind::Card
-                | crate::WidgetKind::Progress
-                | crate::WidgetKind::StatusBadge
-                | crate::WidgetKind::ValidationMessage
-                | crate::WidgetKind::Toast
-                | crate::WidgetKind::LevelMeter
-                | crate::WidgetKind::ImageViewer
-                | crate::WidgetKind::XYPad
-                | crate::WidgetKind::QrCode
-                | crate::WidgetKind::ListItem
-                | crate::WidgetKind::EmptyState
-                | crate::WidgetKind::LabeledValue
-                | crate::WidgetKind::FormField
-                | crate::WidgetKind::Drawer
-                | crate::WidgetKind::SidebarFrame
-                | crate::WidgetKind::SidebarRow
-                | crate::WidgetKind::SettingsRow
-                | crate::WidgetKind::SettingsCard
-                | crate::WidgetKind::ContextMenu
-                | crate::WidgetKind::CommandPalette
-                | crate::WidgetKind::Segmented
-                | crate::WidgetKind::Tabs
-                | crate::WidgetKind::TreeView
-                | crate::WidgetKind::CalendarHeatmap
-                | crate::WidgetKind::NativeMarkdown
-                | crate::WidgetKind::Icon
-                | crate::WidgetKind::GraphCanvas
-                | crate::WidgetKind::Workspace
-                | crate::WidgetKind::Dock
-                | crate::WidgetKind::SplitPane
-                | crate::WidgetKind::AppShell
-                | crate::WidgetKind::DesktopShell
-                | crate::WidgetKind::AppTitleBar
-                | crate::WidgetKind::PaneChrome
-                | crate::WidgetKind::SidebarSection
-                | crate::WidgetKind::SidebarFooter
-                | crate::WidgetKind::SettingsPage
-                | crate::WidgetKind::SettingsCollapsibleCard
-                | crate::WidgetKind::Divider
-                | crate::WidgetKind::Thumbnail
-                | crate::WidgetKind::List
-                | crate::WidgetKind::ScrollView
-                | crate::WidgetKind::Table
-                | crate::WidgetKind::TableRow
-                | crate::WidgetKind::TableCell
-                | crate::WidgetKind::ReorderList
-                | crate::WidgetKind::TimeSeriesChart
-                | crate::WidgetKind::GpuTextureView
-                | crate::WidgetKind::GpuView
-        )
-}
-
-fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f32) {
-    match widget.kind {
-        crate::WidgetKind::Progress => (widget.props.progress, widget.props.progress_max),
-        crate::WidgetKind::LevelMeter => {
-            let raw = crate::widget_map::level_meter_value(&widget.props);
-            if !widget.props.element_tag.eq_ignore_ascii_case("meter") {
-                return (raw, widget.props.max);
-            }
-            let min = widget.props.min;
-            let max = crate::widget_map::attr_value(&widget.props, &["max"])
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(1.0);
-            let span = (max - min).abs().max(f32::EPSILON);
-            (((raw - min) / span).clamp(0.0, 1.0), 1.0)
-        }
-        _ => (widget.props.number, widget.props.max),
-    }
-}
-
-fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
-    let mut extras = Vec::new();
-    let missing = |name: &str| {
-        !widget
-            .props
-            .attrs
-            .keys()
-            .any(|key| key.eq_ignore_ascii_case(name))
-    };
-    match widget.kind {
-        crate::WidgetKind::Switch if missing("control-position") => extras.push((
-            "control-position".into(),
-            match widget.props.control_position {
-                nana_ui_core::SwitchControlPosition::Start => "start",
-                nana_ui_core::SwitchControlPosition::End => "end",
-            }
-            .into(),
-        )),
-        crate::WidgetKind::Card if missing("card-kind") => extras.push((
-            "card-kind".into(),
-            match widget.props.card_kind {
-                nana_ui_core::CardKind::Surface => "surface",
-                nana_ui_core::CardKind::Outlined => "outlined",
-                nana_ui_core::CardKind::Raised => "raised",
-                nana_ui_core::CardKind::Flat => "flat",
-                nana_ui_core::CardKind::Selected => "selected",
-            }
-            .into(),
-        )),
-        crate::WidgetKind::StatusBadge => {
-            if missing("compact") && crate::widget_map::class_has_compact(&widget.props) {
-                extras.push(("compact".into(), "true".into()));
-            }
-            if missing("tone") {
-                extras.push((
-                    "tone".into(),
-                    status_tone_attr(crate::widget_map::status_tone_from_props(&widget.props))
-                        .into(),
-                ));
-            }
-        }
-        crate::WidgetKind::Toast => {
-            if missing("tone") {
-                extras.push((
-                    "tone".into(),
-                    toast_tone_attr(crate::widget_map::toast_tone_from_props(&widget.props)).into(),
-                ));
-            }
-            if missing("dismissible") && crate::widget_map::toast_dismissible(&widget.props) {
-                extras.push(("dismissible".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::Progress => {
-            if missing("cancellable") && crate::widget_map::progress_cancellable(&widget.props) {
-                extras.push(("cancellable".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::Range if missing("unit") && !widget.props.unit.is_empty() => {
-            extras.push(("unit".into(), widget.props.unit.clone()));
-        }
-        crate::WidgetKind::ActionMenuItem => {
-            if missing("danger") && crate::widget_map::action_menu_item_danger(&widget.props) {
-                extras.push(("danger".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::LevelMeter if missing("tone") => extras.push((
-            "tone".into(),
-            status_tone_attr(crate::widget_map::status_tone_from_props(&widget.props)).into(),
-        )),
-        crate::WidgetKind::Segmented => {
-            if missing("chrome") && crate::widget_map::is_radio_group(&widget.props) {
-                extras.push(("chrome".into(), "radio".into()));
-            }
-            if missing("role") && !widget.props.role.is_empty() {
-                extras.push(("role".into(), widget.props.role.clone()));
-            }
-            if missing("fill") && widget.props.fill {
-                extras.push(("fill".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::ImageViewer if missing("src") => {
-            if let Some(src) = widget
-                .props
-                .native_props
-                .get("src")
-                .map(host_value_text)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-            {
-                extras.push(("src".into(), src));
-            }
-        }
-        crate::WidgetKind::ListItem
-            if missing("auto-height") && missing("autoheight") && widget.props.auto_height =>
-        {
-            extras.push(("auto-height".into(), "true".into()));
-        }
-        crate::WidgetKind::EmptyState | crate::WidgetKind::LabeledValue
-            if missing("compact") && crate::widget_map::class_has_compact(&widget.props) =>
-        {
-            extras.push(("compact".into(), "true".into()));
-        }
-        crate::WidgetKind::LabeledValue if missing("muted") && widget.props.muted => {
-            extras.push(("muted".into(), "true".into()));
-        }
-        crate::WidgetKind::Drawer if missing("side") && !widget.props.side.is_empty() => {
-            extras.push(("side".into(), widget.props.side.clone()));
-        }
-        crate::WidgetKind::SidebarRow => {
-            if missing("state") {
-                extras.push((
-                    "state".into(),
-                    match crate::widget_map::sidebar_row_state(&widget.props) {
-                        nana_ui_runtime::SidebarRowState::Idle => "idle",
-                        nana_ui_runtime::SidebarRowState::Active => "active",
-                        nana_ui_runtime::SidebarRowState::AncestorActive => "ancestor",
-                        nana_ui_runtime::SidebarRowState::Disabled => "disabled",
-                    }
-                    .into(),
-                ));
-            }
-            if missing("tone") {
-                extras.push((
-                    "tone".into(),
-                    match crate::widget_map::sidebar_row_tone(&widget.props) {
-                        nana_ui_runtime::SidebarRowTone::Default => "default",
-                        nana_ui_runtime::SidebarRowTone::Warning => "warning",
-                        nana_ui_runtime::SidebarRowTone::Error => "error",
-                    }
-                    .into(),
-                ));
-            }
-            if missing("depth") && missing("data-depth") && missing("indent") {
-                let depth = crate::widget_map::sidebar_row_depth(&widget.props);
-                if depth > 0 {
-                    extras.push(("depth".into(), depth.to_string()));
-                }
-            }
-        }
-        crate::WidgetKind::SettingsRow => {
-            let (stacked, divided, loose, first, last) =
-                crate::widget_map::settings_row_flags(&widget.props);
-            if missing("stacked") && stacked {
-                extras.push(("stacked".into(), "true".into()));
-            }
-            if missing("divided") && divided {
-                extras.push(("divided".into(), "true".into()));
-            }
-            if missing("loose") && loose {
-                extras.push(("loose".into(), "true".into()));
-            }
-            if missing("first-in-group") && missing("firstInGroup") && first {
-                extras.push(("first-in-group".into(), "true".into()));
-            }
-            if missing("last-in-group") && missing("lastInGroup") && last {
-                extras.push(("last-in-group".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::ContextMenu => {
-            if missing("anchor-x") && missing("data-anchor-x") {
-                extras.push(("anchor-x".into(), widget.props.anchor_x.to_string()));
-            }
-            if missing("anchor-y") && missing("data-anchor-y") {
-                extras.push(("anchor-y".into(), widget.props.anchor_y.to_string()));
-            }
-            if missing("searchable") && context_menu_searchable(&widget.props) {
-                extras.push(("searchable".into(), "true".into()));
-            }
-        }
-        crate::WidgetKind::Tabs if missing("fill") && widget.props.fill => {
-            extras.push(("fill".into(), "true".into()));
-        }
-        _ => {}
-    }
-    extras.extend(bind_native_json_attrs(widget));
-    extras
-}
-
-fn stringify_host_attr(value: &nana_js_engine::HostValue) -> String {
-    match value {
-        nana_js_engine::HostValue::String(text) => text.clone(),
-        nana_js_engine::HostValue::Number(number) if number.is_finite() => {
-            if number.fract() == 0.0 {
-                format!("{}", *number as i64)
-            } else {
-                number.to_string()
-            }
-        }
-        nana_js_engine::HostValue::Bool(flag) => flag.to_string(),
-        nana_js_engine::HostValue::Array(_) | nana_js_engine::HostValue::Object(_) => {
-            value.to_json_string()
-        }
-        _ => value.to_json_string(),
-    }
-}
-
-fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
-    let mut extras = Vec::new();
-    let missing = |name: &str, extras: &[(String, String)]| {
-        !widget
-            .props
-            .attrs
-            .keys()
-            .any(|key| key.eq_ignore_ascii_case(name))
-            && !extras.iter().any(|(key, _)| key.eq_ignore_ascii_case(name))
-    };
-    let push = |extras: &mut Vec<(String, String)>, key: &str, host_keys: &[&str]| {
-        if !missing(key, extras) {
-            return;
-        }
-        for host in host_keys {
-            if let Some(value) = widget.props.native_props.get(*host) {
-                extras.push((key.to_string(), stringify_host_attr(value)));
-                return;
-            }
-        }
-    };
-    let push_json = |extras: &mut Vec<(String, String)>, key: &str, host_keys: &[&str]| {
-        if !missing(key, extras) {
-            return;
-        }
-        for host in host_keys {
-            if let Some(value) = widget.props.native_props.get(*host)
-                && matches!(
-                    value,
-                    nana_js_engine::HostValue::Array(_) | nana_js_engine::HostValue::Object(_)
-                )
-            {
-                extras.push((key.to_string(), value.to_json_string()));
-                return;
-            }
-        }
-    };
-    match effective_kind(widget) {
-        crate::WidgetKind::CommandPalette => {
-            push_json(&mut extras, "items", &["items", "options"]);
-        }
-        crate::WidgetKind::TreeView => {
-            push_json(&mut extras, "tree", &["tree"]);
-            push_json(&mut extras, "nodes", &["nodes"]);
-            push_json(&mut extras, "options", &["options"]);
-        }
-        crate::WidgetKind::CalendarHeatmap => {
-            push_json(&mut extras, "data", &["data", "value"]);
-            push(&mut extras, "options", &["options"]);
-        }
-        crate::WidgetKind::NativeMarkdown => {
-            if widget.props.value.trim().is_empty() {
-                let source = markdown_source_from_props(&widget.props);
-                if !source.trim().is_empty() && missing("source", &extras) {
-                    extras.push(("source".into(), source));
-                }
-            }
-            push(
-                &mut extras,
-                "mermaid-renderer",
-                &["mermaid-renderer", "mermaidrenderer"],
-            );
-            push(
-                &mut extras,
-                "math-renderer",
-                &["math-renderer", "mathrenderer"],
-            );
-        }
-        crate::WidgetKind::GraphCanvas => {
-            if widget.props.native_props.contains_key("model") {
-                push(&mut extras, "model", &["model"]);
-            } else {
-                let nodes = widget.props.native_props.get("nodes");
-                let edges = widget.props.native_props.get("edges");
-                if (nodes.is_some() || edges.is_some()) && missing("model", &extras) {
-                    let mut map = BTreeMap::new();
-                    if let Some(nodes) = nodes {
-                        map.insert("nodes".into(), nodes.clone());
-                    }
-                    if let Some(edges) = edges {
-                        map.insert("edges".into(), edges.clone());
-                    }
-                    extras.push((
-                        "model".into(),
-                        nana_js_engine::HostValue::Object(map).to_json_string(),
-                    ));
-                }
-            }
-            push(&mut extras, "nodes", &["nodes"]);
-            push(&mut extras, "edges", &["edges"]);
-            push(&mut extras, "viewport", &["viewport"]);
-            push(&mut extras, "selection", &["selection"]);
-        }
-        crate::WidgetKind::Dock => {
-            push_json(&mut extras, "root", &["root"]);
-            push_json(&mut extras, "layout", &["layout"]);
-        }
-        crate::WidgetKind::ScrollView => {
-            push(&mut extras, "scrollbars", &["scrollbars", "scrollbar"]);
-            push(&mut extras, "axes", &["axes", "axis", "direction"]);
-        }
-        crate::WidgetKind::NumberInput => {
-            push(&mut extras, "precision", &["precision"]);
-        }
-        crate::WidgetKind::Divider => {
-            push(&mut extras, "orientation", &["orientation"]);
-            push(&mut extras, "thickness", &["thickness"]);
-            push(&mut extras, "inset", &["inset"]);
-        }
-        crate::WidgetKind::Thumbnail => {
-            push(&mut extras, "aspect", &["aspect"]);
-        }
-        crate::WidgetKind::TableCell => {
-            push(
-                &mut extras,
-                "header",
-                &["header", "column-header", "columnheader"],
-            );
-        }
-        crate::WidgetKind::ReorderList => {
-            push(&mut extras, "tree-drop", &["tree-drop", "treedrop"]);
-            push(&mut extras, "spacing", &["spacing", "gap"]);
-        }
-        crate::WidgetKind::TimeSeriesChart => {
-            push_json(&mut extras, "values", &["values", "data", "series"]);
-        }
-        crate::WidgetKind::AppTitleBar => {
-            push(&mut extras, "maximized", &["maximized"]);
-            push(
-                &mut extras,
-                "window-controls",
-                &["window-controls", "windowcontrols"],
-            );
-            push(
-                &mut extras,
-                "center-width",
-                &["center-width", "centerwidth"],
-            );
-        }
-        crate::WidgetKind::SidebarSection => {
-            push(&mut extras, "collapsible", &["collapsible"]);
-            push(&mut extras, "expanded", &["expanded", "data-expanded"]);
-            push(&mut extras, "count", &["count"]);
-        }
-        crate::WidgetKind::SplitPane => {
-            push(&mut extras, "axis", &["axis"]);
-            push(&mut extras, "size", &["size"]);
-            push(
-                &mut extras,
-                "default-size",
-                &["default-size", "defaultsize"],
-            );
-            push(&mut extras, "min", &["min"]);
-            push(&mut extras, "max", &["max"]);
-        }
-        crate::WidgetKind::SettingsPage => {
-            push_json(&mut extras, "settings", &["settings", "model"]);
-            push(&mut extras, "tab", &["tab", "value"]);
-            push(
-                &mut extras,
-                "hide-header",
-                &["hide-header", "hideheader", "hideHeader"],
-            );
-        }
-        _ => {}
-    }
-    extras
-}
-
-fn status_tone_attr(tone: nana_ui_core::StatusTone) -> &'static str {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => "neutral",
-        nana_ui_core::StatusTone::Info => "info",
-        nana_ui_core::StatusTone::Success => "success",
-        nana_ui_core::StatusTone::Warning => "warning",
-        nana_ui_core::StatusTone::Danger => "danger",
-    }
-}
-
-fn toast_tone_attr(tone: nana_ui_core::ToastTone) -> &'static str {
-    match tone {
-        nana_ui_core::ToastTone::Info => "info",
-        nana_ui_core::ToastTone::Success => "success",
-        nana_ui_core::ToastTone::Warning => "warning",
-        nana_ui_core::ToastTone::Danger => "danger",
-    }
-}
-
-fn is_shell_composer_kind(kind: crate::WidgetKind) -> bool {
-    matches!(
-        kind,
-        crate::WidgetKind::Workspace
-            | crate::WidgetKind::Dock
-            | crate::WidgetKind::SplitPane
-            | crate::WidgetKind::AppShell
-            | crate::WidgetKind::DesktopShell
-    )
-}
-
-fn shell_kind_from_ident(raw: &str) -> Option<crate::WidgetKind> {
-    let parsed = crate::WidgetKind::parse(raw).or_else(|| {
-        let lower = raw.trim().to_ascii_lowercase();
-        let stripped = lower.strip_prefix("nana.").unwrap_or(&lower);
-        crate::WidgetKind::parse(stripped)
-    })?;
-    is_shell_composer_kind(parsed).then_some(parsed)
-}
-
-fn effective_kind(widget: &crate::SemanticWidget) -> crate::WidgetKind {
-    if !matches!(
-        widget.kind,
-        crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
-    ) {
-        return widget.kind;
-    }
-    if widget.props.element_tag.is_empty() {
-        return widget.kind;
-    }
-    shell_kind_from_ident(&widget.props.element_tag).unwrap_or(widget.kind)
-}
-
-fn bind_semantic_slots(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Vec<(String, StableNodeId)> {
-    let mut slots = Vec::new();
-    let push = |slots: &mut Vec<(String, StableNodeId)>, name: &str, id: Option<StableNodeId>| {
-        let Some(id) = id else {
-            return;
-        };
-        if slots
-            .iter()
-            .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
-        {
-            return;
-        }
-        slots.push((name.to_string(), id));
-    };
-    let data_slot = |name: &str| {
-        widget.children.iter().find_map(|child| {
-            let child = snapshot.get(*child)?;
-            (child.props.attrs.get("data-slot").map(String::as_str) == Some(name))
-                .then(|| StableNodeId::new(child.id))
-                .flatten()
-        })
-    };
-    let assigned = |slots: &[(String, StableNodeId)], id: StableNodeId| {
-        slots.iter().any(|(_, existing)| *existing == id)
-    };
-
-    match effective_kind(widget) {
-        crate::WidgetKind::ListItem | crate::WidgetKind::SidebarRow => {
-            push(
-                &mut slots,
-                "leading",
-                data_slot("leading").or_else(|| data_slot("list-item-leading")),
-            );
-            let tools = data_slot("tools");
-            if widget.kind == crate::WidgetKind::SidebarRow {
-                push(&mut slots, "tools", tools);
-            }
-            let trailing = data_slot("trailing")
-                .or_else(|| data_slot("list-item-trailing"))
-                .filter(|id| Some(*id) != tools);
-            push(&mut slots, "trailing", trailing);
-            let content = data_slot("content")
-                .or_else(|| data_slot("list-item-content"))
-                .or_else(|| {
-                    widget.children.iter().find_map(|child| {
-                        let id = StableNodeId::new(*child)?;
-                        (!assigned(&slots, id)).then_some(id)
-                    })
-                });
-            push(&mut slots, "content", content);
-        }
-        crate::WidgetKind::EmptyState | crate::WidgetKind::LabeledValue => {
-            push(&mut slots, "action", data_slot("action"));
-            push(
-                &mut slots,
-                "action",
-                crate::widget_map::first_button_child_id(snapshot, widget)
-                    .and_then(StableNodeId::new),
-            );
-        }
-        crate::WidgetKind::FormField => {
-            push(&mut slots, "control", data_slot("control"));
-            push(
-                &mut slots,
-                "control",
-                crate::widget_map::form_field_control_child_id(snapshot, widget)
-                    .and_then(StableNodeId::new),
-            );
-        }
-        crate::WidgetKind::Drawer | crate::WidgetKind::Dialog => {
-            push(&mut slots, "body", data_slot("body"));
-            push(
-                &mut slots,
-                "body",
-                widget.children.first().copied().and_then(StableNodeId::new),
-            );
-        }
-        crate::WidgetKind::SidebarFrame => {
-            let (top, body, footer) = crate::widget_map::sidebar_frame_slots(snapshot, widget);
-            push(&mut slots, "top", top.and_then(StableNodeId::new));
-            push(&mut slots, "body", body.and_then(StableNodeId::new));
-            push(&mut slots, "footer", footer.and_then(StableNodeId::new));
-        }
-        crate::WidgetKind::SettingsRow => {
-            let row = crate::widget_map::settings_row_slots(snapshot, widget);
-            push(&mut slots, "copy", row.copy.and_then(StableNodeId::new));
-            push(&mut slots, "label", row.label.and_then(StableNodeId::new));
-            push(&mut slots, "hint", row.hint.and_then(StableNodeId::new));
-            push(&mut slots, "control", data_slot("control"));
-            push(
-                &mut slots,
-                "control",
-                crate::widget_map::settings_row_control_child_id(snapshot, widget)
-                    .and_then(StableNodeId::new),
-            );
-        }
-        crate::WidgetKind::SettingsCard => {
-            push(&mut slots, "title", data_slot("title"));
-            let title = widget.children.iter().find_map(|child| {
-                let child = snapshot.get(*child)?;
-                child
-                    .props
-                    .class_names
-                    .iter()
-                    .any(|class| {
-                        class.contains("nana-settings-card__title")
-                            || class.contains("settings-card__title")
-                    })
-                    .then(|| StableNodeId::new(child.id))
-                    .flatten()
-            });
-            push(&mut slots, "title", title);
-        }
-        crate::WidgetKind::AppShell => {
-            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
-            push(&mut slots, "title-bar", title_bar);
-            push(&mut slots, "body", body);
-            push(&mut slots, "overlay", overlay);
-        }
-        crate::WidgetKind::DesktopShell => {
-            push(
-                &mut slots,
-                "title-bar",
-                data_slot("title-bar").or_else(|| data_slot("title_bar")),
-            );
-            push(
-                &mut slots,
-                "primary",
-                data_slot("primary").or_else(|| data_slot("main")),
-            );
-            push(
-                &mut slots,
-                "navigation",
-                data_slot("navigation").or_else(|| data_slot("nav")),
-            );
-            push(
-                &mut slots,
-                "navigation-footer",
-                data_slot("navigation-footer").or_else(|| data_slot("navigation_footer")),
-            );
-            push(&mut slots, "inspector", data_slot("inspector"));
-            push(&mut slots, "bottom", data_slot("bottom"));
-            push(&mut slots, "overlay", data_slot("overlay"));
-        }
-        crate::WidgetKind::AppTitleBar => {
-            push(&mut slots, "leading", data_slot("leading"));
-            push(&mut slots, "center", data_slot("center"));
-            push(&mut slots, "trailing", data_slot("trailing"));
-            push(&mut slots, "controls", data_slot("controls"));
-        }
-        crate::WidgetKind::PaneChrome => {
-            push(&mut slots, "tabs", data_slot("tabs"));
-            push(&mut slots, "body", data_slot("body"));
-            push(&mut slots, "header", data_slot("header"));
-        }
-        crate::WidgetKind::SidebarSection => {
-            push(&mut slots, "tools", data_slot("tools"));
-            push(&mut slots, "header", data_slot("header"));
-            push(&mut slots, "body", data_slot("body"));
-        }
-        crate::WidgetKind::SettingsCollapsibleCard => {
-            let summary = data_slot("summary")
-                .or_else(|| data_slot("header"))
-                .or_else(|| {
-                    widget.children.iter().find_map(|child| {
-                        let child = snapshot.get(*child)?;
-                        widget_tag(child)
-                            .eq_ignore_ascii_case("summary")
-                            .then(|| StableNodeId::new(child.id))
-                            .flatten()
-                    })
-                });
-            push(&mut slots, "summary", summary);
-            push(
-                &mut slots,
-                "details",
-                data_slot("details")
-                    .or_else(|| data_slot("body"))
-                    .or_else(|| {
-                        widget.children.iter().find_map(|child| {
-                            let child = snapshot.get(*child)?;
-                            let id = StableNodeId::new(child.id)?;
-                            (Some(id) != summary
-                                && !widget_tag(child).eq_ignore_ascii_case("summary"))
-                            .then_some(id)
-                        })
-                    }),
-            );
-            push(&mut slots, "accessory", data_slot("accessory"));
-        }
-        crate::WidgetKind::SplitPane => {
-            let children = element_child_widgets(widget, snapshot);
-            let handle = data_slot("handle")
-                .or_else(|| data_slot("split-handle"))
-                .or_else(|| {
-                    children
-                        .iter()
-                        .find(|child| is_split_handle_child(child))
-                        .and_then(|child| StableNodeId::new(child.id))
-                })
-                .or_else(|| {
-                    (children.len() >= 3)
-                        .then(|| StableNodeId::new(children[2].id))
-                        .flatten()
-                });
-            let panes = children
-                .iter()
-                .filter(|child| Some(child.id) != handle.map(StableNodeId::get))
-                .filter_map(|child| StableNodeId::new(child.id))
-                .collect::<Vec<_>>();
-            push(
-                &mut slots,
-                "first",
-                data_slot("first").or(panes.first().copied()),
-            );
-            push(
-                &mut slots,
-                "second",
-                data_slot("second").or(panes.get(1).copied()),
-            );
-            push(&mut slots, "handle", handle);
-        }
-        crate::WidgetKind::Workspace => {
-            for slot in workspace_slots_from_widget(widget, snapshot) {
-                if let Some(content) = slot.content {
-                    push(&mut slots, slot.id.as_str(), Some(content));
-                }
-            }
-        }
-        crate::WidgetKind::Dock => {
-            for (index, child) in element_child_widgets(widget, snapshot)
-                .into_iter()
-                .enumerate()
-            {
-                let Some(id) = StableNodeId::new(child.id) else {
-                    continue;
-                };
-                push(&mut slots, &dock_item_id(child, index), Some(id));
-            }
-        }
-        crate::WidgetKind::SettingsPage => {
-            push(&mut slots, "content", data_slot("content"));
-            push(&mut slots, "body", data_slot("body"));
-            push(
-                &mut slots,
-                "content",
-                settings_page_content_child(widget, snapshot),
-            );
-        }
-        _ => {
-            for &child in &widget.children {
-                let Some(child) = snapshot.get(child) else {
-                    continue;
-                };
-                let Some(id) = StableNodeId::new(child.id) else {
-                    continue;
-                };
-                let Some(raw) = child.props.attrs.get("data-slot") else {
-                    continue;
-                };
-                let raw_lower = raw.trim().to_ascii_lowercase();
-                let name = match raw_lower.as_str() {
-                    "leading" | "list-item-leading" => "leading",
-                    "content" | "list-item-content" => "content",
-                    "trailing" | "list-item-trailing" => "trailing",
-                    "tools" => "tools",
-                    "action" => "action",
-                    "control" => "control",
-                    "body" | "sidebar-body" => "body",
-                    "top" | "sidebar-top" => "top",
-                    "footer" | "sidebar-footer" => "footer",
-                    "copy" => "copy",
-                    "label" => "label",
-                    "hint" => "hint",
-                    "title" => "title",
-                    "title-bar" | "titlebar" | "title_bar" | "app-title-bar" => "title-bar",
-                    "overlay" => "overlay",
-                    "primary" | "main" => "primary",
-                    "navigation" | "nav" => "navigation",
-                    "navigation-footer" | "navigation_footer" => "navigation-footer",
-                    "inspector" => "inspector",
-                    "bottom" => "bottom",
-                    "tabs" => "tabs",
-                    "header" => "header",
-                    "summary" => "summary",
-                    "details" => "details",
-                    "accessory" => "accessory",
-                    "center" => "center",
-                    "controls" => "controls",
-                    "first" => "first",
-                    "second" => "second",
-                    "handle" | "split-handle" => "handle",
-                    other => other,
-                };
-                push(&mut slots, name, Some(id));
-            }
-        }
-    }
-    slots
-}
-
-fn bind_semantic_copy(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> (Option<String>, Option<String>) {
-    match widget.kind {
-        crate::WidgetKind::LabeledValue => {
-            let caption = crate::widget_map::labeled_value_caption(snapshot, widget);
-            let label = (widget.props.label.is_empty() && !caption.is_empty()).then_some(caption);
-            (label, None)
-        }
-        crate::WidgetKind::SettingsRow => {
-            let slots = crate::widget_map::settings_row_slots(snapshot, widget);
-            let slot_text = |slot: Option<crate::WidgetId>, fallback: &str| {
-                if !fallback.is_empty() {
-                    return None;
-                }
-                slot.map(|id| crate::widget_map::settings_row_plain_text(snapshot, id))
-                    .filter(|text| !text.is_empty())
-            };
-            (
-                slot_text(slots.label, widget.props.display_label()),
-                slot_text(slots.hint, widget.props.hint.as_str()),
-            )
-        }
-        crate::WidgetKind::Table if widget.props.label.is_empty() => {
-            let caption = widget.children.iter().find_map(|child| {
-                let child = snapshot.get(*child)?;
-                widget_tag(child)
-                    .eq_ignore_ascii_case("caption")
-                    .then(|| child.props.display_label().to_string())
-                    .filter(|text| !text.is_empty())
-            });
-            (caption, None)
-        }
-        _ => (None, None),
-    }
-}
-
-fn context_menu_searchable(props: &crate::WidgetProps) -> bool {
-    props.options.len() >= 6
-        || props
-            .class_names
-            .iter()
-            .any(|class| class.contains("search"))
-}
-
-fn try_bind_registered_component(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    id: StableNodeId,
-    context: &AppContext,
-    mutations: &mut MutationQueue,
-    pending: &mut PendingAssembly,
-) -> Option<bool> {
-    let type_id = resolve_widget_component_type(widget, snapshot, context)?;
-    if !can_bind_from_semantic(widget) {
-        if context.world().component_type(id) != Some(&type_id) {
-            mutations.set_component_type(id, Some(type_id));
-        }
-        return None;
-    }
-    let layout = Arc::new(widget.props.layout.clone());
-    let mut extra_attrs = bind_attr_overrides(widget);
-    let missing_query = !widget
-        .props
-        .attrs
-        .keys()
-        .any(|key| key.eq_ignore_ascii_case("query") || key.eq_ignore_ascii_case("data-query"))
-        && !extra_attrs
-            .iter()
-            .any(|(key, _)| key.eq_ignore_ascii_case("query"));
-    if missing_query
-        && ((widget.kind == crate::WidgetKind::ContextMenu
-            && context_menu_searchable(&widget.props))
-            || widget.kind == crate::WidgetKind::SearchDropdown
-            || (widget.kind == crate::WidgetKind::Select
-                && crate::widget_map::is_search_dropdown(&widget.props)))
-        && let Some(state) = context.world().text_input(id)
-    {
-        extra_attrs.push(("query".into(), state.value.clone()));
-    }
-    let attr_pairs: Vec<(&str, &str)> = widget
-        .props
-        .attrs
-        .iter()
-        .map(|(key, value)| (key.as_str(), value.as_str()))
-        .chain(
-            extra_attrs
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str())),
-        )
-        .collect();
-    let slot_pairs = bind_semantic_slots(widget, snapshot);
-    let slot_refs: Vec<(&str, StableNodeId)> = slot_pairs
-        .iter()
-        .map(|(name, id)| (name.as_str(), *id))
-        .collect();
-    let (owned_label, owned_hint) = bind_semantic_copy(widget, snapshot);
-    let (number, max) = semantic_numeric_fields(widget);
-    let tree_child_options = tree_child_bind_options(widget, snapshot);
-    let option_list: Vec<SemanticOption<'_>> = if !widget.props.options.is_empty() {
-        widget
-            .props
-            .options
-            .iter()
-            .map(|option| SemanticOption {
-                value: option.value.as_str(),
-                label: option.label.as_str(),
-                disabled: option.disabled,
-            })
-            .collect()
-    } else {
-        tree_child_options
-            .iter()
-            .map(|(value, label, disabled)| SemanticOption {
-                value: value.as_str(),
-                label: label.as_str(),
-                disabled: *disabled,
-            })
-            .collect()
-    };
-    let is_icon_button = type_id.as_str() == "nana.icon-button";
-    let button_kind = if widget.kind == crate::WidgetKind::Chip {
-        if widget.props.active || widget.props.toggled {
-            nana_ui_core::ButtonKind::Selected
-        } else {
-            nana_ui_core::ButtonKind::Subtle
-        }
-    } else {
-        widget.props.button_kind
-    };
-    let label = if is_icon_button && !widget.props.hint.is_empty() {
-        widget.props.hint.as_str()
-    } else if let Some(label) = owned_label.as_deref() {
-        label
-    } else {
-        widget.props.label.as_str()
-    };
-    let hint = owned_hint.as_deref().unwrap_or(widget.props.hint.as_str());
-    let spec = SemanticSpec {
-        label,
-        value: widget.props.value.as_str(),
-        hint,
-        placeholder: widget.props.placeholder.as_str(),
-        disabled: widget.props.disabled
-            || (widget.kind == crate::WidgetKind::Checkbox && widget.props.loading),
-        loading: widget.props.loading,
-        invalid: widget.props.invalid
-            || (widget.kind == crate::WidgetKind::Dialog && vue_confirm_danger(&widget.props)),
-        active: widget.props.active,
-        toggled: widget.props.toggled,
-        read_only: widget.props.read_only,
-        secure: widget.props.secure,
-        button_kind,
-        size: widget.props.size,
-        icon: widget_icon(widget, snapshot),
-        min: widget.props.min,
-        max,
-        step: widget.props.step,
-        number,
-        options: &option_list,
-        attrs: &attr_pairs,
-        slots: &slot_refs,
-        ..SemanticSpec::from_parts(&type_id, &layout)
-    };
-    let existing_input = matches!(
-        widget.kind,
-        crate::WidgetKind::Input | crate::WidgetKind::NumberInput | crate::WidgetKind::Textarea
-    )
-    .then(|| context.world().text_input(id).cloned())
-    .flatten();
-    match context.bind_semantic(id, &spec, mutations) {
-        Ok(ComponentBindKind::Projected) => {
-            if let Some(mut state) = existing_input {
-                if state.value != widget.props.value {
-                    state.replace_value(&widget.props.value);
-                }
-                mutations.set_text_input(id, Some(state));
-            }
-            if widget.kind == crate::WidgetKind::Popover {
-                retain_projected_children(widget, id, context.world(), mutations);
-            }
-            if widget.kind == crate::WidgetKind::Tooltip
-                && context.world().standard_visual(id).is_some()
-            {
-                mutations.set_standard_visual(id, None);
-            }
-            if matches!(
-                widget.kind,
-                crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
-            ) {
-                let chrome = selection_chrome(widget.kind, &widget.props);
-                for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
-                    let Some(child_id) = StableNodeId::new(*child) else {
-                        continue;
-                    };
-                    project_segmented_option(
-                        child_id,
-                        option,
-                        option.value == widget.props.value,
-                        widget.props.size,
-                        chrome,
-                        widget.kind == crate::WidgetKind::Tabs && widget.props.fill,
-                        context.world(),
-                        mutations,
-                    );
-                }
-            }
-            enqueue_bound_assembly(widget, snapshot, id, context, mutations, pending);
-            Some(true)
-        }
-        Ok(ComponentBindKind::Layout) | Err(_) => None,
-    }
-}
-
-fn selection_chrome(kind: crate::WidgetKind, props: &crate::WidgetProps) -> SelectionChrome {
-    if kind == crate::WidgetKind::Tabs {
-        SelectionChrome::Tabs
-    } else if crate::widget_map::is_radio_group(props) {
-        SelectionChrome::Radio
-    } else {
-        SelectionChrome::Segmented
-    }
-}
-
-fn option_from_widget(child: &crate::SemanticWidget) -> (String, String, bool) {
-    let id = if !child.props.value.is_empty() {
-        child.props.value.clone()
-    } else if !child.props.element_id.is_empty() {
-        child.props.element_id.clone()
-    } else {
-        child.props.display_label().to_string()
-    };
-    (
-        id,
-        child.props.display_label().to_string(),
-        child.props.disabled,
-    )
-}
-
-fn is_option_child(child: &crate::SemanticWidget) -> bool {
-    let tag = widget_tag(child);
-    child.kind == crate::WidgetKind::Radio
-        || tag.eq_ignore_ascii_case("option")
-        || child.props.role.eq_ignore_ascii_case("option")
-        || child.props.role.eq_ignore_ascii_case("radio")
-}
-
-fn collect_choice_options(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Vec<(String, String, bool)> {
-    let mut out = Vec::new();
-    for child in element_child_widgets(widget, snapshot) {
-        if is_option_child(child) {
-            out.push(option_from_widget(child));
-            continue;
-        }
-        if widget_tag(child).eq_ignore_ascii_case("optgroup") {
-            for nested in element_child_widgets(child, snapshot) {
-                if is_option_child(nested) {
-                    out.push(option_from_widget(nested));
-                }
-            }
-        }
-    }
-    out
-}
-
-fn tree_child_bind_options(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Vec<(String, String, bool)> {
-    if !widget.props.options.is_empty() {
-        return Vec::new();
-    }
-    match effective_kind(widget) {
-        crate::WidgetKind::TreeView if host_tree_nodes(&widget.props).is_none() => {
-            element_child_widgets(widget, snapshot)
-                .into_iter()
-                .map(option_from_widget)
-                .collect()
-        }
-        crate::WidgetKind::Select
-        | crate::WidgetKind::Dropdown
-        | crate::WidgetKind::SearchDropdown
-        | crate::WidgetKind::Segmented
-        | crate::WidgetKind::Tabs => collect_choice_options(widget, snapshot),
-        _ => Vec::new(),
-    }
-}
-
-fn enqueue_bound_assembly(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    id: StableNodeId,
-    context: &AppContext,
-    mutations: &mut MutationQueue,
-    pending: &mut PendingAssembly,
-) {
-    let world = context.world();
-    match effective_kind(widget) {
-        crate::WidgetKind::NativeMarkdown => {
-            let markdown =
-                RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
-            let request = markdown_renderer_request(&markdown, &widget.props);
-            if world.highlight_request(id) != request.as_ref() {
-                mutations.set_highlight_request(id, request);
-            }
-            pending.markdowns.push((id, markdown));
-        }
-        crate::WidgetKind::AppShell => {
-            let title = widget.props.display_label();
-            let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
-            if let Some(title_bar) = title_bar {
-                let bar_title = if title.is_empty() {
-                    snapshot
-                        .get(title_bar.get())
-                        .map(|child| child.props.display_label().to_string())
-                        .unwrap_or_default()
-                } else {
-                    title.to_string()
-                };
-                let bar = RuntimeAppTitleBar::new(bar_title);
-                if !snapshot
-                    .get(title_bar.get())
-                    .is_some_and(is_title_bar_child)
-                {
-                    bar.project(title_bar, world, mutations);
-                    pending.title_bars.push((title_bar, bar));
-                }
-            }
-            let mut component = RuntimeAppShell::new();
-            if let Some(title_bar) = title_bar {
-                component = component.title_bar(title_bar);
-            }
-            if let Some(body) = body {
-                component = component.body(body);
-            }
-            if let Some(overlay) = overlay {
-                component = component.overlay(overlay);
-            }
-            pending.app_shells.push((id, component));
-        }
-        crate::WidgetKind::SplitPane => {
-            pending
-                .split_panes
-                .push((id, split_pane_from_widget(widget, snapshot, context, id)));
-        }
-        crate::WidgetKind::Workspace => {
-            pending
-                .workspaces
-                .push((id, workspace_from_widget(widget, snapshot, context, id)));
-        }
-        crate::WidgetKind::Dock => {
-            pending
-                .docks
-                .push((id, dock_from_widget_bound(widget, snapshot, context, id)));
-        }
-        crate::WidgetKind::SettingsPage => {
-            let model = settings_model_from_props(&widget.props).unwrap_or_else(|| {
-                let label = widget.props.display_label();
-                let label = if label.is_empty() { "Settings" } else { label };
-                nana_ui_core::SettingsModel::new(
-                    "settings",
-                    [nana_ui_core::SettingsTab::new("settings", label)],
-                )
-                .expect("fallback settings model has one tab")
-            });
-            let mut state = nana_ui_core::SettingsState::new(&model);
-            if let Some(tab) = settings_active_tab(&widget.props) {
-                state.select(&model, &tab);
-            }
-            let mut component = RuntimeSettingsPage::new(model, state);
-            if let Some(content) = settings_page_content_child(widget, snapshot) {
-                component = component.content(content);
-            }
-            if let Ok(existing) = context.read(
-                Entity::<RuntimeSettingsPage>::from_stable_id(id),
-                Clone::clone,
-            ) {
-                component.assembly = existing.assembly;
-            }
-            pending.settings_pages.push((id, component));
-        }
-        _ => {}
-    }
-}
-
-fn project_migrating_component(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    id: StableNodeId,
-    context: &AppContext,
-    mutations: &mut MutationQueue,
-    pending: &mut PendingAssembly,
-) -> bool {
-    let world = context.world();
-    if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
-        return true;
-    }
-    if is_title_bar_child(widget) {
-        let title = widget.props.display_label();
-        let bar = RuntimeAppTitleBar::new(title);
-        bar.project(id, world, mutations);
-        pending.title_bars.push((id, bar));
-        return true;
-    }
-    if !is_sidebar_frame_body(widget)
-        && try_bind_registered_component(widget, snapshot, id, context, mutations, pending)
-            == Some(true)
-    {
-        return true;
-    }
-    match effective_kind(widget) {
-        crate::WidgetKind::Column | crate::WidgetKind::Box if is_sidebar_frame_body(widget) => {
-            RuntimeSidebarFrame::scroll_body(widget.props.layout.clone())
-                .project(id, world, mutations);
-            true
-        }
-        _ => {
-            if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
-                return true;
-            }
-            if widget.kind == crate::WidgetKind::Radio {
-                let label = widget.props.display_label();
-                RuntimeSegmentedOption::new(Arc::<str>::from(label))
-                    .disabled(widget.props.disabled)
-                    .with_selected(widget.props.toggled || widget.props.active)
-                    .surface(widget.props.size, SelectionChrome::Radio, false)
-                    .project(id, world, mutations);
-                return true;
-            }
-            if matches!(
-                world.standard_visual(id),
-                Some(
-                    nana_ui_runtime::StandardVisual::Icon { .. }
-                        | nana_ui_runtime::StandardVisual::Button { .. }
-                        | nana_ui_runtime::StandardVisual::TextInput { .. }
-                        | nana_ui_runtime::StandardVisual::Switch { .. }
-                        | nana_ui_runtime::StandardVisual::Range { .. }
-                        | nana_ui_runtime::StandardVisual::Card { .. }
-                        | nana_ui_runtime::StandardVisual::StatusBadge { .. }
-                        | nana_ui_runtime::StandardVisual::ValidationMessage { .. }
-                        | nana_ui_runtime::StandardVisual::EmptyState { .. }
-                        | nana_ui_runtime::StandardVisual::LabeledValue { .. }
-                        | nana_ui_runtime::StandardVisual::SelectionOption { .. }
-                        | nana_ui_runtime::StandardVisual::Progress { .. }
-                        | nana_ui_runtime::StandardVisual::Spinner { .. }
-                        | nana_ui_runtime::StandardVisual::LevelMeter { .. }
-                        | nana_ui_runtime::StandardVisual::FormField { .. }
-                        | nana_ui_runtime::StandardVisual::Toast { .. }
-                        | nana_ui_runtime::StandardVisual::XYPad { .. }
-                        | nana_ui_runtime::StandardVisual::QrCode { .. }
-                        | nana_ui_runtime::StandardVisual::Select { .. }
-                        | nana_ui_runtime::StandardVisual::MenuSurface { .. }
-                        | nana_ui_runtime::StandardVisual::ActionMenuItem { .. }
-                        | nana_ui_runtime::StandardVisual::TreeView { .. }
-                        | nana_ui_runtime::StandardVisual::CommandPalette { .. }
-                        | nana_ui_runtime::StandardVisual::ModalFrame { .. }
-                        | nana_ui_runtime::StandardVisual::CalendarHeatmap { .. }
-                        | nana_ui_runtime::StandardVisual::TimeSeriesChart { .. }
-                        | nana_ui_runtime::StandardVisual::ReorderList { .. }
-                        | nana_ui_runtime::StandardVisual::NativeMarkdown { .. }
-                        | nana_ui_runtime::StandardVisual::SelectableRichText { .. }
-                        | nana_ui_runtime::StandardVisual::GraphCanvas { .. }
-                        | nana_ui_runtime::StandardVisual::ImageViewer { .. }
-                        | nana_ui_runtime::StandardVisual::KeyCaptureLayer { .. }
-                        | nana_ui_runtime::StandardVisual::KeymapLayer
-                )
-            ) {
-                mutations.set_standard_visual(id, None);
-            }
-            false
-        }
-    }
-}
-
-fn vue_confirm_dialog(props: &crate::WidgetProps) -> bool {
-    if props.role.eq_ignore_ascii_case("alertdialog") {
-        return true;
-    }
-    if matches!(props.button_kind, nana_ui_core::ButtonKind::Danger) {
-        return true;
-    }
-    if props.attrs.get("data-variant").is_some_and(|value| {
-        value.eq_ignore_ascii_case("confirm") || value.eq_ignore_ascii_case("alertdialog")
-    }) {
-        return true;
-    }
-    props.class_names.iter().any(|class| {
-        matches!(
-            class.as_str(),
-            "nana-confirm" | "nana-confirm-dialog" | "nana-alertdialog"
-        )
-    })
-}
-
-fn vue_confirm_danger(props: &crate::WidgetProps) -> bool {
-    matches!(props.button_kind, nana_ui_core::ButtonKind::Danger)
-}
-
-fn project_segmented_option(
-    id: StableNodeId,
-    option: &crate::SelectOptionProp,
-    selected: bool,
-    size: nana_ui_core::ControlSize,
-    chrome: SelectionChrome,
-    fill: bool,
-    world: &UiWorld,
-    mutations: &mut MutationQueue,
-) {
-    RuntimeSegmentedOption::new(Arc::<str>::from(option.label.as_str()))
-        .disabled(option.disabled)
-        .with_selected(selected)
-        .surface(size, chrome, fill)
-        .project(id, world, mutations);
-}
-
-fn project_aligned_segmented_option(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    id: StableNodeId,
-    world: &UiWorld,
-    mutations: &mut MutationQueue,
-) -> bool {
-    let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
-        return false;
-    };
-    if !matches!(
-        parent.kind,
-        crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
-    ) {
-        return false;
-    }
-    let Some(index) = parent.children.iter().position(|child| *child == widget.id) else {
-        return false;
-    };
-    let Some(option) = parent.props.options.get(index) else {
-        return false;
-    };
-    let chrome = selection_chrome(parent.kind, &parent.props);
-    project_segmented_option(
-        id,
-        option,
-        option.value == parent.props.value,
-        parent.props.size,
-        chrome,
-        parent.kind == crate::WidgetKind::Tabs && parent.props.fill,
-        world,
-        mutations,
-    );
-    true
-}
-
-fn accessibility_role(
-    kind: crate::WidgetKind,
-    explicit_role: &str,
-    element_tag: &str,
-    accessible_name: Option<&str>,
-    is_top_level: bool,
-) -> AccessibilityRole {
-    match explicit_role.trim().to_ascii_lowercase().as_str() {
-        "document" => return AccessibilityRole::Document,
-        "text" => return AccessibilityRole::Text,
-        "button" => return AccessibilityRole::Button,
-        "textbox" | "searchbox" => return AccessibilityRole::TextInput,
-        "checkbox" => return AccessibilityRole::Checkbox,
-        "radio" => return AccessibilityRole::Radio,
-        "radiogroup" => return AccessibilityRole::RadioGroup,
-        "switch" => return AccessibilityRole::Switch,
-        "slider" => return AccessibilityRole::Slider,
-        "combobox" => return AccessibilityRole::ComboBox,
-        "progressbar" => return AccessibilityRole::ProgressIndicator,
-        "list" | "listbox" => return AccessibilityRole::List,
-        "listitem" | "option" => return AccessibilityRole::ListItem,
-        "tablist" => return AccessibilityRole::TabList,
-        "tab" => return AccessibilityRole::Tab,
-        "dialog" | "alertdialog" => return AccessibilityRole::Dialog,
-        "menu" => return AccessibilityRole::Menu,
-        "menuitem" => return AccessibilityRole::MenuItem,
-        "tooltip" => return AccessibilityRole::Tooltip,
-        "img" => return AccessibilityRole::Image,
-        "main" => return AccessibilityRole::Main,
-        "navigation" => return AccessibilityRole::Navigation,
-        "banner" => return AccessibilityRole::Banner,
-        "contentinfo" => return AccessibilityRole::ContentInfo,
-        "complementary" => return AccessibilityRole::Complementary,
-        "region" => return AccessibilityRole::Region,
-        "search" => return AccessibilityRole::Search,
-        "form" => return AccessibilityRole::Form,
-        _ => {}
-    }
-    // HTML landmark tags carry their landmark role without becoming widgets:
-    // `<search>` stays a Column, it never resolves to SearchDropdown. Hints
-    // that repurpose the tag into a concrete control (`<nav role="tablist">`,
-    // `<footer class="nana-search">`) keep the control role; layout kinds and
-    // kinds without their own role still yield to the landmark.
-    let kind_role = match kind {
-        crate::WidgetKind::Text => AccessibilityRole::Text,
-        crate::WidgetKind::Button | crate::WidgetKind::IconButton | crate::WidgetKind::Chip => {
-            AccessibilityRole::Button
-        }
-        crate::WidgetKind::Input | crate::WidgetKind::NumberInput | crate::WidgetKind::Textarea => {
-            AccessibilityRole::TextInput
-        }
-        crate::WidgetKind::Checkbox => AccessibilityRole::Checkbox,
-        crate::WidgetKind::Radio => AccessibilityRole::Radio,
-        crate::WidgetKind::Switch => AccessibilityRole::Switch,
-        crate::WidgetKind::Range => AccessibilityRole::Slider,
-        crate::WidgetKind::Select
-        | crate::WidgetKind::Dropdown
-        | crate::WidgetKind::SearchDropdown => AccessibilityRole::ComboBox,
-        crate::WidgetKind::Progress | crate::WidgetKind::LevelMeter => {
-            AccessibilityRole::ProgressIndicator
-        }
-        crate::WidgetKind::InteractiveCard => AccessibilityRole::Button,
-        crate::WidgetKind::ListItem
-        | crate::WidgetKind::SidebarRow
-        | crate::WidgetKind::TableRow => AccessibilityRole::ListItem,
-        crate::WidgetKind::List | crate::WidgetKind::ReorderList | crate::WidgetKind::Table => {
-            AccessibilityRole::List
-        }
-        crate::WidgetKind::Tabs | crate::WidgetKind::Segmented => AccessibilityRole::TabList,
-        crate::WidgetKind::StatusBadge | crate::WidgetKind::ValidationMessage => {
-            AccessibilityRole::Text
-        }
-        crate::WidgetKind::Dialog => AccessibilityRole::Dialog,
-        crate::WidgetKind::ContextMenu | crate::WidgetKind::ActionMenu => AccessibilityRole::Menu,
-        crate::WidgetKind::ActionMenuItem => AccessibilityRole::MenuItem,
-        crate::WidgetKind::Tooltip => AccessibilityRole::Tooltip,
-        crate::WidgetKind::XYPad => AccessibilityRole::Slider,
-        crate::WidgetKind::QrCode => AccessibilityRole::Image,
-        crate::WidgetKind::Icon
-        | crate::WidgetKind::GpuTextureView
-        | crate::WidgetKind::GpuView
-        | crate::WidgetKind::Video => AccessibilityRole::Image,
-        crate::WidgetKind::CommandPalette | crate::WidgetKind::ImageViewer => {
-            AccessibilityRole::Dialog
-        }
-        crate::WidgetKind::TreeView => AccessibilityRole::List,
-        crate::WidgetKind::CalendarHeatmap => AccessibilityRole::Image,
-        crate::WidgetKind::NativeMarkdown => AccessibilityRole::Document,
-        crate::WidgetKind::GraphCanvas => AccessibilityRole::Generic,
-        _ => AccessibilityRole::Generic,
-    };
-    if (kind.is_layout() || matches!(kind_role, AccessibilityRole::Generic))
-        && let Some(role) =
-            landmark_role_from_tag(element_tag, accessible_name.is_some(), is_top_level)
-    {
-        return role;
-    }
-    kind_role
-}
-
-/// HTML landmark tags map to landmark roles per HTML-AAM. `section` and
-/// `form` are only landmarks when they carry an accessible name; `header`
-/// and `footer` only outside sectioning ancestors (ARIA in HTML).
-fn landmark_role_from_tag(
-    tag: &str,
-    has_accessible_name: bool,
-    is_top_level: bool,
-) -> Option<AccessibilityRole> {
-    match tag.trim().to_ascii_lowercase().as_str() {
-        "main" => Some(AccessibilityRole::Main),
-        "nav" => Some(AccessibilityRole::Navigation),
-        "aside" => Some(AccessibilityRole::Complementary),
-        "search" => Some(AccessibilityRole::Search),
-        "header" if is_top_level => Some(AccessibilityRole::Banner),
-        "footer" if is_top_level => Some(AccessibilityRole::ContentInfo),
-        "section" if has_accessible_name => Some(AccessibilityRole::Region),
-        "form" if has_accessible_name => Some(AccessibilityRole::Form),
-        _ => None,
-    }
-}
-
-fn host_tree_nodes(props: &crate::WidgetProps) -> Option<Vec<nana_ui_core::TreeNode<Arc<str>>>> {
-    let value = props
-        .native_props
-        .get("tree")
-        .or_else(|| props.native_props.get("nodes"))
-        .or_else(|| props.native_props.get("options"))?;
-    let nodes = host_array(value)
-        .into_iter()
-        .filter_map(tree_node_from_host)
-        .collect::<Vec<_>>();
-    (!nodes.is_empty()).then_some(nodes)
-}
-
-fn tree_node_from_host(
-    value: &nana_js_engine::HostValue,
-) -> Option<nana_ui_core::TreeNode<Arc<str>>> {
-    match value {
-        nana_js_engine::HostValue::Object(map) => {
-            let id = host_map_text(map, &["value", "id", "key"]);
-            let label = host_map_text(map, &["label", "title", "text"]);
-            if id.is_empty() && label.is_empty() {
-                return None;
-            }
-            let children = map
-                .get("children")
-                .map(host_array)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(tree_node_from_host)
-                .collect::<Vec<_>>();
-            let expanded = map.get("expanded").is_some_and(host_value_truthy);
-            let selected = map.get("selected").is_some_and(host_value_truthy);
-            let disabled = map.get("disabled").is_some_and(host_value_truthy);
-            let identity = if id.is_empty() { label.clone() } else { id };
-            let caption = if label.is_empty() {
-                identity.clone()
-            } else {
-                label
-            };
-            let mut node = if children.is_empty() {
-                nana_ui_core::TreeNode::leaf(Arc::<str>::from(identity.as_str()), caption)
-            } else {
-                nana_ui_core::TreeNode::branch(
-                    Arc::<str>::from(identity.as_str()),
-                    caption,
-                    expanded,
-                    children,
-                )
-            };
-            node = node.selected(selected).disabled(disabled);
-            if let Some(icon) = map
-                .get("icon")
-                .map(host_value_text)
-                .filter(|name| !name.is_empty())
-                .and_then(|name| nana_ui_core::Icon::parse_name(&name))
-            {
-                node = node.icon(icon);
-            }
-            Some(node)
-        }
-        nana_js_engine::HostValue::String(text) if !text.is_empty() => Some(
-            nana_ui_core::TreeNode::leaf(Arc::<str>::from(text.as_str()), text.clone()),
-        ),
-        _ => None,
-    }
-}
-
-fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsModel> {
-    let map = settings_host_map(props)?;
-    let mut tabs = settings_tabs_from_host(host_map_value(&map, &["tabs", "items"])?);
-    if tabs.is_empty() {
-        return None;
-    }
-    let full_page = settings_full_page_keys(&map);
-    if !full_page.is_empty() {
-        tabs = tabs
-            .into_iter()
-            .map(|tab| {
-                let flagged =
-                    tab.full_page_value() || full_page.iter().any(|key| key == tab.id().as_str());
-                let mut next = nana_ui_core::SettingsTab::new(tab.id().clone(), tab.label());
-                if let Some(icon) = tab.icon_value() {
-                    next = next.icon(icon);
-                }
-                next.full_page(flagged)
-            })
-            .collect();
-    }
-    let default_tab = host_map_text(&map, &["defaultTab", "default_tab", "default-tab"]);
-    let default_tab =
-        if default_tab.is_empty() || tabs.iter().all(|tab| tab.id().as_str() != default_tab) {
-            tabs[0].id().as_str().to_string()
-        } else {
-            default_tab
-        };
-    let mut model = nana_ui_core::SettingsModel::new(default_tab, tabs).ok()?;
-    if let Some(nana_js_engine::HostValue::Object(aliases)) =
-        host_map_value(&map, &["aliases", "alias"])
-    {
-        for (alias, target) in aliases {
-            let target = host_value_text(target);
-            if target.is_empty() {
-                continue;
-            }
-            if let Ok(next) = model.clone().with_alias(alias.as_str(), target) {
-                model = next;
-            }
-        }
-    }
-    let hide_header = host_map_truthy(&map, &["hideHeader", "hide_header", "hide-header"])
-        || settings_hide_header_from_props(props);
-    Some(model.hide_header(hide_header))
-}
-
-fn settings_host_map(
-    props: &crate::WidgetProps,
-) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
-    if let Some(value) = props
-        .native_props
-        .get("settings")
-        .or_else(|| props.native_props.get("model"))
-    {
-        return match value {
-            nana_js_engine::HostValue::Object(map) => Some(map.clone()),
-            nana_js_engine::HostValue::String(json) => settings_object_from_json(json),
-            _ => None,
-        };
-    }
-    crate::widget_map::attr_value(props, &["settings", "model"]).and_then(settings_object_from_json)
-}
-
-fn settings_object_from_json(json: &str) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
-    match nana_js_engine::HostValue::from_json_str(json).ok()? {
-        nana_js_engine::HostValue::Object(map) => Some(map),
-        _ => None,
-    }
-}
-
-fn settings_tabs_from_host(value: &nana_js_engine::HostValue) -> Vec<nana_ui_core::SettingsTab> {
-    let items = host_array(value);
-    if !items.is_empty() {
-        return items
-            .into_iter()
-            .filter_map(settings_tab_from_host)
-            .collect();
-    }
-    if let Some(tab) = settings_tab_from_host(value) {
-        return vec![tab];
-    }
-    let nana_js_engine::HostValue::Object(map) = value else {
-        return Vec::new();
-    };
-    map.iter()
-        .filter_map(|(key, item)| match item {
-            nana_js_engine::HostValue::String(label) if !label.is_empty() => {
-                Some(nana_ui_core::SettingsTab::new(key.as_str(), label.as_str()))
-            }
-            nana_js_engine::HostValue::Object(_) => {
-                let tab = settings_tab_from_host(item)?;
-                if tab.id().as_str().is_empty() {
-                    Some(nana_ui_core::SettingsTab::new(key.as_str(), tab.label()))
-                } else {
-                    Some(tab)
-                }
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-fn settings_tab_from_host(value: &nana_js_engine::HostValue) -> Option<nana_ui_core::SettingsTab> {
-    match value {
-        nana_js_engine::HostValue::String(id) if !id.is_empty() => {
-            Some(nana_ui_core::SettingsTab::new(id.as_str(), id.as_str()))
-        }
-        nana_js_engine::HostValue::Object(map) => {
-            let id = host_map_text(map, &["key", "id", "value"]);
-            if id.is_empty() {
-                return None;
-            }
-            let label = host_map_text(map, &["label", "title", "name"]);
-            let label = if label.is_empty() { id.clone() } else { label };
-            let mut tab = nana_ui_core::SettingsTab::new(id, label);
-            if let Some(icon) = nana_ui_core::Icon::parse_name(&host_map_text(
-                map,
-                &["icon", "iconName", "icon-name"],
-            )) {
-                tab = tab.icon(icon);
-            }
-            Some(tab.full_page(host_map_truthy(
-                map,
-                &["fullPage", "full_page", "full-page"],
-            )))
-        }
-        _ => None,
-    }
-}
-
-fn settings_full_page_keys(map: &BTreeMap<String, nana_js_engine::HostValue>) -> Vec<String> {
-    host_map_value(map, &["fullPageTabs", "full_page_tabs", "full-page-tabs"])
-        .map(host_array)
-        .unwrap_or_default()
-        .into_iter()
-        .map(host_value_text)
-        .filter(|key| !key.is_empty())
-        .collect()
-}
-
-fn settings_hide_header_from_props(props: &crate::WidgetProps) -> bool {
-    if let Some(value) = props
-        .native_props
-        .get("hide-header")
-        .or_else(|| props.native_props.get("hideHeader"))
-    {
-        return host_value_truthy(value);
-    }
-    crate::widget_map::attr_value(props, &["hide-header", "hideheader", "hideHeader"]).is_some_and(
-        |value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "" | "true" | "1" | "yes"
-            )
-        },
-    )
-}
-
-fn settings_active_tab(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsTabId> {
-    native_prop_text(props, &["tab", "value"])
-        .or_else(|| {
-            crate::widget_map::attr_value(props, &["tab", "value"])
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            let value = props.value.trim();
-            (!value.is_empty()).then(|| value.to_string())
-        })
-        .map(nana_ui_core::SettingsTabId::from)
-}
-
-fn settings_page_content_child(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Option<StableNodeId> {
-    widget.children.iter().copied().find_map(|id| {
-        let child = snapshot.get(id)?;
-        if is_settings_page_header_child(child) {
-            return None;
-        }
-        StableNodeId::new(id)
-    })
-}
-
-fn is_settings_page_header_child(widget: &crate::SemanticWidget) -> bool {
-    let slot = widget
-        .props
-        .attrs
-        .get("data-slot")
-        .map(String::as_str)
-        .unwrap_or("");
-    if matches!(slot, "header" | "page-header" | "title") {
-        return true;
-    }
-    widget
-        .props
-        .class_names
-        .iter()
-        .any(|class| class.contains("nana-settings-page__header") || class.contains("page-header"))
-}
-
-fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
-    if !props.value.trim().is_empty() {
-        return props.value.clone();
-    }
-    if let Some(source) = crate::widget_map::attr_value(props, &["source", "markdown", "value"])
-        && !source.trim().is_empty()
-    {
-        return source.to_string();
-    }
-    for key in ["source", "markdown", "value"] {
-        if let Some(text) = props.native_props.get(key).map(host_value_text)
-            && !text.trim().is_empty()
-        {
-            return text;
-        }
-    }
-    String::new()
-}
-
-fn markdown_renderer_request(
-    markdown: &RuntimeNativeMarkdown,
-    props: &crate::WidgetProps,
-) -> Option<HighlightRequest> {
-    let mermaid = crate::widget_map::mermaid_renderer(props)
-        .map(str::to_string)
-        .or_else(|| native_prop_text(props, &["mermaid-renderer", "mermaidrenderer"]));
-    let math = crate::widget_map::math_renderer(props)
-        .map(str::to_string)
-        .or_else(|| native_prop_text(props, &["math-renderer", "mathrenderer"]));
-    for block in markdown.blocks() {
-        match block {
-            nana_ui_runtime::MarkdownBlock::Mermaid(source) => {
-                if let Some(name) = mermaid.as_deref() {
-                    return Some(HighlightRequest::new(name, format!("mermaid:{source}")));
-                }
-            }
-            nana_ui_runtime::MarkdownBlock::DisplayMath(source) => {
-                if let Some(name) = math.as_deref() {
-                    return Some(HighlightRequest::new(name, format!("math:{source}")));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn native_prop_text(props: &crate::WidgetProps, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        props
-            .native_props
-            .get(*key)
-            .map(host_value_text)
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty())
-    })
-}
-
-fn host_value_number(value: &nana_js_engine::HostValue) -> Option<f32> {
-    match value {
-        nana_js_engine::HostValue::Number(number) if number.is_finite() => Some(*number as f32),
-        nana_js_engine::HostValue::String(text) => text.trim().parse().ok(),
-        nana_js_engine::HostValue::Bool(true) => Some(1.0),
-        nana_js_engine::HostValue::Bool(false) => Some(0.0),
-        _ => None,
-    }
-}
-
-fn host_array(value: &nana_js_engine::HostValue) -> Vec<&nana_js_engine::HostValue> {
-    match value {
-        nana_js_engine::HostValue::Array(items) => items.iter().collect(),
-        nana_js_engine::HostValue::Object(map) => {
-            let mut indexed = map
-                .iter()
-                .filter_map(|(key, item)| key.parse::<usize>().ok().map(|index| (index, item)))
-                .collect::<Vec<_>>();
-            if indexed.is_empty() {
-                return Vec::new();
-            }
-            indexed.sort_by_key(|(index, _)| *index);
-            indexed.into_iter().map(|(_, item)| item).collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn host_map_value<'a>(
-    map: &'a BTreeMap<String, nana_js_engine::HostValue>,
-    keys: &[&str],
-) -> Option<&'a nana_js_engine::HostValue> {
-    for key in keys {
-        if let Some(value) = map.get(*key) {
-            return Some(value);
-        }
-    }
-    for key in keys {
-        if let Some((_, value)) = map
-            .iter()
-            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
-        {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn host_map_text(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> String {
-    host_map_value(map, keys)
-        .map(host_value_text)
-        .filter(|text| !text.is_empty())
-        .unwrap_or_default()
-}
-
-fn host_map_truthy(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> bool {
-    host_map_value(map, keys).is_some_and(host_value_truthy)
-}
-
-fn host_map_number(
-    map: &BTreeMap<String, nana_js_engine::HostValue>,
-    keys: &[&str],
-) -> Option<f32> {
-    keys.iter()
-        .find_map(|key| map.get(*key).and_then(host_value_number))
-}
-
-fn host_value_text(value: &nana_js_engine::HostValue) -> String {
-    match value {
-        nana_js_engine::HostValue::String(text) => text.clone(),
-        nana_js_engine::HostValue::Number(number) if number.is_finite() => number.to_string(),
-        nana_js_engine::HostValue::Bool(flag) => flag.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn host_value_truthy(value: &nana_js_engine::HostValue) -> bool {
-    match value {
-        nana_js_engine::HostValue::Bool(flag) => *flag,
-        nana_js_engine::HostValue::Number(number) => *number != 0.0,
-        nana_js_engine::HostValue::String(text) => {
-            !text.is_empty() && !text.eq_ignore_ascii_case("false")
-        }
-        _ => false,
-    }
-}
-
-fn is_shell_composer_slot(
-    snapshot: &crate::SemanticSnapshot,
-    widget: &crate::SemanticWidget,
-) -> bool {
-    widget
-        .parent
-        .and_then(|parent| snapshot.get(parent))
-        .is_some_and(|parent| is_shell_composer_kind(effective_kind(parent)))
-}
-
-fn retain_projected_children(
-    widget: &crate::SemanticWidget,
-    parent: StableNodeId,
-    world: &UiWorld,
-    mutations: &mut MutationQueue,
-) {
-    for child in &widget.children {
-        let Some(child_id) = StableNodeId::new(*child) else {
-            continue;
-        };
-        if !world.contains(child_id) {
-            continue;
-        }
-        if world
-            .node(child_id)
-            .is_some_and(|node| node.parent != Some(parent))
-        {
-            mutations.insert(parent, child_id, None);
-        }
-    }
-}
-
-fn element_child_widgets<'a>(
-    widget: &'a crate::SemanticWidget,
-    snapshot: &'a crate::SemanticSnapshot,
-) -> Vec<&'a crate::SemanticWidget> {
-    widget
-        .children
-        .iter()
-        .filter_map(|child| snapshot.get(*child))
-        .filter(|child| child.kind != crate::WidgetKind::Text)
-        .collect()
-}
-
-fn widget_slot(widget: &crate::SemanticWidget) -> String {
-    crate::widget_map::attr_value(&widget.props, &["data-slot", "slot"])
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
-}
-
-fn widget_tag(widget: &crate::SemanticWidget) -> String {
-    widget.props.element_tag.trim().to_ascii_lowercase()
-}
-
-fn widget_class_blob(widget: &crate::SemanticWidget) -> String {
-    widget
-        .props
-        .class_names
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-}
-
-fn is_title_bar_child(widget: &crate::SemanticWidget) -> bool {
-    let slot = widget_slot(widget);
-    if matches!(slot.as_str(), "title-bar" | "titlebar" | "app-title-bar") {
-        return true;
-    }
-    let tag = widget_tag(widget);
-    let class = widget_class_blob(widget);
-    tag.contains("title-bar")
-        || tag.contains("titlebar")
-        || tag.contains("app-title-bar")
-        || class.contains("title-bar")
-        || class.contains("titlebar")
-        || class.contains("nana-app-title-bar")
-}
-
-fn is_body_child(widget: &crate::SemanticWidget) -> bool {
-    widget_slot(widget) == "body"
-}
-
-fn is_overlay_child(widget: &crate::SemanticWidget) -> bool {
-    let slot = widget_slot(widget);
-    if slot == "overlay" {
-        return true;
-    }
-    let tag = widget_tag(widget);
-    let class = widget_class_blob(widget);
-    tag.contains("overlay") || class.contains("nana-app-shell__overlay")
-}
-
-fn is_split_handle_child(widget: &crate::SemanticWidget) -> bool {
-    let slot = widget_slot(widget);
-    if matches!(slot.as_str(), "handle" | "split-handle") {
-        return true;
-    }
-    let tag = widget_tag(widget);
-    let class = widget_class_blob(widget);
-    tag.contains("split-handle")
-        || class.contains("nana-split-handle")
-        || class.contains("split-handle")
-}
-
-fn native_prop_number(props: &crate::WidgetProps, keys: &[&str]) -> Option<f32> {
-    keys.iter().find_map(|key| {
-        props
-            .native_props
-            .get(*key)
-            .and_then(host_value_number)
-            .filter(|number| number.is_finite())
-    })
-}
-
-fn split_axis_from_props(props: &crate::WidgetProps) -> nana_ui_core::SplitAxis {
-    let raw = native_prop_text(props, &["axis"])
-        .or_else(|| {
-            crate::widget_map::attr_value(props, &["axis", "data-axis"]).map(str::to_string)
-        })
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match raw.as_str() {
-        "vertical" | "column" | "y" => nana_ui_core::SplitAxis::Vertical,
-        _ => nana_ui_core::SplitAxis::Horizontal,
-    }
-}
-
-fn split_pane_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    context: &AppContext,
-    id: StableNodeId,
-) -> RuntimeSplitPane {
-    let children = element_child_widgets(widget, snapshot);
-    let handle = children
-        .iter()
-        .find(|child| is_split_handle_child(child))
-        .and_then(|child| StableNodeId::new(child.id))
-        .or_else(|| {
-            (children.len() >= 3)
-                .then(|| StableNodeId::new(children[2].id))
-                .flatten()
-        })
-        .or_else(|| {
-            context
-                .read(Entity::<RuntimeSplitPane>::from_stable_id(id), |pane| {
-                    pane.handle
-                })
-                .ok()
-                .flatten()
-        });
-    let panes = children
-        .iter()
-        .filter(|child| Some(child.id) != handle.map(StableNodeId::get))
-        .filter_map(|child| StableNodeId::new(child.id))
-        .collect::<Vec<_>>();
-    let first = panes.first().copied();
-    let second = panes.get(1).copied();
-    let default_size = native_prop_number(&widget.props, &["default-size", "defaultsize"])
-        .or_else(|| native_prop_number(&widget.props, &["size"]))
-        .unwrap_or(240.0);
-    let min = native_prop_number(&widget.props, &["min"]).unwrap_or(120.0);
-    let max = native_prop_number(&widget.props, &["max"]).unwrap_or(800.0);
-    let mut model = nana_ui_core::SplitPaneModel::new(
-        split_axis_from_props(&widget.props),
-        default_size,
-        min,
-        max,
-    );
-    if let Some(size) = native_prop_number(&widget.props, &["size"])
-        && (size - model.size()).abs() > f32::EPSILON
-    {
-        model.update(nana_ui_core::SplitPaneMutation::SetSize(size));
-    }
-    match (first, second) {
-        (Some(first), Some(second)) => {
-            let mut pane = RuntimeSplitPane::from_model(&model, first, second);
-            if let Some(handle) = handle {
-                pane = pane.handle(handle);
-            }
-            pane
-        }
-        _ => RuntimeSplitPane {
-            first,
-            second,
-            handle,
-            model,
-        },
-    }
-}
-
-fn workspace_region_token(widget: &crate::SemanticWidget) -> String {
-    if !widget.props.region.is_empty() {
-        return widget.props.region.to_ascii_lowercase();
-    }
-    crate::widget_map::attr_value(
-        &widget.props,
-        &[
-            "data-region-role",
-            "data-region",
-            "region",
-            "region-role",
-            "data-region-id",
-        ],
-    )
-    .unwrap_or("")
-    .trim()
-    .to_ascii_lowercase()
-}
-
-fn region_id_from_token(token: &str) -> Option<nana_ui_core::RegionId> {
-    let token = token.trim().trim_start_matches("region-");
-    if token.is_empty() {
-        return None;
-    }
-    Some(match token {
-        "global-navigation" | "globalnavigation" | "global" => {
-            nana_ui_core::RegionId::GlobalNavigation
-        }
-        "section-navigation" | "sectionnavigation" => nana_ui_core::RegionId::SectionNavigation,
-        "resources" | "sidebar" | "files" => nana_ui_core::RegionId::Resources,
-        "primary-toolbar" | "primarytoolbar" | "toolbar" => nana_ui_core::RegionId::PrimaryToolbar,
-        "primary" | "main" => nana_ui_core::RegionId::Primary,
-        "inspector" => nana_ui_core::RegionId::Inspector,
-        "diagnostics" | "console" => nana_ui_core::RegionId::Diagnostics,
-        other => nana_ui_core::RegionId::custom(other),
-    })
-}
-
-fn workspace_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    context: &AppContext,
-    id: StableNodeId,
-) -> RuntimeWorkspace {
-    let slots = workspace_slots_from_widget(widget, snapshot);
-    let mut component = RuntimeWorkspace::from_model(&nana_ui_core::WorkspaceModel::new(), slots);
-    if let Ok(existing) = context.read(Entity::<RuntimeWorkspace>::from_stable_id(id), Clone::clone)
-    {
-        component.middle = existing.middle;
-        component.primary_column = existing.primary_column;
-        component.primary_row = existing.primary_row;
-        component.editor_stack = existing.editor_stack;
-        component.handles = existing.handles;
-    }
-    component
-}
-
-fn workspace_slots_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> Vec<WorkspaceRegionSlot> {
-    let children = element_child_widgets(widget, snapshot);
-    let mut slots = Vec::new();
-    for (index, child) in children.iter().enumerate() {
-        let Some(content) = StableNodeId::new(child.id) else {
-            continue;
-        };
-        let token = workspace_region_token(child);
-        let region = if let Some(region) = region_id_from_token(&token) {
-            region
-        } else {
-            let fallback = if !child.props.element_id.is_empty() {
-                child.props.element_id.clone()
-            } else if !child.props.value.is_empty() {
-                child.props.value.clone()
-            } else {
-                format!("region-{index}")
-            };
-            nana_ui_core::RegionId::custom(fallback)
-        };
-        if slots
-            .iter()
-            .any(|slot: &WorkspaceRegionSlot| slot.id == region)
-        {
-            continue;
-        }
-        slots.push(WorkspaceRegionSlot::new(region, content));
-    }
-    slots
-}
-
-fn dock_item_id(widget: &crate::SemanticWidget, index: usize) -> String {
-    crate::widget_map::attr_value(&widget.props, &["data-dock-id", "dock-id", "id", "data-id"])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| (!widget.props.element_id.is_empty()).then(|| widget.props.element_id.clone()))
-        .or_else(|| (!widget.props.value.is_empty()).then(|| widget.props.value.clone()))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            let label = widget.props.display_label();
-            if label.is_empty() {
-                format!("item-{index}")
-            } else {
-                label.to_string()
-            }
-        })
-}
-
-fn dock_item_title(widget: &crate::SemanticWidget, id: &str) -> String {
-    let title = widget.props.display_label();
-    if title.is_empty() {
-        id.to_string()
-    } else {
-        title.to_string()
-    }
-}
-
-fn dock_content_for_id(
-    id: &str,
-    children: &[(&crate::SemanticWidget, StableNodeId)],
-) -> Option<StableNodeId> {
-    children.iter().find_map(|(child, node)| {
-        let child_id = dock_item_id(child, 0);
-        (child_id == id).then_some(*node)
-    })
-}
-
-fn parse_dock_axis(raw: &str) -> DockAxis {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "vertical" | "column" | "y" => DockAxis::Vertical,
-        _ => DockAxis::Horizontal,
-    }
-}
-
-fn dock_node_from_host(
-    value: &nana_js_engine::HostValue,
-    children: &[(&crate::SemanticWidget, StableNodeId)],
-) -> Option<DockNode> {
-    match value {
-        nana_js_engine::HostValue::String(id) if !id.is_empty() => Some(DockNode::item(
-            id.as_str(),
-            dock_content_for_id(id, children),
-        )),
-        nana_js_engine::HostValue::Array(items) => {
-            let nodes = items
-                .iter()
-                .filter_map(|item| dock_node_from_host(item, children))
-                .collect::<Vec<_>>();
-            dock_nodes_join(nodes)
-        }
-        nana_js_engine::HostValue::Object(map) => {
-            let kind = host_map_text(map, &["type", "kind", "node"]).to_ascii_lowercase();
-            if kind == "split" || map.contains_key("first") || map.contains_key("second") {
-                let first = map
-                    .get("first")
-                    .and_then(|value| dock_node_from_host(value, children))?;
-                let second = map
-                    .get("second")
-                    .and_then(|value| dock_node_from_host(value, children))?;
-                let axis = parse_dock_axis(&host_map_text(map, &["axis"]));
-                let ratio = host_map_number(map, &["ratio", "size"]).unwrap_or(0.5);
-                return Some(DockNode::split(axis, ratio, first, second));
-            }
-            if kind == "tabs" || map.contains_key("tabs") {
-                let tab_values = map.get("tabs").map(host_array).unwrap_or_default();
-                let mut tabs = Vec::new();
-                let mut contents = Vec::new();
-                for tab in tab_values {
-                    let (id, content) = match tab {
-                        nana_js_engine::HostValue::String(id) if !id.is_empty() => {
-                            (id.clone(), dock_content_for_id(id, children))
-                        }
-                        nana_js_engine::HostValue::Object(tab_map) => {
-                            let id = host_map_text(tab_map, &["id", "key", "value"]);
-                            if id.is_empty() {
-                                continue;
-                            }
-                            (id.clone(), dock_content_for_id(&id, children))
-                        }
-                        _ => continue,
-                    };
-                    if tabs
-                        .iter()
-                        .any(|existing: &Arc<str>| existing.as_ref() == id)
-                    {
-                        continue;
-                    }
-                    let id = Arc::<str>::from(id);
-                    contents.push((Arc::clone(&id), content));
-                    tabs.push(id);
-                }
-                if tabs.is_empty() {
-                    return None;
-                }
-                let active = host_map_text(map, &["active", "value"]);
-                let active = if active.is_empty() {
-                    Arc::clone(&tabs[0])
-                } else {
-                    Arc::<str>::from(active)
-                };
-                return Some(DockNode::tabs(tabs, active, contents));
-            }
-            let id = host_map_text(map, &["id", "key", "value", "dock-id", "data-dock-id"]);
-            if id.is_empty() {
-                return None;
-            }
-            Some(DockNode::item(
-                id.as_str(),
-                dock_content_for_id(&id, children),
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn dock_nodes_join(mut nodes: Vec<DockNode>) -> Option<DockNode> {
-    match nodes.len() {
-        0 => None,
-        1 => nodes.pop(),
-        _ => {
-            let ids = nodes.iter().flat_map(DockNode::flatten).collect::<Vec<_>>();
-            if ids.is_empty() {
-                return None;
-            }
-            let mut contents = Vec::new();
-            for node in &nodes {
-                collect_dock_contents(node, &mut contents);
-            }
-            let active = Arc::clone(&ids[0]);
-            Some(DockNode::tabs(ids, active, contents))
-        }
-    }
-}
-
-fn collect_dock_contents(node: &DockNode, output: &mut Vec<(Arc<str>, Option<StableNodeId>)>) {
-    match node {
-        DockNode::Item { id, content } => output.push((Arc::clone(id), *content)),
-        DockNode::Tabs { contents, .. } => output.extend(contents.iter().cloned()),
-        DockNode::Split { first, second, .. } => {
-            collect_dock_contents(first, output);
-            collect_dock_contents(second, output);
-        }
-    }
-}
-
-fn dock_root_from_children(
-    children: &[(&crate::SemanticWidget, StableNodeId)],
-) -> (DockNode, Vec<(Arc<str>, Arc<str>)>) {
-    let mut titles = Vec::new();
-    let mut items = Vec::new();
-    for (index, (child, content)) in children.iter().enumerate() {
-        let id = dock_item_id(child, index);
-        let title = dock_item_title(child, &id);
-        titles.push((Arc::<str>::from(id.as_str()), Arc::<str>::from(title)));
-        items.push((Arc::<str>::from(id), Some(*content)));
-    }
-    let root = match items.as_slice() {
-        [] => DockNode::item("dock", None),
-        [(id, content)] => DockNode::item(Arc::clone(id), *content),
-        _ => {
-            let tabs = items
-                .iter()
-                .map(|(id, _)| Arc::clone(id))
-                .collect::<Vec<_>>();
-            let active = Arc::clone(&tabs[0]);
-            DockNode::tabs(tabs, active, items)
-        }
-    };
-    (root, titles)
-}
-
-fn dock_from_widget_bound(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-    context: &AppContext,
-    id: StableNodeId,
-) -> RuntimeDock {
-    let next = dock_from_widget(widget, snapshot);
-    match context.read(Entity::<RuntimeDock>::from_stable_id(id), Clone::clone) {
-        Ok(mut existing) => {
-            existing.root = next.root;
-            existing.drop_target = next.drop_target;
-            existing.locked = next.locked;
-            existing.titles = next.titles;
-            existing.style = next.style;
-            existing
-        }
-        Err(_) => next,
-    }
-}
-
-fn dock_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> RuntimeDock {
-    let child_pairs = element_child_widgets(widget, snapshot)
-        .into_iter()
-        .filter_map(|child| StableNodeId::new(child.id).map(|id| (child, id)))
-        .collect::<Vec<_>>();
-    let host_root = widget
-        .props
-        .native_props
-        .get("root")
-        .or_else(|| widget.props.native_props.get("layout"))
-        .and_then(|value| dock_node_from_host(value, &child_pairs));
-    let (root, titles) = if let Some(root) = host_root {
-        let mut titles = Vec::new();
-        for (child, _) in &child_pairs {
-            let id = dock_item_id(child, 0);
-            let title = dock_item_title(child, &id);
-            if title != id {
-                titles.push((Arc::<str>::from(id), Arc::<str>::from(title)));
-            }
-        }
-        (root, titles)
-    } else {
-        dock_root_from_children(&child_pairs)
-    };
-    let mut dock = RuntimeDock::new(root);
-    for (id, title) in titles {
-        dock = dock.title(id, title);
-    }
-    dock
-}
-
-fn app_shell_slots(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
-) -> (
-    Option<StableNodeId>,
-    Option<StableNodeId>,
-    Option<StableNodeId>,
-) {
-    let children = element_child_widgets(widget, snapshot);
-    let title_bar = children
-        .iter()
-        .find(|child| is_title_bar_child(child))
-        .and_then(|child| StableNodeId::new(child.id));
-    let overlay = children
-        .iter()
-        .find(|child| is_overlay_child(child) && Some(child.id) != title_bar.map(StableNodeId::get))
-        .and_then(|child| StableNodeId::new(child.id));
-    let body = children
-        .iter()
-        .find(|child| {
-            is_body_child(child)
-                && Some(child.id) != title_bar.map(StableNodeId::get)
-                && Some(child.id) != overlay.map(StableNodeId::get)
-        })
-        .or_else(|| {
-            children.iter().find(|child| {
-                let id = child.id;
-                Some(id) != title_bar.map(StableNodeId::get)
-                    && Some(id) != overlay.map(StableNodeId::get)
-            })
-        })
-        .and_then(|child| StableNodeId::new(child.id))
-        .or_else(|| {
-            title_bar.and_then(|title_bar| {
-                snapshot.get(title_bar.get()).and_then(|bar| {
-                    element_child_widgets(bar, snapshot)
-                        .into_iter()
-                        .find(|child| is_body_child(child))
-                        .and_then(|child| StableNodeId::new(child.id))
-                })
-            })
-        });
-    (title_bar, body, overlay)
-}
-
-fn normalize_event_name(event: &str) -> String {
-    let e = event.trim();
-    let lower = if let Some(rest) = e.strip_prefix("on").or_else(|| e.strip_prefix("On")) {
-        rest
-    } else {
-        e
-    };
-    lower.to_ascii_lowercase()
-}
-
-/// Minimal trusted HTML fragment for Vue static content (compiler output only).
-#[derive(Debug, Clone)]
-enum FragNode {
-    Text(String),
-    Element {
-        tag: String,
-        attrs: Vec<(String, String)>,
-        children: Vec<FragNode>,
-    },
-}
-
-fn decode_basic_entities(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&nbsp;", "\u{00A0}")
-        .replace("&amp;", "&")
-}
-
-fn parse_html_fragment(html: &str) -> Vec<FragNode> {
-    let bytes = html.as_bytes();
-    let mut i = 0usize;
-    let mut roots = Vec::new();
-    parse_html_children(bytes, &mut i, &mut roots, None);
-    roots
-}
-
-fn is_void_html_tag(tag: &str) -> bool {
-    matches!(
-        tag,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
-}
-
-fn parse_html_children(
-    bytes: &[u8],
-    i: &mut usize,
-    out: &mut Vec<FragNode>,
-    stop_tag: Option<&str>,
-) {
-    while *i < bytes.len() {
-        if bytes[*i] == b'<' {
-            if bytes.get(*i + 1) == Some(&b'/') {
-                let start = *i + 2;
-                let mut end = start;
-                while end < bytes.len() && bytes[end] != b'>' {
-                    end += 1;
-                }
-                let name = std::str::from_utf8(&bytes[start..end])
-                    .unwrap_or("")
-                    .trim()
-                    .to_ascii_lowercase();
-                *i = (end + 1).min(bytes.len());
-                if stop_tag.is_some_and(|t| t == name) {
-                    return;
-                }
-                continue;
-            }
-            if bytes.get(*i + 1) == Some(&b'!') {
-                *i += 2;
-                while *i < bytes.len() && bytes[*i] != b'>' {
-                    *i += 1;
-                }
-                *i = (*i + 1).min(bytes.len());
-                continue;
-            }
-            *i += 1;
-            let tag_start = *i;
-            while *i < bytes.len()
-                && (bytes[*i].is_ascii_alphanumeric() || bytes[*i] == b'-' || bytes[*i] == b':')
-            {
-                *i += 1;
-            }
-            let tag = std::str::from_utf8(&bytes[tag_start..*i])
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if tag.is_empty() {
-                continue;
-            }
-            // Attributes until `>` or `/>`
-            let attr_start = *i;
-            let mut self_closing = false;
-            while *i < bytes.len() {
-                if bytes[*i] == b'>' {
-                    if *i > attr_start && bytes[*i - 1] == b'/' {
-                        self_closing = true;
-                    }
-                    break;
-                }
-                *i += 1;
-            }
-            let attr_end = if self_closing { *i - 1 } else { *i };
-            let attr_str = std::str::from_utf8(&bytes[attr_start..attr_end]).unwrap_or("");
-            let attrs = parse_html_attrs(attr_str);
-            *i = (*i + 1).min(bytes.len());
-            let void = self_closing || is_void_html_tag(&tag);
-            let mut children = Vec::new();
-            if !void {
-                parse_html_children(bytes, i, &mut children, Some(&tag));
-            }
-            out.push(FragNode::Element {
-                tag,
-                attrs,
-                children,
-            });
-            continue;
-        }
-        let start = *i;
-        while *i < bytes.len() && bytes[*i] != b'<' {
-            *i += 1;
-        }
-        if *i > start {
-            let text = std::str::from_utf8(&bytes[start..*i]).unwrap_or("");
-            if !text.is_empty() {
-                out.push(FragNode::Text(decode_basic_entities(text)));
-            }
-        }
-    }
-}
-
-fn parse_html_attrs(attr_str: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let bytes = attr_str.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() || bytes[i] == b'/' {
-            break;
-        }
-        let name_start = i;
-        while i < bytes.len()
-            && !bytes[i].is_ascii_whitespace()
-            && bytes[i] != b'='
-            && bytes[i] != b'/'
-        {
-            i += 1;
-        }
-        let name = std::str::from_utf8(&bytes[name_start..i])
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if name.is_empty() {
-            break;
-        }
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let value = if bytes.get(i) == Some(&b'=') {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            if bytes.get(i) == Some(&b'"') || bytes.get(i) == Some(&b'\'') {
-                let quote = bytes[i];
-                i += 1;
-                let vstart = i;
-                while i < bytes.len() && bytes[i] != quote {
-                    i += 1;
-                }
-                let v = std::str::from_utf8(&bytes[vstart..i]).unwrap_or("");
-                if i < bytes.len() {
-                    i += 1;
-                }
-                decode_basic_entities(v)
-            } else {
-                let vstart = i;
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'/' {
-                    i += 1;
-                }
-                decode_basic_entities(std::str::from_utf8(&bytes[vstart..i]).unwrap_or(""))
-            }
-        } else {
-            String::new()
-        };
-        out.push((name, value));
-    }
-    out
-}
-
-fn selector_list_matches(sel: &str, tag: &str, attrs: &HashMap<String, String>) -> bool {
-    sel.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .any(|simple| selector_matches(simple, tag, attrs))
-}
-
-/// Match one compound simple selector: optional tag + `.class*` + optional `#id` + `[attr]*`.
-fn selector_matches(sel: &str, tag: &str, attrs: &HashMap<String, String>) -> bool {
-    let sel = sel.trim();
-    if sel.is_empty() {
-        return false;
-    }
-    let bytes = sel.as_bytes();
-    let mut i = 0usize;
-    // Optional type selector
-    if bytes[0].is_ascii_alphabetic() || bytes[0] == b'*' {
-        let start = i;
-        i += 1;
-        while i < bytes.len()
-            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-        {
-            i += 1;
-        }
-        let type_sel = &sel[start..i];
-        if type_sel != "*" && !tag.eq_ignore_ascii_case(type_sel) {
-            return false;
-        }
-    }
-    while i < bytes.len() {
-        match bytes[i] {
-            b'.' => {
-                i += 1;
-                let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-                {
-                    i += 1;
-                }
-                if start == i {
-                    return false;
-                }
-                let class = &sel[start..i];
-                if !attrs
-                    .get("class")
-                    .map(|c| c.split_whitespace().any(|x| x == class))
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-            }
-            b'#' => {
-                i += 1;
-                let start = i;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
-                {
-                    i += 1;
-                }
-                if start == i {
-                    return false;
-                }
-                let id = &sel[start..i];
-                if attrs.get("id").map(|v| v.as_str()) != Some(id) {
-                    return false;
-                }
-            }
-            b'[' => {
-                let Some(rel_end) = sel[i..].find(']') else {
-                    return false;
-                };
-                let end = i + rel_end;
-                let inner = sel[i + 1..end].trim();
-                if let Some((k, v)) = inner.split_once('=') {
-                    let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
-                    if attrs.get(k.trim()).map(|x| x.as_str()) != Some(v) {
-                        return false;
-                    }
-                } else if !attrs.contains_key(inner) {
-                    return false;
-                }
-                i = end + 1;
-            }
-            _ => return false,
-        }
-    }
-    // Bare tag already handled; empty remainder after type means tag-only match.
-    // If we never consumed a type and never entered the loop, treat as tag name
-    // (legacy path: `body`, `html`, `div`).
-    if i == 0 {
-        return tag.eq_ignore_ascii_case(sel);
-    }
-    true
-}
 
 #[cfg(test)]
 mod tests {
@@ -6485,7 +3284,7 @@ mod tests {
     /// refreshes.
     #[test]
     fn labelled_widget_kinds_own_their_label_without_a_text_child() {
-        fn settle(doc: &mut NanaTreeDocument, bridge: &crate::MessageBridge) {
+        fn settle(doc: &mut NanaTreeDocument, bridge: &mut crate::MessageBridge) {
             doc.sync_semantic_styles(&bridge.snapshot());
             runtime_layout(doc, 400.0, 240.0);
             doc.flush_runtime_systems();
@@ -6512,7 +3311,7 @@ mod tests {
                 },
             );
 
-            settle(&mut doc, &bridge);
+            settle(&mut doc, &mut bridge);
             assert_eq!(
                 visible_text_primitive_count(&doc, widget),
                 1,
@@ -6524,7 +3323,7 @@ mod tests {
                 "label",
                 &nana_js_engine::HostValue::string("Renamed"),
             );
-            settle(&mut doc, &bridge);
+            settle(&mut doc, &mut bridge);
 
             assert_eq!(
                 visible_text_primitive_count(&doc, widget),
@@ -6839,6 +3638,251 @@ mod tests {
         assert_eq!(accessibility.label.as_deref(), Some("Build"));
         assert!(accessibility.disabled);
         assert_eq!(accessibility.selected, Some(true));
+    }
+
+    /// The `button-with-icon` rule must win before the element-tag chain:
+    /// `<button>` with an icon child tags `nana.icon-button`, not `nana.button`,
+    /// even though "button" itself resolves in the registry.
+    #[test]
+    fn button_with_icon_rule_precedes_element_tag_chain() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let button = doc.create_element("button");
+        let svg = doc.create_element("svg");
+        doc.insert(button, doc.mount_root(), None);
+        doc.insert(svg, button, None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            button.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "Go".into(),
+                element_tag: "button".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            svg.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                value: "search".into(),
+                class_names: vec!["lucide".into(), "lucide-search".into()],
+                element_tag: "svg".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(svg.0, button.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(button).unwrap();
+        assert_eq!(
+            doc.runtime.component_type(id).map(|t| t.as_str()),
+            Some("nana.icon-button")
+        );
+    }
+
+    /// `alertdialog` role must route Dialog to ConfirmDialog rather than the
+    /// plain dialog component.
+    #[test]
+    fn confirm_dialog_rule_routes_alertdialog_role() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("nana-dialog");
+        doc.insert(node, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            node.0,
+            crate::WidgetKind::Dialog,
+            crate::WidgetProps {
+                label: "Delete?".into(),
+                element_tag: "nana-dialog".into(),
+                role: "alertdialog".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        let id = StableNodeId::try_from(node).unwrap();
+        assert_eq!(
+            doc.runtime.component_type(id).map(|t| t.as_str()),
+            Some("nana.confirm-dialog")
+        );
+    }
+
+    /// Choice fields must keep one option list with three Runtime landings:
+    /// Search > Dropdown > Select, decided by kind before props.
+    #[test]
+    fn choice_field_rules_keep_runtime_landings_distinct() {
+        let cases = [
+            (crate::WidgetKind::SearchDropdown, "nana.search-dropdown"),
+            (crate::WidgetKind::Dropdown, "nana.dropdown"),
+            (crate::WidgetKind::Select, "nana.select"),
+        ];
+        for (kind, expected_type) in cases {
+            let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+            let node = doc.create_element("select");
+            doc.insert(node, doc.mount_root(), None);
+            let mut bridge = crate::MessageBridge::new();
+            bridge.register(
+                node.0,
+                kind,
+                crate::WidgetProps {
+                    element_tag: "select".into(),
+                    ..Default::default()
+                },
+            );
+            doc.sync_semantic_styles(&bridge.snapshot());
+            let id = StableNodeId::try_from(node).unwrap();
+            assert_eq!(
+                doc.runtime.component_type(id).map(|t| t.as_str()),
+                Some(expected_type),
+                "kind {kind:?} must land on {expected_type}"
+            );
+        }
+    }
+
+    /// Incremental semantic sync must land the same projections a full pass
+    /// would: mutations applied stepwise (each sync walking only the bridge's
+    /// dirty set) end with correct runtime state for mutated widgets, their
+    /// cascade neighbours, and late insertions.
+    #[test]
+    fn incremental_sync_projects_mutated_widgets_and_cascade_neighbours() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let root = doc.create_element("nana-column");
+        doc.insert(root, doc.mount_root(), None);
+        let button = doc.create_element("button");
+        let input = doc.create_element("input");
+        let checkbox = doc.create_element("input");
+        let checkbox_tail = doc.create_element("input");
+        doc.insert(button, root, None);
+        doc.insert(input, root, None);
+        doc.insert(checkbox, root, None);
+        doc.insert(checkbox_tail, root, None);
+        let mut bridge = crate::MessageBridge::new();
+        let props = |tag: &str, label: &str| crate::WidgetProps {
+            element_tag: tag.into(),
+            label: label.into(),
+            ..Default::default()
+        };
+        bridge.register(root.0, crate::WidgetKind::Column, props("nana-column", ""));
+        bridge.register(button.0, crate::WidgetKind::Button, props("button", "Go"));
+        bridge.register(input.0, crate::WidgetKind::Input, props("input", ""));
+        bridge.register(
+            checkbox.0,
+            crate::WidgetKind::Checkbox,
+            props("input", "Opt-in"),
+        );
+        bridge.register(
+            checkbox_tail.0,
+            crate::WidgetKind::Checkbox,
+            props("input", "Opt-out"),
+        );
+        bridge.insert_child(button.0, root.0, None);
+        bridge.insert_child(input.0, root.0, None);
+        bridge.insert_child(checkbox.0, root.0, None);
+        bridge.insert_child(checkbox_tail.0, root.0, None);
+        doc.sync_semantic_styles(&mut bridge.snapshot());
+
+        // Stepwise mutations: label patch, text input, toggle (which recascades
+        // following siblings), then a structural append.
+        bridge.patch_prop(button.0, "label", &nana_js_engine::HostValue::string("Submit"));
+        bridge.note_input(input.0, "hello");
+        bridge.note_toggle(checkbox.0, true);
+        let item = doc.create_element("li");
+        doc.insert(item, root, None);
+        bridge.register(item.0, crate::WidgetKind::ListItem, props("li", "New row"));
+        bridge.insert_child(item.0, root.0, None);
+        doc.sync_semantic_styles(&mut bridge.snapshot());
+
+        let button_id = StableNodeId::try_from(button).unwrap();
+        let input_id = StableNodeId::try_from(input).unwrap();
+        let checkbox_id = StableNodeId::try_from(checkbox).unwrap();
+        let tail_id = StableNodeId::try_from(checkbox_tail).unwrap();
+        let item_id = StableNodeId::try_from(item).unwrap();
+        assert_eq!(
+            doc.runtime
+                .component_type(button_id)
+                .map(|t| t.as_str().to_owned()),
+            Some("nana.button".into())
+        );
+        assert_eq!(
+            doc.runtime
+                .accessibility(button_id)
+                .and_then(|a| a.label.as_deref()),
+            Some("Submit"),
+            "patched label must reach the accessibility projection"
+        );
+        assert_eq!(
+            doc.runtime.text_input(input_id).map(|t| t.value.clone()),
+            Some("hello".into()),
+            "noted input must reach the Runtime text input state"
+        );
+        assert_eq!(
+            doc.runtime.accessibility(checkbox_id).and_then(|a| a.checked),
+            Some(true),
+            "noted toggle must reach the accessibility projection"
+        );
+        assert_eq!(
+            doc.runtime.accessibility(tail_id).and_then(|a| a.checked),
+            Some(false),
+            "untouched sibling must keep its own unchecked state"
+        );
+        assert_eq!(
+            doc.runtime
+                .component_type(item_id)
+                .map(|t| t.as_str().to_owned()),
+            Some("nana.list-item".into()),
+            "late insertion must be projected on the structural pass"
+        );
+    }
+
+    /// The bridge footprint must classify mutations: prop patches stay
+    /// targeted, structural edits demand a full pass, appearance is global.
+    #[test]
+    fn bridge_footprint_classifies_mutations() {
+        let mut bridge = crate::MessageBridge::new();
+        let root = 1;
+        let button = 2;
+        bridge.register(
+            root,
+            crate::WidgetKind::Column,
+            crate::WidgetProps {
+                element_tag: "nana-column".into(),
+                ..Default::default()
+            },
+        );
+        bridge.register(
+            button,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                element_tag: "button".into(),
+                ..Default::default()
+            },
+        );
+        bridge.insert_child(button, root, None);
+        // Consume the mount footprint.
+        let mount = bridge.snapshot();
+        assert!(mount.changes.needs_full_pass(), "mounting is structural");
+        assert!(!mount.changes.dirty.is_empty());
+
+        bridge.patch_prop(button, "label", &nana_js_engine::HostValue::string("Hi"));
+        let patch = bridge.snapshot();
+        assert!(!patch.changes.needs_full_pass());
+        assert!(patch.changes.dirty.contains(&button));
+
+        bridge.set_label(button, "Renamed");
+        let relabel = bridge.snapshot();
+        assert!(!relabel.changes.needs_full_pass());
+        assert!(relabel.changes.dirty.contains(&button));
+
+        let mut appearance = nana_ui_core::AppearanceSettings::default();
+        appearance.set_standard_radius(20.0);
+        bridge.set_appearance(appearance);
+        let appearance = bridge.snapshot();
+        assert!(appearance.changes.all);
+        assert!(appearance.changes.needs_full_pass());
+
+        let child = 3;
+        bridge.register(child, crate::WidgetKind::Box, Default::default());
+        bridge.insert_child(child, root, None);
+        let insert = bridge.snapshot();
+        assert!(insert.changes.structure_changed);
     }
 
     #[test]
@@ -9749,6 +6793,7 @@ mod tests {
             theme: nana_ui_core::ThemeMode::Light,
             appearance: nana_ui_core::AppearanceSettings::default(),
             roots: vec![child.0],
+            changes: Default::default(),
             widgets: vec![crate::SemanticWidget {
                 id: child.0,
                 kind: crate::WidgetKind::Button,
@@ -10284,6 +7329,7 @@ mod tests {
             theme: nana_ui_core::ThemeMode::Light,
             appearance: nana_ui_core::AppearanceSettings::default(),
             roots: vec![node.0],
+            changes: Default::default(),
             widgets: vec![crate::SemanticWidget {
                 id: node.0,
                 kind: crate::WidgetKind::Button,
@@ -10328,6 +7374,7 @@ mod tests {
             theme: nana_ui_core::ThemeMode::Light,
             appearance: nana_ui_core::AppearanceSettings::default(),
             roots: vec![under.0, overlay.0],
+            changes: Default::default(),
             widgets: vec![
                 crate::SemanticWidget {
                     id: under.0,

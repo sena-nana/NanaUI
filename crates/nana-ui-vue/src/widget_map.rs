@@ -885,16 +885,6 @@ pub(crate) fn attr_value<'a>(props: &'a WidgetProps, names: &[&str]) -> Option<&
     None
 }
 
-/// Bind `<img src>` / `data-src` onto the replaced-content paint slot.
-#[cfg(test)]
-pub(crate) fn apply_img_content_image(style: &mut nana_ui_core::LayoutStyle, props: &WidgetProps) {
-    if !props.element_tag.eq_ignore_ascii_case("img") {
-        return;
-    }
-    let src = attr_value(props, &["src", "data-src"]).unwrap_or("");
-    crate::css_paint::apply_img_replaced_content(style, src);
-}
-
 pub(crate) fn parse_status_tone(raw: &str) -> Option<nana_ui_core::StatusTone> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "neutral" => Some(nana_ui_core::StatusTone::Neutral),
@@ -1031,23 +1021,11 @@ mod tests {
     }
 
     #[test]
-    fn img_maps_to_box_and_src_binds_content_image() {
+    fn img_maps_to_box() {
         assert_eq!(
             resolve_kind_from_hints("img", None, None, None),
             Some(WidgetKind::Box)
         );
-        let mut props = WidgetProps::default();
-        props.element_tag = "img".into();
-        props.attrs.insert("src".into(), "hero.png".into());
-        let mut style = nana_ui_core::LayoutStyle::default();
-        apply_img_content_image(&mut style, &props);
-        match style.paint.content_image {
-            Some(nana_ui_core::BackgroundImage::Url { ref url, fit, .. }) => {
-                assert_eq!(url, "hero.png");
-                assert_eq!(fit, nana_ui_core::BackgroundImageFit::Stretch);
-            }
-            other => panic!("expected img src paint, got {other:?}"),
-        }
     }
 
     #[test]

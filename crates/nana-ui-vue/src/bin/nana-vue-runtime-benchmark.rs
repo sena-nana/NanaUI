@@ -189,6 +189,7 @@ fn build_tree(
         appearance: AppearanceSettings::default(),
         roots: vec![document.mount_root().0],
         widgets,
+        changes: Default::default(),
     };
     (document, snapshot, boxes)
 }
