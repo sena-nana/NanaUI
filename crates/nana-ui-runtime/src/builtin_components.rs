@@ -3040,9 +3040,13 @@ mod tests {
         );
         assert_eq!(
             context
-                .resolve_component_tag("div")
+                .resolve_component_tag("column")
                 .map(ComponentTypeId::as_str),
             Some("nana.column")
+        );
+        assert!(
+            context.resolve_component_tag("div").is_none(),
+            "HTML div stays a layout box; the column alias owns `column`"
         );
         assert_eq!(
             context
