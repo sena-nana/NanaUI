@@ -68,10 +68,12 @@ pub use nana_ui_core::box_layout::{
     FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement,
     GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
     LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges, OverflowSpec,
-    PaddingSpec, PaintTransform, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
+    PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
     ViewportAxis, VisibilitySpec, WhiteSpaceSpec, resolve_grid_column_widths,
     resolve_grid_track_sizes,
 };
+#[cfg(test)]
+use nana_ui_core::box_layout::PaintTransform;
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
 pub trait CssLayoutParse: Sized {
@@ -347,10 +349,6 @@ impl CalcSum {
         .finish()
     }
 
-    fn neg(self) -> Option<Self> {
-        self.scale(-1.0)
-    }
-
     fn add(self, rhs: Self) -> Option<Self> {
         match (self.is_pure_number(), rhs.is_pure_number()) {
             (true, true) => Self::number(self.number + rhs.number).finish(),
@@ -385,13 +383,6 @@ impl CalcSum {
             (false, true) => self.scale(rhs.number),
             (false, false) => None,
         }
-    }
-
-    fn div(self, rhs: Self) -> Option<Self> {
-        if !rhs.is_pure_number() || rhs.number == 0.0 || !rhs.number.is_finite() {
-            return None;
-        }
-        self.scale(1.0 / rhs.number)
     }
 
     fn to_length_spec(self) -> Option<LengthSpec> {
