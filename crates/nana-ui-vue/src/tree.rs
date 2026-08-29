@@ -1560,7 +1560,12 @@ impl NanaTreeDocument {
                 mutations.set_interaction(id, interaction);
             }
             let accessibility = AccessibilityState {
-                role: accessibility_role(widget.kind, &widget.props.role),
+                role: accessibility_role(
+                    widget.kind,
+                    &widget.props.role,
+                    &widget.props.element_tag,
+                    !widget.props.label.is_empty(),
+                ),
                 label: (!widget.props.label.is_empty())
                     .then(|| Arc::<str>::from(widget.props.label.as_str())),
                 value: (!widget.props.value.is_empty())
@@ -4470,7 +4475,12 @@ fn project_aligned_segmented_option(
     true
 }
 
-fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> AccessibilityRole {
+fn accessibility_role(
+    kind: crate::WidgetKind,
+    explicit_role: &str,
+    element_tag: &str,
+    has_accessible_name: bool,
+) -> AccessibilityRole {
     match explicit_role.trim().to_ascii_lowercase().as_str() {
         "document" => return AccessibilityRole::Document,
         "text" => return AccessibilityRole::Text,
@@ -4492,7 +4502,22 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         "menuitem" => return AccessibilityRole::MenuItem,
         "tooltip" => return AccessibilityRole::Tooltip,
         "img" => return AccessibilityRole::Image,
+        "main" => return AccessibilityRole::Main,
+        "navigation" => return AccessibilityRole::Navigation,
+        "banner" => return AccessibilityRole::Banner,
+        "contentinfo" => return AccessibilityRole::ContentInfo,
+        "complementary" => return AccessibilityRole::Complementary,
+        "region" => return AccessibilityRole::Region,
+        "search" => return AccessibilityRole::Search,
+        "form" => return AccessibilityRole::Form,
         _ => {}
+    }
+    // HTML landmark tags carry their landmark role without becoming widgets:
+    // `<search>` stays a Column, it never resolves to SearchDropdown.
+    if kind.is_layout() {
+        if let Some(role) = landmark_role_from_tag(element_tag, has_accessible_name) {
+            return role;
+        }
     }
     match kind {
         crate::WidgetKind::Text => AccessibilityRole::Text,
@@ -4540,6 +4565,24 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         crate::WidgetKind::NativeMarkdown => AccessibilityRole::Document,
         crate::WidgetKind::GraphCanvas => AccessibilityRole::Generic,
         _ => AccessibilityRole::Generic,
+    }
+}
+
+/// HTML landmark tags map to landmark roles per HTML-AAM. `section` and
+/// `form` are only landmarks when they carry an accessible name; `header`
+/// and `footer` map unconditionally (the top-level-only refinement is not
+/// implemented).
+fn landmark_role_from_tag(tag: &str, has_accessible_name: bool) -> Option<AccessibilityRole> {
+    match tag.trim().to_ascii_lowercase().as_str() {
+        "main" => Some(AccessibilityRole::Main),
+        "nav" => Some(AccessibilityRole::Navigation),
+        "aside" => Some(AccessibilityRole::Complementary),
+        "search" => Some(AccessibilityRole::Search),
+        "header" => Some(AccessibilityRole::Banner),
+        "footer" => Some(AccessibilityRole::ContentInfo),
+        "section" if has_accessible_name => Some(AccessibilityRole::Region),
+        "form" if has_accessible_name => Some(AccessibilityRole::Form),
+        _ => None,
     }
 }
 

@@ -32,6 +32,8 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<video>` 播放、未接槽的 `<canvas>` 2D 不伪造浏览器。
 
+地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo；`section` / `form` 只有带可访问名（如 `aria-label`）时才是 region / form。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。`header` / `footer` 目前不区分是否顶层，嵌套时也会得到 banner / contentinfo。
+
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
 
 ## 它提供的 Web 面，以及明确没有的

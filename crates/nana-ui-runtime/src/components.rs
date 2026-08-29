@@ -1290,6 +1290,14 @@ pub enum AccessibilityRole {
     Tooltip,
     Status,
     Image,
+    Main,
+    Navigation,
+    Banner,
+    ContentInfo,
+    Complementary,
+    Region,
+    Search,
+    Form,
     #[default]
     Generic,
 }

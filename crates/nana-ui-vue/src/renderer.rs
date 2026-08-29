@@ -2258,6 +2258,74 @@ mod tests {
     }
 
     #[test]
+    fn html_landmark_tags_project_landmark_roles() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        use nana_ui_runtime::AccessibilityRole as Role;
+        let mut named = std::collections::BTreeMap::new();
+        named.insert("aria-label".into(), HostValue::string("Usage"));
+        let mut role_override = std::collections::BTreeMap::new();
+        role_override.insert("role".into(), HostValue::string("button"));
+        let cases = [
+            ("nav", None, Role::Navigation),
+            ("main", None, Role::Main),
+            ("aside", None, Role::Complementary),
+            ("search", None, Role::Search),
+            ("header", None, Role::Banner),
+            ("footer", None, Role::ContentInfo),
+            ("section", Some(&named), Role::Region),
+            ("form", Some(&named), Role::Form),
+            ("div", None, Role::Generic),
+            ("nav", Some(&role_override), Role::Button),
+        ];
+        let mut ids = Vec::new();
+        for (tag, seed, _) in &cases {
+            let seed = seed.cloned().unwrap_or_default();
+            let id = api
+                .call(
+                    "createElement",
+                    &[
+                        HostValue::string(*tag),
+                        HostValue::Null,
+                        HostValue::Null,
+                        HostValue::Object(seed),
+                    ],
+                )
+                .unwrap()
+                .as_f64()
+                .unwrap() as u64;
+            api.call("insert", &[HostValue::Number(id as f64), HostValue::Number(root as f64)])
+                .unwrap();
+            ids.push(id);
+        }
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        for ((tag, _, expected), id) in cases.iter().zip(&ids) {
+            assert_eq!(
+                roles
+                    .iter()
+                    .find(|entry| entry.id.get() == *id)
+                    .unwrap_or_else(|| panic!("element {id} must enter Runtime accessibility"))
+                    .role,
+                *expected,
+                "tag `{tag}` must project {expected:?}"
+            );
+        }
+    }
+
+    #[test]
     fn create_element_maps_vue_html_controls() {
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
         let bridge = Arc::new(Mutex::new(MessageBridge::new()));
