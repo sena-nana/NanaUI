@@ -594,7 +594,17 @@ impl RegisterableComponent for SegmentedControl {
     const TYPE_ID: &'static str = "nana.segmented";
     const TAGS: &'static [&'static str] = &["segmented"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut component = SegmentedControl::new();
+        let mut component = if spec
+            .attr("chrome")
+            .is_some_and(|value| value.eq_ignore_ascii_case("radio"))
+            || spec
+                .attr("role")
+                .is_some_and(|value| value.eq_ignore_ascii_case("radiogroup"))
+        {
+            SegmentedControl::radio_group()
+        } else {
+            SegmentedControl::new()
+        };
         component = component.size(spec.size).fill(flag_attr(spec, &["fill"]));
         if !spec.label.is_empty() {
             component = component.label(Arc::<str>::from(spec.label));
@@ -643,8 +653,8 @@ impl RegisterableComponent for Dropdown {
 }
 
 impl RegisterableComponent for SearchDropdown {
-    const TYPE_ID: &'static str = "nana.search";
-    const TAGS: &'static [&'static str] = &["search"];
+    const TYPE_ID: &'static str = "nana.search-dropdown";
+    const TAGS: &'static [&'static str] = &["search-dropdown"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -1245,7 +1255,7 @@ impl RegisterableComponent for Table {
 
 impl RegisterableComponent for TableRow {
     const TYPE_ID: &'static str = "nana.table-row";
-    const TAGS: &'static [&'static str] = &["table-row"];
+    const TAGS: &'static [&'static str] = &["tr"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         TableRow::new()
             .selected(spec.active || spec.toggled)
@@ -1257,7 +1267,7 @@ impl RegisterableComponent for TableRow {
 /// rather than the tag.
 impl RegisterableComponent for TableCell {
     const TYPE_ID: &'static str = "nana.table-cell";
-    const TAGS: &'static [&'static str] = &["table-cell"];
+    const TAGS: &'static [&'static str] = &["td"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = TableCell::new(spec.display_label())
             .column_header(flag_attr(

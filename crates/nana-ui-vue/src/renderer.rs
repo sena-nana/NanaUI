@@ -23,6 +23,7 @@ use crate::tree::{
     ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
     query_scroll_content_size,
 };
+use nana_ui_core::ButtonKind;
 
 /// Shared handles used by DOM + semantic bridge host ops.
 #[derive(Clone)]
@@ -125,31 +126,49 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let tag = arg_str(args, 0).unwrap_or_else(|| "div".into());
             let namespace = ElementNamespace::parse(arg_str(args, 1).as_deref());
             let is = arg_str(args, 2);
-            let mut guard = lock_doc(&host.document)?;
-            let handle = guard.create_element_ns(&tag, namespace, is.as_deref());
-            // runtime-dom: select[multiple] seeded from vnode props.
-            if tag.eq_ignore_ascii_case("select")
-                && let Some(HostValue::Object(props)) = args.get(3)
-                && let Some(multiple) = props.get("multiple")
-                && !matches!(multiple, HostValue::Null | HostValue::Undefined)
-            {
-                guard.set_attribute(handle, "multiple", &host_to_string(multiple));
-            }
-            drop(guard);
-            // Every visible element downlevels onto a Nana foundation kind.
-            let kind =
-                resolve_kind_from_hints(&tag, None, None, None).unwrap_or(WidgetKind::Column);
-            let mut bridge = lock_bridge(&host.bridge)?;
-            let mut props = WidgetProps {
-                element_tag: tag.to_ascii_lowercase(),
-                ..WidgetProps::default()
+            let seed = match args.get(3) {
+                Some(HostValue::Object(map)) => Some(map),
+                _ => None,
             };
-            if let Some(is) = is.filter(|s| !s.is_empty()) {
-                props.attrs.insert("is".into(), is);
+            let mut props = match seed {
+                Some(map) => WidgetProps::from_map(map),
+                None => WidgetProps::default(),
+            };
+            props.element_tag = tag.to_ascii_lowercase();
+            if let Some(is_value) = is.as_ref().filter(|s| !s.is_empty()) {
+                props.attrs.insert("is".into(), is_value.clone());
             }
             if let Some(ns) = namespace.as_str() {
                 props.attrs.insert("data-nana-ns".into(), ns.to_string());
             }
+            let class = if props.class_names.is_empty() {
+                None
+            } else {
+                Some(props.class_names.join(" "))
+            };
+            let input_type = props.attrs.get("type").cloned();
+            let kind = resolve_kind_from_hints(
+                &tag,
+                class.as_deref(),
+                (!props.role.is_empty()).then_some(props.role.as_str()),
+                input_type.as_deref(),
+            )
+            .unwrap_or(WidgetKind::Column);
+            if tag.eq_ignore_ascii_case("th") {
+                props.attrs.insert("header".into(), String::new());
+                props.attrs.insert("column-header".into(), String::new());
+            }
+            if tag.eq_ignore_ascii_case("a") {
+                props.button_kind = ButtonKind::Text;
+                if props.role.is_empty() {
+                    props.role = "link".into();
+                }
+            }
+            let mut guard = lock_doc(&host.document)?;
+            let handle = guard.create_element_ns(&tag, namespace, is.as_deref());
+            seed_element_attrs(&mut guard, handle, &props);
+            drop(guard);
+            let mut bridge = lock_bridge(&host.bridge)?;
             bridge.register(widget_id(handle), kind, props);
             Ok(HostValue::Number(handle.0 as f64))
         });
@@ -206,43 +225,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 });
             props.element_tag.clone_from(&element_tag);
             let handle = guard.create_element(&element_tag);
-            if !props.label.is_empty() {
-                // The attribute is the DOM facade. The label itself lives only
-                // on the widget element, which paints and announces it; a
-                // `#text` child here would be a second copy that `patchProp`
-                // never refreshes.
-                guard.set_attribute(handle, "label", &props.label);
-            }
-            if props.disabled {
-                guard.set_attribute(handle, "disabled", "");
-            }
-            // Seed class / data-slot onto the document so slot contracts and
-            // querySelector stay aligned with MessageBridge props (Vue may
-            // skip a later patchProp when the vnode props were already
-            // consumed by createWidget).
-            if !props.class_names.is_empty() {
-                guard.set_attribute(handle, "class", &props.class_names.join(" "));
-            }
-            if let Some(slot) = props.attrs.get("data-slot") {
-                guard.set_attribute(handle, "data-slot", slot);
-            }
-            // Seed GPU/canvas attrs so CustomRenderNode sync runs even when Vue
-            // skips a later patchProp / setGpuSlot for vnode props already
-            // consumed by createWidget.
-            if let Some(gpu) = props
-                .attrs
-                .get("data-nana-gpu")
-                .filter(|slot| !slot.is_empty())
-            {
-                guard.set_attribute(handle, "data-nana-gpu", gpu);
-            }
-            if let Some(canvas) = props
-                .attrs
-                .get("data-nana-canvas")
-                .filter(|id| !id.is_empty())
-            {
-                guard.set_attribute(handle, "data-nana-canvas", canvas);
-            }
+            seed_element_attrs(&mut guard, handle, &props);
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             bridge.register(widget_id(handle), kind, props);
@@ -389,12 +372,16 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 }
             }
             let mut stale_children = Vec::new();
+            let mut created = Vec::new();
             {
                 let mut guard = lock_doc(&host.document)?;
                 if key == "innerHTML" || key == "textContent" {
                     stale_children = guard.children_of(el);
                 }
                 patch_prop(&mut guard, el, &key, value.clone());
+                if key == "innerHTML" {
+                    created = guard.children_of(el);
+                }
             }
             let mut bridge = lock_bridge(&host.bridge)?;
             for child in stale_children {
@@ -406,9 +393,22 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                     bridge.unregister(cid);
                 }
             }
+            if key == "innerHTML" {
+                let pairs: Vec<(NodeHandle, NodeHandle)> =
+                    created.iter().map(|id| (*id, *id)).collect();
+                drop(bridge);
+                bridge = lock_bridge(&host.bridge)?;
+                sync_clone_pairs_to_bridge(&host.document, &mut bridge, &pairs)?;
+                let parent_id = widget_id(el);
+                for child in created {
+                    if bridge.contains(widget_id(child)) {
+                        bridge.insert_child(widget_id(child), parent_id, None);
+                    }
+                }
+            }
             if bridge.contains(widget_id(el)) {
                 bridge.patch_prop(widget_id(el), &key, &value);
-                if key == "innerHTML" || key == "textContent" {
+                if key == "textContent" {
                     let label = match &value {
                         HostValue::Null | HostValue::Undefined => String::new(),
                         other => host_to_string(other),
@@ -1107,8 +1107,17 @@ fn patch_prop(doc: &mut NanaTreeDocument, el: NodeHandle, key: &str, value: Host
             }
             other => doc.set_attribute(el, "style", &host_to_string(&other)),
         },
-        // Vue runtime-dom patchDOMProp: v-html / v-text land here, not as attrs.
-        "innerHTML" | "textContent" => match value {
+        // Vue runtime-dom patchDOMProp: v-html parses a fragment; v-text is text.
+        "innerHTML" => match value {
+            HostValue::Null | HostValue::Undefined => {
+                doc.set_inner_html(el, "");
+                doc.remove_attribute(el, key);
+            }
+            other => {
+                doc.set_inner_html(el, &host_to_string(&other));
+            }
+        },
+        "textContent" => match value {
             HostValue::Null | HostValue::Undefined => {
                 doc.set_element_text(el, "");
                 doc.remove_attribute(el, key);
@@ -1430,6 +1439,45 @@ fn offset_parent_metrics(
     (0.0, x, y)
 }
 
+fn seed_element_attrs(guard: &mut NanaTreeDocument, handle: NodeHandle, props: &WidgetProps) {
+    if !props.label.is_empty() {
+        // The attribute is the DOM facade. The label itself lives only
+        // on the widget element, which paints and announces it; a
+        // `#text` child here would be a second copy that `patchProp`
+        // never refreshes.
+        guard.set_attribute(handle, "label", &props.label);
+    }
+    if props.disabled {
+        guard.set_attribute(handle, "disabled", "");
+    }
+    if !props.class_names.is_empty() {
+        guard.set_attribute(handle, "class", &props.class_names.join(" "));
+    }
+    if let Some(slot) = props.attrs.get("data-slot") {
+        guard.set_attribute(handle, "data-slot", slot);
+    }
+    if let Some(ty) = props.attrs.get("type").filter(|ty| !ty.is_empty()) {
+        guard.set_attribute(handle, "type", ty);
+    }
+    if !props.role.is_empty() {
+        guard.set_attribute(handle, "role", &props.role);
+    }
+    if let Some(gpu) = props
+        .attrs
+        .get("data-nana-gpu")
+        .filter(|slot| !slot.is_empty())
+    {
+        guard.set_attribute(handle, "data-nana-gpu", gpu);
+    }
+    if let Some(canvas) = props
+        .attrs
+        .get("data-nana-canvas")
+        .filter(|id| !id.is_empty())
+    {
+        guard.set_attribute(handle, "data-nana-canvas", canvas);
+    }
+}
+
 fn lock_doc(
     doc: &Arc<Mutex<NanaTreeDocument>>,
 ) -> Result<std::sync::MutexGuard<'_, NanaTreeDocument>, JsException> {
@@ -1529,29 +1577,44 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
     match doc.node_kind(node) {
         crate::tree::DomNodeKind::Element => {
             let tag = doc.element_tag(node).unwrap_or_else(|| "div".into());
-            let kind =
-                resolve_kind_from_hints(&tag, None, None, None).unwrap_or(WidgetKind::Column);
             let mut props = WidgetProps {
-                element_tag: tag,
+                element_tag: tag.clone(),
                 ..WidgetProps::default()
             };
+            for (key, value) in doc.attributes(node) {
+                if key.eq_ignore_ascii_case("class") {
+                    props.class_names = value.split_whitespace().map(str::to_string).collect();
+                } else if key.eq_ignore_ascii_case("id") {
+                    props.element_id = value.clone();
+                    props.attrs.insert(key, value);
+                } else if key.eq_ignore_ascii_case("role") {
+                    props.role = value.clone();
+                    props.attrs.insert(key, value);
+                } else {
+                    props.attrs.insert(key, value);
+                }
+            }
             if let Some(ns) = doc.element_namespace(node).and_then(|n| n.as_str()) {
                 props.attrs.insert("data-nana-ns".into(), ns.to_string());
-            }
-            if let Some(is) = doc.get_attribute(node, "is") {
-                props.attrs.insert("is".into(), is);
-            }
-            if let Some(dir) = doc.get_attribute(node, "dir") {
-                props.attrs.insert("dir".into(), dir);
-            }
-            if let Some(class) = doc.get_attribute(node, "class") {
-                props.class_names = class.split_whitespace().map(str::to_string).collect();
             }
             if let Some(label) = doc.text_content(node)
                 && !label.trim().is_empty()
             {
                 props.label = label;
             }
+            let class = if props.class_names.is_empty() {
+                None
+            } else {
+                Some(props.class_names.join(" "))
+            };
+            let input_type = props.attrs.get("type").cloned();
+            let kind = resolve_kind_from_hints(
+                &tag,
+                class.as_deref(),
+                (!props.role.is_empty()).then_some(props.role.as_str()),
+                input_type.as_deref(),
+            )
+            .unwrap_or(WidgetKind::Column);
             bridge.register(id, kind, props);
         }
         crate::tree::DomNodeKind::Text => {
@@ -2032,6 +2095,245 @@ mod tests {
             assert_eq!(content.renderer.as_ref(), "nana.host-texture");
             assert_eq!(content.resource.as_ref(), "program");
         }
+    }
+
+    #[test]
+    fn create_element_seeds_html_button_widget_props() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let mut seed = std::collections::BTreeMap::new();
+        seed.insert("label".into(), HostValue::string("Save"));
+        seed.insert("disabled".into(), HostValue::Bool(true));
+        let id = api
+            .call(
+                "createElement",
+                &[
+                    HostValue::string("button"),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Object(seed),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widget = bridge.lock().unwrap().get(id).cloned().expect("button");
+        assert_eq!(widget.kind, WidgetKind::Button);
+        assert_eq!(widget.props.element_tag, "button");
+        assert_eq!(widget.props.label, "Save");
+        assert!(widget.props.disabled);
+    }
+
+    #[test]
+    fn create_element_input_checkbox_is_checkbox_kind() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let mut seed = std::collections::BTreeMap::new();
+        seed.insert("type".into(), HostValue::string("checkbox"));
+        seed.insert("checked".into(), HostValue::Bool(true));
+        let id = api
+            .call(
+                "createElement",
+                &[
+                    HostValue::string("input"),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Object(seed),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widget = bridge.lock().unwrap().get(id).cloned().expect("input");
+        assert_eq!(widget.kind, WidgetKind::Checkbox);
+        assert_eq!(widget.props.element_tag, "input");
+        assert!(widget.props.toggled);
+    }
+
+    #[test]
+    fn retired_nana_button_tag_is_not_a_button() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let id = api
+            .call("createElement", &[HostValue::string("nana-button")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widget = bridge.lock().unwrap().get(id).cloned().expect("node");
+        assert_eq!(widget.kind, WidgetKind::Column);
+        assert_eq!(widget.props.element_tag, "nana-button");
+    }
+
+    #[test]
+    fn create_element_html_table_is_table_kind() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let table = api
+            .call("createElement", &[HostValue::string("table")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let row = api
+            .call("createElement", &[HostValue::string("tr")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let header = api
+            .call("createElement", &[HostValue::string("th")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let cell = api
+            .call("createElement", &[HostValue::string("td")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widgets = bridge.lock().unwrap();
+        assert_eq!(widgets.get(table).unwrap().kind, WidgetKind::Table);
+        assert_eq!(widgets.get(row).unwrap().kind, WidgetKind::TableRow);
+        assert_eq!(widgets.get(header).unwrap().kind, WidgetKind::TableCell);
+        assert!(
+            widgets
+                .get(header)
+                .unwrap()
+                .props
+                .attrs
+                .contains_key("header")
+        );
+        assert_eq!(widgets.get(cell).unwrap().kind, WidgetKind::TableCell);
+    }
+
+    #[test]
+    fn html_search_landmark_is_not_search_dropdown() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let landmark = api
+            .call("createElement", &[HostValue::string("search")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let field = api
+            .call("createElement", &[HostValue::string("search-dropdown")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widgets = bridge.lock().unwrap();
+        assert_eq!(widgets.get(landmark).unwrap().kind, WidgetKind::Column);
+        assert_eq!(widgets.get(field).unwrap().kind, WidgetKind::SearchDropdown);
+    }
+
+    #[test]
+    fn create_element_maps_vue_html_controls() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let ul = api
+            .call("createElement", &[HostValue::string("ul")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let mut number_seed = std::collections::BTreeMap::new();
+        number_seed.insert("type".into(), HostValue::string("number"));
+        number_seed.insert("value".into(), HostValue::Number(3.0));
+        let number = api
+            .call(
+                "createElement",
+                &[
+                    HostValue::string("input"),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Object(number_seed),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let mut radio_seed = std::collections::BTreeMap::new();
+        radio_seed.insert("type".into(), HostValue::string("radio"));
+        radio_seed.insert("name".into(), HostValue::string("mode"));
+        let radio = api
+            .call(
+                "createElement",
+                &[
+                    HostValue::string("input"),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Object(radio_seed),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let meter = api
+            .call("createElement", &[HostValue::string("meter")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let details = api
+            .call("createElement", &[HostValue::string("details")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let link = api
+            .call("createElement", &[HostValue::string("a")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        let widgets = bridge.lock().unwrap();
+        assert_eq!(widgets.get(ul).unwrap().kind, WidgetKind::List);
+        assert_eq!(widgets.get(number).unwrap().kind, WidgetKind::NumberInput);
+        assert_eq!(widgets.get(radio).unwrap().kind, WidgetKind::Radio);
+        assert_eq!(widgets.get(meter).unwrap().kind, WidgetKind::LevelMeter);
+        assert_eq!(
+            widgets.get(details).unwrap().kind,
+            WidgetKind::SettingsCollapsibleCard
+        );
+        assert_eq!(widgets.get(link).unwrap().kind, WidgetKind::Button);
+        assert_eq!(
+            widgets.get(link).unwrap().props.button_kind,
+            nana_ui_core::ButtonKind::Text
+        );
     }
 
     #[test]
@@ -2524,7 +2826,7 @@ mod tests {
     }
 
     #[test]
-    fn inner_html_patch_sets_element_text() {
+    fn inner_html_patch_parses_fragment_children() {
         let mut doc = NanaTreeDocument::new(400, 300, 1.0);
         let root = doc.mount_root();
         let el = doc.create_element("article");
@@ -2539,10 +2841,17 @@ mod tests {
             doc.get_attribute(el, "innerHTML").as_deref(),
             Some("<strong>hi</strong>")
         );
+        let children = doc.children_of(el);
+        assert_eq!(children.len(), 1, "v-html should parse one element child");
+        assert_eq!(doc.element_tag(children[0]).as_deref(), Some("strong"));
         let texts = doc.snapshot_boxes().texts;
         assert!(
-            texts.iter().any(|(_, t)| t.contains("<strong>hi</strong>")),
-            "expected text content from innerHTML, got {texts:?}"
+            texts.iter().any(|(_, t)| t.contains("hi")),
+            "expected parsed text from innerHTML, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|(_, t)| t.contains("<strong>")),
+            "v-html must not keep markup as a text node, got {texts:?}"
         );
     }
 

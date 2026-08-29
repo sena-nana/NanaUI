@@ -1,6 +1,6 @@
 /**
  * NanaRangeField — semantic peer of Rust `RangeField`.
- * Host node `nana-range-field` draws as Runtime RangeField (not DOM track paint).
+ * Host node `<input type="range">` draws as Runtime RangeField (not DOM track paint).
  */
 import { h } from "@vue/runtime-core";
 
@@ -21,11 +21,12 @@ export const NanaRangeField = {
     return () => {
       const agentId =
         props.agentId || attrs["data-agent-id"] || attrs["agent-id"] || "nana.range";
-      return h("nana-range-field", {
+      return h("input", {
         ...attrs,
         class: ["nana-range-field", props.disabled ? "is-disabled" : "", attrs.class]
           .filter(Boolean)
           .join(" "),
+        type: "range",
         role: "slider",
         label: props.label,
         value: props.modelValue,

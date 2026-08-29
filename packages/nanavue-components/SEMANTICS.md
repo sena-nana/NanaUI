@@ -14,7 +14,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | 层 | 策略 |
 |----|------|
 | Style Model | **Tokens + Semantics + Layout**；L1/L2/L3 同模型（见 `nana_ui_core::style_model`） |
-| L2（本包） | 语义 props → Semantics / Tokens；**跳过 CSS**；`createWidget` / `nana-*` |
+| L2（本包） | 语义 props → Semantics / Tokens；**跳过 CSS**；HTML 1:1 用原生 tag，撞名 / 无 HTML 同名才用 `nana-*` |
 | L1（同树可混） | HTML·class·role·style → `css_map`（Layout）+ `widget_map`（Semantics） |
 | L3 | Runtime / `UiScene` 保留与绘制合同；`nana-ui` Scene host 是当前桌面绘制适配器（见 `docs/components.md`） |
 | 自定义 | **组合与逻辑**；不另起 paint 引擎。CustomContent **已移除** |
@@ -37,25 +37,27 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 
 | 来源 | Nana `WidgetKind` | Runtime 类型 |
 |------|-------------------|--------------|
-| `nana-button` / `<button>` / role=button | Button | `nana_ui::Button` |
+| `<button>` / role=button | Button | `nana_ui::Button` |
 | `nana-chip` / class `nana-chip` | Chip | Button Selected/Subtle 变体（非独立 catalog 身份） |
 | `nana-switch` / role=switch | Switch | `nana_ui::Switch` |
-| `nana-checkbox` / `input[type=checkbox]` | Checkbox | `nana_ui::Checkbox` |
-| `nana-text-input` / `<input>` | Input | `nana_ui::TextInput` |
+| `input[type=checkbox]` | Checkbox | `nana_ui::Checkbox` |
+| `<input>` | Input | `nana_ui::TextInput` |
 | `nana-tabs` / role=tablist / class `nana-tabs` | Tabs | `nana_ui::Tabs` |
 | `nana-segmented` / class `nana-segmented` | Segmented | `nana_ui::SegmentedControl` |
-| `nana-range-field` / role=slider | Range | `nana_ui::RangeField` |
+| `input[type=range]` / role=slider | Range | `nana_ui::RangeField` |
 | `nana-sidebar-row` / class sidebar-row | SidebarRow | `nana_ui::SidebarRow` |
 | `div` / `section` / `main` / `nana-stack` / `nana-column` / `nana-row` / `nana-box` | 初始 tag（Column / Row / Box） | L3 `Stack`（`nana.stack`；column/row/box 为标签别名）。方向与网格写在 `LayoutStyle`，不按 CSS 改 `WidgetKind` |
 | `#text` / `span` / `p` / `h*` | Text | `nana_ui::Text` |
 | `li` | ListItem | `nana_ui::ListItem` |
 | class `card` / `nana-card` | Card | `nana_ui::Card` |
-| `nana-select` / `<select>` | Select | Runtime `Select` |
+| `<select>` / `<option>` | Select | Runtime `Select`（`options` 或子级 `<option>`） |
+| `input[type=radio]` / `role=radiogroup` | Radio / Segmented | Runtime radio chrome |
+| `<a>` | Button（Text） | Runtime `Button` Text 变体 |
 | `nana-dropdown` | Select (`nana-dropdown`) | Runtime `Dropdown` |
-| `nana-search` | Select (`nana-search`) | Runtime `SearchDropdown` |
-| `nana-textarea` / `<textarea>` | Textarea | Runtime `Textarea` + EditorStore |
-| `nana-dialog` / role=dialog | Dialog | Runtime `Dialog`（`open`/`active`） |
-| `nana-dialog` + role=alertdialog / class confirm | Dialog | Runtime `ConfirmDialog` |
+| `search-dropdown`（不是 HTML `<search>`） | SearchDropdown | Runtime `SearchDropdown` |
+| `<textarea>` | Textarea | Runtime `Textarea` + EditorStore |
+| `<dialog>` / role=dialog | Dialog | Runtime `Dialog`（`open`/`active`） |
+| `<dialog>` + role=alertdialog / class confirm | Dialog | Runtime `ConfirmDialog` |
 | `nana-drawer` / sheet | Drawer | Runtime `Drawer`（`side`/`width`/`footer`） |
 | `nana-popover` | Popover | Runtime `Popover` |
 | `nana-context-menu` | ContextMenu | Runtime `ContextMenu` / ActionMenuItem 列表 / MenuStore |
@@ -68,7 +70,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-form-field` | FormField | Runtime `FormField`（子控件走 composer） |
 | `nana-interactive-card` | InteractiveCard | Runtime `InteractiveCard`（内容子树走 composer） |
 | `nana-skeleton` | Skeleton | Runtime `Skeleton` / Scene leaf |
-| `nana-level-meter` | LevelMeter | Runtime `LevelMeter` / Scene leaf |
+| `<meter>` / `nana-level-meter` class | LevelMeter | Runtime `LevelMeter` / Scene leaf |
 | `nana-command-palette` | CommandPalette | Runtime `CommandPalette` |
 | `nana-tree-view` | TreeView | Runtime `TreeView` |
 | `nana-calendar-heatmap` | CalendarHeatmap | Runtime `CalendarHeatmap`（`data` 单元格；`options` 对象为热图度量，数组仍作单元格回退；无法解释时投影空热图） |
@@ -83,14 +85,15 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-gpu-view` | GpuView | Runtime `GpuView`（`nana.gpu-view`） |
 | `nana-icon-button` | IconButton | Runtime `IconButton` |
 | `nana-icon` / `<i>` | Icon | Runtime `IconGlyph` |
-| `nana-number-input` | NumberInput | Runtime `NumberInput`（HTML `input[type=number]` 仍是 `TextInput`） |
-| `nana-divider` / `<hr>` | Divider | Runtime `Divider` |
+| `input[type=number]` / `NanaNumberInput` | NumberInput | Runtime `NumberInput` |
+| `<progress>` | Progress | Runtime `Progress` |
+| `<hr>` | Divider | Runtime `Divider` |
 | `nana-thumbnail` | Thumbnail | Runtime `Thumbnail` |
-| `nana-list` | List | Runtime `List`（HTML `ul`/`ol` 仍是布局盒） |
+| `<ul>` / `<ol>` / `NanaList` | List | Runtime `List` |
 | `nana-scroll-view` | ScrollView | Runtime `ScrollView`（`scrollbars` / `axes`） |
-| `nana-table` | Table | Runtime `Table`（HTML `<table>` 仍是布局盒） |
-| `nana-table-row` | TableRow | Runtime `TableRow` |
-| `nana-table-cell` | TableCell | Runtime `TableCell`（`header` 标列表头） |
+| `<table>` | Table | Runtime `Table` |
+| `<tr>` | TableRow | Runtime `TableRow` |
+| `<td>` / `<th>` | TableCell | Runtime `TableCell`（`th` / `header` 标列表头） |
 | `nana-reorder-list` | ReorderList | Runtime `ReorderList` |
 | `nana-time-series-chart` | TimeSeriesChart | Runtime `TimeSeriesChart` |
 | `nana-desktop-shell` | DesktopShell | Runtime `DesktopShell` |
@@ -98,7 +101,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-pane-chrome` | PaneChrome | Runtime `PaneChrome` |
 | `nana-sidebar-section` | SidebarSection | Runtime `SidebarSection` |
 | `nana-sidebar-footer` | SidebarFooter | Runtime `SidebarFooter` |
-| `nana-settings-collapsible-card` | SettingsCollapsibleCard | Runtime `SettingsCollapsibleCard` |
+| `<details>` / `NanaSettingsCollapsibleCard` | SettingsCollapsibleCard | Runtime `SettingsCollapsibleCard` |
 
 ## NanaButton ↔ `Button`
 
@@ -172,14 +175,14 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `NanaDesktopShell` 具名槽 | Runtime `DesktopShell`（`title-bar` / `primary` / `navigation` / `inspector` / `bottom` / `overlay`） |
 | `NanaPaneChrome` | Runtime `PaneChrome`；槽 `header` / `tabs` / `body` |
 | `NanaScrollView` `scrollbars` / `axes` | Runtime `ScrollView`；`scrollbars` 为 `auto`（默认）/ `always` / `hidden` |
-| `NanaNumberInput` `modelValue` / `min` / `max` / `step` | Runtime `NumberInput`；不是 HTML `type=number` |
+| `NanaNumberInput` / `input[type=number]` `modelValue` / `min` / `max` / `step` | Runtime `NumberInput` |
 | `NanaDivider` `orientation` | Runtime `Divider` |
-| `NanaList` / `NanaListItem` | Runtime `List` / `ListItem`；槽 `leading` / `content` / `trailing` |
-| `NanaTable` / `NanaTableRow` / `NanaTableCell` | Runtime 表格；HTML `<table>` 不升级 |
+| `NanaList` / `NanaListItem` / `<ul>` `<li>` | Runtime `List` / `ListItem`；槽 `leading` / `content` / `trailing` |
+| `NanaTable` / `NanaTableRow` / `NanaTableCell` / `<table>` `<tr>` `<td>` | Runtime 表格 |
 | `NanaTimeSeriesChart` `values` / `data` | Runtime `TimeSeriesChart` |
 | `NanaReorderList` `options` / `items` | Runtime `ReorderList` |
 | `NanaSidebarSection` / `NanaSidebarFooter` | Runtime 侧栏节与页脚 |
-| `NanaSettingsCollapsibleCard` `open` | Runtime `SettingsCollapsibleCard`；槽 `summary` / `details` / `accessory` |
+| `<details>` / `<summary>` / `NanaSettingsCollapsibleCard` `open` | Runtime `SettingsCollapsibleCard`；槽 `summary` / `details` / `accessory` |
 | `NanaGpu` `source` | Runtime `GpuTextureView`；`<nana-gpu>` + `data-nana-gpu`。不是 `GpuView` 直写 pass |
 | `NanaVirtualList` `count` / `itemExtent` / `extents` / `overscan` | `ScrollView` + 可见窗口；默认槽 `{ index, key }` |
 | `NanaVirtualTable` `rowCount` / `columnCount` | 两轴窗口；默认槽 `{ row, column, rowKey, columnKey }` |

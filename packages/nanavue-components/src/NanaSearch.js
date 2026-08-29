@@ -1,6 +1,6 @@
 /**
  * NanaSearch — Runtime SearchDropdown field.
- * Host tag `nana-search` keeps query IME on the same retained TextInput state.
+ * Host tag `search-dropdown` (not HTML `<search>`) keeps query IME on the same retained TextInput state.
  */
 import { h } from "@vue/runtime-core";
 
@@ -33,7 +33,7 @@ export const NanaSearch = {
     }
 
     return () =>
-      h("nana-search", {
+      h("search-dropdown", {
         ...attrs,
         class: ["nana-search", attrs.class].filter(Boolean).join(" "),
         value: props.modelValue,
@@ -44,7 +44,7 @@ export const NanaSearch = {
         loading: props.loading,
         invalid: props.invalid,
         size: props.size,
-        "data-agent-id": attrs["data-agent-id"] || "nana.search",
+        "data-agent-id": attrs["data-agent-id"] || "nana.search-dropdown",
         onSelect,
         onChange: onSelect,
       });

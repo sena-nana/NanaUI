@@ -12,7 +12,8 @@ function flatten(nodes) {
 function wrapSlot(name, nodes) {
   const children = flatten(nodes);
   if (!children.length) return null;
-  return h("div", { "data-slot": name }, children);
+  const tag = name === "summary" ? "summary" : "div";
+  return h(tag, { "data-slot": name }, children);
 }
 
 export const NanaSettingsCollapsibleCard = {
@@ -42,7 +43,7 @@ export const NanaSettingsCollapsibleCard = {
         wrapSlot("accessory", slots.accessory?.()),
       ].filter(Boolean);
       return h(
-        "nana-settings-collapsible-card",
+        "details",
         {
           ...attrs,
           class: ["nana-settings-collapsible-card", attrs.class]

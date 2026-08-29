@@ -69,7 +69,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 1. 实现 Runtime 的 `ComponentView` / `RegisterableComponent`。
 2. 用 `UiExtension` + `ExtensionRegistrar::register_component` 登记。稳定身份是 `ComponentTypeId`（如 `nana.button`、`app.preview-card`）。
-3. 若 Vue 也要用，提供对应的 `nana-*` 标签。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。
+3. 若 Vue 也要用，登记的 tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀。和 HTML 同语义就用原生标签（`button`、`table`/`tr`/`td`、`ul`/`li`、`details`）。语义不同就换名（`search-dropdown`，不是 HTML `<search>`）。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。
 
 只给 JavaScript 一组命令和属性白名单时，走 Vue 的 `NativeComponentRegistry`（`Nana.components.call`）。那张表**不会**让节点自动进入布局和命中。
 

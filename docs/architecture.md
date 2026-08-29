@@ -50,7 +50,7 @@ GPU 主版本锁定 workspace `wgpu = "30.0.0"`，依赖图里只有一个主版
 
 ## 三种输入，一棵树
 
-Rust 控件、Vue `nana-*`、以及 Vue 的 HTML/CSS 子集，都写入同一 Style Model（Tokens + Semantics + Layout），再进入同一 `UiWorld`。它们是三种输入合同，不是三个运行时。
+Rust 控件、Vue HTML 1:1 控件 / `nana-*`、以及 Vue 的 HTML/CSS 子集，都写入同一 Style Model（Tokens + Semantics + Layout），再进入同一 `UiWorld`。它们是三种输入合同，不是三个运行时。
 
 Vue 的 DOM/CSS facade **不**复制树拓扑。host op 进待提交队列，`flush_host_frame` 才 commit。`event_flags` 权威是 `UiWorld` 的 `EventListeners`；GPU slot 权威是 Runtime `CustomRenderNode`。JS 查询用的盒子是绘制阶段投影，滚动不写回 Runtime `LayoutBox`。`PendingHostOps` 镜像、`WidgetKind`、`ComponentSupport` 都不是第二套实例化 ABI。
 

@@ -1424,6 +1424,7 @@ impl NanaTreeDocument {
                     crate::WidgetKind::Button
                         | crate::WidgetKind::IconButton
                         | crate::WidgetKind::Checkbox
+                        | crate::WidgetKind::Radio
                         | crate::WidgetKind::Switch
                         | crate::WidgetKind::NumberInput
                         | crate::WidgetKind::Card
@@ -1545,6 +1546,7 @@ impl NanaTreeDocument {
                                 | crate::WidgetKind::NumberInput
                                 | crate::WidgetKind::Textarea
                                 | crate::WidgetKind::Checkbox
+                                | crate::WidgetKind::Radio
                                 | crate::WidgetKind::Switch
                                 | crate::WidgetKind::Tabs
                                 | crate::WidgetKind::Segmented
@@ -1566,7 +1568,9 @@ impl NanaTreeDocument {
                 disabled: widget.props.disabled,
                 checked: matches!(
                     widget.kind,
-                    crate::WidgetKind::Checkbox | crate::WidgetKind::Switch
+                    crate::WidgetKind::Checkbox
+                        | crate::WidgetKind::Switch
+                        | crate::WidgetKind::Radio
                 )
                 .then_some(widget.props.toggled),
                 selected: matches!(
@@ -1987,7 +1991,7 @@ impl NanaTreeDocument {
         let mut last = None;
         let mut created = Vec::new();
         for frag in roots {
-            let handle = self.materialize_fragment(frag, namespace, &mut created);
+            let handle = self.materialize_fragment(frag, namespace, &mut created, true);
             self.insert(handle, parent, anchor);
             if first.is_none() {
                 first = Some(handle);
@@ -2005,6 +2009,7 @@ impl NanaTreeDocument {
         frag: FragNode,
         parent_ns: ElementNamespace,
         created: &mut Vec<NodeHandle>,
+        mark_static: bool,
     ) -> NodeHandle {
         match frag {
             FragNode::Text(t) => {
@@ -2034,18 +2039,56 @@ impl NanaTreeDocument {
                     }
                     self.set_attribute(el, k, v);
                 }
-                self.set_attribute(el, "data-static", "1");
+                if mark_static {
+                    self.set_attribute(el, "data-static", "1");
+                }
                 created.push(el);
                 for child in children {
                     let child_ns = match self.element_namespace(el) {
                         Some(n) => n,
                         None => ns,
                     };
-                    let ch = self.materialize_fragment(child, child_ns, created);
+                    let ch = self.materialize_fragment(child, child_ns, created, mark_static);
                     self.insert(ch, el, None);
                 }
                 el
             }
+        }
+    }
+
+    /// Vue `v-html` / `innerHTML`: parse a fragment into live children.
+    pub fn set_inner_html(&mut self, el: NodeHandle, html: &str) -> Vec<NodeHandle> {
+        if !matches!(
+            self.nodes.get(&el.0).map(|node| &node.data),
+            Some(NodeData::Element { .. })
+        ) {
+            return Vec::new();
+        }
+        let children = self.children_of(el);
+        for child in children {
+            self.dispose_subtree(child);
+        }
+        self.set_attribute(el, "innerHTML", html);
+        if html.is_empty() {
+            return Vec::new();
+        }
+        let roots = parse_html_fragment(html);
+        let mut created = Vec::new();
+        let ns = self.element_namespace(el).unwrap_or(ElementNamespace::Html);
+        for frag in roots {
+            let handle = self.materialize_fragment(frag, ns, &mut created, false);
+            self.insert(handle, el, None);
+        }
+        created
+    }
+
+    pub fn attributes(&self, el: NodeHandle) -> Vec<(String, String)> {
+        match self.nodes.get(&el.0) {
+            Some(Node {
+                data: NodeData::Element { attrs, .. },
+                ..
+            }) => attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -3021,7 +3064,7 @@ fn resolve_widget_component_type(
         let tag = if widget.kind == crate::WidgetKind::SearchDropdown
             || crate::widget_map::is_search_dropdown(&widget.props)
         {
-            Some("search")
+            Some("search-dropdown")
         } else if widget.kind == crate::WidgetKind::Dropdown
             || crate::widget_map::is_dropdown_field(&widget.props)
         {
@@ -3041,8 +3084,9 @@ fn resolve_widget_component_type(
         }
         context.resolve_component_tag(tag).cloned()
     };
-    let html_search = kind.is_layout() && element_tag.eq_ignore_ascii_case("search");
-    if !html_search && let Some(id) = try_tag(element_tag) {
+    let html_layout_collision =
+        kind.is_layout() && matches!(element_tag.to_ascii_lowercase().as_str(), "search");
+    if !html_layout_collision && let Some(id) = try_tag(element_tag) {
         return Some(id);
     }
     if element_tag.starts_with("nana-") {
@@ -3134,10 +3178,18 @@ fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
 fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f32) {
     match widget.kind {
         crate::WidgetKind::Progress => (widget.props.progress, widget.props.progress_max),
-        crate::WidgetKind::LevelMeter => (
-            crate::widget_map::level_meter_value(&widget.props),
-            widget.props.max,
-        ),
+        crate::WidgetKind::LevelMeter => {
+            let raw = crate::widget_map::level_meter_value(&widget.props);
+            if !widget.props.element_tag.eq_ignore_ascii_case("meter") {
+                return (raw, widget.props.max);
+            }
+            let min = widget.props.min;
+            let max = crate::widget_map::attr_value(&widget.props, &["max"])
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1.0);
+            let span = (max - min).abs().max(f32::EPSILON);
+            (((raw - min) / span).clamp(0.0, 1.0), 1.0)
+        }
         _ => (widget.props.number, widget.props.max),
     }
 }
@@ -3211,6 +3263,17 @@ fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> 
             "tone".into(),
             status_tone_attr(crate::widget_map::status_tone_from_props(&widget.props)).into(),
         )),
+        crate::WidgetKind::Segmented => {
+            if missing("chrome") && crate::widget_map::is_radio_group(&widget.props) {
+                extras.push(("chrome".into(), "radio".into()));
+            }
+            if missing("role") && !widget.props.role.is_empty() {
+                extras.push(("role".into(), widget.props.role.clone()));
+            }
+            if missing("fill") && widget.props.fill {
+                extras.push(("fill".into(), "true".into()));
+            }
+        }
         crate::WidgetKind::ImageViewer if missing("src") => {
             if let Some(src) = widget
                 .props
@@ -3300,9 +3363,7 @@ fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> 
                 extras.push(("searchable".into(), "true".into()));
             }
         }
-        crate::WidgetKind::Tabs | crate::WidgetKind::Segmented
-            if missing("fill") && widget.props.fill =>
-        {
+        crate::WidgetKind::Tabs if missing("fill") && widget.props.fill => {
             extras.push(("fill".into(), "true".into()));
         }
         _ => {}
@@ -3714,15 +3775,32 @@ fn bind_semantic_slots(
             push(&mut slots, "body", data_slot("body"));
         }
         crate::WidgetKind::SettingsCollapsibleCard => {
-            push(
-                &mut slots,
-                "summary",
-                data_slot("summary").or_else(|| data_slot("header")),
-            );
+            let summary = data_slot("summary")
+                .or_else(|| data_slot("header"))
+                .or_else(|| {
+                    widget.children.iter().find_map(|child| {
+                        let child = snapshot.get(*child)?;
+                        widget_tag(child)
+                            .eq_ignore_ascii_case("summary")
+                            .then(|| StableNodeId::new(child.id))
+                            .flatten()
+                    })
+                });
+            push(&mut slots, "summary", summary);
             push(
                 &mut slots,
                 "details",
-                data_slot("details").or_else(|| data_slot("body")),
+                data_slot("details")
+                    .or_else(|| data_slot("body"))
+                    .or_else(|| {
+                        widget.children.iter().find_map(|child| {
+                            let child = snapshot.get(*child)?;
+                            let id = StableNodeId::new(child.id)?;
+                            (Some(id) != summary
+                                && !widget_tag(child).eq_ignore_ascii_case("summary"))
+                            .then_some(id)
+                        })
+                    }),
             );
             push(&mut slots, "accessory", data_slot("accessory"));
         }
@@ -3860,6 +3938,16 @@ fn bind_semantic_copy(
                 slot_text(slots.label, widget.props.display_label()),
                 slot_text(slots.hint, widget.props.hint.as_str()),
             )
+        }
+        crate::WidgetKind::Table if widget.props.label.is_empty() => {
+            let caption = widget.children.iter().find_map(|child| {
+                let child = snapshot.get(*child)?;
+                widget_tag(child)
+                    .eq_ignore_ascii_case("caption")
+                    .then(|| child.props.display_label().to_string())
+                    .filter(|text| !text.is_empty())
+            });
+            (caption, None)
         }
         _ => (None, None),
     }
@@ -4018,11 +4106,7 @@ fn try_bind_registered_component(
                 widget.kind,
                 crate::WidgetKind::Segmented | crate::WidgetKind::Tabs
             ) {
-                let chrome = if widget.kind == crate::WidgetKind::Tabs {
-                    SelectionChrome::Tabs
-                } else {
-                    SelectionChrome::Segmented
-                };
+                let chrome = selection_chrome(widget.kind, &widget.props);
                 for (child, option) in widget.children.iter().zip(widget.props.options.iter()) {
                     let Some(child_id) = StableNodeId::new(*child) else {
                         continue;
@@ -4046,33 +4130,81 @@ fn try_bind_registered_component(
     }
 }
 
+fn selection_chrome(kind: crate::WidgetKind, props: &crate::WidgetProps) -> SelectionChrome {
+    if kind == crate::WidgetKind::Tabs {
+        SelectionChrome::Tabs
+    } else if crate::widget_map::is_radio_group(props) {
+        SelectionChrome::Radio
+    } else {
+        SelectionChrome::Segmented
+    }
+}
+
+fn option_from_widget(child: &crate::SemanticWidget) -> (String, String, bool) {
+    let id = if !child.props.value.is_empty() {
+        child.props.value.clone()
+    } else if !child.props.element_id.is_empty() {
+        child.props.element_id.clone()
+    } else {
+        child.props.display_label().to_string()
+    };
+    (
+        id,
+        child.props.display_label().to_string(),
+        child.props.disabled,
+    )
+}
+
+fn is_option_child(child: &crate::SemanticWidget) -> bool {
+    let tag = widget_tag(child);
+    child.kind == crate::WidgetKind::Radio
+        || tag.eq_ignore_ascii_case("option")
+        || child.props.role.eq_ignore_ascii_case("option")
+        || child.props.role.eq_ignore_ascii_case("radio")
+}
+
+fn collect_choice_options(
+    widget: &crate::SemanticWidget,
+    snapshot: &crate::SemanticSnapshot,
+) -> Vec<(String, String, bool)> {
+    let mut out = Vec::new();
+    for child in element_child_widgets(widget, snapshot) {
+        if is_option_child(child) {
+            out.push(option_from_widget(child));
+            continue;
+        }
+        if widget_tag(child).eq_ignore_ascii_case("optgroup") {
+            for nested in element_child_widgets(child, snapshot) {
+                if is_option_child(nested) {
+                    out.push(option_from_widget(nested));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn tree_child_bind_options(
     widget: &crate::SemanticWidget,
     snapshot: &crate::SemanticSnapshot,
 ) -> Vec<(String, String, bool)> {
-    if effective_kind(widget) != crate::WidgetKind::TreeView
-        || !widget.props.options.is_empty()
-        || host_tree_nodes(&widget.props).is_some()
-    {
+    if !widget.props.options.is_empty() {
         return Vec::new();
     }
-    element_child_widgets(widget, snapshot)
-        .into_iter()
-        .map(|child| {
-            let id = if !child.props.value.is_empty() {
-                child.props.value.clone()
-            } else if !child.props.element_id.is_empty() {
-                child.props.element_id.clone()
-            } else {
-                child.props.display_label().to_string()
-            };
-            (
-                id,
-                child.props.display_label().to_string(),
-                child.props.disabled,
-            )
-        })
-        .collect()
+    match effective_kind(widget) {
+        crate::WidgetKind::TreeView if host_tree_nodes(&widget.props).is_none() => {
+            element_child_widgets(widget, snapshot)
+                .into_iter()
+                .map(option_from_widget)
+                .collect()
+        }
+        crate::WidgetKind::Select
+        | crate::WidgetKind::Dropdown
+        | crate::WidgetKind::SearchDropdown
+        | crate::WidgetKind::Segmented
+        | crate::WidgetKind::Tabs => collect_choice_options(widget, snapshot),
+        _ => Vec::new(),
+    }
 }
 
 fn enqueue_bound_assembly(
@@ -4207,6 +4339,15 @@ fn project_migrating_component(
             if project_aligned_segmented_option(widget, snapshot, id, world, mutations) {
                 return true;
             }
+            if widget.kind == crate::WidgetKind::Radio {
+                let label = widget.props.display_label();
+                RuntimeSegmentedOption::new(Arc::<str>::from(label))
+                    .disabled(widget.props.disabled)
+                    .with_selected(widget.props.toggled || widget.props.active)
+                    .surface(widget.props.size, SelectionChrome::Radio, false)
+                    .project(id, world, mutations);
+                return true;
+            }
             if matches!(
                 world.standard_visual(id),
                 Some(
@@ -4315,11 +4456,7 @@ fn project_aligned_segmented_option(
     let Some(option) = parent.props.options.get(index) else {
         return false;
     };
-    let chrome = if parent.kind == crate::WidgetKind::Tabs {
-        SelectionChrome::Tabs
-    } else {
-        SelectionChrome::Segmented
-    };
+    let chrome = selection_chrome(parent.kind, &parent.props);
     project_segmented_option(
         id,
         option,
@@ -4340,6 +4477,8 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
         "button" => return AccessibilityRole::Button,
         "textbox" | "searchbox" => return AccessibilityRole::TextInput,
         "checkbox" => return AccessibilityRole::Checkbox,
+        "radio" => return AccessibilityRole::Radio,
+        "radiogroup" => return AccessibilityRole::RadioGroup,
         "switch" => return AccessibilityRole::Switch,
         "slider" => return AccessibilityRole::Slider,
         "combobox" => return AccessibilityRole::ComboBox,
@@ -4364,6 +4503,7 @@ fn accessibility_role(kind: crate::WidgetKind, explicit_role: &str) -> Accessibi
             AccessibilityRole::TextInput
         }
         crate::WidgetKind::Checkbox => AccessibilityRole::Checkbox,
+        crate::WidgetKind::Radio => AccessibilityRole::Radio,
         crate::WidgetKind::Switch => AccessibilityRole::Switch,
         crate::WidgetKind::Range => AccessibilityRole::Slider,
         crate::WidgetKind::Select
@@ -6574,11 +6714,11 @@ mod tests {
     #[test]
     fn migrated_controls_project_one_retained_visual_and_accessibility_state() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
-        let button = doc.create_element("nana-button");
-        let input = doc.create_element("nana-input");
-        let checkbox = doc.create_element("nana-checkbox");
+        let button = doc.create_element("button");
+        let input = doc.create_element("input");
+        let checkbox = doc.create_element("input");
         let switch = doc.create_element("nana-switch");
-        let range = doc.create_element("nana-range");
+        let range = doc.create_element("input");
         doc.insert(button, doc.mount_root(), None);
         doc.insert(input, doc.mount_root(), None);
         doc.insert(checkbox, doc.mount_root(), None);
@@ -6841,9 +6981,9 @@ mod tests {
         let badge = doc.create_element("nana-status");
         let validation = doc.create_element("nana-validation");
         let empty = doc.create_element("nana-empty-state");
-        let action = doc.create_element("nana-button");
+        let action = doc.create_element("button");
         let labeled = doc.create_element("nana-labeled-value");
-        let progress = doc.create_element("nana-progress");
+        let progress = doc.create_element("progress");
         let spinner = doc.create_element("nana-spinner");
         doc.insert(badge, doc.mount_root(), None);
         doc.insert(validation, doc.mount_root(), None);
@@ -7074,9 +7214,9 @@ mod tests {
     #[test]
     fn qualified_candidate_leaves_project_runtime_visuals() {
         let mut doc = NanaTreeDocument::new(320, 200, 1.0);
-        let area = doc.create_element("nana-textarea");
-        let select = doc.create_element("nana-select");
-        let dialog = doc.create_element("nana-dialog");
+        let area = doc.create_element("textarea");
+        let select = doc.create_element("select");
+        let dialog = doc.create_element("dialog");
         let confirm = doc.create_element("nana-confirm-dialog");
         let drawer = doc.create_element("nana-drawer");
         doc.insert(area, doc.mount_root(), None);
@@ -7180,7 +7320,7 @@ mod tests {
     #[test]
     fn highlighted_textarea_binds_language_and_restores_input() {
         let mut doc = NanaTreeDocument::new(320, 200, 1.0);
-        let area = doc.create_element("nana-textarea");
+        let area = doc.create_element("textarea");
         doc.insert(area, doc.mount_root(), None);
         let mut bridge = crate::MessageBridge::new();
         let mut props = crate::WidgetProps {

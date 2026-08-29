@@ -133,6 +133,9 @@ function installMockHost() {
       if (name === "querySelector" || name === "querySelectorAll" || name === "closest") {
         return name === "querySelectorAll" ? [] : null;
       }
+      if (name === "mountRoot") {
+        return 1;
+      }
       if (name === "layoutBox") {
         return { x: 0, y: 0, width: 0, height: 0 };
       }
@@ -146,7 +149,7 @@ describe("hostOps Vue RendererOptions contract", () => {
   let hostOps;
   let wrapNode;
   let nodeId;
-  let createNanaApp;
+  let createApp;
   let flushHostFrame;
 
   beforeEach(async () => {
@@ -157,7 +160,7 @@ describe("hostOps Vue RendererOptions contract", () => {
     hostOps = mod.hostOps;
     wrapNode = mod.wrapNode;
     nodeId = mod.nodeId;
-    createNanaApp = mod.createNanaApp;
+    createApp = mod.createApp;
     flushHostFrame = mod.flushHostFrame;
   });
 
@@ -355,7 +358,7 @@ describe("hostOps Vue RendererOptions contract", () => {
   });
 
   test("Vue warning and error handlers report structured diagnostics", () => {
-    const app = createNanaApp().createApp({});
+    const app = createApp({});
     app.config.warnHandler("bad prop", null, "component trace");
     app.config.errorHandler(new Error("render failed"), null, "render");
     const reports = calls.filter(([name]) => name === "diagnosticReport");
@@ -456,5 +459,72 @@ describe("hostOps Vue RendererOptions contract", () => {
     } finally {
       globalThis.Nana.host = previousHost;
     }
+  });
+
+  test("HTML button seeds createElement rather than createWidget", () => {
+    const el = hostOps.createElement("button", undefined, undefined, {
+      label: "Save",
+      disabled: true,
+    });
+    assert.equal(el.tag, "button");
+    assert.deepEqual(
+      calls.find(([name]) => name === "createElement"),
+      ["createElement", ["button", null, null, { label: "Save", disabled: true }]],
+    );
+    assert.equal(
+      calls.some(([name]) => name === "createWidget"),
+      false,
+    );
+  });
+
+  test("retired nana-button alias does not call createWidget", () => {
+    hostOps.createElement("nana-button", undefined, undefined, { label: "Save" });
+    assert.equal(
+      calls.some(([name]) => name === "createWidget"),
+      false,
+    );
+    assert.equal(calls[0][0], "createElement");
+    assert.equal(calls[0][1][0], "nana-button");
+  });
+
+  test("HTML table uses createElement; retired nana-table does not createWidget", () => {
+    const table = hostOps.createElement("table");
+    assert.equal(table.tag, "table");
+    assert.equal(
+      calls.some(([name]) => name === "createWidget"),
+      false,
+    );
+    calls.length = 0;
+    hostOps.createElement("nana-table");
+    assert.equal(
+      calls.some(([name]) => name === "createWidget"),
+      false,
+    );
+    assert.equal(calls[0][1][0], "nana-table");
+  });
+
+  test("search-dropdown uses createElement; HTML search is not a widget tag", () => {
+    const field = hostOps.createElement("search-dropdown");
+    assert.equal(field.tag, "search-dropdown");
+    assert.equal(
+      calls.some(([name]) => name === "createWidget"),
+      false,
+    );
+  });
+
+  test("nana-drawer still uses createWidget", () => {
+    hostOps.createElement("nana-drawer", undefined, undefined, { open: true });
+    assert.deepEqual(calls.find(([name]) => name === "createWidget"), [
+      "createWidget",
+      ["drawer", { open: true }],
+    ]);
+  });
+
+  test("createApp is the package entry and mount defaults to the body root", () => {
+    assert.equal(typeof createApp, "function");
+    assert.equal(createApp.length, 2);
+    const app = createApp({});
+    app.mount();
+    assert.ok(calls.some(([name]) => name === "mountRoot"));
   });
 });

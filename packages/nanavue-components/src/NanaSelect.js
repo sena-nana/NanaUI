@@ -1,6 +1,6 @@
 /**
  * NanaSelect — single-value pick list.
- * Semantic peer of Rust `Select` (`nana-select` → Runtime / Scene host).
+ * Semantic peer of Rust `Select` (`<select>` → Runtime / Scene host).
  */
 import { h } from "@vue/runtime-core";
 
@@ -33,7 +33,7 @@ export const NanaSelect = {
     }
 
     return () =>
-      h("nana-select", {
+      h("select", {
         ...attrs,
         class: ["nana-select", attrs.class].filter(Boolean).join(" "),
         value: props.modelValue,

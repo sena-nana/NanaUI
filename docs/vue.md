@@ -6,15 +6,14 @@ Vue 用来把已经按网页习惯写好的界面落到**同一棵**原生树上
 
 ## 应用怎么接
 
-JavaScript 入口是 `@nanaui/nanavue-runtime` 的 `createNanaApp()`。你自己的 Vite 工程把 SFC、TypeScript 和 CSS 打成 Nana 能加载的脚本（通常是 IIFE）。NanaUI 不扫描 `dist`，也不提供另一套打包器。
+JavaScript 入口是 `@nanaui/nanavue-runtime` 的 `createApp()`。你自己的 Vite 工程把 SFC、TypeScript 和 CSS 打成 Nana 能加载的脚本（通常是 IIFE）。NanaUI 不扫描 `dist`，也不提供另一套打包器。
 
 ```js
-import { createNanaApp } from "@nanaui/nanavue-runtime";
+import { createApp } from "@nanaui/nanavue-runtime";
 import { NanaButton } from "@nanaui/nanavue-components";
 import "@nanaui/nanavue-components/controls.css";
 
-const nana = createNanaApp();
-nana.createApp({
+createApp({
   // 根组件
 }).mount();
 ```
@@ -28,6 +27,10 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 **Nana 控件。** `NanaButton`、`NanaInput`、`NanaDialog` 直接表达语义，不必靠 class 去猜。兼容路径里优先这样写，才能和 Rust 第一路径用同一套控件。
 
 **普通标签和 CSS。** `div`、flex、间距、字号这一类网页习惯可用，但只覆盖 [布局](layout.md) 列出的子集。适合结构骨架，不适合冒充完整浏览器。
+
+和 Runtime 同语义的 Vue 标签会落到对应控件：`button`、`a`、`input`（含 `checkbox` / `radio` / `range` / `number`）、`textarea`、`select` + `option`、`ul`/`ol`/`li`、`table`/`tr`/`td`/`th`、`progress`、`meter`、`hr`、`dialog`、`details`/`summary`。`v-html` 会把片段解析成子节点。`Teleport to="body|html"`、`Transition`、`KeepAlive`、`Suspense` 走同一套 host ops，没有第二棵树。
+
+语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<video>` 播放、未接槽的 `<canvas>` 2D 不伪造浏览器。
 
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
 
@@ -47,4 +50,4 @@ NanaUI 不内置登录、设置存储或任何产品业务。你在宿主里注�
 
 ## 扩展控件
 
-要让一种新控件进入布局、点击和绘制：在 Rust 里 `register_component`，并提供 Vue 的 `nana-*` 标签。只暴露 JS 命令时走 `NativeComponentRegistry`。两张表不是同一条 ABI，只登记其中一张，另一条路径不会生效。见 [控件](components.md)。
+要让一种新控件进入布局、点击和绘制：在 Rust 里 `register_component`，Vue tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀（`nana.preview-card` → `preview-card`）。和 HTML 同语义就用原生标签（`button`、`table`/`tr`/`td`）。语义不同就换名（`search-dropdown`，不是 HTML `<search>`）。只暴露 JS 命令时走 `NativeComponentRegistry`。两张表不是同一条 ABI，只登记其中一张，另一条路径不会生效。见 [控件](components.md)。

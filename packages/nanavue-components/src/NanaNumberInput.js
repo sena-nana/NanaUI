@@ -1,6 +1,5 @@
 /**
- * NanaNumberInput — semantic peer of Runtime `NumberInput` (`nana-number-input`).
- * HTML `<input type="number">` stays a text field; use this wrapper for the stepper.
+ * NanaNumberInput — semantic peer of Runtime `NumberInput` (`input type=number`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -29,8 +28,9 @@ export const NanaNumberInput = {
       emit("input", value, ev);
     }
     return () =>
-      h("nana-number-input", {
+      h("input", {
         ...attrs,
+        type: "number",
         class: ["nana-number-input", attrs.class].flat().filter(Boolean).join(" "),
         label: props.label,
         value: props.modelValue,

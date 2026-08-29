@@ -1,6 +1,5 @@
 /**
- * NanaTable — semantic peer of Runtime `Table` (`nana-table`).
- * HTML `<table>` stays a layout box; use this host tag for the Runtime table.
+ * NanaTable — semantic peer of Runtime `Table` (`<table>`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -12,7 +11,7 @@ export const NanaTable = {
   setup(props, { slots, attrs }) {
     return () =>
       h(
-        "nana-table",
+        "table",
         {
           ...attrs,
           class: ["nana-table", attrs.class].flat().filter(Boolean).join(" "),

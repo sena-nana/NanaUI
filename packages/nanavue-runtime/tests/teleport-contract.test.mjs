@@ -96,13 +96,11 @@ describe("Teleport target identity", () => {
     delete globalThis.__nanaWrapNode;
   });
 
-  test("querySelector(body) === mountRootHandle (stable wrapNode)", async () => {
+  test("querySelector(body) is the stable mount-root wrapNode", async () => {
     const mod = await import(`${modUrl}?teleport=${Date.now()}`);
-    const { hostOps, mountRootHandle, wrapNode } = mod;
+    const { hostOps, wrapNode } = mod;
     const viaQs = hostOps.querySelector("body");
-    const viaMount = mountRootHandle();
     const viaWrap = wrapNode(bodyId, "element", "body");
-    assert.equal(viaQs, viaMount);
     assert.equal(viaQs, viaWrap);
     assert.equal(viaQs.tag, "body");
     assert.equal(viaQs.__nid, bodyId);

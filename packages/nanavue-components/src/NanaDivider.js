@@ -1,5 +1,5 @@
 /**
- * NanaDivider — semantic peer of Runtime `Divider` (`nana-divider`).
+ * NanaDivider — semantic peer of Runtime `Divider` (`<hr>`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -12,7 +12,7 @@ export const NanaDivider = {
   },
   setup(props, { attrs }) {
     return () =>
-      h("nana-divider", {
+      h("hr", {
         ...attrs,
         class: ["nana-divider", attrs.class].flat().filter(Boolean).join(" "),
         orientation: props.orientation,

@@ -2,7 +2,7 @@
  * NanaButton — **L2** semantic peer of NanaUI `Button` (no DOM/CSS paint).
  *
  * Props (`kind` / `size` / …) map to Style Model Semantics; skips CSS parsing.
- * Renders a `nana-button` host node so Rust `MessageBridge` mirrors props and
+ * Renders an HTML `button` host node so Rust `MessageBridge` mirrors props and
  * the Scene host draws the real control. Mixable with L1 `createElement` in the same tree.
  */
 import { computed, h } from "@vue/runtime-core";
@@ -37,7 +37,7 @@ export const NanaButton = {
     }
 
     return () =>
-      h("nana-button", {
+      h("button", {
         ...attrs,
         kind: props.kind,
         size: props.size,

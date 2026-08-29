@@ -10770,21 +10770,21 @@ mod tests {
             context.resolve_component_tag("form").is_none(),
             "HTML form stays a layout box; nana-form-field owns form-field"
         );
-        assert_eq!(
-            context
-                .resolve_component_tag("search")
-                .map(ComponentTypeId::as_str),
-            Some("nana.search")
-        );
-        assert_eq!(
-            context
-                .resolve_component_tag("nana-search")
-                .map(ComponentTypeId::as_str),
-            Some("nana.search")
-        );
         assert!(
-            context.resolve_component_tag("search-dropdown").is_none(),
-            "search-dropdown is not a second name for nana.search"
+            context.resolve_component_tag("search").is_none(),
+            "HTML search is a landmark; SearchDropdown owns search-dropdown"
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("search-dropdown")
+                .map(ComponentTypeId::as_str),
+            Some("nana.search-dropdown")
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-search-dropdown")
+                .map(ComponentTypeId::as_str),
+            Some("nana.search-dropdown")
         );
 
         #[derive(Clone)]

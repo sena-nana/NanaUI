@@ -1,5 +1,5 @@
 /**
- * NanaProgress — semantic peer of Runtime `Progress` (`nana-progress`).
+ * NanaProgress — semantic peer of Runtime `Progress` (`<progress>`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -14,7 +14,7 @@ export const NanaProgress = {
   emits: ["cancel"],
   setup(props, { emit, attrs }) {
     return () =>
-      h("nana-progress", {
+      h("progress", {
         ...attrs,
         class: ["nana-progress", attrs.class].flat().filter(Boolean).join(" "),
         role: attrs.role || "progressbar",

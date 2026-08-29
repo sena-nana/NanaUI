@@ -1913,11 +1913,30 @@ impl VueHost {
                 default_prevented: true,
             });
         }
+        if let Some(for_id) = crate::widget_map::attr_value(&widget.props, &["for"])
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            && (widget.props.element_tag.eq_ignore_ascii_case("label")
+                || widget.props.role.eq_ignore_ascii_case("label"))
+        {
+            let associated = {
+                let bridge = self.bridge.lock().expect("vue bridge");
+                bridge
+                    .widgets()
+                    .find(|candidate| candidate.props.element_id == for_id)
+                    .map(|candidate| NodeHandle(candidate.id))
+            };
+            if let Some(associated) = associated {
+                return self.semantic_default_action(engine, associated, requested_value, None);
+            }
+        }
         let event = match widget.kind {
-            WidgetKind::Switch | WidgetKind::Checkbox => Some(BridgeEvent::Toggle {
-                id: target.0,
-                value: !widget.props.toggled,
-            }),
+            WidgetKind::Switch | WidgetKind::Checkbox | WidgetKind::Radio => {
+                Some(BridgeEvent::Toggle {
+                    id: target.0,
+                    value: !widget.props.toggled,
+                })
+            }
             WidgetKind::Range => requested_value.map(|value| BridgeEvent::Change {
                 id: target.0,
                 value: quantize_range_value(&widget.props, value),
@@ -1929,10 +1948,22 @@ impl VueHost {
             WidgetKind::Button | WidgetKind::IconButton | WidgetKind::Chip => {
                 Some(BridgeEvent::Press { id: target.0 })
             }
+            WidgetKind::SettingsCollapsibleCard => Some(BridgeEvent::Toggle {
+                id: target.0,
+                value: !widget.props.toggled,
+            }),
             _ => None,
         };
         if let Some(event) = event {
             self.dispatch_bridge_event_inner(engine, event, false)?;
+        }
+        if widget.kind == WidgetKind::Radio {
+            exclusive_check_radios(&self.bridge, target.0);
+        }
+        if widget.kind == WidgetKind::Button && is_submit_control(&widget) {
+            if let Some(form) = ancestor_form(&self.bridge, target.0) {
+                let _ = self.fire_dom_event(engine, NodeHandle(form), "submit", BTreeMap::new())?;
+            }
         }
         Ok(SemanticActionResult {
             handled: true,
@@ -2427,8 +2458,11 @@ impl VueHost {
                     | WidgetKind::TableRow => {
                         !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
                     }
-                    WidgetKind::Switch | WidgetKind::Checkbox => {
+                    WidgetKind::Switch | WidgetKind::Checkbox | WidgetKind::Radio => {
                         !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
+                    }
+                    WidgetKind::SettingsCollapsibleCard => {
+                        !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
                     }
                     WidgetKind::Range => commit_runtime && requested_value.is_some(),
                     _ => false,
@@ -2719,10 +2753,8 @@ impl VueHost {
                 Some(
                     "input"
                         | "textarea"
-                        | "nana-input"
-                        | "nana-text-input"
-                        | "nana-textarea"
                         | "nana-context-menu"
+                        | "search-dropdown"
                         | "nana-search"
                         | "nana-dropdown"
                 )
@@ -3189,6 +3221,55 @@ fn file_drag_detail(
     detail
 }
 
+fn is_submit_control(widget: &SemanticWidget) -> bool {
+    let ty = crate::widget_map::attr_value(&widget.props, &["type"]).unwrap_or("");
+    match widget.props.element_tag.as_str() {
+        tag if tag.eq_ignore_ascii_case("button") => {
+            ty.is_empty() || ty.eq_ignore_ascii_case("submit")
+        }
+        tag if tag.eq_ignore_ascii_case("input") => ty.eq_ignore_ascii_case("submit"),
+        _ => false,
+    }
+}
+
+fn ancestor_form(bridge: &Mutex<MessageBridge>, from: WidgetId) -> Option<WidgetId> {
+    let bridge = bridge.lock().expect("vue bridge");
+    let mut cursor = bridge.get(from).and_then(|widget| widget.parent);
+    while let Some(id) = cursor {
+        let widget = bridge.get(id)?;
+        if widget.props.element_tag.eq_ignore_ascii_case("form") {
+            return Some(id);
+        }
+        cursor = widget.parent;
+    }
+    None
+}
+
+fn exclusive_check_radios(bridge: &Mutex<MessageBridge>, selected: WidgetId) {
+    let mut bridge = bridge.lock().expect("vue bridge");
+    let Some(name) = bridge
+        .get(selected)
+        .and_then(|widget| crate::widget_map::attr_value(&widget.props, &["name"]))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let peers: Vec<WidgetId> = bridge
+        .widgets()
+        .filter(|widget| {
+            widget.id != selected
+                && widget.kind == WidgetKind::Radio
+                && crate::widget_map::attr_value(&widget.props, &["name"]) == Some(name.as_str())
+        })
+        .map(|widget| widget.id)
+        .collect();
+    for id in peers {
+        bridge.patch_prop(id, "checked", &HostValue::Bool(false));
+        bridge.patch_prop(id, "toggled", &HostValue::Bool(false));
+    }
+}
+
 impl Drop for VueHost {
     fn drop(&mut self) {
         #[cfg(feature = "scene-view")]
@@ -3226,18 +3307,14 @@ fn is_focusable_tag(tag: &str) -> bool {
             | "button"
             | "select"
             | "a"
-            | "nana-button"
+            | "checkbox"
+            | "dialog"
+            | "progress"
             | "nana-switch"
             | "nana-sidebar-row"
-            | "nana-input"
-            | "nana-text-input"
             | "nana-number-input"
             | "nana-icon-button"
-            | "nana-textarea"
-            | "nana-checkbox"
-            | "nana-select"
-            | "nana-range"
-            | "nana-range-field"
+            | "range-field"
             | "nana-list-item"
             | "nana-scroll-view"
     )
@@ -3507,7 +3584,7 @@ mod tests {
         let node = {
             let document = host.document();
             let mut doc = document.lock().expect("document");
-            let node = doc.create_element("nana-range");
+            let node = doc.create_element("input");
             let root = doc.mount_root();
             doc.insert(node, root, None);
             node

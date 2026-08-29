@@ -522,6 +522,33 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(sandbox.Nana.windows.get(1), null);
   });
 
+  test("window.open without url maps onto Nana.windows.create", async () => {
+    const sandbox = loadRuntime();
+    const rootId = 4294967296 + 2;
+    sandbox.__nanaHost.call = (name, args) => {
+      if (name === "windowCall") {
+        const [, operation] = args;
+        if (operation === "mountRoot" || operation === "querySelector") return rootId;
+        if (operation === "nodeKind") return "element";
+        if (operation === "elementTag") return "body";
+      }
+      return null;
+    };
+    sandbox.Nana.host.invoke = async (name, args) => {
+      assert.equal(name, "windowCreate");
+      assert.equal(args[0].title, "工具");
+      assert.equal(args[0].width, 420);
+      assert.equal(args[0].height, 300);
+      return { id: 1, mountRoot: rootId, width: 420, height: 300, ready: true };
+    };
+    const handle = await sandbox.window.open(null, "工具", "width=420,height=300");
+    assert.equal(handle.id, 1);
+    assert.throws(
+      () => sandbox.window.open("https://example.com"),
+      /window.open\(url\)/,
+    );
+  });
+
   test("closing a window clears scoped observers and window listeners", () => {
     const context = sandbox.__nanaCreateWindowContext(2, 320, 240, 1);
     let eventCount = 0;

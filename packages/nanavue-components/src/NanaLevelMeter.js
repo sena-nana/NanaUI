@@ -1,5 +1,5 @@
 /**
- * NanaLevelMeter — semantic peer of Runtime `LevelMeter` (`nana-level-meter`).
+ * NanaLevelMeter — semantic peer of Runtime `LevelMeter` (`meter`).
  */
 import { h } from "@vue/runtime-core";
 
@@ -14,7 +14,7 @@ export const NanaLevelMeter = {
   setup(props, { attrs }) {
     return () => {
       const value = props.value ?? props.progress ?? props.modelValue;
-      return h("nana-level-meter", {
+      return h("meter", {
         ...attrs,
         class: ["nana-level-meter", attrs.class].flat().filter(Boolean).join(" "),
         value,
