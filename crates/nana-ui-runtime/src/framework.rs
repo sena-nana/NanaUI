@@ -10917,7 +10917,6 @@ mod tests {
         for (tag, type_id) in [
             ("list", "nana.list"),
             ("scroll-view", "nana.scroll-view"),
-            ("scroll", "nana.scroll-view"),
             ("table", "nana.table"),
             ("tr", "nana.table-row"),
             ("td", "nana.table-cell"),
@@ -10941,6 +10940,10 @@ mod tests {
                 "tag `{tag}` must resolve"
             );
         }
+        assert!(
+            context.resolve_component_tag("scroll").is_none(),
+            "aliases are pruned; scroll-view keeps the single tag"
+        );
 
         let list = context
             .create_component(document, crate::List::new())
