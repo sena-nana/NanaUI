@@ -2,7 +2,7 @@
 
 use nana_js_engine::{JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui_core::ThemeMode;
-use nana_ui_web_api::SharedFetchHost;
+use nana_ui_web_api::{SharedFetchHost, SharedWebSocketHost};
 
 use crate::VueHost;
 use crate::bridge::SemanticSnapshot;
@@ -21,6 +21,10 @@ pub struct MountOptions {
     pub theme: ThemeMode,
     /// Optional application-owned, policy-gated HTTP(S) backend.
     pub fetch_host: Option<SharedFetchHost>,
+    /// Optional application-owned WebSocket transport. The framework reserves
+    /// the interface only — without a host here, the JS `WebSocket` constructor
+    /// reports itself unavailable.
+    pub socket_host: Option<SharedWebSocketHost>,
 }
 
 impl Default for MountOptions {
@@ -31,6 +35,7 @@ impl Default for MountOptions {
             scale_factor: 1.0,
             theme: ThemeMode::Light,
             fetch_host: None,
+            socket_host: None,
         }
     }
 }
@@ -57,6 +62,11 @@ pub fn mount_vue_as_nana(options: MountOptions) -> NanaVueApp {
     };
     // Theme is applied fully once an engine is bound; seed bridge/document/web-api here.
     app.theme = options.theme;
+    if let Some(socket_host) = options.socket_host
+        && let Ok(mut web) = app.web_api().lock()
+    {
+        web.set_socket_host(Some(socket_host));
+    }
     {
         let bridge = app.bridge();
         let mut guard = bridge.lock().expect("vue bridge");

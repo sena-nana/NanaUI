@@ -14,7 +14,7 @@ path = "src/lib.rs"
 base64.workspace = true
 crossbeam-channel.workspace = true
 nana-js-engine.workspace = true
-nana-ui-platform = { workspace = true, features = ["clipboard", "fetch"] }
+nana-ui-platform = { workspace = true, features = ["clipboard", "fetch", "ws"] }
 tiny-skia.workspace = true
 nana-svg-raster.workspace = true
 image.workspace = true
