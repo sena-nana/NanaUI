@@ -32,7 +32,7 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<video>` 播放、未接槽的 `<canvas>` 2D 不伪造浏览器。
 
-地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo；`section` / `form` 只有带可访问名（如 `aria-label`）时才是 region / form。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。`header` / `footer` 目前不区分是否顶层，嵌套时也会得到 banner / contentinfo。
+地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo（`header` / `footer` 是 `article` / `aside` / `main` / `nav` / `section` 后代时除外）；`section` / `form` 只有带可访问名时才是 region / form——名字可以来自 `aria-label`、`aria-labelledby` 或自身文本内容。class / role hints 把地标标签改成具体控件（如 `<nav role="tablist">`）时保留控件角色。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。
 
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
 
@@ -42,7 +42,9 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、缓冲式 `fetch`（读完整响应再交给你）。
 
-没有：完整 DOM / CSSOM、流式请求体、cookie、浏览器 CORS、WebSocket、Service Worker、Tauri invoke / 插件 / 窗口协议。未实现的 `fetch` 选项会报错，不会假装成功。
+没有：完整 DOM / CSSOM、流式请求体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议。未实现的 `fetch` 选项会报错，不会假装成功。
+
+`WebSocket` 是预留接口：JS 面有 `WebSocket` 构造器（ws/wss URL、`send`/`close`、`onopen/onmessage/onclose/onerror`），但框架不内置任何传输。应用不注入实现时，`new WebSocket()` 直接报"不可用"；注入方式与 `fetch_host` 相同，通过 `MountOptions.socket_host` 提供应用自己的 `WebSocketHost` 实现，并为其配置 `SocketPolicy` 源白名单（默认全拒绝）。入站消息和连接状态事件在下一帧泵里送达回调。
 
 ## 网络与宿主命令
 

@@ -7,6 +7,8 @@ mod fetch;
 mod ime;
 mod input;
 mod window;
+#[cfg(feature = "ws")]
+mod ws;
 
 #[cfg(all(feature = "clipboard", not(target_os = "android")))]
 pub use clipboard::OsClipboard;
@@ -27,6 +29,11 @@ pub use window::{
     WindowIconError, WindowId, WindowResizeEdge, WindowRole, WindowSettings,
     clear_registered_application_icon, register_application_icon, resolve_window_icon,
     window_resize_edge,
+};
+#[cfg(feature = "ws")]
+pub use ws::{
+    SharedWebSocketHost, SocketPolicy, WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage,
+    WsOpenRequest, WsSink,
 };
 
 /// Experimental Android host capability flags. They are intentionally absent

@@ -8,6 +8,7 @@
 
 mod canvas;
 mod fetch;
+mod ws;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ pub use canvas::{
     SharedCanvasRuntime, shared_canvas_runtime,
 };
 use fetch::{FetchCompletion, FetchRuntime};
+use ws::{SocketEvent, SocketRuntime};
 
 /// Fallback gap between host frames while rAF is pending. `pump_frame` consumes
 /// pending rAF for the current host frame; this interval is `next_wakeup`, not a
@@ -30,8 +32,9 @@ const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 pub use nana_ui_platform::OsClipboard;
 pub use nana_ui_platform::{
     ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
-    MemoryClipboard, NativeFetchHost, SharedClipboardHost, SharedFetchHost, UnsupportedClipboard,
-    default_shared_clipboard, shared_clipboard, shared_fetch_host,
+    MemoryClipboard, NativeFetchHost, SharedClipboardHost, SharedFetchHost, SharedWebSocketHost,
+    SocketPolicy, UnsupportedClipboard, WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage,
+    WsOpenRequest, WsSink, default_shared_clipboard, shared_clipboard, shared_fetch_host,
 };
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
@@ -72,6 +75,7 @@ pub struct WebApiState {
     location_search: String,
     location_hash: String,
     fetch: FetchRuntime,
+    socket: SocketRuntime,
 }
 
 impl Default for WebApiState {
@@ -109,7 +113,14 @@ impl WebApiState {
             location_search: String::new(),
             location_hash: String::new(),
             fetch: FetchRuntime::new(fetch_host),
+            socket: SocketRuntime::new(),
         }
+    }
+
+    /// Attach or detach the application-owned WebSocket transport. Absent by
+    /// default: without a host the JS `WebSocket` surface reports unavailable.
+    pub fn set_socket_host(&mut self, socket_host: Option<SharedWebSocketHost>) {
+        self.socket.set_host(socket_host);
     }
 
     pub fn storage_get(&self, bucket: &str, key: &str) -> Option<String> {
@@ -278,9 +289,17 @@ impl WebApiState {
             .collect()
     }
 
-    /// Earliest useful host wakeup. Idle (no rAF, timer, or fetch) is `None`.
-    /// Pending rAF uses a stable deadline; an in-flight fetch uses a short
-    /// bounded wake until its completion arrives.
+    pub fn drain_socket_events(&mut self) -> Vec<HostValue> {
+        self.socket
+            .drain_events()
+            .into_iter()
+            .map(SocketEvent::into_host_value)
+            .collect()
+    }
+
+    /// Earliest useful host wakeup. Idle (no rAF, timer, fetch, or socket) is
+    /// `None`. Pending rAF uses a stable deadline; an in-flight fetch or an
+    /// open socket uses a short bounded wake until its next event arrives.
     pub fn next_wakeup(&self, now: Instant) -> Option<Instant> {
         let raf = self.raf_deadline;
         let timer = self
@@ -293,7 +312,15 @@ impl WebApiState {
             .fetch
             .has_pending()
             .then(|| now + Duration::from_millis(8));
-        raf.into_iter().chain(timer).chain(fetch).min()
+        let socket = self
+            .socket
+            .has_active()
+            .then(|| now + ws::SOCKET_WAKE_INTERVAL);
+        raf.into_iter()
+            .chain(timer)
+            .chain(fetch)
+            .chain(socket)
+            .min()
     }
 }
 
@@ -438,6 +465,7 @@ pub fn register_clipboard_host_ops(api: &mut HostApiRegistry, clipboard: SharedC
 
 fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: SharedWebApiState) {
     fetch::register_fetch_host_ops(api, Arc::clone(&state));
+    ws::register_socket_host_ops(api, Arc::clone(&state));
     {
         let state = Arc::clone(&state);
         api.register("storageGet", move |args| {
@@ -917,6 +945,20 @@ mod tests {
         assert!(
             WEB_API_SHIM_JS.contains("entry.capture"),
             "listeners must retain capture flag for multi-listener dispatch"
+        );
+    }
+
+    #[test]
+    fn shim_websocket_uses_reserved_host_ops() {
+        assert!(WEB_API_SHIM_JS.contains("globalThis.WebSocket = WebSocketShim"));
+        assert!(WEB_API_SHIM_JS.contains("win.WebSocket = WebSocketShim"));
+        assert!(WEB_API_SHIM_JS.contains("hostCall(\"wsOpen\""));
+        assert!(WEB_API_SHIM_JS.contains("hostCall(\"wsSend\""));
+        assert!(WEB_API_SHIM_JS.contains("hostCall(\"wsClose\""));
+        assert!(WEB_API_SHIM_JS.contains("__nanaDrainWs"));
+        assert!(
+            WEB_API_SHIM_JS.contains("Nana WebSocket only supports ws:// and wss:// URLs"),
+            "shim must reject non-WS schemes before the host op"
         );
     }
 

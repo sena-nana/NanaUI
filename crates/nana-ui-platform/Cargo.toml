@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 default = ["clipboard", "fetch"]
 clipboard = ["dep:arboard"]
 fetch = ["dep:url", "dep:ureq"]
+ws = ["dep:url"]
 experimental-android = []
 
 [lib]

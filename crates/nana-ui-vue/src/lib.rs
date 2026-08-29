@@ -383,6 +383,7 @@ pub struct VueHost {
     fire_event: Option<JsFunctionId>,
     drain_timers: Option<JsFunctionId>,
     drain_fetch: Option<JsFunctionId>,
+    drain_ws: Option<JsFunctionId>,
     apply_theme: Option<JsFunctionId>,
     /// Optional web-api ResizeObserver flush after layout (`__nanaNotifyLayout`).
     notify_layout: Option<JsFunctionId>,
@@ -518,6 +519,7 @@ impl VueHost {
             fire_event: None,
             drain_timers: None,
             drain_fetch: None,
+            drain_ws: None,
             apply_theme: None,
             notify_layout: None,
             lifecycle_pump: None,
@@ -1205,6 +1207,7 @@ impl VueHost {
         // Drain helper is optional (counter fixture / shim may still install it).
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
         self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
+        self.drain_ws = engine.resolve_function("__nanaDrainWs").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpLifecycle").ok();
@@ -1222,6 +1225,7 @@ impl VueHost {
         self.fire_event = Some(engine.resolve_function("__nanaFireWindowEvent")?);
         self.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
         self.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
+        self.drain_ws = engine.resolve_function("__nanaDrainWs").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyWindowTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpWindowLifecycle").ok();
@@ -1374,7 +1378,8 @@ impl VueHost {
         Ok(())
     }
 
-    /// Settle completed fetches, drain timers, then run microtasks and layout.
+    /// Settle completed fetches and socket events, drain timers, then run
+    /// microtasks and layout.
     ///
     /// After layout resolves, invokes optional `__nanaNotifyLayout` so
     /// `ResizeObserver` callbacks see fresh `layoutBox` geometry.
@@ -1411,6 +1416,24 @@ impl VueHost {
             engine.invoke(
                 drain,
                 &[HostValue::Array(fetch_completions.into_iter().collect())],
+            )?;
+            fired += count;
+            engine.run_microtasks()?;
+        }
+        let socket_events = {
+            let mut guard = self
+                .web_api
+                .lock()
+                .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
+            guard.drain_socket_events()
+        };
+        if !socket_events.is_empty()
+            && let Some(drain) = self.drain_ws
+        {
+            let count = socket_events.len();
+            engine.invoke(
+                drain,
+                &[HostValue::Array(socket_events.into_iter().collect())],
             )?;
             fired += count;
             engine.run_microtasks()?;
