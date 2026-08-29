@@ -162,11 +162,12 @@ pub fn resolve_kind_from_hints(
         // Lucide / <i> glyphs stay Icon; structural <svg> is rasterized via
         // the shared image_url cache (see `svg_inline`). Raster <img> binds
         // `src` onto PaintStyle.content_image. `<canvas>` is a HostTexture slot
-        // (`canvas:{id}`), not a fake 2D context. `<video>` poster only.
-        // `<iframe>` is an explicit L1 skip.
+        // (`canvas:{id}`), not a fake 2D context. `<video>` samples the
+        // `video:{id}` host-texture slot via the Runtime Video control; poster
+        // stays the pre-first-frame fallback. `<iframe>` is an explicit L1 skip.
         "img" => WidgetKind::Box,
         "canvas" => WidgetKind::Box,
-        "video" => WidgetKind::Box,
+        "video" => WidgetKind::Video,
         "iframe" => WidgetKind::Box,
         "i" => WidgetKind::Icon,
         "svg" | "g" => {
@@ -1016,14 +1017,14 @@ mod tests {
     }
 
     #[test]
-    fn canvas_video_iframe_map_to_box() {
+    fn replaced_media_tags_map_kinds() {
         assert_eq!(
             resolve_kind_from_hints("canvas", None, None, None),
             Some(WidgetKind::Box)
         );
         assert_eq!(
             resolve_kind_from_hints("video", None, None, None),
-            Some(WidgetKind::Box)
+            Some(WidgetKind::Video)
         );
         assert_eq!(
             resolve_kind_from_hints("iframe", None, None, None),

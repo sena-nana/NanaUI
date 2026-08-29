@@ -594,6 +594,108 @@ mod tests {
     }
 
     #[test]
+    fn hosted_acceptance_video_frames_upload_through_host_texture_slot() {
+        let mut runtime = build_runtime(gpu(), false, false, false, false, 1120, 760, 1.0).unwrap();
+        let host = runtime.vue().host(VueWindowId::PRIMARY).unwrap();
+        {
+            let host = host.lock().unwrap();
+            let document = host.document();
+            let mut document = document.lock().unwrap();
+            let video = document.create_element("video");
+            let mount_root = document.mount_root();
+            document.insert(video, mount_root, None);
+            document.set_attribute(video, "data-nana-video", "7");
+        }
+        let video_runtime = host.lock().unwrap().video_runtime();
+        video_runtime
+            .lock()
+            .unwrap()
+            .push_frame(nana_ui_vue::VideoId(7), 8, 8, vec![0x40; 8 * 8 * 4], None)
+            .expect("frame push must validate");
+
+        runtime.prepare_runtime_window(WindowId::PRIMARY);
+        let (resource, revision) = {
+            let host = host.lock().unwrap();
+            let document = host.document();
+            let mut document = document.lock().unwrap();
+            document
+                .runtime_document_mut()
+                .flush(
+                    nana_ui_runtime::LayoutViewport::new(1120.0, 760.0),
+                    &mut nana_ui::NanaTextShaper::default(),
+                )
+                .expect("acceptance document must flush");
+            let content = document
+                .scene()
+                .primitives()
+                .find_map(|primitive| match &primitive.kind {
+                    nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                        if custom.renderer.as_ref() == "nana.host-texture"
+                            && custom.resource.as_ref() == "video:7" =>
+                    {
+                        Some((custom.resource.to_string(), custom.revision))
+                    }
+                    _ => None,
+                })
+                .expect("pushed video frame must reach the Scene");
+            content
+        };
+        assert_eq!(resource, "video:7");
+        assert_ne!(revision, 0, "uploaded frame must advance the revision");
+        assert!(
+            host.lock()
+                .unwrap()
+                .host_textures()
+                .get("video:7")
+                .is_some(),
+            "VideoGpuBridge must register the sampled slot"
+        );
+
+        video_runtime
+            .lock()
+            .unwrap()
+            .push_frame(nana_ui_vue::VideoId(7), 8, 8, vec![0x80; 8 * 8 * 4], None)
+            .unwrap();
+        runtime.prepare_runtime_window(WindowId::PRIMARY);
+        let revision_after_second_frame = {
+            let host = host.lock().unwrap();
+            let document = host.document();
+            let mut document = document.lock().unwrap();
+            document
+                .runtime_document_mut()
+                .flush(
+                    nana_ui_runtime::LayoutViewport::new(1120.0, 760.0),
+                    &mut nana_ui::NanaTextShaper::default(),
+                )
+                .expect("acceptance document must flush");
+            document
+                .scene()
+                .primitives()
+                .find_map(|primitive| match &primitive.kind {
+                    nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                        if custom.resource.as_ref() == "video:7" =>
+                    {
+                        Some(custom.revision)
+                    }
+                    _ => None,
+                })
+                .expect("video CustomRenderNode must persist")
+        };
+        assert_ne!(
+            revision_after_second_frame, revision,
+            "each pushed frame must advance CustomRenderNode.revision"
+        );
+
+        let dispatched = host
+            .lock()
+            .unwrap()
+            .set_video_playing(runtime.engine_mut(), 7, true)
+            .expect("video event dispatch must reach the engine");
+        assert!(dispatched, "video element must resolve as event target");
+        runtime.pump().unwrap();
+    }
+
+    #[test]
     fn real_vue_sfc_mounts_an_auxiliary_window_after_native_ready() {
         let mut application_api = HostApiRegistry::new();
         application_api.register("acceptanceMode", |_| Ok(HostValue::String("pure".into())));
