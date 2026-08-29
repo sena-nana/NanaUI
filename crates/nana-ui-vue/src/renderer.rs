@@ -1456,6 +1456,13 @@ fn seed_element_attrs(guard: &mut NanaTreeDocument, handle: NodeHandle, props: &
     if let Some(slot) = props.attrs.get("data-slot") {
         guard.set_attribute(handle, "data-slot", slot);
     }
+    // `id` / `aria-*` back the DOM facade for `#id` selectors and
+    // `aria-labelledby` resolution, which reads document attrs.
+    for (name, value) in &props.attrs {
+        if name == "id" || name.starts_with("aria-") {
+            guard.set_attribute(handle, name, value);
+        }
+    }
     if let Some(ty) = props.attrs.get("type").filter(|ty| !ty.is_empty()) {
         guard.set_attribute(handle, "type", ty);
     }
@@ -2302,8 +2309,11 @@ mod tests {
                 .unwrap()
                 .as_f64()
                 .unwrap() as u64;
-            api.call("insert", &[HostValue::Number(id as f64), HostValue::Number(root as f64)])
-                .unwrap();
+            api.call(
+                "insert",
+                &[HostValue::Number(id as f64), HostValue::Number(root as f64)],
+            )
+            .unwrap();
             ids.push(id);
         }
 
@@ -2323,6 +2333,205 @@ mod tests {
                 "tag `{tag}` must project {expected:?}"
             );
         }
+    }
+
+    /// createElement with seed attrs + insert under `parent`; returns the handle.
+    fn seeded_element(
+        api: &mut HostApiRegistry,
+        parent: u64,
+        tag: &str,
+        attrs: &[(&str, &str)],
+    ) -> u64 {
+        let seed: std::collections::BTreeMap<String, HostValue> = attrs
+            .iter()
+            .map(|(name, value)| (name.to_string(), HostValue::string(*value)))
+            .collect();
+        let id = api
+            .call(
+                "createElement",
+                &[
+                    HostValue::string(tag),
+                    HostValue::Null,
+                    HostValue::Null,
+                    HostValue::Object(seed),
+                ],
+            )
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(id as f64),
+                HostValue::Number(parent as f64),
+            ],
+        )
+        .unwrap();
+        id
+    }
+
+    fn text_child(api: &mut HostApiRegistry, parent: u64, text: &str) -> u64 {
+        let id = api
+            .call("createText", &[HostValue::string(text)])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(id as f64),
+                HostValue::Number(parent as f64),
+            ],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn html_section_and_form_take_landmark_names_from_content() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        use nana_ui_runtime::AccessibilityRole as Role;
+
+        let named_section = seeded_element(&mut api, root, "section", &[]);
+        text_child(&mut api, named_section, "Usage");
+        let named_form = seeded_element(&mut api, root, "form", &[]);
+        text_child(&mut api, named_form, "Profile");
+        let unnamed_section = seeded_element(&mut api, root, "section", &[]);
+        let unnamed_form = seeded_element(&mut api, root, "form", &[]);
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        let role_of = |id: u64| {
+            roles
+                .iter()
+                .find(|entry| entry.id.get() == id)
+                .unwrap_or_else(|| panic!("element {id} must enter Runtime accessibility"))
+        };
+
+        assert_eq!(role_of(named_section).role, Role::Region);
+        assert_eq!(role_of(named_section).label.as_deref(), Some("Usage"));
+        assert_eq!(role_of(named_form).role, Role::Form);
+        assert_eq!(role_of(named_form).label.as_deref(), Some("Profile"));
+        assert_eq!(role_of(unnamed_section).role, Role::Generic);
+        assert_eq!(role_of(unnamed_form).role, Role::Generic);
+    }
+
+    #[test]
+    fn html_aria_labelledby_names_section_landmark() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        use nana_ui_runtime::AccessibilityRole as Role;
+
+        let heading = seeded_element(&mut api, root, "h2", &[("id", "usage-title")]);
+        text_child(&mut api, heading, "Usage");
+        let section = seeded_element(
+            &mut api,
+            root,
+            "section",
+            &[("aria-labelledby", "usage-title")],
+        );
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        let section = roles
+            .iter()
+            .find(|entry| entry.id.get() == section)
+            .unwrap_or_else(|| panic!("section must enter Runtime accessibility"));
+
+        assert_eq!(section.role, Role::Region);
+        assert_eq!(section.label.as_deref(), Some("Usage"));
+    }
+
+    #[test]
+    fn html_header_footer_lose_landmark_inside_sectioning_ancestors() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        use nana_ui_runtime::AccessibilityRole as Role;
+
+        let main = seeded_element(&mut api, root, "main", &[]);
+        let article = seeded_element(&mut api, root, "article", &[]);
+        let header_in_main = seeded_element(&mut api, main, "header", &[]);
+        let footer_in_article = seeded_element(&mut api, article, "footer", &[]);
+        let nav_in_header = seeded_element(&mut api, header_in_main, "nav", &[]);
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        let role_of = |id: u64| {
+            roles
+                .iter()
+                .find(|entry| entry.id.get() == id)
+                .unwrap_or_else(|| panic!("element {id} must enter Runtime accessibility"))
+        };
+
+        assert_eq!(role_of(main).role, Role::Main);
+        assert_eq!(role_of(header_in_main).role, Role::Generic);
+        assert_eq!(role_of(footer_in_article).role, Role::Generic);
+        assert_eq!(role_of(nav_in_header).role, Role::Navigation);
+    }
+
+    #[test]
+    fn html_landmark_tags_yield_to_hint_control_roles() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let root = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        use nana_ui_runtime::AccessibilityRole as Role;
+
+        let tabs_class = seeded_element(&mut api, root, "nav", &[("class", "nana-tabs")]);
+        let tabs_role = seeded_element(&mut api, root, "nav", &[("role", "tablist")]);
+        let search_footer = seeded_element(&mut api, root, "footer", &[("class", "nana-search")]);
+
+        doc.lock()
+            .unwrap()
+            .sync_semantic_styles(&bridge.lock().unwrap().snapshot());
+        let roles = doc.lock().unwrap().accessibility_snapshot();
+        let role_of = |id: u64| {
+            roles
+                .iter()
+                .find(|entry| entry.id.get() == id)
+                .unwrap_or_else(|| panic!("element {id} must enter Runtime accessibility"))
+        };
+
+        assert_eq!(role_of(tabs_class).role, Role::TabList);
+        assert_eq!(role_of(tabs_role).role, Role::TabList);
+        assert_eq!(role_of(search_footer).role, Role::ComboBox);
     }
 
     #[test]
