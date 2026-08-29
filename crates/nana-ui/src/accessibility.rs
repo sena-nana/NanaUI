@@ -728,6 +728,14 @@ const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
         AccessibilityRole::Tooltip => Role::Tooltip,
         AccessibilityRole::Status => Role::Status,
         AccessibilityRole::Image => Role::Image,
+        AccessibilityRole::Main => Role::Main,
+        AccessibilityRole::Navigation => Role::Navigation,
+        AccessibilityRole::Banner => Role::Banner,
+        AccessibilityRole::ContentInfo => Role::ContentInfo,
+        AccessibilityRole::Complementary => Role::Complementary,
+        AccessibilityRole::Region => Role::Region,
+        AccessibilityRole::Search => Role::Search,
+        AccessibilityRole::Form => Role::Form,
         AccessibilityRole::Generic => Role::GenericContainer,
     }
 }
@@ -767,6 +775,25 @@ mod tests {
             numeric_value: None,
             focused: false,
             bounds: LayoutBox::default(),
+        }
+    }
+
+    #[test]
+    fn landmark_roles_project_to_accesskit_landmarks() {
+        let cases = [
+            (AccessibilityRole::Main, Role::Main),
+            (AccessibilityRole::Navigation, Role::Navigation),
+            (AccessibilityRole::Banner, Role::Banner),
+            (AccessibilityRole::ContentInfo, Role::ContentInfo),
+            (AccessibilityRole::Complementary, Role::Complementary),
+            (AccessibilityRole::Region, Role::Region),
+            (AccessibilityRole::Search, Role::Search),
+            (AccessibilityRole::Form, Role::Form),
+        ];
+        for (role, expected) in cases {
+            assert_eq!(project_role(role, false), expected);
+            assert!(!supports_click(role));
+            assert!(!supports_focus(role));
         }
     }
 

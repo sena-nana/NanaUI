@@ -625,6 +625,14 @@ fn accessibility_role_name(role: AccessibilityRole) -> &'static str {
         AccessibilityRole::Tooltip => "tooltip",
         AccessibilityRole::Status => "status",
         AccessibilityRole::Image => "image",
+        AccessibilityRole::Main => "main",
+        AccessibilityRole::Navigation => "navigation",
+        AccessibilityRole::Banner => "banner",
+        AccessibilityRole::ContentInfo => "contentinfo",
+        AccessibilityRole::Complementary => "complementary",
+        AccessibilityRole::Region => "region",
+        AccessibilityRole::Search => "search",
+        AccessibilityRole::Form => "form",
         AccessibilityRole::Generic => "generic",
     }
 }
