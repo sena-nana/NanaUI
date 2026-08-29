@@ -103,6 +103,7 @@ mod svg_inline;
 mod tree;
 #[cfg(feature = "hosted")]
 mod webgpu;
+mod video;
 mod widget_map;
 
 use std::collections::BTreeMap;
@@ -127,6 +128,7 @@ pub use app::{
     MountOptions, NanaVueApp, mount_vue_as_nana, mount_vue_as_nana_with_engine,
     semantic_snapshot_of,
 };
+pub use video::{SharedVideoRuntime, VideoId, VideoRect, VideoRuntime, shared_video_runtime};
 
 /// Application-facing L1/L2 host API. CSS cascade / measure stay at crate root as
 /// adapter internals; do not treat them as the product contract.
@@ -379,6 +381,7 @@ pub struct VueHost {
     layout_boxes: Arc<LayoutBoxStore>,
     web_api: SharedWebApiState,
     canvas: SharedCanvasRuntime,
+    video: video::SharedVideoRuntime,
     diagnostics: DiagnosticBindings,
     fire_event: Option<JsFunctionId>,
     drain_timers: Option<JsFunctionId>,
@@ -412,6 +415,8 @@ pub struct VueHost {
     webgpu: Option<JsWebGpuRuntime>,
     #[cfg(feature = "hosted")]
     canvas_gpu: Option<canvas_gpu::CanvasGpuBridge>,
+    #[cfg(feature = "hosted")]
+    video_gpu: Option<video::VideoGpuBridge>,
 }
 
 impl Default for VueHost {
@@ -515,6 +520,7 @@ impl VueHost {
             layout_boxes: Arc::new(LayoutBoxStore::new()),
             web_api,
             canvas,
+            video: video::shared_video_runtime(),
             diagnostics: DiagnosticBindings::default(),
             fire_event: None,
             drain_timers: None,
@@ -538,6 +544,8 @@ impl VueHost {
             webgpu: None,
             #[cfg(feature = "hosted")]
             canvas_gpu: None,
+            #[cfg(feature = "hosted")]
+            video_gpu: None,
         }
     }
 
@@ -570,6 +578,18 @@ impl VueHost {
 
     pub fn canvas_runtime_ref(&self) -> &SharedCanvasRuntime {
         &self.canvas
+    }
+
+    /// Shared `<video>` frame mailbox. The host pushes decoded frames here;
+    /// the frame pump uploads the newest frame to the video's texture slot.
+    pub fn video_runtime(&self) -> video::SharedVideoRuntime {
+        Arc::clone(&self.video)
+    }
+
+    /// Replaces the shared video mailbox (multi-window sharing). Must be
+    /// called before the first frame pump picks frames up.
+    pub fn share_video_runtime(&mut self, video: video::SharedVideoRuntime) {
+        self.video = video;
     }
 
     /// Current compatibility-layer resource counts for development snapshots.
@@ -690,6 +710,15 @@ impl VueHost {
                 ));
             }
         }
+        match &self.video_gpu {
+            Some(video_gpu) => video_gpu.replace_device(resources.clone()),
+            None => {
+                self.video_gpu = Some(video::VideoGpuBridge::new(
+                    resources.clone(),
+                    self.host_textures.clone(),
+                ));
+            }
+        }
         match &self.webgpu {
             Some(runtime) => runtime.replace_device(resources),
             None => {
@@ -712,10 +741,17 @@ impl VueHost {
     }
 
     #[cfg(feature = "hosted")]
+    pub(crate) fn share_video_gpu(&mut self, video_gpu: video::VideoGpuBridge) {
+        self.video_gpu = Some(video_gpu);
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn video_gpu(&self) -> Option<&video::VideoGpuBridge> {
+        self.video_gpu.as_ref()
+    }
+
+    #[cfg(feature = "hosted")]
     pub(crate) fn prepare_canvas_gpu(&self) {
-        let Some(canvas_gpu) = &self.canvas_gpu else {
-            return;
-        };
         let ids = self
             .bridge
             .lock()
@@ -735,11 +771,83 @@ impl VueHost {
                     .collect::<std::collections::BTreeSet<_>>()
             })
             .unwrap_or_default();
-        for id in ids {
-            if let Err(error) = canvas_gpu.sync(nana_ui_web_api::CanvasId(id)) {
-                self.report_diagnostic("canvas.gpu", JsDiagnosticLevel::Error, error, None);
+        if let Some(canvas_gpu) = &self.canvas_gpu {
+            for id in ids {
+                if let Err(error) = canvas_gpu.sync(nana_ui_web_api::CanvasId(id)) {
+                    self.report_diagnostic("canvas.gpu", JsDiagnosticLevel::Error, error, None);
+                }
             }
         }
+        self.prepare_video_gpu();
+    }
+
+    /// Uploads the newest pushed video frame for every live `video:{id}`
+    /// host-texture slot. Slots are read from the Runtime tree (not a facade
+    /// map); runs on the frame pump so GPU writes stay on the host GPU path.
+    #[cfg(feature = "hosted")]
+    fn prepare_video_gpu(&self) {
+        let Some(video_gpu) = &self.video_gpu else {
+            return;
+        };
+        let ids = {
+            let document = self.document.lock().expect("vue doc");
+            document
+                .gpu_slots()
+                .iter()
+                .filter_map(|(_, resource)| {
+                    resource
+                        .strip_prefix("video:")
+                        .and_then(|id| id.parse::<u64>().ok())
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        for id in ids {
+            if let Err(error) = video_gpu.sync(video::VideoId(id), &self.video) {
+                self.report_diagnostic("video.gpu", JsDiagnosticLevel::Error, error, None);
+            }
+        }
+    }
+
+    /// Dispatches a video lifecycle event (`play` / `pause` / `ended`) to the
+    /// listeners of `<video data-nana-video="{id}">`. Resolves `false` when no
+    /// element carries that surface id.
+    pub fn notify_video_event<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        video_id: u64,
+        name: &str,
+    ) -> Result<bool, JsEngineError> {
+        let Some(target) = self.video_event_target(video_id) else {
+            return Ok(false);
+        };
+        self.dispatch_bridge_event(
+            engine,
+            BridgeEvent::Native {
+                id: target.0,
+                name: name.to_owned(),
+                payload: HostValue::Object(BTreeMap::from([(
+                    "videoId".into(),
+                    HostValue::Number(video_id as f64),
+                )])),
+            },
+        )
+    }
+
+    /// Host playback-state boundary for `<video>`: dispatches `play` or
+    /// `pause`. The playback clock itself stays with the host push side;
+    /// other lifecycle events (`ended`, …) go through [`Self::notify_video_event`].
+    pub fn set_video_playing<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        video_id: u64,
+        playing: bool,
+    ) -> Result<bool, JsEngineError> {
+        self.notify_video_event(engine, video_id, if playing { "play" } else { "pause" })
+    }
+
+    fn video_event_target(&self, video_id: u64) -> Option<NodeHandle> {
+        let document = self.document.lock().expect("vue doc");
+        document.element_with_attribute("data-nana-video", &video_id.to_string())
     }
 
     /// Rebind the JS WebGPU facade after host device recovery and notify the

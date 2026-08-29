@@ -422,7 +422,7 @@ fn resource_key(id: u64) -> Arc<str> {
     Arc::from(id.to_string())
 }
 
-fn fill_layout(style: &NodeStyle) -> NodeStyle {
+pub(crate) fn fill_layout(style: &NodeStyle) -> NodeStyle {
     let mut style = style.clone();
     let layout = Arc::make_mut(&mut style.layout);
     if layout.width.is_none() {
@@ -501,7 +501,7 @@ impl RegisterableComponent for GpuView {
     }
 }
 
-fn parse_content_fit(raw: &str) -> nana_ui_core::ContentFit {
+pub(crate) fn parse_content_fit(raw: &str) -> nana_ui_core::ContentFit {
     match raw.trim().to_ascii_lowercase().as_str() {
         "contain" => nana_ui_core::ContentFit::Contain,
         _ => nana_ui_core::ContentFit::Fill,
@@ -537,7 +537,7 @@ fn saturating_u32(value: f32) -> u32 {
     value.clamp(0.0, u32::MAX as f32) as u32
 }
 
-fn finite_opacity(opacity: f32) -> f32 {
+pub(crate) fn finite_opacity(opacity: f32) -> f32 {
     if opacity.is_finite() {
         opacity.clamp(0.0, 1.0)
     } else {
@@ -545,7 +545,7 @@ fn finite_opacity(opacity: f32) -> f32 {
     }
 }
 
-fn finite_radius(radius: f32) -> f32 {
+pub(crate) fn finite_radius(radius: f32) -> f32 {
     if radius.is_finite() {
         radius.max(0.0)
     } else {

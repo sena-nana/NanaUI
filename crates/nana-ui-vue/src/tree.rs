@@ -2102,6 +2102,19 @@ impl NanaTreeDocument {
         self.set_attribute(el, "data-nana-gpu", slot);
     }
 
+    /// First element carrying `name="value"`. Event dispatch for host-fed
+    /// surfaces (`data-nana-video`) resolves targets this way; callers scan
+    /// rarely, so no secondary index is maintained.
+    pub(crate) fn element_with_attribute(&self, name: &str, value: &str) -> Option<NodeHandle> {
+        self.nodes
+            .iter()
+            .filter(|(_, node)| matches!(node.data, NodeData::Element { .. }))
+            .find_map(|(id, _)| {
+                let handle = NodeHandle(*id);
+                (self.get_attribute(handle, name).as_deref() == Some(value)).then_some(handle)
+            })
+    }
+
     pub fn gpu_slots(&self) -> Vec<(NodeHandle, String)> {
         let mut slots: Vec<_> = self
             .nodes
@@ -2142,6 +2155,13 @@ impl NanaTreeDocument {
         if let Some(slot) = self
             .get_attribute(el, "data-nana-gpu")
             .filter(|slot| !slot.is_empty())
+        {
+            return Some(slot);
+        }
+        if let Some(slot) = self
+            .get_attribute(el, "data-nana-video")
+            .as_deref()
+            .and_then(video_host_texture_slot)
         {
             return Some(slot);
         }
@@ -2220,7 +2240,8 @@ impl NanaTreeDocument {
         }
         if changed
             && (name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas"))
+                || name.eq_ignore_ascii_case("data-nana-canvas")
+                || name.eq_ignore_ascii_case("data-nana-video"))
         {
             self.index_host_texture_node(el);
             self.sync_surface_custom_render(el);
@@ -2248,7 +2269,8 @@ impl NanaTreeDocument {
         }
         if removed
             && (name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas"))
+                || name.eq_ignore_ascii_case("data-nana-canvas")
+                || name.eq_ignore_ascii_case("data-nana-video"))
         {
             self.index_host_texture_node(el);
             self.sync_surface_custom_render(el);
@@ -3075,6 +3097,18 @@ fn canvas_host_texture_slot(id: &str) -> Option<String> {
         .ok()
         .filter(|id| *id > 0)
         .map(|id| format!("canvas:{id}"))
+}
+
+fn video_host_texture_slot(id: &str) -> Option<String> {
+    // Slot contract: `data-nana-video="{id}"` → CustomRenderNode
+    // renderer `"nana.host-texture"` / resource `"video:{id}"`. Video
+    // pixels are pushed by the host through the shared video surface API
+    // and uploaded by VideoGpuBridge. This is not a browser `<video>`;
+    // playback truth (decoder, clock) stays with the host.
+    id.parse::<u64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .map(|id| format!("video:{id}"))
 }
 
 fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
@@ -4642,7 +4676,8 @@ fn accessibility_role(
         crate::WidgetKind::QrCode => AccessibilityRole::Image,
         crate::WidgetKind::Icon
         | crate::WidgetKind::GpuTextureView
-        | crate::WidgetKind::GpuView => AccessibilityRole::Image,
+        | crate::WidgetKind::GpuView
+        | crate::WidgetKind::Video => AccessibilityRole::Image,
         crate::WidgetKind::CommandPalette | crate::WidgetKind::ImageViewer => {
             AccessibilityRole::Dialog
         }
@@ -10438,6 +10473,60 @@ mod tests {
             world_generation,
             "unchanged host-texture revision must not enqueue CustomRender mutations"
         );
+    }
+
+    #[test]
+    fn video_tag_binds_video_control_and_host_texture_slot() {
+        let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+        let video = doc.create_element("video");
+        doc.insert(video, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "7");
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps::default();
+        props.attrs.insert("data-nana-video".into(), "7".into());
+        props.attrs.insert("autoplay".into(), "true".into());
+        props.attrs.insert("muted".into(), "".into());
+        bridge.register(video.0, crate::WidgetKind::Video, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let id = StableNodeId::try_from(video).unwrap();
+        assert_eq!(
+            doc.runtime.component_type(id).map(ComponentTypeId::as_str),
+            Some("nana.video"),
+            "HTML <video> binds the same-name Runtime control"
+        );
+        assert_eq!(
+            doc.element_with_attribute("data-nana-video", "7"),
+            Some(video)
+        );
+
+        doc.flush_host_frame();
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("video slot must land on CustomRenderNode");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), "video:7");
+        assert_eq!(content.revision, 0, "unregistered slot keeps revision 0");
+
+        doc.override_host_texture_revision(
+            "video:7",
+            nana_ui_runtime::pack_gpu_revision(2, 9),
+        );
+        doc.flush_host_frame();
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("invalidated video texture must keep CustomRenderNode");
+        assert_eq!(
+            content.revision,
+            nana_ui_runtime::pack_gpu_revision(2, 9),
+            "frame uploads must surface through CustomRenderNode.revision"
+        );
+
+        doc.remove_attribute(video, "data-nana-video");
+        doc.flush_host_frame();
+        assert!(doc.world().custom_render(id).is_none());
     }
 
     #[test]

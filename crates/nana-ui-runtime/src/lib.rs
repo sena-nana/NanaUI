@@ -52,6 +52,7 @@ mod text_layout_cache;
 mod thumbnail;
 mod toast;
 mod tree_view;
+mod video;
 mod view_components;
 mod workspace;
 mod world;
@@ -195,6 +196,7 @@ pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
+pub use video::Video;
 pub use view_components::{
     Activate, Button, Card, Checkbox, ComponentView, Dialog, Divider, HostedTextarea, IconButton,
     IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged, NumberInput,

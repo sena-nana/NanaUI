@@ -23,8 +23,8 @@ use crate::{
     SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
     SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
     StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
-    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip,
-    TreeView, UiExtension, ValidationMessage, ValueEmphasis, Workspace, WorkspaceRegionSlot, XYPad,
+    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip, TreeView,
+    UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad,
     XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
@@ -112,6 +112,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<SidebarFooter>()?;
         registrar.register_component::<GpuTextureView>()?;
         registrar.register_component::<GpuView>()?;
+        registrar.register_component::<Video>()?;
         Ok(())
     }
 }
@@ -3091,5 +3092,23 @@ mod tests {
             Some("nana.icon-button")
         );
         assert!(context.resolve_component_tag("svg").is_none());
+    }
+
+    #[test]
+    fn video_tag_resolves_to_single_video_component() {
+        let context = AppContext::new();
+        assert_eq!(
+            context
+                .resolve_component_tag("video")
+                .map(ComponentTypeId::as_str),
+            Some("nana.video"),
+            "HTML <video> is the same-name Runtime control tag"
+        );
+        assert_eq!(
+            context
+                .resolve_component_tag("nana-video")
+                .map(ComponentTypeId::as_str),
+            Some("nana.video")
+        );
     }
 }

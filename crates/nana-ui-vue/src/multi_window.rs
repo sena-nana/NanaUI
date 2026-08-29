@@ -218,6 +218,7 @@ struct WindowEntry {
 struct VueRuntimeState {
     windows: BTreeMap<VueWindowId, WindowEntry>,
     canvas: nana_ui_web_api::SharedCanvasRuntime,
+    video: crate::video::SharedVideoRuntime,
     local_storage: nana_ui_web_api::SharedStorage,
     stylesheets: Vec<String>,
     #[cfg(feature = "scene-view")]
@@ -261,6 +262,7 @@ impl VueRuntimeState {
             Arc::clone(&self.canvas),
             Arc::clone(&self.local_storage),
         );
+        host.share_video_runtime(Arc::clone(&self.video));
         #[cfg(feature = "scene-view")]
         {
             host.share_components(self.components.clone());
@@ -352,6 +354,7 @@ impl Default for VueRuntime {
 impl VueRuntime {
     pub fn new(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
         let canvas = nana_ui_web_api::shared_canvas_runtime();
+        let video = crate::video::shared_video_runtime();
         let local_storage = nana_ui_web_api::shared_storage();
         let primary = VueHost::with_document_id_and_shared_resources(
             VueWindowId::PRIMARY.document_id(),
@@ -361,6 +364,8 @@ impl VueRuntime {
             Arc::clone(&canvas),
             Arc::clone(&local_storage),
         );
+        let mut primary = primary;
+        primary.share_video_runtime(Arc::clone(&video));
         #[cfg(feature = "scene-view")]
         let mut primary = primary;
         #[cfg(feature = "scene-view")]
@@ -397,6 +402,7 @@ impl VueRuntime {
                 .into_iter()
                 .collect(),
                 canvas,
+                video,
                 local_storage,
                 stylesheets: Vec::new(),
                 #[cfg(feature = "scene-view")]
@@ -443,6 +449,15 @@ impl VueRuntime {
             .lock()
             .expect("Vue runtime state")
             .components
+            .clone()
+    }
+
+    /// Shared `<video>` frame mailbox across every window in this runtime.
+    pub fn video_runtime(&self) -> crate::video::SharedVideoRuntime {
+        self.state
+            .lock()
+            .expect("Vue runtime state")
+            .video
             .clone()
     }
 
@@ -521,12 +536,19 @@ impl VueRuntime {
             .canvas_gpu()
             .cloned()
             .ok_or_else(|| JsEngineError::new("failed to bind shared Canvas GPU runtime"))?;
+        let video_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .video_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to bind shared Video GPU runtime"))?;
         for host in hosts.into_iter().skip(1) {
             let mut host = host
                 .lock()
                 .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
             host.share_webgpu_runtime(runtime.clone());
             host.share_canvas_gpu(canvas_gpu.clone());
+            host.share_video_gpu(video_gpu.clone());
         }
         if let Ok(mut state) = self.state.lock() {
             state.webgpu = Some(runtime.clone());
@@ -576,12 +598,19 @@ impl VueRuntime {
             .canvas_gpu()
             .cloned()
             .ok_or_else(|| JsEngineError::new("failed to replace shared Canvas GPU runtime"))?;
+        let video_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .video_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to replace shared Video GPU runtime"))?;
         for host in hosts.into_iter().skip(1) {
             let mut host = host
                 .lock()
                 .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
             host.share_webgpu_runtime(runtime.clone());
             host.share_canvas_gpu(canvas_gpu.clone());
+            host.share_video_gpu(video_gpu.clone());
         }
         if let Ok(mut state) = self.state.lock() {
             state.webgpu = Some(runtime);

@@ -83,6 +83,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `nana-app-shell` | AppShell | Runtime `AppShell`（`title` → title bar，默认槽 → body） |
 | `nana-gpu` / `data-nana-gpu` | GpuTextureView | Runtime `GpuTextureView`（`nana.gpu`） |
 | `nana-gpu-view` | GpuView | Runtime `GpuView`（`nana.gpu-view`） |
+| `<video>` / `nana-video` + `data-nana-video` | Video | Runtime `Video`（`nana.video`）；宿主经 `VideoRuntime` 推帧（`video:{id}` host-texture 槽），`autoplay`/`loop`/`muted` 为声明式属性，`play`/`pause`/`ended` 由宿主派发 |
 | `nana-icon-button` | IconButton | Runtime `IconButton` |
 | `nana-icon` / `<i>` | Icon | Runtime `IconGlyph` |
 | `input[type=number]` / `NanaNumberInput` | NumberInput | Runtime `NumberInput` |

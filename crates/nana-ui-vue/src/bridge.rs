@@ -181,6 +181,9 @@ pub enum WidgetKind {
     GpuTextureView,
     /// In-pass GPU node → Runtime `GpuView`.
     GpuView,
+    /// Host-fed video surface → Runtime `Video` (`nana.video`); frames are
+    /// pushed by the host through the video surface API.
+    Video,
 }
 
 impl WidgetKind {
@@ -267,6 +270,7 @@ impl WidgetKind {
             "time-series-chart" => Self::TimeSeriesChart,
             "gpu" => Self::GpuTextureView,
             "gpu-view" => Self::GpuView,
+            "video" => Self::Video,
             _ => return None,
         })
     }
@@ -347,6 +351,7 @@ impl WidgetKind {
             Self::TimeSeriesChart => "time-series-chart",
             Self::GpuTextureView => "gpu",
             Self::GpuView => "gpu-view",
+            Self::Video => "video",
         }
     }
 
@@ -426,6 +431,7 @@ impl WidgetKind {
             Self::TimeSeriesChart => "nana-time-series-chart",
             Self::GpuTextureView => "nana-gpu",
             Self::GpuView => "nana-gpu-view",
+            Self::Video => "nana-video",
         }
     }
 
@@ -7462,6 +7468,9 @@ mod tests {
         assert_eq!(WidgetKind::parse("gpu-view"), Some(WidgetKind::GpuView));
         assert_eq!(WidgetKind::parse("nana-virtual-list"), None);
         assert_eq!(WidgetKind::GpuTextureView.element_tag(), "nana-gpu");
+        assert_eq!(WidgetKind::parse("nana-video"), Some(WidgetKind::Video));
+        assert_eq!(WidgetKind::Video.as_str(), "video");
+        assert_eq!(WidgetKind::Video.element_tag(), "nana-video");
         assert_eq!(WidgetKind::IconButton.as_str(), "icon-button");
         assert!(WidgetKind::CommandPalette.is_overlay());
         assert!(WidgetKind::ImageViewer.is_overlay());
