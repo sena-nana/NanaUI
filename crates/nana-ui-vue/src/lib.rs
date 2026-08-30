@@ -101,9 +101,9 @@ mod shell_contract;
 mod style;
 mod svg_inline;
 mod tree;
+mod video;
 #[cfg(feature = "hosted")]
 mod webgpu;
-mod video;
 mod widget_map;
 
 use std::collections::BTreeMap;

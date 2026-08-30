@@ -2335,7 +2335,10 @@ fn runtime_fixture(
             .stable_id(),
         Component::Popover => document.context_mut().build(document_id, |ui| {
             let body = ui.leaf(RuntimeText::new("Inspector content"));
-            let popover = ui.child("popover", RuntimePopover::new().trigger("Details").open(true));
+            let popover = ui.child(
+                "popover",
+                RuntimePopover::new().trigger("Details").open(true),
+            );
             ui.nest(popover, |ui| ui.adopt(body));
             popover.stable_id()
         })?,
@@ -2529,9 +2532,9 @@ fn runtime_fixture(
             row.stable_id()
         })?,
         Component::Settings => {
-            let control = document.context_mut().build_detached(document_id, |ui| {
-                ui.leaf(RuntimeText::new("暗色"))
-            })?;
+            let control = document
+                .context_mut()
+                .build_detached(document_id, |ui| ui.leaf(RuntimeText::new("暗色")))?;
             let row = document.context_mut().mount_settings_leaf_row(
                 document_id,
                 "主题",
@@ -2704,43 +2707,41 @@ fn mount_runtime_sidebar_section(
         .count(3)
         .collapsible(collapsible)
         .expanded(expanded);
-    Ok(document
-        .context_mut()
-        .build(document_id, |ui| {
-            let disclosure = collapsible.then(|| ui.leaf(spec.disclosure_mark()));
-            let title = ui.leaf(spec.title_label());
-            let count = ui.leaf(spec.count_label());
-            let spec = spec
-                .title_slot(title.stable_id())
-                .count_slot(count.stable_id());
-            let spec = match &disclosure {
-                Some(disclosure) => spec.disclosure(disclosure.stable_id()),
-                None => spec,
-            };
-            let header = ui.leaf(spec.header_item());
-            ui.nest(header, |ui| {
-                if let Some(disclosure) = disclosure {
-                    ui.adopt(disclosure);
-                }
-                ui.adopt(title);
-                ui.adopt(count);
-            });
-            let body = ui.leaf(RuntimeSidebarSection::body_port());
-            ui.nest(body, |ui| {
-                for (index, label) in labels.iter().enumerate() {
-                    ui.child(format!("row-{index}"), RuntimeSidebarRow::new(*label));
-                }
-            });
-            let section = ui.child(
-                "section",
-                spec.header(header.stable_id()).body(body.stable_id()),
-            );
-            ui.nest(section, |ui| {
-                ui.adopt(header);
-                ui.adopt(body);
-            });
-            section.stable_id()
-        })?)
+    Ok(document.context_mut().build(document_id, |ui| {
+        let disclosure = collapsible.then(|| ui.leaf(spec.disclosure_mark()));
+        let title = ui.leaf(spec.title_label());
+        let count = ui.leaf(spec.count_label());
+        let spec = spec
+            .title_slot(title.stable_id())
+            .count_slot(count.stable_id());
+        let spec = match &disclosure {
+            Some(disclosure) => spec.disclosure(disclosure.stable_id()),
+            None => spec,
+        };
+        let header = ui.leaf(spec.header_item());
+        ui.nest(header, |ui| {
+            if let Some(disclosure) = disclosure {
+                ui.adopt(disclosure);
+            }
+            ui.adopt(title);
+            ui.adopt(count);
+        });
+        let body = ui.leaf(RuntimeSidebarSection::body_port());
+        ui.nest(body, |ui| {
+            for (index, label) in labels.iter().enumerate() {
+                ui.child(format!("row-{index}"), RuntimeSidebarRow::new(*label));
+            }
+        });
+        let section = ui.child(
+            "section",
+            spec.header(header.stable_id()).body(body.stable_id()),
+        );
+        ui.nest(section, |ui| {
+            ui.adopt(header);
+            ui.adopt(body);
+        });
+        section.stable_id()
+    })?)
 }
 
 fn slot_label_style() -> NodeStyle {
@@ -2865,86 +2866,80 @@ fn mount_runtime_pane_chrome(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    Ok(document
-        .context_mut()
-        .build(document_id, |ui| {
-            let header = ui.leaf(RuntimeText::new(""));
-            let tabs = ui.leaf(RuntimeText::new("editor.rs"));
-            let body = ui.leaf(RuntimeText::new("Body"));
-            let close = ui.leaf(RuntimeText::new("关闭"));
-            ui.nest(header, |ui| {
-                ui.adopt(tabs);
-                ui.adopt(close);
-            });
-            let chrome = ui.child(
-                "chrome",
-                RuntimePaneChrome::new()
-                    .header(header.stable_id())
-                    .tabs(tabs.stable_id())
-                    .body(body.stable_id())
-                    .actions([nana_ui::runtime::PaneChromeAction::new(
-                        nana_ui::runtime::PaneChromeActionKind::CloseItem,
-                        "关闭",
-                    )
-                    .target(close.stable_id())])
-                    .active(true),
-            );
-            ui.nest(chrome, |ui| {
-                ui.adopt(header);
-                ui.adopt(body);
-            });
-            chrome.stable_id()
-        })?)
+    Ok(document.context_mut().build(document_id, |ui| {
+        let header = ui.leaf(RuntimeText::new(""));
+        let tabs = ui.leaf(RuntimeText::new("editor.rs"));
+        let body = ui.leaf(RuntimeText::new("Body"));
+        let close = ui.leaf(RuntimeText::new("关闭"));
+        ui.nest(header, |ui| {
+            ui.adopt(tabs);
+            ui.adopt(close);
+        });
+        let chrome = ui.child(
+            "chrome",
+            RuntimePaneChrome::new()
+                .header(header.stable_id())
+                .tabs(tabs.stable_id())
+                .body(body.stable_id())
+                .actions([nana_ui::runtime::PaneChromeAction::new(
+                    nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                    "关闭",
+                )
+                .target(close.stable_id())])
+                .active(true),
+        );
+        ui.nest(chrome, |ui| {
+            ui.adopt(header);
+            ui.adopt(body);
+        });
+        chrome.stable_id()
+    })?)
 }
 
 fn mount_runtime_pane_tree(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    Ok(document
-        .context_mut()
-        .build(document_id, |ui| {
-            let left = ui.leaf(RuntimeText::new("left").style(slot_label_style()));
-            let right = ui.leaf(RuntimeText::new("right").style(slot_label_style()));
-            let tree = ui.child(
-                "tree",
-                RuntimePaneTree::new(RuntimePaneTreeNode::split(
-                    "root",
-                    SplitAxis::Horizontal,
-                    0.4,
-                    RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
-                    RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
-                )),
-            );
-            ui.nest(tree, |ui| {
-                ui.adopt(left);
-                ui.adopt(right);
-            });
-            tree.stable_id()
-        })?)
+    Ok(document.context_mut().build(document_id, |ui| {
+        let left = ui.leaf(RuntimeText::new("left").style(slot_label_style()));
+        let right = ui.leaf(RuntimeText::new("right").style(slot_label_style()));
+        let tree = ui.child(
+            "tree",
+            RuntimePaneTree::new(RuntimePaneTreeNode::split(
+                "root",
+                SplitAxis::Horizontal,
+                0.4,
+                RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
+                RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
+            )),
+        );
+        ui.nest(tree, |ui| {
+            ui.adopt(left);
+            ui.adopt(right);
+        });
+        tree.stable_id()
+    })?)
 }
 
 fn mount_runtime_app_shell(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    Ok(document
-        .context_mut()
-        .build(document_id, |ui| {
-            let title = ui.leaf(RuntimeAppTitleBar::new("NanaUI"));
-            let body = ui.leaf(RuntimeText::new("Workspace"));
-            let shell = ui.child(
-                "shell",
-                RuntimeAppShell::new()
-                    .title_bar(title.stable_id())
-                    .body(body.stable_id()),
-            );
-            ui.nest(shell, |ui| {
-                ui.adopt(title);
-                ui.adopt(body);
-            });
-            shell.stable_id()
-        })?)
+    Ok(document.context_mut().build(document_id, |ui| {
+        let title = ui.leaf(RuntimeAppTitleBar::new("NanaUI"));
+        let body = ui.leaf(RuntimeText::new("Workspace"));
+        let shell = ui.child(
+            "shell",
+            RuntimeAppShell::new()
+                .title_bar(title.stable_id())
+                .body(body.stable_id()),
+        );
+        ui.nest(shell, |ui| {
+            ui.adopt(title);
+            ui.adopt(body);
+        });
+        shell.stable_id()
+    })?)
 }
 
 fn snapshot_settings_model() -> &'static SettingsModel {
@@ -3110,32 +3105,30 @@ fn mount_runtime_sidebar_frame(
         &["外观", "工作区", "设置", "关于", "日志", "调试"],
         false,
     )?;
-    Ok(document
-        .context_mut()
-        .build(document_id, |ui| {
-            let top = ui.leaf(RuntimeSidebarRow::new("返回"));
-            let body = ui.leaf(RuntimeSidebarFrame::vertical_body_scroll());
-            ui.nest(body, |ui| {
-                ui.adopt(Entity::<RuntimeSidebarSection>::from_stable_id(section));
-            });
-            let settings =
-                ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
-            let footer = ui.leaf(RuntimeSidebarFooter::new());
-            ui.nest(footer, |ui| ui.adopt(settings));
-            let frame = ui.child(
-                "frame",
-                RuntimeSidebarFrame::new()
-                    .top(top.stable_id())
-                    .body(body.stable_id())
-                    .footer(footer.stable_id()),
-            );
-            ui.nest(frame, |ui| {
-                ui.adopt(top);
-                ui.adopt(body);
-                ui.adopt(footer);
-            });
-            frame.stable_id()
-        })?)
+    Ok(document.context_mut().build(document_id, |ui| {
+        let top = ui.leaf(RuntimeSidebarRow::new("返回"));
+        let body = ui.leaf(RuntimeSidebarFrame::vertical_body_scroll());
+        ui.nest(body, |ui| {
+            ui.adopt(Entity::<RuntimeSidebarSection>::from_stable_id(section));
+        });
+        let settings =
+            ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
+        let footer = ui.leaf(RuntimeSidebarFooter::new());
+        ui.nest(footer, |ui| ui.adopt(settings));
+        let frame = ui.child(
+            "frame",
+            RuntimeSidebarFrame::new()
+                .top(top.stable_id())
+                .body(body.stable_id())
+                .footer(footer.stable_id()),
+        );
+        ui.nest(frame, |ui| {
+            ui.adopt(top);
+            ui.adopt(body);
+            ui.adopt(footer);
+        });
+        frame.stable_id()
+    })?)
 }
 
 fn exercise_segmented_contract(

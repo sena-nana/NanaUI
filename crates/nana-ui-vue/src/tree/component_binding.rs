@@ -60,8 +60,8 @@ pub(crate) enum ComponentRuleOutcome {
 }
 
 /// Rule signature: `(kind + prop composition) → tag`.
-pub(crate) type ComponentRule = fn(&crate::SemanticWidget, &crate::SemanticSnapshot)
--> Option<ComponentRuleOutcome>;
+pub(crate) type ComponentRule =
+    fn(&crate::SemanticWidget, &crate::SemanticSnapshot) -> Option<ComponentRuleOutcome>;
 
 pub(crate) fn rule_button_with_icon(
     widget: &crate::SemanticWidget,
@@ -1221,7 +1221,10 @@ pub(crate) fn try_bind_registered_component(
     }
 }
 
-pub(crate) fn selection_chrome(kind: crate::WidgetKind, props: &crate::WidgetProps) -> SelectionChrome {
+pub(crate) fn selection_chrome(
+    kind: crate::WidgetKind,
+    props: &crate::WidgetProps,
+) -> SelectionChrome {
     if kind == crate::WidgetKind::Tabs {
         SelectionChrome::Tabs
     } else if crate::widget_map::is_radio_group(props) {

@@ -205,8 +205,7 @@ impl AppContext {
             Some(id) => Entity::<RangeField>::from_stable_id(id),
             None => self.create_detached_component(
                 document,
-                RangeField::new(snapshot.hue as f64, 0.0, 360.0, 1.0)
-                    .expect("hue range"),
+                RangeField::new(snapshot.hue as f64, 0.0, 360.0, 1.0).expect("hue range"),
             )?,
         };
         let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {
@@ -410,7 +409,11 @@ pub fn rgb_to_hsv(value: [f32; 4]) -> (f32, f32, f32) {
         60.0 * (((r - g) / delta) + 4.0)
     };
     let hue = if hue < 0.0 { hue + 360.0 } else { hue };
-    let sat = if max <= f32::EPSILON { 0.0 } else { delta / max };
+    let sat = if max <= f32::EPSILON {
+        0.0
+    } else {
+        delta / max
+    };
     (hue, sat, max)
 }
 

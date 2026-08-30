@@ -1119,12 +1119,7 @@ fn titlebar_document(
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
     let title = document.context_mut().build(document_id, |ui| {
-        let leading = ui.leaf(labeled_text(
-            "NANA",
-            SemanticColorRole::Accent,
-            12.0,
-            600,
-        ));
+        let leading = ui.leaf(labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600));
         let center = ui.leaf(labeled_text(
             "LiliaCode › 恢复 Native 侧边栏交互与主界面布局",
             SemanticColorRole::Text,

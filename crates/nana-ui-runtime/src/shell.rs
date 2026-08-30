@@ -3087,7 +3087,9 @@ mod tests {
                 .overlay(overlay.stable_id()),
         );
         let (workspace, overlay_host, status_host) = context
-            .read(shell, |shell| (shell.workspace, shell.overlay, shell.status))
+            .read(shell, |shell| {
+                (shell.workspace, shell.overlay, shell.status)
+            })
             .unwrap();
         let workspace = workspace.expect("workspace");
         let overlay_host = overlay_host.expect("overlay host");

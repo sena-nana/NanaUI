@@ -63,17 +63,16 @@
 //! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them
 //!（feature `scene-view`）。
 
+#[cfg(test)]
+use nana_ui_core::box_layout::PaintTransform;
 pub use nana_ui_core::box_layout::{
     AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClearSpec, DirSpec, DisplaySpec,
     FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement,
     GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
     LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges, OverflowSpec,
-    PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
-    ViewportAxis, VisibilitySpec, WhiteSpaceSpec, resolve_grid_column_widths,
-    resolve_grid_track_sizes,
+    PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec, ViewportAxis,
+    VisibilitySpec, WhiteSpaceSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
-#[cfg(test)]
-use nana_ui_core::box_layout::PaintTransform;
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
 pub trait CssLayoutParse: Sized {

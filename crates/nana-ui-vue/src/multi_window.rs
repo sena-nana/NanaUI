@@ -454,11 +454,7 @@ impl VueRuntime {
 
     /// Shared `<video>` frame mailbox across every window in this runtime.
     pub fn video_runtime(&self) -> crate::video::SharedVideoRuntime {
-        self.state
-            .lock()
-            .expect("Vue runtime state")
-            .video
-            .clone()
+        self.state.lock().expect("Vue runtime state").video.clone()
     }
 
     /// Move view-time native component failures onto the owning V8 event queue. The

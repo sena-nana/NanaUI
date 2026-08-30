@@ -144,10 +144,7 @@ fn render(
             (
                 width,
                 height,
-                tiny_skia::Transform::from_scale(
-                    width as f32 / src_w,
-                    height as f32 / src_h,
-                ),
+                tiny_skia::Transform::from_scale(width as f32 / src_w, height as f32 / src_h),
             )
         }
         Fit::Stretch { width, height } => {
