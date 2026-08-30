@@ -58,7 +58,8 @@ struct GpuClip {
     poly3: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<GpuClip>() == 112);
+pub(super) const GPU_CLIP_BYTES: usize = std::mem::size_of::<GpuClip>();
+const _: () = assert!(GPU_CLIP_BYTES == 112);
 
 /// Bit-exact intern key: every `GpuClip` float as native `to_bits` (112 bytes).
 /// `PartialEq` would collapse `-0.0` with `0.0` and treat NaNs as never-equal.

@@ -110,13 +110,8 @@ fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) ->
     if ((paint.flags & PAINT_MASK) != 0u) {
         var m: f32;
         if ((paint.flags & PAINT_MASK_URL) != 0u) {
-            let sampled = textureSample(url_tex, url_sampler, local);
-            let lum = dot(sampled.xyz, vec3(0.2126, 0.7152, 0.0722));
-            if (sampled.a < 1.0) {
-                m = sampled.a;
-            } else {
-                m = lum;
-            }
+            // CSS match-source for url() images is alpha; luminance is mask-mode.
+            m = textureSample(url_tex, url_sampler, local).a;
         } else {
             m = mask_alpha(local, paint);
         }
