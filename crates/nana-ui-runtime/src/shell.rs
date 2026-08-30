@@ -181,10 +181,11 @@ impl AppTitleBar {
         let columns = title_bar_has_columns(world, id);
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
-        style.background = Some(SemanticColorRole::Surface);
+        style.background = Some(SemanticColorRole::Titlebar);
         style.text_horizontal_alignment = TextHorizontalAlignment::Center;
         style.text_vertical_alignment = TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
+        layout.background = None;
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::Start;
@@ -550,6 +551,7 @@ impl AppShell {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         let layout = Arc::make_mut(&mut style.layout);
+        layout.background = None;
         layout.direction = Some(FlexDirection::Column);
         layout.align_items = AlignSpec::Stretch;
         layout.justify_content = JustifySpec::Start;
@@ -2007,6 +2009,8 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use crate::{
         AppContext, Card, DocumentId, Entity, IconButton, LayoutViewport, MountState, SidebarFrame,
         StableNodeId, StandardVisual, Text, TextHorizontalAlignment, UiWorld,
@@ -2057,7 +2061,8 @@ mod tests {
         assert_eq!(style.layout.font_size, Some(TITLE_FONT_SIZE));
         assert_eq!(style.layout.font_weight, Some(TITLE_FONT_WEIGHT));
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
-        assert_eq!(style.background, Some(SemanticColorRole::Surface));
+        assert_eq!(style.background, Some(SemanticColorRole::Titlebar));
+        assert!(style.layout.background.is_none());
         assert_eq!(style.layout.direction, Some(FlexDirection::Row));
         let chrome = WindowChrome::platform_default();
         let expected_leading_pad = if chrome.leading_inset > 0.0 && !chrome.uses_custom_controls() {
@@ -2645,6 +2650,28 @@ mod tests {
     }
 
     #[test]
+    fn title_bar_drops_css_layout_background() {
+        let mut context = AppContext::new();
+        let mut layout = nana_ui_core::LayoutStyle::default();
+        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana").style(NodeStyle {
+                    layout: Arc::new(layout),
+                    ..NodeStyle::default()
+                }),
+            )
+            .unwrap();
+        let style = context.world().node_style(bar.stable_id()).unwrap();
+        assert_eq!(style.background, Some(SemanticColorRole::Titlebar));
+        assert!(
+            style.layout.background.is_none(),
+            "CSS fill must not cover Titlebar token alpha"
+        );
+    }
+
+    #[test]
     fn app_shell_default_background_is_none_and_title_bar_keeps_surface() {
         let mut context = AppContext::new();
         let title = context
@@ -2669,7 +2696,7 @@ mod tests {
                 .node_style(title.stable_id())
                 .unwrap()
                 .background,
-            Some(SemanticColorRole::Surface)
+            Some(SemanticColorRole::Titlebar)
         );
     }
 

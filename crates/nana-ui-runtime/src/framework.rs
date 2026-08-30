@@ -1409,13 +1409,35 @@ impl AppContext {
     }
 
     /// Change the retained theme once and invalidate only computed paint.
-    /// Re-applying the active mode is a true no-op.
+    /// Re-applying the active mode defaults is a true no-op.
+    ///
+    /// Resets palette alphas. Hosts that apply window backdrop follow with
+    /// [`Self::set_style_tokens`].
     pub fn set_theme(&mut self, mode: ThemeMode) -> Result<bool, FrameworkError> {
-        if self.world.theme_mode() == mode {
+        if self.world.style_model() == nana_ui_core::StyleModelRef::new(mode) {
             return Ok(false);
         }
         let mut queue = MutationQueue::new();
         queue.set_theme(mode);
+        self.world.commit(queue)?;
+        Ok(true)
+    }
+
+    /// Install Style Model tokens, including backdrop alphas on Surface /
+    /// Background / Titlebar.
+    pub fn set_style_tokens(
+        &mut self,
+        mode: ThemeMode,
+        metrics: nana_ui_core::ThemeMetrics,
+        palette: nana_ui_core::SemanticPalette,
+        titlebar: nana_ui_core::SemanticColor,
+    ) -> Result<bool, FrameworkError> {
+        let next = nana_ui_core::StyleModelRef::with_tokens(mode, metrics, palette, titlebar);
+        if self.world.style_model() == next {
+            return Ok(false);
+        }
+        let mut queue = MutationQueue::new();
+        queue.set_style_tokens(mode, metrics, palette, titlebar);
         self.world.commit(queue)?;
         Ok(true)
     }

@@ -166,8 +166,16 @@ impl AppearanceSettings {
         true
     }
 
+    pub const fn clamp_backdrop_opacity(opacity: f32) -> f32 {
+        if opacity.is_finite() {
+            opacity.clamp(Self::MIN_BACKDROP_OPACITY, Self::MAX_BACKDROP_OPACITY)
+        } else {
+            Self::DEFAULT_BACKDROP_OPACITY
+        }
+    }
+
     pub fn set_backdrop_opacity(&mut self, opacity: f32) -> bool {
-        let opacity = normalize_backdrop_opacity(opacity);
+        let opacity = Self::clamp_backdrop_opacity(opacity);
         if (self.backdrop_opacity - opacity).abs() < f32::EPSILON {
             return false;
         }
@@ -233,7 +241,7 @@ impl<'de> Deserialize<'de> for AppearanceSettings {
             workspace_corners_enabled: persisted.workspace_corners_enabled,
             window_material: persisted.window_material,
             backdrop_target: persisted.backdrop_target,
-            backdrop_opacity: normalize_backdrop_opacity(persisted.backdrop_opacity),
+            backdrop_opacity: Self::clamp_backdrop_opacity(persisted.backdrop_opacity),
             titlebar_follows_sidebar: persisted.titlebar_follows_sidebar,
         })
     }
@@ -255,17 +263,6 @@ fn normalize_standard_radius(radius: f32) -> f32 {
         )
     } else {
         UI_METRICS.radius_md
-    }
-}
-
-fn normalize_backdrop_opacity(opacity: f32) -> f32 {
-    if opacity.is_finite() {
-        opacity.clamp(
-            AppearanceSettings::MIN_BACKDROP_OPACITY,
-            AppearanceSettings::MAX_BACKDROP_OPACITY,
-        )
-    } else {
-        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
     }
 }
 
