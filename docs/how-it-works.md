@@ -85,7 +85,7 @@ Vue   button / input / ul / table / nana-*  ─┼─► UiWorld ─► UiScene 
 Vue   div + CSS 子集                         ─┘
 ```
 
-没有 WebView。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。
+没有 WebView 壳。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。应用内打开网页是另一件事，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。
 
 ## 不要做的
 
@@ -95,5 +95,5 @@ Vue   div + CSS 子集                         ─┘
 - 把 GPU 画面读回 CPU、编码成图，再当图标贴回去
 - 在 UI 画完之后再往 Surface 上盖一层实时画面
 - 让控件拿窗口句柄去调系统 API
-- 把整窗 WebView 当成 NanaUI 的壳
+- 把整窗 WebView 当成 NanaUI 的壳，或在 UI 画完后把原生 WebView 盖在窗口上
 - 把 crate 根上的旧控件再导出、或 `nana_ui::dock::*` 适配器，当成第二套产品 API（新代码从 `nana_ui::runtime` 进；产品 Dock 是 Runtime 的 `Dock` / `DockWorkspace`）
