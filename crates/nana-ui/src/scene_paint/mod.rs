@@ -2664,11 +2664,15 @@ mod tests {
         let mesh_64 = work_64
             .gpu_upload_bytes
             .saturating_sub(fill.gpu_upload_bytes);
-        assert!(mesh_32 > 0, "strokes must add mesh upload bytes");
+        // Isolation still includes the interned clip palette: every L-stroke
+        // shares one FragmentClip, so GpuClip bytes stay constant.
+        let instance_32 = mesh_32.saturating_sub(super::mesh::GPU_CLIP_BYTES);
+        let instance_64 = mesh_64.saturating_sub(super::mesh::GPU_CLIP_BYTES);
+        assert!(instance_32 > 0, "strokes must add mesh instance bytes");
         assert_eq!(
-            mesh_64,
-            mesh_32 * 2,
-            "doubling GraphCanvas edges must double isolated mesh upload bytes"
+            instance_64,
+            instance_32 * 2,
+            "doubling GraphCanvas edges must double isolated mesh instance bytes"
         );
         assert_eq!(
             work_32.draw_calls.saturating_sub(fill.draw_calls),
