@@ -807,6 +807,10 @@ impl RuntimeInputAdapter {
                 context.set_ime_preedit(document, text.clone(), *selection)?
             }
             ImeEvent::Commit(text) => context.commit_ime(document, text)?,
+            ImeEvent::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => context.delete_ime_surrounding(document, *before_bytes, *after_bytes)?,
         };
         Ok(InputDisposition {
             prevent_default: handled || owns_ime || overlay_blocks,
@@ -1691,6 +1695,74 @@ mod tests {
             Some("Nana世")
         );
         assert!(context.world().ime(id).is_none());
+    }
+
+    #[test]
+    fn dispatch_ime_deletes_surrounding_committed_text_and_skips_invalid_spans() {
+        let mut context = AppContext::new();
+        let (document, id) = focused_untyped_text_input(&mut context, "你好");
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "世".into(),
+                        selection: Some((0, "世".len())),
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::DeleteSurrounding {
+                        before_bytes: "好".len(),
+                        after_bytes: 0,
+                    },
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("你")
+        );
+        assert_eq!(
+            context.world().ime(id).map(|ime| ime.text.as_str()),
+            Some("世"),
+            "delete surrounding must not clear preedit"
+        );
+
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::DeleteSurrounding {
+                        before_bytes: 1,
+                        after_bytes: 0,
+                    },
+                )
+                .unwrap()
+                .prevent_default,
+            "focused editable still consumes an un-applicable span"
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_input(id)
+                .map(|state| state.value.as_str()),
+            Some("你"),
+            "invalid byte span must leave committed text unchanged"
+        );
     }
 
     #[test]

@@ -3189,6 +3189,15 @@ impl VueHost {
                     commit_runtime,
                 )
             }
+            ImeEvent::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => self.dispatch_native_delete_surrounding(
+                engine,
+                *before_bytes,
+                *after_bytes,
+                commit_runtime,
+            ),
             ImeEvent::Disabled => {
                 if commit_runtime {
                     let leftover = self.take_ime_leftover();
@@ -3223,6 +3232,52 @@ impl VueHost {
                 )
             }
         }
+    }
+
+    fn dispatch_native_delete_surrounding<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        before_bytes: usize,
+        after_bytes: usize,
+        commit_runtime: bool,
+    ) -> Result<bool, JsEngineError> {
+        let Some(target) = self.focused() else {
+            return Ok(false);
+        };
+        if self.text_commit_blocked(target) {
+            return Ok(true);
+        }
+        let next = {
+            let document = self.document.lock().expect("vue doc");
+            let Some(mut state) = document.text_input_state(target) else {
+                return Ok(false);
+            };
+            if commit_runtime && !state.delete_surrounding(before_bytes, after_bytes) {
+                return Ok(false);
+            }
+            state
+        };
+        let mut detail = BTreeMap::new();
+        detail.insert("data".into(), HostValue::string(""));
+        detail.insert("inputType".into(), HostValue::string("deleteContent"));
+        detail.insert("value".into(), HostValue::string(&next.value));
+        detail.insert("isComposing".into(), HostValue::Bool(false));
+        if commit_runtime && !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
+            return Ok(false);
+        }
+        if commit_runtime {
+            let mut document = self.document.lock().expect("vue doc");
+            if !document.set_text_input_state(target, next.clone()) {
+                return Err(JsEngineError::new(
+                    "native IME delete surrounding could not write text input state",
+                ));
+            }
+            document.set_attribute(target, "value", &next.value);
+        }
+        self.fire_dom_event(engine, target, "input", detail)?;
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(true)
     }
 
     /// Legacy keydown helper; printable text is committed separately for compatibility.
@@ -4440,6 +4495,67 @@ mod tests {
             events.iter().filter(|(_, name, _)| name == "input").count(),
             1,
             "native IME commit must not double-insert"
+        );
+    }
+
+    #[test]
+    fn native_ime_delete_surrounding_updates_runtime_value_and_skips_invalid_spans() {
+        let mut host = VueHost::new();
+        host.fire_event = Some(JsFunctionId(1));
+        let (input, _) = install_input_nodes(&mut host);
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.set_attribute(input, "value", "你好");
+            doc.set_focus(input);
+            assert!(doc.set_text_input_state(input, TextInputState::new("你好")));
+        }
+        let mut engine = RecordingEngine::default();
+
+        assert!(
+            host.dispatch_native_ime(
+                &mut engine,
+                &ImeEvent::DeleteSurrounding {
+                    before_bytes: "好".len(),
+                    after_bytes: 0,
+                },
+            )
+            .unwrap()
+        );
+        {
+            let document = host.document();
+            let document = document.lock().expect("document");
+            let state = document
+                .text_input_state(input)
+                .expect("runtime text input state");
+            assert_eq!(state.value, "你");
+            assert_eq!(
+                state.selection,
+                nana_ui_runtime::TextSelection::caret("你".len())
+            );
+            assert_eq!(
+                document.get_attribute(input, "value").as_deref(),
+                Some("你")
+            );
+        }
+
+        assert!(
+            !host
+                .dispatch_native_ime(
+                    &mut engine,
+                    &ImeEvent::DeleteSurrounding {
+                        before_bytes: 1,
+                        after_bytes: 0,
+                    },
+                )
+                .unwrap(),
+            "non-character-boundary spans must not apply"
+        );
+        let document = host.document();
+        let document = document.lock().expect("document");
+        assert_eq!(
+            document.text_input_state(input).map(|state| state.value),
+            Some("你".into())
         );
     }
 

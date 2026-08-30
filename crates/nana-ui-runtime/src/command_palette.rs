@@ -143,6 +143,15 @@ impl CommandPalette {
         true
     }
 
+    pub fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        if !self.state.delete_surrounding(before_bytes, after_bytes) {
+            return false;
+        }
+        self.query = self.state.value.clone();
+        self.selected = 0;
+        true
+    }
+
     fn windowed_rows(&self) -> Vec<PaletteRowData> {
         let visible = self.visible_items();
         if visible.is_empty() {
