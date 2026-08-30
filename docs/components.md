@@ -37,6 +37,8 @@ import "@nanaui/nanavue-components/controls.css";
 
 `GraphCanvas` 默认只画网格、节点框和边（Scene Quad / Stroke），节点内部内容由应用往子节点里放。`"graph-canvas"` 自定义 GPU renderer 不会自动挂上；要直写 pass 须宿主自己登记并 `set_custom_render`。`NativeMarkdown` 解析 mermaid 与公式围栏并给出 presenter 槽，但**不渲染**图和公式——那两样由宿主自己画进槽里。
 
+`ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
+
 ## 交互
 
 可见的按下、输入、开关、选中都接到真实状态：`on` / `observe`，或 `update_component`。
