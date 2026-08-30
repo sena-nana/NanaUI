@@ -23,17 +23,19 @@ import "@nanaui/nanavue-components/controls.css";
 
 ## 目录
 
-**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`。
 
 **展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`GraphCanvas`。
 
-**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。
+**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
 部分族需要 Cargo feature（`calendar`、`charts`、`overlays`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 只控制 `nana-ui` 的再导出路径和 `ComponentSupport` 的 `compiled` 标记；控件实现都在 `nana-ui-runtime` 里，不启用也照样编译，仍可从 `nana_ui::runtime` 取到。要真正裁二进制得在 `nana-ui-runtime` 一侧做，目前没有。
 
-`GraphCanvas` 默认只画网格、节点框和边，节点内部内容由应用往子节点里放。`NativeMarkdown` 解析 mermaid 与公式围栏并给出 presenter 槽，但**不渲染**图和公式——那两样由宿主自己画进槽里。
+`ColorField` 是色块 + hex，`assemble_color_field` 挂 HSV 选择器；提交发 `ColorChanged`，拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮，浏览只发 `BrowseRequested`，由应用打开系统对话框。
+
+`GraphCanvas` 默认只画网格、节点框和边（Scene Quad / Stroke），节点内部内容由应用往子节点里放。`"graph-canvas"` 自定义 GPU renderer 不会自动挂上；要直写 pass 须宿主自己登记并 `set_custom_render`。`NativeMarkdown` 解析 mermaid 与公式围栏并给出 presenter 槽，但**不渲染**图和公式——那两样由宿主自己画进槽里。
 
 ## 交互
 

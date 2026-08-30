@@ -66,12 +66,8 @@ impl Video {
             return None;
         }
         Some(
-            CustomRenderNode::new(
-                crate::HOST_TEXTURE_RENDERER,
-                Arc::clone(&self.resource),
-                0,
-            )
-            .with_fit(self.fit),
+            CustomRenderNode::new(crate::HOST_TEXTURE_RENDERER, Arc::clone(&self.resource), 0)
+                .with_fit(self.fit),
         )
     }
 
@@ -80,13 +76,19 @@ impl Video {
         let layout = Arc::make_mut(&mut style.layout);
         layout.opacity = Some(finite_opacity(self.opacity));
         layout.border_radius = Some(finite_radius(self.corner_radius));
+        if self.custom_render().is_some() {
+            layout.paint.content_image = None;
+            layout.paint.skipped_replaced = None;
+        }
         style
     }
 }
 
 impl ComponentView for Video {
     fn node_kind(&self) -> NodeKind {
-        NodeKind::Element { tag: "video".into() }
+        NodeKind::Element {
+            tag: "video".into(),
+        }
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -230,5 +232,60 @@ mod tests {
         let attrs = [("data-nana-video", "0")];
         let video = Video::from_semantic(&spec(&type_id, &attrs, &layout));
         assert_eq!(video.resource.as_ref(), "");
+    }
+
+    fn mount(video: Video) -> (crate::UiWorld, StableNodeId) {
+        let mut world = crate::UiWorld::new();
+        let id = StableNodeId::new(1).unwrap();
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, video.node_kind());
+        video.project(id, &world, &mut queue);
+        world.commit(queue).unwrap();
+        (world, id)
+    }
+
+    #[test]
+    fn slotted_video_drops_poster_content_image() {
+        let mut video = Video::new("video:7");
+        let mut layout = LayoutStyle::default();
+        layout.paint.content_image = Some(nana_ui_core::BackgroundImage::url("frame.png"));
+        video.style.layout = Arc::new(layout);
+        let (world, id) = mount(video);
+        assert_eq!(
+            world.custom_render(id).map(|node| node.resource.as_ref()),
+            Some("video:7")
+        );
+        assert!(
+            world
+                .layout_style(id)
+                .expect("projected")
+                .paint
+                .content_image
+                .is_none(),
+            "HostTexture video must not also paint poster"
+        );
+    }
+
+    #[test]
+    fn poster_only_video_keeps_content_image() {
+        let mut video = Video::new("");
+        let mut layout = LayoutStyle::default();
+        layout.paint.content_image = Some(nana_ui_core::BackgroundImage::url("frame.png"));
+        video.style.layout = Arc::new(layout);
+        let (world, id) = mount(video);
+        assert!(world.custom_render(id).is_none());
+        match world
+            .layout_style(id)
+            .expect("projected")
+            .paint
+            .content_image
+            .as_ref()
+        {
+            Some(nana_ui_core::BackgroundImage::Url { url, .. }) => {
+                assert_eq!(url.as_str(), "frame.png")
+            }
+            other => panic!("expected poster content_image, got {other:?}"),
+        }
     }
 }

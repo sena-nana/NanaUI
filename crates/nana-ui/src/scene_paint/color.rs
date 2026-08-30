@@ -32,7 +32,7 @@ fn linear_component(u: f32) -> f32 {
     }
 }
 
-/// OpenGL-style ortho matching Iced: (0,0) top-left, Y-down, physical pixels.
+/// OpenGL-style ortho: (0,0) top-left, Y-down, physical pixels.
 pub(super) fn orthographic(width: u32, height: u32) -> [f32; 16] {
     let width = width.max(1) as f32;
     let height = height.max(1) as f32;

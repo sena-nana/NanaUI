@@ -1584,7 +1584,7 @@ impl AppContext {
         )
     }
 
-    /// Mount or refresh the Iced appearance row/control contract from the
+    /// Mount or refresh the appearance row/control contract from the
     /// host snapshot stored on [`AppearanceSection`].
     ///
     /// Child activations re-emit [`AppearanceEvent`] from the section. The

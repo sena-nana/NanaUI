@@ -6,28 +6,31 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{LengthSpec, PhysicalRect};
+use nana_ui_core::LengthSpec;
 
+#[cfg(test)]
+use crate::LayoutBox;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
+/// Scene HostTexture registry renderer (`resource` is the host slot string).
+///
+/// Shared by [`GpuTextureView`], [`crate::Video`], [`crate::Thumbnail`], and
+/// [`crate::ImageViewer`] HostTexture content. Not a second painter.
+pub const HOST_TEXTURE_RENDERER: &str = "nana.host-texture";
 /// Scene renderer key for [`GpuView`].
 ///
 /// [`GpuView::project`] attaches [`GpuView::custom_render`]. Hosts that
 /// return `None` from scene GPU renderers install a `"gpu-view"` painter;
 /// an explicit empty registry still leaves the node unpaintable.
 pub const GPU_VIEW_RENDERER: &str = "gpu-view";
-/// Scene renderer key for [`GpuTextureView`].
-///
-/// Must stay [`crate::HOST_TEXTURE_RENDERER`] (`"nana.host-texture"`) so
-/// the Scene painter can bind a host-owned texture without a second Device/Queue.
-/// `"gpu-texture-view"` is not a registered Scene painter. The node's
-/// `resource` is the same slot string the host registers.
-pub const GPU_TEXTURE_VIEW_RENDERER: &str = crate::HOST_TEXTURE_RENDERER;
+/// Alias of [`HOST_TEXTURE_RENDERER`]. Not a distinct Scene painter; the
+/// string is `"nana.host-texture"`, never `"gpu-texture-view"`.
+pub const GPU_TEXTURE_VIEW_RENDERER: &str = HOST_TEXTURE_RENDERER;
 
 /// Packs identity and content counters for [`CustomRenderNode::revision`].
 ///
@@ -88,6 +91,8 @@ pub mod gpu_view_params {
 ///
 /// Prefer [`GpuTextureView`] when the host already has a sampleable texture.
 /// Paint requires a host-registered Scene GPU renderer for [`GPU_VIEW_RENDERER`].
+/// [`Self::slot_id`] is **not** a [`HOST_TEXTURE_RENDERER`] registry key; the
+/// Scene `resource` is the decimal form of this integer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuView {
     pub slot_id: u64,
@@ -288,78 +293,6 @@ impl GpuTextureView {
     }
 }
 
-/// A stable logical/physical region suitable for a viewport and scissor.
-///
-/// Physical pixels are derived with the same floor/ceil scale math as the Iced
-/// compatibility `RenderSlot`: edges cover fractional coverage, and a
-/// non-finite or non-positive scale becomes `1.0`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RenderSlot {
-    pub id: u64,
-    pub logical: LayoutBox,
-    pub scale: f32,
-}
-
-impl RenderSlot {
-    pub fn new(id: u64, logical: LayoutBox, scale: f32) -> Self {
-        Self {
-            id,
-            logical: sanitize_logical(logical),
-            scale: sanitize_scale(scale),
-        }
-    }
-
-    /// Physical scissor/viewport rectangle derived from [`Self::logical`] and
-    /// [`Self::scale`].
-    pub fn physical(&self) -> PhysicalRect {
-        let scale = self.scale;
-        let left = (self.logical.x * scale).floor().max(0.0);
-        let top = (self.logical.y * scale).floor().max(0.0);
-        let right = ((self.logical.x + self.logical.width) * scale)
-            .ceil()
-            .max(left);
-        let bottom = ((self.logical.y + self.logical.height) * scale)
-            .ceil()
-            .max(top);
-        PhysicalRect {
-            x: saturating_u32(left),
-            y: saturating_u32(top),
-            width: saturating_u32(right - left),
-            height: saturating_u32(bottom - top),
-        }
-    }
-
-    pub fn clipped_physical(self, target_width: u32, target_height: u32) -> PhysicalRect {
-        let physical = self.physical();
-        let right = physical.x.saturating_add(physical.width).min(target_width);
-        let bottom = physical
-            .y
-            .saturating_add(physical.height)
-            .min(target_height);
-        let x = physical.x.min(target_width);
-        let y = physical.y.min(target_height);
-        PhysicalRect {
-            x,
-            y,
-            width: right.saturating_sub(x),
-            height: bottom.saturating_sub(y),
-        }
-    }
-
-    /// Unrounded physical viewport (`logical * scale`), matching Iced
-    /// `slot_for_bounds`. Distinct from the floored/ceiled scissor in
-    /// [`Self::physical`].
-    pub fn viewport(&self) -> [f32; 4] {
-        let scale = self.scale;
-        [
-            self.logical.x * scale,
-            self.logical.y * scale,
-            self.logical.width * scale,
-            self.logical.height * scale,
-        ]
-    }
-}
-
 impl ComponentView for GpuView {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -508,35 +441,6 @@ pub(crate) fn parse_content_fit(raw: &str) -> nana_ui_core::ContentFit {
     }
 }
 
-fn sanitize_scale(scale: f32) -> f32 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    }
-}
-
-fn sanitize_logical(logical: LayoutBox) -> LayoutBox {
-    LayoutBox {
-        x: logical.x,
-        y: logical.y,
-        width: sanitize_extent(logical.width),
-        height: sanitize_extent(logical.height),
-    }
-}
-
-fn sanitize_extent(value: f32) -> f32 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
-}
-
-fn saturating_u32(value: f32) -> u32 {
-    value.clamp(0.0, u32::MAX as f32) as u32
-}
-
 pub(crate) fn finite_opacity(opacity: f32) -> f32 {
     if opacity.is_finite() {
         opacity.clamp(0.0, 1.0)
@@ -580,56 +484,6 @@ mod tests {
         component.project(id, &world, &mut queue);
         world.commit(queue).unwrap();
         (world, id)
-    }
-
-    #[test]
-    fn render_slot_scale_factor_maps_to_physical_rect() {
-        let slot = RenderSlot::new(7, layout(10.25, 20.5, 100.5, 50.25), 1.5);
-        assert_eq!(slot.scale, 1.5);
-        assert_eq!(
-            slot.physical(),
-            PhysicalRect {
-                x: 15,
-                y: 30,
-                width: 152,
-                height: 77,
-            }
-        );
-        assert_eq!(slot.viewport(), [15.375, 30.75, 150.75, 75.375]);
-        assert_eq!(
-            slot.clipped_physical(120, 90),
-            PhysicalRect {
-                x: 15,
-                y: 30,
-                width: 105,
-                height: 60,
-            }
-        );
-    }
-
-    #[test]
-    fn render_slot_treats_non_positive_or_non_finite_scale_as_one() {
-        let logical = layout(50.0, 60.0, 20.0, 30.0);
-        let expected = PhysicalRect {
-            x: 50,
-            y: 60,
-            width: 20,
-            height: 30,
-        };
-        for scale in [0.0, -2.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let slot = RenderSlot::new(1, logical, scale);
-            assert_eq!(slot.scale, 1.0, "scale {scale}");
-            assert_eq!(slot.physical(), expected, "scale {scale}");
-        }
-        assert_eq!(
-            RenderSlot::new(1, logical, f32::NAN).clipped_physical(10, 10),
-            PhysicalRect {
-                x: 10,
-                y: 10,
-                width: 0,
-                height: 0,
-            }
-        );
     }
 
     #[test]

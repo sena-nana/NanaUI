@@ -480,7 +480,7 @@ pub struct ProgressCancelled;
 
 /// Determinate progress track (Subtle rail, Accent fill, 6px girth).
 ///
-/// Optional cancel is a real hit target, matching the Iced compatibility control.
+/// Optional cancel is a real hit target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Progress {
     pub value: f64,

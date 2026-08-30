@@ -71,9 +71,9 @@ scene_gpu_renderers / scene_resource_producers
 
 ## 实时画面怎么成为节点
 
-默认：画面画到可采样纹理，树上挂 `GpuTextureView`，登记同一 slot。和 Button 一样被布局、裁剪、命中。
+默认：画面画到可采样纹理，树上挂 `GpuTextureView`，用**同一字符串 slot** 在 `host_textures()` 登记。和 Button 一样被布局、裁剪、命中。
 
-多层就是相邻的几张 `GpuTextureView`。没有中间纹理才用 `GpuView`，按图离屏见 [gpu.md](gpu.md#按图离屏)。换纹理升 generation，不要拆节点。细则见 [实时画面](gpu.md)。
+多层就是相邻的几张 `GpuTextureView`。没有中间纹理才用 `GpuView`（`u64` slot，不是 registry 键）。`<video data-nana-video>` 走 `video:{id}` HostTexture，有槽时不叠 poster。按图离屏见 [gpu.md](gpu.md#按图离屏)。换纹理升 generation，不要拆节点。细则见 [实时画面](gpu.md)。
 
 ## Vue 是输入，不是另一套窗口
 

@@ -108,7 +108,7 @@ pub use framework::{
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
-    GpuViewPalette, RenderSlot, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
+    GpuViewPalette, HOST_TEXTURE_RENDERER, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
 };
 pub use graph_canvas::{
     GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
@@ -116,8 +116,8 @@ pub use graph_canvas::{
     wheel_zoom_factor,
 };
 pub use image_viewer::{
-    HOST_TEXTURE_RENDERER, ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent,
-    ImageViewerGeometry, ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+    ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
+    ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
 pub use key_layers::{
     ActionDescriptor, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,

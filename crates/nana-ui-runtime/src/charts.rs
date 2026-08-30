@@ -57,7 +57,7 @@ impl TimeSeriesChart {
         self
     }
 
-    /// Local points using Iced inset math (`INSET_X=8`, `INSET_Y=10`).
+    /// Local points using inset (`INSET_X=8`, `INSET_Y=10`).
     pub fn points(&self, bounds: LayoutBox) -> Vec<(f32, f32)> {
         let values: Vec<f64> = self.values.iter().copied().map(sanitize_value).collect();
         if values.is_empty() {
@@ -101,7 +101,7 @@ impl TimeSeriesChart {
     }
 }
 
-/// Iced canvas colors: grid `border_soft` at 0.55, area accent at 0.16, line `accent_strong`.
+/// Sparkline colors: grid `border_soft` at 0.55, area accent at 0.16, line `accent_strong`.
 pub fn time_series_paint(mode: ThemeMode) -> TimeSeriesPaint {
     let palette = mode.palette();
     TimeSeriesPaint {

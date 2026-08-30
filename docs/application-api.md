@@ -16,6 +16,10 @@
 
 新代码从 `nana_ui::runtime` 引入控件。crate 根再导出是兼容面。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
 
+`nana_ui::ActionDescriptor` 是宿主命令面板（label / category / keywords）。`nana_ui::runtime::ActionDescriptor` 只是 keymap 启用表。不要混用。
+
+Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`，把 UiScene 交给 `SceneWgpuPainter`）。没有 `scene-view` 的构建只做 flush / 对照，不画产品帧。
+
 ## Cargo feature
 
 `nana-ui` 默认 `[]`。按职责打开：
@@ -23,7 +27,7 @@
 | feature | 作用 |
 | --- | --- |
 | `hosted` | `run_runtime`、crates.io winit、AccessKit；隐含 `gpu` |
-| `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuView` |
+| `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView` |
 | `bundled-fonts` | 嵌入 Noto Sans SC |
 | `components` | 下面组件族的聚合 |
 | `full` | fonts + components + hosted + syntax-highlighting |

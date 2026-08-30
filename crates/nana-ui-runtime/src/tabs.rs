@@ -4,8 +4,8 @@
 //! identity. This type reports select/reorder/close/transfer results and keeps
 //! retained option order in sync with a successful reorder. Scene paints each
 //! option through [`crate::SegmentedOption`] / [`crate::StandardVisual::SelectionOption`]
-//! with [`crate::SelectionChrome::Tabs`]. Iced `Tabs` has no close control, so
-//! close stays a request: the application owns removal.
+//! with [`crate::SelectionChrome::Tabs`]. Close stays a request: the
+//! application owns removal.
 
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ impl TabOption {
     }
 
     /// Advertises that the application accepts a close request for this tab.
-    /// Runtime does not paint a close control; Iced Tabs also omit one.
+    /// Runtime does not paint a close control.
     pub fn closable(mut self, closable: bool) -> Self {
         self.closable = closable;
         self

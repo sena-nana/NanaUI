@@ -149,6 +149,7 @@ static NEXT_HOST_TEXTURE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 /// The handle remains valid while the host updates the content in place or
 /// replaces the underlying view. `generation` changes only when the view is
 /// replaced, while `version` changes for every content invalidation.
+/// [`Self::id`] is a painter cache key, not the [`HostTextureRegistry`] slot.
 #[derive(Debug, Clone)]
 pub struct HostTexture {
     state: Arc<HostTextureState>,
@@ -230,6 +231,8 @@ impl HostTexture {
         }
     }
 
+    /// Painter pipeline cache key. Not the registry slot string used by
+    /// [`GpuTextureView`](nana_ui_runtime::GpuTextureView) / `"nana.host-texture"`.
     pub fn id(&self) -> u64 {
         self.state.id
     }
@@ -442,7 +445,7 @@ impl HostTextureRegistry {
 /// Layer order follows Scene primitive order, so composition remains owned
 /// by the UI tree rather than by a second renderer.
 #[derive(Debug, Clone)]
-pub struct HostTextureLayer {
+pub(crate) struct HostTextureLayer {
     texture: HostTexture,
     opacity: f32,
     corner_radius: f32,
@@ -458,20 +461,6 @@ impl HostTextureLayer {
     const PASS_CLIP_RECT: [f32; 4] = [-1.0e7, -1.0e7, 2.0e7, 2.0e7];
     const PASS_CLIP_INV_ABCD: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
     const PASS_CLIP_INV_EF: [f32; 2] = [0.0, 0.0];
-
-    pub const fn new(texture: HostTexture) -> Self {
-        Self {
-            texture,
-            opacity: 1.0,
-            corner_radius: 0.0,
-            clip: None,
-            fragment_clip_rect: Self::PASS_CLIP_RECT,
-            fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
-            fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
-            fragment_clip_corner_radius: 0.0,
-            alpha_mode: None,
-        }
-    }
 
     pub fn from_binding(binding: HostTextureBinding) -> Self {
         Self {
@@ -529,36 +518,14 @@ impl HostTextureLayer {
         self
     }
 
-    pub const fn with_alpha_mode(mut self, alpha_mode: HostTextureAlphaMode) -> Self {
-        self.alpha_mode = Some(alpha_mode);
-        self
-    }
-
-    pub const fn texture(&self) -> &HostTexture {
-        &self.texture
-    }
-
-    pub const fn opacity(&self) -> f32 {
-        self.opacity
-    }
-
-    pub const fn clip(&self) -> Option<LogicalRect> {
-        self.clip
-    }
-
-    pub const fn corner_radius(&self) -> f32 {
-        self.corner_radius
-    }
-
     pub fn alpha_mode(&self) -> HostTextureAlphaMode {
         self.alpha_mode
             .unwrap_or(HostTextureAlphaMode::Premultiplied)
     }
 }
 
-#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub struct GpuTexturePrimitive {
+pub(crate) struct GpuTexturePrimitive {
     layer: HostTextureLayer,
     presentation: PresentationIdentity,
 }

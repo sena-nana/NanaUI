@@ -11,8 +11,8 @@
 //!   [`crate::NanaTreeDocument::apply_runtime_hierarchy`] before Scene paint.
 //!
 //! Vue Custom Renderer hostOps project every visible node onto Nana layout
-//! primitives + base controls, then draw through Runtime / UiScene. This is not
-//! an Iced `Element` conversion and not a second ECS tree.
+//! primitives + base controls, then draw through Runtime / UiScene. This is
+//! not a second ECS tree.
 //!
 //! Vue "custom components" are combinations and variants of those foundations —
 //! not a separate CPU paint channel. CustomContent has been removed.
@@ -56,7 +56,10 @@ pub use crate::widget_map::resolve_kind_from_hints;
 /// Stable widget id — same numeric space as [`NodeHandle`].
 pub type WidgetId = u64;
 
-/// Nana layout primitives + base controls mirrored by nanavue / HTML downlevel.
+/// Vue/JS kind facade for host-op parsing. Not a second instantiation ABI.
+///
+/// Layout, hit-testing, and Scene identity go through Runtime
+/// `ComponentRegistry` / `register_component`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WidgetKind {
     /// Vertical stack (default layout box for `div` / section / …).
@@ -3029,7 +3032,11 @@ impl MessageBridge {
             crate::css_paint::apply_img_replaced_content(&mut layout, src);
         } else if leaf_tag.eq_ignore_ascii_case("video") {
             let poster = leaf_attrs.get("poster").map(String::as_str).unwrap_or("");
-            crate::css_paint::apply_video_poster(&mut layout, poster);
+            let slotted = leaf_attrs.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("data-nana-video")
+                    && value.trim().parse::<u64>().ok().is_some_and(|id| id > 0)
+            });
+            crate::css_paint::apply_video_poster(&mut layout, poster, slotted);
         } else if leaf_tag.eq_ignore_ascii_case("iframe") {
             crate::css_paint::apply_iframe_skip(&mut layout);
         } else if leaf_tag.eq_ignore_ascii_case("canvas") {
@@ -5762,7 +5769,11 @@ mod tests {
                 "as_str {:?} does not parse back",
                 kind.as_str()
             );
-            assert!(seen.insert(kind.as_str()), "duplicate as_str {:?}", kind.as_str());
+            assert!(
+                seen.insert(kind.as_str()),
+                "duplicate as_str {:?}",
+                kind.as_str()
+            );
         }
     }
 
@@ -5860,6 +5871,18 @@ mod tests {
                 .skipped_replaced
                 .is_none()
         );
+
+        let mut slotted = WidgetProps::default();
+        slotted.element_tag = "video".into();
+        slotted.attrs.insert("poster".into(), "frame.png".into());
+        slotted.attrs.insert("data-nana-video".into(), "7".into());
+        bridge.register(6, WidgetKind::Video, slotted);
+        let paint = &bridge.get(6).expect("slotted video").props.layout.paint;
+        assert!(
+            paint.content_image.is_none(),
+            "HostTexture video must not also paint poster"
+        );
+        assert!(paint.skipped_replaced.is_none());
 
         let mut bare = WidgetProps::default();
         bare.element_tag = "video".into();

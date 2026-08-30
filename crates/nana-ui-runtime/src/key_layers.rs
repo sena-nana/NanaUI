@@ -1,10 +1,10 @@
 //! Backend-neutral shortcut capture and keymap resolution.
 //!
-//! Host-facing `KeyStroke` / `Keymap` / `ActionRegistry` live in
+//! Host-facing command-palette `KeyStroke` / `Keymap` / `ActionRegistry` live in
 //! `nana-ui::command`. This module uses [`CapturedStroke`] and a thin
-//! enabled-state registry. Hosts map `nana_ui_platform::InputEvent::Keyboard`
-//! (or a Vue `KeyboardEvent`) into [`KeyInput`]; this file does not depend on
-//! platform types.
+//! enabled-state registry — not a second command palette. Hosts map
+//! `nana_ui_platform::InputEvent::Keyboard` (or a Vue `KeyboardEvent`) into
+//! [`KeyInput`]; this file does not depend on platform types.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,13 +21,12 @@ use crate::{
 /// Modifier bits for a backend-neutral key event.
 ///
 /// Fields match `nana_ui_platform::InputModifiers` 1:1:
-/// - `alt` ← `InputModifiers::alt` / Iced `Modifiers::alt`
-/// - `control` ← `InputModifiers::control` / Iced `Modifiers::control`
-/// - `meta` ← `InputModifiers::meta` / Iced `Modifiers::logo` /
-///   `nana_ui::command::KeyModifiers::logo`
-/// - `shift` ← `InputModifiers::shift` / Iced `Modifiers::shift`
+/// - `alt` ← `InputModifiers::alt`
+/// - `control` ← `InputModifiers::control`
+/// - `meta` ← `InputModifiers::meta` / `nana_ui::command::KeyModifiers::logo`
+/// - `shift` ← `InputModifiers::shift`
 ///
-/// This crate does not depend on platform or Iced types; hosts copy the bits.
+/// This crate does not depend on platform types; hosts copy the bits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct KeyModifiers {
     pub alt: bool,
@@ -75,7 +74,7 @@ impl KeyModifiers {
     }
 }
 
-/// Host-normalized key press or release. Not an Iced `keyboard::Event`.
+/// Host-normalized key press or release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyInput {
     pub pressed: bool,
@@ -128,7 +127,7 @@ impl KeyInput {
     }
 }
 
-/// Local stand-in for Iced `KeyStroke` until that type moves to core.
+/// Chord key plus modifiers. Hosts copy these bits from platform input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CapturedStroke {
     pub key: Arc<str>,
@@ -268,6 +267,10 @@ impl ComponentView for KeyCaptureLayer {
     }
 }
 
+/// Enabled-state record for [`ActionRegistry`].
+///
+/// Not the host command-palette descriptor (`nana_ui::command::ActionDescriptor`,
+/// which carries label / category / keywords).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDescriptor {
     pub id: ActionId,
@@ -482,8 +485,8 @@ impl Keymap {
 
 /// Resolves application key bindings against context and enabled actions.
 ///
-/// Chord prefix state matches Iced `KeymapState`. A hit is consumed; a miss
-/// is `None` so content can handle the key.
+/// Chord prefix state. A hit is consumed; a miss is `None` so content can
+/// handle the key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeymapLayer {
     pub keymap: Keymap,
@@ -510,7 +513,7 @@ impl KeymapLayer {
         self.state.cancel();
     }
 
-    /// Full Iced-compatible resolution, including chord [`KeymapMatch::Pending`].
+    /// Resolve including chord [`KeymapMatch::Pending`].
     pub fn resolve_key(&mut self, event: &KeyInput) -> KeymapMatch {
         if !event.pressed {
             return KeymapMatch::NoMatch;

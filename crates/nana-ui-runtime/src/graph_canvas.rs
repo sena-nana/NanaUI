@@ -618,8 +618,10 @@ impl GraphCanvas {
 
     /// Identity for a host-registered Scene GPU painter.
     ///
-    /// [`ComponentView::project`] does not attach this node. The default
-    /// Scene painter fails on unregistered `"graph-canvas"` renderers.
+    /// Default paint is [`StandardVisual::GraphCanvas`] (grid, frames, edges).
+    /// [`ComponentView::project`] does **not** attach this node. Hosts that
+    /// register `"graph-canvas"` may call this and `set_custom_render` themselves.
+    /// The default Scene painter rejects the unregistered key.
     pub fn custom_render(&self) -> CustomRenderNode {
         CustomRenderNode::new(
             GRAPH_CANVAS_RENDERER,

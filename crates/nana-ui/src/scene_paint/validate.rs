@@ -35,7 +35,9 @@ impl fmt::Display for ScenePaintError {
             ),
             Self::UnsupportedCustomRenderer(id) => write!(
                 formatter,
-                "scene primitive {}:{} names an unsupported custom renderer",
+                "scene primitive {}:{} names an unsupported custom renderer; \
+                 scene_gpu_renderers(None) installs the demo \"gpu-view\" painter, \
+                 an empty registry does not",
                 id.node.get(),
                 id.slot
             ),
@@ -52,8 +54,8 @@ impl fmt::Display for ScenePaintError {
 
 impl std::error::Error for ScenePaintError {}
 
-/// Resolves `"nana.host-texture"` custom scene nodes for compatibility trees
-/// such as Vue. Scene GPU painters such as `"gpu-view"` are resolved by
+/// Resolves `"nana.host-texture"` custom scene nodes from the host registry.
+/// Scene GPU painters such as `"gpu-view"` are resolved by
 /// [`super::SceneWgpuPainter`], not this lookup.
 #[derive(Debug, Clone)]
 pub struct HostTextureSceneResolver {
@@ -418,10 +420,14 @@ mod tests {
     #[test]
     fn validate_scene_rejects_gpu_view_with_empty_registry() {
         let (scene, _) = gpu_view_scene();
-        assert!(matches!(
-            validate_scene(&scene, None, Some(&SceneGpuRendererRegistry::new())),
-            Err(ScenePaintError::UnsupportedCustomRenderer(_))
-        ));
+        let err = validate_scene(&scene, None, Some(&SceneGpuRendererRegistry::new()))
+            .expect_err("empty registry must not paint gpu-view");
+        assert!(matches!(err, ScenePaintError::UnsupportedCustomRenderer(_)));
+        let message = err.to_string();
+        assert!(
+            message.contains("empty registry"),
+            "error must distinguish None from an empty registry, got {message}"
+        );
     }
 
     #[test]

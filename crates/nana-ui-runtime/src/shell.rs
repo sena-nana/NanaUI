@@ -654,7 +654,7 @@ impl ComponentView for AppShell {
     }
 }
 
-/// Page-level composer equivalent to Iced `DesktopShell`.
+/// Page-level desktop composer.
 ///
 /// Wires host-mounted [`AppTitleBar`], [`Workspace`], [`AppShell`] layout, and
 /// [`OverlayHost`]. Application content stays in the supplied region slots.
@@ -889,7 +889,7 @@ impl AppContext {
         Ok(changed || fields_changed)
     }
 
-    /// Restore the Iced three-column title bar and mount window controls.
+    /// Restore the three-column title bar and mount window controls.
     ///
     /// Leading and trailing columns fill leftover width; the center column is a
     /// fixed title slot. Custom Minimize / Maximize / Close buttons live in the
@@ -2071,11 +2071,7 @@ mod tests {
                 "custom title bar must own minimize, maximize, and close"
             );
             let columns = context.world().node(bar.stable_id()).unwrap().children;
-            assert_eq!(
-                columns.len(),
-                3,
-                "Iced title bar is leading | center | trailing"
-            );
+            assert_eq!(columns.len(), 3, "title bar is leading | center | trailing");
             assert_eq!(
                 node_tag(context.world(), columns[0]).as_deref(),
                 Some(LEADING_COLUMN_TAG)
@@ -2117,11 +2113,7 @@ mod tests {
             assert!(mounted);
             assert!(snapshot.controls.is_none());
             let columns = context.world().node(bar.stable_id()).unwrap().children;
-            assert_eq!(
-                columns.len(),
-                3,
-                "native chrome still uses three Iced columns"
-            );
+            assert_eq!(columns.len(), 3, "native chrome still uses three columns");
         }
     }
 
@@ -2860,11 +2852,7 @@ mod tests {
         assert!(context.assemble_app_shell(shell).unwrap());
         assert_eq!(context.world().text(title.stable_id()), Some(""));
         let columns = context.world().node(title.stable_id()).unwrap().children;
-        assert_eq!(
-            columns.len(),
-            3,
-            "empty title still uses three Iced columns"
-        );
+        assert_eq!(columns.len(), 3, "empty title still uses three columns");
         assert_eq!(
             node_tag(context.world(), columns[0]).as_deref(),
             Some(LEADING_COLUMN_TAG)
