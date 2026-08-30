@@ -290,10 +290,11 @@ fn live_frame_after_delta(
         y += dy;
         height -= dy;
     }
-    let min_w = min.0.min(max.0);
-    let max_w = min.0.max(max.0);
-    let min_h = min.1.min(max.1);
-    let max_h = min.1.max(max.1);
+    let (min, max) = track_limits(min, max);
+    let min_w = min.0;
+    let max_w = max.0;
+    let min_h = min.1;
+    let max_h = max.1;
     let right = x + width;
     let bottom = y + height;
     width = width.clamp(min_w, max_w);
@@ -305,6 +306,17 @@ fn live_frame_after_delta(
         y = bottom - height;
     }
     [x, y, width, height]
+}
+
+fn track_limits(min: (f64, f64), max: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+    let min = (min.0.max(1.0), min.1.max(1.0));
+    (
+        min,
+        (
+            if max.0 > min.0 { max.0 } else { 100_000.0 },
+            if max.1 > min.1 { max.1 } else { 100_000.0 },
+        ),
+    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -338,14 +350,14 @@ fn win32_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> ((f64, f64), 
             std::ptr::from_mut(&mut info) as isize,
         );
     }
-    (
+    track_limits(
         (
-            f64::from(info.ptMinTrackSize.x.max(1)),
-            f64::from(info.ptMinTrackSize.y.max(1)),
+            f64::from(info.ptMinTrackSize.x),
+            f64::from(info.ptMinTrackSize.y),
         ),
         (
-            f64::from(info.ptMaxTrackSize.x.max(1)),
-            f64::from(info.ptMaxTrackSize.y.max(1)),
+            f64::from(info.ptMaxTrackSize.x),
+            f64::from(info.ptMaxTrackSize.y),
         ),
     )
 }
@@ -555,6 +567,19 @@ mod tests {
         assert_eq!(
             live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::North, min, max, true),
             [100.0, 230.0, 400.0, 270.0]
+        );
+        assert_eq!(
+            live_frame_after_delta(
+                start,
+                0.0,
+                0.0,
+                FrameResizeEdge::East,
+                (120.0, 80.0),
+                (0.0, 0.0),
+                true,
+            ),
+            start,
+            "unset max track size must not clamp a live window down to min"
         );
         assert_eq!(hit_test_for_edge(FrameResizeEdge::West), 10);
         assert_eq!(hit_test_for_edge(FrameResizeEdge::SouthEast), 17);
