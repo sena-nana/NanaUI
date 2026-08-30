@@ -13,19 +13,21 @@ use nana_ui_core::{
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Button, CalendarHeatmap,
     CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card, Checkbox,
-    CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
+    ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
+    Divider,
     Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
     FormField, FrameworkError, GpuTextureView, GpuView, GraphCanvas, GraphModel, HostedTextarea,
     IconButton, IconGlyph, ImageViewer, ImageViewerContent, InteractiveCard, LabeledValue,
     LevelMeter, List, ListItem, ListItemSlots, ModalSurface, NativeMarkdown, NumberInput,
-    PaneChrome, Popover, Progress, QrCode, RangeField, ReorderItem, ReorderList, ScrollView,
+    PaneChrome, PathField, Popover, Progress, QrCode, RangeField, ReorderItem, ReorderList,
+    ScrollView,
     SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
     SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
     SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
     StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
-    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip, TreeView,
-    UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad,
-    XYPadValue,
+    TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast, ToastTone, Tooltip,
+    TreeView, UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot,
+    XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 
@@ -77,6 +79,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<ActionMenuItem>()?;
         registrar.register_component::<Tooltip>()?;
         registrar.register_component::<XYPad>()?;
+        registrar.register_component::<ColorField>()?;
+        registrar.register_component::<PathField>()?;
         registrar.register_component::<QrCode>()?;
         registrar.register_component::<FormField>()?;
         registrar.register_component::<InteractiveCard>()?;
@@ -857,6 +861,35 @@ impl RegisterableComponent for FormField {
         }
         if let Some(control) = spec.slot("control") {
             component = component.control_child(control);
+        }
+        component
+    }
+}
+
+impl RegisterableComponent for ColorField {
+    const TYPE_ID: &'static str = "nana.color-field";
+    const TAGS: &'static [&'static str] = &["color-field"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let value = crate::parse_hex(spec.value)
+            .or_else(|| crate::parse_hex(spec.attr("value").unwrap_or("")))
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        ColorField::new(value)
+            .size(spec.size)
+            .disabled(spec.disabled)
+            .invalid(spec.invalid)
+    }
+}
+
+impl RegisterableComponent for PathField {
+    const TYPE_ID: &'static str = "nana.path-field";
+    const TAGS: &'static [&'static str] = &["path-field"];
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut component = PathField::new(spec.value)
+            .size(spec.size)
+            .disabled(spec.disabled)
+            .invalid(spec.invalid);
+        if !spec.placeholder.is_empty() {
+            component = component.placeholder(Arc::<str>::from(spec.placeholder));
         }
         component
     }
