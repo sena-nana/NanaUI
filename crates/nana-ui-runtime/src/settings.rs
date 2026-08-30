@@ -715,7 +715,7 @@ impl ComponentView for SettingsDisclosure {
 }
 
 const DEFAULT_PLATFORM_HINT: &str =
-    "实色或窗口透明由设置选择；系统模糊（Vibrancy / Mica / Acrylic）由应用显式申请。";
+    "实色或窗口透明由设置选择；系统模糊（Vibrancy / Mica / Acrylic）在当前设备提供时可选。";
 
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]
@@ -724,6 +724,8 @@ pub struct AppearanceSection {
     pub appearance: AppearanceSettings,
     pub material_status: Option<Arc<str>>,
     pub platform_hint: Option<Arc<str>>,
+    /// Native materials the host is willing to offer besides 实色 / 透明.
+    pub available_materials: Vec<WindowMaterialMode>,
     pub assembly: Option<AppearanceSectionAssembly>,
 }
 
@@ -738,6 +740,9 @@ pub struct AppearanceSectionAssembly {
     pub material_control: Option<StableNodeId>,
     pub material_solid: Option<StableNodeId>,
     pub material_translucent: Option<StableNodeId>,
+    pub material_vibrancy: Option<StableNodeId>,
+    pub material_mica: Option<StableNodeId>,
+    pub material_acrylic: Option<StableNodeId>,
     pub material_status_row: Option<StableNodeId>,
     pub material_status_value: Option<StableNodeId>,
     pub target_row: Option<StableNodeId>,
@@ -764,6 +769,7 @@ impl AppearanceSection {
             appearance,
             material_status: None,
             platform_hint: None,
+            available_materials: Vec::new(),
             assembly: None,
         }
     }
@@ -775,6 +781,11 @@ impl AppearanceSection {
 
     pub fn platform_hint(mut self, hint: impl Into<Arc<str>>) -> Self {
         self.platform_hint = Some(hint.into());
+        self
+    }
+
+    pub fn available_materials(mut self, modes: impl Into<Vec<WindowMaterialMode>>) -> Self {
+        self.available_materials = modes.into();
         self
     }
 }
@@ -1527,6 +1538,74 @@ fn ensure_segmented_pair(
     Ok((control, first_entity, second_entity))
 }
 
+fn offered_window_materials(
+    available: &[WindowMaterialMode],
+    current: WindowMaterialMode,
+) -> Vec<WindowMaterialMode> {
+    let mut modes = vec![WindowMaterialMode::Solid, WindowMaterialMode::Translucent];
+    for mode in available
+        .iter()
+        .copied()
+        .chain(std::iter::once(current))
+        .filter(|mode| mode.wants_native())
+    {
+        if !modes.contains(&mode) {
+            modes.push(mode);
+        }
+    }
+    modes
+}
+
+fn material_option_slot(
+    assembly: &mut AppearanceSectionAssembly,
+    mode: WindowMaterialMode,
+) -> &mut Option<StableNodeId> {
+    match mode {
+        WindowMaterialMode::Solid => &mut assembly.material_solid,
+        WindowMaterialMode::Translucent => &mut assembly.material_translucent,
+        WindowMaterialMode::Vibrancy => &mut assembly.material_vibrancy,
+        WindowMaterialMode::Mica => &mut assembly.material_mica,
+        WindowMaterialMode::Acrylic => &mut assembly.material_acrylic,
+    }
+}
+
+fn ensure_material_options(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    assembly: &mut AppearanceSectionAssembly,
+    offered: &[WindowMaterialMode],
+    selected: WindowMaterialMode,
+) -> Result<Entity<SegmentedControl>, FrameworkError> {
+    let control = if let Some(id) = assembly.material_control {
+        Entity::from_stable_id(id)
+    } else {
+        let entity = context.create_detached_component(document, SegmentedControl::new())?;
+        assembly.material_control = Some(entity.stable_id());
+        entity
+    };
+    let mut options = Vec::with_capacity(offered.len());
+    for mode in offered {
+        let slot = material_option_slot(assembly, *mode);
+        let entity = if let Some(id) = *slot {
+            Entity::from_stable_id(id)
+        } else {
+            let entity =
+                context.create_detached_component(document, SegmentedOption::new(mode.label()))?;
+            *slot = Some(entity.stable_id());
+            entity
+        };
+        options.push(entity);
+    }
+    let selected_id = *material_option_slot(assembly, selected);
+    let selected = options
+        .iter()
+        .copied()
+        .find(|option| selected_id == Some(option.stable_id()))
+        .or_else(|| options.first().copied());
+    context.set_segmented_options(control, options, selected)?;
+    Ok(control)
+}
+
 fn ensure_switch(
     context: &mut AppContext,
     document: crate::DocumentId,
@@ -1609,10 +1688,12 @@ impl AppContext {
                 section.appearance,
                 section.material_status.clone(),
                 section.platform_hint.clone(),
+                section.available_materials.clone(),
                 section.assembly.clone().unwrap_or_default(),
             )
         })?;
-        let (theme, appearance, material_status, platform_hint, mut assembly) = snapshot;
+        let (theme, appearance, material_status, platform_hint, available_materials, mut assembly) =
+            snapshot;
         let (solid_mode, titlebar_follow_disabled) = appearance_mode(&appearance);
         let created_theme = assembly.theme_control.is_none();
         let created_material = assembly.material_control.is_none();
@@ -1649,21 +1730,15 @@ impl AppContext {
             theme_control.stable_id(),
         )?;
 
-        let (material_control, material_solid, material_translucent) = ensure_segmented_pair(
+        let offered_materials =
+            offered_window_materials(&available_materials, appearance.window_material());
+        let material_control = ensure_material_options(
             self,
             document,
-            &mut assembly.material_control,
-            &mut assembly.material_solid,
-            &mut assembly.material_translucent,
-            SegmentedOption::new("实色"),
-            SegmentedOption::new("透明"),
-            matches!(appearance.window_material(), WindowMaterialMode::Solid),
-            false,
-            false,
+            &mut assembly,
+            &offered_materials,
+            appearance.window_material(),
         )?;
-        assembly.material_control = Some(material_control.stable_id());
-        assembly.material_solid = Some(material_solid.stable_id());
-        assembly.material_translucent = Some(material_translucent.stable_id());
         let material_hint = platform_hint.as_deref().unwrap_or(DEFAULT_PLATFORM_HINT);
         let material_row = mount_settings_row(
             self,
@@ -1886,16 +1961,25 @@ impl AppContext {
             )?;
         }
         if created_material {
-            let solid = material_solid.stable_id();
-            let translucent = material_translucent.stable_id();
+            let solid = assembly.material_solid;
+            let translucent = assembly.material_translucent;
+            let vibrancy = assembly.material_vibrancy;
+            let mica = assembly.material_mica;
+            let acrylic = assembly.material_acrylic;
             self.observe(
                 material_control,
                 section,
                 move |_, event: &SegmentedSelectionRequested, cx| {
-                    let next = if event.option == solid {
+                    let next = if Some(event.option) == solid {
                         WindowMaterialMode::Solid
-                    } else if event.option == translucent {
+                    } else if Some(event.option) == translucent {
                         WindowMaterialMode::Translucent
+                    } else if Some(event.option) == vibrancy {
+                        WindowMaterialMode::Vibrancy
+                    } else if Some(event.option) == mica {
+                        WindowMaterialMode::Mica
+                    } else if Some(event.option) == acrylic {
+                        WindowMaterialMode::Acrylic
                     } else {
                         return;
                     };
@@ -2764,6 +2848,54 @@ mod tests {
         let translucent_main = assembly_of(&context, section);
         assert!(!option_disabled(&context, translucent_main.target_sidebar));
         assert!(switch_disabled(&context, translucent_main.titlebar_switch));
+    }
+
+    #[test]
+    fn appearance_offers_host_native_materials_and_emits_selection() {
+        let mut context = AppContext::new();
+        let section = context
+            .create_component(
+                document(),
+                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default())
+                    .available_materials(vec![
+                        WindowMaterialMode::Mica,
+                        WindowMaterialMode::Acrylic,
+                    ]),
+            )
+            .unwrap();
+        assert!(context.assemble_appearance_section(section).unwrap());
+        let assembly = assembly_of(&context, section);
+        assert_eq!(
+            context
+                .world()
+                .node(assembly.material_control.unwrap())
+                .unwrap()
+                .children
+                .as_slice(),
+            &[
+                assembly.material_solid.unwrap(),
+                assembly.material_translucent.unwrap(),
+                assembly.material_mica.unwrap(),
+                assembly.material_acrylic.unwrap(),
+            ]
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        context
+            .on(section, move |_, event: &AppearanceEvent, _| {
+                sink.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        assert!(
+            context
+                .activate_segmented_option(Entity::from_stable_id(assembly.material_mica.unwrap()))
+                .unwrap()
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![AppearanceEvent::WindowMaterial(WindowMaterialMode::Mica)]
+        );
     }
 
     #[test]

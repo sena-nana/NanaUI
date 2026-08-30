@@ -8,7 +8,7 @@ pub use nana_ui_core::settings::{
     SettingsTabId, WindowMaterialMode,
 };
 #[cfg(feature = "hosted")]
-use nana_window::MaterialEffect;
+use nana_window::{MaterialEffect, PlatformMaterialSupport, hosted_platform_material_support};
 
 #[cfg(feature = "hosted")]
 pub fn window_material_effect(mode: WindowMaterialMode) -> MaterialEffect {
@@ -19,4 +19,19 @@ pub fn window_material_effect(mode: WindowMaterialMode) -> MaterialEffect {
         WindowMaterialMode::Mica => MaterialEffect::Mica,
         WindowMaterialMode::Acrylic => MaterialEffect::Acrylic,
     }
+}
+
+/// Window materials the hosted Scene path can actually apply on this target.
+#[cfg(feature = "hosted")]
+pub fn hosted_window_material_modes() -> Vec<WindowMaterialMode> {
+    let mut modes = vec![WindowMaterialMode::Solid, WindowMaterialMode::Translucent];
+    match hosted_platform_material_support() {
+        PlatformMaterialSupport::MicaAcrylic => {
+            modes.push(WindowMaterialMode::Mica);
+            modes.push(WindowMaterialMode::Acrylic);
+        }
+        PlatformMaterialSupport::Vibrancy => modes.push(WindowMaterialMode::Vibrancy),
+        PlatformMaterialSupport::None => {}
+    }
+    modes
 }

@@ -229,12 +229,12 @@ pub use scene_paint::{
     set_background_image_url_base,
 };
 pub use selection::{SelectionMove, SingleSelection};
-#[cfg(feature = "hosted")]
-pub use settings::window_material_effect;
 pub use settings::{
     AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
     SettingsTabId, WindowMaterialMode,
 };
+#[cfg(feature = "hosted")]
+pub use settings::{hosted_window_material_modes, window_material_effect};
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{
     Color, Colors, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt,

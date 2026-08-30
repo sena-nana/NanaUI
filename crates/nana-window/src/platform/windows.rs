@@ -27,19 +27,21 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
             MaterialOutcome::transparent()
         }
         MaterialEffect::Mica => {
-            reset_dwm_margins(window);
+            prepare_composed_client(window);
             let dark = matches!(appearance, Appearance::Dark);
             if apply_mica(window, Some(dark)).is_ok() {
                 MaterialOutcome::native(MaterialEffect::Mica)
             } else {
+                apply_solid(window);
                 MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
             }
         }
         MaterialEffect::Acrylic => {
-            reset_dwm_margins(window);
+            prepare_composed_client(window);
             if apply_acrylic(window, Some(fallback.tuple())).is_ok() {
                 MaterialOutcome::native(MaterialEffect::Acrylic)
             } else {
+                apply_solid(window);
                 MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable)
             }
         }
@@ -69,18 +71,15 @@ fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
 }
 
 fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
+    prepare_composed_client(window);
+}
+
+fn prepare_composed_client<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
     extend_frame(hwnd, -1);
     set_no_redirection_bitmap(hwnd, true);
-}
-
-fn reset_dwm_margins<W: HasWindowHandle + ?Sized>(window: &W) {
-    let Some(hwnd) = hwnd(window) else {
-        return;
-    };
-    extend_frame(hwnd, 0);
 }
 
 fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
