@@ -86,11 +86,28 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 | `getContext("webgpu")` | `"nana.host-texture"` + `webgpu-canvas:{id}` | 同一套 HostTexture，不是第二套 Device |
 | `<video>` / `nana-video` + `data-nana-video="{id}"` | `"nana.host-texture"` + `video:{id}` | Runtime `Video`。宿主推帧。有槽时不画 `poster` |
 | `<video poster>`（无槽） | 无 CustomRenderNode；`poster` 走 `content_image` URL | 只显示 poster。不解码、不播 |
-| `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src` |
+| `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src`。不是应用内浏览器 |
+| `WebView`（未实现） | `"nana.host-texture"` + `webview:{id}` | 拟议控件 `nana.webview`。像素仍走 HostTexture；引擎、URL、权限在应用侧。见 [应用内浏览器](#应用内浏览器) |
 
 没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。无槽且无 poster 的 `<video>` 同样是空盒子（`skipped_replaced = video`）。
 
 `GraphCanvas` 默认画 Scene Quad / Stroke。`"graph-canvas"` 自定义 renderer 不会自动投影；未登记时整帧拒绝。
+
+## 应用内浏览器
+
+合同草案，不是现成控件。没有 `WebView` 类型、没有 `browser` feature，Gallery 不得摆假浏览。`nana-css-parity` 的 `webview-ref` 只对照盒模型，不得链进 `nana-ui`。
+
+落地后仍是树上的一块内容，类比 `Video`：Runtime 管布局 / 裁剪 / 命中，宿主管引擎和帧。Vue tag 拟议 `webview`（`nana.webview`）。`<iframe>` 继续 skip，不要改成会加载。
+
+| 名字 | 是什么 |
+| --- | --- |
+| `WebView`（拟议） | Runtime 控件，声明 URL，投影 `CustomRenderNode`。不是 `GpuTextureView` 别名 |
+| 槽 `webview:{id}` | 引擎画面登记到 `HostTextureRegistry` 的键。不是 HWND / NSView |
+| `"nana.host-texture"` | 与 `Video` 同一个 Scene renderer，按文档顺序采样 |
+
+URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 不自动放行）。窗口句柄归宿主；普通控件拿不到。像素在 `prepare_window_frame` 更新同一 slot。禁止 present 后再盖原生 WebView，禁止第二套 Device。
+
+拟议事件：`WebViewNavigated`、`WebViewTitleChanged`、`WebViewFailed`。后退 / 地址栏用现有控件拼，不要让 `WebView` 自绘浏览器 chrome。控件落地前用系统浏览器或应用自己的引擎，不要在树上叠一层原生 WebView。
 
 ## 按图离屏
 
@@ -104,3 +121,5 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 - 把 GPU 内容攒到帧尾一次性画，打乱和按钮的前后关系
 - 同一资源在一帧里提交互相冲突的 revision（整帧会失败，不会挑一个用）
 - 为 Android 另写一套 renderer，或把实验 NativeActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
+- 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
+- 在 UI 画完之后把原生 WebView 盖在窗口上，或让控件拿 HWND / NSView 去挂引擎

@@ -193,6 +193,9 @@ impl GpuView {
 /// Presentation fields stay on this view so CustomRenderNode can keep a
 /// backend-neutral id/revision contract. Pointer events default to off;
 /// [`Self::with_pointer_events`] opts a specific instance into hit-testing.
+///
+/// Not a page loader. In-app browsing is a proposed `WebView` (unimplemented);
+/// see `docs/gpu.md`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuTextureView {
     pub resource: Arc<str>,

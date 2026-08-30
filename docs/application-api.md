@@ -96,7 +96,9 @@ update_component(entity, |view, _| { … }) // 文案 / loading
 
 ## 非目标
 
-- 完整浏览器、Tauri、裸 `@vue/runtime-dom` 产物、WebView 产品路径
+- 完整浏览器、Tauri、裸 `@vue/runtime-dom` 产物、把整窗 WebView 当产品 UI
 - 第二套 Device / Queue、CPU 回读伪装零拷贝
-- 控件拿窗口句柄
+- 控件拿窗口句柄，或在 UI 画完后把原生 WebView 盖在 Surface 上
 - 以 crate 根控件表或 Vue 的 DOM facade 定义新的框架合同
+
+应用内打开网页见 [应用内浏览器](gpu.md#应用内浏览器)（未实现）。`nana-ui` 没有 `browser` feature。
