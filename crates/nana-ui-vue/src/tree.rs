@@ -277,6 +277,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::DespawnSubtree { .. } => "DespawnSubtree",
         UiMutation::SetStyle { .. } => "SetStyle",
         UiMutation::SetTheme { .. } => "SetTheme",
+        UiMutation::SetStyleTokens { .. } => "SetStyleTokens",
         UiMutation::SetText { .. } => "SetText",
         UiMutation::WriteLayout { .. } => "WriteLayout",
         UiMutation::SetScrollOffset { .. } => "SetScrollOffset",

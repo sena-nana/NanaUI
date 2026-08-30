@@ -1241,6 +1241,10 @@ impl RuntimeProgram for GalleryApp {
         nana_ui::window_material_effect(self.state.appearance.window_material())
     }
 
+    fn appearance_backdrop_opacity(&self) -> f32 {
+        self.state.appearance.backdrop_opacity()
+    }
+
     fn prepare_window_frame(
         &mut self,
         id: WindowId,
@@ -1249,6 +1253,11 @@ impl RuntimeProgram for GalleryApp {
         if id == WindowId::PRIMARY && self.state.material_outcome() != context.material() {
             self.state
                 .update(GalleryMessage::MaterialApplied(context.material()));
+        }
+        let theme = self.theme_mode();
+        let tokens = self.state.theme_tokens();
+        if let Some(document) = self.document_mut(id) {
+            let _ = nana_ui::install_theme_tokens(document.context_mut(), theme, tokens);
         }
         if id == WindowId::PRIMARY && !self.state.settings_open {
             self.persist_primary_dock();
