@@ -604,6 +604,12 @@ impl IconButton {
         });
         self
     }
+
+    /// Tooltip with [`nana_ui_core::TooltipConfig::default`].
+    pub fn with_tooltip(self, label: impl Into<Arc<str>>) -> Self {
+        self.tooltip(label, nana_ui_core::TooltipConfig::default())
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self

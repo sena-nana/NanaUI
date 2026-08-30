@@ -227,6 +227,7 @@ impl RuntimeInputAdapter {
                                 modifiers.shift,
                             )?
                             || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
+                            || context.update_reorder_list_pointer(document, *pointer_id, *x, *y)?
                             || context.update_split_resize(document, *pointer_id, *x, *y)?
                             || context.update_dock_split_resize(document, *pointer_id, *x, *y)?
                             || context.update_workspace_resize(
@@ -306,6 +307,15 @@ impl RuntimeInputAdapter {
                                     *y,
                                     graph_button,
                                 )?;
+                            } else if *button == 0
+                                && context.begin_reorder_list_pointer(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                )?
+                            {
                             } else if context.is_dock_handle(target) && *button == 0 {
                                 context.begin_dock_split_resize(
                                     document,
@@ -378,6 +388,13 @@ impl RuntimeInputAdapter {
                                 *y,
                                 false,
                             )?
+                            || context.end_reorder_list_pointer(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                false,
+                            )?
                             || context.end_split_resize(document, *pointer_id, false)?
                             || context.end_dock_split_resize(document, *pointer_id, false)?
                             || context.end_workspace_resize(document, *pointer_id, now)?
@@ -409,6 +426,13 @@ impl RuntimeInputAdapter {
                             *y,
                             true,
                         )?;
+                        let reorder = context.end_reorder_list_pointer(
+                            document,
+                            *pointer_id,
+                            *x,
+                            *y,
+                            true,
+                        )?;
                         let split = context.end_split_resize(document, *pointer_id, true)?;
                         let dock_split =
                             context.end_dock_split_resize(document, *pointer_id, true)?;
@@ -422,6 +446,7 @@ impl RuntimeInputAdapter {
                             || range
                             || xy_pad
                             || graph
+                            || reorder
                             || split
                             || dock_split
                             || workspace

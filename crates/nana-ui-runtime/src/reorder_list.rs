@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, LengthSpec, reorder_changes_position};
+use nana_ui_core::{ControlSize, FlexDirection, LengthSpec, reorder_changes_position};
 
 use crate::view_components::project_common;
 use crate::{
@@ -61,8 +61,8 @@ pub enum ReorderListPointer {
     Cancel,
 }
 
-/// One passive row. Interactive controls that need their own pointer handling
-/// belong outside the list.
+/// One row identity. Optional [`Self::tools`] is a live child that keeps its
+/// own pointer handling; hits there do not start a drag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReorderItem {
     pub value: Arc<str>,
@@ -71,6 +71,7 @@ pub struct ReorderItem {
     pub drop_target: bool,
     pub selected: bool,
     pub disabled: bool,
+    pub tools: Option<StableNodeId>,
 }
 
 impl ReorderItem {
@@ -82,6 +83,7 @@ impl ReorderItem {
             drop_target: true,
             selected: false,
             disabled: false,
+            tools: None,
         }
     }
 
@@ -106,6 +108,13 @@ impl ReorderItem {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Interactive trailing tools. Pointer hits inside this child's layout box
+    /// do not begin a reorder gesture.
+    pub fn tools(mut self, tools: StableNodeId) -> Self {
+        self.tools = Some(tools);
         self
     }
 
@@ -219,16 +228,27 @@ impl ReorderList {
         pointer: ReorderListPointer,
         bounds: LayoutBox,
     ) -> Option<ReorderListEvent> {
+        let rows = self.row_bounds(bounds);
+        self.apply_pointer_with_rows(pointer, &rows, &[])
+    }
+
+    /// Same as [`Self::apply_pointer`], with caller-supplied row boxes and
+    /// reserved tool boxes that must not start a drag.
+    pub fn apply_pointer_with_rows(
+        &mut self,
+        pointer: ReorderListPointer,
+        rows: &[LayoutBox],
+        exclude: &[LayoutBox],
+    ) -> Option<ReorderListEvent> {
         match pointer {
-            ReorderListPointer::Down { x, y } => self.begin(x, y, bounds),
+            ReorderListPointer::Down { x, y } => self.begin(x, y, rows, exclude),
             ReorderListPointer::Move { x, y } => {
                 self.move_to(x, y);
                 None
             }
             ReorderListPointer::Up { x, y } => {
                 self.move_to(x, y);
-                let rows = self.row_bounds(bounds);
-                self.finish(&rows)
+                self.finish(rows)
             }
             ReorderListPointer::Cancel => self.cancel(),
         }
@@ -271,17 +291,25 @@ impl ReorderList {
         self.drag.take().map(|_| ReorderListEvent::Cancelled)
     }
 
-    fn begin(&mut self, x: f32, y: f32, bounds: LayoutBox) -> Option<ReorderListEvent> {
+    fn begin(
+        &mut self,
+        x: f32,
+        y: f32,
+        rows: &[LayoutBox],
+        exclude: &[LayoutBox],
+    ) -> Option<ReorderListEvent> {
         if self.drag.is_some() || !point_finite(x, y) {
             return None;
         }
-        let rows = self.row_bounds(bounds);
+        if exclude.iter().any(|reserved| reserved.contains(x, y)) {
+            return None;
+        }
         let sources = self
             .items
             .iter()
             .map(ReorderItem::is_source)
             .collect::<Vec<_>>();
-        let index = item_at(&rows, &sources, x, y)?;
+        let index = item_at(rows, &sources, x, y)?;
         self.drag = Some(ReorderDrag {
             source: Arc::clone(&self.items[index].value),
             start_x: x,
@@ -393,8 +421,15 @@ impl ComponentView for ReorderList {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(self.intrinsic_height()));
-        layout.min_height = Some(LengthSpec::Px(self.intrinsic_height()));
+        let live_rows = world.node(id).is_some_and(|node| !node.children.is_empty());
+        if live_rows {
+            layout.direction = Some(FlexDirection::Column);
+            layout.gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
+            layout.height = Some(LengthSpec::Shrink);
+        } else {
+            layout.height = Some(LengthSpec::Px(self.intrinsic_height()));
+            layout.min_height = Some(LengthSpec::Px(self.intrinsic_height()));
+        }
         project_common(
             id,
             world,
@@ -412,6 +447,150 @@ impl ComponentView for ReorderList {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+impl crate::AppContext {
+    pub fn is_reorder_list(&self, id: StableNodeId) -> bool {
+        self.read(crate::Entity::<ReorderList>::from_stable_id(id), |_| ())
+            .is_ok()
+    }
+
+    pub fn nearest_reorder_list(&self, mut id: StableNodeId) -> Option<StableNodeId> {
+        loop {
+            if self.is_reorder_list(id) {
+                return Some(id);
+            }
+            id = self.world().node(id)?.parent?;
+        }
+    }
+
+    pub fn begin_reorder_list_pointer(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(list_id) = self.nearest_reorder_list(target) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.reorder_list_entity(list_id) else {
+            return Ok(false);
+        };
+        let Some(bounds) = self.world().layout_box(list_id) else {
+            return Ok(false);
+        };
+        let rows = self.reorder_row_boxes(list_id, bounds);
+        let exclude = self.reorder_tool_boxes(entity);
+        if exclude.iter().any(|reserved| reserved.contains(x, y)) {
+            return Ok(false);
+        }
+        self.update_component(entity, |list, cx| {
+            list.apply_pointer_with_rows(ReorderListPointer::Down { x, y }, &rows, &exclude);
+            if list.is_dragging() {
+                cx.mutations().capture_pointer(pointer_id, list_id);
+                cx.mutations().request_focus(document, Some(list_id));
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn update_reorder_list_pointer(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.reorder_list_entity(target) else {
+            return Ok(false);
+        };
+        let Some(bounds) = self.world().layout_box(target) else {
+            return Ok(false);
+        };
+        let rows = self.reorder_row_boxes(target, bounds);
+        self.update_component(entity, |list, _| {
+            list.apply_pointer_with_rows(ReorderListPointer::Move { x, y }, &rows, &[]);
+            list.is_dragging()
+        })
+    }
+
+    pub fn end_reorder_list_pointer(
+        &mut self,
+        document: crate::DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        cancel: bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        let Some(target) = self.world().pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let Some(entity) = self.reorder_list_entity(target) else {
+            return Ok(false);
+        };
+        let bounds = self.world().layout_box(target);
+        let rows = bounds
+            .map(|bounds| self.reorder_row_boxes(target, bounds))
+            .unwrap_or_default();
+        self.update_component(entity, |list, cx| {
+            let pointer = if cancel {
+                ReorderListPointer::Cancel
+            } else {
+                ReorderListPointer::Up { x, y }
+            };
+            if let Some(event) = list.apply_pointer_with_rows(pointer, &rows, &[]) {
+                cx.emit(event);
+            }
+            cx.mutations().release_pointer(pointer_id, target);
+            true
+        })
+    }
+
+    fn reorder_list_entity(&self, id: StableNodeId) -> Option<crate::Entity<ReorderList>> {
+        self.is_reorder_list(id)
+            .then(|| crate::Entity::from_stable_id(id))
+    }
+
+    fn reorder_row_boxes(&self, id: StableNodeId, bounds: LayoutBox) -> Vec<LayoutBox> {
+        let children = self
+            .world()
+            .node(id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default();
+        if children.is_empty() {
+            return self
+                .read(crate::Entity::<ReorderList>::from_stable_id(id), |list| {
+                    list.row_bounds(bounds)
+                })
+                .unwrap_or_default();
+        }
+        children
+            .into_iter()
+            .filter_map(|child| self.world().layout_box(child))
+            .collect()
+    }
+
+    fn reorder_tool_boxes(&self, entity: crate::Entity<ReorderList>) -> Vec<LayoutBox> {
+        let tools = self
+            .read(entity, |list| {
+                list.items
+                    .iter()
+                    .filter_map(|item| item.tools)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        tools
+            .into_iter()
+            .filter_map(|id| self.world().layout_box(id))
+            .collect()
     }
 }
 
@@ -685,6 +864,36 @@ mod tests {
             apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 12.0 }),
             None
         );
+    }
+
+    #[test]
+    fn reserved_tool_boxes_do_not_begin_a_drag() {
+        let mut list = sample();
+        let rows = list.row_bounds(bounds());
+        let exclude = [LayoutBox {
+            x: 120.0,
+            y: 0.0,
+            width: 60.0,
+            height: 28.0,
+        }];
+        assert_eq!(
+            list.apply_pointer_with_rows(
+                ReorderListPointer::Down { x: 140.0, y: 12.0 },
+                &rows,
+                &exclude
+            ),
+            None
+        );
+        assert!(!list.is_dragging());
+        assert_eq!(
+            list.apply_pointer_with_rows(
+                ReorderListPointer::Down { x: 40.0, y: 12.0 },
+                &rows,
+                &exclude
+            ),
+            None
+        );
+        assert!(list.is_dragging());
     }
 
     #[test]
