@@ -1488,280 +1488,265 @@ fn mount_surfaces(
 ) -> Result<SurfacesTree, FrameworkError> {
     let selected = SurfaceView::from_index(state.surface_selection.selected());
     let tree = context.build_detached(document_id, |ui| {
-    let tabs = ui.leaf(
-        Tabs::new(if selected == SurfaceView::Cards {
-            "cards"
-        } else {
-            "overview"
-        })
-        .options([
-            TabOption::new("overview", "概览"),
-            TabOption::new("cards", "卡片"),
-        ]),
-    );
-    bind_event_ui(
-        ui,
-        tabs,
-        Arc::clone(pending),
-        |event: &TabsEvent| match event {
-            TabsEvent::Select(value) if value.as_ref() == "cards" => {
-                GalleryMessage::SelectSurfaceView(SurfaceView::Cards)
-            }
-            TabsEvent::Select(_) => GalleryMessage::SelectSurfaceView(SurfaceView::Overview),
-            _ => GalleryMessage::OverlayInteraction,
-        },
-    );
-
-    let overview_data = [
-        ("基础表面", "主工作区内容层", CardKind::Surface),
-        ("抬升表面", "侧栏与工具面板", CardKind::Raised),
-        ("选中表面", "当前激活的内容", CardKind::Selected),
-    ];
-    let mut overview = [None; 3];
-    for (index, (title, detail, kind)) in overview_data.into_iter().enumerate() {
-        let mut card_view = Card::new().kind(kind).height(96.0).title(title);
-        apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
-        let card = ui.leaf(card_view);
-        let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
-        ui.nest(card, |ui| ui.adopt(hint));
-        overview[index] = Some(card);
-    }
-    let cards_data = [
-        ("默认卡片", "普通内容容器", false),
-        ("交互卡片", "支持选择操作", false),
-        ("禁用卡片", "不可进行操作", true),
-    ];
-    let mut cards = [None; 3];
-    for (index, (title, detail, disabled)) in cards_data.into_iter().enumerate() {
-        let card = ui.leaf(
-            InteractiveCard::new()
-                .selected(state.selected_surface_card == index)
-                .disabled(disabled)
-                .style({
-                    let mut style = nana_ui::runtime::NodeStyle::default();
-                    apply_equal_fill(std::sync::Arc::make_mut(&mut style.layout), 96.0);
-                    style
-                }),
+        let tabs = ui.leaf(
+            Tabs::new(if selected == SurfaceView::Cards {
+                "cards"
+            } else {
+                "overview"
+            })
+            .options([
+                TabOption::new("overview", "概览"),
+                TabOption::new("cards", "卡片"),
+            ]),
         );
-        let heading = ui.leaf(styled_text(title, SemanticColorRole::Text, 13.0, 400));
-        let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
-        ui.nest(card, |ui| {
+        bind_event_ui(
+            ui,
+            tabs,
+            Arc::clone(pending),
+            |event: &TabsEvent| match event {
+                TabsEvent::Select(value) if value.as_ref() == "cards" => {
+                    GalleryMessage::SelectSurfaceView(SurfaceView::Cards)
+                }
+                TabsEvent::Select(_) => GalleryMessage::SelectSurfaceView(SurfaceView::Overview),
+                _ => GalleryMessage::OverlayInteraction,
+            },
+        );
+
+        let overview_data = [
+            ("基础表面", "主工作区内容层", CardKind::Surface),
+            ("抬升表面", "侧栏与工具面板", CardKind::Raised),
+            ("选中表面", "当前激活的内容", CardKind::Selected),
+        ];
+        let mut overview = [None; 3];
+        for (index, (title, detail, kind)) in overview_data.into_iter().enumerate() {
+            let mut card_view = Card::new().kind(kind).height(96.0).title(title);
+            apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
+            let card = ui.leaf(card_view);
+            let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            ui.nest(card, |ui| ui.adopt(hint));
+            overview[index] = Some(card);
+        }
+        let cards_data = [
+            ("默认卡片", "普通内容容器", false),
+            ("交互卡片", "支持选择操作", false),
+            ("禁用卡片", "不可进行操作", true),
+        ];
+        let mut cards = [None; 3];
+        for (index, (title, detail, disabled)) in cards_data.into_iter().enumerate() {
+            let card = ui.leaf(
+                InteractiveCard::new()
+                    .selected(state.selected_surface_card == index)
+                    .disabled(disabled)
+                    .style({
+                        let mut style = nana_ui::runtime::NodeStyle::default();
+                        apply_equal_fill(std::sync::Arc::make_mut(&mut style.layout), 96.0);
+                        style
+                    }),
+            );
+            let heading = ui.leaf(styled_text(title, SemanticColorRole::Text, 13.0, 400));
+            let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            ui.nest(card, |ui| {
+                ui.adopt(heading);
+                ui.adopt(hint);
+            });
+            cards[index] = Some(card);
+        }
+        let surface_row = ui.leaf(HostStack::fill_row(10.0));
+        ui.nest(surface_row, |ui| {
+            if selected == SurfaceView::Cards {
+                for card in cards.iter().flatten().copied() {
+                    ui.adopt(card);
+                }
+            } else {
+                for card in overview.iter().flatten().copied() {
+                    ui.adopt(card);
+                }
+            }
+        });
+
+        let tree = ui.leaf(gallery_tree(state));
+        bind_event_ui(
+            ui,
+            tree,
+            Arc::clone(pending),
+            |event: &TreeViewEvent<Arc<str>>| match event {
+                TreeViewEvent::Toggle(id) => {
+                    GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
+                }
+                TreeViewEvent::Select(id) => {
+                    GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
+                }
+            },
+        );
+
+        let pane_tabs = ui.leaf(hugging_text(
+            if state.pane_chrome_item_open {
+                "main.rs"
+            } else {
+                "空窗格"
+            },
+            SemanticColorRole::Text,
+            11.0,
+            400,
+        ));
+        let pane_empty = ui.leaf(hugging_text(
+            "Item 已关闭",
+            SemanticColorRole::Muted,
+            11.0,
+            400,
+        ));
+        let pane_editor = ui.leaf(hugging_text(
+            "编辑器内容",
+            SemanticColorRole::Text,
+            11.0,
+            400,
+        ));
+        let pane_left = ui.leaf(hugging_text(
+            "左侧编辑器",
+            SemanticColorRole::Text,
+            11.0,
+            400,
+        ));
+        let pane_right = ui.leaf(hugging_text(
+            "右侧编辑器",
+            SemanticColorRole::Text,
+            11.0,
+            400,
+        ));
+        let pane_tree = ui.leaf(PaneTree::new(pane_tree_node(
+            state,
+            pane_empty,
+            pane_editor,
+            pane_left,
+            pane_right,
+        )));
+        let pane_split = ui.leaf(
+            Button::new("左右分栏")
+                .kind(ButtonKind::Text)
+                .size(ControlSize::Small),
+        );
+        bind_event_ui(ui, pane_split, Arc::clone(pending), |event: &Activate| {
+            let _ = event;
+            GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal)
+        });
+        let pane_close = ui.leaf(
+            IconButton::new(Icon::Close, "关闭 Item")
+                .size(ControlSize::Small)
+                .kind(ButtonKind::Text),
+        );
+        bind_event_ui(ui, pane_close, Arc::clone(pending), |event: &Activate| {
+            let _ = event;
+            GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
+        });
+        let header = ui.leaf(HostStack::fill_row(6.0));
+        ui.nest(header, |ui| {
+            ui.adopt(pane_tabs);
+            if state.pane_chrome_item_open && !state.pane_chrome_split {
+                ui.adopt(pane_split);
+            }
+            if state.pane_chrome_item_open {
+                ui.adopt(pane_close);
+            }
+        });
+        let pane = ui.leaf(
+            PaneChrome::new()
+                .header(header.stable_id())
+                .tabs(pane_tabs.stable_id())
+                .body(pane_tree.stable_id())
+                .actions(pane_actions(
+                    state,
+                    pane_split.stable_id(),
+                    pane_close.stable_id(),
+                )),
+        );
+        ui.nest(pane, |ui| {
+            ui.adopt(header);
+            ui.adopt(pane_tree);
+        });
+
+        let empty = ui.leaf(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"));
+        let labeled = ui.leaf(LabeledValue::new(
+            "当前卡片",
+            format!("{}", state.selected_surface_card),
+        ));
+        let heading = ui.leaf(styled_text("表面层级", SemanticColorRole::Text, 14.0, 400));
+        let hint = ui.leaf(styled_text(
+            "基础、抬升与选中状态",
+            SemanticColorRole::Muted,
+            11.0,
+            400,
+        ));
+        let tab_label = ui.leaf(hugging_text("表面状态", SemanticColorRole::Text, 12.0, 400));
+        let tab_spacer = ui.leaf(HostStack::spacer());
+        let tab_bar = ui.leaf(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
+        ui.nest(tab_bar, |ui| {
+            ui.adopt(tab_label);
+            ui.adopt(tab_spacer);
+            ui.adopt(tabs);
+        });
+        let tab_row = panel(ui, 8.0, None, 0.0);
+        ui.nest(tab_row, |ui| ui.adopt(tab_bar));
+        let tree_heading = ui.leaf(styled_text("层级树", SemanticColorRole::Text, 14.0, 400));
+        let tree_hint = ui.leaf(styled_text(
+            "稳定节点 ID 驱动展开与选择",
+            SemanticColorRole::Muted,
+            11.0,
+            400,
+        ));
+        let tree_panel = panel(ui, 8.0, None, 0.0);
+        ui.nest(tree_panel, |ui| ui.adopt(tree));
+        let pane_heading = ui.leaf(styled_text("Pane 组合", SemanticColorRole::Text, 14.0, 400));
+        let pane_hint = ui.leaf(styled_text(
+            "动作只在具备真实 handler 时出现",
+            SemanticColorRole::Muted,
+            11.0,
+            400,
+        ));
+        let pane_panel = panel(ui, 0.0, Some(LengthSpec::Px(140.0)), 0.0);
+        ui.nest(pane_panel, |ui| ui.adopt(pane));
+        let root = ui.leaf(HostStack::canvas());
+        ui.nest(root, |ui| {
             ui.adopt(heading);
             ui.adopt(hint);
+            ui.adopt(tab_row);
+            ui.adopt(surface_row);
+            ui.adopt(tree_heading);
+            ui.adopt(tree_hint);
+            ui.adopt(tree_panel);
+            ui.adopt(pane_heading);
+            ui.adopt(pane_hint);
+            ui.adopt(pane_panel);
+            ui.adopt(empty);
+            ui.adopt(labeled);
         });
-        cards[index] = Some(card);
-    }
-    let surface_row = ui.leaf(HostStack::fill_row(10.0));
-    ui.nest(surface_row, |ui| {
-        if selected == SurfaceView::Cards {
-            for card in cards.iter().flatten().copied() {
-                ui.adopt(card);
-            }
-        } else {
-            for card in overview.iter().flatten().copied() {
-                ui.adopt(card);
-            }
+
+        SurfacesTree {
+            root,
+            tabs,
+            surface_row,
+            overview: [
+                overview[0].expect("overview"),
+                overview[1].expect("overview"),
+                overview[2].expect("overview"),
+            ],
+            cards: [
+                cards[0].expect("card"),
+                cards[1].expect("card"),
+                cards[2].expect("card"),
+            ],
+            tree,
+            pane,
+            pane_tabs,
+            pane_tree,
+            pane_empty,
+            pane_editor,
+            pane_left,
+            pane_right,
+            pane_split,
+            pane_close,
+            _empty: empty,
+            labeled,
         }
-    });
-
-    let tree = ui.leaf(gallery_tree(state));
-    bind_event_ui(
-        ui,
-        tree,
-        Arc::clone(pending),
-        |event: &TreeViewEvent<Arc<str>>| match event {
-            TreeViewEvent::Toggle(id) => {
-                GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
-            }
-            TreeViewEvent::Select(id) => {
-                GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
-            }
-        },
-    );
-
-    let pane_tabs = ui.leaf(hugging_text(
-        if state.pane_chrome_item_open {
-            "main.rs"
-        } else {
-            "空窗格"
-        },
-        SemanticColorRole::Text,
-        11.0,
-        400,
-    ));
-    let pane_empty = ui.leaf(hugging_text(
-        "Item 已关闭",
-        SemanticColorRole::Muted,
-        11.0,
-        400,
-    ));
-    let pane_editor = ui.leaf(hugging_text(
-        "编辑器内容",
-        SemanticColorRole::Text,
-        11.0,
-        400,
-    ));
-    let pane_left = ui.leaf(hugging_text(
-        "左侧编辑器",
-        SemanticColorRole::Text,
-        11.0,
-        400,
-    ));
-    let pane_right = ui.leaf(hugging_text(
-        "右侧编辑器",
-        SemanticColorRole::Text,
-        11.0,
-        400,
-    ));
-    let pane_tree = ui.leaf(PaneTree::new(pane_tree_node(
-        state,
-        pane_empty,
-        pane_editor,
-        pane_left,
-        pane_right,
-    )));
-    let pane_split = ui.leaf(
-        Button::new("左右分栏")
-            .kind(ButtonKind::Text)
-            .size(ControlSize::Small),
-    );
-    bind_event_ui(ui, pane_split, Arc::clone(pending), |event: &Activate| {
-        let _ = event;
-        GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal)
-    });
-    let pane_close = ui.leaf(
-        IconButton::new(Icon::Close, "关闭 Item")
-            .size(ControlSize::Small)
-            .kind(ButtonKind::Text),
-    );
-    bind_event_ui(ui, pane_close, Arc::clone(pending), |event: &Activate| {
-        let _ = event;
-        GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
-    });
-    let header = ui.leaf(HostStack::fill_row(6.0));
-    ui.nest(header, |ui| {
-        ui.adopt(pane_tabs);
-        if state.pane_chrome_item_open && !state.pane_chrome_split {
-            ui.adopt(pane_split);
-        }
-        if state.pane_chrome_item_open {
-            ui.adopt(pane_close);
-        }
-    });
-    let pane = ui.leaf(
-        PaneChrome::new()
-            .header(header.stable_id())
-            .tabs(pane_tabs.stable_id())
-            .body(pane_tree.stable_id())
-            .actions(pane_actions(
-                state,
-                pane_split.stable_id(),
-                pane_close.stable_id(),
-            )),
-    );
-    ui.nest(pane, |ui| {
-        ui.adopt(header);
-        ui.adopt(pane_tree);
-    });
-
-    let empty = ui.leaf(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"));
-    let labeled = ui.leaf(LabeledValue::new(
-        "当前卡片",
-        format!("{}", state.selected_surface_card),
-    ));
-    let heading = ui.leaf(styled_text(
-        "表面层级",
-        SemanticColorRole::Text,
-        14.0,
-        400,
-    ));
-    let hint = ui.leaf(styled_text(
-        "基础、抬升与选中状态",
-        SemanticColorRole::Muted,
-        11.0,
-        400,
-    ));
-    let tab_label = ui.leaf(hugging_text(
-        "表面状态",
-        SemanticColorRole::Text,
-        12.0,
-        400,
-    ));
-    let tab_spacer = ui.leaf(HostStack::spacer());
-    let tab_bar = ui.leaf(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
-    ui.nest(tab_bar, |ui| {
-        ui.adopt(tab_label);
-        ui.adopt(tab_spacer);
-        ui.adopt(tabs);
-    });
-    let tab_row = panel(ui, 8.0, None, 0.0);
-    ui.nest(tab_row, |ui| ui.adopt(tab_bar));
-    let tree_heading = ui.leaf(styled_text("层级树", SemanticColorRole::Text, 14.0, 400));
-    let tree_hint = ui.leaf(styled_text(
-        "稳定节点 ID 驱动展开与选择",
-        SemanticColorRole::Muted,
-        11.0,
-        400,
-    ));
-    let tree_panel = panel(ui, 8.0, None, 0.0);
-    ui.nest(tree_panel, |ui| ui.adopt(tree));
-    let pane_heading = ui.leaf(styled_text(
-        "Pane 组合",
-        SemanticColorRole::Text,
-        14.0,
-        400,
-    ));
-    let pane_hint = ui.leaf(styled_text(
-        "动作只在具备真实 handler 时出现",
-        SemanticColorRole::Muted,
-        11.0,
-        400,
-    ));
-    let pane_panel = panel(ui, 0.0, Some(LengthSpec::Px(140.0)), 0.0);
-    ui.nest(pane_panel, |ui| ui.adopt(pane));
-    let root = ui.leaf(HostStack::canvas());
-    ui.nest(root, |ui| {
-        ui.adopt(heading);
-        ui.adopt(hint);
-        ui.adopt(tab_row);
-        ui.adopt(surface_row);
-        ui.adopt(tree_heading);
-        ui.adopt(tree_hint);
-        ui.adopt(tree_panel);
-        ui.adopt(pane_heading);
-        ui.adopt(pane_hint);
-        ui.adopt(pane_panel);
-        ui.adopt(empty);
-        ui.adopt(labeled);
-    });
-
-    SurfacesTree {
-        root,
-        tabs,
-        surface_row,
-        overview: [
-            overview[0].expect("overview"),
-            overview[1].expect("overview"),
-            overview[2].expect("overview"),
-        ],
-        cards: [
-            cards[0].expect("card"),
-            cards[1].expect("card"),
-            cards[2].expect("card"),
-        ],
-        tree,
-        pane,
-        pane_tabs,
-        pane_tree,
-        pane_empty,
-        pane_editor,
-        pane_left,
-        pane_right,
-        pane_split,
-        pane_close,
-        _empty: empty,
-        labeled,
-    }
     })?;
     reconcile_children(
         context,
@@ -1821,7 +1806,11 @@ fn mount_feedback(
             let _ = event;
             GalleryMessage::ToggleImageViewer
         });
-        let popover = ui.leaf(Popover::new().trigger("查看当前状态").open(state.popover_open));
+        let popover = ui.leaf(
+            Popover::new()
+                .trigger("查看当前状态")
+                .open(state.popover_open),
+        );
         bind_event_ui(
             ui,
             popover,
@@ -1834,15 +1823,10 @@ fn mount_feedback(
                 }
             },
         );
-        bind_event_ui(
-            ui,
-            popover,
-            Arc::clone(pending),
-            |event: &PopoverClosed| {
-                let _ = event;
-                GalleryMessage::ClosePopover
-            },
-        );
+        bind_event_ui(ui, popover, Arc::clone(pending), |event: &PopoverClosed| {
+            let _ = event;
+            GalleryMessage::ClosePopover
+        });
         let popover_action = ui.leaf(popover_action_button(state.popover_open));
         bind_event_ui(
             ui,
@@ -1859,7 +1843,9 @@ fn mount_feedback(
             state
                 .calendar_active
                 .as_ref()
-                .map_or("移动指针查看日期".to_owned(), |cell| cell.title.clone()),
+                .map_or("移动指针查看日期".to_owned(), |cell| {
+                    cell.title.clone()
+                }),
             SemanticColorRole::Muted,
             10.0,
             400,
@@ -1872,7 +1858,11 @@ fn mount_feedback(
         ));
         let heading = ui.leaf(styled_text("反馈", SemanticColorRole::Text, 14.0, 400));
         let progress_label = ui.leaf(styled_text(
-            if state.loading { "处理中" } else { "已完成" },
+            if state.loading {
+                "处理中"
+            } else {
+                "已完成"
+            },
             SemanticColorRole::Text,
             13.0,
             400,

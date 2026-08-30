@@ -4,7 +4,9 @@
 //! host JSON props) into Runtime component specs and tree models.
 use super::*;
 
-pub(crate) fn host_tree_nodes(props: &crate::WidgetProps) -> Option<Vec<nana_ui_core::TreeNode<Arc<str>>>> {
+pub(crate) fn host_tree_nodes(
+    props: &crate::WidgetProps,
+) -> Option<Vec<nana_ui_core::TreeNode<Arc<str>>>> {
     let value = props
         .native_props
         .get("tree")
@@ -71,7 +73,9 @@ pub(crate) fn tree_node_from_host(
     }
 }
 
-pub(crate) fn settings_model_from_props(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsModel> {
+pub(crate) fn settings_model_from_props(
+    props: &crate::WidgetProps,
+) -> Option<nana_ui_core::SettingsModel> {
     let map = settings_host_map(props)?;
     let mut tabs = settings_tabs_from_host(host_map_value(&map, &["tabs", "items"])?);
     if tabs.is_empty() {
@@ -135,14 +139,18 @@ pub(crate) fn settings_host_map(
     crate::widget_map::attr_value(props, &["settings", "model"]).and_then(settings_object_from_json)
 }
 
-pub(crate) fn settings_object_from_json(json: &str) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
+pub(crate) fn settings_object_from_json(
+    json: &str,
+) -> Option<BTreeMap<String, nana_js_engine::HostValue>> {
     match nana_js_engine::HostValue::from_json_str(json).ok()? {
         nana_js_engine::HostValue::Object(map) => Some(map),
         _ => None,
     }
 }
 
-pub(crate) fn settings_tabs_from_host(value: &nana_js_engine::HostValue) -> Vec<nana_ui_core::SettingsTab> {
+pub(crate) fn settings_tabs_from_host(
+    value: &nana_js_engine::HostValue,
+) -> Vec<nana_ui_core::SettingsTab> {
     let items = host_array(value);
     if !items.is_empty() {
         return items
@@ -174,7 +182,9 @@ pub(crate) fn settings_tabs_from_host(value: &nana_js_engine::HostValue) -> Vec<
         .collect()
 }
 
-pub(crate) fn settings_tab_from_host(value: &nana_js_engine::HostValue) -> Option<nana_ui_core::SettingsTab> {
+pub(crate) fn settings_tab_from_host(
+    value: &nana_js_engine::HostValue,
+) -> Option<nana_ui_core::SettingsTab> {
     match value {
         nana_js_engine::HostValue::String(id) if !id.is_empty() => {
             Some(nana_ui_core::SettingsTab::new(id.as_str(), id.as_str()))
@@ -202,7 +212,9 @@ pub(crate) fn settings_tab_from_host(value: &nana_js_engine::HostValue) -> Optio
     }
 }
 
-pub(crate) fn settings_full_page_keys(map: &BTreeMap<String, nana_js_engine::HostValue>) -> Vec<String> {
+pub(crate) fn settings_full_page_keys(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+) -> Vec<String> {
     host_map_value(map, &["fullPageTabs", "full_page_tabs", "full-page-tabs"])
         .map(host_array)
         .unwrap_or_default()
@@ -230,7 +242,9 @@ pub(crate) fn settings_hide_header_from_props(props: &crate::WidgetProps) -> boo
     )
 }
 
-pub(crate) fn settings_active_tab(props: &crate::WidgetProps) -> Option<nana_ui_core::SettingsTabId> {
+pub(crate) fn settings_active_tab(
+    props: &crate::WidgetProps,
+) -> Option<nana_ui_core::SettingsTabId> {
     native_prop_text(props, &["tab", "value"])
         .or_else(|| {
             crate::widget_map::attr_value(props, &["tab", "value"])
@@ -381,14 +395,20 @@ pub(crate) fn host_map_value<'a>(
     None
 }
 
-pub(crate) fn host_map_text(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> String {
+pub(crate) fn host_map_text(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+    keys: &[&str],
+) -> String {
     host_map_value(map, keys)
         .map(host_value_text)
         .filter(|text| !text.is_empty())
         .unwrap_or_default()
 }
 
-pub(crate) fn host_map_truthy(map: &BTreeMap<String, nana_js_engine::HostValue>, keys: &[&str]) -> bool {
+pub(crate) fn host_map_truthy(
+    map: &BTreeMap<String, nana_js_engine::HostValue>,
+    keys: &[&str],
+) -> bool {
     host_map_value(map, keys).is_some_and(host_value_truthy)
 }
 
@@ -849,7 +869,10 @@ pub(crate) fn dock_nodes_join(mut nodes: Vec<DockNode>) -> Option<DockNode> {
     }
 }
 
-pub(crate) fn collect_dock_contents(node: &DockNode, output: &mut Vec<(Arc<str>, Option<StableNodeId>)>) {
+pub(crate) fn collect_dock_contents(
+    node: &DockNode,
+    output: &mut Vec<(Arc<str>, Option<StableNodeId>)>,
+) {
     match node {
         DockNode::Item { id, content } => output.push((Arc::clone(id), *content)),
         DockNode::Tabs { contents, .. } => output.extend(contents.iter().cloned()),

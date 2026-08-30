@@ -114,7 +114,11 @@ impl VideoRuntime {
 
     /// Newest frame whose version differs from `uploaded_version`.
     /// `None` means the GPU side is already current or the surface is unknown.
-    pub fn take_upload(&mut self, id: VideoId, uploaded_version: Option<u64>) -> Option<VideoFrame> {
+    pub fn take_upload(
+        &mut self,
+        id: VideoId,
+        uploaded_version: Option<u64>,
+    ) -> Option<VideoFrame> {
         let frame = self.frames.get(&id)?;
         (uploaded_version != Some(frame.version)).then(|| frame.clone())
     }

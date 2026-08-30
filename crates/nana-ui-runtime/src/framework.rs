@@ -832,7 +832,10 @@ impl AppContext {
     }
 
     /// Resolve an already-normalized tag (see [`normalize_tag`]).
-    pub fn resolve_component_tag_normalized(&self, normalized_tag: &str) -> Option<&ComponentTypeId> {
+    pub fn resolve_component_tag_normalized(
+        &self,
+        normalized_tag: &str,
+    ) -> Option<&ComponentTypeId> {
         self.components.resolve_normalized(normalized_tag)
     }
 

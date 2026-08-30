@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use super::NodeHandle;
 use super::NanaTreeDocument;
+use super::NodeHandle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomNodeKind {
     Element,
