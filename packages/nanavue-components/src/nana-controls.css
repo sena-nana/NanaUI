@@ -135,7 +135,7 @@
 .nana-settings-row,
 .settings-row.nana-settings-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;

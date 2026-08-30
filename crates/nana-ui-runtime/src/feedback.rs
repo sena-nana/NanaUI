@@ -348,7 +348,8 @@ pub enum ValueEmphasis {
     Strong,
 }
 
-/// A compact label/value summary with an optional application-owned action child.
+/// A compact label/value summary: label start-aligned, value end-aligned on one row.
+/// An optional application-owned action child sits after the value.
 /// The parent remains non-interactive; only the mounted child owns activation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LabeledValue {
@@ -401,9 +402,9 @@ impl LabeledValue {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Percent(100.0));
         layout.direction = Some(FlexDirection::Row);
-        layout.justify_content = JustifySpec::End;
+        layout.justify_content = JustifySpec::SpaceBetween;
         layout.align_items = AlignSpec::Center;
-        layout.min_height = Some(LengthSpec::Px(if self.compact { 28.6 } else { 31.0 }));
+        layout.min_height = Some(LengthSpec::Px(if self.compact { 28.0 } else { 32.0 }));
         layout.gap = Some(LengthSpec::Px(if self.compact { 4.0 } else { 8.0 }));
         style
     }
@@ -1535,6 +1536,24 @@ mod tests {
         assert_eq!(value.font_size, 12.0);
         assert_eq!(value.font_weight, Some(500));
         assert_ne!(label.color, value.color);
+        assert!(
+            label.bounds.x + label.bounds.width <= value.bounds.x + 0.01,
+            "label must sit left of value, got label={:?} value={:?}",
+            label.bounds,
+            value.bounds
+        );
+        assert!(
+            label.bounds.y < value.bounds.y + value.bounds.height
+                && value.bounds.y < label.bounds.y + label.bounds.height,
+            "label and value must share one row, got label={:?} value={:?}",
+            label.bounds,
+            value.bounds
+        );
+        assert!(
+            (value.bounds.x + value.bounds.width - 190.0).abs() < 1.0,
+            "value must hug the trailing edge, got {:?}",
+            value.bounds
+        );
         let accessibility = context.world().accessibility(id).unwrap();
         assert_eq!(accessibility.label.as_deref(), Some("Revision"));
         assert_eq!(accessibility.value.as_deref(), Some("42"));

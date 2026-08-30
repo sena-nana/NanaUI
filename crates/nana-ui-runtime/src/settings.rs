@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
-    ControlSize, FlexDirection, Icon, LengthSpec, LineHeightSpec, OverflowSpec, SemanticColorRole,
-    SettingsModel, SettingsState, SettingsTabId, ThemeMode, UI_METRICS, WindowMaterialMode,
+    ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
+    OverflowSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId, ThemeMode,
+    UI_METRICS, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -143,6 +144,12 @@ impl SettingsRow {
         } else {
             AlignSpec::Center
         };
+        layout.justify_content = if self.stacked {
+            JustifySpec::Start
+        } else {
+            JustifySpec::SpaceBetween
+        };
+        layout.flex_wrap = FlexWrap::NoWrap;
         layout.gap = Some(LengthSpec::Px(self.gap()));
         layout.padding_top = Some(LengthSpec::Px(if self.first_in_group {
             ROW_GROUP_PADDING_Y
@@ -2308,6 +2315,8 @@ mod tests {
         assert_eq!(context.world().text(id), Some(""));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.direction, Some(FlexDirection::Column));
+        assert_eq!(style.layout.justify_content, JustifySpec::Start);
+        assert_eq!(style.layout.flex_wrap, FlexWrap::NoWrap);
         assert_eq!(style.layout.gap, Some(LengthSpec::Px(ROW_STACK_GAP_LOOSE)));
         assert_eq!(
             style.layout.padding_top,
@@ -2376,6 +2385,11 @@ mod tests {
         context.update_component(row, |_, _| {}).unwrap();
 
         assert_eq!(context.world().text(row.stable_id()), Some(""));
+        let row_style = context.world().node_style(row.stable_id()).unwrap();
+        assert_eq!(row_style.layout.direction, Some(FlexDirection::Row));
+        assert_eq!(row_style.layout.justify_content, JustifySpec::SpaceBetween);
+        assert_eq!(row_style.layout.flex_wrap, FlexWrap::NoWrap);
+        assert_eq!(row_style.layout.align_items, AlignSpec::Center);
         assert_eq!(context.world().text(label.stable_id()), Some("主题"));
         let label_style = context.world().node_style(label.stable_id()).unwrap();
         assert_eq!(label_style.layout.font_size, Some(13.0));

@@ -4543,33 +4543,43 @@ impl UiWorld {
                 let gap = if *compact { 4.0 } else { 8.0 };
                 let right = action
                     .and_then(|action| self.layout_box(action))
-                    .map_or(bounds.x + bounds.width, |action| action.x - gap);
-                let width = (right - bounds.x).max(0.0);
-                let label_height = 11.0 * 1.2;
-                let value_y = bounds.y + label_height + 1.0;
+                    .map_or(bounds.x + bounds.width, |action| {
+                        (action.x - gap).max(bounds.x)
+                    });
+                let available = (right - bounds.x).max(0.0);
+                let label_size = 11.0_f32;
+                let value_size = 12.0_f32;
+                let label_height = (label_size * 1.2).min(bounds.height.max(label_size));
+                let value_height = (value_size * 1.2).min(bounds.height.max(value_size));
+                let min_label = if label.is_empty() { 0.0 } else { label_size };
+                let value_width = estimated_text_width(value, value_size)
+                    .min((available - gap - min_label).max(0.0));
+                let value_x = (right - value_width).max(bounds.x);
+                let label_width = (value_x - gap - bounds.x).max(0.0);
+                let center_y = |height: f32| bounds.y + (bounds.height - height).max(0.0) / 2.0;
                 Some(crate::ComponentGeometry::LabeledValue {
                     label: crate::ComponentTextRegion {
                         bounds: LayoutBox {
                             x: bounds.x,
-                            y: bounds.y,
-                            width,
+                            y: center_y(label_height),
+                            width: label_width,
                             height: label_height,
                         },
                         content: Arc::clone(label),
                         color: Some(self.style_model.palette.faint.as_rgba_array()),
-                        font_size: 11.0,
+                        font_size: label_size,
                         font_weight: None,
                     },
                     value: crate::ComponentTextRegion {
                         bounds: LayoutBox {
-                            x: bounds.x,
-                            y: value_y,
-                            width,
-                            height: 12.0 * 1.2,
+                            x: value_x,
+                            y: center_y(value_height),
+                            width: value_width,
+                            height: value_height,
                         },
                         content: Arc::clone(value),
                         color: Some(self.style_model.palette.get(*value_role).as_rgba_array()),
-                        font_size: 12.0,
+                        font_size: value_size,
                         font_weight: Some(*value_weight),
                     },
                     action: action.and_then(|action| self.layout_box(action)),
