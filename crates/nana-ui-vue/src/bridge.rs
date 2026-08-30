@@ -3795,7 +3795,7 @@ impl MessageBridge {
     ///
     /// Keys match `nanavue-components` / web-api shim:
     /// `theme`, `backdrop`, `backdropTarget`, `titlebarFollowsSidebar`,
-    /// `workspaceCorners`, and style `--nana-backdrop-opacity` /
+    /// `workspaceCorners`, and style `--lilia-backdrop-opacity` / `--nana-backdrop-opacity` /
     /// `--backdrop-opacity` / `--app-corner-radius`.
     ///
     /// Theme direction: JS `dataset.theme` → bridge [`ThemeMode`] (paired with
@@ -3842,10 +3842,12 @@ impl MessageBridge {
             next.set_workspace_corners_enabled(raw != "square");
         }
         if let Some(raw) = style
-            .get("--nana-backdrop-opacity")
+            .get("--lilia-backdrop-opacity")
+            .or_else(|| style.get("--nana-backdrop-opacity"))
             .or_else(|| style.get("--backdrop-opacity"))
             .or_else(|| style.get("backdrop-opacity"))
             .or_else(|| style.get("nana-backdrop-opacity"))
+            .or_else(|| style.get("lilia-backdrop-opacity"))
             && let Ok(opacity) = raw.parse::<f32>()
         {
             next.set_backdrop_opacity(opacity);
@@ -6238,6 +6240,14 @@ mod tests {
         assert_eq!(
             bridge.appearance().window_material(),
             WindowMaterialMode::Mica
+        );
+
+        style.clear();
+        style.insert("--lilia-backdrop-opacity".into(), "0.4".into());
+        bridge.apply_document_appearance(&dataset, &style);
+        assert!(
+            (bridge.appearance().backdrop_opacity() - 0.4).abs() < f32::EPSILON,
+            "Lilia CSS variable must write Appearance opacity"
         );
     }
 
