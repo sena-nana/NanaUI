@@ -7,6 +7,10 @@ pub use nana_ui_core::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Host command-palette action (label, category, keywords).
+///
+/// Distinct from Runtime [`nana_ui_runtime::ActionDescriptor`], which is only
+/// the keymap enabled-state table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDescriptor {
     pub id: ActionId,

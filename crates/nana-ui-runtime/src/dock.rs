@@ -238,7 +238,7 @@ pub struct DockSurfaceSpec {
     pub bounds: Option<(f32, f32, f32, f32)>,
 }
 
-/// Host-applied floating window effects. Iced dock host effects stay in `nana-ui`.
+/// Host-applied floating window effects. Window commands stay in `nana-ui`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DockWorkspaceEvent {
     OpenFloating(DockFloatingSurface),

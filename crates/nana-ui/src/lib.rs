@@ -129,9 +129,7 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use dock::hosted_dock_update;
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
-pub use gpu_texture::{
-    HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureLayer, HostTextureRegistry,
-};
+pub use gpu_texture::{HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry};
 #[cfg(feature = "gpu")]
 pub use gpu_view::RenderSlot;
 #[cfg(feature = "gpu")]

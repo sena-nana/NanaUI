@@ -70,8 +70,7 @@ impl QrCode {
         })
     }
 
-    /// Encode `data` with the same matrix convention as Iced `QrCodeCanvas::encode`
-    /// (`qrcode::QrCode::new`, dark modules = true), then paint via [`Self::from_modules`].
+    /// Encode `data` (`qrcode::QrCode::new`, dark modules = true), then paint via [`Self::from_modules`].
     /// Quiet-zone modules are added at paint time, not in the matrix.
     pub fn encode(data: impl AsRef<[u8]>, size: f32) -> Result<Self, QrCodeError> {
         let code = qrcode::QrCode::new(data.as_ref()).map_err(|_| QrCodeError::EncodeFailed)?;
@@ -105,7 +104,6 @@ impl QrCode {
 
     /// Pixel module size and local origin for a laid-out QR field.
     ///
-    /// Same math as Iced `QrCodeCanvas::module_geometry`:
     /// `floor(min(width, height) / (module_width + 8)).max(1)`, then centered
     /// with a floored origin relative to the top-left of `bounds`.
     pub fn module_geometry(bounds: LayoutBox, module_width: usize) -> (f32, (f32, f32)) {
@@ -153,7 +151,7 @@ fn inert() -> InteractionState {
 
 /// Pixel module size and local origin for a laid-out QR field.
 ///
-/// Same math as Iced `QrCodeCanvas::module_geometry`:
+/// Module size and origin:
 /// `floor(min(width, height) / (module_width + 8)).max(1)`, then centered
 /// with a floored origin relative to the top-left of `bounds`.
 pub(crate) fn module_geometry(bounds: LayoutBox, module_width: usize) -> (f32, (f32, f32)) {

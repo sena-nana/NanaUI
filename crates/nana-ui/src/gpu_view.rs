@@ -1,3 +1,8 @@
+//! Physical scissor math and the demo `"gpu-view"` WGSL.
+//!
+//! The product [`nana_ui_runtime::GpuView`] type lives in `nana-ui-runtime`.
+//! This module does not define that component.
+
 use crate::geometry::{LogicalRect, PhysicalRect};
 
 pub(crate) const GPU_VIEW_SHADER: &str = r#"
@@ -44,6 +49,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 /// A stable logical/physical region suitable for a viewport and scissor.
+///
+/// Used by the Scene painter. Distinct from any Runtime GPU-slot helper.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderSlot {
     pub id: u64,

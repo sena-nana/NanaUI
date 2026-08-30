@@ -1290,8 +1290,8 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
     } else {
         SemanticColorRole::Muted
     });
-    // Iced's selected idle fill is effectively invisible on the sidebar
-    // surface; keep selected as a brighter glyph, not a Selected plate.
+    // Selected idle fill is invisible on the sidebar surface; keep selected
+    // as a brighter glyph, not a Selected plate.
     style.background = None;
     style.text_horizontal_alignment = crate::TextHorizontalAlignment::Center;
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;

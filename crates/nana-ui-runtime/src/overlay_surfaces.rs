@@ -310,7 +310,7 @@ pub(crate) fn modal_root_style() -> NodeStyle {
 
 pub(crate) const DRAWER_WIDTH: f32 = 360.0;
 pub(crate) const MODAL_PAD_X: f32 = 16.0;
-/// Iced dialog overlay top inset. Compact scrims clamp this so the card stays inside.
+/// Dialog overlay top inset. Compact scrims clamp this so the card stays inside.
 pub(crate) const MODAL_SCRIM_TOP_INSET: f32 = 90.0;
 pub(crate) const MODAL_HEADER_PAD_TOP: f32 = 14.0;
 pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = 8.0;

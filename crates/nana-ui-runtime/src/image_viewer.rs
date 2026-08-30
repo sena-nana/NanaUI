@@ -5,15 +5,12 @@ use nana_ui_core::{ControlSize, OverflowSpec, PaintTransform, SemanticColorRole}
 use crate::overlay_surfaces::modal_root_style;
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent,
-    UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
+    InteractionState, LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
+    TextContent, UiWorld,
 };
 
-/// Scene HostTexture registry renderer (`resource` is the host slot identity).
-pub const HOST_TEXTURE_RENDERER: &str = "nana.host-texture";
-
-/// Iced `ZoomPan` scale step and clamp.
+/// Zoom scale step and clamp for the viewer surface.
 pub const ZOOM_STEP: f32 = 1.12;
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 6.0;
@@ -251,7 +248,7 @@ impl ImageViewer {
         }
     }
 
-    /// Applies zoom/pan about `stage` center, matching Iced `ZoomPan` draw.
+    /// Applies zoom/pan about `stage` center.
     pub fn transformed_bounds(&self, content: LayoutBox, stage: LayoutBox) -> LayoutBox {
         let zoom = clamp_zoom(self.zoom);
         transform_about(content, stage, zoom, clamp_offset(self.offset, zoom, stage))

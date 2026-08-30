@@ -3,8 +3,8 @@
 //! ## L2 边界
 //! - hostOps 写入 Vue facade metadata + semantic props；Semantics 解析委托
 //!   [`crate::widget_map::resolve_kind_from_hints`]。
-//! - Identity/hierarchy go to `UiWorld`. This module does not build an Iced
-//!   `Element` tree.
+//! - Identity/hierarchy go to `UiWorld`. This module does not build a second
+//!   retained tree.
 //! - 不在此实现 CSS parse / paint；绘制经 Runtime / UiScene → `nana_ui` Scene host。
 
 use std::sync::{Arc, Mutex};

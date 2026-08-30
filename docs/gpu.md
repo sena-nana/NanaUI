@@ -76,15 +76,21 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 
 这些不是浏览器。可见输出仍然只走 Runtime → UiScene → `SceneWgpuPainter`。
 
+默认 GPU 接入是 **字符串 slot** 的 `GpuTextureView` / `"nana.host-texture"`。`GpuView::new(slot_id: u64)` 只给 `"gpu-view"` 直写 pass，**不是** `HostTextureRegistry` 的键。`HostTexture::id` 是 painter 缓存键，同样不是 slot。
+
 | 节点 | 槽位合同 | L1 行为 |
 | --- | --- | --- |
 | `<nana-gpu>` / `data-nana-gpu` | `"nana.host-texture"` + 宿主登记的 slot 名 | `GpuTextureView` |
+| `<nana-gpu-view>` | `"gpu-view"` + 十进制 `slot_id` | `GpuView`。`scene_gpu_renderers(None)` 装演示 painter；空表则不画 |
 | `<canvas data-nana-canvas="{id}">` | `"nana.host-texture"` + `canvas:{id}` | 2D 像素来自 `nana-ui-web-api`（tiny-skia），hosted 路径由 `CanvasGpuBridge` dirty upload。`getContext("2d")` 只在 web-api shim 里存在，不是 Chromium 2D |
 | `getContext("webgpu")` | `"nana.host-texture"` + `webgpu-canvas:{id}` | 同一套 HostTexture，不是第二套 Device |
-| `<video poster>` | 无 CustomRenderNode；`poster` 走 `content_image` URL 缓存 | 只显示 poster。不解码视频、不播第一帧 |
+| `<video>` / `nana-video` + `data-nana-video="{id}"` | `"nana.host-texture"` + `video:{id}` | Runtime `Video`。宿主推帧。有槽时不画 `poster` |
+| `<video poster>`（无槽） | 无 CustomRenderNode；`poster` 走 `content_image` URL | 只显示 poster。不解码、不播 |
 | `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src` |
 
-没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。
+没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。无槽且无 poster 的 `<video>` 同样是空盒子（`skipped_replaced = video`）。
+
+`GraphCanvas` 默认画 Scene Quad / Stroke。`"graph-canvas"` 自定义 renderer 不会自动投影；未登记时整帧拒绝。
 
 ## 按图离屏
 

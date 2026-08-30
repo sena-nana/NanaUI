@@ -329,8 +329,21 @@ pub fn apply_img_replaced_content(style: &mut nana_ui_core::LayoutStyle, src: &s
     });
 }
 
-/// Bind `<video poster>` onto the replaced-content slot. Playback is out of L1.
-pub fn apply_video_poster(style: &mut nana_ui_core::LayoutStyle, poster: &str) {
+/// Bind `<video poster>` only when there is no HostTexture slot.
+///
+/// `data-nana-video` / Runtime [`nana_ui_runtime::Video`] samples
+/// `"nana.host-texture"` (`video:{id}`). A slotted surface must not also
+/// paint `poster` as `content_image`. Decode and playback stay with the host.
+pub fn apply_video_poster(
+    style: &mut nana_ui_core::LayoutStyle,
+    poster: &str,
+    has_host_texture_slot: bool,
+) {
+    if has_host_texture_slot {
+        style.paint.content_image = None;
+        style.paint.skipped_replaced = None;
+        return;
+    }
     let trimmed = poster.trim();
     if trimmed.is_empty() {
         style.paint.content_image = None;
@@ -2397,7 +2410,7 @@ mod tests {
     #[test]
     fn video_poster_and_iframe_skip_fail_closed() {
         let mut poster = LayoutStyle::default();
-        apply_video_poster(&mut poster, "still.png");
+        apply_video_poster(&mut poster, "still.png", false);
         match poster.paint.content_image {
             Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "still.png"),
             other => panic!("expected poster, got {other:?}"),
@@ -2405,9 +2418,17 @@ mod tests {
         assert!(poster.paint.skipped_replaced.is_none());
 
         let mut video = LayoutStyle::default();
-        apply_video_poster(&mut video, "");
+        apply_video_poster(&mut video, "", false);
         assert!(video.paint.content_image.is_none());
         assert_eq!(video.paint.skipped_replaced.as_deref(), Some("video"));
+
+        let mut slotted = LayoutStyle::default();
+        apply_video_poster(&mut slotted, "still.png", true);
+        assert!(
+            slotted.paint.content_image.is_none(),
+            "HostTexture video must not also paint poster"
+        );
+        assert!(slotted.paint.skipped_replaced.is_none());
 
         let mut iframe = LayoutStyle::default();
         apply_iframe_skip(&mut iframe);

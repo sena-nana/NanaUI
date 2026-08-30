@@ -111,7 +111,6 @@ impl DocumentId {
     }
 }
 
-
 /// Vue / DOM element namespace (`svg` | `mathml` | HTML/`None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ElementNamespace {
@@ -358,7 +357,7 @@ impl PendingAssembly {
 /// Identity, hierarchy, kind, text, focus, style, interaction, and layout live
 /// in `nana_ui_runtime::UiWorld`. `nodes` keeps only Vue DOM metadata
 /// (namespace, attributes, scope id) needed by host ops. Do not treat this type
-/// as a second ECS/DOM tree or as an Iced `Element` host.
+/// as a second ECS/DOM tree.
 pub struct NanaTreeDocument {
     id: DocumentId,
     runtime: VueRuntime,
@@ -1088,8 +1087,7 @@ impl NanaTreeDocument {
         // A structural change, a whole-document invalidation, or an empty
         // footprint with a bumped revision (footprint drained by another
         // consumer) falls back to the full preorder pass.
-        let full_pass =
-            snapshot.changes.needs_full_pass() || snapshot.changes.dirty.is_empty();
+        let full_pass = snapshot.changes.needs_full_pass() || snapshot.changes.dirty.is_empty();
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashSet::new();
@@ -2795,8 +2793,6 @@ impl NanaTreeDocument {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3781,7 +3777,11 @@ mod tests {
 
         // Stepwise mutations: label patch, text input, toggle (which recascades
         // following siblings), then a structural append.
-        bridge.patch_prop(button.0, "label", &nana_js_engine::HostValue::string("Submit"));
+        bridge.patch_prop(
+            button.0,
+            "label",
+            &nana_js_engine::HostValue::string("Submit"),
+        );
         bridge.note_input(input.0, "hello");
         bridge.note_toggle(checkbox.0, true);
         let item = doc.create_element("li");
@@ -3814,7 +3814,9 @@ mod tests {
             "noted input must reach the Runtime text input state"
         );
         assert_eq!(
-            doc.runtime.accessibility(checkbox_id).and_then(|a| a.checked),
+            doc.runtime
+                .accessibility(checkbox_id)
+                .and_then(|a| a.checked),
             Some(true),
             "noted toggle must reach the accessibility projection"
         );
@@ -7556,10 +7558,7 @@ mod tests {
         assert_eq!(content.resource.as_ref(), "video:7");
         assert_eq!(content.revision, 0, "unregistered slot keeps revision 0");
 
-        doc.override_host_texture_revision(
-            "video:7",
-            nana_ui_runtime::pack_gpu_revision(2, 9),
-        );
+        doc.override_host_texture_revision("video:7", nana_ui_runtime::pack_gpu_revision(2, 9));
         doc.flush_host_frame();
         let content = doc
             .world()

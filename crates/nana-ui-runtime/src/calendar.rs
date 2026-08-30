@@ -429,7 +429,7 @@ pub fn build_calendar_heatmap_model<T: Clone>(
     }
 }
 
-/// Iced fill contract: level 0 is `subtle`, otherwise accent mixed into subtle.
+/// Heatmap fill: level 0 is `subtle`, otherwise accent mixed into subtle.
 pub fn calendar_cell_fill(mode: ThemeMode, level: u8, max_level: u8) -> SemanticColor {
     let palette = mode.palette();
     if level == 0 {
