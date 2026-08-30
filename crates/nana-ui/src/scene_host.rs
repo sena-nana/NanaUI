@@ -137,7 +137,7 @@ struct SceneReady<Program: RuntimeProgram> {
     ime_requests: HashMap<WindowId, TextInputRequest>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
     size_move: LiveSizeMove,
 }
@@ -335,7 +335,7 @@ fn initialize<Program: RuntimeProgram>(
         ime_requests: HashMap::new(),
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
         size_move: LiveSizeMove::install(window.as_ref())?,
     };
@@ -486,13 +486,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             WinitWindowEvent::Focused(focused) => {
                 if !*focused {
                     self.input_mut(id).clear_pointers();
-                    #[cfg(target_os = "macos")]
-                    if self
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    if let Some((_, live)) = self
                         .live_frame_resize
-                        .as_ref()
-                        .is_some_and(|(session, _)| *session == id)
+                        .take_if(|(session, _)| *session == id)
                     {
-                        self.live_frame_resize = None;
+                        if let Some(window) = self.window(id) {
+                            live.end(window.as_ref());
+                        }
                     }
                 }
                 self.forward_window_event(event_loop, id, &event);
@@ -818,7 +819,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
         #[cfg(not(target_os = "android"))]
-        if !self.size_move_active(id) {
+        if !self.is_live_resize(id) {
             self.synchronize_accessibility(id);
         }
     }
@@ -1078,13 +1079,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             return;
         }
         self.chrome.remove(&id);
-        #[cfg(target_os = "macos")]
-        if self
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some((_, live)) = self
             .live_frame_resize
-            .as_ref()
-            .is_some_and(|(session, _)| *session == id)
+            .take_if(|(session, _)| *session == id)
         {
-            self.live_frame_resize = None;
+            if let Some(window) = self.window(id) {
+                live.end(window.as_ref());
+            }
         }
         if let Some(host) = self.auxiliary.remove(&id) {
             #[cfg(target_os = "windows")]
@@ -1307,12 +1309,27 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn resize_window(&mut self, id: WindowId) {
-        let live = self.size_move_active(id);
+        let live = self.is_live_resize(id);
         if id == WindowId::PRIMARY {
             self.graphics.prepare_frame(live);
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
             self.graphics.prepare_surface_frame(&mut host.surface, live);
         }
+    }
+
+    fn is_live_resize(&self, id: WindowId) -> bool {
+        if self.size_move_active(id) {
+            return true;
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            return self
+                .live_frame_resize
+                .as_ref()
+                .is_some_and(|(session, _)| *session == id);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        false
     }
 
     fn size_move_active(&self, id: WindowId) -> bool {
@@ -1348,7 +1365,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn consume_frame_resize(&mut self, id: WindowId, input: &InputEvent) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some((session, live)) = self.live_frame_resize
             && session == id
         {
@@ -1360,6 +1377,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     if let Some(window) = self.window(id) {
                         let _ = live.update(window.as_ref());
                     }
+                    self.request_redraw(id);
                     self.sync_window_cursor(id);
                     return true;
                 }
@@ -1368,6 +1386,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     ..
                 } => {
                     self.live_frame_resize = None;
+                    if let Some(window) = self.window(id) {
+                        live.end(window.as_ref());
+                    }
+                    self.request_redraw(id);
                     self.sync_window_cursor(id);
                     return true;
                 }
@@ -1396,7 +1418,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let Some(window) = self.window(id).cloned() else {
             return;
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             if let Some(live) =
                 nana_window::LiveFrameResize::begin(window.as_ref(), frame_resize_edge(edge))

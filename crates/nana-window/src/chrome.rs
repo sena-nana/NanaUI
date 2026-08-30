@@ -68,9 +68,9 @@ pub fn resize_custom_frame<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameR
     }
 }
 
-/// Captures a macOS frame so later pointer moves can resize origin and size
-/// together through `NSWindow::setFrame`.
-#[cfg(target_os = "macos")]
+/// Captures a window frame so later pointer moves can resize origin and size
+/// without a nested OS size-move loop.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy)]
 pub struct LiveFrameResize {
     edge: FrameResizeEdge,
@@ -117,6 +117,7 @@ impl LiveFrameResize {
                 min.height.max(content_min.height),
             ),
             (max.width, max.height),
+            false,
         );
         window.setFrame_display(
             objc2_foundation::NSRect::new(
@@ -126,6 +127,74 @@ impl LiveFrameResize {
             true,
         );
         true
+    }
+
+    pub fn end<W: HasWindowHandle + ?Sized>(self, _window: &W) {}
+}
+
+#[cfg(target_os = "windows")]
+impl LiveFrameResize {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameResizeEdge) -> Option<Self> {
+        let hwnd = win32_hwnd(window)?;
+        let mut rect = windows_sys::Win32::Foundation::RECT::default();
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        unsafe {
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) == 0 {
+                return None;
+            }
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) == 0 {
+                return None;
+            }
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
+        }
+        Some(Self {
+            edge,
+            origin_x: f64::from(rect.left),
+            origin_y: f64::from(rect.top),
+            width: f64::from(rect.right - rect.left),
+            height: f64::from(rect.bottom - rect.top),
+            mouse_x: f64::from(mouse.x),
+            mouse_y: f64::from(mouse.y),
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        let Some(hwnd) = win32_hwnd(window) else {
+            return false;
+        };
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) } == 0 {
+            return false;
+        }
+        let (min, max) = win32_track_size(hwnd);
+        let next = live_frame_after_delta(
+            [self.origin_x, self.origin_y, self.width, self.height],
+            f64::from(mouse.x) - self.mouse_x,
+            f64::from(mouse.y) - self.mouse_y,
+            self.edge,
+            min,
+            max,
+            true,
+        );
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                next[0] as i32,
+                next[1] as i32,
+                next[2] as i32,
+                next[3] as i32,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+            );
+        }
+        true
+    }
+
+    pub fn end<W: HasWindowHandle + ?Sized>(self, _window: &W) {
+        unsafe {
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+        }
     }
 }
 
@@ -176,7 +245,6 @@ fn appkit_window<W: HasWindowHandle + ?Sized>(
     view.window()
 }
 
-#[cfg(any(test, target_os = "macos"))]
 fn live_frame_after_delta(
     start: [f64; 4],
     dx: f64,
@@ -184,6 +252,7 @@ fn live_frame_after_delta(
     edge: FrameResizeEdge,
     min: (f64, f64),
     max: (f64, f64),
+    y_down: bool,
 ) -> [f64; 4] {
     let [mut x, mut y, mut width, mut height] = start;
     let west = matches!(
@@ -208,7 +277,14 @@ fn live_frame_after_delta(
         x += dx;
         width -= dx;
     }
-    if north {
+    if y_down {
+        if south {
+            height += dy;
+        } else if north {
+            y += dy;
+            height -= dy;
+        }
+    } else if north {
         height += dy;
     } else if south {
         y += dy;
@@ -219,14 +295,14 @@ fn live_frame_after_delta(
     let min_h = min.1.min(max.1);
     let max_h = min.1.max(max.1);
     let right = x + width;
-    let top = y + height;
+    let bottom = y + height;
     width = width.clamp(min_w, max_w);
     height = height.clamp(min_h, max_h);
     if west {
         x = right - width;
     }
-    if south {
-        y = top - height;
+    if (y_down && north) || (!y_down && south) {
+        y = bottom - height;
     }
     [x, y, width, height]
 }
@@ -234,6 +310,44 @@ fn live_frame_after_delta(
 #[cfg(not(target_os = "macos"))]
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(_window: &W, _enabled: bool) -> bool {
     true
+}
+
+#[cfg(target_os = "windows")]
+fn win32_hwnd<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use raw_window_handle::RawWindowHandle;
+
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return None;
+    };
+    Some(handle.hwnd.get() as windows_sys::Win32::Foundation::HWND)
+}
+
+#[cfg(target_os = "windows")]
+fn win32_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> ((f64, f64), (f64, f64)) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, SendMessageW, WM_GETMINMAXINFO};
+
+    let mut info = MINMAXINFO::default();
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_GETMINMAXINFO,
+            0,
+            std::ptr::from_mut(&mut info) as isize,
+        );
+    }
+    (
+        (
+            f64::from(info.ptMinTrackSize.x.max(1)),
+            f64::from(info.ptMinTrackSize.y.max(1)),
+        ),
+        (
+            f64::from(info.ptMaxTrackSize.x.max(1)),
+            f64::from(info.ptMaxTrackSize.y.max(1)),
+        ),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -430,10 +544,18 @@ mod tests {
         ];
         for (dx, dy, edge, expected) in cases {
             assert_eq!(
-                live_frame_after_delta(start, dx, dy, edge, min, max),
+                live_frame_after_delta(start, dx, dy, edge, min, max, false),
                 expected
             );
         }
+        assert_eq!(
+            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::South, min, max, true),
+            [100.0, 200.0, 400.0, 330.0]
+        );
+        assert_eq!(
+            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::North, min, max, true),
+            [100.0, 230.0, 400.0, 270.0]
+        );
         assert_eq!(hit_test_for_edge(FrameResizeEdge::West), 10);
         assert_eq!(hit_test_for_edge(FrameResizeEdge::SouthEast), 17);
     }

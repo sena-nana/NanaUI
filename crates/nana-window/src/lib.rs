@@ -6,7 +6,7 @@ mod platform;
 mod size_move;
 
 pub use chrome::FrameResizeEdge;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameResize;
 pub use chrome::drag_custom_title_bar;
 pub use chrome::prepare_client_chrome;
