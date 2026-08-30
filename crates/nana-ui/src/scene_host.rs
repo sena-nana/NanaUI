@@ -21,7 +21,7 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, FrameResizeEdge, MaterialEffect, MaterialOutcome,
+    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialEffect, MaterialOutcome,
     apply_hosted_system_material, clear_system_material, prepare_client_chrome,
     resize_custom_frame, suppress_system_caption,
 };
@@ -101,6 +101,7 @@ struct SceneAuxiliary {
     accessibility_pending: Option<AccessibilityUpdate>,
     #[cfg(target_os = "windows")]
     pen_hook: crate::windows_pen::WindowsPenHook,
+    size_move: LiveSizeMove,
 }
 
 impl Drop for SceneAuxiliary {
@@ -138,6 +139,7 @@ struct SceneReady<Program: RuntimeProgram> {
     bind_after_present: HashSet<WindowId>,
     #[cfg(target_os = "macos")]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
+    size_move: LiveSizeMove,
 }
 
 struct WindowChromeSession {
@@ -335,6 +337,7 @@ fn initialize<Program: RuntimeProgram>(
         bind_after_present: HashSet::new(),
         #[cfg(target_os = "macos")]
         live_frame_resize: None,
+        size_move: LiveSizeMove::install(window.as_ref())?,
     };
     ready
         .program
@@ -473,7 +476,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::Resized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
-                self.resize_window(id);
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
                 self.request_redraw(id);
@@ -689,6 +691,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if event_loop.exiting() || self.render_suspended {
             return;
         }
+        self.resize_window(id);
         self.program.prepare_window_frame(id, &self.context_for(id));
         let geometry = self.geometry_of(id);
         let material = self.material_of(id);
@@ -815,7 +818,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
         #[cfg(not(target_os = "android"))]
-        self.synchronize_accessibility(id);
+        if !self.size_move_active(id) {
+            self.synchronize_accessibility(id);
+        }
     }
 
     fn acquire_frame(&mut self, id: WindowId) -> Result<HostedSurfaceFrame, HostedGpuError> {
@@ -1055,6 +1060,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 accessibility_pending: None,
                 #[cfg(target_os = "windows")]
                 pen_hook,
+                size_move: LiveSizeMove::install(window.as_ref())?,
             },
         );
         #[cfg(target_os = "windows")]
@@ -1301,10 +1307,21 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn resize_window(&mut self, id: WindowId) {
+        let live = self.size_move_active(id);
         if id == WindowId::PRIMARY {
-            self.graphics.resize();
+            self.graphics.prepare_frame(live);
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
-            self.graphics.resize_surface(&mut host.surface);
+            self.graphics.prepare_surface_frame(&mut host.surface, live);
+        }
+    }
+
+    fn size_move_active(&self, id: WindowId) -> bool {
+        if id == WindowId::PRIMARY {
+            self.size_move.is_active()
+        } else {
+            self.auxiliary
+                .get(&id)
+                .is_some_and(|host| host.size_move.is_active())
         }
     }
 

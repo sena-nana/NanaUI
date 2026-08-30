@@ -1080,18 +1080,17 @@ impl AppContext {
         self.layout_document_impl(document, viewport, &dirty, false)
     }
 
-    /// Relayout after a viewport change. Roots are the dirty set unless a live
-    /// box reads the viewport directly (`position: fixed`, `vw` / `vh`).
+    /// Relayout after a viewport change. Document roots plus any live
+    /// `position: fixed` / `vw` / `vh` boxes are dirty; unchanged subtrees keep
+    /// the retained cache.
     pub fn layout_document_for_viewport(
         &mut self,
         document: DocumentId,
         viewport: crate::LayoutViewport,
     ) -> Result<crate::CommitReport, FrameworkError> {
-        if self.world.uses_viewport_basis() {
-            return self.layout_document(document, viewport);
-        }
-        let roots = self.world.document_roots(document);
-        self.layout_document_impl(document, viewport, &roots, false)
+        let mut dirty = self.world.document_roots(document);
+        dirty.extend(self.world.viewport_basis_ids());
+        self.layout_document_impl(document, viewport, &dirty, false)
     }
 
     /// Nodes recomputed by the most recent layout pass; drains on read.

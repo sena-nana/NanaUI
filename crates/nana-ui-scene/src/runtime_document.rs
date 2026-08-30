@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_viewport_relative_box_follows_a_resize_and_gives_up_incremental_layout() {
+    fn a_viewport_relative_box_follows_a_resize_without_discarding_the_cache() {
         use nana_ui_core::{LayoutStyle, LengthSpec, ViewportAxis};
 
         struct TestShaper;
@@ -445,8 +445,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             runtime.context().layout_full_invocations() - full_before_resize,
-            1,
-            "a vh box reads the viewport directly, so the retained cache cannot answer for it"
+            0,
+            "a vh box dirties with the document roots and keeps the retained cache"
         );
         assert_eq!(
             runtime
@@ -458,6 +458,73 @@ mod tests {
             180.0,
             "the vh box must follow the new viewport"
         );
+    }
+
+    #[test]
+    fn a_fixed_overlay_follows_a_resize_without_a_full_layout() {
+        use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec};
+
+        struct TestShaper;
+        impl nana_ui_runtime::TextShaper for TestShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics {
+                    width: text.value.len() as f32 * 8.0,
+                    height: 18.0,
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let overlay = LayoutStyle {
+            position: PositionSpec::Fixed,
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(24.0)),
+            offset_left: Some(LengthSpec::Px(8.0)),
+            offset_top: Some(LengthSpec::Px(8.0)),
+            ..Default::default()
+        };
+        let button = runtime
+            .context_mut()
+            .build(document, |ui| {
+                ui.child("overlay", Button::new("Go").layout(Arc::new(overlay)))
+            })
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
+            .unwrap();
+        assert!(
+            runtime.context().world().uses_viewport_basis(),
+            "position:fixed must register as a viewport-basis box"
+        );
+        let before = runtime
+            .context()
+            .world()
+            .layout_box(button.stable_id())
+            .unwrap();
+        assert_eq!((before.width, before.height), (40.0, 24.0));
+
+        let full_before_resize = runtime.context().layout_full_invocations();
+        runtime
+            .flush(LayoutViewport::new(640.0, 360.0), &mut TestShaper)
+            .unwrap();
+        assert_eq!(
+            runtime.context().layout_full_invocations() - full_before_resize,
+            0,
+            "fixed overlay presence must not discard the retained layout cache"
+        );
+        let after = runtime
+            .context()
+            .world()
+            .layout_box(button.stable_id())
+            .unwrap();
+        assert_eq!((after.width, after.height), (40.0, 24.0));
     }
 
     #[test]

@@ -18,7 +18,7 @@ Vue 节点 handle 与 `StableNodeId` 对应。DOM facade 只留兼容元数据�
 
 Runtime 按脏组件产生确定性工作：样式、文字、布局、命中、焦点 / IME、无障碍、抽取。静止 world 返回空工作，不要求持续 redraw。
 
-`RuntimeDocument::flush` 在一次帧事务里调用宿主 `TextShaper`，由 `RuntimeLayoutEngine` 按 viewport、样式和 shaping 写回 layout。viewport 变化在无应用 mutation 时也会触发布局，且只跑一次全量 `layout_document`。系统失败时已消费工作回到调度器，Scene 与无障碍增量在 settle 前不发布。
+`RuntimeDocument::flush` 在一次帧事务里调用宿主 `TextShaper`，由 `RuntimeLayoutEngine` 按 viewport、样式和 shaping 写回 layout。viewport 变化在无应用 mutation 时也会触发布局：脏集合是 document roots 加上 `position: fixed` / `vw` / `vh` 节点，未移动的子树复用 retained cache，不丢整棵树。系统失败时已消费工作回到调度器，Scene 与无障碍增量在 settle 前不发布。
 
 局部 mutation 只传播到语义受影响的节点；遇到已有相同脏状态即停。动画以 Runtime 持有的稳定 ID 注册，宿主传入单调时间；Runtime 不建计时线程。动画、实时 GPU 和普通 UI 唤醒分开。
 

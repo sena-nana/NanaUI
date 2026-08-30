@@ -3,6 +3,7 @@
 mod chrome;
 mod material;
 mod platform;
+mod size_move;
 
 pub use chrome::FrameResizeEdge;
 #[cfg(target_os = "macos")]
@@ -17,6 +18,7 @@ pub use material::{
     PlatformMaterialSupport, apply_hosted_system_material, apply_system_material,
     clear_system_material, hosted_platform_material_support, platform_material_support,
 };
+pub use size_move::LiveSizeMove;
 
 /// macOS Dock / application icon from PNG bytes. No-op on other platforms.
 ///

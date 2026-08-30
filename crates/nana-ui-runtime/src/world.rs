@@ -475,9 +475,10 @@ pub struct UiWorld {
     /// Nodes with an authored `z-index`. Stacking walks skip when this is zero.
     z_index_nodes: usize,
     /// Live nodes whose box resolves against the viewport (`position: fixed`,
-    /// `vw` / `vh`). While this is zero, every viewport dependency reaches a
-    /// node through its available size, so a resize can relayout incrementally.
+    /// `vw` / `vh`). A resize dirties this set together with document roots
+    /// instead of discarding the retained layout cache.
     viewport_basis_nodes: usize,
+    viewport_basis: HashSet<StableNodeId>,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
     presence_flags: HashMap<Entity, PresenceFlags>,
@@ -540,6 +541,7 @@ impl UiWorld {
             clip_visuals: 0,
             z_index_nodes: 0,
             viewport_basis_nodes: 0,
+            viewport_basis: HashSet::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
@@ -3275,7 +3277,12 @@ impl UiWorld {
         }
     }
 
-    fn apply_presence_flags(&mut self, entity: Entity, next: PresenceFlags) {
+    fn apply_presence_flags(
+        &mut self,
+        id: Option<StableNodeId>,
+        entity: Entity,
+        next: PresenceFlags,
+    ) {
         let previous = self
             .presence_flags
             .get(&entity)
@@ -3291,6 +3298,13 @@ impl UiWorld {
             previous.viewport,
             next.viewport,
         );
+        if let Some(id) = id {
+            if next.viewport {
+                self.viewport_basis.insert(id);
+            } else {
+                self.viewport_basis.remove(&id);
+            }
+        }
         if next == PresenceFlags::NONE {
             self.presence_flags.remove(&entity);
         } else {
@@ -3307,7 +3321,7 @@ impl UiWorld {
         } else {
             PresenceFlags::NONE
         };
-        self.apply_presence_flags(entity, next);
+        self.apply_presence_flags(Some(id), entity, next);
     }
 
     fn sync_subtree_presence(&mut self, root: StableNodeId) {
@@ -3318,6 +3332,10 @@ impl UiWorld {
 
     pub fn uses_viewport_basis(&self) -> bool {
         self.viewport_basis_nodes != 0
+    }
+
+    pub fn viewport_basis_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.viewport_basis.iter().copied()
     }
 
     fn note_z_index_presence(&mut self, was_present: bool, now_present: bool) {
@@ -3336,7 +3354,11 @@ impl UiWorld {
     }
 
     fn forget_visual_presence(&mut self, entity: Entity) {
-        self.apply_presence_flags(entity, PresenceFlags::NONE);
+        let id = self
+            .world
+            .get::<Identity>(entity)
+            .map(|identity| identity.stable);
+        self.apply_presence_flags(id, entity, PresenceFlags::NONE);
     }
 
     fn extract_node_memo(
