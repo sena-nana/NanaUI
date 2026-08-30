@@ -33,13 +33,11 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 
 1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽。
 2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
-3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`；系统 caption 窗口不叠第二套缩放命中。
+3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 
 ### 实时缩放
 
-拖动边框时布局跟手更新。`Resized` 只同步几何并请求下一帧，不在事件里 `surface.configure`。画帧时若物理尺寸或 present 策略变了才改 DXGI 表面；同尺寸跳过。
-
-Windows `LiveSizeMove` 观察 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`：拖动期间 present 用 `Mailbox` 或 `Immediate`（latency 2），松手恢复 `AutoVsync`。拖动中不同步 AccessKit。透明窗口走同一条路径。
+客户区拖动边框时，指针移动直接改窗口矩形，事件循环继续跑，`Resized` 同步几何并请求下一帧。画帧时若物理尺寸或 present 策略变了才 `surface.configure`；同尺寸跳过。Windows 系统边框缩放仍可能走 `WM_ENTERSIZEMOVE`；`LiveSizeMove` 在那段时间用 `Mailbox`/`Immediate` present。透明窗口走同一条路径。
 
 DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标；物理像素只用于 Surface。窗口位置由宿主记录，创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。模态辅助窗在 Windows 上 `with_owner_window` 绑定父 HWND。
 
