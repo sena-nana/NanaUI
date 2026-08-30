@@ -13,6 +13,7 @@ mod animation;
 mod builtin_components;
 mod calendar;
 mod charts;
+mod color_field;
 mod command_palette;
 mod component_registry;
 mod components;
@@ -31,6 +32,7 @@ mod menus;
 mod mutation;
 mod overlay_surfaces;
 mod pane;
+mod path_field;
 mod placeholders;
 mod popover;
 mod presentation;
@@ -68,6 +70,10 @@ pub use calendar::{
     build_calendar_heatmap_model, calendar_cell_fill,
 };
 pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
+pub use color_field::{
+    ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
+    sanitize_rgba,
+};
 pub use command_palette::CommandPalette;
 pub use component_registry::{
     ComponentBindKind, ComponentRegistry, ComponentTypeId, RegisterableComponent, SemanticOption,
@@ -154,6 +160,7 @@ pub use overlay_surfaces::{
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use pane::{PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode};
+pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
 pub use popover::{ActionMenu, Popover, PopoverClosed, PopoverToggled, resolve_popover_origin};
 pub use presentation::{

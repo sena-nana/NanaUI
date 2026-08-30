@@ -26,6 +26,7 @@ const CONTROL_GAP: f32 = 2.0;
 const TITLE_FONT_SIZE: f32 = 13.0;
 const TITLE_FONT_WEIGHT: u16 = 600;
 const OVERLAY_Z_INDEX: i32 = 1;
+const STATUS_OVERLAY_Z_INDEX: i32 = 2;
 
 const LEADING_COLUMN_TAG: &str = "app-title-bar-leading";
 const CENTER_COLUMN_TAG: &str = "app-title-bar-center";
@@ -663,6 +664,7 @@ pub struct DesktopShell {
     pub title_bar: Option<StableNodeId>,
     pub workspace: Option<StableNodeId>,
     pub overlay: Option<StableNodeId>,
+    pub status: Option<StableNodeId>,
     pub primary: Option<StableNodeId>,
     pub navigation: Option<StableNodeId>,
     pub navigation_footer: Option<StableNodeId>,
@@ -670,6 +672,7 @@ pub struct DesktopShell {
     pub bottom: Option<StableNodeId>,
     pub extra_regions: Vec<(RegionId, StableNodeId)>,
     pub overlays: Vec<StableNodeId>,
+    pub status_overlays: Vec<StableNodeId>,
     pub navigation_frame: Option<StableNodeId>,
     pub title: Option<Arc<str>>,
     pub title_leading: Option<StableNodeId>,
@@ -687,6 +690,7 @@ impl DesktopShell {
             title_bar: None,
             workspace: None,
             overlay: None,
+            status: None,
             primary: None,
             navigation: None,
             navigation_footer: None,
@@ -694,6 +698,7 @@ impl DesktopShell {
             bottom: None,
             extra_regions: Vec::new(),
             overlays: Vec::new(),
+            status_overlays: Vec::new(),
             navigation_frame: None,
             title: None,
             title_leading: None,
@@ -800,9 +805,16 @@ impl DesktopShell {
         self
     }
 
-    /// Push an overlay child onto the assembled [`OverlayHost`].
+    /// Push a modal overlay child onto the assembled dialog [`OverlayHost`].
     pub fn overlay(mut self, overlay: StableNodeId) -> Self {
         self.overlays.push(overlay);
+        self
+    }
+
+    /// Push a status overlay (toast). It uses a second host so a confirm
+    /// dialog can stay open.
+    pub fn status(mut self, overlay: StableNodeId) -> Self {
+        self.status_overlays.push(overlay);
         self
     }
 
@@ -838,6 +850,20 @@ impl ComponentView for DesktopShell {
             style: self.style.clone(),
         }
         .project(id, world, mutations);
+        if let Some(status) = self.status {
+            patch_layout(world, mutations, status, |layout| {
+                layout.position = PositionSpec::Absolute;
+                layout.offset_top = Some(LengthSpec::Px(0.0));
+                layout.offset_right = Some(LengthSpec::Px(0.0));
+                layout.offset_bottom = Some(LengthSpec::Px(0.0));
+                layout.offset_left = Some(LengthSpec::Px(0.0));
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(LengthSpec::Fill);
+                layout.flex_grow = Some(0.0);
+                layout.flex_shrink = Some(0.0);
+                layout.z_index = Some(layout.z_index.unwrap_or(STATUS_OVERLAY_Z_INDEX));
+            });
+        }
     }
 }
 
@@ -1049,6 +1075,11 @@ impl AppContext {
 
         let workspace_id = ensure_workspace(self, document, snapshot.workspace)?;
         let overlay_id = ensure_overlay_host(self, document, snapshot.overlay)?;
+        let status_id = ensure_overlay_host(
+            self,
+            document,
+            snapshot.status.filter(|id| *id != overlay_id),
+        )?;
         let title_bar = ensure_title_bar(
             self,
             document,
@@ -1074,11 +1105,13 @@ impl AppContext {
         let chrome_changed = snapshot.title_bar != title_bar
             || snapshot.workspace != Some(workspace_id)
             || snapshot.overlay != Some(overlay_id)
+            || snapshot.status != Some(status_id)
             || snapshot.navigation_frame != navigation_frame;
         let mut assembled = snapshot;
         assembled.title_bar = title_bar;
         assembled.workspace = Some(workspace_id);
         assembled.overlay = Some(overlay_id);
+        assembled.status = Some(status_id);
         assembled.navigation_frame = navigation_frame;
         let slots = region_slots(self, &assembled, resources);
         let next_used = used_ids(&assembled, &slots);
@@ -1088,6 +1121,7 @@ impl AppContext {
                 desktop.title_bar = title_bar;
                 desktop.workspace = Some(workspace_id);
                 desktop.overlay = Some(overlay_id);
+                desktop.status = Some(status_id);
                 desktop.navigation_frame = navigation_frame;
             })?;
         }
@@ -1097,6 +1131,7 @@ impl AppContext {
         }
         shell_children.push(workspace_id);
         shell_children.push(overlay_id);
+        shell_children.push(status_id);
         let mut changed = reconcile_ids(self, shell.stable_id(), &shell_children)?;
 
         let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
@@ -1107,6 +1142,7 @@ impl AppContext {
         })?;
         changed |= self.assemble_workspace(workspace)?;
         changed |= reconcile_ids(self, overlay_id, &assembled.overlays)?;
+        changed |= reconcile_ids(self, status_id, &assembled.status_overlays)?;
         if changed || chrome_changed {
             self.update_component(shell, |_, _| {})?;
         }
@@ -1716,6 +1752,7 @@ fn used_ids(shell: &DesktopShell, slots: &[WorkspaceRegionSlot]) -> HashSet<Stab
         shell.title_bar,
         shell.workspace,
         shell.overlay,
+        shell.status,
         shell.primary,
         shell.navigation,
         shell.navigation_footer,
@@ -1735,6 +1772,7 @@ fn used_ids(shell: &DesktopShell, slots: &[WorkspaceRegionSlot]) -> HashSet<Stab
         ids.insert(*content);
     }
     ids.extend(shell.overlays.iter().copied());
+    ids.extend(shell.status_overlays.iter().copied());
     for slot in slots {
         if let Some(content) = slot.content {
             ids.insert(content);
@@ -3048,11 +3086,12 @@ mod tests {
                 .primary(primary.stable_id())
                 .overlay(overlay.stable_id()),
         );
-        let (workspace, overlay_host) = context
-            .read(shell, |shell| (shell.workspace, shell.overlay))
+        let (workspace, overlay_host, status_host) = context
+            .read(shell, |shell| (shell.workspace, shell.overlay, shell.status))
             .unwrap();
         let workspace = workspace.expect("workspace");
         let overlay_host = overlay_host.expect("overlay host");
+        let status_host = status_host.expect("status host");
 
         assert_eq!(
             context.world().node(shell.stable_id()).unwrap().kind,
@@ -3062,7 +3101,7 @@ mod tests {
         );
         assert_eq!(
             context.world().node(shell.stable_id()).unwrap().children,
-            vec![title.stable_id(), workspace, overlay_host]
+            vec![title.stable_id(), workspace, overlay_host, status_host]
         );
         let title_layout = &context
             .world()
