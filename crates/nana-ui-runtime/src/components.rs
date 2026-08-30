@@ -1513,6 +1513,33 @@ impl TextInputState {
         true
     }
 
+    /// Delete UTF-8 bytes before and after the current selection.
+    ///
+    /// IME preedit is stored separately and is not touched. Returns false when
+    /// the selection is invalid, the span is empty, the range would overflow,
+    /// or either end is not a character boundary.
+    pub fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        if !self.selection.is_valid_for(&self.value) {
+            return false;
+        }
+        let range = self.selection.ordered();
+        let Some(start) = range.start.checked_sub(before_bytes) else {
+            return false;
+        };
+        let Some(end) = range.end.checked_add(after_bytes) else {
+            return false;
+        };
+        if end > self.value.len() || start == end {
+            return false;
+        }
+        if !self.value.is_char_boundary(start) || !self.value.is_char_boundary(end) {
+            return false;
+        }
+        self.value.replace_range(start..end, "");
+        self.selection = TextSelection::caret(start);
+        true
+    }
+
     /// Replace a controlled value while keeping a valid selection when
     /// possible. If the old offsets no longer land on UTF-8 boundaries, move
     /// the caret to the new end.

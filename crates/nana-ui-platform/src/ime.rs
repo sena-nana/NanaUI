@@ -13,4 +13,12 @@ pub enum ImeEvent {
         selection: Option<(usize, usize)>,
     },
     Commit(String),
+    /// Delete UTF-8 bytes surrounding the cursor or selection.
+    ///
+    /// Does not affect IME preedit. Editors skip this event when the requested
+    /// span cannot be applied (invalid selection or non-character boundary).
+    DeleteSurrounding {
+        before_bytes: usize,
+        after_bytes: usize,
+    },
 }

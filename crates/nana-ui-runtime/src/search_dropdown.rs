@@ -243,6 +243,15 @@ impl SearchDropdown {
         true
     }
 
+    pub fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        if !self.state.delete_surrounding(before_bytes, after_bytes) {
+            return false;
+        }
+        self.query = self.state.value.clone();
+        self.highlighted = self.first_visible();
+        true
+    }
+
     pub fn select_index(&mut self, index: usize) -> Option<SearchDropdownEvent> {
         let option = self.options.get(index)?;
         if self.inactive() || !option_matches(option, &self.query) {

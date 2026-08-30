@@ -61,6 +61,10 @@ trait EditableText: ComponentView {
     type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
     fn replace_selection(&mut self, text: &str) -> bool;
+    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        self.state_mut()
+            .delete_surrounding(before_bytes, after_bytes)
+    }
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
     fn change(&self) -> Self::Change;
@@ -171,6 +175,10 @@ impl EditableText for SearchDropdown {
         self.replace_selection(text)
     }
 
+    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        self.delete_surrounding(before_bytes, after_bytes)
+    }
+
     fn state(&self) -> &TextInputState {
         &self.state
     }
@@ -207,6 +215,14 @@ impl EditableText for ContextMenu {
         true
     }
 
+    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        if !self.state.delete_surrounding(before_bytes, after_bytes) {
+            return false;
+        }
+        self.sync_query_from_state();
+        true
+    }
+
     fn state(&self) -> &TextInputState {
         &self.state
     }
@@ -237,6 +253,10 @@ impl EditableText for CommandPalette {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        self.delete_surrounding(before_bytes, after_bytes)
     }
 
     fn state(&self) -> &TextInputState {
@@ -3751,6 +3771,34 @@ impl AppContext {
         self.commit_world_text_input_ime(document, text)
     }
 
+    /// Delete UTF-8 bytes surrounding the focused editor's selection.
+    ///
+    /// Leaves IME preedit in place. Returns `Ok(false)` when no focused
+    /// editable field can apply the requested span.
+    pub fn delete_ime_surrounding(
+        &mut self,
+        document: DocumentId,
+        before_bytes: usize,
+        after_bytes: usize,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        if let Some(entity) = self.focused_editor::<TextArea>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        self.delete_world_text_input_surrounding(document, before_bytes, after_bytes)
+    }
+
     fn commit_world_text_input_ime(
         &mut self,
         document: DocumentId,
@@ -3775,6 +3823,50 @@ impl AppContext {
         mutations.set_text_input(target, Some(next));
         self.world.commit(mutations)?;
         Ok(true)
+    }
+
+    fn delete_world_text_input_surrounding(
+        &mut self,
+        document: DocumentId,
+        before_bytes: usize,
+        after_bytes: usize,
+    ) -> Result<bool, FrameworkError> {
+        let Some((target, state)) = self.world.focused_text_input(document) else {
+            return Ok(false);
+        };
+        if !self
+            .world
+            .accessibility(target)
+            .is_some_and(|state| state.editable)
+        {
+            return Ok(false);
+        }
+        let mut next = state.clone();
+        if !next.delete_surrounding(before_bytes, after_bytes) {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_text_input(target, Some(next));
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    fn delete_editable_surrounding<C: EditableText>(
+        &mut self,
+        entity: Entity<C>,
+        before_bytes: usize,
+        after_bytes: usize,
+    ) -> Result<bool, FrameworkError> {
+        if !self.read(entity, EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |editable, cx| {
+            if !editable.delete_surrounding(before_bytes, after_bytes) {
+                return false;
+            }
+            cx.emit(editable.change());
+            true
+        })
     }
 
     pub fn replace_focused_text(
