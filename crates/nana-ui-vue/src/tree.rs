@@ -2987,7 +2987,7 @@ mod tests {
     }
 
     #[test]
-    fn unregistered_custom_tag_stays_column() {
+    fn unregistered_custom_tag_does_not_bind_a_component() {
         let mut doc = NanaTreeDocument::new(400, 200, 1.0);
         let unknown = doc.create_element("nana-unknown-widget");
         doc.insert(unknown, doc.mount_root(), None);

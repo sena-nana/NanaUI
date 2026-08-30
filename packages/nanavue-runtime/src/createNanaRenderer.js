@@ -1340,35 +1340,34 @@ function bindImageSource(el, nid, source) {
  * Create a semantic Nana widget (button / switch / text / …) without DOM paint.
  * Returns a host node whose id is tracked by Rust `MessageBridge`.
  */
-const RETIRED_HTML_ALIAS_TAGS = new Set([
-  "nana-button",
-  "nana-text-input",
-  "nana-input",
-  "nana-textarea",
-  "nana-select",
-  "nana-progress",
-  "nana-divider",
-  "nana-dialog",
-  "nana-checkbox",
-  "nana-range-field",
-  "nana-range",
-  "nana-table",
-  "nana-table-row",
-  "nana-table-cell",
-  "nana-search",
-  "nana-list",
-  "nana-list-item",
-  "nana-number-input",
-  "nana-level-meter",
-  "nana-settings-collapsible-card",
+const RETIRED_HTML_ALIAS_TAGS = new Map([
+  ["nana-button", "button"],
+  ["nana-text-input", "input"],
+  ["nana-input", "input"],
+  ["nana-textarea", "textarea"],
+  ["nana-select", "select"],
+  ["nana-progress", "progress"],
+  ["nana-divider", "hr"],
+  ["nana-dialog", "dialog"],
+  ["nana-checkbox", "input"],
+  ["nana-range-field", "input"],
+  ["nana-range", "input"],
+  ["nana-table", "table"],
+  ["nana-table-row", "tr"],
+  ["nana-table-cell", "td"],
+  ["nana-search", "search-dropdown"],
+  ["nana-list", "ul"],
+  ["nana-list-item", "li"],
+  ["nana-number-input", "input"],
+  ["nana-level-meter", "meter"],
+  ["nana-settings-collapsible-card", "details"],
 ]);
 
 export function createWidget(kind, props) {
   const raw = String(kind);
   const normalized = raw.replace(/^nana-/i, "");
-  const tag = RETIRED_HTML_ALIAS_TAGS.has(`nana-${normalized}`)
-    ? htmlTagForKind(normalized)
-    : `nana-${normalized}`;
+  const tag =
+    RETIRED_HTML_ALIAS_TAGS.get(`nana-${normalized}`) ?? htmlTagForKind(normalized);
   const id = hostCall("createWidget", [raw, props && typeof props === "object" ? { ...props } : {}]);
   return markCreatedNode(wrapNode(id, "element", tag));
 }
@@ -1606,11 +1605,15 @@ export const hostOps = {
         : String(isCustomizedBuiltIn);
     const seed = seedHostProps(vnodeProps);
     // Prefer createWidget for nana-* semantic controls so props seed the bridge.
-    // Retired HTML aliases (`nana-button`, …) fall through to createElement.
+    // Retired HTML aliases (`nana-button`, …) error; use the native tag.
+    if (RETIRED_HTML_ALIAS_TAGS.has(lower)) {
+      throw new Error(
+        `retired tag \`${lower}\`; use \`${RETIRED_HTML_ALIAS_TAGS.get(lower)}\``,
+      );
+    }
     if (
       lower.startsWith("nana-") &&
-      lower !== "nana-gpu" &&
-      !RETIRED_HTML_ALIAS_TAGS.has(lower)
+      lower !== "nana-gpu"
     ) {
       const kind = lower.slice("nana-".length);
       const id = hostCall("createWidget", [kind, seed || {}]);

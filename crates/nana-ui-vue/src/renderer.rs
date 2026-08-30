@@ -2,7 +2,7 @@
 //!
 //! ## L2 边界
 //! - hostOps 写入 Vue facade metadata + semantic props；Semantics 解析委托
-//!   [`crate::widget_map::resolve_kind_from_hints`]。
+//!   [`crate::widget_map::resolve_host_tag_kind`]。未识别 tag 报错，不落到布局盒。
 //! - Identity/hierarchy go to `UiWorld`. This module does not build a second
 //!   retained tree.
 //! - 不在此实现 CSS parse / paint；绘制经 Runtime / UiScene → `nana_ui` Scene host。
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use nana_ui_web_api::{SharedWebApiState, shared_web_api_state};
 
-use crate::bridge::{MessageBridge, WidgetKind, WidgetProps, resolve_kind_from_hints, widget_id};
+use crate::bridge::{MessageBridge, WidgetKind, WidgetProps, widget_id};
 #[cfg(feature = "scene-view")]
 use crate::native_component::{NativeComponentRegistry, normalize_component_name};
 use crate::scroll::{
@@ -23,6 +23,7 @@ use crate::tree::{
     ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
     query_scroll_content_size,
 };
+use crate::widget_map::resolve_host_tag_kind;
 use nana_ui_core::ButtonKind;
 
 /// Shared handles used by DOM + semantic bridge host ops.
@@ -77,6 +78,19 @@ pub(crate) fn register_dom_host_ops_with_bridge_and_layout(
         components: None,
     };
     register_all(api, host);
+}
+
+fn host_tag_kind(
+    doc: &NanaTreeDocument,
+    tag: &str,
+    class: Option<&str>,
+    role: Option<&str>,
+    input_type: Option<&str>,
+) -> Result<WidgetKind, JsException> {
+    resolve_host_tag_kind(tag, class, role, input_type, |candidate| {
+        doc.context().resolve_component_tag(candidate).is_some()
+    })
+    .map_err(JsException::new)
 }
 
 #[cfg(feature = "scene-view")]
@@ -147,13 +161,14 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 Some(props.class_names.join(" "))
             };
             let input_type = props.attrs.get("type").cloned();
-            let kind = resolve_kind_from_hints(
+            let mut guard = lock_doc(&host.document)?;
+            let kind = host_tag_kind(
+                &guard,
                 &tag,
                 class.as_deref(),
                 (!props.role.is_empty()).then_some(props.role.as_str()),
                 input_type.as_deref(),
-            )
-            .unwrap_or(WidgetKind::Column);
+            )?;
             if tag.eq_ignore_ascii_case("th") {
                 props.attrs.insert("header".into(), String::new());
                 props.attrs.insert("column-header".into(), String::new());
@@ -164,7 +179,6 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                     props.role = "link".into();
                 }
             }
-            let mut guard = lock_doc(&host.document)?;
             let handle = guard.create_element_ns(&tag, namespace, is.as_deref());
             seed_element_attrs(&mut guard, handle, &props);
             drop(guard);
@@ -275,6 +289,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             guard.insert(child, parent, anchor);
             let parent_tag = guard.element_tag(parent).unwrap_or_else(|| "div".into());
+            let parent_kind = host_tag_kind(&guard, &parent_tag, None, None, None)?;
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             let parent_id = widget_id(parent);
@@ -283,9 +298,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             // exists in the DOM but not yet in the semantic forest, seed it so
             // children are not flattened onto body.
             if !bridge.contains(parent_id) {
-                let kind = resolve_kind_from_hints(&parent_tag, None, None, None)
-                    .unwrap_or(WidgetKind::Column);
-                bridge.register(parent_id, kind, WidgetProps::default());
+                bridge.register(parent_id, parent_kind, WidgetProps::default());
             }
             if bridge.contains(child_id) {
                 bridge.insert_child(child_id, parent_id, anchor.map(|a| a.0));
@@ -751,12 +764,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             sync_clone_pairs_to_bridge(&host.document, &mut bridge, &pairs)?;
             let parent_id = widget_id(parent);
             if !bridge.contains(parent_id) {
-                let parent_tag = {
+                let kind = {
                     let guard = lock_doc(&host.document)?;
-                    guard.element_tag(parent).unwrap_or_else(|| "div".into())
+                    let parent_tag = guard.element_tag(parent).unwrap_or_else(|| "div".into());
+                    host_tag_kind(&guard, &parent_tag, None, None, None)?
                 };
-                let kind = resolve_kind_from_hints(&parent_tag, None, None, None)
-                    .unwrap_or(WidgetKind::Column);
                 bridge.register(parent_id, kind, WidgetProps::default());
             }
             let top_ids = {
@@ -1548,13 +1560,13 @@ fn sync_clone_pairs_to_bridge(
     let guard = lock_doc(doc)?;
     for &(src, dst) in pairs {
         if src.0 == dst.0 {
-            seed_bridge_node(&guard, bridge, dst);
+            seed_bridge_node(&guard, bridge, dst)?;
             continue;
         }
         if bridge.clone_register(widget_id(src), widget_id(dst)) {
             continue;
         }
-        seed_bridge_node(&guard, bridge, dst);
+        seed_bridge_node(&guard, bridge, dst)?;
     }
     // Parenting: for each mapped dst that has a tree parent also in the pair set,
     // insert_child under that parent (document order).
@@ -1576,10 +1588,14 @@ fn sync_clone_pairs_to_bridge(
     Ok(())
 }
 
-fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: NodeHandle) {
+fn seed_bridge_node(
+    doc: &NanaTreeDocument,
+    bridge: &mut MessageBridge,
+    node: NodeHandle,
+) -> Result<(), JsException> {
     let id = widget_id(node);
     if bridge.contains(id) {
-        return;
+        return Ok(());
     }
     match doc.node_kind(node) {
         crate::tree::DomNodeKind::Element => {
@@ -1615,19 +1631,19 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
                 Some(props.class_names.join(" "))
             };
             let input_type = props.attrs.get("type").cloned();
-            let kind = resolve_kind_from_hints(
+            let kind = host_tag_kind(
+                doc,
                 &tag,
                 class.as_deref(),
                 (!props.role.is_empty()).then_some(props.role.as_str()),
                 input_type.as_deref(),
-            )
-            .unwrap_or(WidgetKind::Column);
+            )?;
             bridge.register(id, kind, props);
         }
         crate::tree::DomNodeKind::Text => {
             let label = doc.text_content(node).unwrap_or_default();
             if label.trim().is_empty() {
-                return;
+                return Ok(());
             }
             bridge.register(
                 id,
@@ -1640,6 +1656,7 @@ fn seed_bridge_node(doc: &NanaTreeDocument, bridge: &mut MessageBridge, node: No
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Inclusive sibling range under `parent` from `first` through `last`.
@@ -2172,7 +2189,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_nana_button_tag_is_not_a_button() {
+    fn unknown_and_retired_tags_are_errors() {
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
         let bridge = Arc::new(Mutex::new(MessageBridge::new()));
         let mut api = HostApiRegistry::new();
@@ -2182,14 +2199,35 @@ mod tests {
             Arc::clone(&bridge),
             shared_web_api_state(),
         );
-        let id = api
+        let retired = api
             .call("createElement", &[HostValue::string("nana-button")])
-            .unwrap()
-            .as_f64()
-            .unwrap() as u64;
-        let widget = bridge.lock().unwrap().get(id).cloned().expect("node");
+            .expect_err("retired HTML alias must not become a layout box");
+        assert_eq!(retired.message, "retired tag `nana-button`; use `button`");
+        let unknown = api
+            .call("createElement", &[HostValue::string("foo-bar")])
+            .expect_err("unregistered custom tag must not become a layout box");
+        assert_eq!(unknown.message, "unknown tag: foo-bar");
+        let article = api
+            .call("createElement", &[HostValue::string("article")])
+            .unwrap();
+        let html = api
+            .call(
+                "patchProp",
+                &[
+                    article,
+                    HostValue::string("innerHTML"),
+                    HostValue::string("<foo-bar></foo-bar>"),
+                ],
+            )
+            .expect_err("v-html unknown tags must not become layout boxes");
+        assert_eq!(html.message, "unknown tag: foo-bar");
+        let stack = api
+            .call("createElement", &[HostValue::string("stack")])
+            .expect("registered Stack tag");
+        let id = stack.as_f64().unwrap() as u64;
+        let widget = bridge.lock().unwrap().get(id).cloned().expect("stack");
         assert_eq!(widget.kind, WidgetKind::Column);
-        assert_eq!(widget.props.element_tag, "nana-button");
+        assert_eq!(widget.props.element_tag, "stack");
     }
 
     #[test]
