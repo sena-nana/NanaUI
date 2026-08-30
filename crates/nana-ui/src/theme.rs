@@ -171,7 +171,7 @@ impl ThemeTokens {
         if !native_material {
             return self;
         }
-        let opacity = normalize_backdrop_opacity(opacity);
+        let opacity = AppearanceSettings::clamp_backdrop_opacity(opacity);
         match target {
             BackdropTarget::Sidebar => {
                 self.colors.surface.a = opacity;
@@ -189,21 +189,24 @@ impl ThemeTokens {
     }
 }
 
-fn normalize_backdrop_opacity(opacity: f32) -> f32 {
-    if opacity.is_finite() {
-        opacity.clamp(
-            AppearanceSettings::MIN_BACKDROP_OPACITY,
-            AppearanceSettings::MAX_BACKDROP_OPACITY,
-        )
-    } else {
-        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
-    }
-}
-
 impl From<Colors> for ThemeTokens {
     fn from(colors: Colors) -> Self {
         Self::new(colors, UI_METRICS)
     }
+}
+
+/// Install Style Model tokens on a Runtime document after applying window material.
+pub fn install_theme_tokens(
+    context: &mut nana_ui_runtime::AppContext,
+    mode: ThemeMode,
+    tokens: ThemeTokens,
+) -> Result<bool, nana_ui_runtime::FrameworkError> {
+    context.set_style_tokens(
+        mode,
+        tokens.metrics,
+        tokens.colors.to_palette(),
+        tokens.titlebar,
+    )
 }
 
 /// Token helpers for [`ThemeMode`].

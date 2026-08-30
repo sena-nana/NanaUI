@@ -135,6 +135,9 @@ pub enum SemanticColorRole {
     Danger,
     DangerSoftHover,
     DangerSoftPressed,
+    /// Chrome strip. Defaults to Surface; backdrop can keep it opaque while
+    /// sidebar Surface is translucent.
+    Titlebar,
 }
 
 impl SemanticColorRole {
@@ -178,6 +181,7 @@ impl SemanticColorRole {
             "danger" | "error" => Self::Danger,
             "danger-soft-hover" => Self::DangerSoftHover,
             "danger-soft-pressed" => Self::DangerSoftPressed,
+            "titlebar" | "title-bar" => Self::Titlebar,
             _ => return None,
         })
     }
@@ -327,24 +331,49 @@ impl SemanticPalette {
                 a: 0.22,
                 ..self.danger
             },
+            SemanticColorRole::Titlebar => self.surface,
         }
     }
 }
 
 /// Index of Style Model pieces that already live in this crate.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StyleModelRef {
     pub theme_mode: ThemeMode,
     pub metrics: ThemeMetrics,
     pub palette: SemanticPalette,
+    pub titlebar: SemanticColor,
 }
 
 impl StyleModelRef {
     pub const fn new(theme_mode: ThemeMode) -> Self {
+        let palette = SemanticPalette::for_mode(theme_mode);
         Self {
             theme_mode,
             metrics: UI_METRICS,
-            palette: SemanticPalette::for_mode(theme_mode),
+            titlebar: palette.surface,
+            palette,
+        }
+    }
+
+    pub const fn with_tokens(
+        theme_mode: ThemeMode,
+        metrics: ThemeMetrics,
+        palette: SemanticPalette,
+        titlebar: SemanticColor,
+    ) -> Self {
+        Self {
+            theme_mode,
+            metrics,
+            palette,
+            titlebar,
+        }
+    }
+
+    pub const fn color(self, role: SemanticColorRole) -> SemanticColor {
+        match role {
+            SemanticColorRole::Titlebar => self.titlebar,
+            other => self.palette.get(other),
         }
     }
 
@@ -403,6 +432,19 @@ mod tests {
     }
 
     #[test]
+    fn style_model_ref_titlebar_stays_independent_of_surface_alpha() {
+        let mut palette = SemanticPalette::dark();
+        palette.surface.a = 0.5;
+        let mut titlebar = palette.surface;
+        titlebar.a = 1.0;
+        let model =
+            StyleModelRef::with_tokens(ThemeMode::Dark, crate::UI_METRICS, palette, titlebar);
+        assert!((model.color(SemanticColorRole::Surface).a - 0.5).abs() < f32::EPSILON);
+        assert!((model.color(SemanticColorRole::Titlebar).a - 1.0).abs() < f32::EPSILON);
+        assert!((model.palette.get(SemanticColorRole::Titlebar).a - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn known_css_token_maps_to_role_hex_does_not() {
         assert_eq!(
             SemanticColorRole::from_css_token_name("accent"),
@@ -414,6 +456,10 @@ mod tests {
         );
         assert_eq!(SemanticColorRole::from_css_token_name("#e74c3c"), None);
         assert_eq!(SemanticColorRole::from_css_token_name("rgb(1,2,3)"), None);
+        assert_eq!(
+            SemanticColorRole::from_css_token_name("titlebar"),
+            Some(SemanticColorRole::Titlebar)
+        );
     }
 
     #[test]

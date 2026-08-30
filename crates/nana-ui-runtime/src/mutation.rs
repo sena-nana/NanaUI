@@ -42,6 +42,12 @@ pub enum UiMutation {
     SetTheme {
         mode: ThemeMode,
     },
+    SetStyleTokens {
+        mode: ThemeMode,
+        metrics: nana_ui_core::ThemeMetrics,
+        palette: nana_ui_core::SemanticPalette,
+        titlebar: nana_ui_core::SemanticColor,
+    },
     SetText {
         id: StableNodeId,
         text: TextContent,
@@ -176,6 +182,21 @@ impl MutationQueue {
 
     pub fn set_theme(&mut self, mode: ThemeMode) {
         self.mutations.push(UiMutation::SetTheme { mode });
+    }
+
+    pub fn set_style_tokens(
+        &mut self,
+        mode: ThemeMode,
+        metrics: nana_ui_core::ThemeMetrics,
+        palette: nana_ui_core::SemanticPalette,
+        titlebar: nana_ui_core::SemanticColor,
+    ) {
+        self.mutations.push(UiMutation::SetStyleTokens {
+            mode,
+            metrics,
+            palette,
+            titlebar,
+        });
     }
 
     pub fn set_text(&mut self, id: StableNodeId, text: TextContent) {

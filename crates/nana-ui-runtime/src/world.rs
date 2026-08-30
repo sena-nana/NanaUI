@@ -695,6 +695,32 @@ impl UiWorld {
         self.style_model.metrics
     }
 
+    pub fn style_model(&self) -> StyleModelRef {
+        self.style_model
+    }
+
+    fn apply_style_model(&mut self, next: StyleModelRef) {
+        if self.style_model == next {
+            return;
+        }
+        let previous_metrics = self.style_model.metrics;
+        self.style_model = next;
+        self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+        let mut bits = DirtyMask::RENDER;
+        if self.style_model.metrics != previous_metrics {
+            bits |= DirtyMask::LAYOUT;
+        }
+        let mut ids = Vec::new();
+        for roots in self.live_document_roots.values() {
+            for &root in roots {
+                ids.extend(self.subtree_ids(root));
+            }
+        }
+        for id in ids {
+            self.mark(id, bits);
+        }
+    }
+
     pub fn event_route(&self, target: StableNodeId) -> Option<EventRoute> {
         if !self.is_mounted(target) {
             return None;
@@ -2744,26 +2770,17 @@ impl UiWorld {
                 }
             }
             UiMutation::SetTheme { mode } => {
-                if self.style_model.theme_mode != *mode {
-                    let previous_metrics = self.style_model.metrics;
-                    self.style_model = StyleModelRef::new(*mode);
-                    self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
-                    // Palette roles are resolved at extract from SemanticColorRole;
-                    // skip STYLE so a theme swap does not restyle the live tree.
-                    let mut bits = DirtyMask::RENDER;
-                    if self.style_model.metrics != previous_metrics {
-                        bits |= DirtyMask::LAYOUT;
-                    }
-                    let mut ids = Vec::new();
-                    for roots in self.live_document_roots.values() {
-                        for &root in roots {
-                            ids.extend(self.subtree_ids(root));
-                        }
-                    }
-                    for id in ids {
-                        self.mark(id, bits);
-                    }
-                }
+                self.apply_style_model(StyleModelRef::new(*mode));
+            }
+            UiMutation::SetStyleTokens {
+                mode,
+                metrics,
+                palette,
+                titlebar,
+            } => {
+                self.apply_style_model(StyleModelRef::with_tokens(
+                    *mode, *metrics, *palette, *titlebar,
+                ));
             }
             UiMutation::SetText { id, text } => {
                 *self.component_mut::<TextContent>(*id) = text.clone();
@@ -3203,7 +3220,7 @@ impl UiWorld {
             .map(|span| ExtractedTextSpan {
                 start: span.start,
                 end: span.end,
-                color: self.style_model.palette.get(span.color).as_rgba_array(),
+                color: self.style_model.color(span.color).as_rgba_array(),
             })
             .collect()
     }
@@ -4578,7 +4595,7 @@ impl UiWorld {
                             height: value_height,
                         },
                         content: Arc::clone(value),
-                        color: Some(self.style_model.palette.get(*value_role).as_rgba_array()),
+                        color: Some(self.style_model.color(*value_role).as_rgba_array()),
                         font_size: value_size,
                         font_weight: Some(*value_weight),
                     },
@@ -5466,7 +5483,6 @@ impl UiWorld {
     }
 
     fn inherited_palette_color(&self, mut parent: Option<StableNodeId>) -> Option<[f32; 4]> {
-        let palette = self.style_model.palette;
         while let Some(id) = parent {
             let local = self.component::<NodeStyle>(id);
             if let Some(color) = local.layout.color {
@@ -5474,7 +5490,7 @@ impl UiWorld {
             }
             let paint = self.semantic_paint(id, local);
             if let Some(role) = paint.foreground {
-                return Some(palette.get(role).as_rgba_array());
+                return Some(self.style_model.color(role).as_rgba_array());
             }
             parent = self.component::<Hierarchy>(id).parent;
         }
@@ -5494,7 +5510,6 @@ impl UiWorld {
         let local = self.component::<NodeStyle>(id);
         let paint = self.semantic_paint(id, local);
         let layout = local.layout.as_ref();
-        let palette = self.style_model.palette;
         let parent = self.component::<Hierarchy>(id).parent;
         let inherited_foreground = parent
             .map(|parent| self.component::<ResolvedStyle>(parent).0.foreground)
@@ -5503,18 +5518,20 @@ impl UiWorld {
         let color = layout.color.or_else(|| {
             paint
                 .foreground
-                .map(|role| palette.get(role).as_rgba_array())
+                .map(|role| self.style_model.color(role).as_rgba_array())
                 .or(inherited_color)
-                .or_else(|| Some(palette.get(foreground).as_rgba_array()))
+                .or_else(|| Some(self.style_model.color(foreground).as_rgba_array()))
         });
         let background = layout.background.or_else(|| {
             paint
                 .background
-                .map(|role| palette.get(role).as_rgba_array())
+                .map(|role| self.style_model.color(role).as_rgba_array())
         });
-        let border_color = layout
-            .resolved_border_color()
-            .or_else(|| paint.border.map(|role| palette.get(role).as_rgba_array()));
+        let border_color = layout.resolved_border_color().or_else(|| {
+            paint
+                .border
+                .map(|role| self.style_model.color(role).as_rgba_array())
+        });
         (foreground, color, background, border_color)
     }
 
@@ -6935,7 +6952,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                     self.styles.insert(*id, style.clone());
                 }
-                UiMutation::SetTheme { .. } => {}
+                UiMutation::SetTheme { .. } | UiMutation::SetStyleTokens { .. } => {}
                 UiMutation::SetText { id, .. } => {
                     self.node(*id)?;
                 }
@@ -11704,6 +11721,85 @@ mod tests {
                     .accent
                     .as_rgba_array()
             )
+        );
+    }
+
+    #[test]
+    fn style_tokens_drive_surface_background_and_titlebar_extract_alphas() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "sidebar".into(),
+            },
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                background: Some(SemanticColorRole::Surface),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "main".into() },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                background: Some(SemanticColorRole::Background),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element { tag: "bar".into() },
+        );
+        queue.set_style(
+            node(3),
+            NodeStyle {
+                background: Some(SemanticColorRole::Titlebar),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+
+        let mut palette = SemanticPalette::dark();
+        palette.surface.a = 0.5;
+        let mut titlebar = palette.surface;
+        titlebar.a = 1.0;
+        let mut tokens = MutationQueue::new();
+        tokens.set_style_tokens(ThemeMode::Dark, nana_ui_core::UI_METRICS, palette, titlebar);
+        world.commit(tokens).unwrap();
+        let work = world.take_system_work();
+        assert!(work.style.is_empty());
+        let extracted = world.extract_nodes(&[node(1), node(2), node(3)]);
+        assert!(
+            (extracted[0].style.background.unwrap()[3] - 0.5).abs() < f32::EPSILON,
+            "sidebar Surface follows token alpha"
+        );
+        assert!(
+            (extracted[1].style.background.unwrap()[3] - 1.0).abs() < f32::EPSILON,
+            "main Background stays opaque for sidebar target"
+        );
+        assert!(
+            (extracted[2].style.background.unwrap()[3] - 1.0).abs() < f32::EPSILON,
+            "titlebar stays opaque when follows=false"
+        );
+
+        let mut reset = MutationQueue::new();
+        reset.set_theme(ThemeMode::Dark);
+        world.commit(reset).unwrap();
+        let restored = world.extract_nodes(&[node(1)])[0].style.background.unwrap()[3];
+        assert!(
+            (restored - 1.0).abs() < f32::EPSILON,
+            "set_theme restores opaque mode defaults"
         );
     }
 

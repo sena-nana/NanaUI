@@ -209,6 +209,7 @@ impl SidebarFrame {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
+        layout.background = None;
         layout.direction = Some(layout.direction.unwrap_or(FlexDirection::Column));
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(layout.width.unwrap_or(LengthSpec::Fill));
@@ -1395,6 +1396,8 @@ impl ComponentView for SidebarFooterButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use crate::{AppContext, DocumentId, Entity, IconButton, List, ListItem, StandardVisual, Text};
 
     fn document() -> DocumentId {
@@ -1491,6 +1494,32 @@ mod tests {
                 .layout
                 .overflow_y
                 .scrolls()
+        );
+    }
+
+    #[test]
+    fn frame_drops_css_layout_background() {
+        let mut context = AppContext::new();
+        let mut layout = nana_ui_core::LayoutStyle::default();
+        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        let frame = context
+            .create_component(
+                document(),
+                SidebarFrame::new().style(NodeStyle {
+                    layout: Arc::new(layout),
+                    ..NodeStyle::default()
+                }),
+            )
+            .unwrap();
+        assert!(
+            context
+                .world()
+                .node_style(frame.stable_id())
+                .unwrap()
+                .layout
+                .background
+                .is_none(),
+            "CSS --bg-elev must not cover the parent Surface region"
         );
     }
 
