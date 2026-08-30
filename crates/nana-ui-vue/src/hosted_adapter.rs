@@ -11,7 +11,8 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, window_material_effect,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, install_theme_tokens,
+    window_material_effect,
 };
 use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -20,7 +21,7 @@ use nana_ui_scene::RuntimeDocument;
 use crate::{
     BridgeEvent, FileDragEventKind, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime,
-    VueWindowId, WheelInput, WindowLifecycleEvent,
+    VueWindowId, WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
 };
 
 thread_local! {
@@ -799,6 +800,18 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             .unwrap_or(nana_ui::MaterialEffect::Solid)
     }
 
+    fn appearance_backdrop_opacity(&self) -> f32 {
+        self.runtime
+            .vue()
+            .host(VueWindowId::PRIMARY)
+            .and_then(|host| {
+                host.lock()
+                    .ok()
+                    .map(|guard| guard.appearance().backdrop_opacity())
+            })
+            .unwrap_or(nana_ui::AppearanceSettings::DEFAULT_BACKDROP_OPACITY)
+    }
+
     fn host_textures(&self, id: WindowId) -> Option<HostTextureRegistry> {
         self.runtime.host_textures_for(id)
     }
@@ -806,9 +819,20 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     fn prepare_window_frame(
         &mut self,
         id: WindowId,
-        _context: &RuntimeProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) {
         self.sync_documents();
+        let appearance = self
+            .runtime
+            .vue()
+            .host(VueWindowId(id.0))
+            .and_then(|host| host.lock().ok().map(|guard| guard.appearance()));
+        let native = context.material().is_native();
+        let theme = self.theme;
+        if let (Some(appearance), Some(document)) = (appearance, self.documents.get(&id)) {
+            let tokens = theme_tokens_from_appearance(theme, &appearance, native);
+            let _ = install_theme_tokens(document.get_mut().context_mut(), theme, tokens);
+        }
         self.runtime.prepare_runtime_window(id);
     }
 

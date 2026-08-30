@@ -290,6 +290,10 @@ pub trait RuntimeProgram: Sized + 'static {
         crate::MaterialEffect::Solid
     }
 
+    fn appearance_backdrop_opacity(&self) -> f32 {
+        nana_ui_core::AppearanceSettings::DEFAULT_BACKDROP_OPACITY
+    }
+
     /// Product default: attach an existing sampleable texture to the tree.
     ///
     /// Pair with [`crate::GpuTextureView`] on the same slot, then update the

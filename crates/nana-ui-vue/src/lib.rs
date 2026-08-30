@@ -285,6 +285,24 @@ fn hosted_material_support_key() -> &'static str {
     }
 }
 
+/// Build L3 [`nana_ui::ThemeTokens`] from Appearance + native material outcome.
+#[cfg(feature = "scene-view")]
+pub fn theme_tokens_from_appearance(
+    theme: nana_ui::ThemeMode,
+    appearance: &nana_ui::AppearanceSettings,
+    native_material: bool,
+) -> nana_ui::ThemeTokens {
+    use nana_ui::ThemeModeExt;
+    nana_ui::ThemeTokens::new(theme.colors(), appearance.metrics())
+        .with_workspace_corners(appearance.workspace_corners_enabled())
+        .with_backdrop(
+            native_material,
+            appearance.backdrop_target(),
+            appearance.backdrop_opacity(),
+            appearance.titlebar_follows_sidebar(),
+        )
+}
+
 /// Build L3 [`nana_ui::ThemeTokens`] from a semantic snapshot + native material flag.
 ///
 /// Applies Appearance `backdrop_*` / `titlebar_follows_sidebar` into region alphas.
@@ -293,15 +311,7 @@ pub fn theme_tokens_from_snapshot(
     snap: &SemanticSnapshot,
     native_material: bool,
 ) -> nana_ui::ThemeTokens {
-    use nana_ui::ThemeModeExt;
-    nana_ui::ThemeTokens::new(snap.theme.colors(), snap.appearance.metrics())
-        .with_workspace_corners(snap.appearance.workspace_corners_enabled())
-        .with_backdrop(
-            native_material,
-            snap.appearance.backdrop_target(),
-            snap.appearance.backdrop_opacity(),
-            snap.appearance.titlebar_follows_sidebar(),
-        )
+    theme_tokens_from_appearance(snap.theme, &snap.appearance, native_material)
 }
 
 /// Host → JS window/document lifecycle events (shim EventTarget).

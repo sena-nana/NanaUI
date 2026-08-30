@@ -288,6 +288,7 @@ fn initialize<Program: RuntimeProgram>(
         last_theme,
         settings.transparent,
         last_material_mode,
+        AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
     );
     let mut graphics = pollster::block_on(HostedGpuContext::new(
         Arc::clone(&window),
@@ -329,6 +330,7 @@ fn initialize<Program: RuntimeProgram>(
         last_theme,
         settings.transparent,
         last_material_mode,
+        program.appearance_backdrop_opacity(),
     );
     graphics
         .apply_alpha_mode(window_wants_transparent_surface(
@@ -1131,6 +1133,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.last_theme,
             settings.transparent,
             self.last_material_mode,
+            self.program.appearance_backdrop_opacity(),
         );
         let surface = self
             .graphics
@@ -1256,6 +1259,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.last_theme,
             self.settings.transparent,
             self.last_material_mode,
+            self.program.appearance_backdrop_opacity(),
         );
         match pollster::block_on(HostedGpuContext::new(
             window,
@@ -1285,6 +1289,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                         self.last_theme,
                         host.settings.transparent,
                         self.last_material_mode,
+                        self.program.appearance_backdrop_opacity(),
                     );
                     match graphics.create_surface(
                         window,
@@ -1364,6 +1369,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.last_theme,
             self.settings.transparent,
             self.last_material_mode,
+            self.program.appearance_backdrop_opacity(),
         );
         let mut alpha_error = self
             .graphics
@@ -1379,6 +1385,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.last_theme,
                 host.settings.transparent,
                 self.last_material_mode,
+                self.program.appearance_backdrop_opacity(),
             );
             let want_transparent = window_wants_transparent_surface(
                 host.settings.transparent,
@@ -2067,13 +2074,14 @@ fn apply_scene_material(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
     requested: crate::MaterialEffect,
+    backdrop_opacity: f32,
 ) -> MaterialOutcome {
     let appearance = match theme {
         crate::ThemeMode::Dark => Appearance::Dark,
         crate::ThemeMode::Light => Appearance::Light,
     };
     let (red, green, blue, _) = theme.palette().background.to_u8_rgba();
-    let alpha = (AppearanceSettings::DEFAULT_BACKDROP_OPACITY * 255.0 + 0.5) as u8;
+    let alpha = (AppearanceSettings::clamp_backdrop_opacity(backdrop_opacity) * 255.0 + 0.5) as u8;
     apply_hosted_system_material(
         window,
         requested,
@@ -2091,9 +2099,10 @@ fn apply_window_surface(
     theme: crate::ThemeMode,
     settings_transparent: bool,
     appearance: crate::MaterialEffect,
+    backdrop_opacity: f32,
 ) -> MaterialOutcome {
     let requested = window_surface_effect(settings_transparent, appearance);
-    let material = apply_scene_material(window, theme, requested);
+    let material = apply_scene_material(window, theme, requested, backdrop_opacity);
     apply_window_transparency(window, requested);
     material
 }
