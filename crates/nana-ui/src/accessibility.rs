@@ -9,14 +9,18 @@ use nana_ui_runtime::{
     SelectionOrientation, StableNodeId,
 };
 
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+use accesskit::DeactivationHandler;
 #[cfg(not(target_os = "android"))]
-use accesskit::{ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler};
-#[cfg(not(target_os = "android"))]
-use accesskit_winit::Adapter;
+use accesskit::{ActionHandler, ActionRequest, ActivationHandler};
 #[cfg(not(target_os = "android"))]
 use std::sync::{Arc, Mutex};
-#[cfg(not(target_os = "android"))]
-use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::Window};
 
 /// Stateful conversion from NanaUI's backend-neutral semantics to AccessKit.
 ///
@@ -399,7 +403,7 @@ impl ActivationHandler for CurrentTree {
 #[cfg(not(target_os = "android"))]
 struct QueuedActions {
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
-    window: Arc<Window>,
+    window: Arc<dyn winit::window::Window>,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -428,19 +432,236 @@ impl ActionHandler for QueuedActions {
     }
 }
 
-#[cfg(not(target_os = "android"))]
-struct IgnoreDeactivation;
+#[cfg(target_os = "windows")]
+fn native_adapter(
+    window: &Arc<dyn winit::window::Window>,
+    activation: CurrentTree,
+    action: QueuedActions,
+) -> accesskit_windows::SubclassingAdapter {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-#[cfg(not(target_os = "android"))]
-impl DeactivationHandler for IgnoreDeactivation {
+    let handle = window
+        .window_handle()
+        .expect("AccessKit requires a live window handle");
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        panic!("hosted AccessKit on Windows requires an HWND");
+    };
+    accesskit_windows::SubclassingAdapter::new(
+        accesskit_windows::HWND(handle.hwnd.get() as *mut _),
+        activation,
+        action,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn native_adapter(
+    window: &Arc<dyn winit::window::Window>,
+    activation: CurrentTree,
+    action: QueuedActions,
+) -> accesskit_macos::SubclassingAdapter {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window
+        .window_handle()
+        .expect("AccessKit requires a live window handle");
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        panic!("hosted AccessKit on macOS requires an NSView");
+    };
+    unsafe { accesskit_macos::SubclassingAdapter::new(handle.ns_view.as_ptr(), activation, action) }
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+struct UnixDeactivation;
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+impl DeactivationHandler for UnixDeactivation {
     fn deactivate_accessibility(&mut self) {}
+}
+
+/// Wayland cannot report outer position; X11 can. `surface_position` is relative
+/// to the window frame, so inner desktop origin is outer + surface origin.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn unix_root_window_bounds(
+    window: &dyn winit::window::Window,
+    outer_position: winit::dpi::PhysicalPosition<i32>,
+    inner_size: winit::dpi::PhysicalSize<u32>,
+) -> (Rect, Rect) {
+    let surface_position = window.surface_position();
+    let inner_position = winit::dpi::PhysicalPosition::new(
+        outer_position.x + surface_position.x,
+        outer_position.y + surface_position.y,
+    );
+    let outer_origin: (f64, f64) = outer_position.cast::<f64>().into();
+    let outer_size: (f64, f64) = window.outer_size().cast::<f64>().into();
+    let inner_origin: (f64, f64) = inner_position.cast::<f64>().into();
+    let inner_size: (f64, f64) = inner_size.cast::<f64>().into();
+    (
+        Rect::from_origin_size(outer_origin, outer_size),
+        Rect::from_origin_size(inner_origin, inner_size),
+    )
+}
+
+/// AT-SPI attaches over D-Bus; there is no HWND/NSView-style window handle.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn native_adapter(
+    _window: &Arc<dyn winit::window::Window>,
+    activation: CurrentTree,
+    action: QueuedActions,
+) -> accesskit_unix::Adapter {
+    accesskit_unix::Adapter::new(activation, action, UnixDeactivation)
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "android",
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+)))]
+fn native_adapter(
+    _window: &Arc<dyn winit::window::Window>,
+    _activation: CurrentTree,
+    _action: QueuedActions,
+) -> Option<()> {
+    None
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn raise_accesskit_update<A>(adapter: &mut A, update: TreeUpdate)
+where
+    A: AccessKitUpdate,
+{
+    if let Some(events) = adapter.update_if_active(|| update) {
+        events.raise();
+    }
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn raise_accesskit_update(adapter: &mut accesskit_unix::Adapter, update: TreeUpdate) {
+    adapter.update_if_active(|| update);
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "android",
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+)))]
+fn raise_accesskit_update(_adapter: &mut Option<()>, _update: TreeUpdate) {}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+trait AccessKitUpdate {
+    type Events: RaiseEvents;
+    fn update_if_active(
+        &mut self,
+        update_factory: impl FnOnce() -> TreeUpdate,
+    ) -> Option<Self::Events>;
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+trait RaiseEvents {
+    fn raise(self);
+}
+
+#[cfg(target_os = "windows")]
+impl AccessKitUpdate for accesskit_windows::SubclassingAdapter {
+    type Events = accesskit_windows::QueuedEvents;
+    fn update_if_active(
+        &mut self,
+        update_factory: impl FnOnce() -> TreeUpdate,
+    ) -> Option<Self::Events> {
+        accesskit_windows::SubclassingAdapter::update_if_active(self, update_factory)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl RaiseEvents for accesskit_windows::QueuedEvents {
+    fn raise(self) {
+        accesskit_windows::QueuedEvents::raise(self);
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl AccessKitUpdate for accesskit_macos::SubclassingAdapter {
+    type Events = accesskit_macos::QueuedEvents;
+    fn update_if_active(
+        &mut self,
+        update_factory: impl FnOnce() -> TreeUpdate,
+    ) -> Option<Self::Events> {
+        accesskit_macos::SubclassingAdapter::update_if_active(self, update_factory)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl RaiseEvents for accesskit_macos::QueuedEvents {
+    fn raise(self) {
+        accesskit_macos::QueuedEvents::raise(self);
+    }
 }
 
 /// Per-window native adapter. Only actions with a backend-neutral hosted path
 /// are advertised and accepted.
 #[cfg(not(target_os = "android"))]
 pub(crate) struct HostedAccessibility {
-    adapter: Adapter,
+    #[cfg(target_os = "windows")]
+    adapter: accesskit_windows::SubclassingAdapter,
+    #[cfg(target_os = "macos")]
+    adapter: accesskit_macos::SubclassingAdapter,
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    adapter: accesskit_unix::Adapter,
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    adapter: Option<()>,
     projector: AccessibilityProjector,
     current_tree: Arc<Mutex<TreeUpdate>>,
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
@@ -449,8 +670,7 @@ pub(crate) struct HostedAccessibility {
 #[cfg(not(target_os = "android"))]
 impl HostedAccessibility {
     pub(crate) fn new(
-        event_loop: &ActiveEventLoop,
-        window: Arc<Window>,
+        window: Arc<dyn winit::window::Window>,
         generation: Option<u64>,
         nodes: Vec<AccessibilityNode>,
         interactive: bool,
@@ -460,16 +680,11 @@ impl HostedAccessibility {
             AccessibilityProjector::new_at_generation(nodes, interactive, scale_factor, generation);
         let current_tree = Arc::new(Mutex::new(initial_tree));
         let requests = Arc::new(Mutex::new(VecDeque::new()));
-        let adapter = Adapter::with_direct_handlers(
-            event_loop,
-            window.as_ref(),
-            CurrentTree(Arc::clone(&current_tree)),
-            QueuedActions {
-                requests: Arc::clone(&requests),
-                window: Arc::clone(&window),
-            },
-            IgnoreDeactivation,
-        );
+        let actions = QueuedActions {
+            requests: Arc::clone(&requests),
+            window: Arc::clone(&window),
+        };
+        let adapter = native_adapter(&window, CurrentTree(Arc::clone(&current_tree)), actions);
         Self {
             adapter,
             projector,
@@ -482,8 +697,44 @@ impl HostedAccessibility {
         self.projector.generation
     }
 
-    pub(crate) fn process_event(&mut self, window: &Window, event: &WindowEvent) {
-        self.adapter.process_event(window, event);
+    pub(crate) fn process_event(
+        &mut self,
+        window: &dyn winit::window::Window,
+        event: &winit::event::WindowEvent,
+    ) {
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        match event {
+            winit::event::WindowEvent::Moved(outer_position) => {
+                let (outer, inner) =
+                    unix_root_window_bounds(window, *outer_position, window.surface_size());
+                self.adapter.set_root_window_bounds(outer, inner);
+            }
+            winit::event::WindowEvent::SurfaceResized(inner_size) => {
+                let outer_position = window.outer_position().unwrap_or_default();
+                let (outer, inner) = unix_root_window_bounds(window, outer_position, *inner_size);
+                self.adapter.set_root_window_bounds(outer, inner);
+            }
+            winit::event::WindowEvent::Focused(is_focused) => {
+                self.adapter.update_window_focus_state(*is_focused);
+            }
+            _ => {}
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        )))]
+        {
+            let _ = (window, event);
+        }
     }
 
     pub(crate) fn scale_factor_changed(&self, scale_factor: f32) -> bool {
@@ -505,7 +756,7 @@ impl HostedAccessibility {
             if let Ok(mut current_tree) = self.current_tree.lock() {
                 *current_tree = self.projector.full_update();
             }
-            self.adapter.update_if_active(|| update);
+            raise_accesskit_update(&mut self.adapter, update);
         }
     }
 

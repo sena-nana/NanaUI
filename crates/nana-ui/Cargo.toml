@@ -39,14 +39,14 @@ gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster
 hosted = [
     "gpu",
     "dep:accesskit",
-    "dep:accesskit_winit",
+    "dep:accesskit_macos",
+    "dep:accesskit_unix",
+    "dep:accesskit_windows",
     "dep:android-activity",
     "dep:image",
     "dep:nana-app-icon",
     "dep:nana-window",
     "dep:raw-window-handle",
-    "dep:windows",
-    "dep:windows-sys",
     "dep:winit",
 ]
 
@@ -78,22 +78,14 @@ winit = { workspace = true, optional = true }
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
-accesskit_winit = { version = "0.33.2", optional = true }
+[target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = { version = "0.26.3", optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+accesskit_unix = { version = "0.22.1", optional = true, default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_WindowsAndMessaging",
-], optional = true }
-windows-sys = { workspace = true, optional = true, features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_Input_Pointer",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-] }
+accesskit_windows = { version = "0.34.0", optional = true }
 
 [[example]]
 name = "hosted-gpu-demo"

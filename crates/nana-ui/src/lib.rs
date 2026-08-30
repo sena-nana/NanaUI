@@ -60,8 +60,6 @@ pub mod tooltip;
 pub mod virtual_list;
 pub mod widgets;
 pub mod window_chrome;
-#[cfg(all(feature = "hosted", target_os = "windows"))]
-mod windows_pen;
 pub mod workspace;
 
 pub mod runtime;

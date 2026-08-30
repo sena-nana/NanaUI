@@ -48,8 +48,10 @@ url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 # Keep a single WGPU major version across NanaUI.
 wgpu = "30.0.0"
-# Hosted desktop windowing. crates.io winit 0.30, not the iced-rs fork.
-winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+# Hosted desktop windowing. winit 0.31-line git rev, not the iced-rs fork.
+# crates.io 0.31.0 stable is not required yet; pin exact sha (not floating master).
+# rwh_06 is always-on in 0.31; x11/wayland features are Linux-only optional backends.
+winit = { git = "https://github.com/rust-windowing/winit", rev = "874a1e31f194d11313c1ac133b28037b99db3e19", default-features = false, features = ["x11", "wayland", "wayland-dlopen"] }
 # Product JS engine. crates.io `v8` is the rusty_v8 successor package name.
 v8 = "150.4.0"
 tiny-skia = "0.11.4"
