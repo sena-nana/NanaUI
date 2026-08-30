@@ -49,7 +49,7 @@ impl HostedGpuResources {
 
 /// One window and surface attached to a shared hosted GPU context.
 pub struct HostedGpuSurface {
-    window: Arc<winit::window::Window>,
+    window: Arc<dyn winit::window::Window>,
     surface: wgpu::Surface<'static>,
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
@@ -57,7 +57,7 @@ pub struct HostedGpuSurface {
 }
 
 impl HostedGpuSurface {
-    pub fn window(&self) -> &Arc<winit::window::Window> {
+    pub fn window(&self) -> &Arc<dyn winit::window::Window> {
         &self.window
     }
 
@@ -71,17 +71,17 @@ impl HostedGpuSurface {
     }
 
     pub fn physical_size(&self) -> (u32, u32) {
-        let size = self.window.inner_size();
+        let size = self.window.surface_size();
         (size.width, size.height)
     }
 
     pub fn is_drawable(&self) -> bool {
-        let size = self.window.inner_size();
+        let size = self.window.surface_size();
         size.width > 0 && size.height > 0
     }
 
     pub fn resize(&mut self, resources: &HostedGpuResources) {
-        let size = self.window.inner_size();
+        let size = self.window.surface_size();
         if !surface_size_changed(
             (self.configuration.width, self.configuration.height),
             (size.width, size.height),
@@ -95,7 +95,7 @@ impl HostedGpuSurface {
 
     /// Apply size and live-resize present policy, then configure at most once.
     pub fn prepare_frame(&mut self, resources: &HostedGpuResources, live: bool) {
-        let size = self.window.inner_size();
+        let size = self.window.surface_size();
         let mut changed = self.apply_live_resize_policy(resources, live);
         if surface_size_changed(
             (self.configuration.width, self.configuration.height),
@@ -231,7 +231,7 @@ pub struct HostedDeviceLost {
 
 impl HostedGpuContext {
     pub async fn new(
-        window: Arc<winit::window::Window>,
+        window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
         want_transparent: bool,
     ) -> Result<Self, HostedGpuError> {
@@ -298,7 +298,7 @@ impl HostedGpuContext {
         })
     }
 
-    pub fn window(&self) -> &Arc<winit::window::Window> {
+    pub fn window(&self) -> &Arc<dyn winit::window::Window> {
         self.primary.window()
     }
 
@@ -381,7 +381,7 @@ impl HostedGpuContext {
 
     pub fn create_surface(
         &self,
-        window: Arc<winit::window::Window>,
+        window: Arc<dyn winit::window::Window>,
         want_transparent: bool,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         let surface = self
@@ -423,14 +423,14 @@ impl HostedGpuContext {
 }
 
 fn configure_surface(
-    window: Arc<winit::window::Window>,
+    window: Arc<dyn winit::window::Window>,
     surface: wgpu::Surface<'static>,
     format: wgpu::TextureFormat,
     capabilities: &wgpu::SurfaceCapabilities,
     resources: &HostedGpuResources,
     want_transparent: bool,
 ) -> HostedGpuSurface {
-    let size = window.inner_size();
+    let size = window.surface_size();
     let configuration = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,

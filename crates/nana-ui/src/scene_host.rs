@@ -3,8 +3,9 @@
 //! Paint goes through [`crate::SceneWgpuPainter`].
 
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::PathBuf;
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,22 +22,33 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialEffect, MaterialOutcome,
+    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialOutcome,
     apply_hosted_system_material, clear_system_material, prepare_client_chrome,
     resize_custom_frame, suppress_system_caption,
 };
 use winit::application::ApplicationHandler;
+use winit::cursor::CursorIcon;
+use winit::data_transfer::{DataTransferId, TypeHint};
+use winit::dpi::PhysicalPosition;
 use winit::event::{
-    ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent as WinitWindowEvent,
+    ButtonSource, ElementState, MouseButton, MouseScrollDelta, PointerKind, PointerSource,
+    WindowEvent as WinitWindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{
+    ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction, EventLoop, EventLoopProxy,
+};
+use winit::icon::{Icon, RgbaIcon};
 use winit::keyboard::ModifiersState;
+use winit::monitor::Fullscreen;
 #[cfg(target_os = "macos")]
-use winit::platform::macos::WindowAttributesExtMacOS;
+use winit::platform::macos::WindowAttributesMacOS;
 #[cfg(target_os = "windows")]
-use winit::platform::windows::{WindowAttributesExtWindows, WindowExtWindows};
+use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::{
+    ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
+};
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
@@ -63,30 +75,37 @@ const TASK_WORKERS: usize = 4;
 pub fn run_runtime_scene<Program: RuntimeProgram>(
     settings: RuntimeWindowSettings,
 ) -> Result<(), HostedRunError> {
-    let event_loop = EventLoop::<Program::Message>::with_user_event()
-        .build()
-        .map_err(HostedRunError::EventLoop)?;
+    let event_loop = EventLoop::new().map_err(HostedRunError::EventLoop)?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut runner = SceneRunner::<Program>::Loading {
+    let (message_tx, message_rx) = mpsc::channel();
+    let startup_failure = Arc::new(Mutex::new(None));
+    let runner = SceneRunner::<Program>::Loading {
         proxy: event_loop.create_proxy(),
+        message_tx,
+        message_rx,
         settings,
-        failure: None,
+        startup_failure: Arc::clone(&startup_failure),
     };
     event_loop
-        .run_app(&mut runner)
+        .run_app(runner)
         .map_err(HostedRunError::EventLoop)?;
-    runner.into_result()
+    match startup_failure.lock().ok().and_then(|guard| guard.clone()) {
+        Some(message) => Err(HostedRunError::Startup(message)),
+        None => Ok(()),
+    }
 }
 
 enum SceneRunner<Program: RuntimeProgram> {
     Loading {
-        proxy: EventLoopProxy<Program::Message>,
+        proxy: EventLoopProxy,
+        message_tx: Sender<Program::Message>,
+        message_rx: Receiver<Program::Message>,
         settings: RuntimeWindowSettings,
-        failure: Option<String>,
+        startup_failure: Arc<Mutex<Option<String>>>,
     },
     Ready(Box<SceneReady<Program>>),
     Finished {
-        failure: Option<String>,
+        startup_failure: Arc<Mutex<Option<String>>>,
     },
 }
 
@@ -99,8 +118,6 @@ struct SceneAuxiliary {
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
     accessibility_pending: Option<AccessibilityUpdate>,
-    #[cfg(target_os = "windows")]
-    pen_hook: crate::windows_pen::WindowsPenHook,
     size_move: LiveSizeMove,
 }
 
@@ -115,7 +132,9 @@ struct SceneReady<Program: RuntimeProgram> {
     graphics: HostedGpuContext,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     text: NanaTextShaper,
-    proxy: EventLoopProxy<Program::Message>,
+    proxy: EventLoopProxy,
+    message_tx: Sender<Program::Message>,
+    messages: Receiver<Program::Message>,
     tasks: SyncSender<Task<Program::Message>>,
     geometry: WindowGeometry,
     animation_clock: RuntimeAnimationClock,
@@ -127,8 +146,6 @@ struct SceneReady<Program: RuntimeProgram> {
     material: MaterialOutcome,
     auxiliary: HashMap<WindowId, SceneAuxiliary>,
     window_ids: HashMap<winit::window::WindowId, WindowId>,
-    #[cfg(target_os = "windows")]
-    pen_hook: crate::windows_pen::WindowsPenHook,
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeMode,
@@ -137,6 +154,7 @@ struct SceneReady<Program: RuntimeProgram> {
     ime_requests: HashMap<WindowId, TextInputRequest>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
+    startup_failure: Arc<Mutex<Option<String>>>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
     size_move: LiveSizeMove,
@@ -157,52 +175,72 @@ impl WindowChromeSession {
 }
 
 impl<Program: RuntimeProgram> SceneRunner<Program> {
-    fn into_result(self) -> Result<(), HostedRunError> {
-        let failure = match self {
-            Self::Loading { failure, .. } | Self::Finished { failure } => failure,
-            Self::Ready(_) => None,
+    fn fail(&mut self, event_loop: &dyn ActiveEventLoop, message: impl Into<String>) {
+        let slot = match self {
+            Self::Loading {
+                startup_failure, ..
+            }
+            | Self::Finished { startup_failure } => Arc::clone(startup_failure),
+            Self::Ready(ready) => Arc::clone(&ready.startup_failure),
         };
-        failure.map_or(Ok(()), |message| Err(HostedRunError::Startup(message)))
-    }
-
-    fn fail(&mut self, event_loop: &ActiveEventLoop, message: impl Into<String>) {
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(message.into());
+        }
         *self = Self::Finished {
-            failure: Some(message.into()),
+            startup_failure: slot,
         };
         event_loop.exit();
     }
 }
 
-impl<Program: RuntimeProgram> ApplicationHandler<Program::Message> for SceneRunner<Program> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let Self::Loading {
-            proxy,
-            settings,
-            failure,
-        } = self
-        else {
-            return;
-        };
-        if failure.is_some() {
-            event_loop.exit();
+impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !matches!(self, Self::Loading { .. }) {
             return;
         }
-        match initialize::<Program>(event_loop, proxy.clone(), settings.clone()) {
+        let Self::Loading {
+            proxy,
+            message_tx,
+            message_rx,
+            settings,
+            startup_failure,
+        } = std::mem::replace(
+            self,
+            Self::Finished {
+                startup_failure: Arc::new(Mutex::new(None)),
+            },
+        )
+        else {
+            unreachable!("checked Loading");
+        };
+        match initialize::<Program>(
+            event_loop,
+            proxy,
+            message_tx,
+            message_rx,
+            settings,
+            Arc::clone(&startup_failure),
+        ) {
             Ok(ready) => *self = Self::Ready(Box::new(ready)),
-            Err(error) => self.fail(event_loop, error),
+            Err(error) => {
+                *self = Self::Finished { startup_failure };
+                self.fail(event_loop, error);
+            }
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Self::Ready(ready) = self else {
             return;
         };
-        ready.process_message(event_loop, message);
+        while let Ok(message) = ready.messages.try_recv() {
+            ready.process_message(event_loop, message);
+        }
     }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         window_id: winit::window::WindowId,
         event: WinitWindowEvent,
     ) {
@@ -215,7 +253,7 @@ impl<Program: RuntimeProgram> ApplicationHandler<Program::Message> for SceneRunn
         ready.handle_window_event(event_loop, id, event);
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Self::Ready(ready) = self else {
             return;
         };
@@ -224,11 +262,14 @@ impl<Program: RuntimeProgram> ApplicationHandler<Program::Message> for SceneRunn
 }
 
 fn initialize<Program: RuntimeProgram>(
-    event_loop: &ActiveEventLoop,
-    proxy: EventLoopProxy<Program::Message>,
+    event_loop: &dyn ActiveEventLoop,
+    proxy: EventLoopProxy,
+    message_tx: Sender<Program::Message>,
+    message_rx: Receiver<Program::Message>,
     settings: RuntimeWindowSettings,
+    startup_failure: Arc<Mutex<Option<String>>>,
 ) -> Result<SceneReady<Program>, String> {
-    let window = Arc::new(
+    let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
             .create_window(scene_window_attributes(&settings).with_visible(false))
             .map_err(|error| format!("failed to create scene window: {error}"))?,
@@ -264,10 +305,11 @@ fn initialize<Program: RuntimeProgram>(
             format,
         ),
     );
-    let tasks = spawn_task_workers(proxy.clone());
-    let geometry = window_geometry(graphics.window());
+    let tasks = spawn_task_workers(message_tx.clone(), proxy.clone());
+    let geometry = window_geometry(graphics.window().as_ref());
     let context = program_context(
-        &proxy,
+        message_tx.clone(),
+        proxy.clone(),
         &graphics,
         WindowId::PRIMARY,
         geometry,
@@ -297,7 +339,6 @@ fn initialize<Program: RuntimeProgram>(
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
-            event_loop,
             Arc::clone(graphics.window()),
             accessibility_world_generation(&program, WindowId::PRIMARY),
             accessibility_snapshot(&program, WindowId::PRIMARY),
@@ -314,6 +355,8 @@ fn initialize<Program: RuntimeProgram>(
         painters,
         text: NanaTextShaper::default(),
         proxy,
+        message_tx,
+        messages: message_rx,
         tasks,
         geometry,
         animation_clock,
@@ -325,8 +368,6 @@ fn initialize<Program: RuntimeProgram>(
         material,
         auxiliary: HashMap::new(),
         window_ids,
-        #[cfg(target_os = "windows")]
-        pen_hook: crate::windows_pen::WindowsPenHook::install(window.as_ref())?,
         next_gpu_retry: None,
         render_suspended: false,
         last_theme,
@@ -335,6 +376,7 @@ fn initialize<Program: RuntimeProgram>(
         ime_requests: HashMap::new(),
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
+        startup_failure,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
         size_move: LiveSizeMove::install(window.as_ref())?,
@@ -371,7 +413,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn context_for(&self, id: WindowId) -> RuntimeProgramContext<Program::Message> {
         program_context(
-            &self.proxy,
+            self.message_tx.clone(),
+            self.proxy.clone(),
             &self.graphics,
             id,
             self.geometry_of(id),
@@ -381,7 +424,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         )
     }
 
-    fn process_message(&mut self, event_loop: &ActiveEventLoop, message: Program::Message) {
+    fn process_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Program::Message) {
         self.bind_after_present.insert(WindowId::PRIMARY);
         let update = self.program.update(message, &self.context());
         self.sync_appearance();
@@ -390,7 +433,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn handle_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         event: WinitWindowEvent,
     ) {
@@ -423,17 +466,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let Some(modal) = self.active_modal_child(id)
             && !allows_modal_parent_event(&event)
         {
-            #[cfg(target_os = "windows")]
-            let _ = self.take_windows_pen_events(id);
             self.focus_window(modal);
             return;
         }
-        #[cfg(target_os = "windows")]
-        self.dispatch_windows_pen_events(event_loop, id);
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
             self.input_mut(id).modifiers = modifiers.state();
         }
-        if let WinitWindowEvent::CursorMoved { position, .. } = &event {
+        if let WinitWindowEvent::PointerMoved { position, .. }
+        | WinitWindowEvent::PointerEntered { position, .. } = &event
+        {
             let scale = self.scale_factor(id);
             let point = position.to_logical::<f32>(f64::from(scale));
             self.input_mut(id).cursor = (point.x, point.y);
@@ -443,7 +484,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
-            if matches!(&event, WinitWindowEvent::CursorMoved { .. }) {
+            if matches!(&event, WinitWindowEvent::PointerMoved { .. }) {
                 self.sync_window_cursor(id);
             }
             if disposition.prevent_default || event_loop.exiting() {
@@ -475,7 +516,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
             }
-            WinitWindowEvent::Resized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
+            WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
                 self.request_redraw(id);
@@ -502,10 +543,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             WinitWindowEvent::Ime(ime) => {
                 self.handle_ime(event_loop, id, platform_ime_event(ime.clone()))
             }
-            WinitWindowEvent::HoveredFile(_)
-            | WinitWindowEvent::DroppedFile(_)
-            | WinitWindowEvent::HoveredFileCancelled => {
-                if let Some(window_event) = self.input_mut(id).map_file_window_event(&event, id) {
+            WinitWindowEvent::DragEntered { .. }
+            | WinitWindowEvent::DragPosition { .. }
+            | WinitWindowEvent::DragDropped { .. }
+            | WinitWindowEvent::DragLeft { .. }
+            | WinitWindowEvent::DataTransferReceived { .. } => {
+                if let Some(window_event) = self.handle_file_dnd(event_loop, id, &event) {
                     let update = self
                         .program
                         .window_event(window_event, &self.context_for(id));
@@ -518,7 +561,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn forward_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         event: &WinitWindowEvent,
     ) {
@@ -530,7 +573,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn handle_ime(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: ImeEvent) {
+    fn handle_ime(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: ImeEvent) {
         let window_event = WindowEvent::Ime {
             id,
             event: event.clone(),
@@ -577,7 +620,76 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.apply_ime_request(id);
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn handle_file_dnd(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        event: &WinitWindowEvent,
+    ) -> Option<WindowEvent> {
+        let scale = self.scale_factor(id);
+        match event {
+            WinitWindowEvent::DragEntered {
+                id: transfer,
+                position,
+            } => {
+                if let Some(position) = position {
+                    self.input_mut(id).set_cursor_physical(*position, scale);
+                }
+                if !dnd_advertises_files(event_loop, *transfer) {
+                    return None;
+                }
+                let _ = event_loop.set_valid_dnd_actions(*transfer, &[DndAction::Copy]);
+                let serial = event_loop
+                    .fetch_data_transfer(*transfer, &TypeHint::UriList)
+                    .ok();
+                self.input_mut(id).begin_file_drag(*transfer, serial);
+                self.input_mut(id).map_file_window_event(event, id)
+            }
+            WinitWindowEvent::DragPosition { position, .. } => {
+                self.input_mut(id).set_cursor_physical(*position, scale);
+                self.input_mut(id).map_file_window_event(event, id)
+            }
+            WinitWindowEvent::DragDropped { id: transfer, .. } => {
+                if !self.input_mut(id).pending_file_paths.is_empty() {
+                    return self.input_mut(id).map_file_window_event(event, id);
+                }
+                match event_loop.fetch_data_transfer(*transfer, &TypeHint::UriList) {
+                    Ok(serial) => {
+                        self.input_mut(id).wait_for_drop_data(*transfer, serial);
+                        None
+                    }
+                    Err(_) => self.input_mut(id).map_file_window_event(event, id),
+                }
+            }
+            WinitWindowEvent::DragLeft { .. } => {
+                self.input_mut(id).map_file_window_event(event, id)
+            }
+            WinitWindowEvent::DataTransferReceived {
+                id: transfer,
+                serial,
+                value,
+            } => {
+                if !self.input_mut(id).accepts_dnd_serial(*transfer, *serial) {
+                    return None;
+                }
+                match value.try_as_file_paths() {
+                    Ok(paths) => self.input_mut(id).ingest_file_paths(*transfer, paths, id),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Deadlock
+                        ) =>
+                    {
+                        None
+                    }
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let now = Instant::now();
         if self.graphics.take_device_lost()
             || self.next_gpu_retry.is_some_and(|deadline| now >= deadline)
@@ -643,7 +755,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         update
     }
 
-    fn wake(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
+    fn wake(&mut self, event_loop: &dyn ActiveEventLoop, now: Instant) {
         let mut update = self.drain_all_program_messages();
         update = update.merge(self.program.wake(now, &self.context()));
         for id in self.known_window_ids() {
@@ -676,7 +788,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.apply_update(event_loop, update, None);
     }
 
-    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+    fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         if self.render_suspended {
             return;
         }
@@ -838,7 +950,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn apply_update(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         update: RuntimeProgramUpdate,
         painting: Option<WindowId>,
     ) {
@@ -860,7 +972,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn apply_window_command(&mut self, event_loop: &ActiveEventLoop, command: WindowCommand) {
+    fn apply_window_command(&mut self, event_loop: &dyn ActiveEventLoop, command: WindowCommand) {
         let known = self.known_window_ids();
         match route_window_command(&command, &known) {
             RoutedWindowCommand::Ignore => {}
@@ -902,9 +1014,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     return;
                 };
                 if let Some(window) = self.window(id) {
-                    window.set_fullscreen(
-                        fullscreen.then_some(winit::window::Fullscreen::Borderless(None)),
-                    );
+                    window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
                 }
             }
             RoutedWindowCommand::SetMinimized(id) => {
@@ -978,7 +1088,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn open_window(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         settings: RuntimeWindowSettings,
     ) -> Result<WindowEvent, String> {
@@ -1000,7 +1110,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .parent
             .and_then(|parent| self.window(parent).cloned());
         let attributes = scene_aux_window_attributes(&settings, parent.as_deref())?;
-        let window = Arc::new(
+        let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
@@ -1031,12 +1141,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .map_err(|error| error.to_string())?;
         let format = surface.format();
         let _ = self.painter_mut(format);
-        #[cfg(target_os = "windows")]
-        let pen_hook = crate::windows_pen::WindowsPenHook::install(window.as_ref())?;
         #[cfg(not(target_os = "android"))]
         let accessibility = {
             Some(HostedAccessibility::new(
-                event_loop,
                 Arc::clone(&window),
                 accessibility_world_generation(&self.program, id),
                 accessibility_snapshot(&self.program, id),
@@ -1044,7 +1151,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 window.scale_factor() as f32,
             ))
         };
-        let geometry = window_geometry(&window);
+        let geometry = window_geometry(window.as_ref());
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         self.window_ids.insert(window.id(), id);
@@ -1059,8 +1166,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 #[cfg(not(target_os = "android"))]
                 accessibility,
                 accessibility_pending: None,
-                #[cfg(target_os = "windows")]
-                pen_hook,
                 size_move: LiveSizeMove::install(window.as_ref())?,
             },
         );
@@ -1074,7 +1179,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         Ok(WindowEvent::Ready { id, geometry })
     }
 
-    fn close_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+    fn close_window(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         if id == WindowId::PRIMARY {
             return;
         }
@@ -1133,10 +1238,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         window.set_outer_position(winit::dpi::Position::Logical(
             winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
         ));
-        let _ = window.request_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
-            f64::from(size.0.max(1.0)),
-            f64::from(size.1.max(1.0)),
-        )));
+        let _ = window.request_surface_size(winit::dpi::Size::Logical(
+            winit::dpi::LogicalSize::new(f64::from(size.0.max(1.0)), f64::from(size.1.max(1.0))),
+        ));
     }
 
     fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
@@ -1145,7 +1249,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         })
     }
 
-    fn recover_device(&mut self, event_loop: &ActiveEventLoop) {
+    fn recover_device(&mut self, event_loop: &dyn ActiveEventLoop) {
         let window = Arc::clone(self.graphics.window());
         let _ = apply_window_surface(
             window.as_ref(),
@@ -1294,9 +1398,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn sync_geometry(&mut self, id: WindowId) {
         if id == WindowId::PRIMARY {
-            self.geometry = window_geometry(self.graphics.window());
+            self.geometry = window_geometry(self.graphics.window().as_ref());
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
-            host.geometry = window_geometry(host.surface.window());
+            host.geometry = window_geometry(host.surface.window().as_ref());
         }
         let maximized = self.geometry_of(id).maximized;
         if let Some(session) = self.chrome.get_mut(&id) {
@@ -1360,7 +1464,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             (handle, text_field)
         });
         if let Some(window) = self.window(id) {
-            window.set_cursor(scene_cursor_icon(frame_edge, handle, text_field));
+            window.set_cursor(scene_cursor_icon(frame_edge, handle, text_field).into());
         }
     }
 
@@ -1479,13 +1583,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let scale = self.scale_factor(id);
         let origin = self
             .window(id)
-            .and_then(|window| window_screen_origin(window));
+            .and_then(|window| window_screen_origin(window.as_ref()));
         self.input_mut(id).map(event, scale, origin)
     }
 
     fn dispatch_input(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         input: InputEvent,
     ) -> nana_ui_platform::InputDisposition {
@@ -1700,66 +1804,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    fn take_windows_pen_events(&self, id: WindowId) -> Vec<crate::windows_pen::PenEvent> {
-        if id == WindowId::PRIMARY {
-            self.pen_hook.drain()
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| host.pen_hook.drain())
-                .unwrap_or_default()
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn dispatch_windows_pen_events(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
-        use crate::windows_pen::PenPhase;
-
-        let events = self.take_windows_pen_events(id);
-        let scale = self.scale_factor(id).max(0.01);
-        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
-        for event in events {
-            let x = event.client_x as f32 / scale;
-            let y = event.client_y as f32 / scale;
-            self.input_mut(id).cursor = (x, y);
-            let input = InputEvent::Pointer {
-                phase: match event.phase {
-                    PenPhase::Down => PointerPhase::Down,
-                    PenPhase::Move => PointerPhase::Move,
-                    PenPhase::Up => PointerPhase::Up,
-                    PenPhase::Cancel => PointerPhase::Cancel,
-                },
-                pointer_id: event.pointer_id,
-                pointer_type: PointerType::Pen,
-                x,
-                y,
-                screen_x: event.screen_x as f32 / scale,
-                screen_y: event.screen_y as f32 / scale,
-                button: event.button,
-                buttons: event.buttons,
-                pressure: event.pressure,
-                tangential_pressure: 0.0,
-                tilt_x: event.tilt_x,
-                tilt_y: event.tilt_y,
-                twist: event.twist,
-                is_primary: event.is_primary,
-                modifiers,
-            };
-            self.dispatch_input(event_loop, id, input);
-            if event_loop.exiting() {
-                return;
-            }
-        }
-    }
-
     fn known_window_ids(&self) -> Vec<WindowId> {
         let mut ids = vec![WindowId::PRIMARY];
         ids.extend(self.auxiliary.keys().copied());
         ids
     }
 
-    fn window(&self, id: WindowId) -> Option<&Arc<winit::window::Window>> {
+    fn window(&self, id: WindowId) -> Option<&Arc<dyn winit::window::Window>> {
         if id == WindowId::PRIMARY {
             Some(self.graphics.window())
         } else {
@@ -1870,7 +1921,8 @@ impl<Program: RuntimeProgram> Drop for SceneReady<Program> {
 }
 
 fn program_context<Message: Send + 'static>(
-    proxy: &EventLoopProxy<Message>,
+    message_tx: Sender<Message>,
+    proxy: EventLoopProxy,
     graphics: &HostedGpuContext,
     id: WindowId,
     geometry: WindowGeometry,
@@ -1878,7 +1930,6 @@ fn program_context<Message: Send + 'static>(
     material: MaterialOutcome,
     surface_alpha_mode: wgpu::CompositeAlphaMode,
 ) -> RuntimeProgramContext<Message> {
-    let proxy = proxy.clone();
     RuntimeProgramContext::new(
         id,
         geometry,
@@ -1886,19 +1937,23 @@ fn program_context<Message: Send + 'static>(
         material,
         surface_alpha_mode,
         Arc::new(move |message| {
-            let _ = proxy.send_event(message);
+            if message_tx.send(message).is_ok() {
+                proxy.wake_up();
+            }
         }),
         tasks,
     )
 }
 
 fn spawn_task_workers<Message: Send + 'static>(
-    proxy: EventLoopProxy<Message>,
+    message_tx: Sender<Message>,
+    proxy: EventLoopProxy,
 ) -> SyncSender<Task<Message>> {
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Task<Message>>(TASK_QUEUE_CAPACITY);
     let receiver = Arc::new(Mutex::new(receiver));
     for _ in 0..TASK_WORKERS {
         let receiver = Arc::clone(&receiver);
+        let message_tx = message_tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             loop {
@@ -1912,9 +1967,10 @@ fn spawn_task_workers<Message: Send + 'static>(
                     task
                 };
                 let message = pollster::block_on(task.into_future());
-                if proxy.send_event(message).is_err() {
+                if message_tx.send(message).is_err() {
                     return;
                 }
+                proxy.wake_up();
             }
         });
     }
@@ -2008,7 +2064,7 @@ fn window_wants_transparent_surface(
 }
 
 fn apply_scene_material(
-    window: &winit::window::Window,
+    window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
     requested: crate::MaterialEffect,
 ) -> MaterialOutcome {
@@ -2026,12 +2082,12 @@ fn apply_scene_material(
     )
 }
 
-fn apply_window_transparency(window: &winit::window::Window, requested: crate::MaterialEffect) {
+fn apply_window_transparency(window: &dyn winit::window::Window, requested: crate::MaterialEffect) {
     window.set_transparent(requested.wants_transparent_surface());
 }
 
 fn apply_window_surface(
-    window: &winit::window::Window,
+    window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
     settings_transparent: bool,
     appearance: crate::MaterialEffect,
@@ -2042,14 +2098,14 @@ fn apply_window_surface(
     material
 }
 
-fn drag_scene_window(window: &winit::window::Window) {
+fn drag_scene_window(window: &dyn winit::window::Window) {
     if nana_window::drag_custom_title_bar(window) {
         return;
     }
     let _ = window.drag_window();
 }
 
-fn resize_scene_window(window: &winit::window::Window, edge: WindowResizeEdge) {
+fn resize_scene_window(window: &dyn winit::window::Window, edge: WindowResizeEdge) {
     if resize_custom_frame(window, frame_resize_edge(edge)) {
         return;
     }
@@ -2095,8 +2151,7 @@ fn scene_cursor_icon(
     frame_edge: Option<WindowResizeEdge>,
     handle: Option<(f32, f32)>,
     text_field: bool,
-) -> winit::window::CursorIcon {
-    use winit::window::CursorIcon;
+) -> CursorIcon {
     match frame_edge {
         Some(WindowResizeEdge::East | WindowResizeEdge::West) => CursorIcon::EwResize,
         Some(WindowResizeEdge::North | WindowResizeEdge::South) => CursorIcon::NsResize,
@@ -2133,16 +2188,11 @@ fn scene_paint_viewport(
 }
 
 fn scene_clear_color(theme: crate::ThemeMode, material: MaterialOutcome) -> [f32; 4] {
-    if material.effect == MaterialEffect::Transparent {
+    if material.wants_transparent_surface() {
         return [0.0, 0.0, 0.0, 0.0];
     }
     let color = theme.palette().background;
-    let alpha = if material.is_native() {
-        AppearanceSettings::DEFAULT_BACKDROP_OPACITY
-    } else {
-        color.a
-    };
-    [color.r, color.g, color.b, alpha]
+    [color.r, color.g, color.b, color.a]
 }
 
 fn resolved_scene_ime_request(
@@ -2157,22 +2207,30 @@ fn resolved_scene_ime_request(
         })
 }
 
-fn apply_text_input_request(window: &winit::window::Window, request: TextInputRequest) {
-    window.set_ime_allowed(request.enabled);
+fn apply_text_input_request(window: &dyn winit::window::Window, request: TextInputRequest) {
     if !request.enabled {
+        let _ = window.request_ime_update(ImeRequest::Disable);
         return;
     }
+    let purpose = match request.purpose {
+        TextInputPurpose::Normal => ImePurpose::Normal,
+        TextInputPurpose::Password => ImePurpose::Password,
+        TextInputPurpose::Terminal => ImePurpose::Terminal,
+    };
+    let mut capabilities = ImeCapabilities::new().with_hint_and_purpose();
+    let mut data = ImeRequestData::default().with_hint_and_purpose(ImeHint::NONE, purpose);
     if let Some(cursor) = request.cursor_area {
-        window.set_ime_cursor_area(
-            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height),
-            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)),
+        capabilities = capabilities.with_cursor_area();
+        data = data.with_cursor_area(
+            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height).into(),
+            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)).into(),
         );
     }
-    window.set_ime_purpose(match request.purpose {
-        TextInputPurpose::Normal => winit::window::ImePurpose::Normal,
-        TextInputPurpose::Password => winit::window::ImePurpose::Password,
-        TextInputPurpose::Terminal => winit::window::ImePurpose::Terminal,
-    });
+    if let Some(enable) = ImeEnableRequest::new(capabilities, data.clone()) {
+        let _ = window.request_ime_update(ImeRequest::Enable(enable));
+    } else {
+        let _ = window.request_ime_update(ImeRequest::Update(data));
+    }
 }
 
 fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::WindowAttributes {
@@ -2181,11 +2239,11 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
         .with_transparent(settings.transparent)
         .with_resizable(settings.resizable)
         .with_window_level(window_level(settings.always_on_top))
-        .with_inner_size(winit::dpi::LogicalSize::new(
+        .with_surface_size(winit::dpi::LogicalSize::new(
             settings.initial_size.0,
             settings.initial_size.1,
         ))
-        .with_min_inner_size(winit::dpi::LogicalSize::new(
+        .with_min_surface_size(winit::dpi::LogicalSize::new(
             settings.minimum_size.0,
             settings.minimum_size.1,
         ))
@@ -2194,15 +2252,7 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
         attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
     }
     if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
-        attributes = attributes.with_window_icon(Some(icon.clone()));
-        #[cfg(target_os = "windows")]
-        {
-            attributes = attributes.with_taskbar_icon(Some(icon));
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = icon;
-        }
+        attributes = attributes.with_window_icon(Some(icon));
     }
 
     apply_scene_window_chrome(attributes, settings)
@@ -2212,12 +2262,14 @@ fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
     nana_app_icon::resolved_application_icon(per_window)
 }
 
-fn winit_icon(icon: &WindowIcon) -> Option<winit::window::Icon> {
-    winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height).ok()
+fn winit_icon(icon: &WindowIcon) -> Option<Icon> {
+    RgbaIcon::new(icon.rgba.clone(), icon.width, icon.height)
+        .ok()
+        .map(Icon::from)
 }
 
 fn apply_scene_window_icon(
-    window: &winit::window::Window,
+    window: &dyn winit::window::Window,
     per_window: Option<&WindowIcon>,
     apply_app_icon: bool,
 ) {
@@ -2274,10 +2326,13 @@ fn apply_scene_window_chrome(
         }
         attributes
             .with_decorations(true)
-            .with_titlebar_transparent(true)
-            .with_fullsize_content_view(true)
-            .with_title_hidden(true)
-            .with_movable_by_window_background(false)
+            .with_platform_attributes(Box::new(
+                WindowAttributesMacOS::default()
+                    .with_titlebar_transparent(true)
+                    .with_fullsize_content_view(true)
+                    .with_title_hidden(true)
+                    .with_movable_by_window_background(false),
+            ))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -2286,14 +2341,16 @@ fn apply_scene_window_chrome(
         let attributes = attributes.with_decorations(chrome.decorations);
         #[cfg(target_os = "windows")]
         let attributes = {
-            let attributes = attributes.with_no_redirection_bitmap(chrome.no_redirection_bitmap);
-            if chrome.decorations {
-                attributes
-            } else {
-                attributes
-                    .with_undecorated_shadow(chrome.undecorated_shadow)
-                    .with_corner_preference(winit::platform::windows::CornerPreference::Round)
+            let mut win = WindowAttributesWindows::default()
+                .with_no_redirection_bitmap(chrome.no_redirection_bitmap)
+                .with_undecorated_shadow(chrome.undecorated_shadow);
+            if !chrome.decorations {
+                win = win.with_corner_preference(CornerPreference::Round);
             }
+            if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
+                win = win.with_taskbar_icon(Some(icon));
+            }
+            attributes.with_platform_attributes(Box::new(win))
         };
         attributes
     }
@@ -2301,7 +2358,7 @@ fn apply_scene_window_chrome(
 
 fn scene_aux_window_attributes(
     settings: &RuntimeWindowSettings,
-    parent: Option<&winit::window::Window>,
+    parent: Option<&dyn winit::window::Window>,
 ) -> Result<winit::window::WindowAttributes, String> {
     let attributes = scene_window_attributes(settings).with_visible(false);
     #[cfg(target_os = "windows")]
@@ -2313,7 +2370,20 @@ fn scene_aux_window_attributes(
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
             return Err("Windows modal owner is not an HWND".into());
         };
-        attributes.with_owner_window(handle.hwnd.get())
+        {
+            let chrome = windows_scene_chrome(settings.system_caption, settings.transparent);
+            let mut win = WindowAttributesWindows::default()
+                .with_no_redirection_bitmap(chrome.no_redirection_bitmap)
+                .with_undecorated_shadow(chrome.undecorated_shadow)
+                .with_owner_window(handle.hwnd.get() as _);
+            if !chrome.decorations {
+                win = win.with_corner_preference(CornerPreference::Round);
+            }
+            if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
+                win = win.with_taskbar_icon(Some(icon));
+            }
+            attributes.with_platform_attributes(Box::new(win))
+        }
     } else {
         let _ = parent;
         attributes
@@ -2327,7 +2397,7 @@ fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
     matches!(
         event,
         WinitWindowEvent::RedrawRequested
-            | WinitWindowEvent::Resized(_)
+            | WinitWindowEvent::SurfaceResized(_)
             | WinitWindowEvent::Moved(_)
             | WinitWindowEvent::ScaleFactorChanged { .. }
             | WinitWindowEvent::Occluded(_)
@@ -2437,9 +2507,9 @@ fn window_level(always_on_top: bool) -> winit::window::WindowLevel {
     }
 }
 
-fn window_geometry(window: &winit::window::Window) -> WindowGeometry {
+fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
     let scale_factor = normalized_scale_factor(window.scale_factor() as f32);
-    let physical_size = window.inner_size();
+    let physical_size = window.surface_size();
     let physical_position = window.outer_position().ok();
     WindowGeometry {
         physical_position: physical_position.map(|position| (position.x, position.y)),
@@ -2457,7 +2527,7 @@ fn window_geometry(window: &winit::window::Window) -> WindowGeometry {
     }
 }
 
-fn window_screen_origin(window: &winit::window::Window) -> Option<(f32, f32)> {
+fn window_screen_origin(window: &dyn winit::window::Window) -> Option<(f32, f32)> {
     let scale = window.scale_factor().max(0.01);
     window.outer_position().ok().map(|position| {
         let origin = position.to_logical::<f32>(scale);
@@ -2485,9 +2555,16 @@ fn platform_input_modifiers(value: ModifiersState) -> InputModifiers {
     InputModifiers {
         alt: value.alt_key(),
         control: value.control_key(),
-        meta: value.super_key(),
+        meta: value.meta_key(),
         shift: value.shift_key(),
     }
+}
+
+fn dnd_advertises_files(event_loop: &dyn ActiveEventLoop, transfer: DataTransferId) -> bool {
+    event_loop
+        .data_transfer(transfer)
+        .map(|transfer| transfer.has_type(&TypeHint::UriList))
+        .unwrap_or(true)
 }
 
 fn platform_ime_event(ime: winit::event::Ime) -> ImeEvent {
@@ -2496,6 +2573,14 @@ fn platform_ime_event(ime: winit::event::Ime) -> ImeEvent {
         winit::event::Ime::Disabled => ImeEvent::Disabled,
         winit::event::Ime::Preedit(text, selection) => ImeEvent::Preedit { text, selection },
         winit::event::Ime::Commit(text) => ImeEvent::Commit(text),
+        winit::event::Ime::DeleteSurrounding {
+            before_bytes,
+            after_bytes,
+        } => ImeEvent::DeleteSurrounding {
+            before_bytes,
+            after_bytes,
+        },
+        _ => ImeEvent::Disabled,
     }
 }
 
@@ -2506,7 +2591,7 @@ fn mouse_button_code(button: MouseButton) -> i16 {
         MouseButton::Right => 2,
         MouseButton::Back => 3,
         MouseButton::Forward => 4,
-        MouseButton::Other(button) => button.min(i16::MAX as u16) as i16,
+        other => other as u8 as i16,
     }
 }
 
@@ -2525,6 +2610,122 @@ fn screen_position(origin: Option<(f32, f32)>, client: (f32, f32)) -> (f32, f32)
     origin.map_or(client, |origin| (origin.0 + client.0, origin.1 + client.1))
 }
 
+struct MappedPointer {
+    pointer_id: u64,
+    pointer_type: PointerType,
+    is_primary: bool,
+    pressure: Option<f32>,
+    tangential_pressure: f32,
+    tilt_x: i16,
+    tilt_y: i16,
+    twist: u16,
+}
+
+fn map_pointer_kind(kind: &PointerKind, primary: bool) -> MappedPointer {
+    match kind {
+        PointerKind::Touch(finger_id) => MappedPointer {
+            pointer_id: finger_id.into_raw() as u64 + 2,
+            pointer_type: PointerType::Touch,
+            is_primary: primary,
+            pressure: None,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+        },
+        PointerKind::TabletTool(_) => MappedPointer {
+            pointer_id: 1000,
+            pointer_type: PointerType::Pen,
+            is_primary: primary,
+            pressure: None,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+        },
+        PointerKind::Mouse | PointerKind::Unknown | _ => MappedPointer {
+            pointer_id: 1,
+            pointer_type: PointerType::Mouse,
+            is_primary: primary,
+            pressure: None,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+        },
+    }
+}
+
+fn map_pointer_source(source: &PointerSource, primary: bool) -> MappedPointer {
+    match source {
+        PointerSource::Touch { finger_id, force } => MappedPointer {
+            pointer_id: finger_id.into_raw() as u64 + 2,
+            pointer_type: PointerType::Touch,
+            is_primary: primary,
+            pressure: force.as_ref().map(|force| force.normalized(None) as f32),
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+        },
+        PointerSource::TabletTool { data, .. } => {
+            let tilt = data.clone().tilt();
+            let angle = data.clone().angle();
+            MappedPointer {
+                pointer_id: 1000,
+                pointer_type: PointerType::Pen,
+                is_primary: primary,
+                pressure: data
+                    .force
+                    .as_ref()
+                    .map(|force| force.normalized(angle) as f32),
+                tangential_pressure: data.tangential_force.unwrap_or(0.0),
+                tilt_x: tilt.map(|tilt| i16::from(tilt.x)).unwrap_or(0),
+                tilt_y: tilt.map(|tilt| i16::from(tilt.y)).unwrap_or(0),
+                twist: data.twist.unwrap_or(0),
+            }
+        }
+        PointerSource::Mouse | PointerSource::Unknown | _ => {
+            map_pointer_kind(&PointerKind::Mouse, primary)
+        }
+    }
+}
+
+fn map_button_source(source: &ButtonSource, primary: bool) -> MappedPointer {
+    match source {
+        ButtonSource::Touch { finger_id, force } => MappedPointer {
+            pointer_id: finger_id.into_raw() as u64 + 2,
+            pointer_type: PointerType::Touch,
+            is_primary: primary,
+            pressure: force.as_ref().map(|force| force.normalized(None) as f32),
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+        },
+        ButtonSource::TabletTool { data, .. } => {
+            let tilt = data.clone().tilt();
+            let angle = data.clone().angle();
+            MappedPointer {
+                pointer_id: 1000,
+                pointer_type: PointerType::Pen,
+                is_primary: primary,
+                pressure: data
+                    .force
+                    .as_ref()
+                    .map(|force| force.normalized(angle) as f32),
+                tangential_pressure: data.tangential_force.unwrap_or(0.0),
+                tilt_x: tilt.map(|tilt| i16::from(tilt.x)).unwrap_or(0),
+                tilt_y: tilt.map(|tilt| i16::from(tilt.y)).unwrap_or(0),
+                twist: data.twist.unwrap_or(0),
+            }
+        }
+        ButtonSource::Mouse(_) | ButtonSource::Unknown(_) | _ => {
+            map_pointer_kind(&PointerKind::Mouse, primary)
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct InputTracker {
     cursor: (f32, f32),
@@ -2534,6 +2735,9 @@ struct InputTracker {
     primary_touch: Option<u64>,
     pending_file_paths: Vec<PathBuf>,
     file_drop_emitted: bool,
+    pending_dnd: Option<DataTransferId>,
+    pending_dnd_serial: Option<AsyncRequestSerial>,
+    drop_waiting_for_data: bool,
 }
 
 impl InputTracker {
@@ -2541,6 +2745,63 @@ impl InputTracker {
         self.buttons = 0;
         self.active_touches.clear();
         self.primary_touch = None;
+    }
+
+    fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
+        let point = position.to_logical::<f32>(f64::from(scale));
+        self.cursor = (point.x, point.y);
+    }
+
+    fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
+        self.pending_file_paths.clear();
+        self.file_drop_emitted = false;
+        self.drop_waiting_for_data = false;
+        self.pending_dnd = Some(transfer);
+        self.pending_dnd_serial = serial;
+    }
+
+    fn wait_for_drop_data(&mut self, transfer: DataTransferId, serial: AsyncRequestSerial) {
+        self.pending_dnd = Some(transfer);
+        self.pending_dnd_serial = Some(serial);
+        self.drop_waiting_for_data = true;
+    }
+
+    fn accepts_dnd_serial(&self, transfer: DataTransferId, serial: AsyncRequestSerial) -> bool {
+        self.pending_dnd == Some(transfer)
+            && self
+                .pending_dnd_serial
+                .is_none_or(|pending| pending == serial)
+    }
+
+    fn ingest_file_paths(
+        &mut self,
+        transfer: DataTransferId,
+        paths: Vec<PathBuf>,
+        id: WindowId,
+    ) -> Option<WindowEvent> {
+        if self.pending_dnd != Some(transfer) {
+            return None;
+        }
+        self.pending_file_paths = paths;
+        if self.drop_waiting_for_data {
+            if self.file_drop_emitted {
+                return None;
+            }
+            self.file_drop_emitted = true;
+            self.drop_waiting_for_data = false;
+            self.pending_dnd = None;
+            self.pending_dnd_serial = None;
+            return Some(WindowEvent::FileDropped {
+                id,
+                paths: std::mem::take(&mut self.pending_file_paths),
+                position: Some(self.cursor),
+            });
+        }
+        Some(WindowEvent::FileHovered {
+            id,
+            paths: self.pending_file_paths.clone(),
+            position: Some(self.cursor),
+        })
     }
 
     fn map(
@@ -2551,38 +2812,56 @@ impl InputTracker {
     ) -> Option<InputEvent> {
         let modifiers = platform_input_modifiers(self.modifiers);
         match event {
-            WinitWindowEvent::CursorMoved { position, .. } => {
+            WinitWindowEvent::PointerMoved {
+                position,
+                primary,
+                source,
+                ..
+            } => {
                 let point = position.to_logical::<f32>(f64::from(scale));
                 self.cursor = (point.x, point.y);
+                let mapped = map_pointer_source(source, *primary);
                 let screen = screen_position(screen_origin, self.cursor);
                 Some(InputEvent::Pointer {
                     phase: PointerPhase::Move,
-                    pointer_id: 1,
-                    pointer_type: PointerType::Mouse,
+                    pointer_id: mapped.pointer_id,
+                    pointer_type: mapped.pointer_type,
                     x: self.cursor.0,
                     y: self.cursor.1,
                     screen_x: screen.0,
                     screen_y: screen.1,
                     button: -1,
                     buttons: self.buttons,
-                    pressure: if self.buttons == 0 { 0.0 } else { 0.5 },
-                    tangential_pressure: 0.0,
-                    tilt_x: 0,
-                    tilt_y: 0,
-                    twist: 0,
-                    is_primary: true,
+                    pressure: mapped
+                        .pressure
+                        .unwrap_or(if self.buttons == 0 { 0.0 } else { 0.5 }),
+                    tangential_pressure: mapped.tangential_pressure,
+                    tilt_x: mapped.tilt_x,
+                    tilt_y: mapped.tilt_y,
+                    twist: mapped.twist,
+                    is_primary: mapped.is_primary,
                     modifiers,
                 })
             }
-            WinitWindowEvent::MouseInput { state, button, .. } => {
-                let button = mouse_button_code(*button);
+            WinitWindowEvent::PointerButton {
+                state,
+                position,
+                primary,
+                button,
+                ..
+            } => {
+                let point = position.to_logical::<f32>(f64::from(scale));
+                self.cursor = (point.x, point.y);
+                let mouse = button.clone().mouse_button().unwrap_or(MouseButton::Left);
+                let button_code = mouse_button_code(mouse);
                 let pressed = *state == ElementState::Pressed;
-                let mask = mouse_button_mask(button);
+                let mask = mouse_button_mask(button_code);
                 if pressed {
                     self.buttons |= mask;
                 } else {
                     self.buttons &= !mask;
                 }
+                let mapped = map_button_source(button, *primary);
                 let screen = screen_position(screen_origin, self.cursor);
                 Some(InputEvent::Pointer {
                     phase: if pressed {
@@ -2590,30 +2869,33 @@ impl InputTracker {
                     } else {
                         PointerPhase::Up
                     },
-                    pointer_id: 1,
-                    pointer_type: PointerType::Mouse,
+                    pointer_id: mapped.pointer_id,
+                    pointer_type: mapped.pointer_type,
                     x: self.cursor.0,
                     y: self.cursor.1,
                     screen_x: screen.0,
                     screen_y: screen.1,
-                    button,
+                    button: button_code,
                     buttons: self.buttons,
-                    pressure: if self.buttons == 0 { 0.0 } else { 0.5 },
-                    tangential_pressure: 0.0,
-                    tilt_x: 0,
-                    tilt_y: 0,
-                    twist: 0,
-                    is_primary: true,
+                    pressure: mapped
+                        .pressure
+                        .unwrap_or(if self.buttons == 0 { 0.0 } else { 0.5 }),
+                    tangential_pressure: mapped.tangential_pressure,
+                    tilt_x: mapped.tilt_x,
+                    tilt_y: mapped.tilt_y,
+                    twist: mapped.twist,
+                    is_primary: mapped.is_primary,
                     modifiers,
                 })
             }
-            WinitWindowEvent::CursorLeft { .. } => {
+            WinitWindowEvent::PointerLeft { primary, kind, .. } => {
                 let screen = screen_position(screen_origin, self.cursor);
                 let buttons = std::mem::take(&mut self.buttons);
+                let mapped = map_pointer_kind(kind, *primary);
                 Some(InputEvent::Pointer {
                     phase: PointerPhase::Cancel,
-                    pointer_id: 1,
-                    pointer_type: PointerType::Mouse,
+                    pointer_id: mapped.pointer_id,
+                    pointer_type: mapped.pointer_type,
                     x: self.cursor.0,
                     y: self.cursor.1,
                     screen_x: screen.0,
@@ -2625,63 +2907,7 @@ impl InputTracker {
                     tilt_x: 0,
                     tilt_y: 0,
                     twist: 0,
-                    is_primary: true,
-                    modifiers,
-                })
-            }
-            WinitWindowEvent::Touch(touch) => {
-                let point = touch.location.to_logical::<f32>(f64::from(scale));
-                let client = (point.x, point.y);
-                let screen = screen_position(screen_origin, client);
-                let phase = match touch.phase {
-                    TouchPhase::Started => PointerPhase::Down,
-                    TouchPhase::Moved => PointerPhase::Move,
-                    TouchPhase::Ended => PointerPhase::Up,
-                    TouchPhase::Cancelled => PointerPhase::Cancel,
-                };
-                if matches!(touch.phase, TouchPhase::Started) {
-                    if self.active_touches.is_empty() {
-                        self.primary_touch = Some(touch.id);
-                    }
-                    self.active_touches.insert(touch.id);
-                }
-                if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-                    self.active_touches.remove(&touch.id);
-                }
-                let is_primary = self.primary_touch == Some(touch.id);
-                if self.active_touches.is_empty() {
-                    self.active_touches.clear();
-                    self.primary_touch = None;
-                }
-                Some(InputEvent::Pointer {
-                    phase,
-                    pointer_id: touch.id.saturating_add(2),
-                    pointer_type: PointerType::Touch,
-                    x: client.0,
-                    y: client.1,
-                    screen_x: screen.0,
-                    screen_y: screen.1,
-                    button: 0,
-                    buttons: if matches!(phase, PointerPhase::Down | PointerPhase::Move) {
-                        1
-                    } else {
-                        0
-                    },
-                    pressure: if matches!(phase, PointerPhase::Down | PointerPhase::Move) {
-                        touch
-                            .force
-                            .as_ref()
-                            .map(|force| force.normalized() as f32)
-                            .unwrap_or(0.5)
-                            .clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    },
-                    tangential_pressure: 0.0,
-                    tilt_x: 0,
-                    tilt_y: 0,
-                    twist: 0,
-                    is_primary,
+                    is_primary: mapped.is_primary,
                     modifiers,
                 })
             }
@@ -2693,6 +2919,7 @@ impl InputTracker {
                         (delta.y / f64::from(scale)) as f32,
                         false,
                     ),
+                    _ => (0.0, 0.0, false),
                 };
                 Some(InputEvent::Wheel {
                     x: self.cursor.0,
@@ -2721,33 +2948,45 @@ impl InputTracker {
         id: WindowId,
     ) -> Option<WindowEvent> {
         match event {
-            WinitWindowEvent::HoveredFile(path) => {
-                self.file_drop_emitted = false;
-                self.pending_file_paths.push(path.clone());
+            WinitWindowEvent::DragEntered { id: transfer, .. } => {
+                if self.pending_dnd != Some(*transfer) {
+                    self.begin_file_drag(*transfer, None);
+                }
                 Some(WindowEvent::FileHovered {
                     id,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
                 })
             }
-            WinitWindowEvent::HoveredFileCancelled => {
+            WinitWindowEvent::DragPosition { id: transfer, .. } => {
+                if self.pending_dnd != Some(*transfer) || self.file_drop_emitted {
+                    return None;
+                }
+                Some(WindowEvent::FileHovered {
+                    id,
+                    paths: self.pending_file_paths.clone(),
+                    position: Some(self.cursor),
+                })
+            }
+            WinitWindowEvent::DragLeft { .. } => {
                 self.pending_file_paths.clear();
                 self.file_drop_emitted = false;
+                self.drop_waiting_for_data = false;
+                self.pending_dnd = None;
+                self.pending_dnd_serial = None;
                 Some(WindowEvent::FileHoverCancelled { id })
             }
-            WinitWindowEvent::DroppedFile(path) => {
+            WinitWindowEvent::DragDropped { .. } => {
                 if self.file_drop_emitted {
                     return None;
                 }
                 self.file_drop_emitted = true;
-                let paths = if self.pending_file_paths.is_empty() {
-                    vec![path.clone()]
-                } else {
-                    std::mem::take(&mut self.pending_file_paths)
-                };
+                self.drop_waiting_for_data = false;
+                self.pending_dnd = None;
+                self.pending_dnd_serial = None;
                 Some(WindowEvent::FileDropped {
                     id,
-                    paths,
+                    paths: std::mem::take(&mut self.pending_file_paths),
                     position: Some(self.cursor),
                 })
             }
@@ -2776,7 +3015,7 @@ fn platform_window_event(
             id,
             event: platform_ime_event(ime.clone()),
         },
-        WinitWindowEvent::Resized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
+        WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
             WindowEvent::Resized { id, geometry }
         }
         WinitWindowEvent::Moved(_) => WindowEvent::Moved { id, geometry },
@@ -2791,14 +3030,14 @@ mod tests {
     use super::{
         InputTracker, RoutedWindowCommand, invalidate_program_host_textures, mouse_button_code,
         mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
-        platform_window_event, resolved_scene_ime_request, route_window_command,
+        platform_window_event, resolved_scene_ime_request, route_window_command, scene_clear_color,
         scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, window_level, window_surface_effect,
         window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw,
     };
     use crate::{
-        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect,
-        RuntimeProgramUpdate, RuntimeRedraw,
+        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
+        RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
     };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
@@ -2806,11 +3045,10 @@ mod tests {
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
-    use std::path::PathBuf;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
-        DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase,
-        WindowEvent as WinitWindowEvent,
+        ButtonSource, ElementState, FingerId, MouseButton, MouseScrollDelta, PointerKind,
+        PointerSource, TouchPhase, WindowEvent as WinitWindowEvent,
     };
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -2964,6 +3202,30 @@ mod tests {
     }
 
     #[test]
+    fn native_and_transparent_materials_clear_the_surface_to_zero_alpha() {
+        let solid = scene_clear_color(ThemeMode::Dark, MaterialOutcome::chosen_solid());
+        assert!(solid[3] > 0.0, "opaque windows keep a readable clear color");
+        assert_eq!(
+            scene_clear_color(ThemeMode::Dark, MaterialOutcome::transparent()),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            scene_clear_color(
+                ThemeMode::Dark,
+                MaterialOutcome::native(MaterialEffect::Mica)
+            ),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            scene_clear_color(
+                ThemeMode::Light,
+                MaterialOutcome::native(MaterialEffect::Acrylic)
+            ),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
     fn transparent_aux_keeps_transparent_when_primary_appearance_is_solid() {
         let appearance = MaterialEffect::Solid;
         assert_eq!(
@@ -3041,7 +3303,7 @@ mod tests {
             ModifiersState::CONTROL
                 | ModifiersState::ALT
                 | ModifiersState::SHIFT
-                | ModifiersState::SUPER,
+                | ModifiersState::META,
         );
         assert!(modifiers.control);
         assert!(modifiers.alt);
@@ -3063,9 +3325,11 @@ mod tests {
         let mut tracker = InputTracker::default();
         let moved = tracker
             .map(
-                &WinitWindowEvent::CursorMoved {
-                    device_id: DeviceId::dummy(),
+                &WinitWindowEvent::PointerMoved {
+                    device_id: None,
                     position: PhysicalPosition::new(20.0, 40.0),
+                    primary: true,
+                    source: PointerSource::Mouse,
                 },
                 2.0,
                 Some((100.0, 200.0)),
@@ -3092,10 +3356,13 @@ mod tests {
 
         let down = tracker
             .map(
-                &WinitWindowEvent::MouseInput {
-                    device_id: DeviceId::dummy(),
+                &WinitWindowEvent::PointerButton {
+                    device_id: None,
                     state: ElementState::Pressed,
-                    button: MouseButton::Left,
+                    position: PhysicalPosition::new(20.0, 40.0),
+                    primary: true,
+                    button: ButtonSource::Mouse(MouseButton::Left),
+                    is_macos_activation_click: false,
                 },
                 2.0,
                 Some((100.0, 200.0)),
@@ -3116,8 +3383,11 @@ mod tests {
 
         let left = tracker
             .map(
-                &WinitWindowEvent::CursorLeft {
-                    device_id: DeviceId::dummy(),
+                &WinitWindowEvent::PointerLeft {
+                    device_id: None,
+                    position: None,
+                    primary: true,
+                    kind: PointerKind::Mouse,
                 },
                 2.0,
                 Some((100.0, 200.0)),
@@ -3143,7 +3413,7 @@ mod tests {
         let line = tracker
             .map(
                 &WinitWindowEvent::MouseWheel {
-                    device_id: DeviceId::dummy(),
+                    device_id: None,
                     delta: MouseScrollDelta::LineDelta(1.0, -2.0),
                     phase: TouchPhase::Moved,
                 },
@@ -3166,7 +3436,7 @@ mod tests {
         let pixel = tracker
             .map(
                 &WinitWindowEvent::MouseWheel {
-                    device_id: DeviceId::dummy(),
+                    device_id: None,
                     delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(8.0, -4.0)),
                     phase: TouchPhase::Moved,
                 },
@@ -3192,13 +3462,17 @@ mod tests {
         let mut tracker = InputTracker::default();
         let start = tracker
             .map(
-                &WinitWindowEvent::Touch(Touch {
-                    device_id: DeviceId::dummy(),
-                    phase: TouchPhase::Started,
-                    location: PhysicalPosition::new(4.0, 8.0),
-                    force: None,
-                    id: 3,
-                }),
+                &WinitWindowEvent::PointerButton {
+                    device_id: None,
+                    state: ElementState::Pressed,
+                    position: PhysicalPosition::new(4.0, 8.0),
+                    primary: true,
+                    button: ButtonSource::Touch {
+                        finger_id: FingerId::from_raw(3),
+                        force: None,
+                    },
+                    is_macos_activation_click: false,
+                },
                 2.0,
                 None,
             )
@@ -3235,6 +3509,16 @@ mod tests {
             ImeEvent::Preedit {
                 text: "かな".into(),
                 selection: Some((3, 6)),
+            }
+        );
+        assert_eq!(
+            platform_ime_event(winit::event::Ime::DeleteSurrounding {
+                before_bytes: 3,
+                after_bytes: 0,
+            }),
+            ImeEvent::DeleteSurrounding {
+                before_bytes: 3,
+                after_bytes: 0,
             }
         );
         assert_eq!(
@@ -3296,66 +3580,108 @@ mod tests {
             cursor: (24.0, 48.0),
             ..InputTracker::default()
         };
-        let first = PathBuf::from("a.png");
-        let second = PathBuf::from("b.png");
-        assert_eq!(
-            tracker
-                .map_file_window_event(
-                    &WinitWindowEvent::HoveredFile(first.clone()),
-                    WindowId::PRIMARY,
-                )
-                .and_then(|event| match event {
-                    WindowEvent::FileHovered {
-                        paths, position, ..
-                    } => Some((paths, position)),
-                    _ => None,
-                }),
-            Some((vec![first.clone()], Some((24.0, 48.0))))
-        );
-        tracker.map_file_window_event(
-            &WinitWindowEvent::HoveredFile(second.clone()),
-            WindowId::PRIMARY,
-        );
-        assert_eq!(
-            tracker
-                .map_file_window_event(
-                    &WinitWindowEvent::DroppedFile(first.clone()),
-                    WindowId::PRIMARY,
-                )
-                .and_then(|event| match event {
-                    WindowEvent::FileDropped { paths, .. } => Some(paths),
-                    _ => None,
-                }),
-            Some(vec![first, second.clone()])
-        );
+        let transfer = winit::data_transfer::DataTransferId::from_raw(1);
+        assert!(matches!(
+            tracker.map_file_window_event(
+                &WinitWindowEvent::DragEntered {
+                    id: transfer,
+                    position: None,
+                },
+                WindowId::PRIMARY,
+            ),
+            Some(WindowEvent::FileHovered { .. })
+        ));
+        assert!(matches!(
+            tracker.map_file_window_event(
+                &WinitWindowEvent::DragDropped {
+                    id: transfer,
+                    proposed_action: None,
+                },
+                WindowId::PRIMARY,
+            ),
+            Some(WindowEvent::FileDropped { .. })
+        ));
         assert!(
             tracker
-                .map_file_window_event(&WinitWindowEvent::DroppedFile(second), WindowId::PRIMARY,)
+                .map_file_window_event(
+                    &WinitWindowEvent::DragDropped {
+                        id: transfer,
+                        proposed_action: None,
+                    },
+                    WindowId::PRIMARY,
+                )
                 .is_none()
         );
 
         let mut cancelled = InputTracker::default();
         cancelled.map_file_window_event(
-            &WinitWindowEvent::HoveredFile(PathBuf::from("gone.png")),
+            &WinitWindowEvent::DragEntered {
+                id: transfer,
+                position: None,
+            },
             WindowId::PRIMARY,
         );
         assert!(matches!(
-            cancelled
-                .map_file_window_event(&WinitWindowEvent::HoveredFileCancelled, WindowId::PRIMARY,),
+            cancelled.map_file_window_event(
+                &WinitWindowEvent::DragLeft { id: transfer },
+                WindowId::PRIMARY,
+            ),
             Some(WindowEvent::FileHoverCancelled { .. })
         ));
-        let solo = PathBuf::from("solo.txt");
+    }
+
+    #[test]
+    fn file_drag_ingests_fetched_paths_before_and_after_drop() {
+        let transfer = winit::data_transfer::DataTransferId::from_raw(7);
+        let paths = vec![std::path::PathBuf::from("/tmp/nana.txt")];
+        let mut hover = InputTracker {
+            cursor: (8.0, 16.0),
+            ..InputTracker::default()
+        };
+        hover.begin_file_drag(transfer, None);
         assert_eq!(
-            cancelled
+            hover.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
+            Some(WindowEvent::FileHovered {
+                id: WindowId::PRIMARY,
+                paths: paths.clone(),
+                position: Some((8.0, 16.0)),
+            })
+        );
+        assert_eq!(
+            hover.map_file_window_event(
+                &WinitWindowEvent::DragDropped {
+                    id: transfer,
+                    proposed_action: None,
+                },
+                WindowId::PRIMARY,
+            ),
+            Some(WindowEvent::FileDropped {
+                id: WindowId::PRIMARY,
+                paths: paths.clone(),
+                position: Some((8.0, 16.0)),
+            })
+        );
+
+        let mut delayed = InputTracker::default();
+        delayed.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
+        assert_eq!(
+            delayed.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
+            Some(WindowEvent::FileDropped {
+                id: WindowId::PRIMARY,
+                paths,
+                position: Some((0.0, 0.0)),
+            })
+        );
+        assert!(
+            delayed
                 .map_file_window_event(
-                    &WinitWindowEvent::DroppedFile(solo.clone()),
+                    &WinitWindowEvent::DragDropped {
+                        id: transfer,
+                        proposed_action: None,
+                    },
                     WindowId::PRIMARY,
                 )
-                .and_then(|event| match event {
-                    WindowEvent::FileDropped { paths, .. } => Some(paths),
-                    _ => None,
-                }),
-            Some(vec![solo])
+                .is_none()
         );
     }
 
@@ -3534,7 +3860,7 @@ mod tests {
     #[test]
     fn client_frame_resize_hits_edges_unless_caption_or_maximized() {
         use super::{frame_resize_edge_for, scene_cursor_icon};
-        use winit::window::CursorIcon;
+        use winit::cursor::CursorIcon;
 
         let mut settings = WindowSettings::new("Scene");
         let mut geometry = geometry();
