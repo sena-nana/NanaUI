@@ -4364,7 +4364,9 @@ fn write_evidence(
                 && (label.font_size - 11.0).abs() < 0.01
                 && (value.font_size - 12.0).abs() < 0.01
                 && value.font_weight == Some(expected_weight)
-                && label.bounds.y + label.bounds.height <= value.bounds.y + 0.01
+                && label.bounds.x + label.bounds.width <= value.bounds.x + 0.01
+                && label.bounds.y < value.bounds.y + value.bounds.height
+                && value.bounds.y < label.bounds.y + label.bounds.height
                 && (action.is_some() == (fixture.state == "action"))
                 && primitive(2).is_some_and(|primitive| {
                     matches!(primitive.kind, ScenePrimitiveKind::Text { size, .. } if (size - 11.0).abs() < 0.01)

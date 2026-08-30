@@ -7405,6 +7405,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         layout.apply_class_layout_hints(&["nana-settings-row".into()]);
         assert_eq!(layout.direction, Some(FlexDirection::Row));
         assert_eq!(layout.justify_content, JustifySpec::SpaceBetween);
+        assert_eq!(layout.flex_wrap, nana_ui_core::FlexWrap::NoWrap);
         assert_eq!(layout.gap, Some(LengthSpec::Px(14.0)));
         assert_eq!(layout.align_items, AlignSpec::Center);
     }

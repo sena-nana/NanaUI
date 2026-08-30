@@ -151,7 +151,7 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 layout.justify_content = JustifySpec::SpaceBetween;
                 // Force — mirrors nana-controls.css; may override kind default gap.
                 layout.gap = Some(LengthSpec::Px(14.0));
-                layout.flex_wrap = FlexWrap::Wrap;
+                layout.flex_wrap = FlexWrap::NoWrap;
                 if layout.padding_top.is_none() && layout.padding.is_none() {
                     layout.padding_top = Some(LengthSpec::Px(10.0));
                     layout.padding_bottom = Some(LengthSpec::Px(10.0));

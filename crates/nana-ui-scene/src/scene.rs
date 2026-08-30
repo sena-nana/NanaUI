@@ -1529,7 +1529,7 @@ impl UiScene {
                         id,
                         3,
                         value,
-                        TextHorizontalAlignment::Start,
+                        TextHorizontalAlignment::End,
                         false,
                         &node,
                         transform,
