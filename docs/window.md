@@ -35,6 +35,12 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`；系统 caption 窗口不叠第二套缩放命中。
 
+### 实时缩放
+
+拖动边框时布局跟手更新。`Resized` 只同步几何并请求下一帧，不在事件里 `surface.configure`。画帧时若物理尺寸或 present 策略变了才改 DXGI 表面；同尺寸跳过。
+
+Windows `LiveSizeMove` 观察 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`：拖动期间 present 用 `Mailbox` 或 `Immediate`（latency 2），松手恢复 `AutoVsync`。拖动中不同步 AccessKit。透明窗口走同一条路径。
+
 DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标；物理像素只用于 Surface。窗口位置由宿主记录，创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。模态辅助窗在 Windows 上 `with_owner_window` 绑定父 HWND。
 
 IME：焦点输入把 `TextInputRequest::cursor_area` 交给 `set_ime_cursor_area`，候选框相对 caret，不相对系统非客户区。AccessKit 增量更新与视觉几何同一套 layout box；composition 期间不得出现悬空 `parent_and_index`。

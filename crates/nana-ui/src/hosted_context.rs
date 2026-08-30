@@ -82,12 +82,50 @@ impl HostedGpuSurface {
 
     pub fn resize(&mut self, resources: &HostedGpuResources) {
         let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        if !surface_size_changed(
+            (self.configuration.width, self.configuration.height),
+            (size.width, size.height),
+        ) {
             return;
         }
         self.configuration.width = size.width;
         self.configuration.height = size.height;
         self.reconfigure(resources);
+    }
+
+    /// Apply size and live-resize present policy, then configure at most once.
+    pub fn prepare_frame(&mut self, resources: &HostedGpuResources, live: bool) {
+        let size = self.window.inner_size();
+        let mut changed = self.apply_live_resize_policy(resources, live);
+        if surface_size_changed(
+            (self.configuration.width, self.configuration.height),
+            (size.width, size.height),
+        ) {
+            self.configuration.width = size.width;
+            self.configuration.height = size.height;
+            changed = true;
+        }
+        if changed {
+            self.reconfigure(resources);
+        }
+    }
+
+    fn apply_live_resize_policy(&mut self, resources: &HostedGpuResources, live: bool) -> bool {
+        let mode = if live {
+            let capabilities = self.surface.get_capabilities(resources.adapter());
+            preferred_live_present_mode(&capabilities.present_modes)
+        } else {
+            wgpu::PresentMode::AutoVsync
+        };
+        let latency = live_resize_frame_latency(live);
+        if self.configuration.present_mode == mode
+            && self.configuration.desired_maximum_frame_latency == latency
+        {
+            return false;
+        }
+        self.configuration.present_mode = mode;
+        self.configuration.desired_maximum_frame_latency = latency;
+        self.configuration.width > 0 && self.configuration.height > 0
     }
 
     fn reconfigure(&self, resources: &HostedGpuResources) {
@@ -287,6 +325,14 @@ impl HostedGpuContext {
 
     pub fn resize(&mut self) {
         self.primary.resize(&self.resources);
+    }
+
+    pub fn prepare_frame(&mut self, live: bool) {
+        self.primary.prepare_frame(&self.resources, live);
+    }
+
+    pub fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
+        surface.prepare_frame(&self.resources, live);
     }
 
     pub fn reconfigure(&mut self) {
@@ -492,6 +538,25 @@ pub(crate) fn preferred_alpha_mode(
     }
 }
 
+fn surface_size_changed(configured: (u32, u32), inner: (u32, u32)) -> bool {
+    inner.0 > 0 && inner.1 > 0 && configured != inner
+}
+
+fn live_resize_frame_latency(live: bool) -> u32 {
+    if live { 2 } else { 1 }
+}
+
+fn preferred_live_present_mode(modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    [
+        wgpu::PresentMode::Mailbox,
+        wgpu::PresentMode::Immediate,
+        wgpu::PresentMode::AutoVsync,
+    ]
+    .into_iter()
+    .find(|mode| modes.contains(mode))
+    .unwrap_or(wgpu::PresentMode::AutoVsync)
+}
+
 fn advertised_transparent_alpha(modes: &[wgpu::CompositeAlphaMode]) -> bool {
     modes.iter().any(|mode| {
         matches!(
@@ -523,7 +588,8 @@ pub(crate) fn alpha_mode_needs_surface_recreate(
 #[cfg(test)]
 mod tests {
     use super::{
-        alpha_mode_needs_surface_recreate, preferred_alpha_mode, preferred_surface_format,
+        alpha_mode_needs_surface_recreate, live_resize_frame_latency, preferred_alpha_mode,
+        preferred_live_present_mode, preferred_surface_format, surface_size_changed,
     };
 
     #[test]
@@ -577,5 +643,35 @@ mod tests {
             wgpu::CompositeAlphaMode::Opaque,
             &[wgpu::CompositeAlphaMode::Opaque],
         ));
+    }
+
+    #[test]
+    fn identical_drawable_sizes_do_not_need_a_new_swapchain() {
+        assert!(!surface_size_changed((1280, 720), (1280, 720)));
+        assert!(surface_size_changed((1280, 720), (1281, 720)));
+        assert!(!surface_size_changed((1280, 720), (0, 720)));
+        assert!(!surface_size_changed((1280, 720), (1280, 0)));
+    }
+
+    #[test]
+    fn live_resize_prefers_unblocked_present_when_the_surface_advertises_it() {
+        assert_eq!(live_resize_frame_latency(true), 2);
+        assert_eq!(live_resize_frame_latency(false), 1);
+        assert_eq!(
+            preferred_live_present_mode(&[
+                wgpu::PresentMode::Fifo,
+                wgpu::PresentMode::Mailbox,
+                wgpu::PresentMode::Immediate,
+            ]),
+            wgpu::PresentMode::Mailbox
+        );
+        assert_eq!(
+            preferred_live_present_mode(&[wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate,]),
+            wgpu::PresentMode::Immediate
+        );
+        assert_eq!(
+            preferred_live_present_mode(&[wgpu::PresentMode::AutoVsync]),
+            wgpu::PresentMode::AutoVsync
+        );
     }
 }
