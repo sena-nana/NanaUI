@@ -73,8 +73,10 @@ import "@nanaui/nanavue-components/controls.css";
 
 1. 实现 Runtime 的 `ComponentView` / `RegisterableComponent`。
 2. 用 `UiExtension` + `ExtensionRegistrar::register_component` 登记。稳定身份是 `ComponentTypeId`（如 `nana.button`、`app.preview-card`）。
-3. 若 Vue 也要用，登记的 tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀。和 HTML 同语义就用原生标签（`button`、`table`/`tr`/`td`、`ul`/`li`、`details`）。语义不同就换名（`search-dropdown`，不是 HTML `<search>`）。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。
+3. 若 Vue 也要用，登记的 tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀。和 HTML 同语义就用原生标签（`button`、`table`/`tr`/`td`、`ul`/`li`、`details`）。语义不同就换名（`search-dropdown`，不是 HTML `<search>`）。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。未登记、也不是已知 HTML 的 tag 会报错，不会当成布局盒。
 
 只给 JavaScript 一组命令和属性白名单时，走 Vue 的 `NativeComponentRegistry`（`Nana.components.call`）。那张表**不会**让节点自动进入布局和命中。
 
 实时画面不要做成「自己往窗口上画的控件」，走 [实时画面](gpu.md)。不支持动态加载 dylib 插件。
+
+没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。

@@ -477,17 +477,15 @@ describe("hostOps Vue RendererOptions contract", () => {
     );
   });
 
-  test("retired nana-button alias does not call createWidget", () => {
-    hostOps.createElement("nana-button", undefined, undefined, { label: "Save" });
-    assert.equal(
-      calls.some(([name]) => name === "createWidget"),
-      false,
+  test("retired nana-button alias throws instead of creating a layout box", () => {
+    assert.throws(
+      () => hostOps.createElement("nana-button", undefined, undefined, { label: "Save" }),
+      /retired tag `nana-button`; use `button`/,
     );
-    assert.equal(calls[0][0], "createElement");
-    assert.equal(calls[0][1][0], "nana-button");
+    assert.equal(calls.length, 0);
   });
 
-  test("HTML table uses createElement; retired nana-table does not createWidget", () => {
+  test("HTML table uses createElement; retired nana-table throws", () => {
     const table = hostOps.createElement("table");
     assert.equal(table.tag, "table");
     assert.equal(
@@ -495,12 +493,11 @@ describe("hostOps Vue RendererOptions contract", () => {
       false,
     );
     calls.length = 0;
-    hostOps.createElement("nana-table");
-    assert.equal(
-      calls.some(([name]) => name === "createWidget"),
-      false,
+    assert.throws(
+      () => hostOps.createElement("nana-table"),
+      /retired tag `nana-table`; use `table`/,
     );
-    assert.equal(calls[0][1][0], "nana-table");
+    assert.equal(calls.length, 0);
   });
 
   test("search-dropdown uses createElement; HTML search is not a widget tag", () => {

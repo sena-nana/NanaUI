@@ -9,7 +9,7 @@
 //! 已知 class（如 `nana-btn` / `nana-chip`）→ kind + 后续 props；**不是**把 class
 //! 当 ThemeTokens 工厂。Vue 自定义组件通过组合这些 kind 表达，不旁路 paint。
 //! 可实例化权威是 Runtime `ComponentRegistry`（tag → type id）；`WidgetKind`
-//! 仍负责 CSS / HTML downlevel。未注册自定义 tag 落到 Column。
+//! 仍负责 CSS / HTML downlevel。未注册自定义 tag 报错，不落到布局盒。
 //!
 //! Overlay / layout kinds come from documented `nana-*` contracts, HTML tags, and
 //! ARIA `role` — not product kit BEM (`ui-dialog`, `ctx-menu`, `dd__menu`, …).
@@ -17,6 +17,28 @@
 use std::collections::BTreeMap;
 
 use crate::bridge::{SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps};
+
+/// Resolve a host element tag. Known HTML / `nana-*` kinds succeed; retired
+/// HTML aliases and tags that are neither HTML nor a registered component fail.
+pub fn resolve_host_tag_kind(
+    tag: &str,
+    class: Option<&str>,
+    role: Option<&str>,
+    input_type: Option<&str>,
+    is_registered_component: impl FnOnce(&str) -> bool,
+) -> Result<WidgetKind, String> {
+    let normalized = tag.trim().to_ascii_lowercase();
+    if let Some(replacement) = retired_html_alias_replacement(&normalized) {
+        return Err(format!("retired tag `{normalized}`; use `{replacement}`"));
+    }
+    if let Some(kind) = resolve_kind_from_hints(tag, class, role, input_type) {
+        return Ok(kind);
+    }
+    if !normalized.is_empty() && is_registered_component(&normalized) {
+        return Ok(WidgetKind::Column);
+    }
+    Err(format!("unknown tag: {normalized}"))
+}
 
 /// DOM text nodes (`#text` / `createText` / `nana-text`), not L2 `p` / `span` /
 /// `label` / `h1`–`h6`. `WidgetKind::Text` is shared by both.
@@ -72,9 +94,8 @@ pub fn resolve_kind_from_hints(
     let role = role.unwrap_or("").to_ascii_lowercase();
     let input_type = input_type.unwrap_or("").to_ascii_lowercase();
 
-    // Retired `nana-*` aliases of HTML widgets. Vue uses the native tag.
-    if is_retired_html_alias_tag(&tag) {
-        return Some(WidgetKind::Column);
+    if retired_html_alias_replacement(&tag).is_some() {
+        return None;
     }
 
     if tag.starts_with("nana-")
@@ -195,11 +216,14 @@ pub fn resolve_kind_from_hints(
         }
         "text" => WidgetKind::Text,
         "span" | "p" | "label" | "strong" | "em" | "code" | "small" | "b" | "h1" | "h2" | "h3"
-        | "h4" | "h5" | "h6" | "output" | "pre" | "blockquote" | "dt" | "dd" | "#text" => {
+        | "h4" | "h5" | "h6" | "output" | "pre" | "blockquote" | "dt" | "dd" | "#text" | "abbr"
+        | "cite" | "q" | "kbd" | "samp" | "var" | "mark" | "time" | "ins" | "del" | "sub"
+        | "sup" | "s" | "u" | "dfn" | "data" | "ruby" | "rt" | "rp" | "bdi" | "bdo" | "wbr" => {
             WidgetKind::Text
         }
         "div" | "section" | "article" | "main" | "aside" | "nav" | "header" | "footer" | "form"
-        | "search" | "fieldset" | "dl" | "body" | "template" | "fragment" => {
+        | "search" | "fieldset" | "dl" | "body" | "template" | "fragment" | "html" | "head"
+        | "title" | "meta" | "link" | "style" | "script" | "noscript" | "base" | "math" => {
             // Direction is LayoutStyle only (CSS / class hints). Tag stays Column.
             WidgetKind::Column
         }
@@ -208,9 +232,12 @@ pub fn resolve_kind_from_hints(
         // suggestions surface through the associated `input`, `<slot>` is
         // already expanded by the Vue runtime before it reaches the host, and
         // `<map>` only positions hotspots this renderer does not support.
-        "figure" | "hgroup" | "picture" | "datalist" | "slot" | "map" => WidgetKind::Column,
+        "figure" | "hgroup" | "picture" | "datalist" | "slot" | "map" | "option" | "optgroup" => {
+            WidgetKind::Column
+        }
+        "tspan" | "pattern" | "image" | "foreignobject" | "desc" => WidgetKind::Box,
         _ if tag.is_empty() => WidgetKind::Column,
-        _ => WidgetKind::Column,
+        _ => return None,
     })
 }
 
@@ -313,6 +340,43 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "body"
             | "template"
             | "fragment"
+            | "html"
+            | "head"
+            | "title"
+            | "meta"
+            | "link"
+            | "style"
+            | "script"
+            | "noscript"
+            | "base"
+            | "math"
+            | "tspan"
+            | "pattern"
+            | "image"
+            | "foreignobject"
+            | "desc"
+            | "abbr"
+            | "cite"
+            | "q"
+            | "kbd"
+            | "samp"
+            | "var"
+            | "mark"
+            | "time"
+            | "ins"
+            | "del"
+            | "sub"
+            | "sup"
+            | "s"
+            | "u"
+            | "dfn"
+            | "data"
+            | "ruby"
+            | "rt"
+            | "rp"
+            | "bdi"
+            | "bdo"
+            | "wbr"
             | "h1"
             | "h2"
             | "h3"
@@ -344,31 +408,28 @@ fn is_html_tag_name(tag: &str) -> bool {
     )
 }
 
-/// `nana-*` tags that used to alias HTML widgets. They are not Runtime tags.
-fn is_retired_html_alias_tag(tag: &str) -> bool {
-    matches!(
-        tag,
-        "nana-button"
-            | "nana-text-input"
-            | "nana-input"
-            | "nana-textarea"
-            | "nana-select"
-            | "nana-progress"
-            | "nana-divider"
-            | "nana-dialog"
-            | "nana-checkbox"
-            | "nana-range-field"
-            | "nana-range"
-            | "nana-table"
-            | "nana-table-row"
-            | "nana-table-cell"
-            | "nana-search"
-            | "nana-list"
-            | "nana-list-item"
-            | "nana-number-input"
-            | "nana-level-meter"
-            | "nana-settings-collapsible-card"
-    )
+fn retired_html_alias_replacement(tag: &str) -> Option<&'static str> {
+    Some(match tag {
+        "nana-button" => "button",
+        "nana-text-input" | "nana-input" => "input",
+        "nana-textarea" => "textarea",
+        "nana-select" => "select",
+        "nana-progress" => "progress",
+        "nana-divider" => "hr",
+        "nana-dialog" => "dialog",
+        "nana-checkbox" => "input",
+        "nana-range-field" | "nana-range" => "input",
+        "nana-table" => "table",
+        "nana-table-row" => "tr",
+        "nana-table-cell" => "td",
+        "nana-search" => "search-dropdown",
+        "nana-list" => "ul",
+        "nana-list-item" => "li",
+        "nana-number-input" => "input",
+        "nana-level-meter" => "meter",
+        "nana-settings-collapsible-card" => "details",
+        _ => return None,
+    })
 }
 
 fn class_token_kind(token: &str) -> Option<WidgetKind> {
@@ -1140,8 +1201,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-button", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-button alias is not a Button"
+            None,
+            "retired nana-button alias is not a Button or layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("dialog", None, None, None),
@@ -1149,8 +1210,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-dialog", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-dialog alias is not a Dialog"
+            None,
+            "retired nana-dialog alias is not a Dialog or layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("input", None, None, Some("checkbox")),
@@ -1260,7 +1321,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-form", None, None, None),
-            Some(WidgetKind::Column)
+            None,
+            "nana-form is not a registered control or HTML layout tag"
         );
         assert_eq!(
             resolve_kind_from_hints("form", None, None, None),
@@ -1274,8 +1336,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-search", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-search alias is not SearchDropdown"
+            None,
+            "retired nana-search alias is not SearchDropdown or a layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("search-dropdown", None, None, None),
@@ -1295,8 +1357,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-level-meter", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-level-meter alias is not LevelMeter"
+            None,
+            "retired nana-level-meter alias is not LevelMeter or a layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("meter", None, None, None),
@@ -1392,8 +1454,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-number-input", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-number-input alias is not NumberInput"
+            None,
+            "retired nana-number-input alias is not NumberInput or a layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("input", None, None, Some("number")),
@@ -1453,8 +1515,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-table", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-table alias is not Table"
+            None,
+            "retired nana-table alias is not Table or a layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-desktop-shell", None, None, None),
@@ -1470,8 +1532,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-settings-collapsible-card", None, None, None),
-            Some(WidgetKind::Column),
-            "retired nana-settings-collapsible-card alias is not the disclosure"
+            None,
+            "retired nana-settings-collapsible-card alias is not the disclosure or a layout box"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-gpu", None, None, None),
@@ -1483,7 +1545,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-virtual-list", None, None, None),
-            Some(WidgetKind::Column)
+            None,
+            "virtual windows use nana-scroll-view, not a second tag"
         );
         assert_eq!(
             resolve_kind_from_hints(
@@ -1554,5 +1617,35 @@ mod tests {
         assert!((level_meter_value(&props) - 0.25).abs() < f32::EPSILON);
         props.progress = 0.8;
         assert!((level_meter_value(&props) - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn unknown_tags_error_instead_of_becoming_layout_boxes() {
+        assert_eq!(resolve_kind_from_hints("foo-bar", None, None, None), None);
+        assert_eq!(
+            resolve_kind_from_hints("html", None, None, None),
+            Some(WidgetKind::Column)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("option", None, None, None),
+            Some(WidgetKind::Column)
+        );
+        assert_eq!(
+            resolve_host_tag_kind("nana-button", None, None, None, |_| true)
+                .unwrap_err()
+                .as_str(),
+            "retired tag `nana-button`; use `button`"
+        );
+        assert_eq!(
+            resolve_host_tag_kind("foo-bar", None, None, None, |_| false)
+                .unwrap_err()
+                .as_str(),
+            "unknown tag: foo-bar"
+        );
+        assert_eq!(
+            resolve_host_tag_kind("preview-card", None, None, None, |tag| tag
+                == "preview-card"),
+            Ok(WidgetKind::Column)
+        );
     }
 }
