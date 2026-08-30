@@ -141,6 +141,10 @@ function applyAppearance() {
       "--lilia-backdrop-opacity",
       String(backdropOpacityRef.value),
     );
+    el.style.setProperty(
+      "--nana-backdrop-opacity",
+      String(backdropOpacityRef.value),
+    );
     el.style.setProperty("--app-corner-radius", `${cornerRadiusRef.value}px`);
   }
 }
