@@ -100,6 +100,7 @@ impl GallerySettingsRuntime {
             let appearance = ui.leaf(
                 AppearanceSection::new(state.theme, state.appearance)
                     .platform_hint(nana_ui::hosted_platform_material_support().hint())
+                    .available_materials(nana_ui::hosted_window_material_modes())
                     .material_status(state.material_outcome.status_label()),
             );
             let about = ui.leaf(AboutSection::new(settings_view::gallery_about_metadata()));
@@ -322,6 +323,7 @@ impl GallerySettingsRuntime {
             section.platform_hint = Some(Arc::from(
                 nana_ui::hosted_platform_material_support().hint(),
             ));
+            section.available_materials = nana_ui::hosted_window_material_modes();
             section.material_status = Some(Arc::from(state.material_outcome.status_label()));
         });
         let _ = context.update_component(self.about, |section, _| {

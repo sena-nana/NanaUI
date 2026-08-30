@@ -16,12 +16,13 @@ import {
   BACKDROP_OPACITY_MIN,
   CORNER_RADIUS_MAX,
   CORNER_RADIUS_MIN,
+  backdropModeIsNative,
   installCornerStyle,
   installNativeAppearance,
   resetAppearanceDefaults,
 } from "./appearance.js";
 
-const BACKDROP_OPTIONS = [
+const BASE_BACKDROP_OPTIONS = [
   {
     value: "solid",
     label: "实色",
@@ -34,6 +35,42 @@ const BACKDROP_OPTIONS = [
   },
 ];
 
+const NATIVE_BACKDROP_OPTIONS = [
+  {
+    value: "mica",
+    label: "Mica",
+    support: "mica-acrylic",
+    agentId: "settings.appearance.backdrop.mica",
+  },
+  {
+    value: "acrylic",
+    label: "Acrylic",
+    support: "mica-acrylic",
+    agentId: "settings.appearance.backdrop.acrylic",
+  },
+  {
+    value: "vibrancy",
+    label: "Vibrancy",
+    support: "vibrancy",
+    agentId: "settings.appearance.backdrop.vibrancy",
+  },
+];
+
+function readMaterialSupport() {
+  const globalSupport = globalThis.__nanaMaterialSupport;
+  if (typeof globalSupport === "string" && globalSupport) return globalSupport;
+  const dataset = globalThis.document?.documentElement?.dataset?.materialSupport;
+  return typeof dataset === "string" ? dataset : "";
+}
+
+function backdropOptions(support) {
+  if (!support || support === "none") return BASE_BACKDROP_OPTIONS;
+  const extras = NATIVE_BACKDROP_OPTIONS.filter(
+    (option) => support === "all" || option.support === support,
+  );
+  return BASE_BACKDROP_OPTIONS.concat(extras);
+}
+
 export const NanaAppearancePanel = {
   name: "NanaAppearancePanel",
   props: {
@@ -41,6 +78,7 @@ export const NanaAppearancePanel = {
     description: { type: String, default: "" },
     materialStatus: { type: String, default: "" },
     platformHint: { type: String, default: "" },
+    materialSupport: { type: String, default: "" },
   },
   setup(props, { attrs }) {
     const appearance = installNativeAppearance();
@@ -49,8 +87,12 @@ export const NanaAppearancePanel = {
     const theme = computed(() =>
       appearance.theme.value === "dark" ? "dark" : "light",
     );
-    const backdrop = computed(() =>
-      appearance.backdropMode.value === "solid" ? "solid" : "translucent",
+    const backdrop = computed(() => appearance.backdropMode.value);
+    const materialSupport = computed(
+      () => props.materialSupport || readMaterialSupport(),
+    );
+    const materialOptions = computed(() =>
+      backdropOptions(materialSupport.value),
     );
     const backdropTarget = computed(() =>
       appearance.backdropTarget.value === "main" ? "main" : "sidebar",
@@ -61,18 +103,22 @@ export const NanaAppearancePanel = {
     );
     const titlebarFollow = computed(() => !!appearance.titlebarFollowsSidebar.value);
     const workspaceCorners = computed(() => !!appearance.workspaceCorners.value);
-    const solidMode = computed(() => backdrop.value === "solid");
+    const solidMode = computed(() => !backdropModeIsNative(backdrop.value));
     const titlebarFollowDisabled = computed(
       () => solidMode.value || backdropTarget.value !== "sidebar",
     );
     const materialStatusText = computed(() => {
       if (props.materialStatus) return props.materialStatus;
+      const native = NATIVE_BACKDROP_OPTIONS.find(
+        (option) => option.value === backdrop.value,
+      );
+      if (native) return native.label;
       return solidMode.value ? "实色背景" : "透明材质";
     });
     const materialHint = computed(
       () =>
         props.platformHint ||
-        "实色或窗口透明由设置选择；系统模糊由应用显式申请。Hosted GPU 不提供恒 no-op 的 Vibrancy 选项。",
+        "实色、窗口透明与当前设备提供的系统模糊（Mica / Acrylic / Vibrancy）由设置选择。",
     );
 
     const backdropTargetOptions = computed(() => [
@@ -152,7 +198,7 @@ export const NanaAppearancePanel = {
                     default: () =>
                       h(NanaSegmented, {
                         modelValue: backdrop.value,
-                        options: BACKDROP_OPTIONS,
+                        options: materialOptions.value,
                         "aria-label": "窗口材质",
                         "data-agent-id": "settings.appearance.backdrop.control",
                         "onUpdate:modelValue": (value) =>

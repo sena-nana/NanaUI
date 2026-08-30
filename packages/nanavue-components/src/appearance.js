@@ -110,6 +110,22 @@ export function getLiliaSettings() {
   return settingsModel;
 }
 
+const NATIVE_BACKDROPS = new Set(["mica", "acrylic", "vibrancy"]);
+
+function normalizeBackdropMode(raw) {
+  const value = String(raw || "solid").toLowerCase();
+  if (value === "solid") return "solid";
+  if (NATIVE_BACKDROPS.has(value)) return value;
+  if (value === "translucent" || value === "transparent" || value === "system") {
+    return "translucent";
+  }
+  return "solid";
+}
+
+export function backdropModeIsNative(mode) {
+  return NATIVE_BACKDROPS.has(String(mode || "").toLowerCase());
+}
+
 function applyAppearance() {
   const el = docEl();
   if (!el) return;
@@ -132,19 +148,7 @@ function applyAppearance() {
 /** Nana replacement for installTauriNativeAppearanceAdapter + installNativeAppearance. */
 export function installNativeAppearance() {
   themeRef.value = readStorage(STORAGE_THEME, "light") === "dark" ? "dark" : "light";
-  const storedBackdrop = readStorage(STORAGE_BACKDROP, "solid");
-  backdropRef.value =
-    storedBackdrop === "translucent" ||
-    storedBackdrop === "system" ||
-    storedBackdrop === "mica" ||
-    storedBackdrop === "acrylic"
-      ? storedBackdrop === "mica" || storedBackdrop === "acrylic" || storedBackdrop === "system"
-        ? "translucent"
-        : storedBackdrop
-      : "solid";
-  if (backdropRef.value !== "solid" && backdropRef.value !== "translucent") {
-    backdropRef.value = "solid";
-  }
+  backdropRef.value = normalizeBackdropMode(readStorage(STORAGE_BACKDROP, "solid"));
   const storedTarget = readStorage(
     STORAGE_BACKDROP_TARGET,
     uiConfig.appearance?.backdropTarget || "sidebar",
@@ -183,11 +187,7 @@ export function installNativeAppearance() {
       applyAppearance();
     },
     setBackdropMode(next) {
-      const raw = String(next || "solid");
-      backdropRef.value =
-        raw === "translucent" || raw === "system" || raw === "mica" || raw === "acrylic"
-          ? "translucent"
-          : "solid";
+      backdropRef.value = normalizeBackdropMode(next);
       writeStorage(STORAGE_BACKDROP, backdropRef.value);
       applyAppearance();
     },

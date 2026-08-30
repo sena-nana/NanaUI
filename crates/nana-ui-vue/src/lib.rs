@@ -275,6 +275,16 @@ impl NanaTextureHandle {
     }
 }
 
+fn hosted_material_support_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "none"
+    } else if cfg!(target_os = "windows") {
+        "mica-acrylic"
+    } else {
+        "none"
+    }
+}
+
 /// Build L3 [`nana_ui::ThemeTokens`] from a semantic snapshot + native material flag.
 ///
 /// Applies Appearance `backdrop_*` / `titlebar_follows_sidebar` into region alphas.
@@ -1463,6 +1473,7 @@ impl VueHost {
         // Same store `sync_appearance_shared` reads — must not lag behind bridge.
         if let Ok(mut web) = self.web_api.lock() {
             web.set_document_dataset("theme", label);
+            web.set_document_dataset("materialSupport", hosted_material_support_key());
         }
         {
             let mut doc = self.document.lock().expect("vue doc");

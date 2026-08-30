@@ -10,6 +10,7 @@ export {
   provideLiliaSettings,
   getLiliaSettings,
   installNativeAppearance,
+  backdropModeIsNative,
   installCornerStyle,
   installGlobalScrollbarVisibility,
   installLiliaContextMenu,

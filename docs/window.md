@@ -56,7 +56,7 @@ IME：焦点输入把 `TextInputRequest::cursor_area` 交给 `set_ime_cursor_are
 
 ## 材质
 
-通过 `RuntimeProgram::window_material_mode` 申请**一种**系统效果。失败回实色，并给出原因，不会改试另一种。
+通过 `RuntimeProgram::window_material_mode` 申请**一种**系统效果。Appearance 设置在宿主提供时可选 Mica / Acrylic / Vibrancy；失败回实色，并给出原因，不会改试另一种。
 
 | 平台 | 可申请 | 失败时 |
 | --- | --- | --- |
