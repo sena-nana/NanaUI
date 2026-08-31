@@ -138,8 +138,9 @@ impl PaintStyle {
                 stops,
             } => RadialGradient::new(
                 *start,
+                start_radius.max(0.0),
                 *end,
-                (*end_radius - *start_radius).abs().max(f32::EPSILON),
+                end_radius.max(0.0),
                 alpha_stops(stops, alpha),
                 SpreadMode::Pad,
                 Transform::identity(),
@@ -171,6 +172,7 @@ impl PaintStyle {
             shader,
             blend_mode,
             anti_alias: true,
+            colorspace: Default::default(),
             force_hq_pipeline: false,
         }
     }

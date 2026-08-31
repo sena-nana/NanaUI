@@ -1,6 +1,6 @@
 //! V8-only Vue `runtime-core` probe.
 //!
-//! Uses crates.io `v8 = "150.4.0"` (rusty_v8 successor).
+//! Uses crates.io `v8 = "152.2.0"` (rusty_v8 successor).
 //!
 //! Stops at JS execution + HostApiRegistry callbacks. Product retained/render is
 //! Runtime/UiScene; desktop windows use `scene-view` → `SceneWgpuPainter`.
