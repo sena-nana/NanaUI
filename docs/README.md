@@ -29,6 +29,14 @@
 | --- | --- |
 | Vue 怎么进这棵树 | [Vue](vue.md) |
 | 兼容路径里 CSS 能写到哪 | [布局](layout.md) |
+| 宿主 API / Fetch 安全边界 | [应用 API](application-api.md) |
+
+L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
+
+- Fetch 只有缓冲式正文；流式 body、`FormData`、cookie、cache、CORS/preflight 未做，非默认 Request 选项明确拒绝。
+- WebSocket 只留接口与 shim，需宿主注入 socket host，框架不带默认传输。
+- CSS：RTL 不翻转 flex/grid 轴（只映射逻辑 inline padding/text-align）；嵌套 `repeat(auto-fit/auto-fill)` 与 subgrid 未做。`position: sticky` 与整表 `repeat(auto-fit)` 已交付。
+- 完整浏览器 DOM/CSSOM、未经 Nana 入口的 `@vue/runtime-dom` 生产 bundle、WebGL、真实 WebView 明确不做。
 
 ## 查阅
 
