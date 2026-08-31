@@ -18,4 +18,4 @@ nana-ui-platform = { workspace = true, features = ["clipboard", "fetch", "ws"] }
 tiny-skia.workspace = true
 nana-svg-raster.workspace = true
 image.workspace = true
-fontdue.workspace = true
+cosmic-text.workspace = true

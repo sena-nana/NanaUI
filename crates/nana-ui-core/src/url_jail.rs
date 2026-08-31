@@ -179,6 +179,26 @@ fn is_windows_drive_path(path: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
+/// path → `file://` URL, the inverse of [`file_url_to_path`]. Percent-encodes
+/// every byte outside the RFC 3986 unreserved set (plus `/` and `:`).
+pub fn path_to_file_url(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    #[cfg(windows)]
+    let text = text.replace('\\', "/");
+    let trimmed = text.strip_prefix('/').unwrap_or(&text);
+    let encoded: String = trimmed
+        .as_bytes()
+        .iter()
+        .map(|&b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    format!("file:///{encoded}")
+}
+
 fn is_local_file_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host == "127.0.0.1"

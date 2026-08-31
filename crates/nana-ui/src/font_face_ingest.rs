@@ -4,7 +4,6 @@
 //! [`resolve_background_image_url`] / document URL base.
 
 use std::collections::HashSet;
-use std::io::Read;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -129,27 +128,5 @@ fn decode_data_url_bytes(url: &str) -> Option<Vec<u8>> {
 }
 
 fn fetch_http_bytes(url: &str) -> Option<Vec<u8>> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(FONT_FACE_FETCH_TIMEOUT))
-        .http_status_as_error(false)
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
-    let mut response = agent.get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let mut reader = response.body_mut().as_reader();
-    let mut bytes = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = reader.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        if bytes.len().saturating_add(n) > FONT_FACE_MAX_BYTES {
-            return None;
-        }
-        bytes.extend_from_slice(&buf[..n]);
-    }
-    Some(bytes)
+    nana_ui_platform::fetch_bytes_blocking(url, FONT_FACE_FETCH_TIMEOUT, FONT_FACE_MAX_BYTES as u64)
 }
