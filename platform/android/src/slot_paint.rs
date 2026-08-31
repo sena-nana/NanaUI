@@ -6,7 +6,8 @@
 //! Pointer + KeyEvent input is applied through [`crate::slot_runtime::SlotRuntime`].
 //! The soft keyboard is shown/hidden from [`Self::text_input_focused`]; committed
 //! text arrives as hardware-style KeyEvents (NativeActivity has no InputConnection,
-//! so no composition/preedit). AX stays unimplemented.
+//! so no composition/preedit). Accessibility publication lives in [`crate::slot_ax`]
+//! (phase one: name/role/value; reader actions are not driven back into Runtime).
 
 use nana_ui::{ScenePaintViewport, SceneWgpuPainter};
 use nana_ui_core::PhysicalRect;
