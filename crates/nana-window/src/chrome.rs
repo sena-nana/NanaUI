@@ -69,7 +69,8 @@ pub fn resize_custom_frame<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameR
 }
 
 /// Captures a window frame so later pointer moves can resize origin and size
-/// without a nested OS size-move loop.
+/// without a nested OS size-move loop. The window's minimum track size is
+/// queried once at `begin` and clamps every update; there is no max clamp.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy)]
 pub struct LiveFrameResize {
@@ -80,6 +81,7 @@ pub struct LiveFrameResize {
     height: f64,
     mouse_x: f64,
     mouse_y: f64,
+    min: (f64, f64),
 }
 
 #[cfg(target_os = "macos")]
@@ -88,6 +90,8 @@ impl LiveFrameResize {
         let window = appkit_window(window)?;
         let frame = window.frame();
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        let min_size = window.minSize();
+        let content_min = window.contentMinSize();
         Some(Self {
             edge,
             origin_x: frame.origin.x,
@@ -96,6 +100,10 @@ impl LiveFrameResize {
             height: frame.size.height,
             mouse_x: mouse.x,
             mouse_y: mouse.y,
+            min: (
+                min_size.width.max(content_min.width),
+                min_size.height.max(content_min.height),
+            ),
         })
     }
 
@@ -104,19 +112,12 @@ impl LiveFrameResize {
             return false;
         };
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
-        let min = window.minSize();
-        let content_min = window.contentMinSize();
-        let max = window.maxSize();
         let next = live_frame_after_delta(
             [self.origin_x, self.origin_y, self.width, self.height],
             mouse.x - self.mouse_x,
             mouse.y - self.mouse_y,
             self.edge,
-            (
-                min.width.max(content_min.width),
-                min.height.max(content_min.height),
-            ),
-            (max.width, max.height),
+            self.min,
             false,
         );
         window.setFrame_display(
@@ -147,6 +148,7 @@ impl LiveFrameResize {
             }
             windows_sys::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
         }
+        let min = win32_min_track_size(hwnd);
         Some(Self {
             edge,
             origin_x: f64::from(rect.left),
@@ -155,6 +157,7 @@ impl LiveFrameResize {
             height: f64::from(rect.bottom - rect.top),
             mouse_x: f64::from(mouse.x),
             mouse_y: f64::from(mouse.y),
+            min,
         })
     }
 
@@ -166,14 +169,12 @@ impl LiveFrameResize {
         if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) } == 0 {
             return false;
         }
-        let (min, max) = win32_track_size(hwnd);
         let next = live_frame_after_delta(
             [self.origin_x, self.origin_y, self.width, self.height],
             f64::from(mouse.x) - self.mouse_x,
             f64::from(mouse.y) - self.mouse_y,
             self.edge,
-            min,
-            max,
+            self.min,
             true,
         );
         unsafe {
@@ -251,7 +252,6 @@ fn live_frame_after_delta(
     dy: f64,
     edge: FrameResizeEdge,
     min: (f64, f64),
-    max: (f64, f64),
     y_down: bool,
 ) -> [f64; 4] {
     let [mut x, mut y, mut width, mut height] = start;
@@ -290,15 +290,10 @@ fn live_frame_after_delta(
         y += dy;
         height -= dy;
     }
-    let (min, max) = track_limits(min, max);
-    let min_w = min.0;
-    let max_w = max.0;
-    let min_h = min.1;
-    let max_h = max.1;
     let right = x + width;
     let bottom = y + height;
-    width = width.clamp(min_w, max_w);
-    height = height.clamp(min_h, max_h);
+    width = width.max(min.0);
+    height = height.max(min.1);
     if west {
         x = right - width;
     }
@@ -306,17 +301,6 @@ fn live_frame_after_delta(
         y = bottom - height;
     }
     [x, y, width, height]
-}
-
-fn track_limits(min: (f64, f64), max: (f64, f64)) -> ((f64, f64), (f64, f64)) {
-    let min = (min.0.max(1.0), min.1.max(1.0));
-    (
-        min,
-        (
-            if max.0 > min.0 { max.0 } else { 100_000.0 },
-            if max.1 > min.1 { max.1 } else { 100_000.0 },
-        ),
-    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -338,7 +322,7 @@ fn win32_hwnd<W: HasWindowHandle + ?Sized>(
 }
 
 #[cfg(target_os = "windows")]
-fn win32_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> ((f64, f64), (f64, f64)) {
+fn win32_min_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> (f64, f64) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, SendMessageW, WM_GETMINMAXINFO};
 
     let mut info = MINMAXINFO::default();
@@ -350,15 +334,12 @@ fn win32_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> ((f64, f64), 
             std::ptr::from_mut(&mut info) as isize,
         );
     }
-    track_limits(
-        (
-            f64::from(info.ptMinTrackSize.x),
-            f64::from(info.ptMinTrackSize.y),
-        ),
-        (
-            f64::from(info.ptMaxTrackSize.x),
-            f64::from(info.ptMaxTrackSize.y),
-        ),
+    // The pinned winit proc fills only `ptMinTrackSize` (from the window's
+    // min size) and never calls `DefWindowProc`, so `ptMaxTrackSize` stays at
+    // its default of zero. Only the min is meaningful here.
+    (
+        f64::from(info.ptMinTrackSize.x),
+        f64::from(info.ptMinTrackSize.y),
     )
 }
 
@@ -512,10 +493,9 @@ mod tests {
     }
 
     #[test]
-    fn live_frame_grows_and_clamps_from_each_edge() {
+    fn live_frame_grows_and_clamps_to_min_from_each_edge() {
         let start = [100.0, 200.0, 400.0, 300.0];
         let min = (120.0, 80.0);
-        let max = (800.0, 600.0);
         let cases = [
             (
                 40.0,
@@ -551,35 +531,27 @@ mod tests {
                 500.0,
                 400.0,
                 FrameResizeEdge::NorthEast,
-                [100.0, 200.0, 800.0, 600.0],
+                [100.0, 200.0, 900.0, 700.0],
             ),
         ];
         for (dx, dy, edge, expected) in cases {
             assert_eq!(
-                live_frame_after_delta(start, dx, dy, edge, min, max, false),
+                live_frame_after_delta(start, dx, dy, edge, min, false),
                 expected
             );
         }
         assert_eq!(
-            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::South, min, max, true),
+            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::South, min, true),
             [100.0, 200.0, 400.0, 330.0]
         );
         assert_eq!(
-            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::North, min, max, true),
+            live_frame_after_delta(start, 0.0, 30.0, FrameResizeEdge::North, min, true),
             [100.0, 230.0, 400.0, 270.0]
         );
+        // Growth is unbounded: a live drag must never clamp to a stale max.
         assert_eq!(
-            live_frame_after_delta(
-                start,
-                0.0,
-                0.0,
-                FrameResizeEdge::East,
-                (120.0, 80.0),
-                (0.0, 0.0),
-                true,
-            ),
-            start,
-            "unset max track size must not clamp a live window down to min"
+            live_frame_after_delta(start, 2_000.0, 0.0, FrameResizeEdge::East, min, true),
+            [100.0, 200.0, 2_400.0, 300.0]
         );
         assert_eq!(hit_test_for_edge(FrameResizeEdge::West), 10);
         assert_eq!(hit_test_for_edge(FrameResizeEdge::SouthEast), 17);
