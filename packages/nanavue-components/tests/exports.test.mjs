@@ -200,6 +200,7 @@ describe("L2 overlay / form exports", () => {
     const src = readFileSync(join(root, "src/NanaGraphCanvas.js"), "utf8");
     assert.match(src, /viewport:\s*props\.viewport/);
     assert.match(src, /selection:\s*props\.selection/);
+    assert.match(src, /slots\.default/);
   });
 
   test("NanaMarkdown forwards mermaid/math renderer identity", () => {

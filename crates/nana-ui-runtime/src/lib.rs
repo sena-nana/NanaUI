@@ -60,7 +60,10 @@ mod workspace;
 mod world;
 mod xy_pad;
 
-pub use animation::{AnimationFrame, AnimationId, AnimationSample, AnimationSpec, Easing};
+pub use animation::{
+    AnimationDirection, AnimationFillMode, AnimationFrame, AnimationId, AnimationIteration,
+    AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
+};
 pub use builtin_components::NanaBuiltinComponents;
 pub use calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
@@ -118,8 +121,8 @@ pub use gpu_slots::{
 };
 pub use graph_canvas::{
     GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
-    GraphInteraction, GraphNodePaint, GraphPointerButton, GraphPortPaint, GraphScrollDelta,
-    wheel_zoom_factor,
+    GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton, GraphPortPaint,
+    GraphScrollDelta, wheel_zoom_factor,
 };
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
@@ -140,20 +143,22 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FrameStage,
+    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection,
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
     GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
     GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
     GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
     GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
-    JustifySpec, KeyContext, LayoutStyle, LengthSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, StatusTone, TabDragGroup, TabDragLease, TabDragRect,
-    TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, TextAlignSpec,
-    ThemeMode, TreeNavigation, TreeNode, TreeViewEvent, ValidationIntent, VirtualListLayout,
-    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
-    VirtualListMount, VirtualListWindow, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
-    VirtualTreeWindow, WorkCounters, graph_node_fitted_height, port_tangent, tree_navigation_event,
+    JustifySpec, KeyContext, LayoutStyle, LengthSpec, LineBreakSpec, PopoverAlignment,
+    PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone, TabDragGroup, TabDragLease,
+    TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor, TableNavigation,
+    TextAlignSpec, ThemeMode, TreeNavigation, TreeNode, TreeViewEvent, ValidationIntent,
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualTableLayout,
+    VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout,
+    VirtualTreeRow, VirtualTreeWindow, WordBreakSpec, WorkCounters, graph_node_fitted_height,
+    port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,

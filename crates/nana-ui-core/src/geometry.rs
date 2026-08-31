@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::layout::{RegionId, RegionPlacement, RegionScope, RegionState, WorkspaceLayout};
 
 /// Fixed chrome dimensions used by the NanaUI application shell.
@@ -19,16 +21,44 @@ impl LogicalPoint {
 
 /// How a source image or host texture maps into its layout box.
 ///
-/// [`Self::Fill`] keeps the historical stretch-to-bounds sampling. [`Self::Contain`]
-/// letterboxes inside the box by shrinking the destination rect; the painter
-/// samples the full source into that rect (no extra GPU copy).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+/// CSS `object-fit` on `<img>` uses this at the content box. The painter
+/// samples the full source into the destination rect and clips to the layout
+/// box — no extra GPU copy. [`Self::Fill`] stretches. [`Self::Contain`]
+/// letterboxes. [`Self::Cover`] overflow-crops. [`Self::None`] keeps intrinsic
+/// size. [`Self::ScaleDown`] is `none` or `contain`, whichever is smaller.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ContentFit {
-    /// Stretch the source to the layout box.
+    /// Stretch the source to the layout box (`object-fit: fill`).
     #[default]
     Fill,
     /// Keep the source aspect ratio and letterbox inside the layout box.
     Contain,
+    /// Keep the source aspect ratio and overflow-crop to fill the layout box.
+    Cover,
+    /// Keep the source's intrinsic size, centered (`object-fit: none`).
+    None,
+    /// `none` when the source fits, otherwise `contain` (`object-fit: scale-down`).
+    ScaleDown,
+}
+
+impl ContentFit {
+    /// Parse a CSS `object-fit` keyword. Unknown or empty values are `None`.
+    pub fn from_object_fit(value: &str) -> Option<Self> {
+        match value
+            .trim()
+            .trim_end_matches("!important")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "fill" => Some(Self::Fill),
+            "contain" => Some(Self::Contain),
+            "cover" => Some(Self::Cover),
+            "none" => Some(Self::None),
+            "scale-down" => Some(Self::ScaleDown),
+            _ => None,
+        }
+    }
 }
 
 /// A logical-pixel rectangle that can be handed to a content view.
@@ -55,25 +85,18 @@ impl LogicalRect {
         match fit {
             ContentFit::Fill => self,
             ContentFit::Contain => contain_rect(self, content_width, content_height),
+            ContentFit::Cover => cover_rect(self, content_width, content_height),
+            ContentFit::None => none_rect(self, content_width, content_height),
+            ContentFit::ScaleDown => scale_down_rect(self, content_width, content_height),
         }
     }
 }
 
 fn contain_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
-    if !content_width.is_finite()
-        || !content_height.is_finite()
-        || content_width <= 0.0
-        || content_height <= 0.0
-        || frame.width <= 0.0
-        || frame.height <= 0.0
-    {
+    let Some(content_aspect) = fit_aspects(frame, content_width, content_height) else {
         return frame;
-    }
+    };
     let frame_aspect = frame.width / frame.height;
-    let content_aspect = content_width / content_height;
-    if !frame_aspect.is_finite() || !content_aspect.is_finite() {
-        return frame;
-    }
     if content_aspect > frame_aspect {
         let height = frame.width / content_aspect;
         LogicalRect::new(
@@ -91,6 +114,74 @@ fn contain_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> 
             frame.height,
         )
     }
+}
+
+fn cover_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
+    let Some(content_aspect) = fit_aspects(frame, content_width, content_height) else {
+        return frame;
+    };
+    let frame_aspect = frame.width / frame.height;
+    if content_aspect > frame_aspect {
+        let width = frame.height * content_aspect;
+        LogicalRect::new(
+            frame.x + (frame.width - width) * 0.5,
+            frame.y,
+            width,
+            frame.height,
+        )
+    } else {
+        let height = frame.width / content_aspect;
+        LogicalRect::new(
+            frame.x,
+            frame.y + (frame.height - height) * 0.5,
+            frame.width,
+            height,
+        )
+    }
+}
+
+fn none_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
+    if !usable_fit_size(content_width, content_height) {
+        return frame;
+    }
+    LogicalRect::new(
+        frame.x + (frame.width - content_width) * 0.5,
+        frame.y + (frame.height - content_height) * 0.5,
+        content_width,
+        content_height,
+    )
+}
+
+fn scale_down_rect(frame: LogicalRect, content_width: f32, content_height: f32) -> LogicalRect {
+    if usable_fit_size(content_width, content_height)
+        && content_width <= frame.width
+        && content_height <= frame.height
+    {
+        none_rect(frame, content_width, content_height)
+    } else {
+        contain_rect(frame, content_width, content_height)
+    }
+}
+
+fn fit_aspects(frame: LogicalRect, content_width: f32, content_height: f32) -> Option<f32> {
+    if !usable_fit_size(content_width, content_height) || frame.width <= 0.0 || frame.height <= 0.0
+    {
+        return None;
+    }
+    let frame_aspect = frame.width / frame.height;
+    let content_aspect = content_width / content_height;
+    if !frame_aspect.is_finite() || !content_aspect.is_finite() {
+        None
+    } else {
+        Some(content_aspect)
+    }
+}
+
+fn usable_fit_size(content_width: f32, content_height: f32) -> bool {
+    content_width.is_finite()
+        && content_height.is_finite()
+        && content_width > 0.0
+        && content_height > 0.0
 }
 
 /// A physical-pixel rectangle derived from a logical rectangle and scale factor.
@@ -535,6 +626,58 @@ mod tests {
         assert_eq!(contained.height, 100.0);
         assert!((contained.width - 50.0).abs() < f32::EPSILON);
         assert!((contained.x - 75.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn cover_crops_a_wide_source_in_a_tall_frame() {
+        use super::ContentFit;
+        let frame = LogicalRect::new(10.0, 20.0, 100.0, 200.0);
+        let covered = frame.fitted(200.0, 100.0, ContentFit::Cover);
+        assert_eq!(covered.y, 20.0);
+        assert_eq!(covered.height, 200.0);
+        assert!((covered.width - 400.0).abs() < f32::EPSILON);
+        assert!((covered.x - (10.0 - 150.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn none_centers_intrinsic_size() {
+        use super::ContentFit;
+        let frame = LogicalRect::new(0.0, 0.0, 200.0, 100.0);
+        let dest = frame.fitted(50.0, 40.0, ContentFit::None);
+        assert!((dest.x - 75.0).abs() < f32::EPSILON);
+        assert!((dest.y - 30.0).abs() < f32::EPSILON);
+        assert_eq!(dest.width, 50.0);
+        assert_eq!(dest.height, 40.0);
+    }
+
+    #[test]
+    fn scale_down_uses_none_when_source_fits_and_contain_when_it_does_not() {
+        use super::ContentFit;
+        let frame = LogicalRect::new(0.0, 0.0, 100.0, 100.0);
+        let small = frame.fitted(40.0, 20.0, ContentFit::ScaleDown);
+        assert_eq!(small, frame.fitted(40.0, 20.0, ContentFit::None));
+        let large = frame.fitted(200.0, 100.0, ContentFit::ScaleDown);
+        assert_eq!(large, frame.fitted(200.0, 100.0, ContentFit::Contain));
+    }
+
+    #[test]
+    fn object_fit_keywords_map_to_content_fit() {
+        use super::ContentFit;
+        assert_eq!(
+            ContentFit::from_object_fit("cover"),
+            Some(ContentFit::Cover)
+        );
+        assert_eq!(
+            ContentFit::from_object_fit("  CONTAIN !important "),
+            Some(ContentFit::Contain)
+        );
+        assert_eq!(
+            ContentFit::from_object_fit("scale-down"),
+            Some(ContentFit::ScaleDown)
+        );
+        assert_eq!(ContentFit::from_object_fit("none"), Some(ContentFit::None));
+        assert_eq!(ContentFit::from_object_fit("fill"), Some(ContentFit::Fill));
+        assert!(ContentFit::from_object_fit("auto").is_none());
     }
 
     fn region<'a>(geometry: &'a WorkspaceGeometry, id: &RegionId) -> &'a super::RegionRect {

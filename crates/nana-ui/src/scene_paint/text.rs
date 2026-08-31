@@ -1,18 +1,17 @@
 use bytemuck::{Pod, Zeroable};
-use cosmic_text::{
-    Align, Attrs, Buffer, Color, FeatureTag, FontFeatures, Metrics, Shaping, SwashCache,
-    SwashContent,
-};
+use cosmic_text::{Align, Buffer, Color, Metrics, Shaping, SwashCache, SwashContent};
 use nana_ui_core::LineHeightSpec;
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
-use nana_ui_scene::SceneTextSpan;
+use nana_ui_scene::{SceneTextOpenType, SceneTextSpan};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
 use super::clip::{self, LogicalRect};
 use super::color::{orthographic, pack_linear, to_rgba8, with_opacity};
 use crate::PhysicalRect;
-use crate::nana_text::{letter_spacing_em, resolve_family};
+use crate::nana_text::{
+    RTL_ISOLATE_PREFIX, RTL_ISOLATE_SUFFIX, cosmic_wrap, shape_attrs, wrap_for_css_direction,
+};
 
 const SHAPE_CACHE_CAP: usize = 512;
 const AFFINE_CACHE_CAP: usize = 128;
@@ -329,9 +328,16 @@ struct ShapeKey {
     max_lines: Option<u16>,
     shaping: u8,
     letter_spacing_bits: u32,
+    word_break: u8,
+    line_break: u8,
+    kerning: u8,
+    features: Vec<nana_ui_core::FontFeatureSetting>,
+    variations: Vec<nana_ui_core::FontVariationSetting>,
     width_bits: u32,
     height_bits: u32,
     align: u8,
+    direction: u8,
+    writing_mode: u8,
     spans: Option<Vec<(String, [u32; 4])>>,
     font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
@@ -353,9 +359,16 @@ struct ShapeKeyRef<'a> {
     max_lines: Option<u16>,
     shaping: u8,
     letter_spacing_bits: u32,
+    word_break: u8,
+    line_break: u8,
+    kerning: u8,
+    features: &'a [nana_ui_core::FontFeatureSetting],
+    variations: &'a [nana_ui_core::FontVariationSetting],
     width_bits: u32,
     height_bits: u32,
     align: u8,
+    direction: u8,
+    writing_mode: u8,
     /// `Some` only for rich text, whose span colors change the shaped attrs.
     spans: Option<&'a [(&'a str, [f32; 4])]>,
     font_features: &'a [nana_ui_core::FontFeatureSetting],
@@ -376,10 +389,17 @@ impl ShapeKeyRef<'_> {
         self.max_lines.hash(&mut hasher);
         self.shaping.hash(&mut hasher);
         self.letter_spacing_bits.hash(&mut hasher);
+        self.word_break.hash(&mut hasher);
+        self.line_break.hash(&mut hasher);
+        self.kerning.hash(&mut hasher);
+        self.features.hash(&mut hasher);
+        self.variations.hash(&mut hasher);
         self.width_bits.hash(&mut hasher);
         self.height_bits.hash(&mut hasher);
         self.align.hash(&mut hasher);
         self.font_features.hash(&mut hasher);
+        self.direction.hash(&mut hasher);
+        self.writing_mode.hash(&mut hasher);
         match self.spans {
             None => 0u8.hash(&mut hasher),
             Some(spans) => {
@@ -408,10 +428,17 @@ impl ShapeKeyRef<'_> {
             max_lines: self.max_lines,
             shaping: self.shaping,
             letter_spacing_bits: self.letter_spacing_bits,
+            word_break: self.word_break,
+            line_break: self.line_break,
+            kerning: self.kerning,
+            features: self.features.to_vec(),
+            variations: self.variations.to_vec(),
             width_bits: self.width_bits,
             height_bits: self.height_bits,
             align: self.align,
             font_features: self.font_features.to_vec(),
+            direction: self.direction,
+            writing_mode: self.writing_mode,
             spans: self.spans.map(|spans| {
                 spans
                     .iter()
@@ -436,10 +463,17 @@ impl ShapeKey {
             && self.max_lines == other.max_lines
             && self.shaping == other.shaping
             && self.letter_spacing_bits == other.letter_spacing_bits
+            && self.word_break == other.word_break
+            && self.line_break == other.line_break
+            && self.kerning == other.kerning
+            && self.features == other.features
+            && self.variations == other.variations
             && self.width_bits == other.width_bits
             && self.height_bits == other.height_bits
             && self.align == other.align
             && self.font_features == other.font_features
+            && self.direction == other.direction
+            && self.writing_mode == other.writing_mode
             && match (&self.spans, other.spans) {
                 (None, None) => true,
                 (Some(mine), Some(theirs)) => {
@@ -577,6 +611,7 @@ impl TextPipeline {
         spans: &[SceneTextSpan],
         letter_spacing: f32,
         font_features: &[nana_ui_core::FontFeatureSetting],
+        opentype: &SceneTextOpenType,
         affine: [f32; 6],
         persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
@@ -604,14 +639,26 @@ impl TextPipeline {
         let physical_width = bounds.width.max(0.0) * scale;
         let physical_height = bounds.height.max(line_height) * scale;
         let default_color = with_opacity(color.unwrap_or([0.0, 0.0, 0.0, 1.0]), opacity);
-        let attrs = text_attrs(family, weight, letter_spacing, size, font_features, italic);
+        let attrs = shape_attrs(
+            family,
+            weight,
+            letter_spacing,
+            size,
+            &opentype.features,
+            &opentype.variations,
+            opentype.kerning,
+            italic,
+        );
         let shaping = match shaping {
             TextShaping::Auto if content.is_ascii() => Shaping::Basic,
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
         };
+        let rtl = opentype.direction.is_rtl();
         let align = match horizontal {
+            TextHorizontalAlignment::Start if rtl => Some(Align::Right),
             TextHorizontalAlignment::Start => None,
             TextHorizontalAlignment::Center => Some(Align::Center),
+            TextHorizontalAlignment::End if rtl => None,
             TextHorizontalAlignment::End => Some(Align::Right),
         };
         let painted = presentation_spans(content, spans, default_color, opacity);
@@ -632,12 +679,23 @@ impl TextPipeline {
                 Shaping::Advanced => 1,
             },
             letter_spacing_bits: letter_spacing.to_bits(),
+            word_break: opentype_disc(opentype.word_break),
+            line_break: opentype_line_disc(opentype.line_break),
+            kerning: opentype_kern_disc(opentype.kerning),
+            features: &opentype.features,
+            variations: &opentype.variations,
             width_bits: physical_width.to_bits(),
             height_bits: physical_height.to_bits(),
             align: match horizontal {
                 TextHorizontalAlignment::Start => 0,
                 TextHorizontalAlignment::Center => 1,
                 TextHorizontalAlignment::End => 2,
+            },
+            direction: if opentype.direction.is_rtl() { 1 } else { 0 },
+            writing_mode: match opentype.writing_mode {
+                nana_ui_core::WritingModeSpec::HorizontalTb => 0,
+                nana_ui_core::WritingModeSpec::VerticalRl => 1,
+                nana_ui_core::WritingModeSpec::VerticalLr => 2,
             },
             spans: rich.then_some(painted.as_slice()),
             font_features,
@@ -650,7 +708,12 @@ impl TextPipeline {
                 Metrics::new(physical_size, physical_line_height),
             );
             buffer.set_size(Some(physical_width), Some(physical_height));
-            buffer.set_wrap(crate::nana_text::cosmic_wrap(wrap, wrap_break));
+            buffer.set_wrap(cosmic_wrap(
+                wrap,
+                wrap_break,
+                opentype.word_break,
+                opentype.line_break,
+            ));
             buffer.set_ellipsize(if ellipsis {
                 let limit = max_lines
                     .map(|n| cosmic_text::EllipsizeHeightLimit::Lines(n.max(1) as usize))
@@ -660,13 +723,18 @@ impl TextPipeline {
                 cosmic_text::Ellipsize::None
             });
             if rich {
-                let rich_text = painted
+                let mut rich_text = painted
                     .iter()
                     .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
                     .collect::<Vec<_>>();
+                if opentype.direction.is_rtl() {
+                    rich_text.insert(0, (RTL_ISOLATE_PREFIX, attrs.clone()));
+                    rich_text.push((RTL_ISOLATE_SUFFIX, attrs.clone()));
+                }
                 buffer.set_rich_text(rich_text, &attrs, shaping, align);
             } else {
-                buffer.set_text(content, &attrs, shaping, align);
+                let shaped = wrap_for_css_direction(content, opentype.direction);
+                buffer.set_text(&shaped, &attrs, shaping, align);
             }
             buffer.shape_until_scroll(&mut fonts, false);
             drop(fonts);
@@ -1166,43 +1234,28 @@ fn text_box_origin(
     [bounds.x, top]
 }
 
-fn text_attrs<'a>(
-    family: Option<&'a str>,
-    weight: Option<u16>,
-    letter_spacing: f32,
-    font_size: f32,
-    font_features: &[nana_ui_core::FontFeatureSetting],
-    italic: bool,
-) -> Attrs<'a> {
-    let mut attrs =
-        Attrs::new()
-            .family(resolve_family(family))
-            .weight(match weight.unwrap_or(400) {
-                0..=199 => cosmic_text::Weight::THIN,
-                200..=299 => cosmic_text::Weight::EXTRA_LIGHT,
-                300..=349 => cosmic_text::Weight::LIGHT,
-                350..=449 => cosmic_text::Weight::NORMAL,
-                450..=549 => cosmic_text::Weight::MEDIUM,
-                550..=649 => cosmic_text::Weight::SEMIBOLD,
-                650..=749 => cosmic_text::Weight::BOLD,
-                750..=849 => cosmic_text::Weight::EXTRA_BOLD,
-                _ => cosmic_text::Weight::BLACK,
-            });
-    if italic {
-        attrs = attrs.style(cosmic_text::Style::Italic);
+fn opentype_disc(word_break: nana_ui_core::WordBreakSpec) -> u8 {
+    match word_break {
+        nana_ui_core::WordBreakSpec::Normal => 0,
+        nana_ui_core::WordBreakSpec::BreakAll => 1,
+        nana_ui_core::WordBreakSpec::BreakWord => 2,
     }
-    let tracking = letter_spacing_em(letter_spacing, font_size);
-    if tracking != 0.0 {
-        attrs = attrs.letter_spacing(tracking);
+}
+
+fn opentype_line_disc(line_break: nana_ui_core::LineBreakSpec) -> u8 {
+    match line_break {
+        nana_ui_core::LineBreakSpec::Auto => 0,
+        nana_ui_core::LineBreakSpec::Normal => 1,
+        nana_ui_core::LineBreakSpec::Anywhere => 2,
     }
-    if !font_features.is_empty() {
-        let mut features = FontFeatures::new();
-        for setting in font_features {
-            features.set(FeatureTag::new(&setting.tag), setting.value);
-        }
-        attrs = attrs.font_features(features);
+}
+
+fn opentype_kern_disc(kerning: nana_ui_core::FontKerningSpec) -> u8 {
+    match kerning {
+        nana_ui_core::FontKerningSpec::Auto => 0,
+        nana_ui_core::FontKerningSpec::Normal => 1,
+        nana_ui_core::FontKerningSpec::None => 2,
     }
-    attrs
 }
 
 fn rgba8_color(color: [f32; 4]) -> Color {
@@ -1376,6 +1429,68 @@ fn quad_aabb(corners: &[[f32; 2]]) -> LogicalRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rtl_latin_in_wide_box_places_first_glyph_on_the_right() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        pipeline.begin_frame(&queue, [256, 64]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui rtl paint shape"),
+        });
+        let bounds = LogicalRect::from_xywh(0.0, 0.0, 200.0, 24.0);
+        let clip = LogicalRect::from_xywh(0.0, 0.0, 200.0, 24.0);
+        let opentype = SceneTextOpenType {
+            direction: nana_ui_core::DirSpec::Rtl,
+            ..SceneTextOpenType::default()
+        };
+        pipeline
+            .prepare(
+                &device,
+                &queue,
+                &mut encoder,
+                bounds,
+                clip,
+                1.0,
+                "Hello",
+                Some([1.0, 1.0, 1.0, 1.0]),
+                16.0,
+                None,
+                None,
+                None,
+                false,
+                nana_ui_core::TextWrapBreak::Word,
+                false,
+                false,
+                None,
+                TextShaping::Advanced,
+                TextHorizontalAlignment::Start,
+                TextVerticalAlignment::Top,
+                &[],
+                0.0,
+                &[],
+                &opentype,
+                clip::IDENTITY_AFFINE,
+                [0.0, 0.0],
+                clip::FragmentClip::PASS,
+                1.0,
+                [0.0, 0.0],
+            )
+            .expect("rtl latin must prepare");
+        let buffer = pipeline
+            .shape_cache
+            .entries
+            .values()
+            .next()
+            .map(|entry| &entry.buffer)
+            .expect("paint must cache the shaped run");
+        let glyph_x = crate::nana_text::first_content_glyph_x(buffer)
+            .expect("rtl latin must shape a content glyph");
+        assert!(
+            glyph_x > 100.0,
+            "first Latin glyph must sit on the right of a 200px RTL box, got {glyph_x}"
+        );
+    }
 
     #[test]
     fn text_box_origin_keeps_left_edge_and_centers_vertically() {
@@ -1613,6 +1728,7 @@ mod tests {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-ui text affine prepare"),
         });
+        let opentype = SceneTextOpenType::default();
         let prepared = pipeline
             .prepare(
                 device,
@@ -1638,6 +1754,7 @@ mod tests {
                 &[],
                 0.0,
                 &[],
+                &opentype,
                 affine,
                 [0.0, 0.0],
                 fragment_clip,
@@ -1705,6 +1822,7 @@ mod tests {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-ui text clip prepare"),
         });
+        let opentype = SceneTextOpenType::default();
         let prepared = pipeline
             .prepare(
                 device,
@@ -1730,6 +1848,7 @@ mod tests {
                 &[],
                 0.0,
                 &[],
+                &opentype,
                 affine,
                 [0.0, 0.0],
                 fragment_clip,

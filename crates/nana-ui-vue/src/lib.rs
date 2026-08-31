@@ -82,16 +82,21 @@ mod bridge;
 mod canvas_gpu;
 mod css_at_rule;
 mod css_cascade;
+mod css_font_face;
 mod css_interactive;
 mod css_interactive_apply;
 mod css_map;
 mod css_paint;
 mod css_paint_transform;
+#[cfg(feature = "scene-view")]
+mod font_face_host;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
 mod input;
 mod layout_map;
 mod measure;
+#[cfg(feature = "hosted")]
+mod media_gpu;
 mod multi_window;
 #[cfg(feature = "scene-view")]
 mod native_component;
@@ -100,6 +105,9 @@ mod scroll;
 mod shell_contract;
 mod style;
 mod svg_inline;
+#[cfg(feature = "hosted")]
+mod svg_gpu;
+mod svg_raster;
 mod tree;
 mod video;
 #[cfg(feature = "hosted")]
@@ -120,8 +128,9 @@ use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 pub use nana_ui_platform::ImeEvent;
 use nana_ui_runtime::TextInputState;
 use nana_ui_web_api::{
-    SharedCanvasRuntime, SharedWebApiState, compose_runtime_artifact, default_shared_clipboard,
-    register_web_api_host_ops_with_resources, shared_canvas_runtime, shared_web_api_state,
+    SharedCanvasRuntime, SharedMediaRuntime, SharedWebApiState, compose_runtime_artifact,
+    default_shared_clipboard, register_media_host_ops, register_web_api_host_ops_with_resources,
+    shared_canvas_runtime, shared_media_runtime, shared_web_api_state,
 };
 
 pub use app::{
@@ -170,19 +179,22 @@ pub use css_at_rule::{
 };
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
-    MatchContext, MatchNode, Selector, SimpleCompound, Specificity, StyleRule,
-    StylesheetParseReport, apply_stylesheet_to_layout,
+    MatchContext, MatchNode, MatchSubtree, MediaEnv, OwnedMatchTree, Selector, SimpleCompound,
+    Specificity, StyleRule, StylesheetParseReport, apply_stylesheet_to_layout,
     collect_document_custom_properties_from_rules, matched_declaration_entries,
     matched_declarations, parse_stylesheet, parse_stylesheet_full,
-    parse_stylesheet_full_with_options, parse_stylesheet_with_report, rebuild_layout_style,
-    selector_matches,
+    parse_stylesheet_full_with_layers, parse_stylesheet_full_with_options,
+    parse_stylesheet_with_report, rebuild_layout_style, selector_matches, stylesheet_needs_relative,
 };
+pub use css_font_face::{FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules};
+
 pub use css_interactive::{
     GeneratedPseudo, GeneratedPseudoMatch, GeneratedPseudoRule, InteractiveMatchState,
     InteractivePseudo, InteractivePseudoFlags, InteractiveSelector, InteractiveStyleRule,
     KeyframeBlock, KeyframeSelector, KeyframesRule, MediaRule, MotionDeclarations, MotionStyleRule,
-    ParsedStylesheet, keyframes_by_name, matched_generated_pseudo, matched_interactive_rules,
-    matched_motion_rules, merge_parsed_stylesheet, partition_motion_entries,
+    ParsedStylesheet, ScrollbarPseudo, ScrollbarPseudoRule, keyframes_by_name,
+    matched_generated_pseudo, matched_interactive_rules, matched_motion_rules,
+    matched_scrollbar_pseudo, merge_parsed_stylesheet, partition_motion_entries,
 };
 /// Adapter internals: CSS subset → LayoutStyle. Prefer [`prelude`] for hosts.
 pub use css_map::{
@@ -190,10 +202,12 @@ pub use css_map::{
     FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse, GridTrackListUnsupported,
     JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec, OverflowSpec,
     PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
-    parse_box_edge_length, parse_css_font_family, parse_css_font_size, parse_css_font_weight,
-    parse_css_length_px, parse_css_letter_spacing, parse_css_line_height,
-    parse_grid_template_columns, parse_grid_track_list_result, parse_inset_length,
-    resolve_grid_column_widths, resolve_grid_track_sizes, resolve_paint_color,
+    parse_box_edge_length, parse_css_font_family, parse_css_font_feature_settings,
+    parse_css_font_kerning, parse_css_font_size, parse_css_font_variation_settings,
+    parse_css_font_weight, parse_css_length_px, parse_css_letter_spacing, parse_css_line_break,
+    parse_css_line_height, parse_css_word_break, parse_grid_template_columns,
+    parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
+    resolve_grid_track_sizes, resolve_paint_color,
 };
 #[cfg(feature = "hosted")]
 pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueRuntimeProgram};
@@ -402,6 +416,7 @@ pub struct VueHost {
     web_api: SharedWebApiState,
     canvas: SharedCanvasRuntime,
     video: video::SharedVideoRuntime,
+    media: SharedMediaRuntime,
     diagnostics: DiagnosticBindings,
     fire_event: Option<JsFunctionId>,
     drain_timers: Option<JsFunctionId>,
@@ -410,6 +425,10 @@ pub struct VueHost {
     apply_theme: Option<JsFunctionId>,
     /// Optional web-api ResizeObserver flush after layout (`__nanaNotifyLayout`).
     notify_layout: Option<JsFunctionId>,
+    /// Host → JS CSS motion completion (`__nanaMotionComplete`). Not WAAPI.
+    motion_complete: Option<JsFunctionId>,
+    /// Host → JS cancel of the class-armed motion fallback (`__nanaMotionCancel`).
+    motion_cancel: Option<JsFunctionId>,
     /// Optional window/document lifecycle pump (`__nanaPumpLifecycle`).
     lifecycle_pump: Option<JsFunctionId>,
     /// Auxiliary-window identity. `None` preserves the original primary-window
@@ -437,6 +456,10 @@ pub struct VueHost {
     canvas_gpu: Option<canvas_gpu::CanvasGpuBridge>,
     #[cfg(feature = "hosted")]
     video_gpu: Option<video::VideoGpuBridge>,
+    #[cfg(feature = "hosted")]
+    svg_gpu: Option<svg_gpu::SvgGpuBridge>,
+    #[cfg(feature = "hosted")]
+    media_gpu: Option<media_gpu::MediaGpuBridge>,
 }
 
 impl Default for VueHost {
@@ -458,6 +481,7 @@ impl VueHost {
             scale_factor,
             shared_web_api_state(),
             shared_canvas_runtime(),
+            shared_media_runtime(),
         )
     }
 
@@ -475,6 +499,7 @@ impl VueHost {
             scale_factor,
             shared_web_api_state(),
             shared_canvas_runtime(),
+            shared_media_runtime(),
         )
     }
 
@@ -491,6 +516,7 @@ impl VueHost {
             scale_factor,
             web_api,
             shared_canvas_runtime(),
+            shared_media_runtime(),
         )
     }
 
@@ -500,6 +526,7 @@ impl VueHost {
         physical_height: u32,
         scale_factor: f32,
         canvas: SharedCanvasRuntime,
+        media: SharedMediaRuntime,
         local_storage: nana_ui_web_api::SharedStorage,
     ) -> Self {
         Self::with_document_id_and_web_api_state(
@@ -509,6 +536,7 @@ impl VueHost {
             scale_factor,
             nana_ui_web_api::shared_web_api_state_with_local_storage(local_storage),
             canvas,
+            media,
         )
     }
 
@@ -519,6 +547,7 @@ impl VueHost {
         scale_factor: f32,
         web_api: SharedWebApiState,
         canvas: SharedCanvasRuntime,
+        media: SharedMediaRuntime,
     ) -> Self {
         let theme = ThemeMode::Light;
         #[cfg_attr(not(feature = "scene-view"), allow(unused_mut))]
@@ -541,6 +570,7 @@ impl VueHost {
             web_api,
             canvas,
             video: video::shared_video_runtime(),
+            media,
             diagnostics: DiagnosticBindings::default(),
             fire_event: None,
             drain_timers: None,
@@ -548,6 +578,8 @@ impl VueHost {
             drain_ws: None,
             apply_theme: None,
             notify_layout: None,
+            motion_complete: None,
+            motion_cancel: None,
             lifecycle_pump: None,
             event_window_id: None,
             input: Arc::new(Mutex::new(input::InputState::default())),
@@ -566,6 +598,10 @@ impl VueHost {
             canvas_gpu: None,
             #[cfg(feature = "hosted")]
             video_gpu: None,
+            #[cfg(feature = "hosted")]
+            svg_gpu: None,
+            #[cfg(feature = "hosted")]
+            media_gpu: None,
         }
     }
 
@@ -612,12 +648,78 @@ impl VueHost {
         self.video = video;
     }
 
+    pub fn media_runtime(&self) -> SharedMediaRuntime {
+        Arc::clone(&self.media)
+    }
+
+    /// CPU retain set (video **and** audio) plus visual `video:{id}` slots.
+    ///
+    /// Identity comes from the tree (`data-nana-media` / `<video>` / `<audio>`)
+    /// and the bridge snapshot. Visual slots still come only from
+    /// `data-nana-video` / CustomRender, matching canvas/svg GPU prune.
+    pub(crate) fn live_media_sets(&self) -> nana_ui_web_api::MediaLiveSets {
+        let mut retain = std::collections::HashSet::new();
+        let mut visual = std::collections::HashSet::new();
+        if let Ok(doc) = self.document.lock() {
+            let sets = doc.live_media_sets();
+            retain.extend(sets.retain);
+            visual.extend(sets.visual);
+        }
+        if let Ok(mut bridge) = self.bridge.lock() {
+            let owned: Vec<(String, Option<String>, Option<String>)> = bridge
+                .snapshot()
+                .widgets
+                .into_iter()
+                .map(|widget| {
+                    (
+                        if widget.props.element_tag.is_empty() {
+                            widget.kind.element_tag().to_string()
+                        } else {
+                            widget.props.element_tag.clone()
+                        },
+                        widget.props.attrs.get("data-nana-media").cloned(),
+                        widget.props.attrs.get("data-nana-video").cloned(),
+                    )
+                })
+                .collect();
+            let sets = nana_ui_web_api::media_live_sets_from_tree(owned.iter().map(
+                |(tag, media_id, video_id)| nana_ui_web_api::MediaTreeRef {
+                    tag,
+                    media_id: media_id.as_deref(),
+                    video_id: video_id.as_deref(),
+                },
+            ));
+            retain.extend(sets.retain);
+            visual.extend(sets.visual);
+        }
+        let mut retain: Vec<_> = retain.into_iter().collect();
+        retain.sort_by_key(|id| id.0);
+        let mut visual: Vec<_> = visual.into_iter().collect();
+        visual.sort_by_key(|id| id.0);
+        nana_ui_web_api::MediaLiveSets { retain, visual }
+    }
+
+    /// Drop CPU media that is no longer on the tree. GPU prune is separate.
+    pub(crate) fn retain_live_media(&self) {
+        let sets = self.live_media_sets();
+        if let Ok(mut media) = self.media.lock() {
+            media.retain_live(sets.retain.iter().copied());
+        }
+    }
+
     /// Current compatibility-layer resource counts for development snapshots.
     pub fn resource_counts(&self) -> BTreeMap<String, usize> {
         let mut counts = BTreeMap::new();
         counts.insert(
             "canvas".into(),
             self.canvas
+                .lock()
+                .map(|runtime| runtime.active_resource_count())
+                .unwrap_or_default(),
+        );
+        counts.insert(
+            "media".into(),
+            self.media
                 .lock()
                 .map(|runtime| runtime.active_resource_count())
                 .unwrap_or_default(),
@@ -735,6 +837,25 @@ impl VueHost {
             None => {
                 self.video_gpu = Some(video::VideoGpuBridge::new(
                     resources.clone(),
+                    self.host_textures.clone(),
+                ));
+            }
+        }
+        match &self.svg_gpu {
+            Some(svg_gpu) => svg_gpu.replace_device(resources.clone()),
+            None => {
+                self.svg_gpu = Some(svg_gpu::SvgGpuBridge::new(
+                    resources.clone(),
+                    self.host_textures.clone(),
+                ));
+            }
+        }
+        match &self.media_gpu {
+            Some(media_gpu) => media_gpu.replace_device(resources.clone()),
+            None => {
+                self.media_gpu = Some(media_gpu::MediaGpuBridge::new(
+                    resources.clone(),
+                    Arc::clone(&self.media),
                     self.host_textures.clone(),
                 ));
             }
@@ -868,6 +989,65 @@ impl VueHost {
     fn video_event_target(&self, video_id: u64) -> Option<NodeHandle> {
         let document = self.document.lock().expect("vue doc");
         document.element_with_attribute("data-nana-video", &video_id.to_string())
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn share_svg_gpu(&mut self, svg_gpu: svg_gpu::SvgGpuBridge) {
+        self.svg_gpu = Some(svg_gpu);
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn svg_gpu(&self) -> Option<&svg_gpu::SvgGpuBridge> {
+        self.svg_gpu.as_ref()
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn share_media_gpu(&mut self, media_gpu: media_gpu::MediaGpuBridge) {
+        self.media_gpu = Some(media_gpu);
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn media_gpu(&self) -> Option<&media_gpu::MediaGpuBridge> {
+        self.media_gpu.as_ref()
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn prepare_svg_gpu(&self) {
+        let Some(svg_gpu) = &self.svg_gpu else {
+            return;
+        };
+        let uploads = self
+            .document
+            .lock()
+            .map(|doc| doc.svg_host_uploads())
+            .unwrap_or_default();
+        let live: std::collections::HashSet<String> =
+            uploads.iter().map(|upload| upload.slot.clone()).collect();
+        svg_gpu.prune_released(&live);
+        for upload in uploads {
+            if let Err(error) = svg_gpu.sync(&upload) {
+                self.report_diagnostic("svg.gpu", JsDiagnosticLevel::Error, error, None);
+            }
+        }
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn prepare_media_gpu(&self) {
+        let Some(media_gpu) = &self.media_gpu else {
+            return;
+        };
+        media_gpu.tick_playing();
+        let sets = self.live_media_sets();
+        if let Ok(mut media) = self.media.lock() {
+            media.retain_live(sets.retain.iter().copied());
+        }
+        let live = sets.visual_slots();
+        media_gpu.prune_released(&live);
+        for id in sets.visual {
+            if let Err(error) = media_gpu.sync(id) {
+                self.report_diagnostic("media.gpu", JsDiagnosticLevel::Error, error, None);
+            }
+        }
     }
 
     /// Rebind the JS WebGPU facade after host device recovery and notify the
@@ -1156,6 +1336,7 @@ impl VueHost {
             default_shared_clipboard(),
             Arc::clone(&self.canvas),
         );
+        register_media_host_ops(&mut api, Arc::clone(&self.media));
         #[cfg(feature = "hosted")]
         if let Some(webgpu) = &self.webgpu {
             webgpu.register_host_ops(&mut api);
@@ -1338,6 +1519,8 @@ impl VueHost {
         self.drain_ws = engine.resolve_function("__nanaDrainWs").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
+        self.motion_complete = engine.resolve_function("__nanaMotionComplete").ok();
+        self.motion_cancel = engine.resolve_function("__nanaMotionCancel").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpLifecycle").ok();
         Ok(())
     }
@@ -1356,6 +1539,8 @@ impl VueHost {
         self.drain_ws = engine.resolve_function("__nanaDrainWs").ok();
         self.apply_theme = engine.resolve_function("__nanaApplyWindowTheme").ok();
         self.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
+        self.motion_complete = engine.resolve_function("__nanaMotionComplete").ok();
+        self.motion_cancel = engine.resolve_function("__nanaMotionCancel").ok();
         self.lifecycle_pump = engine.resolve_function("__nanaPumpWindowLifecycle").ok();
         Ok(())
     }
@@ -1567,6 +1752,16 @@ impl VueHost {
             fired += count;
             engine.run_microtasks()?;
         }
+        {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
+            let mut doc = self.document.lock().expect("vue doc");
+            if doc.host_animation_epoch().is_none() {
+                bridge.tick_css_animations(&mut doc);
+            }
+        }
+        // Rust complete/cancel first so class-arm fallback timeouts do not
+        // synthesize a second transitionend on the same pump.
+        self.flush_motion_complete(engine)?;
         let frame_now = Instant::now();
         {
             let mut guard = self
@@ -1605,19 +1800,64 @@ impl VueHost {
                 .map_err(|_| JsEngineError::new("web-api state poisoned"))?;
             guard.end_host_frame(Instant::now());
         }
-        {
-            let mut bridge = self.bridge.lock().expect("vue bridge");
-            let mut doc = self.document.lock().expect("vue doc");
-            if doc.host_animation_epoch().is_none() {
-                bridge.tick_css_animations(&mut doc);
-            }
-        }
         self.resolve_layout();
         if let Some(notify) = self.notify_layout {
             engine.invoke(notify, &[])?;
             engine.run_microtasks()?;
         }
         Ok(fired)
+    }
+
+    pub(crate) fn flush_motion_complete<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let (cancels, events) = {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
+            (bridge.take_motion_cancels(), bridge.take_motion_completes())
+        };
+        if cancels.is_empty() && events.is_empty() {
+            return Ok(());
+        }
+        if let Some(cancel) = self.motion_cancel {
+            for id in cancels {
+                engine.invoke(cancel, &[HostValue::Number(id as f64)])?;
+            }
+        }
+        if let Some(complete) = self.motion_complete {
+            for event in events {
+                let detail = [
+                    ("type".into(), HostValue::string(event.event_type)),
+                    (
+                        "propertyName".into(),
+                        HostValue::string(event.property_name.clone()),
+                    ),
+                    (
+                        "animationName".into(),
+                        HostValue::string(event.animation_name),
+                    ),
+                    (
+                        "transitionProperty".into(),
+                        HostValue::string(event.transition_property),
+                    ),
+                    (
+                        "elapsedTime".into(),
+                        HostValue::Number(event.elapsed_time as f64),
+                    ),
+                ]
+                .into_iter()
+                .collect();
+                engine.invoke(
+                    complete,
+                    &[
+                        HostValue::Number(event.widget_id as f64),
+                        HostValue::Object(detail),
+                    ],
+                )?;
+            }
+        }
+        engine.run_microtasks()?;
+        Ok(())
     }
 
     /// Earliest timer/rAF/fetch wake requested by the Web API state.
@@ -3592,8 +3832,18 @@ mod tests {
             Ok(())
         }
 
-        fn resolve_function(&mut self, _name: &str) -> Result<JsFunctionId, JsEngineError> {
-            Ok(JsFunctionId(1))
+        fn resolve_function(&mut self, name: &str) -> Result<JsFunctionId, JsEngineError> {
+            Ok(JsFunctionId(match name {
+                "__nanaFireEvent" | "__nanaFireWindowEvent" => 1,
+                "__nanaMotionComplete" => 10,
+                "__nanaMotionCancel" => 16,
+                "__nanaNotifyLayout" => 11,
+                "__nanaDrainTimers" => 12,
+                "__nanaDrainFetch" => 13,
+                "__nanaApplyTheme" | "__nanaApplyWindowTheme" => 14,
+                "__nanaPumpLifecycle" | "__nanaPumpWindowLifecycle" => 15,
+                _ => 1,
+            }))
         }
 
         fn invoke(
@@ -5511,6 +5761,162 @@ mod tests {
     }
 
     #[test]
+    fn pump_frame_invokes_nana_motion_complete_on_transition_end() {
+        let mut host = VueHost::new();
+        let mut engine = RecordingEngine::default();
+        host.bind_event_bridge(&mut engine).unwrap();
+        let btn = {
+            let document_lock = host.document();
+            let mut doc = document_lock.lock().expect("doc");
+            let bridge_lock = host.bridge();
+            let mut bridge = bridge_lock.lock().expect("bridge");
+            let root = doc.mount_root();
+            let btn = doc.create_element("button");
+            doc.insert(btn, root, None);
+            bridge.register(
+                btn.0,
+                WidgetKind::Button,
+                WidgetProps {
+                    class_names: vec!["btn".into()],
+                    ..WidgetProps::default()
+                },
+            );
+            bridge.inject_stylesheet(
+                ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+                 .btn:hover { background: red; }",
+            );
+            bridge.resolve_document_layout(&mut doc);
+            doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+            doc.set_pointer_hover(0, Some(btn));
+            bridge.reapply_interactive_cascade(&mut doc);
+            doc.set_runtime_clock_for_test(std::time::Duration::from_millis(220));
+            btn
+        };
+        host.pump_frame(&mut engine).unwrap();
+        let complete = engine
+            .invocations
+            .iter()
+            .find(|(id, _)| id.0 == 10)
+            .expect("Rust host must call __nanaMotionComplete");
+        assert_eq!(complete.1[0].as_f64(), Some(btn.0 as f64));
+        let detail = complete.1[1].as_object().expect("motion detail");
+        assert_eq!(
+            detail.get("type").and_then(HostValue::as_str),
+            Some("transitionend")
+        );
+        assert_eq!(
+            detail.get("propertyName").and_then(HostValue::as_str),
+            Some("background")
+        );
+    }
+
+    #[test]
+    fn pump_frame_flushes_motion_complete_before_timer_drain() {
+        let mut host = VueHost::new();
+        let mut engine = RecordingEngine::default();
+        host.bind_event_bridge(&mut engine).unwrap();
+        {
+            let document_lock = host.document();
+            let mut doc = document_lock.lock().expect("doc");
+            let bridge_lock = host.bridge();
+            let mut bridge = bridge_lock.lock().expect("bridge");
+            let root = doc.mount_root();
+            let btn = doc.create_element("button");
+            doc.insert(btn, root, None);
+            bridge.register(
+                btn.0,
+                WidgetKind::Button,
+                WidgetProps {
+                    class_names: vec!["btn".into()],
+                    ..WidgetProps::default()
+                },
+            );
+            bridge.inject_stylesheet(
+                ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+                 .btn:hover { background: red; }",
+            );
+            bridge.resolve_document_layout(&mut doc);
+            doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+            doc.set_pointer_hover(0, Some(btn));
+            bridge.reapply_interactive_cascade(&mut doc);
+            doc.set_runtime_clock_for_test(std::time::Duration::from_millis(220));
+            assert!(bridge.tick_css_animations(&mut doc));
+        }
+        host.web_api().lock().expect("web-api").schedule_raf(1);
+        host.pump_frame(&mut engine).unwrap();
+        let complete_at = engine
+            .invocations
+            .iter()
+            .position(|(id, _)| id.0 == 10)
+            .expect("Rust complete");
+        let drain_at = engine
+            .invocations
+            .iter()
+            .position(|(id, _)| id.0 == 12)
+            .expect("timer drain");
+        assert!(
+            complete_at < drain_at,
+            "flush motion complete must run before JS fallback timers"
+        );
+        assert_eq!(
+            engine
+                .invocations
+                .iter()
+                .filter(|(id, _)| id.0 == 10)
+                .count(),
+            1,
+            "transitionend must fire once"
+        );
+    }
+
+    #[test]
+    fn hosted_same_beat_flush_does_not_double_complete_on_next_pump() {
+        let mut host = VueHost::new();
+        let mut engine = RecordingEngine::default();
+        host.bind_event_bridge(&mut engine).unwrap();
+        let epoch = Instant::now();
+        host.set_host_animation_epoch(epoch);
+        {
+            let document_lock = host.document();
+            let mut doc = document_lock.lock().expect("doc");
+            let bridge_lock = host.bridge();
+            let mut bridge = bridge_lock.lock().expect("bridge");
+            let root = doc.mount_root();
+            let btn = doc.create_element("button");
+            doc.insert(btn, root, None);
+            bridge.register(
+                btn.0,
+                WidgetKind::Button,
+                WidgetProps {
+                    class_names: vec!["btn".into()],
+                    ..WidgetProps::default()
+                },
+            );
+            bridge.inject_stylesheet(
+                ".btn { background: rgb(0, 0, 255); transition: background 200ms linear; } \
+                 .btn:hover { background: red; }",
+            );
+            bridge.resolve_document_layout(&mut doc);
+            doc.set_pointer_hover(0, Some(btn));
+            bridge.reapply_interactive_cascade(&mut doc);
+            let frame = doc.advance_css_animations(std::time::Duration::from_millis(220));
+            assert!(bridge.apply_css_animation_samples(&mut doc, frame));
+        }
+        host.flush_motion_complete(&mut engine).unwrap();
+        host.web_api().lock().expect("web-api").schedule_raf(1);
+        host.pump_frame(&mut engine).unwrap();
+        assert_eq!(
+            engine
+                .invocations
+                .iter()
+                .filter(|(id, _)| id.0 == 10)
+                .count(),
+            1,
+            "hosted apply+flush on T_end plus later pump must not double-dispatch"
+        );
+    }
+
+    #[test]
     fn pump_frame_nested_raf_follows_next_wakeup_not_busy_loop() {
         struct RescheduleEngine {
             web_api: SharedWebApiState,
@@ -5575,5 +5981,251 @@ mod tests {
             "nested rAF must wait for next_wakeup (~16ms), not spin"
         );
         assert!(wakeup <= before + std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn get_user_media_mock_feeds_video_host_texture() {
+        let host = VueHost::new();
+        let api = host.host_api_registry();
+        let stream = api
+            .call(
+                "mediaDevicesGetUserMedia",
+                &[HostValue::Object(
+                    [("video".into(), HostValue::Bool(true))]
+                        .into_iter()
+                        .collect(),
+                )],
+            )
+            .expect("mock camera must not hang");
+        let stream_id = stream
+            .as_object()
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("stream id");
+        let video = api
+            .call("mediaCreate", &[HostValue::string("video")])
+            .expect("video element");
+        let media_id = video
+            .as_object()
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("media id");
+        let attached = api
+            .call(
+                "mediaSetSrcObject",
+                &[HostValue::BigInt(media_id), HostValue::BigInt(stream_id)],
+            )
+            .expect("attach preview");
+        let attached = attached.as_object().expect("descriptor");
+        assert_eq!(
+            attached.get("hasVideoFrame").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            attached.get("slot").and_then(HostValue::as_str),
+            Some(format!("video:{media_id}").as_str())
+        );
+
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let node = doc.create_element("video");
+        let root = doc.mount_root();
+        doc.insert(node, root, None);
+        doc.set_attribute(node, "data-nana-video", &media_id.to_string());
+        doc.apply_layout_boxes(&[(
+            node,
+            crate::LayoutBox {
+                handle: node,
+                x: 0.0,
+                y: 0.0,
+                width: 160.0,
+                height: 90.0,
+            },
+        )]);
+        let id = nana_ui_runtime::StableNodeId::try_from(node).expect("video id");
+        let content = doc
+            .world()
+            .custom_render(id)
+            .expect("camera preview must land on CustomRenderNode");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), &format!("video:{media_id}"));
+    }
+
+    #[test]
+    fn get_user_media_permission_failure_degrades() {
+        let host = VueHost::new();
+        let api = host.host_api_registry();
+        api.call("mediaSetCaptureMode", &[HostValue::string("deny")])
+            .expect("deny mode");
+        let error = api
+            .call(
+                "mediaDevicesGetUserMedia",
+                &[HostValue::Object(
+                    [("video".into(), HostValue::Bool(true))]
+                        .into_iter()
+                        .collect(),
+                )],
+            )
+            .expect_err("permission failure must be testable");
+        assert_eq!(error.name, "NotAllowedError");
+    }
+
+    #[test]
+    fn retain_live_keeps_audio_after_prepare_and_releases_on_remove() {
+        let host = VueHost::new();
+        let api = host.host_api_registry();
+        let audio = api
+            .call("mediaCreate", &[HostValue::string("audio")])
+            .expect("audio");
+        let audio_id = audio
+            .as_object()
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("audio id");
+        api.call(
+            "mediaSetSrc",
+            &[HostValue::BigInt(audio_id), HostValue::string("track.ogg")],
+        )
+        .expect("audio src");
+        let video = api
+            .call("mediaCreate", &[HostValue::string("video")])
+            .expect("video");
+        let video_id = video
+            .as_object()
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("video id");
+        api.call(
+            "mediaSetSrc",
+            &[HostValue::BigInt(video_id), HostValue::string("nana:mock")],
+        )
+        .expect("video src");
+
+        let audio_node = {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let node = doc.create_element("audio");
+            let root = doc.mount_root();
+            doc.insert(node, root, None);
+            doc.set_attribute(node, "data-nana-media", &audio_id.to_string());
+            node
+        };
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            let node = doc.create_element("video");
+            let root = doc.mount_root();
+            doc.insert(node, root, None);
+            doc.set_attribute(node, "data-nana-media", &video_id.to_string());
+            doc.set_attribute(node, "data-nana-video", &video_id.to_string());
+        }
+
+        let sets = host.live_media_sets();
+        assert!(
+            sets.retain.iter().any(|id| id.0 == audio_id),
+            "CPU retain must include the audio element"
+        );
+        assert!(
+            sets.retain.iter().any(|id| id.0 == video_id),
+            "CPU retain must include the video element"
+        );
+        assert!(
+            sets.visual.iter().any(|id| id.0 == video_id),
+            "visual GPU set must include video"
+        );
+        assert!(
+            sets.visual.iter().all(|id| id.0 != audio_id),
+            "audio must not occupy a visual HostTexture slot"
+        );
+
+        host.retain_live_media();
+        let playing = api
+            .call("mediaPlay", &[HostValue::BigInt(audio_id)])
+            .expect("audio must still play after retain_live");
+        assert_eq!(
+            playing
+                .as_object()
+                .and_then(|map| map.get("paused"))
+                .and_then(HostValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            playing
+                .as_object()
+                .and_then(|map| map.get("hasVideoFrame"))
+                .and_then(HostValue::as_bool),
+            Some(false)
+        );
+
+        {
+            let document = host.document();
+            let mut doc = document.lock().expect("document");
+            doc.remove(audio_node);
+        }
+        host.retain_live_media();
+        let error = api
+            .call("mediaPlay", &[HostValue::BigInt(audio_id)])
+            .expect_err("removed audio must be released");
+        assert!(
+            error.message.contains("unknown media"),
+            "expected unknown media, got {}",
+            error.message
+        );
+        api.call("mediaPlay", &[HostValue::BigInt(video_id)])
+            .expect("video must survive audio prune");
+    }
+
+    #[test]
+    fn media_play_pause_current_time_host_ops() {
+        let host = VueHost::new();
+        let api = host.host_api_registry();
+        let created = api
+            .call("mediaCreate", &[HostValue::string("audio")])
+            .expect("audio");
+        let id = created
+            .as_object()
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("id");
+        api.call(
+            "mediaSetSrc",
+            &[HostValue::BigInt(id), HostValue::string("track.ogg")],
+        )
+        .expect("src");
+        let playing = api
+            .call("mediaPlay", &[HostValue::BigInt(id)])
+            .expect("play");
+        assert_eq!(
+            playing
+                .as_object()
+                .and_then(|map| map.get("paused"))
+                .and_then(HostValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            playing
+                .as_object()
+                .and_then(|map| map.get("hasVideoFrame"))
+                .and_then(HostValue::as_bool),
+            Some(false),
+            "audio must not fabricate a video frame"
+        );
+        api.call(
+            "mediaSetCurrentTime",
+            &[HostValue::BigInt(id), HostValue::Number(0.4)],
+        )
+        .expect("seek");
+        let paused = api
+            .call("mediaPause", &[HostValue::BigInt(id)])
+            .expect("pause");
+        let paused = paused.as_object().expect("descriptor");
+        assert_eq!(
+            paused.get("paused").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            paused.get("currentTime").and_then(HostValue::as_f64),
+            Some(0.4)
+        );
     }
 }

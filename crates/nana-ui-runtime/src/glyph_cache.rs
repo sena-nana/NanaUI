@@ -21,6 +21,9 @@ struct GlyphKey {
     font_family: Option<Arc<str>>,
     letter_spacing_bits: u32,
     italic: bool,
+    font_features: Vec<nana_ui_core::FontFeatureSetting>,
+    font_variations: Vec<nana_ui_core::FontVariationSetting>,
+    font_kerning: nana_ui_core::FontKerningSpec,
 }
 
 impl GlyphKey {
@@ -32,6 +35,9 @@ impl GlyphKey {
             font_family: style.font_family.clone(),
             letter_spacing_bits: style.letter_spacing.to_bits(),
             italic: style.italic,
+            font_features: style.font_features.clone(),
+            font_variations: style.font_variations.clone(),
+            font_kerning: style.font_kerning,
         }
     }
 }
@@ -173,5 +179,22 @@ mod tests {
         cache.insert('a', &tracked, 8.5);
         assert_eq!(cache.peek('a', &tight), Some(8.0));
         assert_eq!(cache.peek('a', &tracked), Some(8.5));
+    }
+
+    #[test]
+    fn font_features_are_part_of_the_glyph_key() {
+        let mut cache = GlyphCache::with_cap(8);
+        let liga_off = ComputedStyle {
+            font_size: 16.0,
+            font_features: vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 0)],
+            ..ComputedStyle::default()
+        };
+        let liga_on = ComputedStyle {
+            font_size: 16.0,
+            font_features: vec![nana_ui_core::FontFeatureSetting::new(*b"liga", 1)],
+            ..ComputedStyle::default()
+        };
+        cache.insert('f', &liga_off, 8.0);
+        assert!(cache.peek('f', &liga_on).is_none());
     }
 }

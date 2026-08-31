@@ -301,6 +301,7 @@ mod tests {
                     } else {
                         18.0
                     },
+                    ascent: None,
                 }
             }
         }
@@ -404,6 +405,7 @@ mod tests {
                 TextMetrics {
                     width: text.value.len() as f32 * 8.0,
                     height: 18.0,
+                    ascent: None,
                 }
             }
         }
@@ -549,6 +551,7 @@ mod tests {
                     } else {
                         18.0
                     },
+                    ascent: None,
                 }
             }
         }
@@ -613,6 +616,7 @@ mod tests {
                 TextMetrics {
                     width,
                     height: 18.0,
+                    ascent: None,
                 }
             }
         }
@@ -692,6 +696,7 @@ mod tests {
                     } else {
                         18.0
                     },
+                    ascent: None,
                 }
             }
         }
@@ -807,6 +812,7 @@ mod tests {
                     } else {
                         18.0
                     },
+                    ascent: None,
                 }
             }
         }
@@ -848,11 +854,13 @@ mod tests {
                     return TextMetrics {
                         width: f32::NAN,
                         height: 18.0,
+                        ascent: None,
                     };
                 }
                 TextMetrics {
                     width: text.value.len() as f32 * 8.0,
                     height: 18.0,
+                    ascent: None,
                 }
             }
         }

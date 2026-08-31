@@ -694,7 +694,7 @@ fn strip_first_linear_gradient_fn(input: &str) -> String {
 
 fn parse_mask_image(input: &str) -> Option<MaskImage> {
     let trimmed = input.trim();
-    if trimmed.eq_ignore_ascii_case("none") {
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         return None;
     }
     if let Some(grad) = parse_linear_gradient(trimmed) {
@@ -2064,7 +2064,66 @@ mod tests {
             None,
             None,
         );
+        match layout.paint.mask {
+            Some(MaskImage::Gradient(CssGradient::Linear(ref grad))) => {
+                assert!((grad.angle_deg - 180.0).abs() < 0.01);
+            }
+            other => panic!("expected linear mask gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mask_image_url_accepts_http_file_relative_and_data() {
+        for css in [
+            "url(\"http://example.com/a.png\")",
+            "url(\"https://example.com/a.png\")",
+            "url('file:///tmp/mask.png')",
+            "url(mask.png)",
+            "url(\"./assets/mask.png\")",
+            "url(\"data:image/png;base64,iVBORw0KGgo=\")",
+        ] {
+            let mask = parse_mask_image(css).unwrap();
+            match mask {
+                MaskImage::Url(ref url) => assert!(!url.is_empty(), "{css}"),
+                other => panic!("expected url mask for {css}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn mask_image_url_applies_via_css() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("mask-image: url(\"hero.png\")", None, None);
+        match layout.paint.mask {
+            Some(MaskImage::Url(ref url)) => assert_eq!(url, "hero.png"),
+            other => panic!("expected relative url mask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn webkit_mask_image_url_applies_via_css() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("-webkit-mask-image: url(\"fade.png\")", None, None);
+        match layout.paint.mask {
+            Some(MaskImage::Url(ref url)) => assert_eq!(url, "fade.png"),
+            other => panic!("expected webkit url mask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mask_image_none_and_empty_url_are_ignored() {
+        assert!(parse_mask_image("none").is_none());
+        assert!(parse_mask_image("url(\"\")").is_none());
+        assert!(parse_mask_image("not-a-mask").is_none());
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "mask-image: linear-gradient(black, transparent)",
+            None,
+            None,
+        );
         assert!(layout.paint.mask.is_some());
+        layout.apply_css_text("mask-image: none", None, None);
+        assert!(layout.paint.mask.is_none());
     }
 
     #[test]

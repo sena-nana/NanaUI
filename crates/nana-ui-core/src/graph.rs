@@ -316,6 +316,17 @@ pub struct GraphNode {
     pub position: GraphPoint,
     pub size: GraphSize,
     pub ports: Vec<GraphPort>,
+    /// Optional host identity for this node's interior (`nana.host-texture`
+    /// registry slot or Vue `data-nana-gpu`). Empty / omitted keeps the
+    /// default frame; Runtime never paints mermaid/math/formula pixels.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "contentSlot",
+        alias = "hostTexture",
+        alias = "host_texture"
+    )]
+    pub content_slot: Option<String>,
 }
 
 impl GraphNode {
@@ -331,11 +342,18 @@ impl GraphNode {
             position,
             size,
             ports: Vec::new(),
+            content_slot: None,
         }
     }
 
     pub fn with_port(mut self, port: GraphPort) -> Self {
         self.ports.push(port);
+        self
+    }
+
+    pub fn with_content_slot(mut self, slot: impl Into<String>) -> Self {
+        let slot = slot.into();
+        self.content_slot = (!slot.trim().is_empty()).then_some(slot);
         self
     }
 
@@ -1294,5 +1312,30 @@ mod tests {
         assert!((view.origin.y - 75.0).abs() < 0.001);
         assert!((view.size.width - 900.0).abs() < 0.001);
         assert!((view.size.height - 450.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn content_slot_round_trips_json() {
+        let node = GraphNode::new(
+            "source",
+            "Source",
+            GraphPoint::new(10.0, 20.0),
+            GraphSize::new(120.0, 80.0),
+        )
+        .with_content_slot("formula.source");
+        let encoded = serde_json::to_value(&node).expect("encode");
+        assert_eq!(
+            encoded
+                .get("content_slot")
+                .or_else(|| encoded.get("contentSlot")),
+            Some(&serde_json::Value::String("formula.source".into()))
+        );
+        let decoded: GraphNode = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded.content_slot.as_deref(), Some("formula.source"));
+        let alias: GraphNode = serde_json::from_str(
+            r#"{"id":"source","label":"Source","position":{"x":0,"y":0},"size":{"width":10,"height":10},"ports":[],"contentSlot":"preview"}"#,
+        )
+        .expect("alias");
+        assert_eq!(alias.content_slot.as_deref(), Some("preview"));
     }
 }

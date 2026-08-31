@@ -53,13 +53,15 @@ pub struct InteractiveSelector {
 }
 
 /// One interactive rule (not applied during static cascade).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InteractiveStyleRule {
     pub selector: InteractiveSelector,
     pub declarations: String,
     pub declaration_entries: Vec<DeclarationEntry>,
     pub motion: MotionDeclarations,
     pub source_order: u32,
+    pub layer: Option<u32>,
+    pub media: Vec<crate::css_cascade::MediaQuery>,
 }
 
 /// Generated pseudo-element kind.
@@ -84,8 +86,25 @@ impl GeneratedPseudo {
     }
 }
 
+/// `::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` (skin overlay, not a generated box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ScrollbarPseudo {
+    Scrollbar,
+    Thumb,
+}
+
+impl ScrollbarPseudo {
+    pub fn from_webkit_ident(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "-webkit-scrollbar" => Some(Self::Scrollbar),
+            "-webkit-scrollbar-thumb" => Some(Self::Thumb),
+            _ => None,
+        }
+    }
+}
+
 /// Rule for a generated `::before` / `::after` box or `::placeholder` paint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GeneratedPseudoRule {
     /// Originating element selector (pseudo stripped from subject).
     pub originating_selector: Selector,
@@ -94,6 +113,19 @@ pub struct GeneratedPseudoRule {
     pub declaration_entries: Vec<DeclarationEntry>,
     pub motion: MotionDeclarations,
     pub source_order: u32,
+    pub layer: Option<u32>,
+    pub media: Vec<crate::css_cascade::MediaQuery>,
+}
+
+/// `::-webkit-scrollbar` rule applied onto the originating element's scrollbar skin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollbarPseudoRule {
+    pub originating_selector: Selector,
+    pub pseudo: ScrollbarPseudo,
+    pub declaration_entries: Vec<DeclarationEntry>,
+    pub source_order: u32,
+    pub layer: Option<u32>,
+    pub media: Vec<crate::css_cascade::MediaQuery>,
 }
 
 /// Keyframe stop selector (`from` / `to` / percentage).
@@ -158,11 +190,13 @@ impl MotionDeclarations {
 }
 
 /// Motion properties keyed by matching static selector(s).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MotionStyleRule {
     pub selectors: Vec<Selector>,
     pub motion: MotionDeclarations,
     pub source_order: u32,
+    pub layer: Option<u32>,
+    pub media: Vec<crate::css_cascade::MediaQuery>,
 }
 
 /// Parsed `@media` block. Inner rules join the cascade only while the query matches.
@@ -182,6 +216,7 @@ pub struct ParsedStylesheet {
     pub static_rules: Vec<StyleRule>,
     pub interactive_rules: Vec<InteractiveStyleRule>,
     pub generated_pseudo_rules: Vec<GeneratedPseudoRule>,
+    pub scrollbar_pseudo_rules: Vec<ScrollbarPseudoRule>,
     pub keyframes: BTreeMap<String, KeyframesRule>,
     pub motion_rules: Vec<MotionStyleRule>,
     pub media_rules: Vec<MediaRule>,
@@ -195,6 +230,7 @@ impl ParsedStylesheet {
         self.static_rules.is_empty()
             && self.interactive_rules.is_empty()
             && self.generated_pseudo_rules.is_empty()
+            && self.scrollbar_pseudo_rules.is_empty()
             && self.motion_rules.is_empty()
             && self.keyframes.is_empty()
             && self.media_rules.is_empty()
@@ -207,6 +243,7 @@ impl ParsedStylesheet {
             static_rules: self.static_rules.clone(),
             interactive_rules: self.interactive_rules.clone(),
             generated_pseudo_rules: self.generated_pseudo_rules.clone(),
+            scrollbar_pseudo_rules: self.scrollbar_pseudo_rules.clone(),
             keyframes: self.keyframes.clone(),
             motion_rules: self.motion_rules.clone(),
             media_rules: Vec::new(),
@@ -259,6 +296,8 @@ pub fn merge_parsed_stylesheet(dest: &mut ParsedStylesheet, src: ParsedStyleshee
     dest.interactive_rules.extend(src.interactive_rules);
     dest.generated_pseudo_rules
         .extend(src.generated_pseudo_rules);
+    dest.scrollbar_pseudo_rules
+        .extend(src.scrollbar_pseudo_rules);
     dest.motion_rules.extend(src.motion_rules);
     dest.font_faces.extend(src.font_faces);
     dest.media_rules.extend(src.media_rules);
@@ -283,6 +322,9 @@ pub(crate) fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
         rule.source_order = rule.source_order.saturating_add(delta);
     }
     for rule in &mut sheet.generated_pseudo_rules {
+        rule.source_order = rule.source_order.saturating_add(delta);
+    }
+    for rule in &mut sheet.scrollbar_pseudo_rules {
         rule.source_order = rule.source_order.saturating_add(delta);
     }
     for rule in &mut sheet.motion_rules {
@@ -419,14 +461,25 @@ pub fn matched_interactive_rules<'a>(
 ) -> Vec<(Specificity, u32, &'a InteractiveStyleRule)> {
     let mut matched = Vec::new();
     for rule in rules {
+        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
+            continue;
+        }
         if rule.selector.pseudo == pseudo
             && interactive_selector_matches(&rule.selector, ctx, state)
         {
-            matched.push((rule.selector.specificity, rule.source_order, rule));
+            matched.push((
+                crate::css_cascade::cascade_layer_key(false, rule.layer),
+                rule.selector.specificity,
+                rule.source_order,
+                rule,
+            ));
         }
     }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     matched
+        .into_iter()
+        .map(|(_, spec, order, rule)| (spec, order, rule))
+        .collect()
 }
 
 /// Generated `::before` / `::after` / `::placeholder` blocks for an originating element.
@@ -435,10 +488,20 @@ pub fn matched_generated_pseudo(
     ctx: &MatchContext<'_>,
 ) -> GeneratedPseudoMatch {
     let mut out = GeneratedPseudoMatch::default();
-    let mut matched: Vec<(Specificity, u32, GeneratedPseudo, Vec<DeclarationEntry>)> = Vec::new();
+    let mut matched: Vec<(
+        u32,
+        Specificity,
+        u32,
+        GeneratedPseudo,
+        Vec<DeclarationEntry>,
+    )> = Vec::new();
     for rule in rules {
+        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
+            continue;
+        }
         if crate::css_cascade::selector_matches(&rule.originating_selector, ctx) {
             matched.push((
+                crate::css_cascade::cascade_layer_key(false, rule.layer),
                 rule.originating_selector.specificity,
                 rule.source_order,
                 rule.pseudo,
@@ -446,8 +509,8 @@ pub fn matched_generated_pseudo(
             ));
         }
     }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    for (_, _, pseudo, entries) in matched {
+    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    for (_, _, _, pseudo, entries) in matched {
         match pseudo {
             GeneratedPseudo::Before => out.before.push(entries),
             GeneratedPseudo::After => out.after.push(entries),
@@ -457,6 +520,39 @@ pub fn matched_generated_pseudo(
     out
 }
 
+/// `::-webkit-scrollbar` / thumb declaration blocks for an originating scroll container.
+pub fn matched_scrollbar_pseudo(
+    rules: &[ScrollbarPseudoRule],
+    ctx: &MatchContext<'_>,
+) -> Vec<(ScrollbarPseudo, Vec<DeclarationEntry>)> {
+    let mut matched: Vec<(
+        u32,
+        Specificity,
+        u32,
+        ScrollbarPseudo,
+        Vec<DeclarationEntry>,
+    )> = Vec::new();
+    for rule in rules {
+        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
+            continue;
+        }
+        if crate::css_cascade::selector_matches(&rule.originating_selector, ctx) {
+            matched.push((
+                crate::css_cascade::cascade_layer_key(false, rule.layer),
+                rule.originating_selector.specificity,
+                rule.source_order,
+                rule.pseudo,
+                rule.declaration_entries.clone(),
+            ));
+        }
+    }
+    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    matched
+        .into_iter()
+        .map(|(_, _, _, pseudo, entries)| (pseudo, entries))
+        .collect()
+}
+
 /// Motion rules whose selector list matches `ctx` (specificity + source order).
 pub fn matched_motion_rules<'a>(
     rules: &'a [MotionStyleRule],
@@ -464,15 +560,26 @@ pub fn matched_motion_rules<'a>(
 ) -> Vec<(Specificity, u32, &'a MotionStyleRule)> {
     let mut matched = Vec::new();
     for rule in rules {
+        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
+            continue;
+        }
         for sel in &rule.selectors {
             if crate::css_cascade::selector_matches(sel, ctx) {
-                matched.push((sel.specificity, rule.source_order, rule));
+                matched.push((
+                    crate::css_cascade::cascade_layer_key(false, rule.layer),
+                    sel.specificity,
+                    rule.source_order,
+                    rule,
+                ));
                 break;
             }
         }
     }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     matched
+        .into_iter()
+        .map(|(_, spec, order, rule)| (spec, order, rule))
+        .collect()
 }
 
 /// True when selector structure matches and the interactive pseudo is active on
@@ -746,6 +853,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
 
         let card_hovered = [InteractivePseudoFlags {
@@ -817,6 +934,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
 
         // Inner card not hovered; outer card hovered — must still match.
@@ -883,6 +1010,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let hover = matched_interactive_rules(
             &sheet.interactive_rules,
@@ -927,6 +1064,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let hovered = InteractiveMatchState {
             subject: InteractivePseudoFlags {
@@ -961,6 +1108,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         assert!(
             matched_interactive_rules(
@@ -1000,6 +1157,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         assert!(
             matched_interactive_rules(

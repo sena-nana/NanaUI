@@ -280,6 +280,7 @@ mod tests {
             TextMetrics {
                 width: style.font_size,
                 height: style.font_size,
+                ascent: None,
             }
         }
     }

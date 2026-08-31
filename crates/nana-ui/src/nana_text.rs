@@ -1,16 +1,25 @@
 //! Nana-owned cosmic-text shaper. Layout metrics stay on Runtime.
 
 use cosmic_text::{
-    Affinity, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag,
-    FontFeatures, FontSystem, Metrics, Shaping, Style, Weight, Wrap,
+    Affinity, Align, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag,
+    FontFeatures, FontSystem, Metrics, Shaping, Stretch, Style, Weight, Wrap,
 };
-use nana_ui_core::LineHeightSpec;
+use nana_ui_core::{
+    DirSpec, FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec,
+    LineHeightSpec, WordBreakSpec,
+};
 use nana_ui_runtime::{
     ComputedStyle, GlyphCache, LayoutBox, StableNodeId, TextContent, TextMetrics,
     TextShapeConstraints, TextShaper, TextShaping,
 };
+use std::borrow::Cow;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use unicode_segmentation::UnicodeSegmentation;
+
+/// CSS `direction: rtl` paragraph isolate (U+2067 RLI … U+2069 PDI).
+pub(crate) const RTL_ISOLATE_PREFIX: &str = "\u{2067}";
+pub(crate) const RTL_ISOLATE_SUFFIX: &str = "\u{2069}";
 
 /// Product text shaper for Runtime flush on the Nana WGPU host path.
 #[derive(Debug)]
@@ -236,6 +245,110 @@ fn select_local_faces(
     }
 }
 
+/// Failure loading a host-supplied face into the shared [`FontSystem`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFontError {
+    /// Empty byte buffer.
+    Empty,
+    /// Bytes were not a recognized OpenType / TrueType face.
+    Unrecognized,
+    /// Filesystem error while reading a path (`Display` string, for `PartialEq` tests).
+    Io(String),
+}
+
+impl std::fmt::Display for HostFontError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "host font bytes were empty"),
+            Self::Unrecognized => write!(f, "host font bytes were not a recognized font face"),
+            Self::Io(err) => write!(f, "host font file: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for HostFontError {}
+
+/// CSS `@font-face` `font-style` mapped onto a loaded face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostFontStyle {
+    Normal,
+    Italic,
+    Oblique,
+}
+
+/// Load font bytes into the process-wide FontSystem used by shaping and paint.
+pub fn register_host_font_bytes(bytes: impl Into<Vec<u8>>) -> Result<usize, HostFontError> {
+    let bytes = bytes.into();
+    if bytes.is_empty() {
+        return Err(HostFontError::Empty);
+    }
+    let fonts = nana_font_system();
+    let mut fonts = lock_font_system(&fonts);
+    let ids = fonts
+        .db_mut()
+        .load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(bytes)));
+    if ids.is_empty() {
+        Err(HostFontError::Unrecognized)
+    } else {
+        Ok(ids.len())
+    }
+}
+
+/// Family names (name table + CSS aliases) of faces used to shape `text`.
+pub fn shaped_face_families(family: &str, text: &str) -> Vec<String> {
+    let mut shaper = NanaTextShaper::default();
+    let buffer = shaper.shape_buffer(
+        text,
+        &ComputedStyle {
+            font_family: Some(family.into()),
+            ..ComputedStyle::default()
+        },
+        TextShapeConstraints {
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        },
+    );
+    let fonts = lock_font_system(&shaper.font_system);
+    let mut names = Vec::new();
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            if let Some(face) = fonts.db().face(glyph.font_id) {
+                for (name, _) in &face.families {
+                    names.push(name.clone());
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Load a font file (or collection) from `path` into the shared FontSystem.
+pub fn register_host_font_file(path: impl AsRef<Path>) -> Result<usize, HostFontError> {
+    let path = path.as_ref();
+    let fonts = nana_font_system();
+    let mut fonts = lock_font_system(&fonts);
+    let before = fonts.db().len();
+    fonts
+        .db_mut()
+        .load_font_file(path)
+        .map_err(|err| HostFontError::Io(err.to_string()))?;
+    let loaded = fonts.db().len().saturating_sub(before);
+    if loaded == 0 {
+        Err(HostFontError::Unrecognized)
+    } else {
+        Ok(loaded)
+    }
+}
+
+/// Set the generic `sans-serif` family. `bundled-fonts` already sets `Noto Sans SC`.
+pub fn set_sans_serif_family(name: impl AsRef<str>) {
+    let fonts = nana_font_system();
+    let mut fonts = lock_font_system(&fonts);
+    fonts.db_mut().set_sans_serif_family(name.as_ref());
+}
+
 fn build_font_system() -> FontSystem {
     #[cfg(not(feature = "bundled-fonts"))]
     {
@@ -265,11 +378,7 @@ impl TextShaper for NanaTextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         let buffer = self.shape_buffer(&text.value, style, constraints);
-        let (width, height, _) = measure(&buffer);
-        TextMetrics {
-            width: width.max(0.0),
-            height,
-        }
+        metrics_of(&buffer)
     }
 
     fn shape_cached(
@@ -290,11 +399,7 @@ impl TextShaper for NanaTextShaper {
         }
         let buffer = self.shape_buffer(&text.value, style, constraints);
         record_shaped_glyphs(&buffer, style, glyphs);
-        let (width, height, _) = measure(&buffer);
-        TextMetrics {
-            width: width.max(0.0),
-            height,
-        }
+        metrics_of(&buffer)
     }
 
     fn horizontal_offset(
@@ -415,7 +520,15 @@ impl NanaTextShaper {
             Some(constraints.max_width.unwrap_or(f32::INFINITY)),
             Some(constraints.max_height.unwrap_or(f32::INFINITY)),
         );
-        buffer.set_wrap(cosmic_wrap(constraints.wrap, constraints.wrap_break));
+        // `style.writing_mode` is part of the layout/cache identity. cosmic-text
+        // 0.19 has no vertical glyph orientation; do not rotate the buffer.
+        let _ = style.writing_mode;
+        buffer.set_wrap(cosmic_wrap(
+            constraints.wrap,
+            constraints.wrap_break,
+            style.word_break,
+            style.line_break,
+        ));
         buffer.set_ellipsize(if constraints.ellipsis {
             let limit = constraints
                 .max_lines
@@ -431,46 +544,157 @@ impl NanaTextShaper {
         let shaping = match constraints.shaping {
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
         };
-        buffer.set_text(text, &attrs, shaping, None);
+        let shaped = wrap_for_css_direction(text, style.direction);
+        let align = match style.direction {
+            DirSpec::Ltr => None,
+            DirSpec::Rtl => Some(Align::Right),
+        };
+        buffer.set_text(&shaped, &attrs, shaping, align);
         buffer.shape_until_scroll(&mut fonts, false);
 
         let (min_width, min_height, has_rtl) = measure(&buffer);
-        if has_rtl {
+        // Shrink-to-fit only for intrinsic measure. A definite max-width is the
+        // same containing block paint uses, so caret and glyphs stay aligned.
+        if has_rtl && constraints.max_width.is_none() {
             buffer.set_size(Some(min_width), Some(min_height));
             buffer.shape_until_scroll(&mut fonts, false);
         }
+
         buffer
     }
 }
 
 fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
+    shape_attrs(
+        style.font_family.as_deref(),
+        style.font_weight,
+        style.letter_spacing,
+        style.font_size,
+        &style.font_features,
+        &style.font_variations,
+        style.font_kerning,
+        style.italic,
+    )
+}
+
+pub(crate) fn shape_attrs<'a>(
+    family: Option<&'a str>,
+    weight: Option<u16>,
+    letter_spacing_px: f32,
+    font_size: f32,
+    features: &[FontFeatureSetting],
+    variations: &[FontVariationSetting],
+    kerning: FontKerningSpec,
+    italic: bool,
+) -> Attrs<'a> {
     let mut attrs = Attrs::new()
-        .family(resolve_family(style.font_family.as_deref()))
-        .weight(font_weight(style.font_weight));
-    if style.italic {
+        .family(resolve_family(family))
+        .weight(font_weight(
+            FontVariationSetting::wght_value(variations)
+                .map(|wght| wght.round().clamp(1.0, 1000.0) as u16)
+                .or(weight),
+        ));
+    if italic {
         attrs = attrs.style(Style::Italic);
     }
-    if style.letter_spacing != 0.0 {
-        attrs = attrs.letter_spacing(letter_spacing_em(style.letter_spacing, style.font_size));
+    if let Some(wdth) = FontVariationSetting::wdth_value(variations) {
+        attrs = attrs.stretch(stretch_from_wdth(wdth));
     }
-    if !style.font_features.is_empty() {
-        let mut features = FontFeatures::new();
-        for setting in &style.font_features {
-            features.set(FeatureTag::new(&setting.tag), setting.value);
-        }
-        attrs = attrs.font_features(features);
+    if letter_spacing_px != 0.0 {
+        attrs = attrs.letter_spacing(letter_spacing_em(letter_spacing_px, font_size));
+    }
+    let mut ot_features = FontFeatures::new();
+    for feature in features {
+        ot_features.set(FeatureTag::new(&feature.tag), feature.value);
+    }
+    if kerning == FontKerningSpec::None {
+        ot_features.disable(FeatureTag::KERNING);
+    }
+    if kerning == FontKerningSpec::None || !features.is_empty() {
+        attrs = attrs.font_features(ot_features);
     }
     attrs
 }
 
-pub(crate) fn cosmic_wrap(wrap: bool, mode: nana_ui_core::TextWrapBreak) -> Wrap {
+pub(crate) fn cosmic_wrap(
+    wrap: bool,
+    mode: nana_ui_core::TextWrapBreak,
+    word_break: WordBreakSpec,
+    line_break: LineBreakSpec,
+) -> Wrap {
     if !wrap {
         return Wrap::None;
     }
-    match mode {
-        nana_ui_core::TextWrapBreak::Word => Wrap::Word,
-        nana_ui_core::TextWrapBreak::WordOrGlyph => Wrap::WordOrGlyph,
-        nana_ui_core::TextWrapBreak::Glyph => Wrap::Glyph,
+    if matches!(word_break, WordBreakSpec::BreakAll)
+        || matches!(line_break, LineBreakSpec::Anywhere)
+    {
+        Wrap::Glyph
+    } else if matches!(word_break, WordBreakSpec::BreakWord) {
+        Wrap::WordOrGlyph
+    } else {
+        match mode {
+            nana_ui_core::TextWrapBreak::Word => Wrap::Word,
+            nana_ui_core::TextWrapBreak::WordOrGlyph => Wrap::WordOrGlyph,
+            nana_ui_core::TextWrapBreak::Glyph => Wrap::Glyph,
+        }
+    }
+}
+
+fn stretch_from_wdth(wdth: f32) -> Stretch {
+    if wdth <= 56.25 {
+        Stretch::UltraCondensed
+    } else if wdth <= 68.75 {
+        Stretch::ExtraCondensed
+    } else if wdth <= 81.25 {
+        Stretch::Condensed
+    } else if wdth <= 93.75 {
+        Stretch::SemiCondensed
+    } else if wdth <= 106.25 {
+        Stretch::Normal
+    } else if wdth <= 118.75 {
+        Stretch::SemiExpanded
+    } else if wdth <= 137.5 {
+        Stretch::Expanded
+    } else if wdth <= 175.0 {
+        Stretch::ExtraExpanded
+    } else {
+        Stretch::UltraExpanded
+    }
+}
+
+pub(crate) fn wrap_for_css_direction(text: &str, direction: DirSpec) -> Cow<'_, str> {
+    match direction {
+        DirSpec::Ltr => Cow::Borrowed(text),
+        DirSpec::Rtl => Cow::Owned(format!("{RTL_ISOLATE_PREFIX}{text}{RTL_ISOLATE_SUFFIX}")),
+    }
+}
+
+pub(crate) fn first_content_glyph_x(buffer: &Buffer) -> Option<f32> {
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            let cluster = &run.text[glyph.start..glyph.end];
+            if cluster == RTL_ISOLATE_PREFIX || cluster == RTL_ISOLATE_SUFFIX {
+                continue;
+            }
+            return Some(glyph.x + glyph.x_offset * glyph.font_size);
+        }
+    }
+    None
+}
+
+fn first_line_ascent(buffer: &Buffer) -> Option<f32> {
+    buffer
+        .layout_runs()
+        .next()
+        .map(|run| (run.line_y - run.line_top).max(0.0))
+}
+
+fn metrics_of(buffer: &Buffer) -> TextMetrics {
+    let (width, height, _) = measure(buffer);
+    TextMetrics {
+        width: width.max(0.0),
+        height,
+        ascent: first_line_ascent(buffer),
     }
 }
 
@@ -526,6 +750,7 @@ fn metrics_from_advance(advance: f32, style: &ComputedStyle, _char_count: usize)
     TextMetrics {
         width: advance.max(0.0),
         height: resolved_line_height(style),
+        ascent: None,
     }
 }
 
@@ -1011,5 +1236,34 @@ mod tests {
         let hit = world.last_work_counters();
         assert_eq!(hit.glyph_cache_hits, Some(2));
         assert_eq!(hit.glyph_cache_misses, Some(0));
+    }
+    #[test]
+    fn host_font_empty_bytes_are_rejected() {
+        assert_eq!(
+            register_host_font_bytes(Vec::new()),
+            Err(HostFontError::Empty)
+        );
+        assert_eq!(
+            register_host_font_bytes(b"not-a-font".to_vec()),
+            Err(HostFontError::Unrecognized)
+        );
+        let missing = register_host_font_file("/definitely/not/a/font.ttf");
+        assert!(matches!(missing, Err(HostFontError::Io(_))));
+    }
+
+    #[test]
+    fn css_family_alias_shapes_loaded_face() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/fonts/NotoSansSC-Regular.ttf"),
+        )
+        .expect("bundled Noto Sans SC Regular");
+        let added = register_host_font_face("Host Sans", bytes, Some(400), None);
+        assert!(added > 0, "Noto bytes must load");
+        let used = shaped_face_families("Host Sans", "H");
+        assert!(
+            used.iter().any(|name| name == "Host Sans"),
+            "shaper must hit the CSS alias, used={used:?}"
+        );
     }
 }

@@ -13,10 +13,10 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G03", "T-G04", "T-G05", "T-G06", "T-G07", "T-G08", "T-G09", "T-G10", "T-G11", "T-G12",
     "T-G13", "T-G14", "T-G15", "T-G16", "T-G17", "T-G18", "T-G19", "T-G20", "T-G21", "T-G22",
     "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
-    "T-G33", "T-G34", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07", "T-P08",
-    "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17", "T-P18",
-    "T-P19", "T-I01", "T-I02", "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03", "T-FL04", "T-FL05",
-    "T-FL06",
+    "T-G33", "T-G34", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06", "T-P07",
+    "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16", "T-P17",
+    "T-P18", "T-P19", "T-I01", "T-I02", "T-I03", "T-I04", "T-FL01", "T-FL02", "T-FL03",
+    "T-FL04", "T-FL05", "T-FL06",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -69,8 +69,8 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-S18", true, None), // width:fit-content clamp to available
         ("T-S19", true, None), // width:min-content wrap = widest child
         ("T-S20", true, None), // width:fit-content vs column stretch Fill
-        ("T-S21", true, None), // calc * / + nested min/max + var 展开后再算
-        ("T-S22", true, None), // 混单位嵌套 min/max 相对包含块兑现
+        ("T-S21", true, None), // calc * / + nested min/max + var 展开后再算；更复杂式走 Calc AST
+        ("T-S22", true, None), // 混单位嵌套 min/max 相对包含块兑现；grid cell calc(min() + px)
         ("T-L01", true, None),
         ("T-L02", true, None), // 显式 width:220 + flex:1
         ("T-L03", true, None), // class nana-settings-row → space-between
@@ -134,6 +134,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-G32", true, None),  // grid item 100% fills resolved cell
         ("T-G33", true, None),  // nth named line foo 2 / foo
         ("T-G34", true, None),  // auto-fill copies [mid] per expansion; mid 2
+        ("T-G35", true, None),  // subgrid inherits parent column track sizes
         ("T-P01", true, None),  // position:relative + inset
         ("T-P02", true, None),  // absolute 脱流 + top/left
         ("T-P03", true, None),  // absolute right/bottom

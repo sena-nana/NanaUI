@@ -552,7 +552,7 @@ mod tests {
         assert!(document.scene().primitives().any(|primitive| {
             matches!(
                 &primitive.kind,
-                nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. }
                     if custom.renderer.as_ref() == "nana.host-texture"
                         && custom.resource.as_ref().starts_with("canvas:")
             )
@@ -580,7 +580,7 @@ mod tests {
                 primitive.node.get() == gpu_canvas.id
                     && matches!(
                         &primitive.kind,
-                        nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                        nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. }
                             if custom.renderer.as_ref() == "nana.host-texture"
                     )
             })
@@ -787,6 +787,41 @@ mod tests {
             image.props.layout.height,
             Some(nana_ui_vue::LengthSpec::Px(48.0)),
             "Vue img stylesheet height was not applied: {image:?}"
+        );
+        let image_slot = format!(
+            "canvas:{}",
+            image
+                .props
+                .attrs
+                .get("data-nana-image")
+                .expect("decoded image id")
+        );
+        let host = runtime
+            .vue()
+            .host(VueWindowId::PRIMARY)
+            .expect("primary Vue host");
+        let document = host.lock().unwrap().document();
+        let mut document = document.lock().unwrap();
+        document.flush_host_frame();
+        assert!(
+            document
+                .gpu_slots()
+                .iter()
+                .any(|(handle, slot)| handle.0 == image.id && slot == &image_slot),
+            "decoded <img> must project HostTexture slot {image_slot}, slots={:?}",
+            document.gpu_slots()
+        );
+        assert!(
+            document.scene().primitives().any(|primitive| {
+                primitive.node.get() == image.id
+                    && matches!(
+                        &primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. }
+                            if custom.renderer.as_ref() == "nana.host-texture"
+                                && custom.resource.as_ref() == image_slot
+                    )
+            }),
+            "decoded <img> must be a document-order HostTexture primitive for {image_slot}"
         );
     }
 

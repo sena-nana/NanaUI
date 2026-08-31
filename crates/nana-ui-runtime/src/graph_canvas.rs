@@ -3,20 +3,24 @@
 //! Applications own [`GraphModel`], viewport, selection, and persistence.
 //! This component owns transient pointer state and emits [`GraphCanvasEvent`].
 //! Default paint is [`StandardVisual::GraphCanvas`]: grid lines, node frames,
-//! ports, and sampled edge curves. Node *contents* are ordinary child nodes the
-//! application mounts; this component does not render them.
+//! ports, and sampled edge curves. Node interiors are optional child Regions
+//! or `"nana.host-texture"` slots ([`GraphNodeContent`]); this component does
+//! not rasterize mermaid, math, or formula pixels. Unslotted nodes keep the
+//! default frame.
 //!
 //! [`CustomRenderNode`] (`renderer = "graph-canvas"`) is not projected here
 //! because the default Scene painter rejects unregistered custom renderers.
 //! Hosts that register a Scene GPU painter for [`GRAPH_CANVAS_RENDERER`] may
 //! attach [`GraphCanvas::custom_render`]. No host Device or Queue is created here.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nana_ui_core::{
-    GRAPH_NODE_TITLE_HEIGHT, GraphCanvasId, GraphEndpoint, GraphModel, GraphNodeId, GraphPoint,
-    GraphPortId, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphTargetDescriptor,
-    GraphViewport, LengthSpec, OverflowSpec, SemanticColorRole, port_tangent,
+    GRAPH_NODE_TITLE_HEIGHT, GRAPH_PORT_INSET, GraphCanvasId, GraphEndpoint, GraphModel,
+    GraphNodeId, GraphPoint, GraphPortId, GraphPortKind, GraphPortSide, GraphSelection, GraphSize,
+    GraphTargetDescriptor, GraphViewport, LengthSpec, OverflowSpec, PositionSpec,
+    SemanticColorRole, port_tangent,
 };
 
 #[cfg(test)]
@@ -24,9 +28,9 @@ use nana_ui_core::{GRAPH_MAX_ZOOM, GraphEdge, GraphNode, GraphPort};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    InteractionStyle, LayoutBox, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId,
-    StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
+    InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind, NodeStyle,
+    SemanticPaint, StableNodeId, StandardVisual, UiWorld,
 };
 
 pub const GRAPH_CANVAS_RENDERER: &str = "graph-canvas";
@@ -37,6 +41,7 @@ const KEYBOARD_ZOOM_FACTOR: f32 = 1.2;
 const FIT_PADDING: f32 = 36.0;
 const DEFAULT_CANVAS_ID: &str = "graph-canvas";
 const DEFAULT_LABEL: &str = "Graph canvas";
+const GRAPH_NODE_CONTENT_TAG: &str = "graph-node-content";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphCanvasEvent {
@@ -158,6 +163,72 @@ pub struct GraphEdgePaint {
     pub label: Option<Arc<str>>,
 }
 
+/// Host-drawn interior of one graph node.
+///
+/// Default canvas paint still draws the grid, frames, ports, and edges.
+/// Interiors are first-class children sampled in document order
+/// (`"nana.host-texture"`), not a HUD overlay and not a Live2D/Cubism node.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GraphNodeContent {
+    /// Existing child Region. Layout is the node body below the title bar.
+    Region(StableNodeId),
+    /// HostTexture registry slot. Assemble allocates a child that samples
+    /// [`HOST_TEXTURE_RENDERER`].
+    HostTexture(Arc<str>),
+    /// Already-built custom node, still projected onto a child (never the canvas).
+    CustomRender(CustomRenderNode),
+}
+
+impl GraphNodeContent {
+    pub fn region(id: StableNodeId) -> Self {
+        Self::Region(id)
+    }
+
+    pub fn host_texture(slot: impl Into<Arc<str>>) -> Self {
+        Self::HostTexture(slot.into())
+    }
+
+    pub fn custom_render(node: CustomRenderNode) -> Self {
+        Self::CustomRender(node)
+    }
+
+    pub fn as_child(&self) -> Option<StableNodeId> {
+        match self {
+            Self::Region(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// HostTexture slots use [`HOST_TEXTURE_RENDERER`]. Empty identities are omitted.
+    pub fn as_custom_render(&self) -> Option<CustomRenderNode> {
+        match self {
+            Self::HostTexture(slot) if !slot.trim().is_empty() => Some(CustomRenderNode::new(
+                HOST_TEXTURE_RENDERER,
+                Arc::clone(slot),
+                0,
+            )),
+            Self::CustomRender(node)
+                if !node.renderer.trim().is_empty() && !node.resource.trim().is_empty() =>
+            {
+                Some(node.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<StableNodeId> for GraphNodeContent {
+    fn from(id: StableNodeId) -> Self {
+        Self::Region(id)
+    }
+}
+
+impl From<CustomRenderNode> for GraphNodeContent {
+    fn from(node: CustomRenderNode) -> Self {
+        Self::CustomRender(node)
+    }
+}
+
 /// Controlled graph canvas. Viewport and selection live on the view; the
 /// application applies model and persistence from typed events.
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +244,10 @@ pub struct GraphCanvas {
     pub interaction: GraphInteraction,
     pub hover: Option<GraphSelection>,
     pub revision: u64,
+    /// Optional per-node interiors. Region children win over HostTexture.
+    pub node_contents: Vec<(GraphNodeId, GraphNodeContent)>,
+    /// Child identities allocated by [`AppContext::assemble_graph_canvas_contents`].
+    allocated_contents: Vec<(GraphNodeId, StableNodeId)>,
 }
 
 impl GraphCanvas {
@@ -189,6 +264,8 @@ impl GraphCanvas {
             interaction: GraphInteraction::None,
             hover: None,
             revision: 0,
+            node_contents: Vec::new(),
+            allocated_contents: Vec::new(),
         }
     }
 
@@ -222,6 +299,85 @@ impl GraphCanvas {
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Bind a host-drawn interior to `node`. Replaces any previous content for
+    /// that node. Unknown node ids are kept until [`Self::set_model`] prunes them.
+    pub fn node_content(mut self, node: impl Into<GraphNodeId>, content: GraphNodeContent) -> Self {
+        self.set_node_content(node, content);
+        self
+    }
+
+    pub fn set_node_content(
+        &mut self,
+        node: impl Into<GraphNodeId>,
+        content: GraphNodeContent,
+    ) -> bool {
+        let node = node.into();
+        if let Some((_, existing)) = self
+            .node_contents
+            .iter_mut()
+            .find(|(existing, _)| *existing == node)
+        {
+            if *existing == content {
+                return false;
+            }
+            *existing = content;
+        } else {
+            self.node_contents.push((node, content));
+        }
+        self.bump_revision();
+        true
+    }
+
+    pub fn node_contents(&self) -> &[(GraphNodeId, GraphNodeContent)] {
+        &self.node_contents
+    }
+
+    /// Canvas-local rectangle for a node's interior (below the title, inset
+    /// from ports). `None` when the node is missing or the body has no area.
+    pub fn node_content_rect(&self, node: &GraphNodeId) -> Option<LayoutBox> {
+        let model = self.displayed_model();
+        let graph_node = model.node(node)?;
+        content_rect_for(graph_node, self.viewport)
+    }
+
+    fn content_for(&self, node: &GraphNodeId) -> Option<GraphNodeContent> {
+        if let Some((_, content)) = self
+            .node_contents
+            .iter()
+            .find(|(existing, _)| existing == node)
+        {
+            return Some(content.clone());
+        }
+        let slot = self
+            .model
+            .node(node)
+            .and_then(|graph_node| graph_node.content_slot.as_deref())
+            .map(str::trim)
+            .filter(|slot| !slot.is_empty())?;
+        Some(GraphNodeContent::host_texture(slot))
+    }
+
+    fn child_for(&self, node: &GraphNodeId, content: &GraphNodeContent) -> Option<StableNodeId> {
+        content.as_child().or_else(|| {
+            self.allocated_contents
+                .iter()
+                .find(|(existing, _)| existing == node)
+                .map(|(_, id)| *id)
+        })
+    }
+
+    fn prune_contents(&mut self) {
+        let known: HashSet<_> = self
+            .model
+            .nodes()
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        self.node_contents.retain(|(node, _)| known.contains(node));
+        self.allocated_contents
+            .retain(|(node, _)| known.contains(node));
     }
 
     pub fn paint_nodes(&self) -> Arc<[GraphNodePaint]> {
@@ -346,6 +502,7 @@ impl GraphCanvas {
     pub fn set_model(&mut self, model: GraphModel) {
         if self.model != model {
             self.model = model;
+            self.prune_contents();
             self.bump_revision();
         }
     }
@@ -630,6 +787,39 @@ impl GraphCanvas {
         )
     }
 
+    fn project_node_contents(
+        &self,
+        canvas: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        let model = self.displayed_model();
+        for node in model.nodes() {
+            let Some(content) = self.content_for(&node.id) else {
+                continue;
+            };
+            let Some(child) = self.child_for(&node.id, &content) else {
+                continue;
+            };
+            if world.node(child).is_none() {
+                continue;
+            }
+            mutations.insert(canvas, child, None);
+            if content.as_child().is_none() {
+                let custom = content.as_custom_render();
+                if world.custom_render(child) != custom.as_ref() {
+                    mutations.set_custom_render(child, custom);
+                }
+                project_allocated_interaction(child, world, mutations);
+            }
+            let Some(rect) = content_rect_for(node, self.viewport) else {
+                hide_content_child(child, world, mutations);
+                continue;
+            };
+            position_content_child(child, rect, world, mutations);
+        }
+    }
+
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
@@ -641,6 +831,7 @@ impl GraphCanvas {
         }
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
+        layout.position = PositionSpec::Relative;
         if style.background.is_none() {
             style.background = Some(SemanticColorRole::Background);
         }
@@ -694,6 +885,7 @@ impl ComponentView for GraphCanvas {
                 ..AccessibilityState::default()
             },
         );
+        self.project_node_contents(id, world, mutations);
     }
 }
 
@@ -890,6 +1082,79 @@ impl crate::AppContext {
         })
     }
 
+    /// Allocate a first-class child per HostTexture / CustomRender node interior.
+    ///
+    /// Region children are host-owned and only reparented. Allocated children
+    /// sample [`HOST_TEXTURE_RENDERER`] in document order. The canvas itself
+    /// keeps [`StandardVisual::GraphCanvas`] and does not attach GPU content.
+    pub fn assemble_graph_canvas_contents(
+        &mut self,
+        canvas: crate::Entity<GraphCanvas>,
+    ) -> Result<bool, crate::FrameworkError> {
+        let parent = canvas.stable_id();
+        let document = self
+            .world()
+            .node(parent)
+            .map(|node| node.document)
+            .ok_or(crate::FrameworkError::MissingView(parent))?;
+        let (wanted, stored) = self.read(canvas, |canvas| {
+            let mut wanted = Vec::new();
+            for node in canvas.displayed_model().nodes() {
+                let Some(content) = canvas.content_for(&node.id) else {
+                    continue;
+                };
+                if content.as_child().is_some() {
+                    continue;
+                }
+                if content.as_custom_render().is_none() {
+                    continue;
+                }
+                wanted.push(node.id.clone());
+            }
+            (wanted, canvas.allocated_contents.clone())
+        })?;
+        let mut existing: Vec<(GraphNodeId, StableNodeId)> = stored
+            .into_iter()
+            .filter(|(_, id)| self.world().contains(*id))
+            .collect();
+        let mut next = Vec::with_capacity(wanted.len());
+        let mut used = HashSet::new();
+        for node in wanted {
+            if let Some((_, id)) = existing.iter().find(|(existing, _)| *existing == node) {
+                next.push((node.clone(), *id));
+                used.insert(*id);
+            } else {
+                let id = self
+                    .create_view(
+                        document,
+                        NodeKind::Element {
+                            tag: GRAPH_NODE_CONTENT_TAG.into(),
+                        },
+                        (),
+                    )?
+                    .stable_id();
+                next.push((node, id));
+                used.insert(id);
+            }
+        }
+        for (_, id) in existing.drain(..) {
+            if !used.contains(&id) {
+                drop_allocated_content(self, id)?;
+            }
+        }
+        let mut mutations = MutationQueue::new();
+        for (_, id) in &next {
+            mutations.insert(parent, *id, None);
+        }
+        if !mutations.is_empty() {
+            self.commit_mutations(mutations)?;
+        }
+        self.update_component(canvas, |canvas, _| {
+            canvas.allocated_contents = next;
+        })?;
+        Ok(true)
+    }
+
     fn graph_canvas_entity(&self, id: StableNodeId) -> Option<crate::Entity<GraphCanvas>> {
         self.is_graph_canvas(id)
             .then(|| crate::Entity::from_stable_id(id))
@@ -974,6 +1239,7 @@ fn canvas_style() -> NodeStyle {
             height: Some(LengthSpec::Fill),
             overflow_x: OverflowSpec::Hidden,
             overflow_y: OverflowSpec::Hidden,
+            position: PositionSpec::Relative,
             ..nana_ui_core::LayoutStyle::default()
         }),
         background: Some(SemanticColorRole::Background),
@@ -991,6 +1257,109 @@ fn canvas_style() -> NodeStyle {
         },
         ..NodeStyle::default()
     }
+}
+
+fn content_rect_for(node: &nana_ui_core::GraphNode, viewport: GraphViewport) -> Option<LayoutBox> {
+    let rect = viewport.world_rect_to_view(node.bounds());
+    if !rect.origin.x.is_finite()
+        || !rect.origin.y.is_finite()
+        || !rect.size.width.is_finite()
+        || !rect.size.height.is_finite()
+    {
+        return None;
+    }
+    let title_height = (GRAPH_NODE_TITLE_HEIGHT * viewport.zoom).clamp(18.0, 34.0);
+    let pad = GRAPH_PORT_INSET * viewport.zoom;
+    let width = (rect.size.width - pad * 2.0).max(0.0);
+    let height = (rect.size.height - title_height - pad).max(0.0);
+    if width < 1.0 || height < 1.0 {
+        return None;
+    }
+    Some(LayoutBox {
+        x: rect.origin.x + pad,
+        y: rect.origin.y + title_height,
+        width,
+        height,
+    })
+}
+
+fn position_content_child(
+    id: StableNodeId,
+    rect: LayoutBox,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+) {
+    let mut style = world.node_style(id).cloned().unwrap_or_default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.position = PositionSpec::Absolute;
+    layout.offset_left = Some(LengthSpec::Px(rect.x));
+    layout.offset_top = Some(LengthSpec::Px(rect.y));
+    layout.offset_right = None;
+    layout.offset_bottom = None;
+    layout.width = Some(LengthSpec::Px(rect.width));
+    layout.height = Some(LengthSpec::Px(rect.height));
+    layout.overflow_x = OverflowSpec::Hidden;
+    layout.overflow_y = OverflowSpec::Hidden;
+    layout.hidden = false;
+    if world.node_style(id) != Some(&style) {
+        mutations.set_style(id, style);
+    }
+}
+
+fn hide_content_child(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+    let mut style = world.node_style(id).cloned().unwrap_or_default();
+    let layout = Arc::make_mut(&mut style.layout);
+    if layout.hidden {
+        return;
+    }
+    layout.hidden = true;
+    if world.node_style(id) != Some(&style) {
+        mutations.set_style(id, style);
+    }
+}
+
+fn project_allocated_interaction(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+    let interaction = InteractionState {
+        pointer_events: false,
+        focusable: false,
+    };
+    if world.interaction(id) != Some(interaction) {
+        mutations.set_interaction(id, interaction);
+    }
+}
+
+fn drop_allocated_content(
+    context: &mut crate::AppContext,
+    id: StableNodeId,
+) -> Result<(), crate::FrameworkError> {
+    if context.world().contains(id) {
+        let mut mutations = MutationQueue::new();
+        mutations.despawn_subtree(id);
+        context.commit_mutations(mutations)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn graph_node_slot_name(name: &str, model: &GraphModel) -> Option<GraphNodeId> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = GraphNodeId::new(trimmed);
+    if model.node(&candidate).is_some() {
+        return Some(candidate);
+    }
+    for prefix in [
+        "node:", "node.", "node-", "content:", "content.", "content-",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let candidate = GraphNodeId::new(rest);
+            if model.node(&candidate).is_some() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn sanitize_canvas_id(id: GraphCanvasId) -> GraphCanvasId {
@@ -1619,5 +1988,128 @@ mod tests {
             }
             _ => panic!("graph visual"),
         }
+    }
+
+    #[test]
+    fn region_content_is_positioned_inside_the_node_and_default_paint_stays() {
+        let mut context = AppContext::new();
+        let child = context
+            .create_view(
+                document(),
+                NodeKind::Element {
+                    tag: "nana.host-texture".into(),
+                },
+                (),
+            )
+            .unwrap();
+        let canvas = context
+            .create_component(
+                document(),
+                GraphCanvas::new("gallery", sample_graph())
+                    .node_content("source", GraphNodeContent::region(child.stable_id())),
+            )
+            .unwrap();
+        let rect = context
+            .read(canvas, |canvas| canvas.node_content_rect(&"source".into()))
+            .unwrap()
+            .expect("source body");
+        let style = context.world().node_style(child.stable_id()).unwrap();
+        assert_eq!(style.layout.position, PositionSpec::Absolute);
+        assert_eq!(style.layout.offset_left, Some(LengthSpec::Px(rect.x)));
+        assert_eq!(style.layout.offset_top, Some(LengthSpec::Px(rect.y)));
+        assert_eq!(style.layout.width, Some(LengthSpec::Px(rect.width)));
+        assert_eq!(style.layout.height, Some(LengthSpec::Px(rect.height)));
+        assert_eq!(
+            context.world().node(canvas.stable_id()).unwrap().children,
+            vec![child.stable_id()]
+        );
+        assert!(context.world().custom_render(canvas.stable_id()).is_none());
+        assert!(matches!(
+            context.world().standard_visual(canvas.stable_id()),
+            Some(StandardVisual::GraphCanvas {
+                ref nodes,
+                ref ports,
+                ref edges,
+                connecting: None,
+                ..
+            }) if nodes.len() == 2 && ports.len() == 2 && edges.len() == 1
+        ));
+    }
+
+    #[test]
+    fn host_texture_assemble_samples_in_document_order_not_on_the_canvas() {
+        let mut context = AppContext::new();
+        let canvas = context
+            .create_component(
+                document(),
+                GraphCanvas::new("gallery", sample_graph())
+                    .node_content("source", GraphNodeContent::host_texture("formula.source")),
+            )
+            .unwrap();
+        assert!(
+            context
+                .world()
+                .node(canvas.stable_id())
+                .unwrap()
+                .children
+                .is_empty()
+        );
+        assert!(context.assemble_graph_canvas_contents(canvas).unwrap());
+        let children = context
+            .world()
+            .node(canvas.stable_id())
+            .unwrap()
+            .children
+            .clone();
+        assert_eq!(children.len(), 1);
+        let custom = context.world().custom_render(children[0]).unwrap();
+        assert_eq!(custom.renderer.as_ref(), HOST_TEXTURE_RENDERER);
+        assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(custom.resource.as_ref(), "formula.source");
+        assert!(context.world().custom_render(canvas.stable_id()).is_none());
+        assert!(matches!(
+            context.world().standard_visual(canvas.stable_id()),
+            Some(StandardVisual::GraphCanvas {
+                ref nodes,
+                ref edges,
+                ..
+            }) if nodes.len() == 2 && edges.len() == 1
+        ));
+        let rect = context
+            .read(canvas, |canvas| canvas.node_content_rect(&"source".into()))
+            .unwrap()
+            .expect("source body");
+        let style = context.world().node_style(children[0]).unwrap();
+        assert_eq!(style.layout.position, PositionSpec::Absolute);
+        assert_eq!(style.layout.offset_left, Some(LengthSpec::Px(rect.x)));
+        assert!(style.layout.offset_top.is_some());
+        assert_eq!(
+            context.world().interaction(children[0]),
+            Some(InteractionState {
+                pointer_events: false,
+                focusable: false,
+            })
+        );
+    }
+
+    #[test]
+    fn unslotted_nodes_do_not_allocate_content_children() {
+        let mut context = AppContext::new();
+        let canvas = context
+            .create_component(document(), GraphCanvas::new("gallery", sample_graph()))
+            .unwrap();
+        assert!(context.assemble_graph_canvas_contents(canvas).unwrap());
+        assert!(
+            context
+                .world()
+                .node(canvas.stable_id())
+                .unwrap()
+                .children
+                .is_empty()
+        );
+        assert!(matches!(
+            context.world().standard_visual(canvas.stable_id()),
+            Some(StandardVisual::GraphCanvas { ref nodes, .. }) if nodes.len() == 2
+        ));
     }
 }

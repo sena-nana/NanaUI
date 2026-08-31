@@ -10,6 +10,7 @@ use wgpu;
 
 use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::gpu_view::{RenderSlot, intersect_physical, slot_for_bounds};
+use crate::scene_paint::image_url::{CachedUrlTexture, load_url_texture};
 
 const SOURCE: &str = r#"
 @group(0) @binding(0)
@@ -35,10 +36,26 @@ struct LayerUniform {
     clip_rect: vec4<f32>,
     clip_inv_abcd: vec4<f32>,
     clip_inv_ef: vec4<f32>,
+    // flags (0 none / 1 linear / 2 radial / 3 url image-alpha), stop count, angle, radial shape
+    mask_meta: vec4<f32>,
+    mask_center: vec4<f32>,
+    mask_stops0: vec4<f32>,
+    mask_stops1: vec4<f32>,
+    mask_stops2: vec4<f32>,
+    mask_stops3: vec4<f32>,
+    mask_stops4: vec4<f32>,
+    mask_stops5: vec4<f32>,
+    mask_stops6: vec4<f32>,
+    mask_stops7: vec4<f32>,
+    mask_pos: vec4<f32>,
+    mask_pos2: vec4<f32>,
 }
 
 @group(0) @binding(2)
 var<uniform> layer: LayerUniform;
+
+@group(0) @binding(3)
+var mask_source: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -113,6 +130,99 @@ fn inside_overflow_clip(world: vec2<f32>) -> bool {
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner <= 0.0;
 }
 
+fn gradient_axis(angle_deg: f32) -> vec2<f32> {
+    let rad = angle_deg * 0.017453292;
+    return vec2(sin(rad), -cos(rad));
+}
+
+fn gradient_t(local: vec2<f32>, angle_deg: f32) -> f32 {
+    let axis = gradient_axis(angle_deg);
+    let p = local - vec2(0.5);
+    let denom = abs(axis.x) + abs(axis.y);
+    if (denom <= 0.0001) {
+        return 0.5;
+    }
+    return clamp(p.x * axis.x / denom + p.y * axis.y / denom + 0.5, 0.0, 1.0);
+}
+
+fn radial_max_distance(center: vec2<f32>) -> f32 {
+    let c0 = length(center);
+    let c1 = length(vec2(1.0 - center.x, center.y));
+    let c2 = length(vec2(center.x, 1.0 - center.y));
+    let c3 = length(vec2(1.0 - center.x, 1.0 - center.y));
+    return max(c0, max(c1, max(c2, c3)));
+}
+
+fn radial_gradient_t(local: vec2<f32>, center: vec2<f32>, circle: bool) -> f32 {
+    let p = local - center;
+    if (circle) {
+        let dist = length(p);
+        return clamp(dist / max(radial_max_distance(center), 0.0001), 0.0, 1.0);
+    }
+    let rx = max(center.x, 1.0 - center.x);
+    let ry = max(center.y, 1.0 - center.y);
+    let nx = p.x / max(rx, 0.0001);
+    let ny = p.y / max(ry, 0.0001);
+    return clamp(length(vec2(nx, ny)), 0.0, 1.0);
+}
+
+fn sample_mask_stops(t: f32) -> vec4<f32> {
+    let count = u32(round(layer.mask_meta.y));
+    if (count <= 1u) {
+        return layer.mask_stops0;
+    }
+    var colors = array<vec4<f32>, 8>(
+        layer.mask_stops0, layer.mask_stops1, layer.mask_stops2, layer.mask_stops3,
+        layer.mask_stops4, layer.mask_stops5, layer.mask_stops6, layer.mask_stops7,
+    );
+    var positions = array<f32, 8>(
+        layer.mask_pos.x, layer.mask_pos.y, layer.mask_pos.z, layer.mask_pos.w,
+        layer.mask_pos2.x, layer.mask_pos2.y, layer.mask_pos2.z, layer.mask_pos2.w,
+    );
+    if (t <= positions[0]) {
+        return colors[0];
+    }
+    let last = count - 1u;
+    if (t >= positions[last]) {
+        return colors[min(last, 7u)];
+    }
+    for (var i: u32 = 0u; i < min(count, 8u) - 1u; i = i + 1u) {
+        let p0 = positions[i];
+        let p1 = positions[i + 1u];
+        if (t >= p0 && t <= p1) {
+            let mix_t = (t - p0) / max(p1 - p0, 0.0001);
+            return mix(colors[i], colors[min(i + 1u, 7u)], mix_t);
+        }
+    }
+    return layer.mask_stops0;
+}
+
+fn mask_alpha(local: vec2<f32>) -> f32 {
+    let flags = u32(round(layer.mask_meta.x));
+    if (flags == 0u) {
+        return 1.0;
+    }
+    if (flags == 3u) {
+        return textureSample(mask_source, source_sampler, clamp(local, vec2(0.0), vec2(1.0))).a;
+    }
+    var t: f32;
+    if (flags == 2u) {
+        t = radial_gradient_t(
+            local,
+            layer.mask_center.xy,
+            u32(round(layer.mask_meta.w)) == 0u,
+        );
+    } else {
+        t = gradient_t(local, layer.mask_meta.z);
+    }
+    let color = sample_mask_stops(t);
+    let lum = dot(color.xyz, vec3(0.2126, 0.7152, 0.0722));
+    if (color.a < 1.0) {
+        return color.a;
+    }
+    return lum;
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if !inside_overflow_clip(input.world) {
@@ -120,10 +230,11 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let sampled = textureSample(source, source_sampler, input.uv);
     let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
-    let color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x;
     let has_clip = layer.clip.z > 0.0 && layer.clip.w > 0.0;
     let box_pos = select(layer.origin.zw, layer.clip.xy, has_clip);
     let box_size = select(layer.params.zw, layer.clip.zw, has_clip);
+    let mask_uv = (input.local - box_pos) / max(box_size, vec2(0.0001));
+    var color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x * mask_alpha(mask_uv);
     let radius = min(layer.params.y, min(box_size.x, box_size.y) * 0.5);
     if radius <= 0.0 {
         return color;
@@ -455,6 +566,7 @@ pub(crate) struct HostTextureLayer {
     fragment_clip_inv_ef: [f32; 2],
     fragment_clip_corner_radius: f32,
     alpha_mode: Option<HostTextureAlphaMode>,
+    mask: Option<nana_ui_core::MaskImage>,
 }
 
 impl HostTextureLayer {
@@ -462,6 +574,20 @@ impl HostTextureLayer {
     const PASS_CLIP_INV_ABCD: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
     const PASS_CLIP_INV_EF: [f32; 2] = [0.0, 0.0];
 
+    pub const fn new(texture: HostTexture) -> Self {
+        Self {
+            texture,
+            opacity: 1.0,
+            corner_radius: 0.0,
+            clip: None,
+            fragment_clip_rect: Self::PASS_CLIP_RECT,
+            fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
+            fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
+            fragment_clip_corner_radius: 0.0,
+            alpha_mode: None,
+            mask: None,
+        }
+    }
     pub fn from_binding(binding: HostTextureBinding) -> Self {
         Self {
             texture: binding.texture,
@@ -473,6 +599,7 @@ impl HostTextureLayer {
             fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
             fragment_clip_corner_radius: 0.0,
             alpha_mode: Some(binding.alpha_mode),
+            mask: None,
         }
     }
 
@@ -518,6 +645,32 @@ impl HostTextureLayer {
         self
     }
 
+    pub const fn with_alpha_mode(mut self, alpha_mode: HostTextureAlphaMode) -> Self {
+        self.alpha_mode = Some(alpha_mode);
+        self
+    }
+
+    pub fn with_mask(mut self, mask: Option<nana_ui_core::MaskImage>) -> Self {
+        self.mask = mask;
+        self
+    }
+
+    pub const fn texture(&self) -> &HostTexture {
+        &self.texture
+    }
+
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    pub const fn clip(&self) -> Option<LogicalRect> {
+        self.clip
+    }
+
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
+
     pub fn alpha_mode(&self) -> HostTextureAlphaMode {
         self.alpha_mode
             .unwrap_or(HostTextureAlphaMode::Premultiplied)
@@ -558,13 +711,25 @@ impl GpuTexturePrimitive {
             .layer
             .clip
             .map(|clip| RenderSlot::new(texture.id, clip, scale_factor).physical);
+        let mask_url = match self.layer.mask.as_ref() {
+            Some(nana_ui_core::MaskImage::Url(url))
+                if load_url_texture(device, queue, &mut pipeline.url_cache, url) =>
+            {
+                Some(url.clone())
+            }
+            _ => None,
+        };
+        let mask_changed = pipeline
+            .textures
+            .get(&key)
+            .is_none_or(|prepared| prepared.mask_url != mask_url);
         let needs_rebind = texture_needs_rebind(
             pipeline
                 .textures
                 .get(&key)
                 .map(PreparedTexture::fingerprint),
             &texture,
-        );
+        ) || mask_changed;
 
         if needs_rebind {
             let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -573,14 +738,26 @@ impl GpuTexturePrimitive {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let layer_uniform_value =
-                make_layer_uniform(&self.layer, bounds, affine, persp, scale_factor, dest_size);
+            let layer_uniform_value = make_layer_uniform(
+                &self.layer,
+                bounds,
+                affine,
+                persp,
+                scale_factor,
+                dest_size,
+                mask_url.is_some(),
+            );
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
                 work.record_upload(uniform_bytes.len());
                 work.record_realloc();
             }
+            let mask_view = mask_url
+                .as_deref()
+                .and_then(|url| pipeline.url_cache.get(url))
+                .map(|cached| &cached.view)
+                .unwrap_or(&pipeline.mask_fallback);
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nana-ui host texture bind group"),
                 layout: &pipeline.bind_group_layout,
@@ -597,6 +774,10 @@ impl GpuTexturePrimitive {
                         binding: 2,
                         resource: layer_uniform.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(mask_view),
+                    },
                 ],
             });
             pipeline.textures.insert(
@@ -609,12 +790,20 @@ impl GpuTexturePrimitive {
                     viewport: viewport_rect,
                     clip,
                     layer_uniform,
+                    mask_url,
                     used: true,
                 },
             );
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
-            let layer_uniform_value =
-                make_layer_uniform(&self.layer, bounds, affine, persp, scale_factor, dest_size);
+            let layer_uniform_value = make_layer_uniform(
+                &self.layer,
+                bounds,
+                affine,
+                persp,
+                scale_factor,
+                dest_size,
+                mask_url.is_some(),
+            );
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
@@ -690,13 +879,15 @@ pub struct GpuTexturePipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    mask_fallback: wgpu::TextureView,
+    url_cache: HashMap<String, CachedUrlTexture>,
     textures: HashMap<TextureKey, PreparedTexture>,
 }
 
 impl GpuTexturePipeline {
     pub(crate) fn new(
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -729,6 +920,16 @@ impl GpuTexturePipeline {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -773,10 +974,14 @@ impl GpuTexturePipeline {
             ..wgpu::SamplerDescriptor::default()
         });
 
+        let mask_fallback = white_mask_fallback(device, queue);
+
         Self {
             pipeline,
             bind_group_layout,
             sampler,
+            mask_fallback,
+            url_cache: HashMap::new(),
             textures: HashMap::new(),
         }
     }
@@ -794,6 +999,7 @@ struct PreparedTexture {
     viewport: [f32; 4],
     clip: Option<crate::geometry::PhysicalRect>,
     layer_uniform: wgpu::Buffer,
+    mask_url: Option<String>,
     used: bool,
 }
 
@@ -844,7 +1050,21 @@ struct LayerUniform {
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 4],
+    mask_meta: [f32; 4],
+    mask_center: [f32; 4],
+    mask_stops0: [f32; 4],
+    mask_stops1: [f32; 4],
+    mask_stops2: [f32; 4],
+    mask_stops3: [f32; 4],
+    mask_stops4: [f32; 4],
+    mask_stops5: [f32; 4],
+    mask_stops6: [f32; 4],
+    mask_stops7: [f32; 4],
+    mask_pos: [f32; 4],
+    mask_pos2: [f32; 4],
 }
+
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 320);
 
 fn make_layer_uniform(
     layer: &HostTextureLayer,
@@ -853,6 +1073,7 @@ fn make_layer_uniform(
     persp: [f32; 2],
     scale_factor: f32,
     dest_size: [u32; 2],
+    url_mask_loaded: bool,
 ) -> LayerUniform {
     let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -860,6 +1081,7 @@ fn make_layer_uniform(
         1.0
     };
     let clip = layer.clip.unwrap_or(bounds);
+    let mask = pack_layer_mask(layer.mask.as_ref(), url_mask_loaded);
     LayerUniform {
         params: [
             layer.opacity,
@@ -889,7 +1111,110 @@ fn make_layer_uniform(
             layer.fragment_clip_corner_radius,
             0.0,
         ],
+        mask_meta: mask.meta,
+        mask_center: mask.center,
+        mask_stops0: mask.stops[0],
+        mask_stops1: mask.stops[1],
+        mask_stops2: mask.stops[2],
+        mask_stops3: mask.stops[3],
+        mask_stops4: mask.stops[4],
+        mask_stops5: mask.stops[5],
+        mask_stops6: mask.stops[6],
+        mask_stops7: mask.stops[7],
+        mask_pos: mask.pos,
+        mask_pos2: mask.pos2,
     }
+}
+
+struct PackedLayerMask {
+    meta: [f32; 4],
+    center: [f32; 4],
+    stops: [[f32; 4]; 8],
+    pos: [f32; 4],
+    pos2: [f32; 4],
+}
+
+fn pack_layer_mask(mask: Option<&nana_ui_core::MaskImage>, url_loaded: bool) -> PackedLayerMask {
+    let mut packed = PackedLayerMask {
+        meta: [0.0; 4],
+        center: [0.0; 4],
+        stops: [[0.0; 4]; 8],
+        pos: [0.0; 4],
+        pos2: [0.0; 4],
+    };
+    let Some(mask) = mask else {
+        return packed;
+    };
+    let (kind, angle, center, circle, stops) = match mask {
+        nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Linear(linear)) => (
+            1.0,
+            linear.angle_deg,
+            [0.5, 0.5],
+            0.0,
+            linear.stops.as_slice(),
+        ),
+        nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Radial(radial)) => (
+            2.0,
+            0.0,
+            radial.center,
+            if radial.circle { 0.0 } else { 1.0 },
+            radial.stops.as_slice(),
+        ),
+        nana_ui_core::MaskImage::Url(_) if url_loaded => {
+            packed.meta = [3.0, 0.0, 0.0, 0.0];
+            return packed;
+        }
+        nana_ui_core::MaskImage::Url(_) => return packed,
+    };
+    let count = stops.len().min(8);
+    packed.meta = [kind, count as f32, angle, circle];
+    packed.center = [center[0], center[1], 0.0, 0.0];
+    for (index, stop) in stops.iter().take(8).enumerate() {
+        packed.stops[index] = stop.color;
+        if index < 4 {
+            packed.pos[index] = stop.position;
+        } else {
+            packed.pos2[index - 4] = stop.position;
+        }
+    }
+    packed
+}
+
+fn white_mask_fallback(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui host texture mask fallback"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[255, 255, 255, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&Default::default())
 }
 
 fn next_host_texture_instance_id() -> u64 {
@@ -1061,6 +1386,7 @@ mod tests {
             [0.0, 0.0],
             1.0,
             [320, 180],
+            false,
         );
         let opaque_uniform = make_layer_uniform(
             &HostTextureLayer::from_binding(opaque),
@@ -1069,6 +1395,7 @@ mod tests {
             [0.0, 0.0],
             1.0,
             [320, 180],
+            false,
         );
         assert_eq!(premultiplied_uniform.source[0], 0.0);
         assert_eq!(opaque_uniform.source[0], 1.0);
@@ -1080,6 +1407,7 @@ mod tests {
             [0.0, 0.0],
             1.0,
             [320, 180],
+            false,
         );
         assert_eq!(rounded.params[1], 8.0);
         assert_eq!(rounded.clip, [0.0, 0.0, 320.0, 180.0]);
@@ -1094,6 +1422,7 @@ mod tests {
             [0.0, 0.0],
             1.0,
             [320, 180],
+            false,
         );
         assert_eq!(rounded_clip.params[1], 32.0);
         assert_eq!(rounded_clip.params[2], 320.0);
@@ -1101,12 +1430,151 @@ mod tests {
         assert_eq!(rounded_clip.origin[2], 0.0);
         assert_eq!(rounded_clip.origin[3], 40.0);
         assert_eq!(rounded_clip.clip, [0.0, 0.0, 320.0, 180.0]);
+        assert_eq!(rounded_clip.mask_meta[0], 0.0);
+    }
+
+    #[test]
+    fn layer_uniform_packs_linear_mask_stops() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let binding = registry.register(
+            "masked",
+            texture,
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let mask = nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Linear(
+            nana_ui_core::LinearGradient {
+                angle_deg: 90.0,
+                stops: vec![
+                    nana_ui_core::GradientStop {
+                        position: 0.0,
+                        color: [1.0, 1.0, 1.0, 1.0],
+                    },
+                    nana_ui_core::GradientStop {
+                        position: 1.0,
+                        color: [1.0, 1.0, 1.0, 0.0],
+                    },
+                ],
+            },
+        ));
+        let uniform = make_layer_uniform(
+            &HostTextureLayer::from_binding(binding).with_mask(Some(mask)),
+            LogicalRect::new(0.0, 0.0, 64.0, 64.0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [64, 64],
+            false,
+        );
+        assert_eq!(uniform.mask_meta[0], 1.0);
+        assert_eq!(uniform.mask_meta[1], 2.0);
+        assert_eq!(uniform.mask_meta[2], 90.0);
+        assert_eq!(uniform.mask_stops0[3], 1.0);
+        assert_eq!(uniform.mask_stops1[3], 0.0);
+        assert_eq!(uniform.mask_pos[0], 0.0);
+        assert_eq!(uniform.mask_pos[1], 1.0);
+    }
+
+    #[test]
+    fn layer_uniform_packs_url_mask_kind_only_when_loaded() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let binding = registry.register(
+            "masked-url",
+            texture,
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let mask = nana_ui_core::MaskImage::Url("fade.png".into());
+        let loaded = make_layer_uniform(
+            &HostTextureLayer::from_binding(binding.clone()).with_mask(Some(mask.clone())),
+            LogicalRect::new(0.0, 0.0, 64.0, 64.0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [64, 64],
+            true,
+        );
+        assert_eq!(loaded.mask_meta[0], 3.0);
+        let ignored = make_layer_uniform(
+            &HostTextureLayer::from_binding(binding).with_mask(Some(mask)),
+            LogicalRect::new(0.0, 0.0, 64.0, 64.0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [64, 64],
+            false,
+        );
+        assert_eq!(ignored.mask_meta[0], 0.0);
     }
 
     #[test]
     fn opaque_shader_pipeline_builds_on_the_host_device() {
         let (device, queue) = test_device();
         let _pipeline = GpuTexturePipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn video_host_texture_slot_prunes_released_bindings() {
+        let (device, queue) = test_device();
+        let registry = HostTextureRegistry::new();
+        let first = HostTexture::from_wgpu(1, 1, test_texture_view(&device));
+        let second = HostTexture::from_wgpu(2, 1, test_texture_view(&device));
+        registry.register(
+            "video:1",
+            first,
+            32,
+            18,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        registry.register(
+            "video:2",
+            second,
+            32,
+            18,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        assert_eq!(registry.len(), 2);
+        assert!(registry.remove("video:2").is_some());
+        assert!(registry.get("video:2").is_none());
+        assert!(registry.get("video:1").is_some());
+        let _ = queue;
+        assert_eq!(
+            registry.len(),
+            1,
+            "prune must drop released video slots only"
+        );
+    }
+
+    #[test]
+    fn video_host_texture_resize_advances_generation_on_same_device() {
+        let (device, queue) = test_device();
+        let registry = HostTextureRegistry::new();
+        let texture = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let binding = registry.register(
+            "video:7",
+            texture.clone(),
+            32,
+            18,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        assert_eq!(binding.texture.generation(), 3);
+        let next_generation = texture.replace_view(test_texture_view(&device));
+        assert_eq!(next_generation, 4);
+        registry.register(
+            "video:7",
+            texture,
+            64,
+            36,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let replaced = registry.get("video:7").expect("video slot remains");
+        assert_eq!(replaced.texture.generation(), 4);
+        assert_eq!((replaced.width, replaced.height), (64, 36));
+        let _ = queue;
     }
 
     fn test_host_texture(id: u64, generation: u64) -> HostTexture {

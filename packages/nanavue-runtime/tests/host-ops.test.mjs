@@ -435,6 +435,94 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(a, b);
   });
 
+  test("inline transform is a paint overlay and does not patchProp style", async () => {
+    const el = hostOps.createElement("li");
+    calls.length = 0;
+    el.style.transform = "translate(12px, 4px)";
+    if (typeof flushHostFrame === "function") flushHostFrame();
+    await Promise.resolve();
+    assert.equal(el.style.transform, "translate(12px, 4px)");
+    assert.equal(
+      calls.some(
+        ([name, args]) =>
+          name === "setPaintTransform" && args[1] === "translate(12px, 4px)",
+      ),
+      true,
+    );
+    assert.equal(
+      calls.some(
+        ([name, args]) =>
+          name === "patchProp" &&
+          args[1] === "style" &&
+          args[2] &&
+          typeof args[2] === "object" &&
+          args[2].transform,
+      ),
+      false,
+    );
+    calls.length = 0;
+    el.style.transform = "";
+    assert.equal(
+      calls.some(([name, args]) => name === "setPaintTransform" && args[1] === ""),
+      true,
+    );
+  });
+
+  test("host __nanaMotionComplete dispatches transitionend on wrapNode", () => {
+    const el = hostOps.createElement("div");
+    const seen = [];
+    el.addEventListener("transitionend", (event) => {
+      seen.push(event.propertyName);
+    });
+    assert.equal(typeof globalThis.__nanaMotionComplete, "function");
+    globalThis.__nanaMotionComplete(nodeId(el), {
+      type: "transitionend",
+      propertyName: "opacity",
+      elapsedTime: 0.24,
+    });
+    assert.deepEqual(seen, ["opacity"]);
+  });
+
+  test("class-arm fallback plus host complete fires transitionend once", async () => {
+    const el = hostOps.createElement("div");
+    const seen = [];
+    el.addEventListener("transitionend", () => seen.push("end"));
+    const view =
+      (el.ownerDocument && el.ownerDocument.defaultView) || globalThis;
+    const previous = view.getComputedStyle;
+    view.getComputedStyle = () => ({
+      transitionDelay: "0s",
+      transitionDuration: "10ms",
+      transitionProperty: "opacity",
+      animationDelay: "0s",
+      animationDuration: "0s",
+      animationName: "none",
+    });
+    try {
+      el.classList.add("fade-enter-active", "fade-enter-to");
+      assert.equal(typeof globalThis.__nanaMotionCancel, "function");
+      globalThis.__nanaMotionComplete(nodeId(el), {
+        type: "transitionend",
+        propertyName: "opacity",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.deepEqual(seen, ["end"]);
+    } finally {
+      if (previous) view.getComputedStyle = previous;
+      else delete view.getComputedStyle;
+    }
+  });
+
+  test("class replace keeps appear/enter tokens for Vue Transition timing", () => {
+    const el = hostOps.createElement("div");
+    el.classList.add("fade-appear-from", "fade-appear-active");
+    el.classList.__replace("panel");
+    assert.ok(el.classList.contains("panel"));
+    assert.ok(el.classList.contains("fade-appear-from"));
+    assert.ok(el.classList.contains("fade-appear-active"));
+    assert.equal(el.__nanaTransitionPhase, "appear-from-active");
+  });
+
   test("registered native components use semantic tags and promise commands", async () => {
     const el = hostOps.createElement("nana-live2d-view", undefined, undefined, {
       modelId: "m1",

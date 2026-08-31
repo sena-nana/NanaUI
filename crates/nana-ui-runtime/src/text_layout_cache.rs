@@ -21,6 +21,12 @@ pub(crate) struct TextLayoutKey {
     font_family: Option<Arc<str>>,
     line_height: Option<(u8, u32)>,
     letter_spacing_bits: u32,
+    font_features: Vec<nana_ui_core::FontFeatureSetting>,
+    font_variations: Vec<nana_ui_core::FontVariationSetting>,
+    font_kerning: nana_ui_core::FontKerningSpec,
+    word_break: nana_ui_core::WordBreakSpec,
+    line_break: nana_ui_core::LineBreakSpec,
+    writing_mode: nana_ui_core::WritingModeSpec,
     wrap: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
@@ -48,6 +54,12 @@ impl TextLayoutKey {
                 LineHeightSpec::Absolute(value) => (1, value.to_bits()),
             }),
             letter_spacing_bits: style.letter_spacing.to_bits(),
+            font_features: style.font_features.clone(),
+            font_variations: style.font_variations.clone(),
+            font_kerning: style.font_kerning,
+            word_break: style.word_break,
+            line_break: style.line_break,
+            writing_mode: style.writing_mode,
             wrap: constraints.wrap,
             ellipsis: constraints.ellipsis,
             max_lines: constraints.max_lines,
@@ -153,6 +165,7 @@ mod tests {
         let metrics = TextMetrics {
             width: 1.0,
             height: 1.0,
+            ascent: None,
         };
 
         assert!(cache.lookup(&first).is_none());

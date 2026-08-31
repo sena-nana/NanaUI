@@ -219,6 +219,7 @@ struct VueRuntimeState {
     windows: BTreeMap<VueWindowId, WindowEntry>,
     canvas: nana_ui_web_api::SharedCanvasRuntime,
     video: crate::video::SharedVideoRuntime,
+    media: nana_ui_web_api::SharedMediaRuntime,
     local_storage: nana_ui_web_api::SharedStorage,
     stylesheets: Vec<String>,
     #[cfg(feature = "scene-view")]
@@ -229,6 +230,10 @@ struct VueRuntimeState {
     webgpu: Option<crate::JsWebGpuRuntime>,
     #[cfg(feature = "hosted")]
     canvas_gpu: Option<crate::canvas_gpu::CanvasGpuBridge>,
+    #[cfg(feature = "hosted")]
+    svg_gpu: Option<crate::svg_gpu::SvgGpuBridge>,
+    #[cfg(feature = "hosted")]
+    media_gpu: Option<crate::media_gpu::MediaGpuBridge>,
     next_id: u64,
     commands: VecDeque<VueWindowCommand>,
     events: Option<HostEventSender>,
@@ -260,6 +265,7 @@ impl VueRuntimeState {
             options.height.round().max(1.0) as u32,
             1.0,
             Arc::clone(&self.canvas),
+            Arc::clone(&self.media),
             Arc::clone(&self.local_storage),
         );
         host.share_video_runtime(Arc::clone(&self.video));
@@ -275,6 +281,12 @@ impl VueRuntimeState {
             }
             if let Some(canvas_gpu) = &self.canvas_gpu {
                 host.share_canvas_gpu(canvas_gpu.clone());
+            }
+            if let Some(svg_gpu) = &self.svg_gpu {
+                host.share_svg_gpu(svg_gpu.clone());
+            }
+            if let Some(media_gpu) = &self.media_gpu {
+                host.share_media_gpu(media_gpu.clone());
             }
         }
         host.set_diagnostics(
@@ -355,6 +367,7 @@ impl VueRuntime {
     pub fn new(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
         let canvas = nana_ui_web_api::shared_canvas_runtime();
         let video = crate::video::shared_video_runtime();
+        let media = nana_ui_web_api::shared_media_runtime();
         let local_storage = nana_ui_web_api::shared_storage();
         let primary = VueHost::with_document_id_and_shared_resources(
             VueWindowId::PRIMARY.document_id(),
@@ -362,6 +375,7 @@ impl VueRuntime {
             physical_height,
             scale_factor,
             Arc::clone(&canvas),
+            Arc::clone(&media),
             Arc::clone(&local_storage),
         );
         let mut primary = primary;
@@ -403,6 +417,7 @@ impl VueRuntime {
                 .collect(),
                 canvas,
                 video,
+                media,
                 local_storage,
                 stylesheets: Vec::new(),
                 #[cfg(feature = "scene-view")]
@@ -413,6 +428,10 @@ impl VueRuntime {
                 webgpu: None,
                 #[cfg(feature = "hosted")]
                 canvas_gpu: None,
+                #[cfg(feature = "hosted")]
+                svg_gpu: None,
+                #[cfg(feature = "hosted")]
+                media_gpu: None,
                 next_id: 1,
                 commands: VecDeque::new(),
                 events: None,
@@ -538,6 +557,18 @@ impl VueRuntime {
             .video_gpu()
             .cloned()
             .ok_or_else(|| JsEngineError::new("failed to bind shared Video GPU runtime"))?;
+        let svg_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .svg_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to bind shared SVG GPU runtime"))?;
+        let media_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .media_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to bind shared media GPU runtime"))?;
         for host in hosts.into_iter().skip(1) {
             let mut host = host
                 .lock()
@@ -545,10 +576,14 @@ impl VueRuntime {
             host.share_webgpu_runtime(runtime.clone());
             host.share_canvas_gpu(canvas_gpu.clone());
             host.share_video_gpu(video_gpu.clone());
+            host.share_svg_gpu(svg_gpu.clone());
+            host.share_media_gpu(media_gpu.clone());
         }
         if let Ok(mut state) = self.state.lock() {
             state.webgpu = Some(runtime.clone());
             state.canvas_gpu = Some(canvas_gpu);
+            state.svg_gpu = Some(svg_gpu);
+            state.media_gpu = Some(media_gpu);
             for entry in state.windows.values_mut() {
                 if let Ok(host) = entry.host.lock() {
                     entry.api = host.host_api_registry();
@@ -600,6 +635,18 @@ impl VueRuntime {
             .video_gpu()
             .cloned()
             .ok_or_else(|| JsEngineError::new("failed to replace shared Video GPU runtime"))?;
+        let svg_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .svg_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to replace shared SVG GPU runtime"))?;
+        let media_gpu = primary
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .media_gpu()
+            .cloned()
+            .ok_or_else(|| JsEngineError::new("failed to replace shared media GPU runtime"))?;
         for host in hosts.into_iter().skip(1) {
             let mut host = host
                 .lock()
@@ -607,10 +654,14 @@ impl VueRuntime {
             host.share_webgpu_runtime(runtime.clone());
             host.share_canvas_gpu(canvas_gpu.clone());
             host.share_video_gpu(video_gpu.clone());
+            host.share_svg_gpu(svg_gpu.clone());
+            host.share_media_gpu(media_gpu.clone());
         }
         if let Ok(mut state) = self.state.lock() {
             state.webgpu = Some(runtime);
             state.canvas_gpu = Some(canvas_gpu);
+            state.svg_gpu = Some(svg_gpu);
+            state.media_gpu = Some(media_gpu);
             for entry in state.windows.values_mut() {
                 if let Ok(host) = entry.host.lock() {
                     entry.api = host.host_api_registry();

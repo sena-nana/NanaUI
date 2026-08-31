@@ -1612,3 +1612,62 @@ fn url_dest_for_uv_maps_source_slice() {
     assert!((uv0_y - 0.0).abs() < 1.0e-5);
     assert!((uv1_y - 0.5).abs() < 1.0e-5);
 }
+
+#[cfg(test)]
+#[test]
+fn pack_paint_sets_mask_url_flag_from_png_alpha() {
+    use nana_ui_core::MaskImage;
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let url = alpha_split_png_data_url();
+    let surface = QuadSurfacePaint {
+        mask: Some(MaskImage::Url(url)),
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    assert_ne!(paint.flags & PAINT_MASK, 0, "flags={}", paint.flags);
+    assert_ne!(paint.flags & PAINT_MASK_URL, 0, "flags={}", paint.flags);
+}
+
+#[cfg(test)]
+#[test]
+fn pack_paint_ignores_unloadable_mask_url() {
+    use nana_ui_core::MaskImage;
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = quad_paint_test_device();
+    let surface = QuadSurfacePaint {
+        mask: Some(MaskImage::Url("nana-missing-mask-image-xyz.png".into())),
+        ..Default::default()
+    };
+    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    assert_eq!(
+        paint.flags & PAINT_MASK,
+        0,
+        "unloadable url must not fake a mask"
+    );
+    assert_eq!(paint.flags & PAINT_MASK_URL, 0);
+}
+
+#[cfg(test)]
+fn alpha_split_png_data_url() -> String {
+    let mut img = image::RgbaImage::new(64, 64);
+    for y in 0..64 {
+        for x in 0..64 {
+            let a = if x < 32 { 255 } else { 0 };
+            img.put_pixel(x, y, image::Rgba([255, 255, 255, a]));
+        }
+    }
+    let mut bytes = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .expect("encode mask png");
+    use base64::Engine as _;
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}

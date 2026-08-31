@@ -17,8 +17,10 @@
 //! Vue "custom components" are combinations and variants of those foundations —
 //! not a separate CPU paint channel. CustomContent has been removed.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nana_ui_core::{
     AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
@@ -31,20 +33,24 @@ use crate::css_at_rule::{
     parse_media_query_list,
 };
 use crate::css_cascade::{
-    MatchContext, MatchNode, SimpleCompound, StyleRule, StylesheetParseReport,
-    collect_document_custom_properties_from_rules, parse_stylesheet_full_with_options,
-    rebuild_layout_style_indexed, simple_matches, stylesheet_matches, stylesheet_may_match_subject,
+    MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound,
+    StyleRule, StylesheetParseReport, collect_document_custom_properties_from_rules,
+    parse_stylesheet_full_with_options, rebuild_layout_style_indexed, simple_matches,
+    stylesheet_matches, stylesheet_may_match_subject, stylesheet_needs_relative,
 };
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
-    KeyframesRule, MotionStyleRule, ParsedStylesheet, merge_parsed_stylesheet,
+    KeyframesRule, MotionStyleRule, ParsedStylesheet, ScrollbarPseudoRule,
+    merge_parsed_stylesheet,
 };
 use crate::css_interactive_apply::{
-    ActiveCssTransition, CssComputedMotion, CssPaintSnapshot, InteractiveRuntimeSnapshot,
-    apply_generated_pseudo_entries, apply_interactive_layers, apply_placeholder_paint,
+    ActiveCssTransition, CssComputedMotion, CssMotionComplete, CssPaintSnapshot,
+    InteractiveRuntimeSnapshot, animation_elapsed_secs, apply_generated_pseudo_entries,
+    apply_interactive_layers, apply_placeholder_paint, apply_scrollbar_pseudo_skin,
     build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
-    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
-    parse_transition_properties, resolve_computed_motion,
+    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties,
+    parse_content_text, parse_transition_properties, resolve_computed_motion,
+    transition_elapsed_secs,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
@@ -852,6 +858,8 @@ impl WidgetProps {
             }
             "stroke-dasharray" => {
                 // Keep geometry in attrs for SVG rebuild (pie rings via pathLength).
+                // resvg HostTexture serializes these attrs; there is no Vue/CSS
+                // extract into Scene StrokePattern.path_length.
                 // Do not overwrite `value` — that leaked dash strings into captions.
                 let s = host_string(value);
                 if !s.is_empty() {
@@ -2014,6 +2022,8 @@ pub struct MessageBridge {
     interactive_rules: Vec<InteractiveStyleRule>,
     /// Deferred generated pseudo rules (`::before` / `::after`).
     generated_pseudo_rules: Vec<GeneratedPseudoRule>,
+    /// `::-webkit-scrollbar` / thumb skin rules (applied onto the originating node).
+    scrollbar_pseudo_rules: Vec<ScrollbarPseudoRule>,
     /// Parsed `@keyframes` blocks keyed by animation name.
     keyframes: BTreeMap<String, KeyframesRule>,
     /// Static selector motion rules (`transition` / `animation` longhands).
@@ -2040,6 +2050,17 @@ pub struct MessageBridge {
     css_transition_base: HashMap<WidgetId, CssPaintSnapshot>,
     /// Latest eased progress for in-flight CSS transitions (0..=1).
     css_transition_progress: HashMap<WidgetId, f32>,
+    /// Finished CSS timelines waiting for host → JS `__nanaMotionComplete`.
+    pending_motion_completes: Vec<CssMotionComplete>,
+    /// Widgets whose Runtime timeline just started; host should cancel the JS fallback.
+    pending_motion_cancels: Vec<WidgetId>,
+    /// Last `animation-name` started per widget. Same name still playing must
+    /// not `start_css_animation` again (that would reset the clock).
+    css_keyframes_name: HashMap<WidgetId, String>,
+    /// TransitionGroup FLIP paint overlay. Applied after cascade; never LayoutBox.
+    paint_transform_overlays: HashMap<WidgetId, nana_ui_core::PaintTransform>,
+    /// JS cleared the overlay; consume on class recascade / layout resolve.
+    paint_transform_releases: HashSet<WidgetId>,
     /// Runtime pointer/focus snapshot used during the current interactive cascade.
     interactive_runtime: Option<InteractiveRuntimeSnapshot>,
     /// Document-level custom properties (`:root` / `html` / `body` …) as inheritance base.
@@ -2047,6 +2068,8 @@ pub struct MessageBridge {
     stylesheet_vars: BTreeMap<String, String>,
     /// Last synced layout viewport (`vw`/`vh` resolve during cascade).
     layout_viewport: Option<(f32, f32)>,
+    /// Document `@layer` order (first declared is weaker).
+    layer_order: Vec<String>,
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     stylesheet_skips: StylesheetParseReport,
     /// Unflattened author sheets (imports already merged; `@media` kept conditional).
@@ -2061,6 +2084,12 @@ pub struct MessageBridge {
     stylesheet_base: PathBuf,
     /// Parsed imported sheets keyed by canonical href (not re-parsed every frame).
     import_cache: HashMap<String, ParsedStylesheet>,
+    /// Shared relative forest for the current recascade pass.
+    relative_pass: Option<Arc<RelativeMatchForest>>,
+    /// Test hook: how many times a relative forest was built.
+    relative_forest_builds: Cell<usize>,
+    /// Test hook: identity nodes inserted into forests (must stay O(N), not N²).
+    relative_forest_nodes: Cell<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2116,6 +2145,7 @@ impl MessageBridge {
             stylesheet_rule_index: crate::css_cascade::RuleIndex::default(),
             interactive_rules: Vec::new(),
             generated_pseudo_rules: Vec::new(),
+            scrollbar_pseudo_rules: Vec::new(),
             keyframes: BTreeMap::new(),
             motion_rules: Vec::new(),
             next_rule_order: 0,
@@ -2130,9 +2160,15 @@ impl MessageBridge {
             css_transitions: HashMap::new(),
             css_transition_base: HashMap::new(),
             css_transition_progress: HashMap::new(),
+            pending_motion_completes: Vec::new(),
+            pending_motion_cancels: Vec::new(),
+            css_keyframes_name: HashMap::new(),
+            paint_transform_overlays: HashMap::new(),
+            paint_transform_releases: HashSet::new(),
             interactive_runtime: None,
             stylesheet_vars: BTreeMap::new(),
             layout_viewport: None,
+            layer_order: Vec::new(),
             stylesheet_skips: StylesheetParseReport::default(),
             authored_sheets: Vec::new(),
             font_faces: Vec::new(),
@@ -2140,12 +2176,16 @@ impl MessageBridge {
             font_bytes_used: 0,
             stylesheet_base: PathBuf::new(),
             import_cache: HashMap::new(),
+            relative_pass: None,
+            relative_forest_builds: Cell::new(0),
+            relative_forest_nodes: Cell::new(0),
         }
     }
 
     pub fn has_interactive_css(&self) -> bool {
         !self.interactive_rules.is_empty()
             || !self.generated_pseudo_rules.is_empty()
+            || !self.scrollbar_pseudo_rules.is_empty()
             || !self.motion_rules.is_empty()
             || !self.keyframes.is_empty()
     }
@@ -2235,6 +2275,132 @@ impl MessageBridge {
         self.computed_motion.get(&id)
     }
 
+    pub(crate) fn take_motion_completes(&mut self) -> Vec<CssMotionComplete> {
+        std::mem::take(&mut self.pending_motion_completes)
+    }
+
+    pub(crate) fn take_motion_cancels(&mut self) -> Vec<WidgetId> {
+        std::mem::take(&mut self.pending_motion_cancels)
+    }
+
+    fn queue_motion_cancel(&mut self, id: WidgetId) {
+        if !self.pending_motion_cancels.contains(&id) {
+            self.pending_motion_cancels.push(id);
+        }
+    }
+
+    fn should_start_keyframes(&self, id: WidgetId, name: &str) -> bool {
+        if name.is_empty() || name.eq_ignore_ascii_case("none") {
+            return false;
+        }
+        !self
+            .css_keyframes_name
+            .get(&id)
+            .is_some_and(|started| started.eq_ignore_ascii_case(name))
+    }
+
+    fn snapshot_widget(&self, id: WidgetId) -> Option<CssPaintSnapshot> {
+        let widget = self.widgets.get(&id)?;
+        Some(CssPaintSnapshot::from_layout_resolved(
+            &widget.props.layout,
+            widget.props.containing_block_width,
+            widget.props.containing_block_height,
+            self.layout_viewport,
+        ))
+    }
+
+    /// Paint-only CSS `transform` (TransitionGroup FLIP). Writes `LayoutStyle.transform`
+    /// without recascade so Scene extract sees the affine and CSS animations keep
+    /// their clocks.
+    pub fn set_paint_transform(
+        &mut self,
+        id: WidgetId,
+        css: &str,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        if !self.widgets.contains_key(&id) {
+            return;
+        }
+        if let Some(transform) = crate::css_map::parse_inline_paint_transform(css) {
+            self.paint_transform_overlays.insert(id, transform);
+            self.paint_transform_releases.remove(&id);
+            if let Some(widget) = self.widgets.get_mut(&id) {
+                widget.props.layout.transform = Some(transform);
+            }
+            self.sync_widget_layouts_for(doc, &[id]);
+            return;
+        }
+        if self.paint_transform_overlays.contains_key(&id) {
+            self.paint_transform_releases.insert(id);
+            if let Some(widget) = self.widgets.get_mut(&id) {
+                widget.props.layout.transform = None;
+            }
+            self.sync_widget_layouts_for(doc, &[id]);
+            return;
+        }
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            widget.props.layout.transform = None;
+        }
+        self.sync_widget_layouts_for(doc, &[id]);
+    }
+
+    /// Consume a released FLIP overlay: start a CSS transform transition when
+    /// motion exists, otherwise snap to the cascaded (no leftover translate).
+    pub(crate) fn maybe_release_flip_paint_transform(
+        &mut self,
+        id: WidgetId,
+        doc: &mut crate::tree::NanaTreeDocument,
+    ) {
+        if !self.paint_transform_releases.contains(&id) {
+            return;
+        }
+        let Some(overlay) = self.paint_transform_overlays.get(&id).copied() else {
+            self.paint_transform_releases.remove(&id);
+            return;
+        };
+        let mut from = self
+            .snapshot_widget(id)
+            .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
+        from.transform = Some(overlay);
+        self.paint_transform_overlays.remove(&id);
+        self.paint_transform_releases.remove(&id);
+        self.reapply_layout_for(id);
+        let to = self
+            .snapshot_widget(id)
+            .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
+        let now = doc.runtime_now();
+        if from.transform != to.transform
+            && let Some(motion) = self.computed_motion.get(&id).cloned()
+            && let Some(spec) = build_transition_spec(id, &motion, now)
+        {
+            self.css_transition_base.insert(id, from.clone());
+            self.css_transition_progress.insert(id, 0.0);
+            self.css_transitions.insert(
+                id,
+                ActiveCssTransition {
+                    from: from.clone(),
+                    to,
+                    spec,
+                },
+            );
+            doc.start_css_animation(spec);
+            self.queue_motion_cancel(id);
+            if let Some(widget) = self.widgets.get_mut(&id) {
+                from.apply_to_layout(&mut widget.props.layout);
+            }
+            self.sync_widget_layouts_for(doc, &[id]);
+            return;
+        }
+        self.sync_widget_layouts_for(doc, &[id]);
+    }
+
+    fn release_pending_flip_transforms(&mut self, doc: &mut crate::tree::NanaTreeDocument) {
+        let ids: Vec<WidgetId> = self.paint_transform_releases.iter().copied().collect();
+        for id in ids {
+            self.maybe_release_flip_paint_transform(id, doc);
+        }
+    }
+
     pub(crate) fn interactive_ancestor_flags(
         &self,
         id: WidgetId,
@@ -2296,7 +2462,11 @@ impl MessageBridge {
         self.authored_sheets.push(sheet);
         self.rebuild_active_stylesheet();
         self.rebuild_stylesheet_vars();
-        self.reapply_layout_cascade_matching(&new_static);
+        if stylesheet_needs_relative(&new_static) {
+            self.reapply_layout_cascade_all();
+        } else {
+            self.reapply_layout_cascade_matching(&new_static);
+        }
         if self.has_interactive_css() {
             self.reapply_layout_cascade_all();
         } else if self.has_focus_within_css() {
@@ -2448,6 +2618,10 @@ impl MessageBridge {
         self.generated_pseudo_rules.len()
     }
 
+    pub fn scrollbar_pseudo_rule_count(&self) -> usize {
+        self.scrollbar_pseudo_rules.len()
+    }
+
     /// Record Vue `setScopeId` attribute for scoped selector matching.
     pub fn set_scope_attr(&mut self, id: WidgetId, scope: &str) {
         let Some(widget) = self.widgets.get_mut(&id) else {
@@ -2545,9 +2719,11 @@ impl MessageBridge {
         // computed ancestor `font-size` (CSS inheritance + rem root).
         ids.sort_by_cached_key(|id| self.widget_depth(*id));
         self.refresh_has_descendant_index();
+        self.begin_relative_pass();
         for id in &ids {
             self.reapply_layout_for(*id);
         }
+        self.end_relative_pass();
         self.changed_all();
     }
 
@@ -2637,6 +2813,16 @@ impl MessageBridge {
             focus_within: self.focus_within_of(id),
             is_empty,
             checked: widget_checked_state(widget),
+            media: self.media_env(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         stylesheet_matches(rules, &ctx)
     }
@@ -2781,6 +2967,16 @@ impl MessageBridge {
             focus_within: self.focus_within_of(id),
             is_empty,
             checked: widget_checked_state(widget),
+            media: self.media_env(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let mut map = crate::css_cascade::matched_custom_properties_indexed(
             &self.stylesheet_rules,
@@ -2821,6 +3017,7 @@ impl MessageBridge {
         let keep_border_width = widget.props.layout.border_width;
         let cb_w = widget.props.containing_block_width;
         let cb_h = widget.props.containing_block_height;
+        let checked = widget_checked_state(widget);
 
         // ancestry is [self, parent, grandparent, …] — full chain for combinators.
         let leaf_classes = class_names;
@@ -2831,10 +3028,19 @@ impl MessageBridge {
         let (sibling_index, sibling_count) = self.sibling_position(id);
         let (of_type_index, of_type_count) = self.of_type_position(id);
         let prev_snaps = self.prev_sibling_snaps(id);
+        self.ensure_relative_pass();
+        let forest = self.relative_pass.clone();
+        let sibling_snaps = if forest.is_some() {
+            self.all_sibling_snaps(id)
+        } else {
+            Vec::new()
+        };
 
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
+        let all_sibling_nodes: Vec<MatchNode<'_>> =
+            sibling_snaps.iter().map(|n| n.as_node()).collect();
         let ctx = MatchContext {
             tag: leaf_tag.as_str(),
             id: leaf_id.as_str(),
@@ -2850,7 +3056,17 @@ impl MessageBridge {
             has_args: self.has_args.as_slice(),
             focus_within: self.focus_within_of(id),
             is_empty,
-            checked: widget_checked_state(widget),
+            checked,
+            media: self.media_env(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: all_sibling_nodes.as_slice(),
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: forest.as_deref(),
+            relative_id: id,
         };
 
         // Layer order: kind default → stylesheet → class hints → prop → inline
@@ -2928,6 +3144,15 @@ impl MessageBridge {
             cb_w,
             cb_h,
         );
+        if !self.scrollbar_pseudo_rules.is_empty() {
+            apply_scrollbar_pseudo_skin(
+                &mut layout,
+                &self.scrollbar_pseudo_rules,
+                &ctx,
+                cb_w,
+                cb_h,
+            );
+        }
 
         if let Some(runtime) = &self.interactive_runtime {
             let subject = runtime.subject_flags(id);
@@ -3050,6 +3275,12 @@ impl MessageBridge {
 
         crate::svg_inline::apply_inline_svg_replaced(self, id, &mut layout);
 
+        if let Some(overlay) = self.paint_transform_overlays.get(&id).copied()
+            && !self.paint_transform_releases.contains(&id)
+        {
+            layout.transform = Some(overlay);
+        }
+
         if let Some(widget) = self.widgets.get_mut(&id) {
             if widget.props.layout != layout {
                 widget.props.layout = layout;
@@ -3092,7 +3323,18 @@ impl MessageBridge {
             .iter()
             .filter_map(|id| {
                 let widget = self.widgets.get(id)?;
-                Some((*id, CssPaintSnapshot::from_layout(&widget.props.layout)))
+                if widget.props.attrs.contains_key(GENERATED_PSEUDO_ATTR) {
+                    return None;
+                }
+                Some((
+                    *id,
+                    CssPaintSnapshot::from_layout_resolved(
+                        &widget.props.layout,
+                        widget.props.containing_block_width,
+                        widget.props.containing_block_height,
+                        self.layout_viewport,
+                    ),
+                ))
             })
             .collect();
         // Steady-state frames recascade nothing and must not bump the
@@ -3103,6 +3345,7 @@ impl MessageBridge {
         }
         self.interactive_runtime = Some(snapshot);
         self.refresh_has_descendant_index();
+        self.begin_relative_pass();
         for id in &ids {
             self.reapply_layout_for(*id);
         }
@@ -3112,12 +3355,19 @@ impl MessageBridge {
             let Some(motion) = self.computed_motion.get(&id).cloned() else {
                 continue;
             };
-            if !motion.animation_name.eq_ignore_ascii_case("none")
-                && self.keyframes.contains_key(&motion.animation_name)
+            if motion.animation_name.eq_ignore_ascii_case("none")
+                || motion.animation_name.is_empty()
+            {
+                self.css_keyframes_name.remove(&id);
+            } else if self.keyframes.contains_key(&motion.animation_name)
                 && !self.css_transitions.contains_key(&id)
+                && self.should_start_keyframes(id, &motion.animation_name)
                 && let Some(spec) = build_keyframes_spec(id, &motion, now)
             {
+                self.css_keyframes_name
+                    .insert(id, motion.animation_name.clone());
                 doc.start_css_animation(spec);
+                self.queue_motion_cancel(id);
             }
             let Some(from) = from_snapshots.get(&id) else {
                 continue;
@@ -3130,9 +3380,9 @@ impl MessageBridge {
                 if existing.to == to {
                     continue;
                 }
-                let current = CssPaintSnapshot::from_layout(
-                    &self.widgets.get(&id).expect("widget").props.layout,
-                );
+                let current = self
+                    .snapshot_widget(id)
+                    .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
                 if let Some(spec) = build_transition_spec(id, &motion, now) {
                     self.css_transition_base.insert(id, current.clone());
                     self.css_transition_progress.insert(id, 0.0);
@@ -3145,7 +3395,10 @@ impl MessageBridge {
                         },
                     );
                     doc.start_css_animation(spec);
+                    self.queue_motion_cancel(id);
                     self.pin_host_driven_transition_paint(doc, id, &current);
+                    self.paint_transform_overlays.remove(&id);
+                    self.paint_transform_releases.remove(&id);
                 }
                 continue;
             }
@@ -3164,12 +3417,17 @@ impl MessageBridge {
                     },
                 );
                 doc.start_css_animation(spec);
+                self.queue_motion_cancel(id);
                 self.pin_host_driven_transition_paint(doc, id, from);
+                self.paint_transform_overlays.remove(&id);
+                self.paint_transform_releases.remove(&id);
             }
         }
+        self.release_pending_flip_transforms(doc);
         if doc.host_animation_epoch().is_none() {
             self.tick_css_animations(doc);
         }
+        self.end_relative_pass();
     }
 
     /// Widgets whose interactive CSS result can differ from the previous pass.
@@ -3235,6 +3493,11 @@ impl MessageBridge {
     }
 
     fn cascaded_target_paint(&mut self, id: WidgetId) -> CssPaintSnapshot {
+        let overlay = if self.paint_transform_releases.contains(&id) {
+            self.paint_transform_overlays.remove(&id)
+        } else {
+            None
+        };
         let saved_layout = self
             .widgets
             .get(&id)
@@ -3243,8 +3506,9 @@ impl MessageBridge {
         let progress = self.css_transition_progress.remove(&id);
         let base = self.css_transition_base.remove(&id);
         self.reapply_layout_for(id);
-        let paint =
-            CssPaintSnapshot::from_layout(&self.widgets.get(&id).expect("widget").props.layout);
+        let paint = self
+            .snapshot_widget(id)
+            .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
         if let Some(layout) = saved_layout
             && let Some(widget) = self.widgets.get_mut(&id)
         {
@@ -3258,6 +3522,9 @@ impl MessageBridge {
         }
         if let Some(base) = base {
             self.css_transition_base.insert(id, base);
+        }
+        if let Some(transform) = overlay {
+            self.paint_transform_overlays.insert(id, transform);
         }
         paint
     }
@@ -3282,11 +3549,21 @@ impl MessageBridge {
         doc: &mut crate::tree::NanaTreeDocument,
         frame: nana_ui_runtime::AnimationFrame,
     ) -> bool {
-        let changed = self.apply_css_animation_samples_inner(frame);
-        if changed {
-            self.sync_cascaded_layout_into_runtime(doc);
+        let changed_ids = self.apply_css_animation_samples_inner(frame);
+        if !changed_ids.is_empty() {
+            self.sync_widget_layouts_for(doc, &changed_ids);
         }
-        changed
+        !changed_ids.is_empty()
+    }
+
+    fn sync_widget_layouts_for(&self, doc: &mut crate::tree::NanaTreeDocument, ids: &[WidgetId]) {
+        // Incremental: only widgets whose interpolated LayoutStyle changed.
+        // Never writes Runtime LayoutBox (scroll authority stays on the engine).
+        doc.sync_widget_layouts(ids.iter().filter_map(|id| {
+            self.widgets
+                .get(id)
+                .map(|widget| (*id, &widget.props.layout))
+        }));
     }
 
     fn collect_interactive_runtime_snapshot(
@@ -3374,6 +3651,16 @@ impl MessageBridge {
                 focus_within: self.focus_within_of(origin),
                 is_empty,
                 checked: widget_checked_state(widget),
+                media: self.media_env(),
+                children: &[],
+                following_siblings: &[],
+                all_siblings: &[],
+                ancestor_subtrees: &[],
+                owned_children: &[],
+                owned_following: &[],
+                owned_ancestor_trees: &[],
+                relative: None,
+                relative_id: 0,
             };
             crate::css_interactive::matched_generated_pseudo(&self.generated_pseudo_rules, &ctx)
         };
@@ -3540,11 +3827,11 @@ impl MessageBridge {
     fn apply_css_animation_samples_inner(
         &mut self,
         frame: nana_ui_runtime::AnimationFrame,
-    ) -> bool {
-        let mut changed = false;
+    ) -> Vec<WidgetId> {
+        let mut changed_ids = Vec::new();
         for sample in frame.samples {
             let id = sample.target.get();
-            if let Some(transition) = self.css_transitions.get(&id)
+            if let Some(transition) = self.css_transitions.get(&id).cloned()
                 && sample.id == transition.spec.id
             {
                 let base = self
@@ -3552,36 +3839,59 @@ impl MessageBridge {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| transition.from.clone());
-                let properties = self
-                    .computed_motion
-                    .get(&id)
+                let motion = self.computed_motion.get(&id).cloned();
+                let properties = motion
+                    .as_ref()
                     .map(|motion| parse_transition_properties(&motion.transition_property))
                     .unwrap_or_default();
                 let paint =
                     lerp_paint_for_properties(&base, &transition.to, sample.progress, &properties);
                 if let Some(widget) = self.widgets.get_mut(&id) {
                     paint.apply_to_layout(&mut widget.props.layout);
-                    changed = true;
+                    changed_ids.push(id);
                 }
                 self.css_transition_progress.insert(id, sample.progress);
                 if sample.finished {
+                    if let Some(motion) = motion {
+                        self.pending_motion_completes
+                            .push(CssMotionComplete::transition_end(
+                                id,
+                                &motion,
+                                transition_elapsed_secs(&motion),
+                            ));
+                    }
                     self.css_transitions.remove(&id);
                     self.css_transition_base.remove(&id);
                     self.css_transition_progress.remove(&id);
                 }
                 continue;
             }
-            if sample.id == css_keyframes_animation_id(id)
-                && let Some(motion) = self.computed_motion.get(&id)
-                && let Some(rule) = self.keyframes.get(&motion.animation_name)
-                && let Some(paint) = keyframe_paint_at(rule, sample.progress)
-                && let Some(widget) = self.widgets.get_mut(&id)
-            {
-                paint.apply_to_layout(&mut widget.props.layout);
-                changed = true;
+            if sample.id == css_keyframes_animation_id(id) {
+                if let Some(motion) = self.computed_motion.get(&id).cloned()
+                    && let Some(rule) = self.keyframes.get(&motion.animation_name)
+                    && let Some(paint) = keyframe_paint_at(rule, sample.progress)
+                {
+                    if let Some(widget) = self.widgets.get_mut(&id) {
+                        paint.apply_to_layout(&mut widget.props.layout);
+                        changed_ids.push(id);
+                    }
+                    if sample.finished {
+                        self.pending_motion_completes
+                            .push(CssMotionComplete::animation_end(
+                                id,
+                                &motion,
+                                animation_elapsed_secs(&motion),
+                            ));
+                    }
+                }
+                if sample.finished {
+                    // Runtime already dropped the spec; stale name would skip
+                    // the next same-name start after class remove/add recascade.
+                    self.css_keyframes_name.remove(&id);
+                }
             }
         }
-        changed
+        changed_ids
     }
 
     fn match_ancestry(&self, id: WidgetId) -> Option<Vec<MatchNodeSnap>> {
@@ -3740,6 +4050,162 @@ impl MessageBridge {
                 Some(match_snap_from_widget(w, is_empty))
             })
             .collect()
+    }
+
+    fn media_env(&self) -> crate::css_cascade::MediaEnv {
+        crate::css_cascade::MediaEnv {
+            viewport: self.layout_viewport,
+            color_scheme_dark: matches!(self.theme, ThemeMode::Dark),
+        }
+    }
+
+    fn css_needs_relative(&self) -> bool {
+        use crate::css_cascade::selector_needs_relative;
+        stylesheet_needs_relative(&self.stylesheet_rules)
+            || self
+                .motion_rules
+                .iter()
+                .any(|rule| rule.selectors.iter().any(selector_needs_relative))
+            || self
+                .generated_pseudo_rules
+                .iter()
+                .any(|rule| selector_needs_relative(&rule.originating_selector))
+            || self.interactive_rules.iter().any(|rule| {
+                selector_needs_relative(&crate::css_cascade::Selector {
+                    subject: rule.selector.subject.clone(),
+                    ancestors: rule.selector.ancestors.clone(),
+                    specificity: rule.selector.specificity,
+                })
+            })
+    }
+
+    fn begin_relative_pass(&mut self) {
+        if self.relative_pass.is_some() || !self.css_needs_relative() {
+            return;
+        }
+        self.relative_pass = Some(Arc::new(self.build_relative_forest()));
+    }
+
+    fn ensure_relative_pass(&mut self) {
+        self.begin_relative_pass();
+    }
+
+    fn end_relative_pass(&mut self) {
+        self.relative_pass = None;
+    }
+
+    fn invalidate_relative_pass(&mut self) {
+        self.relative_pass = None;
+    }
+
+    fn build_relative_forest(&self) -> RelativeMatchForest {
+        let mut forest = RelativeMatchForest::default();
+        for (&id, widget) in &self.widgets {
+            let tag = if widget.props.element_tag.is_empty() {
+                widget.kind.element_tag().to_string()
+            } else {
+                widget.props.element_tag.clone()
+            };
+            forest.insert(
+                id,
+                RelativeMatchNode {
+                    tag,
+                    css_id: widget.props.element_id.clone(),
+                    classes: widget.props.class_names.clone(),
+                    attrs: widget.props.attrs.clone(),
+                    children: widget.children.clone(),
+                    parent: widget.parent,
+                },
+            );
+        }
+        self.relative_forest_builds
+            .set(self.relative_forest_builds.get().saturating_add(1));
+        self.relative_forest_nodes.set(
+            self.relative_forest_nodes
+                .get()
+                .saturating_add(forest.len()),
+        );
+        forest
+    }
+
+    fn all_sibling_snaps(&self, id: WidgetId) -> Vec<MatchNodeSnap> {
+        let Some(widget) = self.widgets.get(&id) else {
+            return Vec::new();
+        };
+        let Some(parent_id) = widget.parent else {
+            return vec![match_snap_from_widget(widget, self.widget_is_empty(id))];
+        };
+        let Some(parent) = self.widgets.get(&parent_id) else {
+            return Vec::new();
+        };
+        parent
+            .children
+            .iter()
+            .filter_map(|&cid| {
+                let w = self.widgets.get(&cid)?;
+                Some(match_snap_from_widget(w, self.widget_is_empty(cid)))
+            })
+            .collect()
+    }
+
+    fn reapply_relative_ancestors(&mut self, id: WidgetId) {
+        self.reapply_relative_neighborhood(id);
+    }
+
+    /// Recascade `id` (if present), all siblings, and the ancestor chain.
+    /// Required for `:has()`, `:nth-child`, and `of <selector-list>`.
+    fn reapply_relative_neighborhood(&mut self, id: WidgetId) {
+        if !self.css_needs_relative() {
+            return;
+        }
+        self.invalidate_relative_pass();
+        let parent = self.widgets.get(&id).and_then(|w| w.parent);
+        let mut dirty = HashSet::new();
+        if self.widgets.contains_key(&id) {
+            dirty.insert(id);
+        }
+        if let Some(pid) = parent {
+            dirty.insert(pid);
+            if let Some(p) = self.widgets.get(&pid) {
+                dirty.extend(p.children.iter().copied());
+            }
+            let mut cur = Some(pid);
+            while let Some(cid) = cur {
+                dirty.insert(cid);
+                cur = self.widgets.get(&cid).and_then(|w| w.parent);
+            }
+        }
+        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
+        ordered.sort_by_cached_key(|wid| self.widget_depth(*wid));
+        self.begin_relative_pass();
+        for wid in ordered {
+            self.reapply_layout_for(wid);
+        }
+        self.end_relative_pass();
+    }
+
+    fn reapply_relative_neighborhood_of_parent(&mut self, parent: WidgetId) {
+        if !self.css_needs_relative() {
+            return;
+        }
+        self.invalidate_relative_pass();
+        let mut dirty = HashSet::new();
+        dirty.insert(parent);
+        if let Some(p) = self.widgets.get(&parent) {
+            dirty.extend(p.children.iter().copied());
+        }
+        let mut cur = self.widgets.get(&parent).and_then(|w| w.parent);
+        while let Some(cid) = cur {
+            dirty.insert(cid);
+            cur = self.widgets.get(&cid).and_then(|w| w.parent);
+        }
+        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
+        ordered.sort_by_cached_key(|wid| self.widget_depth(*wid));
+        self.begin_relative_pass();
+        for wid in ordered {
+            self.reapply_layout_for(wid);
+        }
+        self.end_relative_pass();
     }
 
     pub fn revision(&self) -> u64 {
@@ -4084,6 +4550,7 @@ impl MessageBridge {
     }
 
     pub fn unregister(&mut self, id: WidgetId) {
+        let old_parent = self.widgets.get(&id).and_then(|w| w.parent);
         if let Some(slots) = self.generated_pseudo_children.remove(&id) {
             for child in [slots.before, slots.after].into_iter().flatten() {
                 self.teardown_generated_pseudo_sidecar(child);
@@ -4122,6 +4589,17 @@ impl MessageBridge {
         self.css_transitions.remove(&id);
         self.css_transition_base.remove(&id);
         self.css_transition_progress.remove(&id);
+        self.pending_motion_completes
+            .retain(|event| event.widget_id != id);
+        self.pending_motion_cancels.retain(|queued| *queued != id);
+        self.css_keyframes_name.remove(&id);
+        self.paint_transform_overlays.remove(&id);
+        self.paint_transform_releases.remove(&id);
+        if let Some(parent) = old_parent {
+            if self.widgets.contains_key(&parent) {
+                self.reapply_relative_neighborhood_of_parent(parent);
+            }
+        }
         if let Some(parent) = svg_parent
             && self.widgets.contains_key(&parent)
         {
@@ -4170,7 +4648,8 @@ impl MessageBridge {
     }
 
     pub fn insert_child(&mut self, child: WidgetId, parent: WidgetId, anchor: Option<WidgetId>) {
-        if let Some(prev) = self.widgets.get(&child).and_then(|w| w.parent)
+        let old_parent = self.widgets.get(&child).and_then(|w| w.parent);
+        if let Some(prev) = old_parent
             && let Some(p) = self.widgets.get_mut(&prev)
         {
             p.children.retain(|&c| c != child);
@@ -4219,6 +4698,14 @@ impl MessageBridge {
                 walk = self.widgets.get(&pid).and_then(|w| w.parent);
             }
         }
+        self.reapply_layout_for(child);
+        if let Some(prev) = old_parent
+            && prev != parent
+            && self.widgets.contains_key(&prev)
+        {
+            self.reapply_relative_neighborhood_of_parent(prev);
+        }
+        self.reapply_relative_neighborhood(child);
         self.recascade_inline_svg(parent);
         self.changed_structure();
     }
@@ -4292,6 +4779,7 @@ impl MessageBridge {
         } else {
             self.discard_interactive_runtime_if_unused();
         }
+        self.release_pending_flip_transforms(doc);
         self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
     }
@@ -4318,6 +4806,7 @@ impl MessageBridge {
         self.reparent_orphans();
         self.sync_sidebar_footer_into_document(doc);
         self.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        self.release_pending_flip_transforms(doc);
         self.sync_cascaded_layout_into_runtime(doc);
         doc.flush_host_frame();
         // CSS measure only fills boxes the engine has not produced yet. When
@@ -4851,6 +5340,11 @@ impl MessageBridge {
         }
         if full_rebuild {
             self.reapply_layout_for(id);
+            if matches!(key_n.as_str(), "class" | "classname" | "id" | "style")
+                || key_n.starts_with("data-")
+            {
+                self.reapply_relative_ancestors(id);
+            }
         } else if let Some(widget) = self.widgets.get_mut(&id) {
             pin_svg_chart_min_height(&mut widget.props);
         }
@@ -9123,10 +9617,70 @@ mod tests {
     fn inject_stylesheet_keeps_interactive_and_generated_buckets() {
         let mut bridge = MessageBridge::new();
         bridge.inject_stylesheet(
-            ".chip::before { content: \"\"; width: 4px; } .chip:hover { color: red; }",
+            ".chip::before { content: \"\"; width: 4px; } .chip:hover { color: red; } .panel::-webkit-scrollbar { width: 8px; }",
         );
         assert_eq!(bridge.generated_pseudo_rule_count(), 1);
         assert_eq!(bridge.interactive_rule_count(), 1);
+        assert_eq!(bridge.scrollbar_pseudo_rule_count(), 1);
+    }
+
+    #[test]
+    fn stylesheet_object_fit_cascades_onto_img_layout() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "img".into(),
+                attrs: {
+                    let mut attrs = BTreeMap::new();
+                    attrs.insert("object-fit".into(), "contain".into());
+                    attrs
+                },
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet("img { object-fit: cover; }");
+        assert_eq!(
+            bridge.get(1).expect("img").props.layout.paint.object_fit,
+            Some(nana_ui_core::BackgroundImageFit::Cover),
+            "stylesheet object-fit must beat the HTML presentational hint"
+        );
+    }
+
+    #[test]
+    fn webkit_scrollbar_pseudo_skins_originating_layout() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["panel".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            r#"
+            .panel::-webkit-scrollbar { width: 8px; background: #111111; }
+            .panel::-webkit-scrollbar-thumb { background: #ff0000; height: 4px; }
+            "#,
+        );
+        let skin = bridge
+            .get(1)
+            .expect("panel")
+            .props
+            .layout
+            .paint
+            .scrollbar
+            .expect("scrollbar skin");
+        assert!((skin.thickness.unwrap() - 8.0).abs() < 0.01);
+        assert!((skin.thumb_thickness.unwrap() - 4.0).abs() < 0.01);
+        let track = skin.track_color.expect("track");
+        assert!((track[0] - 0x11 as f32 / 255.0).abs() < 0.02);
+        let thumb = skin.thumb_color.expect("thumb");
+        assert!((thumb[0] - 1.0).abs() < 0.01);
+        assert!(thumb[1].abs() < 0.01);
     }
 
     #[test]
@@ -9496,6 +10050,53 @@ mod tests {
         let motion = bridge.computed_motion_for(1).expect("motion");
         assert_eq!(motion.transition_duration, "0.2s");
         assert!(motion.has_transition());
+    }
+
+    #[test]
+    fn media_layer_and_has_drive_bridge_cascade() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["badge".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(
+            r#"
+            @layer base, override;
+            @layer base { .card { gap: 4px; } }
+            @layer override { .card { gap: 8px; } }
+            .card:has(.badge) { width: 40px; }
+            @media (prefers-color-scheme: dark) { .card { height: 20px; } }
+            "#,
+        );
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.gap,
+            Some(LengthSpec::Px(8.0))
+        );
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(40.0))
+        );
+        assert!(bridge.get(1).expect("card").props.layout.height.is_none());
+        bridge.set_theme(ThemeMode::Dark);
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.height,
+            Some(LengthSpec::Px(20.0))
+        );
     }
 
     #[test]
@@ -10485,5 +11086,628 @@ mod tests {
             (width - 60.0).abs() < 1.0,
             "mid-transition width expected ~60px, got {width}"
         );
+    }
+
+    #[test]
+    fn has_plus_transition_interactive_pass_builds_forest_once() {
+        let mut bridge = MessageBridge::new();
+        for i in 1..=20u64 {
+            bridge.register(
+                i,
+                WidgetKind::Column,
+                WidgetProps {
+                    element_tag: "div".into(),
+                    class_names: vec!["card".into()],
+                    ..WidgetProps::default()
+                },
+            );
+            let badge = 100 + i;
+            bridge.register(
+                badge,
+                WidgetKind::Box,
+                WidgetProps {
+                    element_tag: "span".into(),
+                    class_names: vec!["badge".into()],
+                    ..WidgetProps::default()
+                },
+            );
+            bridge.insert_child(badge, i, None);
+        }
+        bridge.inject_stylesheet(
+            ".card:has(.badge) { color: red; } .card { transition: color 0.2s; }",
+        );
+        let builds_after_inject = bridge.relative_forest_builds.get();
+        let nodes_after_inject = bridge.relative_forest_nodes.get();
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        bridge.reapply_interactive_cascade(&mut doc);
+        let builds = bridge.relative_forest_builds.get() - builds_after_inject;
+        let nodes = bridge.relative_forest_nodes.get() - nodes_after_inject;
+        let n = bridge.widgets.len();
+        assert_eq!(
+            builds, 1,
+            "interactive recascade must share one relative forest, got {builds}"
+        );
+        assert_eq!(
+            nodes, n,
+            "forest must clone each widget once (O(N)), not per-node root trees"
+        );
+        assert!(n >= 40);
+    }
+
+    #[test]
+    fn inject_only_has_recascades_matching_parent() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["badge".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".card:has(.badge) { width: 40px; }");
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(40.0)),
+            "inject of only :has must recascade the parent"
+        );
+    }
+
+    #[test]
+    fn unregister_badge_drops_has_style_on_parent() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["card".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["badge".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.inject_stylesheet(".card:has(.badge) { width: 40px; }");
+        assert_eq!(
+            bridge.get(1).expect("card").props.layout.width,
+            Some(LengthSpec::Px(40.0))
+        );
+        bridge.unregister(2);
+        assert!(
+            bridge.get(1).expect("card").props.layout.width.is_none(),
+            "parent must lose :has style after the badge is unregistered"
+        );
+    }
+
+    #[test]
+    fn insert_at_index_zero_updates_nth_child_siblings() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["row".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            2,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["item".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            3,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["item".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(2, 1, None);
+        bridge.insert_child(3, 1, None);
+        bridge.inject_stylesheet(".row > :nth-child(2) { width: 10px; }");
+        assert!(bridge.get(2).expect("first").props.layout.width.is_none());
+        assert_eq!(
+            bridge.get(3).expect("second").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+        bridge.register(
+            4,
+            WidgetKind::Box,
+            WidgetProps {
+                element_tag: "span".into(),
+                class_names: vec!["item".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.insert_child(4, 1, Some(2));
+        assert!(
+            bridge
+                .get(3)
+                .expect("old second")
+                .props
+                .layout
+                .width
+                .is_none(),
+            "old :nth-child(2) must drop after a prepend"
+        );
+        assert_eq!(
+            bridge.get(2).expect("old first").props.layout.width,
+            Some(LengthSpec::Px(10.0)),
+            "old first becomes :nth-child(2) after insert at index 0"
+        );
+    }
+
+    #[test]
+    fn class_on_sibling_updates_nth_child_of_index() {
+        let mut bridge = MessageBridge::new();
+        bridge.register(
+            1,
+            WidgetKind::Column,
+            WidgetProps {
+                element_tag: "div".into(),
+                class_names: vec!["row".into()],
+                ..WidgetProps::default()
+            },
+        );
+        for (id, noted) in [(2, true), (3, false), (4, true)] {
+            bridge.register(
+                id,
+                WidgetKind::Box,
+                WidgetProps {
+                    element_tag: "span".into(),
+                    class_names: if noted {
+                        vec!["noted".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    ..WidgetProps::default()
+                },
+            );
+            bridge.insert_child(id, 1, None);
+        }
+        bridge.inject_stylesheet(".row > :nth-child(even of .noted) { width: 10px; }");
+        assert!(
+            bridge
+                .get(2)
+                .expect("first noted")
+                .props
+                .layout
+                .width
+                .is_none()
+        );
+        assert_eq!(
+            bridge.get(4).expect("second noted").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+        bridge.patch_prop(3, "class", &nana_js_engine::HostValue::string("noted"));
+        assert!(
+            bridge
+                .get(4)
+                .expect("was second noted")
+                .props
+                .layout
+                .width
+                .is_none(),
+            "adding .noted to the middle sibling must change `of` numbering"
+        );
+        assert_eq!(
+            bridge.get(3).expect("new second noted").props.layout.width,
+            Some(LengthSpec::Px(10.0))
+        );
+    }
+
+    #[test]
+    fn layout_width_transition_lerps_px_and_syncs_only_that_widget() {
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let panel = doc.create_element("div");
+        let sibling = doc.create_element("div");
+        doc.insert(panel, root, None);
+        doc.insert(sibling, root, None);
+        bridge.register(
+            panel.0,
+            WidgetKind::Box,
+            WidgetProps {
+                class_names: vec!["panel".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.register(
+            sibling.0,
+            WidgetKind::Box,
+            WidgetProps {
+                class_names: vec!["static".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".panel { width: 40px; height: 20px; transition: width 200ms linear; } \
+             .panel:hover { width: 80px; } \
+             .static { width: 16px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        let sibling_width = bridge.get(sibling.0).expect("sibling").props.layout.width;
+        doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+        doc.set_pointer_hover(0, Some(panel));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(std::time::Duration::from_millis(100));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let mid = bridge
+            .get(panel.0)
+            .expect("panel")
+            .props
+            .layout
+            .width
+            .expect("interpolated width");
+        match mid {
+            LengthSpec::Px(v) => assert!(
+                (v - 60.0).abs() < 0.6,
+                "expected mid-transition width ~60px, got {v}"
+            ),
+            other => panic!("layout transition must write px, got {other:?}"),
+        }
+        assert_eq!(
+            bridge.get(sibling.0).expect("sibling").props.layout.width,
+            sibling_width,
+            "incremental layout must not rewrite the static sibling"
+        );
+        let style = doc
+            .world()
+            .node_style(StableNodeId::new(panel.0).unwrap())
+            .expect("panel runtime style");
+        match style.layout.width {
+            Some(LengthSpec::Px(v)) => assert!((v - 60.0).abs() < 0.6),
+            other => panic!("runtime layout width should be interpolated px, got {other:?}"),
+        }
+        doc.set_runtime_clock_for_test(std::time::Duration::from_millis(220));
+        assert!(bridge.tick_css_animations(&mut doc));
+        let completes = bridge.take_motion_completes();
+        assert_eq!(completes.len(), 1);
+        assert_eq!(completes[0].event_type, "transitionend");
+        assert_eq!(completes[0].widget_id, panel.0);
+        assert_eq!(completes[0].property_name, "width");
+        assert!((completes[0].elapsed_time - 0.2).abs() < 0.001);
+        assert_eq!(
+            bridge.get(panel.0).expect("panel").props.layout.width,
+            Some(LengthSpec::Px(80.0))
+        );
+    }
+
+    #[test]
+    fn keyframes_finish_queues_animationend() {
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["spin".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
+             .spin { animation: spin 200ms linear; width: 40px; height: 40px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let frame = doc.advance_css_animations(Duration::from_millis(220));
+        assert!(bridge.apply_css_animation_samples(&mut doc, frame));
+        let completes = bridge.take_motion_completes();
+        assert_eq!(completes.len(), 1);
+        assert_eq!(completes[0].event_type, "animationend");
+        assert_eq!(completes[0].animation_name, "spin");
+        assert_eq!(completes[0].widget_id, host.0);
+    }
+
+    #[test]
+    fn recascade_does_not_restart_same_name_keyframes() {
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["spin".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
+             .spin { animation: spin 1s linear infinite; width: 40px; height: 40px; } \
+             .spin:hover { color: red; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        doc.set_runtime_clock_for_test(Duration::from_millis(250));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let mid = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("style")
+            .layout
+            .opacity
+            .expect("mid opacity");
+        assert!(
+            (mid - 0.25).abs() < 0.08,
+            "expected ~0.25 at 250ms, got {mid}"
+        );
+
+        doc.set_pointer_hover(0, Some(host));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(Duration::from_millis(500));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let later = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("style")
+            .layout
+            .opacity
+            .expect("later opacity");
+        assert!(
+            (later - 0.5).abs() < 0.08,
+            "same-name recascade must keep the clock (expect ~0.5 at 500ms), got {later}"
+        );
+    }
+
+    #[test]
+    fn recascade_restarts_same_name_keyframes_after_finish() {
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["spin".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
+             .spin { animation: spin 200ms linear; width: 40px; height: 40px; } \
+             .spin:hover { color: red; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        doc.set_runtime_clock_for_test(Duration::from_millis(220));
+        assert!(bridge.tick_css_animations(&mut doc));
+        let first = bridge.take_motion_completes();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].event_type, "animationend");
+
+        doc.set_pointer_hover(0, Some(host));
+        bridge.reapply_interactive_cascade(&mut doc);
+        doc.set_runtime_clock_for_test(Duration::from_millis(320));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let mid = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("style")
+            .layout
+            .opacity
+            .expect("restarted opacity");
+        assert!(
+            (mid - 0.5).abs() < 0.08,
+            "finished same-name recascade must start again (~0.5 at 100ms), got {mid}"
+        );
+
+        doc.set_runtime_clock_for_test(Duration::from_millis(440));
+        assert!(bridge.tick_css_animations(&mut doc));
+        let second = bridge.take_motion_completes();
+        assert_eq!(
+            second.len(),
+            1,
+            "restarted timeline must complete once more"
+        );
+        assert_eq!(second[0].event_type, "animationend");
+        assert_eq!(second[0].animation_name, "spin");
+        assert_eq!(second[0].widget_id, host.0);
+    }
+
+    #[test]
+    fn flip_paint_transform_enters_runtime_and_clears_after_move_transition() {
+        use nana_ui_core::PaintTransform;
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let item = doc.create_element("li");
+        doc.insert(item, root, None);
+        bridge.register(
+            item.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["item".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            ".item { width: 40px; height: 16px; } \
+             .item-move { transition: transform 200ms linear; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        let width_before = doc
+            .world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style")
+            .layout
+            .width;
+
+        doc.set_runtime_clock_for_test(Duration::ZERO);
+        bridge.set_paint_transform(item.0, "translate(30px, 0px)", &mut doc);
+        doc.flush_host_frame();
+        let overlay = doc
+            .world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style");
+        assert_eq!(
+            overlay.layout.transform,
+            Some(PaintTransform {
+                e: 30.0,
+                ..PaintTransform::default()
+            })
+        );
+        assert_eq!(
+            overlay.layout.width, width_before,
+            "paint transform must not recascade layout"
+        );
+
+        bridge.set_paint_transform(item.0, "", &mut doc);
+        bridge.patch_prop(item.0, "class", &HostValue::string("item item-move"));
+        bridge.maybe_release_flip_paint_transform(item.0, &mut doc);
+        doc.set_runtime_clock_for_test(Duration::from_millis(100));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let mid = doc
+            .world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style")
+            .layout
+            .transform
+            .expect("mid flip transform");
+        assert!(
+            (mid.e - 15.0).abs() < 1.0,
+            "expected ~15px mid FLIP, got {}",
+            mid.e
+        );
+
+        doc.set_runtime_clock_for_test(Duration::from_millis(220));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let done = doc
+            .world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style");
+        assert_eq!(
+            done.layout.transform, None,
+            "FLIP must not leave a leftover transform"
+        );
+        assert_eq!(done.layout.width, width_before);
+    }
+
+    #[test]
+    fn paint_transform_does_not_restart_same_name_keyframes() {
+        use nana_ui_runtime::StableNodeId;
+        use std::time::Duration;
+
+        let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+        let mut bridge = MessageBridge::new();
+        let root = doc.mount_root();
+        let host = doc.create_element("div");
+        doc.insert(host, root, None);
+        bridge.register(
+            host.0,
+            WidgetKind::Column,
+            WidgetProps {
+                class_names: vec!["spin".into()],
+                ..WidgetProps::default()
+            },
+        );
+        bridge.inject_stylesheet(
+            "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
+             .spin { animation: spin 1s linear infinite; width: 40px; height: 40px; }",
+        );
+        bridge.resolve_document_layout(&mut doc);
+        doc.flush_host_frame();
+        doc.set_runtime_clock_for_test(Duration::from_millis(250));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let mid = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("style")
+            .layout
+            .opacity
+            .expect("mid opacity");
+        assert!(
+            (mid - 0.25).abs() < 0.08,
+            "expected ~0.25 at 250ms, got {mid}"
+        );
+
+        bridge.set_paint_transform(host.0, "translate(8px, 0px)", &mut doc);
+        doc.flush_host_frame();
+        doc.set_runtime_clock_for_test(Duration::from_millis(500));
+        assert!(bridge.tick_css_animations(&mut doc));
+        doc.flush_host_frame();
+        let later = doc
+            .world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("style")
+            .layout
+            .opacity
+            .expect("later opacity");
+        assert!(
+            (later - 0.5).abs() < 0.08,
+            "paint transform must keep the keyframe clock (expect ~0.5 at 500ms), got {later}"
+        );
+        assert_eq!(
+            later_transform_e(&doc, host.0),
+            8.0,
+            "FLIP overlay must still be on LayoutStyle.transform"
+        );
+    }
+
+    fn later_transform_e(doc: &crate::tree::NanaTreeDocument, id: u64) -> f32 {
+        use nana_ui_runtime::StableNodeId;
+        doc.world()
+            .node_style(StableNodeId::new(id).unwrap())
+            .expect("style")
+            .layout
+            .transform
+            .expect("paint transform")
+            .e
     }
 }

@@ -446,6 +446,22 @@ fn t_g34_auto_fill_nth_named_line_expanded() {
     assert_pass_case("T-G34");
 }
 #[test]
+fn t_g35_subgrid_inherits_parent_tracks() {
+    let case = load_fixture(&fixture_path("T-G35")).unwrap();
+    let a = case
+        .expected
+        .iter()
+        .find(|box_| box_.id == "a")
+        .expect("T-G35 a");
+    assert!(
+        a.w <= 81.0 && a.x < 1.0,
+        "T-G35 must assert a is the 80px parent track, not half of 200, got x={} w={}",
+        a.x,
+        a.w
+    );
+    assert_pass_case("T-G35");
+}
+#[test]
 fn t_p01_position_relative_inset() {
     assert_pass_case("T-P01");
 }

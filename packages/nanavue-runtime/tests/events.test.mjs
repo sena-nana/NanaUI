@@ -16,6 +16,10 @@ const shimSrc = readFileSync(
 );
 const rendererSrc = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
 const layoutMetricsSrc = readFileSync(join(root, "src/layoutMetrics.js"), "utf8");
+const transitionContractSrc = readFileSync(
+  join(root, "src/transitionContract.js"),
+  "utf8",
+);
 
 function stripEsm(src) {
   return src
@@ -45,6 +49,9 @@ function loadRuntime() {
     Symbol,
     Boolean,
     RegExp,
+    Proxy,
+    setTimeout,
+    clearTimeout,
   };
   sandbox.globalThis = sandbox;
   sandbox.__hostListeners = hostListeners;
@@ -85,6 +92,7 @@ function loadRuntime() {
       const defineLayoutMetrics = globalThis.defineLayoutMetrics;
       const hostCall = globalThis.hostCall;
       const layoutRect = globalThis.layoutRect;
+      ${stripEsm(transitionContractSrc)}
       ${stripEsm(rendererSrc)}
       globalThis.wrapNode = wrapNode;
       globalThis.hostOps = hostOps;

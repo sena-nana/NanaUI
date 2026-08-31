@@ -1437,6 +1437,91 @@
   }
   globalThis.__nanaEnhanceCanvas = enhanceCanvasElement;
 
+  function enhanceMediaElement(element, kind) {
+    if (!element || element.__nanaMediaResource) return element;
+    const type = kind === "audio" ? "audio" : "video";
+    const resource = hostCall("mediaCreate", [type]);
+    element.__nanaMediaResource = resource;
+    element.__nanaOwnsMediaResource = true;
+    if (resource && resource.id != null && typeof element.setAttribute === "function") {
+      try { element.setAttribute("data-nana-media", String(resource.id)); } catch (_err) {}
+    }
+    element.paused = true;
+    element.ended = false;
+    element.muted = false;
+    element.volume = 1;
+    element.currentTime = 0;
+    element.duration = 0;
+    element.readyState = 0;
+    element.videoWidth = 0;
+    element.videoHeight = 0;
+    let src = "";
+    function applyDescriptor(next) {
+      if (!next || typeof next !== "object") return;
+      element.__nanaMediaResource = next;
+      element.paused = !!next.paused;
+      element.duration = Number(next.duration || 0);
+      element.currentTime = Number(next.currentTime || 0);
+      element.readyState = Number(next.readyState || 0);
+      element.videoWidth = Number(next.width || 0);
+      element.videoHeight = Number(next.height || 0);
+      if (typeof element.setAttribute === "function") {
+        try {
+          if (next.id != null) {
+            element.setAttribute("data-nana-media", String(next.id));
+          }
+          if (type === "video") {
+            if (next.hasVideoFrame && next.id != null) {
+              element.setAttribute("data-nana-video", String(next.id));
+            } else {
+              element.setAttribute("data-nana-video", "");
+            }
+          }
+        } catch (_err) {}
+      }
+    }
+    Object.defineProperty(element, "src", {
+      configurable: true,
+      get: function () { return src; },
+      set: function (value) {
+        src = String(value || "");
+        applyDescriptor(hostCall("mediaSetSrc", [resource.id, src]));
+      },
+    });
+    Object.defineProperty(element, "srcObject", {
+      configurable: true,
+      get: function () { return element.__nanaSrcObject || null; },
+      set: function (stream) {
+        element.__nanaSrcObject = stream || null;
+        const streamId = stream && stream.id != null ? stream.id : 0;
+        applyDescriptor(hostCall("mediaSetSrcObject", [resource.id, streamId]));
+      },
+    });
+    Object.defineProperty(element, "currentTime", {
+      configurable: true,
+      get: function () { return Number(element.__nanaMediaResource && element.__nanaMediaResource.currentTime || 0); },
+      set: function (value) {
+        applyDescriptor(hostCall("mediaSetCurrentTime", [resource.id, Number(value) || 0]));
+      },
+    });
+    element.play = function () {
+      applyDescriptor(hostCall("mediaPlay", [resource.id]));
+      return Promise.resolve();
+    };
+    element.pause = function () {
+      applyDescriptor(hostCall("mediaPause", [resource.id]));
+    };
+    if (globalThis.HTMLMediaElement && globalThis.HTMLMediaElement.prototype) {
+      try { Object.setPrototypeOf(element, type === "audio" ? globalThis.HTMLAudioElement.prototype : globalThis.HTMLVideoElement.prototype); } catch (_err) {}
+    }
+    return element;
+  }
+  globalThis.__nanaEnhanceMedia = enhanceMediaElement;
+
+  function HTMLMediaElementShim() {}
+  function HTMLVideoElementShim() {}
+  function HTMLAudioElementShim() {}
+
   function BlobShim(parts, options) {
     const chunks = [];
     let length = 0;
@@ -1619,7 +1704,10 @@
     el.removeEventListener = function () {};
     el.textContent = "";
     el.innerHTML = "";
-    return t === "canvas" ? enhanceCanvasElement(el) : el;
+    return t === "canvas" ? enhanceCanvasElement(el)
+      : t === "video" ? enhanceMediaElement(el, "video")
+      : t === "audio" ? enhanceMediaElement(el, "audio")
+      : el;
   };
   DocumentShim.prototype.createElementNS = function (_ns, tag) {
     return this.createElement(tag);
@@ -2212,6 +2300,13 @@
           });
         },
       },
+      mediaDevices: {
+        getUserMedia: function (constraints) {
+          return Promise.resolve().then(function () {
+            return hostCall("mediaDevicesGetUserMedia", [constraints && typeof constraints === "object" ? constraints : { video: true }]);
+          });
+        },
+      },
     };
     this.location = new LocationShim();
     this.history = new HistoryShim(this.location);
@@ -2291,11 +2386,21 @@
             return fromHost("animationDuration", "animationDuration", read("animation-duration", "animationDuration", "0s"));
           if (key === "animation-name" || key === "animationname")
             return fromHost("animationName", "animationName", read("animation-name", "animationName", "none"));
+          if (key === "transition-timing-function" || key === "transitiontimingfunction")
+            return fromHost("transitionTimingFunction", "transitionTimingFunction", read("transition-timing-function", "transitionTimingFunction", "ease"));
           if (key === "width") return fromHost("width", "width", read("width", "width", "0px"));
           if (key === "height") return fromHost("height", "height", read("height", "height", "0px"));
           if (key === "opacity") return fromHost("opacity", "opacity", read("opacity", "opacity", "1"));
           if (key === "color") return fromHost("color", "color", read("color", "color", ""));
           if (key === "transform") return fromHost("transform", "transform", read("transform", "transform", "none"));
+          if (key === "background-color" || key === "backgroundcolor")
+            return fromHost("backgroundColor", "background-color", read("background-color", "backgroundColor", "rgba(0, 0, 0, 0)"));
+          if (key === "font-size" || key === "fontsize")
+            return fromHost("fontSize", "font-size", read("font-size", "fontSize", ""));
+          if (key === "font-family" || key === "fontfamily")
+            return fromHost("fontFamily", "font-family", read("font-family", "fontFamily", ""));
+          if (key === "font-weight" || key === "fontweight")
+            return fromHost("fontWeight", "font-weight", read("font-weight", "fontWeight", ""));
           if (style.getPropertyValue) return style.getPropertyValue(name) || "";
           return style[name] || "";
         },
@@ -2305,11 +2410,16 @@
         animationDelay: fromHost("animationDelay", "animationDelay", "0s"),
         animationDuration: fromHost("animationDuration", "animationDuration", "0s"),
         animationName: fromHost("animationName", "animationName", "none"),
+        transitionTimingFunction: fromHost("transitionTimingFunction", "transitionTimingFunction", "ease"),
         width: fromHost("width", "width", "0px"),
         height: fromHost("height", "height", "0px"),
         opacity: fromHost("opacity", "opacity", "1"),
         color: fromHost("color", "color", ""),
         transform: fromHost("transform", "transform", "none"),
+        backgroundColor: fromHost("backgroundColor", "background-color", "rgba(0, 0, 0, 0)"),
+        fontSize: fromHost("fontSize", "font-size", ""),
+        fontFamily: fromHost("fontFamily", "font-family", ""),
+        fontWeight: fromHost("fontWeight", "font-weight", ""),
       };
       // Prefer explicit inline style when present.
       const td = read("transition-duration", "transitionDuration", null);
@@ -3147,6 +3257,15 @@
   HTMLCanvasElementShim.prototype = Object.create(globalThis.HTMLElement.prototype);
   HTMLCanvasElementShim.prototype.constructor = HTMLCanvasElementShim;
   globalThis.HTMLCanvasElement = HTMLCanvasElementShim;
+  HTMLMediaElementShim.prototype = Object.create(globalThis.HTMLElement.prototype);
+  HTMLMediaElementShim.prototype.constructor = HTMLMediaElementShim;
+  globalThis.HTMLMediaElement = HTMLMediaElementShim;
+  HTMLVideoElementShim.prototype = Object.create(HTMLMediaElementShim.prototype);
+  HTMLVideoElementShim.prototype.constructor = HTMLVideoElementShim;
+  globalThis.HTMLVideoElement = HTMLVideoElementShim;
+  HTMLAudioElementShim.prototype = Object.create(HTMLMediaElementShim.prototype);
+  HTMLAudioElementShim.prototype.constructor = HTMLAudioElementShim;
+  globalThis.HTMLAudioElement = HTMLAudioElementShim;
   globalThis.Blob = BlobShim;
   globalThis.Image = ImageShim;
   globalThis.ImageBitmap = ImageBitmapShim;
@@ -3205,6 +3324,9 @@
   win.ImageData = ImageDataShim;
   win.CanvasRenderingContext2D = CanvasRenderingContext2DShim;
   win.HTMLCanvasElement = HTMLCanvasElementShim;
+  win.HTMLMediaElement = HTMLMediaElementShim;
+  win.HTMLVideoElement = HTMLVideoElementShim;
+  win.HTMLAudioElement = HTMLAudioElementShim;
   win.Blob = BlobShim;
   win.Image = ImageShim;
   win.ImageBitmap = ImageBitmapShim;

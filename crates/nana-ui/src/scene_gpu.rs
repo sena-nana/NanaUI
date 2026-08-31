@@ -161,7 +161,7 @@ impl SceneResourceProducerRegistry {
                     return None;
                 };
                 let primitive = scene.primitive(*id)?;
-                let ScenePrimitiveKind::Custom(node) = &primitive.kind else {
+                let ScenePrimitiveKind::Custom { node, .. } = &primitive.kind else {
                     return None;
                 };
                 self.producers

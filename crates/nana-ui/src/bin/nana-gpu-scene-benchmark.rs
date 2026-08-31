@@ -485,13 +485,13 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
         ScenePrimitiveKind::Icon { .. } => "icon",
         ScenePrimitiveKind::Spinner { .. } => "spinner",
         ScenePrimitiveKind::Stroke { .. } => "stroke",
-        ScenePrimitiveKind::Custom(custom)
+        ScenePrimitiveKind::Custom { node: custom, .. }
             if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER
                 && custom.resource.as_ref() == slot =>
         {
             "host-texture"
         }
-        ScenePrimitiveKind::Custom(_) => "custom",
+        ScenePrimitiveKind::Custom { .. } => "custom",
     }
 }
 

@@ -35,7 +35,7 @@ pub use nana_ui_runtime::{
     build_calendar_heatmap_model,
 };
 #[cfg(feature = "graph-canvas")]
-pub use nana_ui_runtime::{GraphCanvas, GraphCanvasEvent};
+pub use nana_ui_runtime::{GraphCanvas, GraphCanvasEvent, GraphNodeContent};
 pub use nana_ui_runtime::{KeyCaptureEvent, KeyCaptureLayer, KeymapLayer};
 #[cfg(feature = "rich-text")]
 pub use nana_ui_runtime::{

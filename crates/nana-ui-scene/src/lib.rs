@@ -16,7 +16,7 @@ pub use graph::{
 pub use icon::{IconGeometry, IconPathCommand, IconShape, icon_geometry};
 pub use runtime_document::{RuntimeDocument, RuntimeFrameUpdate};
 pub use scene::{
-    AffineTransform, ClipRegion, FilterGroup, OpacityGroup, PrimitiveId, QuadSurfacePaint,
-    SceneDelta, ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextSpan, StrokeCap,
-    StrokePattern, UiScene,
+    AffineTransform, ClipRegion, FilterGroup, InsetShadowOverlay, OpacityGroup, PrimitiveId,
+    QuadSurfacePaint, SceneDelta, ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextOpenType,
+    SceneTextSpan, StrokeCap, StrokePattern, UiScene,
 };

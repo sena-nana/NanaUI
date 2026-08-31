@@ -19,8 +19,9 @@
 //! [`crate::shell_contract`]（非中立；不在此模块扩展 class 特判）.
 //!
 //! Parsed into separate buckets (not static cascade): `:hover`/`:focus`/`:active`,
-//! `::before`/`::after`, `@keyframes`, and transition/animation longhands — see
-//! [`crate::css_interactive::ParsedStylesheet`].
+//! `::before`/`::after`, `@keyframes`, `@font-face`, and transition/animation
+//! longhands — see [`crate::css_interactive::ParsedStylesheet`].
+//! `writing-mode` vertical-rl/lr is a stored subset (not fully fail-closed).
 //!
 //! Cheap `:disabled` (subject or `:not(:disabled)`) is the same present-check
 //! as `[disabled]` (HTML `disabled` attr / form-control disabled). Cheap
@@ -54,15 +55,17 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::css_at_rule::{
-    ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_supports_condition,
-    font_face_from_pairs, is_blocked_href, parse_import_prelude, parse_layer_prelude,
-    parse_media_query_list,
+    ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_media_query,
+    evaluate_supports_condition, font_face_from_pairs, is_blocked_href, parse_import_prelude,
+    parse_layer_prelude, parse_media_query_list,
 };
+
+pub use crate::css_at_rule::MediaQuery;
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractiveSelector,
     InteractiveStyleRule, MediaRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet,
-    merge_parsed_stylesheet, offset_source_order, parse_keyframes_at_rule,
-    partition_motion_entries,
+    ScrollbarPseudo, ScrollbarPseudoRule, merge_parsed_stylesheet, offset_source_order,
+    parse_keyframes_at_rule, partition_motion_entries,
 };
 use crate::css_map::{
     LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode, split_important_flag,
@@ -309,6 +312,142 @@ pub struct MatchContext<'a> {
     pub is_empty: bool,
     /// Checkable host with `toggled` (`:checked`).
     pub checked: bool,
+    /// Viewport + color-scheme used to evaluate stylesheet `@media`.
+    pub media: MediaEnv,
+    /// Direct children as a forest (for relative `:has()`).
+    pub children: &'a [MatchSubtree<'a>],
+    /// Following siblings, **immediate next first** (`:has(+ …)` / `:has(~ …)`).
+    pub following_siblings: &'a [MatchSubtree<'a>],
+    /// All siblings including self, document order (`:nth-child(… of …)`).
+    pub all_siblings: &'a [MatchNode<'a>],
+    /// Parallel to [`Self::ancestors`]: each ancestor as a subtree root.
+    pub ancestor_subtrees: &'a [MatchSubtree<'a>],
+    /// Owned children of the subject (bridge). Ignored when `children` is non-empty.
+    pub owned_children: &'a [OwnedMatchTree],
+    /// Owned following siblings (bridge).
+    pub owned_following: &'a [OwnedMatchTree],
+    /// Owned ancestor forests, parallel to [`Self::ancestors`] (bridge).
+    pub owned_ancestor_trees: &'a [OwnedMatchTree],
+    /// Shared document forest for relative matching (bridge).
+    pub relative: Option<&'a RelativeMatchForest>,
+    /// Widget id of the subject inside [`Self::relative`].
+    pub relative_id: u64,
+}
+
+/// One node plus its descendant forest (relative matching / `:has()`).
+#[derive(Debug, Clone, Copy)]
+pub struct MatchSubtree<'a> {
+    pub node: MatchNode<'a>,
+    pub children: &'a [MatchSubtree<'a>],
+}
+
+/// Owned descendant forest used by the bridge so `:has()` can walk live widgets.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OwnedMatchTree {
+    pub tag: String,
+    pub id: String,
+    pub classes: Vec<String>,
+    pub attrs: BTreeMap<String, String>,
+    pub children: Vec<OwnedMatchTree>,
+}
+
+impl OwnedMatchTree {
+    pub fn as_node(&self) -> MatchNode<'_> {
+        MatchNode {
+            tag: self.tag.as_str(),
+            id: self.id.as_str(),
+            classes: self.classes.as_slice(),
+            attrs: &self.attrs,
+            is_empty: self.children.is_empty(),
+            checked: false,
+        }
+    }
+}
+
+/// Flat identity forest for relative selectors. One entry per widget; children
+/// are ids. Bridge builds this once per recascade pass.
+#[derive(Debug, Clone, Default)]
+pub struct RelativeMatchForest {
+    nodes: BTreeMap<u64, RelativeMatchNode>,
+}
+
+/// One node in [`RelativeMatchForest`].
+#[derive(Debug, Clone)]
+pub struct RelativeMatchNode {
+    pub tag: String,
+    pub css_id: String,
+    pub classes: Vec<String>,
+    pub attrs: BTreeMap<String, String>,
+    pub children: Vec<u64>,
+    pub parent: Option<u64>,
+}
+
+impl RelativeMatchForest {
+    pub fn insert(&mut self, id: u64, node: RelativeMatchNode) {
+        self.nodes.insert(id, node);
+    }
+
+    pub fn get(&self, id: u64) -> Option<&RelativeMatchNode> {
+        self.nodes.get(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn as_node(&self, id: u64) -> Option<MatchNode<'_>> {
+        let n = self.nodes.get(&id)?;
+        Some(MatchNode {
+            tag: n.tag.as_str(),
+            id: n.css_id.as_str(),
+            classes: n.classes.as_slice(),
+            attrs: &n.attrs,
+            is_empty: n.children.is_empty(),
+            checked: false,
+        })
+    }
+}
+
+/// Inputs for the `@media` subset (viewport + color-scheme).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MediaEnv {
+    pub viewport: Option<(f32, f32)>,
+    pub color_scheme_dark: bool,
+}
+
+impl MediaEnv {
+    fn to_media_environment(self) -> crate::css_at_rule::MediaEnvironment {
+        let (width, height) = self.viewport.unwrap_or((960.0, 640.0));
+        crate::css_at_rule::MediaEnvironment {
+            width,
+            height,
+            color_scheme_dark: self.color_scheme_dark,
+        }
+    }
+}
+
+/// Cascade sort key for `@layer`: later wins.
+///
+/// Normal: first-declared layer weakest, unlayered strongest.
+/// `!important`: reverse (first-declared layer strongest, unlayered weakest).
+pub fn cascade_layer_key(important: bool, layer: Option<u32>) -> u32 {
+    match (important, layer) {
+        (false, Some(i)) => i.saturating_add(1),
+        (false, None) => u32::MAX,
+        (true, None) => 0,
+        (true, Some(i)) => u32::MAX.saturating_sub(i),
+    }
+}
+
+/// True when every stacked `@media` query matches `env` (empty = always).
+pub fn media_list_matches(queries: &[MediaQuery], env: &MediaEnv) -> bool {
+    queries
+        .iter()
+        .all(|query| evaluate_media_query(query, &env.to_media_environment()))
 }
 
 impl<'a> MatchContext<'a> {
@@ -373,6 +512,15 @@ pub fn parse_stylesheet_full(
     order_base: u32,
 ) -> (ParsedStylesheet, StylesheetParseReport) {
     parse_stylesheet_full_with_options(css, order_base, &mut ParseStylesheetOptions::default())
+}
+
+/// Compatibility wrapper: origin tracks `@layer` inside [`ParseStylesheetOptions`].
+pub fn parse_stylesheet_full_with_layers(
+    css: &str,
+    order_base: u32,
+    _layer_order: &mut Vec<String>,
+) -> (ParsedStylesheet, StylesheetParseReport) {
+    parse_stylesheet_full(css, order_base)
 }
 
 /// Like [`parse_stylesheet_full`], with `@import` loader / media environment.
@@ -730,8 +878,11 @@ fn parse_stylesheet_into(
         let mut static_selectors = Vec::new();
         let mut interactive_selectors = Vec::new();
         let mut generated = Vec::new();
+        let mut scrollbar = Vec::new();
         for part in split_selector_list(selector_text) {
-            if let Some((originating, pseudo)) = parse_generated_pseudo_selector(part) {
+            if let Some((originating, pseudo)) = parse_scrollbar_pseudo_selector(part) {
+                scrollbar.push((originating, pseudo));
+            } else if let Some((originating, pseudo)) = parse_generated_pseudo_selector(part) {
                 generated.push((originating, pseudo));
             } else if let Some(sel) = parse_interactive_selector(part) {
                 interactive_selectors.push(sel);
@@ -742,7 +893,11 @@ fn parse_stylesheet_into(
             }
         }
 
-        if static_selectors.is_empty() && interactive_selectors.is_empty() && generated.is_empty() {
+        if static_selectors.is_empty()
+            && interactive_selectors.is_empty()
+            && generated.is_empty()
+            && scrollbar.is_empty()
+        {
             continue;
         }
 
@@ -774,6 +929,8 @@ fn parse_stylesheet_into(
                     declaration_entries: layout_entries.clone(),
                     motion: motion_for_rules.clone(),
                     source_order: *order,
+                    layer: None,
+                    media: Vec::new(),
                 });
             }
         }
@@ -787,6 +944,21 @@ fn parse_stylesheet_into(
                     declaration_entries: layout_entries.clone(),
                     motion: motion_for_rules.clone(),
                     source_order: *order,
+                    layer: None,
+                    media: Vec::new(),
+                });
+            }
+        }
+        if !scrollbar.is_empty() && has_layout {
+            consumed = true;
+            for (originating_selector, pseudo) in scrollbar {
+                sheet.scrollbar_pseudo_rules.push(ScrollbarPseudoRule {
+                    originating_selector,
+                    pseudo,
+                    declaration_entries: layout_entries.clone(),
+                    source_order: *order,
+                    layer: None,
+                    media: Vec::new(),
                 });
             }
         }
@@ -796,6 +968,8 @@ fn parse_stylesheet_into(
                 selectors: static_selectors,
                 motion,
                 source_order: *order,
+                layer: None,
+                media: Vec::new(),
             });
         }
         if consumed {
@@ -1492,6 +1666,34 @@ pub fn stylesheet_matches(rules: &[StyleRule], ctx: &MatchContext<'_>) -> bool {
         .any(|rule| rule.selectors.iter().any(|sel| selector_matches(sel, ctx)))
 }
 
+/// True when matching needs descendant / sibling forests (`:has()`, `nth-*`, combinators).
+pub fn stylesheet_needs_relative(rules: &[StyleRule]) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule.selectors.iter().any(selector_needs_relative))
+}
+
+pub fn selector_needs_relative(sel: &Selector) -> bool {
+    !sel.ancestors.is_empty()
+        || compound_needs_relative(&sel.subject)
+        || sel
+            .ancestors
+            .iter()
+            .any(|(_, compound)| compound_needs_relative(compound))
+}
+
+fn compound_needs_relative(c: &CompoundSelector) -> bool {
+    !c.has_queries.is_empty()
+        || c.nth_child.is_some()
+        || c.nth_of_type.is_some()
+        || c.nth_last_child.is_some()
+        || c.first_child
+        || c.last_child
+        || c.only_child
+        || c.first_of_type
+        || c.last_of_type
+}
+
 /// Cheap reject: if no rule subject *could* match this element's tag/id/classes,
 /// skip building a full [`MatchContext`]. Combinators / attrs / pseudos still
 /// require [`stylesheet_matches`].
@@ -1700,6 +1902,31 @@ fn parse_generated_pseudo_selector(raw: &str) -> Option<(Selector, GeneratedPseu
     }
     let originating_selector = parse_selector_chain(&base)?;
     Some((originating_selector, pseudo))
+}
+
+fn parse_scrollbar_pseudo_selector(raw: &str) -> Option<(Selector, ScrollbarPseudo)> {
+    let s = raw.trim();
+    let (base, pseudo) = strip_subject_scrollbar_pseudo(s)?;
+    if selector_has_interactive_pseudo(s) || selector_has_deferred_pseudo(&base) {
+        return None;
+    }
+    let originating = if base.is_empty() { "*" } else { base.as_str() };
+    let originating_selector = parse_selector_chain(originating)?;
+    Some((originating_selector, pseudo))
+}
+
+fn strip_subject_scrollbar_pseudo(s: &str) -> Option<(String, ScrollbarPseudo)> {
+    let lower = s.to_ascii_lowercase();
+    for (suffix, pseudo) in [
+        ("::-webkit-scrollbar-thumb", ScrollbarPseudo::Thumb),
+        ("::-webkit-scrollbar", ScrollbarPseudo::Scrollbar),
+    ] {
+        if lower.ends_with(suffix) {
+            let base = s[..s.len().wrapping_sub(suffix.len())].trim().to_string();
+            return Some((base, pseudo));
+        }
+    }
+    None
 }
 
 fn parse_selector_chain(s: &str) -> Option<Selector> {
@@ -2724,6 +2951,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         }
     }
 
@@ -2753,6 +2990,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         }
     }
 
@@ -2783,6 +3030,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         }
     }
 
@@ -3586,6 +3843,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let mut layout = LayoutStyle::default();
         apply_stylesheet_to_layout(&mut layout, &rules, &first, None, None);
@@ -3705,6 +3972,16 @@ mod tests {
                 focus_within: false,
                 is_empty: true,
                 checked: false,
+                media: MediaEnv::default(),
+                children: &[],
+                following_siblings: &[],
+                all_siblings: &[],
+                ancestor_subtrees: &[],
+                owned_children: &[],
+                owned_following: &[],
+                owned_ancestor_trees: &[],
+                relative: None,
+                relative_id: 0,
             };
             let matched: Vec<usize> = rules
                 .iter()
