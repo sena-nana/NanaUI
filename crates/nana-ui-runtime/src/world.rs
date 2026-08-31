@@ -2631,7 +2631,7 @@ impl UiWorld {
                 titlebar,
             } => {
                 self.apply_style_model(StyleModelRef::with_tokens(
-                    *mode, *metrics, *palette, *titlebar,
+                    *mode, *metrics, **palette, *titlebar,
                 ));
             }
             UiMutation::SetText { id, text } => {

@@ -6766,6 +6766,7 @@ mod tests {
         };
         {
             let layout = Arc::make_mut(&mut scroller.source_style.layout);
+            layout.overflow_x = nana_ui_core::OverflowSpec::Scroll;
             layout.overflow_y = nana_ui_core::OverflowSpec::Scroll;
         }
         scroller.standard_visual = Some(StandardVisual::Scrollbar {
@@ -6827,8 +6828,8 @@ mod tests {
         ));
         assert_eq!(thumb.bounds.x, 191.0);
         assert_eq!(thumb.bounds.height, 72.0);
-        // Chrome is clipped only by the scrollport box it already sits inside,
-        // so the edge is never cut.
+        // Both axes clip, so chrome shares the scrollport overflow clip and is
+        // not cut by a tighter content clip.
         assert_eq!(
             track.clips.as_ref(),
             [ClipRegion {

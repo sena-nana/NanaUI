@@ -76,8 +76,8 @@ impl AnimationDirection {
         let reverse = match self {
             Self::Normal => false,
             Self::Reverse => true,
-            Self::Alternate => iteration_index % 2 == 1,
-            Self::AlternateReverse => iteration_index % 2 == 0,
+            Self::Alternate => !iteration_index.is_multiple_of(2),
+            Self::AlternateReverse => iteration_index.is_multiple_of(2),
         };
         if reverse { 1.0 - linear } else { linear }
     }
