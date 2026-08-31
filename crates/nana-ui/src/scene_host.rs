@@ -1585,7 +1585,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     return true;
                 }
                 InputEvent::Pointer {
-                    phase: PointerPhase::Up | PointerPhase::Cancel,
+                    phase: PointerPhase::Up,
                     ..
                 } => {
                     self.live_frame_resize = None;
@@ -1595,6 +1595,30 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     self.request_redraw(id);
                     self.sync_window_cursor(id);
                     return true;
+                }
+                InputEvent::Pointer {
+                    phase: PointerPhase::Cancel,
+                    ..
+                } => {
+                    // The pinned winit win32 proc synthesizes `PointerLeft`
+                    // from a client-rect bounds check even while the drag is
+                    // captured, so a fast drag crossing the window edge must
+                    // not end the session; only Up or focus loss does.
+                    self.sync_window_cursor(id);
+                    return true;
+                }
+                InputEvent::Pointer {
+                    phase: PointerPhase::Down,
+                    button: 0,
+                    is_primary: true,
+                    ..
+                } => {
+                    // A fresh primary press means the previous drag is over
+                    // even if its Up was lost while capture was stolen.
+                    self.live_frame_resize = None;
+                    if let Some(window) = self.window(id) {
+                        live.end(window.as_ref());
+                    }
                 }
                 _ => {}
             }
