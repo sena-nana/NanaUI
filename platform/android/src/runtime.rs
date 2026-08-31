@@ -10,6 +10,7 @@ use nana_ui_vue::VueHost;
 use crate::engine::smoke_engine_only;
 use crate::gpu::GpuSurface;
 use crate::shell::{AndroidShellStub, scale_factor_from_density_dpi};
+use crate::slot_ax::SlotAccessibility;
 use crate::slot_input::{
     SlotKeyMods, SlotTouchKind, android_keycode_is_modifier, logical_key_from_android_keycode,
 };
@@ -18,11 +19,15 @@ use crate::slot_paint::SlotPainter;
 struct HostState {
     gpu: Option<GpuSurface>,
     slot: Option<SlotPainter>,
+    ax: Option<SlotAccessibility>,
     vue: Option<VueHost>,
     shell: AndroidShellStub,
     engine_booted: bool,
     last_paint: Instant,
     phase: SurfacePhase,
+    /// Mirrors the soft keyboard: `true` after we asked InputMethodManager to
+    /// show it while the slot text input held focus.
+    ime_shown: bool,
 }
 
 impl HostState {
@@ -30,11 +35,13 @@ impl HostState {
         Self {
             gpu: None,
             slot: None,
+            ax: None,
             vue: None,
             shell: AndroidShellStub::new(),
             engine_booted: false,
             last_paint: Instant::now() - Duration::from_secs(1),
             phase: SurfacePhase::Pending,
+            ime_shown: false,
         }
     }
 
@@ -105,8 +112,13 @@ impl HostState {
         self.shell.resize(w, h, scale);
         self.phase = SurfacePhase::Ready;
         self.ensure_engine();
+        match SlotAccessibility::new(app, self.slot.as_ref().expect("slot painter").runtime()) {
+            Ok(ax) => self.ax = Some(ax),
+            Err(err) => log::warn!("nana-android-host: accessibility attach failed: {err}"),
+        }
         log::info!("nana-android-host: NanaUI slot ready scale={scale}");
         self.paint_frame()?;
+        self.publish_accessibility();
         Ok(())
     }
 
@@ -124,8 +136,22 @@ impl HostState {
     fn on_window_destroyed(&mut self) {
         self.slot = None;
         self.gpu = None;
+        self.ax = None;
         self.phase = SurfacePhase::Destroyed;
+        self.ime_shown = false;
         log::info!("nana-android-host: surface destroyed");
+    }
+
+    /// Publish the slot accessibility tree (no-op until TalkBack initializes
+    /// it); called whenever the frame actually changed.
+    fn publish_accessibility(&mut self) {
+        let Some(ax) = self.ax.as_mut() else {
+            return;
+        };
+        let Some(painter) = self.slot.as_ref() else {
+            return;
+        };
+        ax.push(painter.runtime());
     }
 
     fn paint_frame(&mut self) -> Result<(), String> {
@@ -167,6 +193,33 @@ impl HostState {
         Ok(())
     }
 
+    /// Mirror Runtime text-input focus onto the soft keyboard.
+    ///
+    /// Committed text then flows through the existing hardware-style KeyEvent
+    /// path — NativeActivity has no InputConnection, so there is no
+    /// composition/preedit and no `TextEvent`; this is deliberately not a
+    /// second text protocol.
+    fn sync_soft_input(&mut self, app: &AndroidApp) {
+        let Some(painter) = self.slot.as_ref() else {
+            self.ime_shown = false;
+            return;
+        };
+        let focused = painter.text_input_focused();
+        match (focused, self.ime_shown) {
+            (true, false) => {
+                app.show_soft_input(true);
+                self.ime_shown = true;
+                log::debug!("nana-android-host: soft input show (text input focused)");
+            }
+            (false, true) => {
+                app.hide_soft_input(false);
+                self.ime_shown = false;
+                log::debug!("nana-android-host: soft input hide (focus left text input)");
+            }
+            _ => {}
+        }
+    }
+
     fn handle_motion(
         &mut self,
         action: MotionAction,
@@ -191,10 +244,11 @@ impl HostState {
 
     /// NativeActivity KeyEvent → Runtime keyboard (US-QWERTY subset + editing keys).
     ///
-    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no InputConnection;
-    /// this is not an IME implementation. Keys are Handled only while the slot holds
-    /// keyboard focus (last Down was inside the slot); otherwise they remain
-    /// available to VueHost.
+    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no
+    /// InputConnection: soft-keyboard commits arrive here as hardware-style
+    /// KeyEvents, so this path doubles as the soft-keyboard text route. Keys
+    /// are Handled only while the slot holds keyboard focus (last Down was
+    /// inside the slot); otherwise they remain available to VueHost.
     fn handle_key(
         &mut self,
         action: KeyAction,
@@ -259,14 +313,19 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                     if let Err(err) = state.paint_frame() {
                         log::warn!("nana-android-host: paint: {err}");
                     }
+                    state.publish_accessibility();
                 }
                 MainEvent::ConfigChanged { .. } => {
                     state.on_config_changed(&app);
                     if let Err(err) = state.paint_frame() {
                         log::warn!("nana-android-host: config paint: {err}");
                     }
+                    state.publish_accessibility();
                 }
                 MainEvent::Pause | MainEvent::Stop => {
+                    // Android dismisses the IME itself on pause/stop; drop the
+                    // mirror so the next focus re-shows it.
+                    state.ime_shown = false;
                     log::info!("nana-android-host: pause/stop phase={:?}", state.phase);
                 }
                 MainEvent::Resume { .. } | MainEvent::Start => {
@@ -299,6 +358,19 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                         let y = pointer.y();
                         let pointer_id = pointer.pointer_id();
                         if state.handle_motion(action, x, y, pointer_id) {
+                            // Re-ask on every tap on the focused field: the IME
+                            // may have been dismissed (Back) since the last
+                            // focus change and native-activity has no
+                            // visibility query to distinguish that state.
+                            if matches!(action, MotionAction::Up | MotionAction::PointerUp)
+                                && state
+                                    .slot
+                                    .as_ref()
+                                    .is_some_and(|painter| painter.text_input_focused())
+                            {
+                                app.show_soft_input(true);
+                                state.ime_shown = true;
+                            }
                             need_paint = true;
                             InputStatus::Handled
                         } else {
@@ -329,7 +401,9 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
             if let Err(err) = state.paint_frame() {
                 log::warn!("nana-android-host: input paint: {err}");
             }
+            state.publish_accessibility();
         }
+        state.sync_soft_input(&app);
     }
 
     Ok(())

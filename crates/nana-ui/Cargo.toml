@@ -32,13 +32,16 @@ syntax-highlighting = [
     "controls",
     "nana-ui-runtime/syntax-highlighting",
 ]
+# AccessKit TreeUpdate projection for hosts that own their platform adapter
+# wiring (e.g. Android via `accesskit_android`). Desktop `hosted` implies it.
+accesskit-tree = ["dep:accesskit"]
 graph-canvas = []
 image-viewer = []
 rich-text = []
 gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:ureq", "dep:url", "dep:wgpu"]
 hosted = [
     "gpu",
-    "dep:accesskit",
+    "accesskit-tree",
     "dep:accesskit_macos",
     "dep:accesskit_unix",
     "dep:accesskit_windows",

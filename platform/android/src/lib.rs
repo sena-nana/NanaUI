@@ -14,6 +14,8 @@ mod gpu;
 #[cfg(target_os = "android")]
 mod runtime;
 mod shell;
+#[cfg(target_os = "android")]
+mod slot_ax;
 mod slot_input;
 #[cfg(target_os = "android")]
 mod slot_paint;

@@ -68,6 +68,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
 objc2-metal = "0.3.2"
 accesskit = "0.25.0"
+accesskit_android = "0.8.0"
 accesskit_macos = "0.27.0"
 accesskit_windows = "0.35.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }

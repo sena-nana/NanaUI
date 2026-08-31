@@ -4,7 +4,9 @@
 //! strip on the **full window viewport** — **not** [`nana_ui::DesktopShell`].
 //! Hit-testing must use [`crate::control_slot::control_slot_paint_bounds`].
 //! Pointer + KeyEvent input is applied through [`crate::slot_runtime::SlotRuntime`].
-//! NativeActivity has no InputConnection; IME / AX stay no-op.
+//! The soft keyboard is shown/hidden from [`Self::text_input_focused`]; committed
+//! text arrives as hardware-style KeyEvents (NativeActivity has no InputConnection,
+//! so no composition/preedit). AX stays unimplemented.
 
 use nana_ui::{ScenePaintViewport, SceneWgpuPainter};
 use nana_ui_core::PhysicalRect;
@@ -84,6 +86,19 @@ impl SlotPainter {
                 false
             }
         }
+    }
+
+    /// Whether the Runtime keyboard focus sits on the slot's text input.
+    ///
+    /// The Android activity loop mirrors this into the soft keyboard.
+    pub fn text_input_focused(&self) -> bool {
+        self.runtime.text_input_focused()
+    }
+
+    /// Retained Runtime document backing the strip (for accessibility
+    /// publication and host-side focus mirrors).
+    pub(crate) fn runtime(&self) -> &SlotRuntime {
+        &self.runtime
     }
 
     /// Draw the flushed Runtime scene over chrome already encoded on `view`.
