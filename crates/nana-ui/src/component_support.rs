@@ -180,6 +180,7 @@ component_catalog! {
     SELECTABLE_RICH_TEXT => { id: "selectable-rich-text", name: "SelectableRichText", family: Data, migration: RuntimeQualified, feature: Some("rich-text"), compiled: cfg!(feature = "rich-text"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     QR_CODE => { id: "qr-code", name: "QrCodeCanvas", family: Data, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
     GRAPH_CANVAS => { id: "graph-canvas", name: "GraphCanvas", family: Data, migration: RuntimeQualified, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Gpu] },
+    GRAPH_MINIMAP => { id: "graph-minimap", name: "GraphMinimap", family: Data, migration: RuntimeQualified, feature: Some("graph-canvas"), compiled: cfg!(feature = "graph-canvas"), capabilities: [Render, Pointer, Accessibility] },
     IMAGE_VIEWER => { id: "image-viewer", name: "ImageViewer", family: Media, migration: RuntimeQualified, feature: Some("image-viewer"), compiled: cfg!(feature = "image-viewer"), capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     XY_PAD => { id: "xy-pad", name: "XYPad", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     FORM_FIELD => { id: "form-field", name: "FormField", family: Control, migration: RuntimeQualified, feature: None, compiled: true, capabilities: [Render, Accessibility] },
@@ -375,6 +376,8 @@ mod tests {
     fn graph_and_gpu_public_exports_are_runtime_components() {
         let _: nana_ui_runtime::GraphCanvas =
             crate::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
+        let _: nana_ui_runtime::GraphMinimap =
+            crate::GraphMinimap::new(nana_ui_core::GraphModel::empty());
         let _: nana_ui_runtime::GpuView = crate::GpuView::new(1);
         let _: nana_ui_runtime::GpuTextureView = crate::GpuTextureView::new("slot");
         let _: nana_ui_runtime::Thumbnail = crate::Thumbnail::empty();

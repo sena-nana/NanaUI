@@ -33,10 +33,10 @@ use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppearanceEvent, DockWorkspace, DockWorkspaceEvent, GraphCanvasEvent, GraphEdge, GraphEndpoint,
-    GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection,
-    GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis, SplitPaneAction,
-    SplitPaneController,
+    GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
+    GraphSelection, GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis,
+    SplitPaneAction, SplitPaneController,
 };
 use nana_ui_platform::{
     InputEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
@@ -133,6 +133,7 @@ pub enum GalleryMessage {
     ResetAppearance,
     SelectSection(GallerySection),
     Graph(GraphCanvasEvent),
+    GraphMinimap(GraphMinimapEvent),
     ResetGraphViewport,
     OpenMarkdownLink(String),
     OpenSettings,
@@ -574,6 +575,9 @@ impl GalleryState {
                 | GraphCanvasEvent::NodePositionChanged { node, position },
             ) => {
                 let _ = self.graph.set_node_position(&node, position);
+            }
+            GalleryMessage::GraphMinimap(GraphMinimapEvent::ViewportRequested(viewport)) => {
+                self.graph_viewport = viewport;
             }
             GalleryMessage::Graph(GraphCanvasEvent::ConnectionRequested { source, target }) => {
                 let edge_id = format!("gallery-edge-{}", self.graph.edges().len() + 1);

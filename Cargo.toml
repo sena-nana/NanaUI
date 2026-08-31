@@ -71,3 +71,9 @@ accesskit_android = "0.8.0"
 accesskit_macos = "0.27.0"
 accesskit_windows = "0.35.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }
+
+# 本机构建临时补丁(勿提交):v8 crate 注册表源在 C 盘、产物在 D 盘,
+# 跨盘触发 gn_root 符号链接(需开发者模式)。指向本盘同一份源码绕过;
+# C 盘注册表路径已建 junction。CI/其他机器请勿复制此段。
+[patch.crates-io]
+v8 = { path = "../.cargo-disk-move/v8-152.2.0" }

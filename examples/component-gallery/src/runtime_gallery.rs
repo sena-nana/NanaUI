@@ -5,15 +5,16 @@ use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, DesktopShell, DockFloatingSurface, DocumentId, Dropdown,
     DropdownEvent, DropdownOption, EmptyState, Entity, FrameworkError, GraphCanvas,
-    GraphCanvasEvent, IconButton, InteractiveCard, LabeledValue, LayoutViewport, LengthSpec,
-    LevelMeter, ListItem, ListItemSlots, NativeMarkdown, OverlayHost, PaneChrome, PaneChromeAction,
-    PaneChromeActionKind, PaneTree, PaneTreeNode, Popover, PopoverClosed, PopoverToggled, Progress,
-    RangeChanged, RichTextEvent, RuntimeDocument, SearchDropdown, SearchDropdownEvent,
-    SearchDropdownOption, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
-    SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
-    SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
-    Switch, TabOption, Tabs, TabsEvent, TextArea, TextChanged, TextInput, Thumbnail, Toast,
-    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
+    GraphCanvasEvent, GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard,
+    LabeledValue, LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown,
+    NodeStyle, OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree,
+    PaneTreeNode, Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged,
+    RichTextEvent, RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, SemanticColorRole,
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
+    SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge, Switch, TabOption, Tabs,
+    TabsEvent, TextArea, TextChanged, TextInput, Thumbnail, Toast, ToggleChanged, TreeNode,
+    TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
@@ -44,6 +45,7 @@ type RichTextMount = (
 type GraphMount = (
     Entity<HostStack>,
     Entity<GraphCanvas>,
+    Entity<GraphMinimap>,
     Entity<nana_ui::runtime::Text>,
     Entity<Button>,
 );
@@ -132,6 +134,7 @@ pub(super) struct GalleryRuntime {
     link_status: Entity<nana_ui::runtime::Text>,
     graph_root: Entity<HostStack>,
     graph: Entity<GraphCanvas>,
+    graph_minimap: Entity<GraphMinimap>,
     graph_selection: Entity<nana_ui::runtime::Text>,
     _graph_reset: Entity<Button>,
     workspace: WorkspaceTree,
@@ -256,7 +259,7 @@ impl GalleryRuntime {
         let feedback = mount_feedback(context, document_id, state, &pending)?;
         let (rich_text_root, rich_text, link_status) =
             mount_rich_text(context, document_id, state, &pending)?;
-        let (graph_root, graph, graph_selection, graph_reset) =
+        let (graph_root, graph, graph_minimap, graph_selection, graph_reset) =
             mount_graph(context, document_id, state, &pending)?;
         let workspace = mount_workspace(context, document_id, state, &pending)?;
         let inspector = mount_inspector(context, document_id, state, &pending)?;
@@ -412,6 +415,7 @@ impl GalleryRuntime {
             link_status,
             graph_root,
             graph,
+            graph_minimap,
             graph_selection,
             _graph_reset: graph_reset,
             workspace,
@@ -485,6 +489,10 @@ impl GalleryRuntime {
             canvas.set_model(state.graph.clone());
             canvas.set_viewport(state.graph_viewport);
             canvas.set_selection(state.graph_selection.clone());
+        });
+        let _ = context.update_component(self.graph_minimap, |minimap, _| {
+            minimap.set_model(state.graph.clone());
+            minimap.set_viewport(state.graph_viewport);
         });
         let _ = context.update_component(self.graph_selection, |label, _| {
             *label = hugging_text(
@@ -2025,13 +2033,41 @@ fn mount_graph(
             Arc::clone(pending),
             |event: &GraphCanvasEvent| GalleryMessage::Graph(event.clone()),
         );
+        let minimap = ui.leaf(
+            GraphMinimap::new(state.graph.clone())
+                .canvas_size(GraphSize::new(900.0, 560.0))
+                .viewport(state.graph_viewport)
+                .style(graph_minimap_style()),
+        );
+        bind_event_ui(
+            ui,
+            minimap,
+            Arc::clone(pending),
+            |event: &GraphMinimapEvent| GalleryMessage::GraphMinimap(event.clone()),
+        );
         let root = ui.leaf(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(toolbar);
             ui.adopt(graph);
+            ui.adopt(minimap);
         });
-        (root, graph, selection, reset)
+        (root, graph, minimap, selection, reset)
     })
+}
+
+fn graph_minimap_style() -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui::runtime::LayoutStyle {
+            position: PositionSpec::Absolute,
+            offset_right: Some(LengthSpec::Px(12.0)),
+            offset_bottom: Some(LengthSpec::Px(12.0)),
+            width: Some(LengthSpec::Px(180.0)),
+            height: Some(LengthSpec::Px(135.0)),
+            z_index: Some(3),
+            ..nana_ui::runtime::LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    }
 }
 
 fn mount_workspace(

@@ -4128,8 +4128,8 @@ mod tests {
     use std::sync::Arc;
 
     use nana_ui_core::{
-        AlignSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec, DisplaySpec,
-        FlexDirection, FlexWrap, FloatSpec, GridLine, GridPlacement, GridRepeatAuto, GridTrack,
+        AlignSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec, DisplaySpec, FlexDirection,
+        FlexWrap, FloatSpec, GridLine, GridPlacement, GridRepeatAuto, GridTrack,
         GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec,
         PositionSpec, WhiteSpaceSpec, WritingModeSpec,
     };

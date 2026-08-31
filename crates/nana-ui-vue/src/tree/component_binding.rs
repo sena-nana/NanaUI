@@ -1475,6 +1475,7 @@ pub(crate) fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::NativeMarkdown { .. }
                         | nana_ui_runtime::StandardVisual::SelectableRichText { .. }
                         | nana_ui_runtime::StandardVisual::GraphCanvas { .. }
+                        | nana_ui_runtime::StandardVisual::GraphMinimap { .. }
                         | nana_ui_runtime::StandardVisual::ImageViewer { .. }
                         | nana_ui_runtime::StandardVisual::KeyCaptureLayer { .. }
                         | nana_ui_runtime::StandardVisual::KeymapLayer

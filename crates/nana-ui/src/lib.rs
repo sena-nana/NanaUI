@@ -99,8 +99,8 @@ pub use nana_ui_runtime::{
 pub use nana_ui_runtime::{GpuTextureView, GpuView, GpuViewMode, GpuViewPalette};
 #[cfg(feature = "graph-canvas")]
 pub use nana_ui_runtime::{
-    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphInteraction, GraphNodeContent,
-    GraphPointerButton, GraphScrollDelta,
+    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphInteraction, GraphMinimap,
+    GraphMinimapEvent, GraphNodeContent, GraphPointerButton, GraphScrollDelta,
 };
 #[cfg(feature = "syntax-highlighting")]
 pub use nana_ui_runtime::{HIGHLIGHT_PRESENTER, HighlightPresentation, SyntectHighlighter};

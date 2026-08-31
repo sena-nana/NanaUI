@@ -302,6 +302,15 @@ pub enum StandardVisual {
         viewport_offset_y: f32,
         viewport_zoom: f32,
     },
+    /// Overview minimap policy. Node rectangles and the indicator stay in
+    /// world space; the uniform map projection resolves at extraction time
+    /// against the final widget box.
+    GraphMinimap {
+        bounds: nana_ui_core::GraphRect,
+        nodes: Arc<[nana_ui_core::GraphRect]>,
+        indicator: Option<nana_ui_core::GraphRect>,
+        node_fill: Option<nana_ui_core::SemanticColorRole>,
+    },
     ImageViewer {
         name: Option<Arc<str>>,
         metadata: Option<Arc<str>>,
@@ -712,6 +721,13 @@ pub enum ComponentGeometry {
         background: [f32; 4],
         grid_color: [f32; 4],
         separator_color: [f32; 4],
+    },
+    GraphMinimap {
+        nodes: Vec<LayoutBox>,
+        node_fill: [f32; 4],
+        indicator: Option<LayoutBox>,
+        indicator_fill: [f32; 4],
+        indicator_border: [f32; 4],
     },
     ImageViewer {
         scrim: LayoutBox,

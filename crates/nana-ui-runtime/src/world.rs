@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, LayoutStyle, PointerEventsSpec,
-    SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode,
-    TooltipConfig, cubic_point, icon_y_on_text_glyph_center,
+    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSize, LayoutStyle,
+    PointerEventsSpec, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
+    ThemeMode, TooltipConfig, cubic_point, icon_y_on_text_glyph_center,
 };
 
 use crate::animation::ActiveAnimation;
@@ -3335,6 +3335,7 @@ impl UiWorld {
             | StandardVisual::NativeMarkdown { .. }
             | StandardVisual::SelectableRichText { .. }
             | StandardVisual::GraphCanvas { .. }
+            | StandardVisual::GraphMinimap { .. }
             | StandardVisual::ImageViewer { .. }
             | StandardVisual::KeyCaptureLayer { .. }
             | StandardVisual::KeymapLayer => self.style_model.palette.text.as_rgba_array(),
@@ -4857,6 +4858,19 @@ impl UiWorld {
                 *viewport_offset_x,
                 *viewport_offset_y,
                 *viewport_zoom,
+                &self.style_model.palette,
+            )),
+            StandardVisual::GraphMinimap {
+                bounds: model_bounds,
+                nodes,
+                indicator,
+                node_fill,
+            } => Some(graph_minimap_geometry(
+                bounds,
+                *model_bounds,
+                nodes,
+                indicator.as_ref(),
+                *node_fill,
                 &self.style_model.palette,
             )),
             StandardVisual::ImageViewer {
@@ -7844,6 +7858,45 @@ fn graph_canvas_geometry(
             color
         },
         separator_color: palette.border_soft.as_rgba_array(),
+    }
+}
+
+fn graph_minimap_geometry(
+    box_bounds: LayoutBox,
+    model_bounds: GraphRect,
+    nodes: &[GraphRect],
+    indicator: Option<&GraphRect>,
+    node_fill: Option<SemanticColorRole>,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let fill = palette
+        .get(node_fill.unwrap_or(SemanticColorRole::Muted))
+        .as_rgba_array();
+    let mut indicator_fill = palette.accent.as_rgba_array();
+    indicator_fill[3] *= 0.16;
+    let indicator_border = palette.accent.as_rgba_array();
+    let projection = crate::graph_minimap::GraphMinimapProjection::new(
+        GraphSize::new(box_bounds.width, box_bounds.height),
+        model_bounds,
+    );
+    let project = |rect: &GraphRect| {
+        projection
+            .map(|projection| projection.local_rect(*rect))
+            .map(|rect| LayoutBox {
+                x: box_bounds.x + rect.origin.x,
+                y: box_bounds.y + rect.origin.y,
+                width: rect.size.width,
+                height: rect.size.height,
+            })
+    };
+    crate::ComponentGeometry::GraphMinimap {
+        nodes: nodes.iter().filter_map(&project).collect(),
+        node_fill: fill,
+        indicator: indicator
+            .and_then(&project)
+            .and_then(|mapped| intersect_layout_boxes(box_bounds, mapped)),
+        indicator_fill,
+        indicator_border,
     }
 }
 

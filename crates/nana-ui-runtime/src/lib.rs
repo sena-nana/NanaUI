@@ -25,6 +25,7 @@ mod framework;
 mod glyph_cache;
 mod gpu_slots;
 mod graph_canvas;
+mod graph_minimap;
 mod image_viewer;
 mod key_layers;
 mod layout_engine;
@@ -125,6 +126,7 @@ pub use graph_canvas::{
     GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton, GraphPortPaint,
     GraphScrollDelta, wheel_zoom_factor,
 };
+pub use graph_minimap::{GraphMinimap, GraphMinimapDrag, GraphMinimapEvent};
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
     ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
