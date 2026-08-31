@@ -622,14 +622,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 if !*focused {
                     self.input_mut(id).clear_pointers();
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
-                    if let Some((_, live)) = self
-                        .live_frame_resize
-                        .take_if(|(session, _)| *session == id)
-                    {
-                        if let Some(window) = self.window(id) {
-                            live.end(window.as_ref());
-                        }
-                    }
+                    self.end_live_frame_resize(id);
                 }
                 self.forward_window_event(event_loop, id, &event);
                 self.apply_ime_request(id);
@@ -1572,6 +1565,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let Some((session, live)) = self.live_frame_resize
             && session == id
         {
+            // The pinned winit win32 proc synthesizes `PointerLeft` from a
+            // client-rect bounds check even while the drag is captured, so a
+            // fast drag crossing the window edge arrives as `Cancel` and must
+            // not end the session; only Up, a fresh primary press (lost Up),
+            // or focus loss does.
             match input {
                 InputEvent::Pointer {
                     phase: PointerPhase::Move,
@@ -1585,25 +1583,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     return true;
                 }
                 InputEvent::Pointer {
-                    phase: PointerPhase::Up,
+                    phase: PointerPhase::Cancel,
                     ..
                 } => {
-                    self.live_frame_resize = None;
-                    if let Some(window) = self.window(id) {
-                        live.end(window.as_ref());
-                    }
-                    self.request_redraw(id);
                     self.sync_window_cursor(id);
                     return true;
                 }
                 InputEvent::Pointer {
-                    phase: PointerPhase::Cancel,
+                    phase: PointerPhase::Up,
                     ..
                 } => {
-                    // The pinned winit win32 proc synthesizes `PointerLeft`
-                    // from a client-rect bounds check even while the drag is
-                    // captured, so a fast drag crossing the window edge must
-                    // not end the session; only Up or focus loss does.
+                    self.end_live_frame_resize(id);
+                    self.request_redraw(id);
                     self.sync_window_cursor(id);
                     return true;
                 }
@@ -1612,14 +1603,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     button: 0,
                     is_primary: true,
                     ..
-                } => {
-                    // A fresh primary press means the previous drag is over
-                    // even if its Up was lost while capture was stolen.
-                    self.live_frame_resize = None;
-                    if let Some(window) = self.window(id) {
-                        live.end(window.as_ref());
-                    }
-                }
+                } => self.end_live_frame_resize(id),
                 _ => {}
             }
         }
@@ -1639,6 +1623,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         };
         self.start_frame_resize(id, edge);
         true
+    }
+
+    /// Ends the live frame resize for `id` if one is running, releasing the
+    /// mouse capture.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn end_live_frame_resize(&mut self, id: WindowId) {
+        if let Some((_, live)) = self
+            .live_frame_resize
+            .take_if(|(session, _)| *session == id)
+        {
+            if let Some(window) = self.window(id) {
+                live.end(window.as_ref());
+            }
+        }
     }
 
     fn start_frame_resize(&mut self, id: WindowId, edge: WindowResizeEdge) {
