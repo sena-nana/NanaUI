@@ -15,6 +15,3 @@ path = "src/bin/css_parity.rs"
 nana-ui-vue = { path = "../../crates/nana-ui-vue" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-
-[dev-dependencies]
-nana-ui-vue = { path = "../../crates/nana-ui-vue" }

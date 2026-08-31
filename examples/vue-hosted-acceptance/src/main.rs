@@ -625,11 +625,11 @@ mod tests {
                     &mut nana_ui::NanaTextShaper::default(),
                 )
                 .expect("acceptance document must flush");
-            let content = document
+            document
                 .scene()
                 .primitives()
                 .find_map(|primitive| match &primitive.kind {
-                    nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                    nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. }
                         if custom.renderer.as_ref() == "nana.host-texture"
                             && custom.resource.as_ref() == "video:7" =>
                     {
@@ -637,8 +637,7 @@ mod tests {
                     }
                     _ => None,
                 })
-                .expect("pushed video frame must reach the Scene");
-            content
+                .expect("pushed video frame must reach the Scene")
         };
         assert_eq!(resource, "video:7");
         assert_ne!(revision, 0, "uploaded frame must advance the revision");
@@ -672,7 +671,7 @@ mod tests {
                 .scene()
                 .primitives()
                 .find_map(|primitive| match &primitive.kind {
-                    nana_ui_scene::ScenePrimitiveKind::Custom(custom)
+                    nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. }
                         if custom.resource.as_ref() == "video:7" =>
                     {
                         Some(custom.revision)

@@ -1,6 +1,6 @@
 //! Real V8 `JsEngine` implementation (feature = "engine").
 //!
-//! Bound to crates.io `v8 = "150.4.0"` (rusty_v8 successor package name).
+//! Bound to crates.io `v8 = "152.2.0"` (rusty_v8 successor package name).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet, VecDeque};

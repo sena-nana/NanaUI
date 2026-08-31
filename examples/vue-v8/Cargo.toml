@@ -10,13 +10,6 @@ description = "V8 Vue runtime-core probe"
 name = "vue-v8"
 path = "src/main.rs"
 
-[features]
-default = ["engine", "engine-v8"]
-# Links crates.io v8 150.4.0.
-engine = ["nana-js-v8/engine"]
-engine-v8 = ["engine"]
-ui-vue-v8 = ["engine-v8"]
-
 [dependencies]
 nana-js-engine.workspace = true
 nana-js-v8 = { workspace = true, features = ["engine"] }
