@@ -671,6 +671,7 @@ fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
         tilt_y: 0,
         twist: 0,
         is_primary: true,
+        activation_click: false,
         modifiers: InputModifiers::default(),
     }
 }

@@ -264,45 +264,6 @@ pub(crate) fn load_url_texture(
     true
 }
 
-fn decode_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let resolved = resolve_background_image_url(url)?;
-    if resolved.starts_with("data:") {
-        return decode_data_url_rgba(&resolved);
-    }
-    if resolved.starts_with("http://") || resolved.starts_with("https://") {
-        return decode_http_rgba(&resolved);
-    }
-    let bytes = std::fs::read(&resolved).ok()?;
-    decode_image_bytes(&bytes)
-}
-
-fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let payload = url
-        .strip_prefix("data:image/png;base64,")
-        .or_else(|| url.strip_prefix("data:image/jpeg;base64,"))?;
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .ok()?;
-    decode_image_bytes(&bytes)
-}
-
-fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let mut response = ureq::get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let bytes = response.body_mut().read_to_vec().ok()?;
-    decode_image_bytes(&bytes)
-}
-
-fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let image = image::load_from_memory(bytes).ok()?;
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Some((width, height, rgba.into_raw()))
-}
-
 #[cfg(test)]
 pub(super) fn reset_test_url_base() {
     TEST_URL_BASE.with(|slot| *slot.borrow_mut() = None);

@@ -192,6 +192,7 @@ pub fn touch_to_pointer_event(
         tilt_y: 0,
         twist: 0,
         is_primary: true,
+        activation_click: false,
         modifiers,
     }
 }

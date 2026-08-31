@@ -2759,7 +2759,7 @@ mod tests {
             &mut painter,
             &graph_canvas_scene(l_stroke_edges(64)),
         );
-        let mesh_16 = work_16
+        let _mesh_16 = work_16
             .gpu_upload_bytes
             .saturating_sub(fill.gpu_upload_bytes);
         let mesh_32 = work_32

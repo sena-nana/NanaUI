@@ -276,6 +276,7 @@ pub(super) fn runtime_pointer(phase: PointerPhase, point: LogicalPoint, button: 
         tilt_y: 0,
         twist: 0,
         is_primary: button == 0,
+        activation_click: false,
         modifiers: InputModifiers::default(),
     }
 }

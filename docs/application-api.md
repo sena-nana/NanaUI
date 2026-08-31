@@ -26,7 +26,7 @@ Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`，把 Ui
 
 | feature | 作用 |
 | --- | --- |
-| `hosted` | `run_runtime`、crates.io winit、AccessKit；隐含 `gpu` |
+| `hosted` | `run_runtime`、winit 0.31-line（workspace git pin，非 crates.io 0.31.0）、AccessKit；隐含 `gpu` |
 | `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView` |
 | `bundled-fonts` | 嵌入 Noto Sans SC |
 | `components` | 下面组件族的聚合 |

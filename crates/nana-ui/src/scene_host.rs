@@ -31,8 +31,8 @@ use winit::cursor::CursorIcon;
 use winit::data_transfer::{DataTransferId, TypeHint};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    ButtonSource, ElementState, MouseButton, MouseScrollDelta, PointerKind, PointerSource,
-    WindowEvent as WinitWindowEvent,
+    ButtonSource, DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerKind,
+    PointerSource, TabletToolKind, WindowEvent as WinitWindowEvent,
 };
 use winit::event_loop::{
     ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction, EventLoop, EventLoopProxy,
@@ -48,14 +48,16 @@ use winit::platform::windows::{CornerPreference, WindowAttributesWindows, Window
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
+    ImeRequestError, ImeSurroundingText,
 };
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeWindowSettings, gated_runtime_window_update, runtime_text_input_request,
+    HostFailure, ImeSurroundingSnapshot, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, gated_runtime_window_update,
+    runtime_ime_surrounding, runtime_text_input_request,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
@@ -151,7 +153,7 @@ struct SceneReady<Program: RuntimeProgram> {
     last_theme: crate::ThemeMode,
     last_material_mode: nana_window::MaterialEffect,
     settings: RuntimeWindowSettings,
-    ime_requests: HashMap<WindowId, TextInputRequest>,
+    ime: HashMap<WindowId, AppliedIme>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
     startup_failure: Arc<Mutex<Option<String>>>,
@@ -163,6 +165,93 @@ struct SceneReady<Program: RuntimeProgram> {
 struct WindowChromeSession {
     state: WindowChromeState,
     drag: TitleBarDragTracker,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct AppliedIme {
+    request: TextInputRequest,
+    surrounding: Option<ImeSurroundingSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ImeApply {
+    None,
+    Disable,
+    Enable {
+        capabilities: ImeCapabilities,
+        data: ImeRequestData,
+    },
+    Replace {
+        capabilities: ImeCapabilities,
+        data: ImeRequestData,
+    },
+    Update(ImeRequestData),
+}
+
+fn ime_capabilities(request: &TextInputRequest, has_surrounding: bool) -> ImeCapabilities {
+    if !request.enabled {
+        return ImeCapabilities::new();
+    }
+    let mut capabilities = ImeCapabilities::new().with_hint_and_purpose();
+    if request.cursor_area.is_some() {
+        capabilities = capabilities.with_cursor_area();
+    }
+    if has_surrounding {
+        capabilities = capabilities.with_surrounding_text();
+    }
+    capabilities
+}
+
+fn ime_request_data(
+    request: TextInputRequest,
+    surrounding: Option<ImeSurroundingText>,
+) -> ImeRequestData {
+    let purpose = match request.purpose {
+        TextInputPurpose::Normal => ImePurpose::Normal,
+        TextInputPurpose::Password => ImePurpose::Password,
+        TextInputPurpose::Terminal => ImePurpose::Terminal,
+    };
+    let mut data = ImeRequestData::default().with_hint_and_purpose(ImeHint::NONE, purpose);
+    if let Some(cursor) = request.cursor_area {
+        data = data.with_cursor_area(
+            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height).into(),
+            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)).into(),
+        );
+    }
+    if let Some(surrounding) = surrounding {
+        data = data.with_surrounding_text(surrounding);
+    }
+    data
+}
+
+fn ime_apply(
+    previous: Option<&TextInputRequest>,
+    previous_surrounding: bool,
+    next: TextInputRequest,
+    surrounding: Option<ImeSurroundingText>,
+) -> ImeApply {
+    let was_enabled = previous.is_some_and(|request| request.enabled);
+    if !next.enabled {
+        return if was_enabled {
+            ImeApply::Disable
+        } else {
+            ImeApply::None
+        };
+    }
+    let has_surrounding = surrounding.is_some();
+    let capabilities = ime_capabilities(&next, has_surrounding);
+    let data = ime_request_data(next, surrounding);
+    if !was_enabled {
+        return ImeApply::Enable { capabilities, data };
+    }
+    let previous_capabilities = previous
+        .map(|request| ime_capabilities(request, previous_surrounding))
+        .unwrap_or_default();
+    if previous_capabilities != capabilities {
+        ImeApply::Replace { capabilities, data }
+    } else {
+        ImeApply::Update(data)
+    }
 }
 
 impl WindowChromeSession {
@@ -375,7 +464,7 @@ fn initialize<Program: RuntimeProgram>(
         last_theme,
         last_material_mode,
         settings,
-        ime_requests: HashMap::new(),
+        ime: HashMap::new(),
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
         startup_failure,
@@ -486,7 +575,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
-            if matches!(&event, WinitWindowEvent::PointerMoved { .. }) {
+            if matches!(
+                &event,
+                WinitWindowEvent::PointerMoved { .. } | WinitWindowEvent::PointerEntered { .. }
+            ) {
                 self.sync_window_cursor(id);
             }
             if disposition.prevent_default || event_loop.exiting() {
@@ -1209,7 +1301,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 parent.focus_window();
             }
             self.window_ids.remove(&host.surface.window().id());
-            self.ime_requests.remove(&id);
+            self.ime.remove(&id);
             drop(host);
             let update = self
                 .program
@@ -1573,7 +1665,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn apply_ime_request(&mut self, id: WindowId) {
         let request = resolved_scene_ime_request(self.program.document(id));
-        if self.ime_requests.get(&id) == Some(&request) {
+        let surrounding = self.program.document(id).and_then(runtime_ime_surrounding);
+        let previous = self.ime.get(&id);
+        if previous
+            .is_some_and(|applied| applied.request == request && applied.surrounding == surrounding)
+        {
             return;
         }
         let Some(window) = self.window(id).cloned() else {
@@ -1582,8 +1678,25 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         // Follow the focused editable field, not NSWindow key status.
         // Gating on has_focus() disables IME while the SCIM candidate panel is
         // key, and also races automation that activates then types immediately.
-        apply_text_input_request(window.as_ref(), request);
-        self.ime_requests.insert(id, request);
+        let ime_text = surrounding.as_ref().and_then(|snapshot| {
+            ImeSurroundingText::new(snapshot.text.clone(), snapshot.cursor, snapshot.anchor).ok()
+        });
+        apply_text_input_request(
+            window.as_ref(),
+            ime_apply(
+                previous.map(|applied| &applied.request),
+                previous.is_some_and(|applied| applied.surrounding.is_some()),
+                request,
+                ime_text,
+            ),
+        );
+        self.ime.insert(
+            id,
+            AppliedIme {
+                request,
+                surrounding,
+            },
+        );
     }
 
     fn normalized_input(&mut self, id: WindowId, event: &WinitWindowEvent) -> Option<InputEvent> {
@@ -2216,29 +2329,34 @@ fn resolved_scene_ime_request(
         })
 }
 
-fn apply_text_input_request(window: &dyn winit::window::Window, request: TextInputRequest) {
-    if !request.enabled {
-        let _ = window.request_ime_update(ImeRequest::Disable);
+fn enable_ime(
+    window: &dyn winit::window::Window,
+    capabilities: ImeCapabilities,
+    data: ImeRequestData,
+) {
+    let Some(enable) = ImeEnableRequest::new(capabilities, data.clone()) else {
         return;
-    }
-    let purpose = match request.purpose {
-        TextInputPurpose::Normal => ImePurpose::Normal,
-        TextInputPurpose::Password => ImePurpose::Password,
-        TextInputPurpose::Terminal => ImePurpose::Terminal,
     };
-    let mut capabilities = ImeCapabilities::new().with_hint_and_purpose();
-    let mut data = ImeRequestData::default().with_hint_and_purpose(ImeHint::NONE, purpose);
-    if let Some(cursor) = request.cursor_area {
-        capabilities = capabilities.with_cursor_area();
-        data = data.with_cursor_area(
-            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height).into(),
-            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)).into(),
-        );
-    }
-    if let Some(enable) = ImeEnableRequest::new(capabilities, data.clone()) {
-        let _ = window.request_ime_update(ImeRequest::Enable(enable));
-    } else {
+    if window.request_ime_update(ImeRequest::Enable(enable)) == Err(ImeRequestError::AlreadyEnabled)
+    {
         let _ = window.request_ime_update(ImeRequest::Update(data));
+    }
+}
+
+fn apply_text_input_request(window: &dyn winit::window::Window, apply: ImeApply) {
+    match apply {
+        ImeApply::None => {}
+        ImeApply::Disable => {
+            let _ = window.request_ime_update(ImeRequest::Disable);
+        }
+        ImeApply::Enable { capabilities, data } => enable_ime(window, capabilities, data),
+        ImeApply::Replace { capabilities, data } => {
+            let _ = window.request_ime_update(ImeRequest::Disable);
+            enable_ime(window, capabilities, data);
+        }
+        ImeApply::Update(data) => {
+            let _ = window.request_ime_update(ImeRequest::Update(data));
+        }
     }
 }
 
@@ -2630,107 +2748,113 @@ struct MappedPointer {
     twist: u16,
 }
 
-fn map_pointer_kind(kind: &PointerKind, primary: bool) -> MappedPointer {
+fn tablet_pointer_id(device_id: Option<DeviceId>, kind: TabletToolKind) -> u64 {
+    let device = device_id
+        .map(|id| id.into_raw().unsigned_abs())
+        .unwrap_or(0);
+    let kind_index = u64::from(kind != TabletToolKind::Pen);
+    1000 + device.saturating_mul(2) + kind_index
+}
+
+fn mapped_pointer(
+    pointer_id: u64,
+    pointer_type: PointerType,
+    primary: bool,
+    pressure: Option<f32>,
+) -> MappedPointer {
+    MappedPointer {
+        pointer_id,
+        pointer_type,
+        is_primary: primary,
+        pressure,
+        tangential_pressure: 0.0,
+        tilt_x: 0,
+        tilt_y: 0,
+        twist: 0,
+    }
+}
+
+fn map_tablet(
+    kind: TabletToolKind,
+    data: &winit::event::TabletToolData,
+    primary: bool,
+    device_id: Option<DeviceId>,
+) -> MappedPointer {
+    let tilt = data.clone().tilt();
+    let angle = data.clone().angle();
+    MappedPointer {
+        pointer_id: tablet_pointer_id(device_id, kind),
+        pointer_type: PointerType::Pen,
+        is_primary: primary,
+        pressure: data
+            .force
+            .as_ref()
+            .map(|force| force.normalized(angle) as f32),
+        tangential_pressure: data.tangential_force.unwrap_or(0.0),
+        tilt_x: tilt.map(|tilt| i16::from(tilt.x)).unwrap_or(0),
+        tilt_y: tilt.map(|tilt| i16::from(tilt.y)).unwrap_or(0),
+        twist: data.twist.unwrap_or(0),
+    }
+}
+
+fn map_pointer_kind(
+    kind: &PointerKind,
+    primary: bool,
+    device_id: Option<DeviceId>,
+) -> MappedPointer {
     match kind {
-        PointerKind::Touch(finger_id) => MappedPointer {
-            pointer_id: finger_id.into_raw() as u64 + 2,
-            pointer_type: PointerType::Touch,
-            is_primary: primary,
-            pressure: None,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-        },
-        PointerKind::TabletTool(_) => MappedPointer {
-            pointer_id: 1000,
-            pointer_type: PointerType::Pen,
-            is_primary: primary,
-            pressure: None,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-        },
-        PointerKind::Mouse | PointerKind::Unknown | _ => MappedPointer {
-            pointer_id: 1,
-            pointer_type: PointerType::Mouse,
-            is_primary: primary,
-            pressure: None,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-        },
+        PointerKind::Touch(finger_id) => mapped_pointer(
+            finger_id.into_raw() as u64 + 2,
+            PointerType::Touch,
+            primary,
+            None,
+        ),
+        PointerKind::TabletTool(kind) => mapped_pointer(
+            tablet_pointer_id(device_id, *kind),
+            PointerType::Pen,
+            primary,
+            None,
+        ),
+        PointerKind::Mouse | PointerKind::Unknown | _ => {
+            mapped_pointer(1, PointerType::Mouse, primary, None)
+        }
     }
 }
 
-fn map_pointer_source(source: &PointerSource, primary: bool) -> MappedPointer {
+fn map_pointer_source(
+    source: &PointerSource,
+    primary: bool,
+    device_id: Option<DeviceId>,
+) -> MappedPointer {
     match source {
-        PointerSource::Touch { finger_id, force } => MappedPointer {
-            pointer_id: finger_id.into_raw() as u64 + 2,
-            pointer_type: PointerType::Touch,
-            is_primary: primary,
-            pressure: force.as_ref().map(|force| force.normalized(None) as f32),
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-        },
-        PointerSource::TabletTool { data, .. } => {
-            let tilt = data.clone().tilt();
-            let angle = data.clone().angle();
-            MappedPointer {
-                pointer_id: 1000,
-                pointer_type: PointerType::Pen,
-                is_primary: primary,
-                pressure: data
-                    .force
-                    .as_ref()
-                    .map(|force| force.normalized(angle) as f32),
-                tangential_pressure: data.tangential_force.unwrap_or(0.0),
-                tilt_x: tilt.map(|tilt| i16::from(tilt.x)).unwrap_or(0),
-                tilt_y: tilt.map(|tilt| i16::from(tilt.y)).unwrap_or(0),
-                twist: data.twist.unwrap_or(0),
-            }
-        }
+        PointerSource::Touch { finger_id, force } => mapped_pointer(
+            finger_id.into_raw() as u64 + 2,
+            PointerType::Touch,
+            primary,
+            force.as_ref().map(|force| force.normalized(None) as f32),
+        ),
+        PointerSource::TabletTool { kind, data } => map_tablet(*kind, data, primary, device_id),
         PointerSource::Mouse | PointerSource::Unknown | _ => {
-            map_pointer_kind(&PointerKind::Mouse, primary)
+            map_pointer_kind(&PointerKind::Mouse, primary, device_id)
         }
     }
 }
 
-fn map_button_source(source: &ButtonSource, primary: bool) -> MappedPointer {
+fn map_button_source(
+    source: &ButtonSource,
+    primary: bool,
+    device_id: Option<DeviceId>,
+) -> MappedPointer {
     match source {
-        ButtonSource::Touch { finger_id, force } => MappedPointer {
-            pointer_id: finger_id.into_raw() as u64 + 2,
-            pointer_type: PointerType::Touch,
-            is_primary: primary,
-            pressure: force.as_ref().map(|force| force.normalized(None) as f32),
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-        },
-        ButtonSource::TabletTool { data, .. } => {
-            let tilt = data.clone().tilt();
-            let angle = data.clone().angle();
-            MappedPointer {
-                pointer_id: 1000,
-                pointer_type: PointerType::Pen,
-                is_primary: primary,
-                pressure: data
-                    .force
-                    .as_ref()
-                    .map(|force| force.normalized(angle) as f32),
-                tangential_pressure: data.tangential_force.unwrap_or(0.0),
-                tilt_x: tilt.map(|tilt| i16::from(tilt.x)).unwrap_or(0),
-                tilt_y: tilt.map(|tilt| i16::from(tilt.y)).unwrap_or(0),
-                twist: data.twist.unwrap_or(0),
-            }
-        }
+        ButtonSource::Touch { finger_id, force } => mapped_pointer(
+            finger_id.into_raw() as u64 + 2,
+            PointerType::Touch,
+            primary,
+            force.as_ref().map(|force| force.normalized(None) as f32),
+        ),
+        ButtonSource::TabletTool { kind, data, .. } => map_tablet(*kind, data, primary, device_id),
         ButtonSource::Mouse(_) | ButtonSource::Unknown(_) | _ => {
-            map_pointer_kind(&PointerKind::Mouse, primary)
+            map_pointer_kind(&PointerKind::Mouse, primary, device_id)
         }
     }
 }
@@ -2759,6 +2883,43 @@ impl InputTracker {
     fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
         let point = position.to_logical::<f32>(f64::from(scale));
         self.cursor = (point.x, point.y);
+    }
+
+    fn pointer_event(
+        &self,
+        mapped: MappedPointer,
+        phase: PointerPhase,
+        button: i16,
+        buttons: u16,
+        activation_click: bool,
+        modifiers: InputModifiers,
+        screen_origin: Option<(f32, f32)>,
+        pressure: Option<f32>,
+    ) -> InputEvent {
+        let screen = screen_position(screen_origin, self.cursor);
+        InputEvent::Pointer {
+            phase,
+            pointer_id: mapped.pointer_id,
+            pointer_type: mapped.pointer_type,
+            x: self.cursor.0,
+            y: self.cursor.1,
+            screen_x: screen.0,
+            screen_y: screen.1,
+            button,
+            buttons,
+            pressure: pressure.unwrap_or_else(|| {
+                mapped
+                    .pressure
+                    .unwrap_or(if buttons == 0 { 0.0 } else { 0.5 })
+            }),
+            tangential_pressure: mapped.tangential_pressure,
+            tilt_x: mapped.tilt_x,
+            tilt_y: mapped.tilt_y,
+            twist: mapped.twist,
+            is_primary: mapped.is_primary,
+            activation_click,
+            modifiers,
+        }
     }
 
     fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
@@ -2822,45 +2983,50 @@ impl InputTracker {
         let modifiers = platform_input_modifiers(self.modifiers);
         match event {
             WinitWindowEvent::PointerMoved {
+                device_id,
                 position,
                 primary,
                 source,
-                ..
             } => {
-                let point = position.to_logical::<f32>(f64::from(scale));
-                self.cursor = (point.x, point.y);
-                let mapped = map_pointer_source(source, *primary);
-                let screen = screen_position(screen_origin, self.cursor);
-                Some(InputEvent::Pointer {
-                    phase: PointerPhase::Move,
-                    pointer_id: mapped.pointer_id,
-                    pointer_type: mapped.pointer_type,
-                    x: self.cursor.0,
-                    y: self.cursor.1,
-                    screen_x: screen.0,
-                    screen_y: screen.1,
-                    button: -1,
-                    buttons: self.buttons,
-                    pressure: mapped
-                        .pressure
-                        .unwrap_or(if self.buttons == 0 { 0.0 } else { 0.5 }),
-                    tangential_pressure: mapped.tangential_pressure,
-                    tilt_x: mapped.tilt_x,
-                    tilt_y: mapped.tilt_y,
-                    twist: mapped.twist,
-                    is_primary: mapped.is_primary,
+                self.set_cursor_physical(*position, scale);
+                Some(self.pointer_event(
+                    map_pointer_source(source, *primary, *device_id),
+                    PointerPhase::Move,
+                    -1,
+                    self.buttons,
+                    false,
                     modifiers,
-                })
+                    screen_origin,
+                    None,
+                ))
+            }
+            WinitWindowEvent::PointerEntered {
+                device_id,
+                position,
+                primary,
+                kind,
+            } => {
+                self.set_cursor_physical(*position, scale);
+                Some(self.pointer_event(
+                    map_pointer_kind(kind, *primary, *device_id),
+                    PointerPhase::Move,
+                    -1,
+                    self.buttons,
+                    false,
+                    modifiers,
+                    screen_origin,
+                    None,
+                ))
             }
             WinitWindowEvent::PointerButton {
+                device_id,
                 state,
                 position,
                 primary,
                 button,
-                ..
+                is_macos_activation_click,
             } => {
-                let point = position.to_logical::<f32>(f64::from(scale));
-                self.cursor = (point.x, point.y);
+                self.set_cursor_physical(*position, scale);
                 let mouse = button.clone().mouse_button().unwrap_or(MouseButton::Left);
                 let button_code = mouse_button_code(mouse);
                 let pressed = *state == ElementState::Pressed;
@@ -2870,55 +3036,41 @@ impl InputTracker {
                 } else {
                     self.buttons &= !mask;
                 }
-                let mapped = map_button_source(button, *primary);
-                let screen = screen_position(screen_origin, self.cursor);
-                Some(InputEvent::Pointer {
-                    phase: if pressed {
+                Some(self.pointer_event(
+                    map_button_source(button, *primary, *device_id),
+                    if pressed {
                         PointerPhase::Down
                     } else {
                         PointerPhase::Up
                     },
-                    pointer_id: mapped.pointer_id,
-                    pointer_type: mapped.pointer_type,
-                    x: self.cursor.0,
-                    y: self.cursor.1,
-                    screen_x: screen.0,
-                    screen_y: screen.1,
-                    button: button_code,
-                    buttons: self.buttons,
-                    pressure: mapped
-                        .pressure
-                        .unwrap_or(if self.buttons == 0 { 0.0 } else { 0.5 }),
-                    tangential_pressure: mapped.tangential_pressure,
-                    tilt_x: mapped.tilt_x,
-                    tilt_y: mapped.tilt_y,
-                    twist: mapped.twist,
-                    is_primary: mapped.is_primary,
+                    button_code,
+                    self.buttons,
+                    *is_macos_activation_click,
                     modifiers,
-                })
+                    screen_origin,
+                    None,
+                ))
             }
-            WinitWindowEvent::PointerLeft { primary, kind, .. } => {
-                let screen = screen_position(screen_origin, self.cursor);
+            WinitWindowEvent::PointerLeft {
+                device_id,
+                position,
+                primary,
+                kind,
+            } => {
+                if let Some(position) = position {
+                    self.set_cursor_physical(*position, scale);
+                }
                 let buttons = std::mem::take(&mut self.buttons);
-                let mapped = map_pointer_kind(kind, *primary);
-                Some(InputEvent::Pointer {
-                    phase: PointerPhase::Cancel,
-                    pointer_id: mapped.pointer_id,
-                    pointer_type: mapped.pointer_type,
-                    x: self.cursor.0,
-                    y: self.cursor.1,
-                    screen_x: screen.0,
-                    screen_y: screen.1,
-                    button: -1,
+                Some(self.pointer_event(
+                    map_pointer_kind(kind, *primary, *device_id),
+                    PointerPhase::Cancel,
+                    -1,
                     buttons,
-                    pressure: 0.0,
-                    tangential_pressure: 0.0,
-                    tilt_x: 0,
-                    tilt_y: 0,
-                    twist: 0,
-                    is_primary: mapped.is_primary,
+                    false,
                     modifiers,
-                })
+                    screen_origin,
+                    Some(0.0),
+                ))
             }
             WinitWindowEvent::MouseWheel { delta, .. } => {
                 let (delta_x, delta_y, line_delta) = match delta {
@@ -3037,12 +3189,13 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        InputTracker, RoutedWindowCommand, invalidate_program_host_textures, mouse_button_code,
-        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
-        platform_window_event, resolved_scene_ime_request, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw,
+        ImeApply, InputTracker, RoutedWindowCommand, ime_apply, invalidate_program_host_textures,
+        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
+        platform_input_modifiers, platform_window_event, resolved_scene_ime_request,
+        route_window_command, scene_clear_color, scene_runtime_input_update,
+        scene_window_attributes, screen_position, should_deliver_program_ime, tablet_pointer_id,
+        window_level, window_surface_effect, window_wants_transparent_surface,
+        windows_scene_chrome, windows_to_redraw,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -3050,14 +3203,15 @@ mod tests {
     };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
-        WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowResizeEdge, WindowSettings,
+        TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowResizeEdge,
+        WindowSettings,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
     use winit::dpi::PhysicalPosition;
     use winit::event::{
-        ButtonSource, ElementState, FingerId, MouseButton, MouseScrollDelta, PointerKind,
-        PointerSource, TouchPhase, WindowEvent as WinitWindowEvent,
+        ButtonSource, DeviceId, ElementState, FingerId, MouseButton, MouseScrollDelta, PointerKind,
+        PointerSource, TabletToolData, TabletToolKind, TouchPhase, WindowEvent as WinitWindowEvent,
     };
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -3390,6 +3544,28 @@ mod tests {
         assert_eq!(buttons, 1);
         assert_eq!(pressure, 0.5);
 
+        let activation = tracker
+            .map(
+                &WinitWindowEvent::PointerButton {
+                    device_id: None,
+                    state: ElementState::Pressed,
+                    position: PhysicalPosition::new(20.0, 40.0),
+                    primary: true,
+                    button: ButtonSource::Mouse(MouseButton::Left),
+                    is_macos_activation_click: true,
+                },
+                2.0,
+                Some((100.0, 200.0)),
+            )
+            .expect("activation down");
+        let InputEvent::Pointer {
+            activation_click, ..
+        } = activation
+        else {
+            panic!("expected pointer");
+        };
+        assert!(activation_click);
+
         let left = tracker
             .map(
                 &WinitWindowEvent::PointerLeft {
@@ -3411,6 +3587,110 @@ mod tests {
         assert_eq!(phase, PointerPhase::Cancel);
         assert_eq!(x, 10.0);
         assert_eq!(buttons, 1);
+    }
+
+    #[test]
+    fn pointer_enter_emits_move_without_a_followup_moved() {
+        let mut tracker = InputTracker::default();
+        let entered = tracker
+            .map(
+                &WinitWindowEvent::PointerEntered {
+                    device_id: None,
+                    position: PhysicalPosition::new(20.0, 40.0),
+                    primary: true,
+                    kind: PointerKind::Mouse,
+                },
+                2.0,
+                Some((100.0, 200.0)),
+            )
+            .expect("pointer enter");
+        let InputEvent::Pointer {
+            phase,
+            x,
+            y,
+            screen_x,
+            screen_y,
+            pointer_type,
+            button,
+            ..
+        } = entered
+        else {
+            panic!("expected pointer");
+        };
+        assert_eq!(phase, PointerPhase::Move);
+        assert_eq!(pointer_type, PointerType::Mouse);
+        assert_eq!((x, y), (10.0, 20.0));
+        assert_eq!((screen_x, screen_y), (110.0, 220.0));
+        assert_eq!(button, -1);
+    }
+
+    #[test]
+    fn pointer_leave_uses_event_position_when_present() {
+        let mut tracker = InputTracker {
+            cursor: (1.0, 1.0),
+            ..InputTracker::default()
+        };
+        let left = tracker
+            .map(
+                &WinitWindowEvent::PointerLeft {
+                    device_id: None,
+                    position: Some(PhysicalPosition::new(40.0, 80.0)),
+                    primary: true,
+                    kind: PointerKind::Mouse,
+                },
+                2.0,
+                None,
+            )
+            .expect("pointer leave");
+        let InputEvent::Pointer { phase, x, y, .. } = left else {
+            panic!("expected pointer");
+        };
+        assert_eq!(phase, PointerPhase::Cancel);
+        assert_eq!((x, y), (20.0, 40.0));
+    }
+
+    #[test]
+    fn tablet_pointer_ids_split_device_and_tool_kind() {
+        let pen = DeviceId::from_raw(2);
+        let other = DeviceId::from_raw(3);
+        assert_ne!(
+            tablet_pointer_id(Some(pen), TabletToolKind::Pen),
+            tablet_pointer_id(Some(pen), TabletToolKind::Eraser)
+        );
+        assert_ne!(
+            tablet_pointer_id(Some(pen), TabletToolKind::Pen),
+            tablet_pointer_id(Some(other), TabletToolKind::Pen)
+        );
+        let mut tracker = InputTracker::default();
+        let moved = tracker
+            .map(
+                &WinitWindowEvent::PointerMoved {
+                    device_id: Some(pen),
+                    position: PhysicalPosition::new(4.0, 8.0),
+                    primary: true,
+                    source: PointerSource::TabletTool {
+                        kind: TabletToolKind::Eraser,
+                        data: TabletToolData::default(),
+                    },
+                },
+                1.0,
+                None,
+            )
+            .expect("pen move");
+        let InputEvent::Pointer {
+            pointer_id,
+            pointer_type,
+            ..
+        } = moved
+        else {
+            panic!("expected pointer");
+        };
+        assert_eq!(pointer_type, PointerType::Pen);
+        assert_eq!(
+            pointer_id,
+            tablet_pointer_id(Some(pen), TabletToolKind::Eraser)
+        );
+        assert_ne!(pointer_id, 1000);
     }
 
     #[test]
@@ -3717,6 +3997,67 @@ mod tests {
         let enabled = resolved_scene_ime_request(Some(&document));
         assert!(enabled.enabled);
         assert_eq!(enabled.purpose, TextInputPurpose::Normal);
+    }
+
+    fn ime_request(
+        enabled: bool,
+        cursor: Option<(f32, f32, f32, f32)>,
+        purpose: TextInputPurpose,
+    ) -> TextInputRequest {
+        TextInputRequest {
+            enabled,
+            cursor_area: cursor
+                .map(|(x, y, width, height)| nana_ui_core::LogicalRect::new(x, y, width, height)),
+            purpose,
+        }
+    }
+
+    #[test]
+    fn ime_apply_enables_once_then_updates_caret() {
+        let off = ime_request(false, None, TextInputPurpose::Normal);
+        let first = ime_request(
+            true,
+            Some((10.0, 20.0, 8.0, 16.0)),
+            TextInputPurpose::Normal,
+        );
+        assert!(matches!(
+            ime_apply(Some(&off), false, first, None),
+            ImeApply::Enable { .. }
+        ));
+
+        let moved = ime_request(
+            true,
+            Some((12.0, 20.0, 8.0, 16.0)),
+            TextInputPurpose::Normal,
+        );
+        assert!(matches!(
+            ime_apply(Some(&first), false, moved, None),
+            ImeApply::Update(_)
+        ));
+    }
+
+    #[test]
+    fn ime_apply_replaces_when_cursor_area_capability_appears() {
+        let without_caret = ime_request(true, None, TextInputPurpose::Normal);
+        let with_caret = ime_request(true, Some((4.0, 8.0, 2.0, 12.0)), TextInputPurpose::Normal);
+        assert!(matches!(
+            ime_apply(Some(&without_caret), false, with_caret, None),
+            ImeApply::Replace { .. }
+        ));
+    }
+
+    #[test]
+    fn ime_apply_disables_when_leaving_the_field() {
+        let on = ime_request(true, Some((1.0, 2.0, 3.0, 4.0)), TextInputPurpose::Normal);
+        let off = ime_request(false, None, TextInputPurpose::Normal);
+        assert!(matches!(
+            ime_apply(Some(&on), false, off, None),
+            ImeApply::Disable
+        ));
+        assert!(matches!(
+            ime_apply(Some(&off), false, off, None),
+            ImeApply::None
+        ));
     }
 
     #[test]
