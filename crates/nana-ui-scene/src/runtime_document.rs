@@ -478,6 +478,7 @@ mod tests {
                 TextMetrics {
                     width: text.value.len() as f32 * 8.0,
                     height: 18.0,
+                    ascent: None,
                 }
             }
         }

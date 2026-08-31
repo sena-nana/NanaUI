@@ -2,7 +2,8 @@
 //!
 //! - Nana：`LayoutStyle` → [`nana_ui_vue::measure_layout`]（适配
 //!   [`nana_ui_runtime::RuntimeLayoutEngine::layout_style_tree`] 共享算法）
-//! - 参照：可选 `webview-ref`（wry/WKWebView）或 fixture 内嵌 `expected` 盒
+//! - 参照：fixture 内嵌 `expected` 盒。本机 WKWebView 对照见 workspace 外的
+//!   `tools/css-parity-webview`，不得链进 `nana-ui`
 //! - **不**进入 `nana-ui` 默认依赖 / 产品运行时
 
 use std::collections::BTreeMap;
@@ -13,9 +14,6 @@ use nana_ui_vue::{LayoutNode, LayoutStyle, LayoutStyleCss, MeasuredBox, measure_
 use serde::{Deserialize, Serialize};
 
 pub mod cases;
-
-#[cfg(feature = "webview-ref")]
-pub mod webview;
 
 /// 默认容差（逻辑像素）。
 pub const DEFAULT_TOLERANCE_PX: f32 = 2.0;

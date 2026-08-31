@@ -41,7 +41,7 @@ nana-ui-core = { workspace = true, optional = true }
 nana-ui-devtools = { workspace = true, optional = true, features = ["offscreen"] }
 nana-ui-platform.workspace = true
 nana-ui-scene = { workspace = true, optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }

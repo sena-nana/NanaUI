@@ -23,6 +23,7 @@ members = [
     "examples/runtime-host-fixture",
 ]
 resolver = "2"
+exclude = ["tools/css-parity-webview"]
 
 [workspace.dependencies]
 nana-ui-core = { path = "crates/nana-ui-core" }
@@ -61,3 +62,13 @@ fontdue = "0.9"
 unicode-segmentation = "1.13.0"
 raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"
+pollster = "0.4"
+cosmic-text = "0.19"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
+objc2-metal = "0.3.2"
+accesskit = "0.25.0"
+accesskit_macos = "0.27.0"
+accesskit_windows = "0.35.0"
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }

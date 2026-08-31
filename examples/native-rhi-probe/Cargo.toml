@@ -6,11 +6,11 @@ rust-version = "1.92"
 publish = false
 
 [dependencies]
-pollster = "0.4"
+pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wgpu.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6.4"
-objc2-metal = "0.3.2"
+objc2.workspace = true
+objc2-metal.workspace = true

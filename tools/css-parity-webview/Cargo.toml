@@ -1,0 +1,21 @@
+[workspace]
+# Nested workspace: wry/tao must not enter the NanaUI lockfile.
+
+[package]
+name = "nana-css-parity-webview"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "macOS WKWebView / wry reference for nana-css-parity (not a NanaUI product crate)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "css-parity-webview"
+path = "src/bin/css_parity_webview.rs"
+
+[dependencies]
+nana-css-parity = { path = "../css-parity" }
+# macOS WKWebView / wry reference only — never enable from nana-ui product crates.
+wry = { version = "=0.55.1", default-features = true }
+tao = { version = "0.31", default-features = true }

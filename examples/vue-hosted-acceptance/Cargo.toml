@@ -21,5 +21,5 @@ nana-ui-platform.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false, features = ["scene-view", "hosted"] }
-pollster = "0.4"
+pollster.workspace = true
 wgpu.workspace = true

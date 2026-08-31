@@ -710,33 +710,3 @@ fn all_pass_fixtures_succeed() {
         failures.join("\n")
     );
 }
-
-#[cfg(feature = "webview-ref")]
-mod webview_live {
-    use super::*;
-    use nana_css_parity::{compare_maps, expected_to_map, measure_nana};
-
-    #[test]
-    #[ignore = "需要本机显示环境；CI 无显示时跳过。运行: cargo test -p nana-css-parity --features webview-ref -- --ignored"]
-    fn webview_vs_nana_pass_cases() {
-        let fixtures = load_all_fixtures().expect("fixtures");
-        for (_path, case) in fixtures {
-            if case.status != CaseStatus::Pass {
-                continue;
-            }
-            match nana_css_parity::webview::measure_webview(&case) {
-                Err(e) if e.starts_with("skip:") => {
-                    eprintln!("skip {}: {e}", case.id);
-                    continue;
-                }
-                Err(e) => panic!("{}: {e}", case.id),
-                Ok(boxes) => {
-                    let nana = measure_nana(&case);
-                    let expected = expected_to_map(&boxes);
-                    let report = compare_maps(&case.id, &expected, &nana, case.tolerance_px);
-                    assert!(report.ok, "{}", format_report(&report));
-                }
-            }
-        }
-    }
-}

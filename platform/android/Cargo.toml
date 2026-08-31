@@ -30,8 +30,8 @@ nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-js-v8 = { workspace = true, optional = true }
 wgpu.workspace = true
 log = "0.4"
-pollster = "0.4"
-raw-window-handle = "0.6"
+pollster.workspace = true
+raw-window-handle.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }

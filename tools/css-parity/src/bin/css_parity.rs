@@ -1,6 +1,7 @@
 //! CLI：`cargo run -p nana-css-parity -- compare`
 //!
-//! Optional：`--features webview-ref -- compare --webview`
+//! WebView 对照不在本 crate。用 `tools/css-parity-webview`：
+//! `(cd tools/css-parity-webview && cargo run --locked -- compare --webview)`
 
 use std::process::ExitCode;
 
@@ -40,6 +41,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
+            if want_webview {
+                eprintln!(
+                    "--webview is provided by tools/css-parity-webview, not nana-css-parity.\n\
+                     Run: (cd tools/css-parity-webview && cargo run --locked -- compare --webview)"
+                );
+                return ExitCode::FAILURE;
+            }
             let fixtures = match load_all_fixtures() {
                 Ok(f) => f,
                 Err(e) => {
@@ -66,40 +74,6 @@ fn main() -> ExitCode {
                     passed += 1;
                 } else {
                     failed += 1;
-                }
-
-                if want_webview {
-                    #[cfg(feature = "webview-ref")]
-                    {
-                        match nana_css_parity::webview::measure_webview(&case) {
-                            Ok(boxes) => {
-                                let nana = nana_css_parity::measure_nana(&case);
-                                let expected = nana_css_parity::expected_to_map(&boxes);
-                                let wr = nana_css_parity::compare_maps(
-                                    &format!("{}+webview", case.id),
-                                    &expected,
-                                    &nana,
-                                    case.tolerance_px,
-                                );
-                                println!("{}", format_report(&wr));
-                                if !wr.ok {
-                                    failed += 1;
-                                }
-                            }
-                            Err(e) if e.starts_with("skip:") => {
-                                println!("{} webview {}", case.id, e);
-                            }
-                            Err(e) => {
-                                eprintln!("{} webview error: {e}", case.id);
-                                failed += 1;
-                            }
-                        }
-                    }
-                    #[cfg(not(feature = "webview-ref"))]
-                    {
-                        eprintln!("--webview requires --features webview-ref");
-                        return ExitCode::FAILURE;
-                    }
                 }
             }
             println!("summary: pass={passed} fail={failed} ignore={ignored}");
