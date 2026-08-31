@@ -18,8 +18,9 @@ use crate::{
     ExtensionRegistrar, FormField, FrameworkError, GpuTextureView, GpuView, GraphCanvas,
     GraphModel, HostedTextarea, IconButton, IconGlyph, ImageViewer, ImageViewerContent,
     InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface,
-    NativeMarkdown, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode, RangeField,
-    ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl,
+    NativeMarkdown, NumberInput, NodeStyle, PaneChrome, PathField, Popover, Progress, QrCode,
+    RangeField, ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption,
+    SegmentedControl,
     Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter,
     SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner,
     SplitPane, Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea,
@@ -1141,6 +1142,7 @@ impl RegisterableComponent for SplitPane {
             second: spec.slot("second"),
             handle: spec.slot("handle"),
             model,
+            style: NodeStyle::default(),
         }
     }
 }
