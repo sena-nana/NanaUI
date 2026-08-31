@@ -917,4 +917,49 @@ mod tests {
             .unwrap()
             .semantic_snapshot()
     }
+
+    fn has_label(
+        runtime: &mut VueHostedRuntime<nana_js_v8::V8Engine>,
+        needle: &str,
+    ) -> bool {
+        snapshot_after_pump(runtime)
+            .widgets
+            .iter()
+            .any(|widget| widget.props.label.contains(needle))
+    }
+
+    /// Regression: sibling slot children must all mount, and a dynamic
+    /// `<component :is>` swap must replace the previous view.
+    #[test]
+    fn structural_slot_children_mount_and_dynamic_components_swap() {
+        let gpu = gpu();
+        let mut runtime =
+            build_runtime(gpu.clone(), false, false, false, false, 1120, 760, 1.0).unwrap();
+        for _ in 0..24 {
+            runtime.pump().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        for index in 0..5 {
+            let needle = format!("structural-slot-{index}");
+            assert!(
+                has_label(&mut runtime, &needle),
+                "slot sibling `{needle}` missing from the semantic tree"
+            );
+        }
+
+        assert!(
+            has_label(&mut runtime, "structural-swap-a"),
+            "initial dynamic component missing"
+        );
+        invoke_control(&mut runtime, "toggleStructuralSwap", &[]);
+        assert!(
+            has_label(&mut runtime, "structural-swap-b"),
+            "dynamic component swap did not mount the new view"
+        );
+        assert!(
+            !has_label(&mut runtime, "structural-swap-a"),
+            "previous dynamic component stayed mounted after the swap"
+        );
+    }
 }

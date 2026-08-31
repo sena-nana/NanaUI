@@ -34,6 +34,19 @@ const AuxiliaryAcceptance = {
   },
 };
 
+// Structural probe: sibling slot children + dynamic component swap.
+const SlotProbeHost = {
+  render() {
+    return h("div", { class: "slot-probe-host" }, this.$slots.default?.());
+  },
+};
+const SwapA = { render: () => h("p", { style: "font-weight:700" }, "structural-swap-a") };
+const SwapB = { render: () => h("p", { style: "font-weight:700" }, "structural-swap-b") };
+const structuralSwap = ref("a");
+function toggleStructuralSwap() {
+  structuralSwap.value = structuralSwap.value === "a" ? "b" : "a";
+}
+
 async function openAuxiliaryWindow() {
   if (auxiliaryWindow) return auxiliaryWindow;
   auxiliaryWindow = await Nana.windows.create({
@@ -150,6 +163,7 @@ onMounted(async () => {
     setScore,
     setNativeVisible,
     openAuxiliaryWindow,
+    toggleStructuralSwap,
     state: () => ({
       score: score.value,
       probeStatus: probeStatus.value,
@@ -218,6 +232,21 @@ onBeforeUnmount(() => {
         <p>{{ probeStatus }}</p>
         <button @click="pingNative">Call native command</button>
       </article>
+    </section>
+
+    <section class="acceptance-card structural-probe">
+      <h2>Structural probe</h2>
+      <SlotProbeHost>
+        <p>structural-slot-0</p>
+        <p>structural-slot-1</p>
+        <p>structural-slot-2</p>
+        <p>structural-slot-3</p>
+        <p>structural-slot-4</p>
+      </SlotProbeHost>
+      <component :is="structuralSwap === 'a' ? SwapA : SwapB" />
+      <button data-agent-id="structural-swap-toggle" @click="toggleStructuralSwap">
+        Toggle swap
+      </button>
     </section>
 
     <div v-if="dialogOpen" class="acceptance-modal" role="dialog" aria-modal="true">
