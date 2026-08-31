@@ -193,7 +193,7 @@ impl RegisterableComponent for IconButton {
 
 impl RegisterableComponent for IconGlyph {
     const TYPE_ID: &'static str = "nana.icon";
-    const TAGS: &'static [&'static str] = &["icon"];
+    const TAGS: &'static [&'static str] = &["icon", "i"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let Some(icon) = spec.icon else {
             return IconGlyph::new(Icon::Search).size(0.0);

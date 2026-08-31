@@ -45,7 +45,7 @@ pub enum UiMutation {
     SetStyleTokens {
         mode: ThemeMode,
         metrics: nana_ui_core::ThemeMetrics,
-        palette: nana_ui_core::SemanticPalette,
+        palette: Box<nana_ui_core::SemanticPalette>,
         titlebar: nana_ui_core::SemanticColor,
     },
     SetText {
@@ -194,7 +194,7 @@ impl MutationQueue {
         self.mutations.push(UiMutation::SetStyleTokens {
             mode,
             metrics,
-            palette,
+            palette: Box::new(palette),
             titlebar,
         });
     }
