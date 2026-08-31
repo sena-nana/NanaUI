@@ -44,7 +44,7 @@ nana-ui = { workspace = true, optional = true }
 nana-ui-vue = { workspace = true, optional = true }
 nana-js-v8 = { workspace = true, optional = true }
 png = { version = "0.18.1", optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }

@@ -1,10 +1,10 @@
-//! Optional WebView reference (`webview-ref` feature).
+//! Optional WebView reference for `nana-css-parity`.
 //!
 //! Live `wry` measurement requires a display server. Headless CI should skip
 //! (`NANA_CSS_PARITY_SKIP_WEBVIEW=1` or absent DISPLAY). Prefer fixture
 //! `expected` boxes for default `cargo test`.
 
-use crate::{ExpectedBox, FixtureCase, WEBVIEW_MEASURE_JS, parse_webview_boxes};
+use nana_css_parity::{ExpectedBox, FixtureCase, WEBVIEW_MEASURE_JS, parse_webview_boxes};
 
 /// Measure fixture boxes via wry/WKWebView.
 ///
@@ -32,7 +32,7 @@ fn measure_with_wry(case: &FixtureCase) -> Result<Vec<ExpectedBox>, String> {
     use tao::window::WindowBuilder;
     use wry::WebViewBuilder;
 
-    let html = crate::fixture_to_html(case);
+    let html = nana_css_parity::fixture_to_html(case);
     let result: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
     let result_set = result.clone();
     let result_ready = result.clone();

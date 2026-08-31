@@ -45,7 +45,7 @@ cargo test -p nana-js-v8 --features engine --locked -- --test-threads=1
 (cd packages/nanavue-runtime && npm test)
 (cd packages/nanavue-components && npm test)
 (cd crates/nana-js-engine/fixtures/vue-sfc-compat && npm ci && npm run build)
-cargo check -p nana-css-parity --all-targets --features webview-ref --locked # macOS
+(cd tools/css-parity-webview && cargo check --all-targets --locked) # macOS; not a workspace member
 cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 cargo run --release -p component-gallery --bin ui-snapshots \

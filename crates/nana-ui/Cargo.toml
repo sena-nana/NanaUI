@@ -51,13 +51,13 @@ hosted = [
 ]
 
 [dependencies]
-accesskit = { version = "0.24.1", optional = true }
+accesskit = { workspace = true, optional = true }
 bytemuck = { version = "1.24", features = ["derive"], optional = true }
 base64 = { workspace = true, optional = true }
-cosmic-text = "0.19"
+cosmic-text.workspace = true
 cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
 image = { workspace = true, optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
@@ -79,13 +79,13 @@ winit = { workspace = true, optional = true }
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-accesskit_macos = { version = "0.26.3", optional = true }
+accesskit_macos = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
-accesskit_unix = { version = "0.22.1", optional = true, default-features = false, features = ["async-io"] }
+accesskit_unix = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-accesskit_windows = { version = "0.34.0", optional = true }
+accesskit_windows = { workspace = true, optional = true }
 
 [[example]]
 name = "hosted-gpu-demo"

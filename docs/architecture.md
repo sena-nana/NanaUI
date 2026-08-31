@@ -56,7 +56,7 @@ Vue 的 DOM/CSS facade **不**复制树拓扑。host op 进待提交队列，`fl
 
 内建与插件控件走同一份 `ComponentRegistry` / `register_component`。`NativeComponentRegistry` 只服务 JS host 命令，不是这条 Runtime ABI。
 
-WebView 不是产品 UI。`nana-ui` 没有 `browser` feature。`nana-css-parity` 的可选 WebView 参照只用于盒模型对照，不得链进产品 crate。应用内打开网页若落地，仍是 Runtime 节点 + HostTexture，见 [应用内浏览器](gpu.md#应用内浏览器)（未实现）。
+WebView 不是产品 UI。`nana-ui` 没有 `browser` feature。盒模型对照在 workspace 外的 `tools/css-parity-webview`，不得链进产品 crate。应用内打开网页若落地，仍是 Runtime 节点 + HostTexture，见 [应用内浏览器](gpu.md#应用内浏览器)（未实现）。
 
 ## 编译边界
 

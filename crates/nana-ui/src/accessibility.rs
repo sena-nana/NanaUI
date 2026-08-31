@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use accesskit::{
     Action, ActionData, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
-    TextSelection as AccessKitTextSelection, Toggled, Tree, TreeId, TreeUpdate,
+    TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
@@ -265,7 +265,7 @@ impl AccessibilityProjector {
         }
         TreeUpdate {
             nodes,
-            tree: Some(Tree::new(self.tree_root_id())),
+            tree: Some(TreeInfo::new(self.tree_root_id())),
             tree_id: TreeId::ROOT,
             focus: self.focused_node_id(),
         }

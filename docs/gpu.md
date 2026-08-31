@@ -95,7 +95,7 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 
 ## 应用内浏览器
 
-合同草案，不是现成控件。没有 `WebView` 类型、没有 `browser` feature，Gallery 不得摆假浏览。`nana-css-parity` 的 `webview-ref` 只对照盒模型，不得链进 `nana-ui`。
+合同草案，不是现成控件。没有 `WebView` 类型、没有 `browser` feature，Gallery 不得摆假浏览。`tools/css-parity-webview`（workspace 外）只对照盒模型，不得链进 `nana-ui`。
 
 落地后仍是树上的一块内容，类比 `Video`：Runtime 管布局 / 裁剪 / 命中，宿主管引擎和帧。Vue tag 拟议 `webview`（`nana.webview`）。`<iframe>` 继续 skip，不要改成会加载。
 
