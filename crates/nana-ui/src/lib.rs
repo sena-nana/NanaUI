@@ -12,8 +12,10 @@
 //! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
 //! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].
 
-#[cfg(feature = "hosted")]
+#[cfg(any(feature = "hosted", feature = "accesskit-tree"))]
 mod accessibility;
+#[cfg(feature = "accesskit-tree")]
+mod accessibility_tree;
 pub mod command;
 pub mod component_support;
 pub mod components;
@@ -119,6 +121,8 @@ pub use nana_ui_runtime::{
     TreeDropIntent, TreeDropPosition,
 };
 
+#[cfg(feature = "accesskit-tree")]
+pub use accessibility_tree::AccessTreeProjector;
 #[cfg(feature = "gpu")]
 pub use default_gpu_view::{
     DefaultGpuViewRenderer, default_scene_gpu_renderers, default_scene_gpu_renderers_with_host,

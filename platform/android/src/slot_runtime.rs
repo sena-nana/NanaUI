@@ -3,7 +3,9 @@
 //! Hosts [`RuntimeDocument`] + [`RuntimeInputAdapter`] + host text shaping — the
 //! same contract `run_runtime` uses on desktop. The Android Activity still owns
 //! the window and event loop; this type does not call `run_runtime` (winit).
-//! IME and accessibility stay unimplemented on this host.
+//! Soft keyboard show/hide is driven by the host from [`Self::text_input_focused`];
+//! committed text arrives as hardware-style KeyEvents. NativeActivity has no
+//! InputConnection, so there is no composition/preedit and no AccessKit tree yet.
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
@@ -141,6 +143,19 @@ impl SlotRuntime {
         self.last_touch_in_slot
     }
 
+    /// Whether the Runtime keyboard focus sits on the slot's text input.
+    ///
+    /// The Android host mirrors this into `show_soft_input` / `hide_soft_input`
+    /// so tapping the field raises the soft keyboard and moving focus away
+    /// lowers it.
+    pub fn text_input_focused(&self) -> bool {
+        self.document
+            .context()
+            .world()
+            .focused(self.document.document())
+            == Some(self.field.stable_id())
+    }
+
     pub(crate) fn snapshot(&self) -> SlotSnapshot {
         SlotSnapshot {
             press_count: self.press_count(),
@@ -202,8 +217,9 @@ impl SlotRuntime {
     /// Queue a keyboard sample (Android KeyEvent → Runtime).
     ///
     /// Returns `false` when the slot does not hold keyboard focus so the host
-    /// does not swallow whole-window keys. When `key` is `None`, only modifier
-    /// state is recorded (no-op; there is no IME connection).
+    /// does not swallow whole-window keys. Soft-keyboard commits reach this
+    /// path as hardware-style KeyEvents (there is no InputConnection on
+    /// NativeActivity); when `key` is `None`, only modifier state is recorded.
     pub fn push_key(
         &mut self,
         down: bool,
@@ -353,6 +369,67 @@ mod tests {
             .expect("type")
         );
         assert_eq!(slot.input_value(), "h");
+    }
+
+    #[test]
+    fn text_input_focus_tracks_taps_for_soft_input_mirror() {
+        let mut slot = runtime();
+        let bounds = control_slot_paint_bounds(slot.physical_size(), slot.scale());
+        let field_center = |slot: &SlotRuntime| {
+            let layout = slot
+                .document()
+                .context()
+                .world()
+                .layout_box(slot.field.stable_id())
+                .expect("field layout");
+            let scale = slot.scale();
+            (
+                (layout.x + layout.width * 0.5) * scale,
+                (layout.y + layout.height * 0.5) * scale,
+            )
+        };
+        let button_center = |slot: &SlotRuntime| {
+            let layout = slot
+                .document()
+                .context()
+                .world()
+                .layout_box(slot.button.stable_id())
+                .expect("button layout");
+            let scale = slot.scale();
+            (
+                (layout.x + layout.width * 0.5) * scale,
+                (layout.y + layout.height * 0.5) * scale,
+            )
+        };
+        assert!(!slot.text_input_focused());
+
+        let (fx, fy) = field_center(&slot);
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Down, fx, fy, 0)
+                .expect("field down")
+        );
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Up, fx, fy, 0)
+                .expect("field up")
+        );
+        assert!(
+            slot.text_input_focused(),
+            "tapping the field must move Runtime focus onto the text input"
+        );
+
+        let (bx, by) = button_center(&slot);
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Down, bx, by, 0)
+                .expect("button down")
+        );
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Up, bx, by, 0)
+                .expect("button up")
+        );
+        assert!(
+            !slot.text_input_focused(),
+            "tapping another control must drop text-input focus so the host hides the keyboard"
+        );
     }
 
     #[test]

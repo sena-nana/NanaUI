@@ -1,25 +1,34 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
+use std::collections::VecDeque;
+
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
+use accesskit::ActionData;
 use accesskit::{
-    Action, ActionData, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
+    Action, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
     TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
+use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
-    SelectionOrientation, StableNodeId,
+    AccessibilityDelta, AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId,
 };
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 use accesskit::DeactivationHandler;
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 use accesskit::{ActionHandler, ActionRequest, ActivationHandler};
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 use std::sync::{Arc, Mutex};
 
 /// Stateful conversion from NanaUI's backend-neutral semantics to AccessKit.
@@ -48,7 +57,7 @@ impl AccessibilityProjector {
         Self::new_at_generation(nodes, interactive, scale_factor, None)
     }
 
-    fn new_at_generation(
+    pub(crate) fn new_at_generation(
         nodes: Vec<AccessibilityNode>,
         interactive: bool,
         scale_factor: f32,
@@ -70,7 +79,7 @@ impl AccessibilityProjector {
         (projector, update)
     }
 
-    fn apply_delta(&mut self, delta: AccessibilityDelta) -> Option<TreeUpdate> {
+    pub(crate) fn apply_delta(&mut self, delta: AccessibilityDelta) -> Option<TreeUpdate> {
         if self
             .generation
             .is_some_and(|generation| delta.generation <= generation)
@@ -81,7 +90,7 @@ impl AccessibilityProjector {
         Some(self.apply(delta))
     }
 
-    fn synchronize_full(
+    pub(crate) fn synchronize_full(
         &mut self,
         nodes: Vec<AccessibilityNode>,
         scale_factor: f32,
@@ -252,7 +261,7 @@ impl AccessibilityProjector {
         }))
     }
 
-    fn full_update(&self) -> TreeUpdate {
+    pub(crate) fn full_update(&self) -> TreeUpdate {
         let mut nodes = self
             .nodes
             .values()
@@ -330,7 +339,7 @@ impl AccessibilityProjector {
         )
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     fn project_action_request(
         &self,
         request: ActionRequest,
@@ -390,26 +399,26 @@ fn runtime_roots(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> Vec<Stabl
         .collect()
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 struct CurrentTree(Arc<Mutex<TreeUpdate>>);
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl ActivationHandler for CurrentTree {
     fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
         Some(self.0.lock().ok()?.clone())
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 struct QueuedActions {
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
     window: Arc<dyn winit::window::Window>,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 const MAX_PENDING_ACCESSIBILITY_ACTIONS: usize = 256;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 fn enqueue_accessibility_action(
     requests: &mut VecDeque<ActionRequest>,
     request: ActionRequest,
@@ -421,7 +430,7 @@ fn enqueue_accessibility_action(
     true
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl ActionHandler for QueuedActions {
     fn do_action(&mut self, request: ActionRequest) {
         if let Ok(mut requests) = self.requests.lock()
@@ -432,7 +441,7 @@ impl ActionHandler for QueuedActions {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "hosted", target_os = "windows"))]
 fn native_adapter(
     window: &Arc<dyn winit::window::Window>,
     activation: CurrentTree,
@@ -453,7 +462,7 @@ fn native_adapter(
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hosted", target_os = "macos"))]
 fn native_adapter(
     window: &Arc<dyn winit::window::Window>,
     activation: CurrentTree,
@@ -470,21 +479,27 @@ fn native_adapter(
     unsafe { accesskit_macos::SubclassingAdapter::new(handle.ns_view.as_ptr(), activation, action) }
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 struct UnixDeactivation;
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 impl DeactivationHandler for UnixDeactivation {
     fn deactivate_accessibility(&mut self) {}
@@ -492,12 +507,15 @@ impl DeactivationHandler for UnixDeactivation {
 
 /// Wayland cannot report outer position; X11 can. `surface_position` is relative
 /// to the window frame, so inner desktop origin is outer + surface origin.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 fn unix_root_window_bounds(
     window: &dyn winit::window::Window,
@@ -520,12 +538,15 @@ fn unix_root_window_bounds(
 }
 
 /// AT-SPI attaches over D-Bus; there is no HWND/NSView-style window handle.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 fn native_adapter(
     _window: &Arc<dyn winit::window::Window>,
@@ -535,16 +556,19 @@ fn native_adapter(
     accesskit_unix::Adapter::new(activation, action, UnixDeactivation)
 }
 
-#[cfg(not(any(
-    target_os = "windows",
-    target_os = "macos",
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
-)))]
+#[cfg(all(
+    feature = "hosted",
+    not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "android",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))
+))]
 fn native_adapter(
     _window: &Arc<dyn winit::window::Window>,
     _activation: CurrentTree,
@@ -553,7 +577,7 @@ fn native_adapter(
     None
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(all(feature = "hosted", any(target_os = "windows", target_os = "macos")))]
 fn raise_accesskit_update<A>(adapter: &mut A, update: TreeUpdate)
 where
     A: AccessKitUpdate,
@@ -563,30 +587,36 @@ where
     }
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
+#[cfg(all(
+    feature = "hosted",
+    any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )
 ))]
 fn raise_accesskit_update(adapter: &mut accesskit_unix::Adapter, update: TreeUpdate) {
     adapter.update_if_active(|| update);
 }
 
-#[cfg(not(any(
-    target_os = "windows",
-    target_os = "macos",
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd"
-)))]
+#[cfg(all(
+    feature = "hosted",
+    not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "android",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))
+))]
 fn raise_accesskit_update(_adapter: &mut Option<()>, _update: TreeUpdate) {}
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(all(feature = "hosted", any(target_os = "windows", target_os = "macos")))]
 trait AccessKitUpdate {
     type Events: RaiseEvents;
     fn update_if_active(
@@ -595,12 +625,12 @@ trait AccessKitUpdate {
     ) -> Option<Self::Events>;
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(all(feature = "hosted", any(target_os = "windows", target_os = "macos")))]
 trait RaiseEvents {
     fn raise(self);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "hosted", target_os = "windows"))]
 impl AccessKitUpdate for accesskit_windows::SubclassingAdapter {
     type Events = accesskit_windows::QueuedEvents;
     fn update_if_active(
@@ -611,14 +641,14 @@ impl AccessKitUpdate for accesskit_windows::SubclassingAdapter {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "hosted", target_os = "windows"))]
 impl RaiseEvents for accesskit_windows::QueuedEvents {
     fn raise(self) {
         accesskit_windows::QueuedEvents::raise(self);
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hosted", target_os = "macos"))]
 impl AccessKitUpdate for accesskit_macos::SubclassingAdapter {
     type Events = accesskit_macos::QueuedEvents;
     fn update_if_active(
@@ -629,7 +659,7 @@ impl AccessKitUpdate for accesskit_macos::SubclassingAdapter {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hosted", target_os = "macos"))]
 impl RaiseEvents for accesskit_macos::QueuedEvents {
     fn raise(self) {
         accesskit_macos::QueuedEvents::raise(self);
@@ -638,11 +668,11 @@ impl RaiseEvents for accesskit_macos::QueuedEvents {
 
 /// Per-window native adapter. Only actions with a backend-neutral hosted path
 /// are advertised and accepted.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 pub(crate) struct HostedAccessibility {
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "hosted", target_os = "windows"))]
     adapter: accesskit_windows::SubclassingAdapter,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "hosted", target_os = "macos"))]
     adapter: accesskit_macos::SubclassingAdapter,
     #[cfg(any(
         target_os = "linux",
@@ -667,7 +697,7 @@ pub(crate) struct HostedAccessibility {
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl HostedAccessibility {
     pub(crate) fn new(
         window: Arc<dyn winit::window::Window>,
@@ -935,6 +965,7 @@ fn byte_to_character_index(value: &str, byte_offset: usize) -> Option<usize> {
     Some(value[..byte_offset].chars().count())
 }
 
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
 fn character_index_to_byte(value: &str, character_index: usize) -> Option<usize> {
     if character_index == value.chars().count() {
         return Some(value.len());
@@ -1474,7 +1505,7 @@ mod tests {
         assert!(radio.supports_action(Action::Focus));
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn unicode_text_run_selection_round_trips_without_byte_index_loss() {
         let root = node(1, None, &[2]);
@@ -1654,7 +1685,7 @@ mod tests {
         assert!(update.tree.is_some());
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn activation_always_returns_the_latest_complete_tree() {
         let (_, initial) = AccessibilityProjector::new(vec![node(1, None, &[])], false, 1.0);
@@ -1693,7 +1724,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn action_queue_is_bounded_and_preserves_accepted_fifo_order() {
         let mut requests = VecDeque::new();
@@ -1717,7 +1748,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn set_value_action_requires_a_text_payload() {
         let root = node(1, None, &[7]);
@@ -1754,7 +1785,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn range_set_value_accepts_only_finite_numeric_payloads() {
         let root = node(1, None, &[8]);
