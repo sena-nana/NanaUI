@@ -9,13 +9,12 @@
 
 use std::{any::TypeId, collections::HashMap, fmt, sync::Arc};
 
-use bevy_ecs::component::Component;
 use nana_ui_core::{ButtonKind, ControlSize, Icon, LayoutStyle};
 
 use crate::{ComponentView, FrameworkError, MutationQueue, StableNodeId, UiWorld};
 
 /// Stable component identity (`nana.button`, `app.bilibili-user-card`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Component)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ComponentTypeId(Arc<str>);
 
 impl ComponentTypeId {

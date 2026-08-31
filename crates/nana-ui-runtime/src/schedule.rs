@@ -1,4 +1,3 @@
-use bevy_ecs::component::Component;
 use nana_ui_core::WorkCounters;
 
 use crate::{ExtractedNode, StableNodeId};
@@ -6,7 +5,7 @@ use crate::{ExtractedNode, StableNodeId};
 /// Per-entity invalidation mask. Widened from `u8` because Issue #8 §6.2 STATE
 /// and TRANSFORM are independent bits; packing them into the last unused `u8`
 /// lane would leave no room for TRANSFORM.
-#[derive(Component, Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct DirtyMask(u16);
 
 impl DirtyMask {

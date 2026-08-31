@@ -1,9 +1,9 @@
 //! Backend-neutral retained runtime for NanaUI.
 //!
 //! Applications and compatibility adapters use stable Nana IDs. The internal
-//! generational entity representation is deliberately not part of the public
-//! contract, so changing ECS implementations cannot invalidate JS handles,
-//! diagnostics, snapshots, or persisted data.
+//! node table is deliberately not part of the public contract, so changing
+//! storage cannot invalidate JS handles, diagnostics, snapshots, or persisted
+//! data.
 
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::too_many_arguments)]
@@ -49,6 +49,7 @@ mod settings;
 mod shell;
 mod sidebar;
 mod split_pane;
+mod store;
 mod tabs;
 mod text_layout_cache;
 mod thumbnail;
