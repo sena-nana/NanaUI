@@ -1,7 +1,7 @@
 {
   "schema_version": 8,
   "profile": "release",
-  "storage": "bevy_ecs 0.19.1 (default features disabled, std only)",
+  "storage": "nana-ui-runtime node table",
   "frame_budget_ms": 16.67,
   "frame_budget_hz": 60,
   "warmup_iterations": 10,

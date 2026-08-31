@@ -12,7 +12,6 @@ benchmark = []
 syntax-highlighting = ["dep:two-face"]
 
 [dependencies]
-bevy_ecs.workspace = true
 futures-core.workspace = true
 nana-ui-core.workspace = true
 pulldown-cmark = { version = "0.13.4", default-features = false }

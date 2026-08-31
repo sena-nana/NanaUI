@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
-use bevy_ecs::component::Component;
 use nana_ui_core::{
     CardKind, ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon,
     LayoutStyle, LineBreakSpec, LineHeightSpec, SemanticColorRole, SwitchControlPosition,
@@ -28,7 +27,7 @@ static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
 /// Parked nodes keep their stable identity and application-owned view state,
 /// but are excluded from layout, rendering, input, focus and accessibility
 /// until the same subtree is inserted again.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MountState {
     #[default]
     Mounted,
@@ -74,7 +73,7 @@ pub struct TooltipVisual {
     pub open: bool,
 }
 
-#[derive(Component, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StandardVisual {
     ModalFrame {
         title: Arc<str>,
@@ -777,7 +776,7 @@ impl InteractionStyle {
     }
 }
 
-#[derive(Component, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NodeStyle {
     pub layout: Arc<LayoutStyle>,
     pub foreground: Option<SemanticColorRole>,
@@ -828,7 +827,7 @@ impl NodeStyle {
     }
 }
 
-#[derive(Component, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
     pub foreground: SemanticColorRole,
     pub color: Option<[f32; 4]>,
@@ -890,12 +889,12 @@ impl Default for ComputedStyle {
     }
 }
 
-#[derive(Component, Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextContent {
     pub value: String,
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextMetrics {
     pub width: f32,
     pub height: f32,
@@ -906,13 +905,13 @@ pub struct TextMetrics {
 
 /// Shaped intrinsic text owned by an EmptyState rather than application child
 /// nodes. Runtime layout and every renderer consume the same measured runs.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct EmptyStateTextPresentation {
     pub title: TextMetrics,
     pub message: Option<TextMetrics>,
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct ModalTextPresentation {
     pub title: TextMetrics,
     pub description: Option<TextMetrics>,
@@ -1191,7 +1190,7 @@ fn resolved_text_line_height(style: &ComputedStyle) -> f32 {
 
 /// Shaped editing presentation. The committed value remains in
 /// [`TextInputState`]; this derived component only carries renderer geometry.
-#[derive(Component, Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextInputPresentation {
     pub display_value: String,
     pub placeholder: bool,
@@ -1223,7 +1222,7 @@ pub struct ModalLayoutInput {
     pub body_text: Option<TextMetrics>,
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LayoutBox {
     pub x: f32,
     pub y: f32,
@@ -1231,7 +1230,7 @@ pub struct LayoutBox {
     pub height: f32,
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ScrollOffset {
     pub x: f32,
     pub y: f32,
@@ -1239,7 +1238,7 @@ pub struct ScrollOffset {
 
 /// Derived scrollport and content extents in logical pixels. Absence means
 /// the layout backend has not measured this scroll container yet.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollMetrics {
     pub viewport_width: f32,
     pub viewport_height: f32,
@@ -1249,7 +1248,7 @@ pub struct ScrollMetrics {
 
 /// Exclusive overlay state attached to an overlay host. `active` must be a
 /// direct child of the host; `restore_focus` remains in the same document.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OverlayHostState {
     pub active: Option<StableNodeId>,
     pub restore_focus: Option<StableNodeId>,
@@ -1283,7 +1282,7 @@ impl LayoutBox {
     }
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InteractionState {
     pub pointer_events: bool,
     pub focusable: bool,
@@ -1330,7 +1329,7 @@ pub enum AccessibilityRole {
     Generic,
 }
 
-#[derive(Component, Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AccessibilityState {
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
@@ -1429,7 +1428,7 @@ pub struct EventRoute {
 }
 
 /// Subscribed DOM/Vue event names. Capture/bubble paths stay on [`EventRoute`].
-#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventListeners {
     events: BTreeSet<String>,
 }
@@ -1472,7 +1471,7 @@ impl Default for InteractionState {
     }
 }
 
-#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImeComposition {
     pub text: String,
     pub selection: Option<(usize, usize)>,
@@ -1517,7 +1516,7 @@ fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
 
 /// Committed editable text and its selection. IME preedit remains separate in
 /// [`ImeComposition`], so cancelling composition never corrupts committed text.
-#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextInputState {
     pub value: String,
     pub selection: TextSelection,
@@ -1625,7 +1624,7 @@ impl TextInputState {
 /// can reach its own painter without Runtime learning a shading model.
 /// [`Self::dedicated_pass`] asks the painter to open a pass for this node
 /// instead of joining the current one.
-#[derive(Component, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CustomRenderNode {
     pub renderer: Arc<str>,
     pub resource: Arc<str>,

@@ -2,12 +2,9 @@ use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::mem::size_of;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use bevy_ecs::component::{Component, Mutable};
-use bevy_ecs::entity::Entity;
-use bevy_ecs::world::World;
 use nana_ui_core::{
     ControlSize, GraphPoint, GraphPortKind, GraphPortSide, LayoutStyle, PointerEventsSpec,
     SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode,
@@ -17,6 +14,7 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
 use crate::schedule::{DirtyMask, SystemWork, push_work};
+use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComponentTypeId, ComputedStyle, CustomRenderNode, EventListeners,
@@ -135,65 +133,10 @@ pub enum NodeKind {
     Comment,
 }
 
-#[derive(Component)]
-struct Identity {
-    stable: StableNodeId,
-    document: DocumentId,
-}
-
-#[derive(Component)]
-struct Kind(Arc<NodeKind>);
-
-/// `.1` is the palette epoch (`0` = never resolved).
-#[derive(Component, Clone)]
-struct ResolvedStyle(Arc<ComputedStyle>, u64);
-
 fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
     match visual {
         Some(StandardVisual::MenuSurface { open, .. }) => Some(*open),
         _ => None,
-    }
-}
-
-#[derive(Component)]
-struct Hierarchy {
-    parent: Option<StableNodeId>,
-    children: Arc<Vec<StableNodeId>>,
-}
-
-impl Default for Hierarchy {
-    fn default() -> Self {
-        Self {
-            parent: None,
-            children: Arc::clone(&EMPTY_CHILDREN),
-        }
-    }
-}
-
-static EMPTY_CHILDREN: LazyLock<Arc<Vec<StableNodeId>>> = LazyLock::new(|| Arc::new(Vec::new()));
-static INTERNED_KIND_DOCUMENT: LazyLock<Arc<NodeKind>> =
-    LazyLock::new(|| Arc::new(NodeKind::Document));
-static INTERNED_KIND_TEXT: LazyLock<Arc<NodeKind>> = LazyLock::new(|| Arc::new(NodeKind::Text));
-static INTERNED_KIND_COMMENT: LazyLock<Arc<NodeKind>> =
-    LazyLock::new(|| Arc::new(NodeKind::Comment));
-static INTERNED_KIND_DIV: LazyLock<Arc<NodeKind>> =
-    LazyLock::new(|| Arc::new(NodeKind::Element { tag: "div".into() }));
-static INTERNED_DEFAULT_STYLE: LazyLock<Arc<ComputedStyle>> =
-    LazyLock::new(|| Arc::new(ComputedStyle::default()));
-
-fn intern_kind(kind: &NodeKind) -> Arc<NodeKind> {
-    match kind {
-        NodeKind::Document => Arc::clone(&INTERNED_KIND_DOCUMENT),
-        NodeKind::Text => Arc::clone(&INTERNED_KIND_TEXT),
-        NodeKind::Comment => Arc::clone(&INTERNED_KIND_COMMENT),
-        NodeKind::Element { tag } if tag == "div" => Arc::clone(&INTERNED_KIND_DIV),
-        _ => Arc::new(kind.clone()),
-    }
-}
-
-fn intern_empty_children(children: &mut Arc<Vec<StableNodeId>>) {
-    if children.is_empty() {
-        *children = Arc::clone(&EMPTY_CHILDREN);
     }
 }
 
@@ -435,8 +378,7 @@ struct PlannedNode {
 
 /// The sole authoritative retained identity and hierarchy store.
 pub struct UiWorld {
-    world: World,
-    entities: HashMap<StableNodeId, Entity>,
+    nodes: NodeStore,
     retired: RetiredIds,
     dirty_entities: HashSet<StableNodeId>,
     focused: HashMap<DocumentId, StableNodeId>,
@@ -481,7 +423,7 @@ pub struct UiWorld {
     viewport_basis: HashSet<StableNodeId>,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
-    presence_flags: HashMap<Entity, PresenceFlags>,
+    presence_flags: HashMap<StableNodeId, PresenceFlags>,
     /// Subtree roots detached by Remove or Park. Mounted document/scene roots
     /// are created with no parent and are not in this set.
     detached: HashSet<StableNodeId>,
@@ -508,8 +450,7 @@ impl Default for UiWorld {
 impl UiWorld {
     pub fn new() -> Self {
         Self {
-            world: World::new(),
-            entities: HashMap::new(),
+            nodes: NodeStore::new(),
             retired: RetiredIds::default(),
             dirty_entities: HashSet::new(),
             focused: HashMap::new(),
@@ -552,19 +493,19 @@ impl UiWorld {
     }
 
     pub fn len(&self) -> usize {
-        self.entities.len()
+        self.nodes.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
+        self.nodes.is_empty()
     }
 
     pub fn contains(&self, id: StableNodeId) -> bool {
-        self.entities.contains_key(&id)
+        self.nodes.contains(id)
     }
 
     pub(crate) fn mark_layout(&mut self, id: StableNodeId) {
-        if self.entities.contains_key(&id) {
+        if self.nodes.contains(id) {
             let _ = self.mark(id, crate::schedule::DirtyMask::LAYOUT);
         }
     }
@@ -572,17 +513,13 @@ impl UiWorld {
     /// Whether the node is `Mounted`. Parked is not; Detach stays mounted but
     /// is omitted from the live document until inserted.
     pub fn is_mounted(&self, id: StableNodeId) -> bool {
-        let Some(&entity) = self.entities.get(&id) else {
-            return false;
-        };
-        self.world
-            .get::<MountState>(entity)
-            .is_some_and(|state| *state == MountState::Mounted)
+        self.nodes
+            .get(id)
+            .is_some_and(|node| node.mount == MountState::Mounted)
     }
 
     pub fn mount_state(&self, id: StableNodeId) -> Option<MountState> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<MountState>(entity).copied()
+        self.nodes.get(id).map(|node| node.mount)
     }
 
     pub fn is_retired(&self, id: StableNodeId) -> bool {
@@ -920,7 +857,7 @@ impl UiWorld {
             accessibility_removals: std::mem::take(&mut self.pending_accessibility_removals),
             render_extraction: Vec::new(),
             render_removals: std::mem::take(&mut self.pending_render_removals),
-            entities_total: self.entities.len(),
+            entities_total: self.nodes.len(),
             entities_changed: 0,
             entities_spawned: std::mem::take(&mut self.spawned_since_drain),
             entities_despawned: std::mem::take(&mut self.despawned_since_drain),
@@ -944,19 +881,14 @@ impl UiWorld {
         work.render_removals.sort_unstable();
         work.accessibility_removals.sort_unstable();
         for id in ids {
-            let entity = self.entities[&id];
-            let bits = self
-                .world
-                .get_mut::<DirtyMask>(entity)
-                .expect("entity must have dirty component")
-                .take();
+            let bits = self.record_mut(id).dirty.take();
             if !self.presence_live(id) {
                 continue;
             }
-            let has_text = matches!(self.component::<Kind>(id).0.as_ref(), NodeKind::Text)
-                || !self.component::<TextContent>(id).value.is_empty()
+            let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                || !self.record(id).text.value.is_empty()
                 || matches!(
-                    self.world.get::<StandardVisual>(entity),
+                    self.nodes.visual(id),
                     Some(StandardVisual::EmptyState { .. })
                         | Some(StandardVisual::ModalFrame { .. })
                 );
@@ -1046,11 +978,12 @@ impl UiWorld {
             (work.render_extraction, DirtyMask::RENDER),
         ] {
             for id in ids {
-                let Some(&entity) = self.entities.get(&id) else {
+                if !self.nodes.contains(id) {
                     continue;
                 };
-                self.world
-                    .get_mut::<DirtyMask>(entity)
+                self.nodes
+                    .get_mut(id)
+                    .map(|n| &mut n.dirty)
                     .expect("retained node must have dirty state")
                     .insert(bit);
                 self.dirty_entities.insert(id);
@@ -1072,16 +1005,13 @@ impl UiWorld {
     }
 
     pub fn node(&self, id: StableNodeId) -> Option<NodeSnapshot> {
-        let entity = *self.entities.get(&id)?;
-        let identity = self.world.get::<Identity>(entity)?;
-        let kind = self.world.get::<Kind>(entity)?;
-        let hierarchy = self.world.get::<Hierarchy>(entity)?;
+        let node = self.nodes.get(id)?;
         Some(NodeSnapshot {
-            id: identity.stable,
-            document: identity.document,
-            kind: kind.0.as_ref().clone(),
-            parent: hierarchy.parent,
-            children: hierarchy.children.as_ref().clone(),
+            id,
+            document: node.document,
+            kind: node.kind.as_ref().clone(),
+            parent: node.hierarchy.parent,
+            children: node.hierarchy.children.as_ref().clone(),
         })
     }
 
@@ -1098,25 +1028,22 @@ impl UiWorld {
     }
 
     pub fn text(&self, id: StableNodeId) -> Option<&str> {
-        let entity = *self.entities.get(&id)?;
-        self.world
-            .get::<TextContent>(entity)
+        self.nodes
+            .get(id)
+            .map(|n| &n.text)
             .map(|text| text.value.as_str())
     }
 
     pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<LayoutBox>(entity).copied()
+        self.nodes.get(id).map(|node| node.layout)
     }
 
     pub fn scroll_offset(&self, id: StableNodeId) -> Option<ScrollOffset> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<ScrollOffset>(entity).copied()
+        self.nodes.get(id).map(|node| node.scroll_offset)
     }
 
     pub fn scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<ScrollMetrics>(entity).copied()
+        self.nodes.scroll_metrics(id).copied()
     }
 
     pub fn clamp_scroll_offset(&self, id: StableNodeId, offset: ScrollOffset) -> ScrollOffset {
@@ -1125,15 +1052,11 @@ impl UiWorld {
     }
 
     pub fn node_style(&self, id: StableNodeId) -> Option<&NodeStyle> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<NodeStyle>(entity)
+        self.nodes.get(id).map(|node| &node.style)
     }
 
     pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {
-        let entity = *self.entities.get(&id)?;
-        self.world
-            .get::<ResolvedStyle>(entity)
-            .map(|style| style.0.as_ref())
+        self.nodes.get(id).map(|node| node.resolved.0.as_ref())
     }
 
     /// Whether a mounted node is visible through every retained overlay branch.
@@ -1170,28 +1093,23 @@ impl UiWorld {
     }
 
     pub fn interaction(&self, id: StableNodeId) -> Option<InteractionState> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<InteractionState>(entity).copied()
+        self.nodes.get(id).map(|node| node.interaction)
     }
 
     pub fn text_input(&self, id: StableNodeId) -> Option<&TextInputState> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<TextInputState>(entity)
+        self.nodes.text_input(id)
     }
 
     pub fn text_input_presentation(&self, id: StableNodeId) -> Option<&TextInputPresentation> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<TextInputPresentation>(entity)
+        self.nodes.text_input_presentation(id)
     }
 
     pub fn highlight_request(&self, id: StableNodeId) -> Option<&HighlightRequest> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<HighlightRequest>(entity)
+        self.nodes.highlight(id)
     }
 
     pub fn text_presentation(&self, id: StableNodeId) -> Option<&TextPresentation> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<TextPresentation>(entity)
+        self.nodes.text_presentation(id)
     }
 
     pub fn has_presenter(&self, name: &str) -> bool {
@@ -1213,11 +1131,11 @@ impl UiWorld {
         }
         let name = name.to_owned();
         self.presenters.insert(name.clone(), presenter);
-        let ids = self.entities.keys().copied().collect::<Vec<_>>();
+        let ids = self.nodes.keys().collect::<Vec<_>>();
         for id in ids {
             if self
-                .world
-                .get::<HighlightRequest>(self.entities[&id])
+                .nodes
+                .highlight(id)
                 .is_some_and(|request| request.presenter.as_ref() == name)
             {
                 self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
@@ -1233,18 +1151,17 @@ impl UiWorld {
             if !self.contains(id) {
                 return Err(UiWorldError::MissingNode(id));
             }
-            let entity = self.entities[&id];
-            let Some(request) = self.world.get::<HighlightRequest>(entity).cloned() else {
-                if self.world.get::<TextPresentation>(entity).is_some() {
-                    self.world.entity_mut(entity).remove::<TextPresentation>();
+            let Some(request) = self.nodes.highlight(id).cloned() else {
+                if self.nodes.text_presentation(id).is_some() {
+                    self.nodes.set_text_presentation(id, None);
                 }
                 continue;
             };
             let text = self.committed_presentation_text(id);
             let source = crate::presentation::presentation_source(&text, &request);
             if self
-                .world
-                .get::<TextPresentation>(entity)
+                .nodes
+                .text_presentation(id)
                 .is_some_and(|presentation| presentation.source == source)
             {
                 continue;
@@ -1256,34 +1173,29 @@ impl UiWorld {
                     crate::presentation::sanitize_spans(&text, presenter.present(&text, &request))
                 })
                 .unwrap_or_default();
-            self.world
-                .entity_mut(entity)
-                .insert(TextPresentation { spans, source });
+            self.nodes
+                .set_text_presentation(id, Some(TextPresentation { spans, source }));
         }
         Ok(())
     }
 
     fn committed_presentation_text(&self, id: StableNodeId) -> String {
-        let entity = self.entities[&id];
-        self.world
-            .get::<TextInputState>(entity)
+        self.nodes
+            .text_input(id)
             .map(|state| state.value.clone())
-            .unwrap_or_else(|| self.component::<TextContent>(id).value.clone())
+            .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<TextMetrics>(entity).copied()
+        self.nodes.get(id).map(|node| node.text_metrics)
     }
 
     pub fn ime(&self, id: StableNodeId) -> Option<&ImeComposition> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<ImeComposition>(entity)
+        self.nodes.ime(id)
     }
 
     pub fn custom_render(&self, id: StableNodeId) -> Option<&CustomRenderNode> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<CustomRenderNode>(entity)
+        self.nodes.custom_render(id)
     }
 
     pub fn has_event(&self, id: StableNodeId, event: &str) -> bool {
@@ -1292,13 +1204,11 @@ impl UiWorld {
     }
 
     pub fn event_listeners(&self, id: StableNodeId) -> Option<&EventListeners> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<EventListeners>(entity)
+        self.nodes.event_listeners(id)
     }
 
     pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<ComponentTypeId>(entity)
+        self.nodes.component_type(id)
     }
 
     pub fn event_targets(&self, document: DocumentId) -> HashSet<(u64, String)> {
@@ -1317,25 +1227,21 @@ impl UiWorld {
     }
 
     pub fn standard_visual(&self, id: StableNodeId) -> Option<StandardVisual> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<StandardVisual>(entity).cloned()
+        self.nodes.visual(id).cloned()
     }
 
     pub fn component_geometry(&self, id: StableNodeId) -> Option<crate::ComponentGeometry> {
-        let entity = *self.entities.get(&id)?;
-        let visual = self.world.get::<StandardVisual>(entity)?;
-        let style = self.world.get::<ResolvedStyle>(entity)?.0.as_ref();
+        let visual = self.nodes.visual(id)?;
+        let style = self.nodes.get(id)?.resolved.0.as_ref();
         self.derive_component_geometry(id, visual, style)
     }
 
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<AccessibilityState>(entity)
+        self.nodes.get(id).map(|node| &node.accessibility)
     }
 
     pub fn overlay_host(&self, id: StableNodeId) -> Option<OverlayHostState> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<OverlayHostState>(entity).copied()
+        self.nodes.overlay_host(id).copied()
     }
 
     /// Nodes that carry an `OverlayHostState`. Overlay validation iterates this
@@ -1368,7 +1274,7 @@ impl UiWorld {
             .copied()
             .collect::<BTreeSet<_>>();
         removed.extend(work.accessibility.iter().copied().filter(|id| {
-            self.entities.contains_key(id) && self.project_accessibility_node(*id).is_none()
+            self.nodes.contains(*id) && self.project_accessibility_node(*id).is_none()
         }));
         AccessibilityDelta {
             generation: work.generation,
@@ -1397,8 +1303,8 @@ impl UiWorld {
             .iter()
             .filter_map(|(&document, &id)| {
                 let invalid = dirty.contains(&id)
-                    && (!self.component::<ResolvedStyle>(id).0.visible
-                        || !self.component::<InteractionState>(id).focusable);
+                    && (!self.record(id).resolved.0.visible
+                        || !self.record(id).interaction.focusable);
                 invalid.then_some((document, id))
             })
             .collect::<Vec<_>>();
@@ -1447,14 +1353,12 @@ impl UiWorld {
             }
             let presentation = self.text_input_presentation_source(id);
             let text = presentation.as_ref().map_or_else(
-                || self.component::<TextContent>(id).clone(),
+                || self.record(id).text.clone(),
                 |source| source.text.clone(),
             );
             self.record_string_clone(text.value.len());
-            let style = self.component::<ResolvedStyle>(id).0.as_ref().clone();
-            if let Some(visual @ StandardVisual::EmptyState { .. }) =
-                self.world.get::<StandardVisual>(self.entities[&id])
-            {
+            let style = self.record(id).resolved.0.as_ref().clone();
+            if let Some(visual @ StandardVisual::EmptyState { .. }) = self.nodes.visual(id) {
                 let intrinsic = shape_empty_state_text(id, visual, &style, None, &mut shaper);
                 validate_text_metrics(id, intrinsic.title)?;
                 if let Some(message) = intrinsic.message {
@@ -1462,9 +1366,7 @@ impl UiWorld {
                 }
                 empty_shaped.push((id, intrinsic));
             }
-            if let Some(visual @ StandardVisual::ModalFrame { .. }) =
-                self.world.get::<StandardVisual>(self.entities[&id])
-            {
+            if let Some(visual @ StandardVisual::ModalFrame { .. }) = self.nodes.visual(id) {
                 let intrinsic = shape_modal_text(id, visual, &style, None, &mut shaper);
                 validate_text_metrics(id, intrinsic.title)?;
                 if let Some(description) = intrinsic.description {
@@ -1484,12 +1386,11 @@ impl UiWorld {
             shaped.push((id, metrics, presentation));
         }
         for (id, metrics, presentation) in shaped {
-            let previous = *self.component::<TextMetrics>(id);
-            *self.component_mut::<TextMetrics>(id) = metrics;
+            let previous = self.record(id).text_metrics;
+            self.record_mut(id).text_metrics = metrics;
             if let Some(presentation) = presentation {
-                self.world
-                    .entity_mut(self.entities[&id])
-                    .insert(presentation);
+                self.nodes
+                    .set_text_input_presentation(id, Some(presentation));
             }
             if text_intrinsic_changed(previous, metrics) {
                 self.propagate_layout_from_node(id);
@@ -1499,9 +1400,7 @@ impl UiWorld {
             self.apply_empty_state_text_presentation(id, presentation);
         }
         for (id, presentation) in modal_shaped {
-            self.world
-                .entity_mut(self.entities[&id])
-                .insert(presentation);
+            self.nodes.set_modal_text(id, Some(presentation));
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
@@ -1543,7 +1442,7 @@ impl UiWorld {
         let mut scope = ids.to_vec();
         scope.sort_unstable();
         scope.dedup();
-        scope.retain(|id| self.entities.contains_key(id));
+        scope.retain(|id| self.nodes.contains(*id));
         self.shape_text_for_layout_impl(scope, shaper)
     }
 
@@ -1556,10 +1455,9 @@ impl UiWorld {
             .iter()
             .copied()
             .filter(|id| {
-                self.entities
-                    .get(id)
-                    .and_then(|entity| self.world.get::<DirtyMask>(*entity))
-                    .is_some_and(|mask| mask.has(DirtyMask::LAYOUT))
+                self.nodes
+                    .get(*id)
+                    .is_some_and(|node| node.dirty.has(DirtyMask::LAYOUT))
             })
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -1581,16 +1479,15 @@ impl UiWorld {
         for id in ids {
             let presentation = self.text_input_presentation_source(id);
             let text = presentation.as_ref().map_or_else(
-                || self.component::<TextContent>(id).clone(),
+                || self.record(id).text.clone(),
                 |source| source.text.clone(),
             );
             self.record_string_clone(text.value.len());
-            let computed = self.component::<ResolvedStyle>(id).0.as_ref();
-            if let Some(visual @ StandardVisual::EmptyState { compact, .. }) =
-                self.world.get::<StandardVisual>(self.entities[&id])
+            let computed = self.record(id).resolved.0.as_ref();
+            if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = self.nodes.visual(id)
             {
                 if computed.visible {
-                    let layout = *self.component::<LayoutBox>(id);
+                    let layout = self.record(id).layout;
                     let horizontal = if *compact { 6.0 } else { 16.0 };
                     let width = (layout.width - horizontal * 2.0).max(0.0);
                     let intrinsic =
@@ -1608,10 +1505,10 @@ impl UiWorld {
                 continue;
             }
             if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
-                self.world.get::<StandardVisual>(self.entities[&id])
+                self.nodes.visual(id)
             {
                 if computed.visible {
-                    let root = *self.component::<LayoutBox>(id);
+                    let root = self.record(id).layout;
                     let surface = crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
                     let chrome = crate::overlay_surfaces::ModalChrome::measure(
                         *kind,
@@ -1631,9 +1528,7 @@ impl UiWorld {
                     if let Some(body) = intrinsic.body {
                         validate_text_metrics(id, body)?;
                     }
-                    if self.world.get::<ModalTextPresentation>(self.entities[&id])
-                        != Some(&intrinsic)
-                    {
+                    if self.nodes.modal_text(id) != Some(&intrinsic) {
                         modal_shaped.push((id, intrinsic));
                     }
                 }
@@ -1648,30 +1543,27 @@ impl UiWorld {
             let presentation = presentation.map(|source| {
                 shape_text_input_presentation(id, source, computed, constraints, &mut shaper)
             });
-            if *self.component::<TextMetrics>(id) != metrics
-                || presentation.as_ref().is_some_and(|value| {
-                    self.world.get::<TextInputPresentation>(self.entities[&id]) != Some(value)
-                })
+            if self.record(id).text_metrics != metrics
+                || presentation
+                    .as_ref()
+                    .is_some_and(|value| self.nodes.text_input_presentation(id) != Some(value))
             {
                 shaped.push((id, metrics, presentation));
             }
         }
         let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, presentation) in shaped {
-            *self.component_mut::<TextMetrics>(id) = metrics;
+            self.record_mut(id).text_metrics = metrics;
             if let Some(presentation) = presentation {
-                self.world
-                    .entity_mut(self.entities[&id])
-                    .insert(presentation);
+                self.nodes
+                    .set_text_input_presentation(id, Some(presentation));
             }
         }
         for (id, presentation) in empty_shaped {
             changed |= self.apply_empty_state_text_presentation(id, presentation);
         }
         for (id, presentation) in modal_shaped {
-            self.world
-                .entity_mut(self.entities[&id])
-                .insert(presentation);
+            self.nodes.set_modal_text(id, Some(presentation));
             self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
         let runs = shaper.runs;
@@ -1699,14 +1591,8 @@ impl UiWorld {
         presentation: EmptyStateTextPresentation,
     ) -> bool {
         let mut changed = false;
-        if self
-            .world
-            .get::<EmptyStateTextPresentation>(self.entities[&id])
-            != Some(&presentation)
-        {
-            self.world
-                .entity_mut(self.entities[&id])
-                .insert(presentation);
+        if self.nodes.empty_state_text(id) != Some(&presentation) {
+            self.nodes.set_empty_state_text(id, Some(presentation));
             changed = true;
         }
         let Some(StandardVisual::EmptyState {
@@ -1714,7 +1600,7 @@ impl UiWorld {
             compact,
             action,
             ..
-        }) = self.world.get::<StandardVisual>(self.entities[&id])
+        }) = self.nodes.visual(id)
         else {
             return changed;
         };
@@ -1731,10 +1617,10 @@ impl UiWorld {
             height += spacing + 4.0;
         }
         let padding_top = nana_ui_core::LengthSpec::Px(vertical + height);
-        let mut style = self.component::<NodeStyle>(id).clone();
+        let mut style = self.record(id).style.clone();
         if style.layout.padding_top != Some(padding_top) {
             Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
-            *self.component_mut::<NodeStyle>(id) = style;
+            self.record_mut(id).style = style;
             self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
             if let Some(parent) = self.node(id).and_then(|node| node.parent) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
@@ -1752,16 +1638,16 @@ impl UiWorld {
             placeholder,
             secure,
             ..
-        } = self.world.get::<StandardVisual>(self.entities[&id])?
+        } = self.nodes.visual(id)?
         else {
             return None;
         };
-        let state = self.world.get::<TextInputState>(self.entities[&id])?;
-        let ime = self.world.get::<ImeComposition>(self.entities[&id]);
+        let state = self.nodes.text_input(id)?;
+        let ime = self.nodes.ime(id);
         let multiline = self
-            .world
-            .get::<AccessibilityState>(self.entities[&id])
-            .is_some_and(|state| state.multiline);
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.accessibility.multiline);
         Some(build_text_input_presentation_source(
             state,
             ime,
@@ -1772,11 +1658,7 @@ impl UiWorld {
     }
 
     fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
-        if self
-            .world
-            .get::<TextInputState>(self.entities[&id])
-            .is_some()
-        {
+        if self.nodes.text_input(id).is_some() {
             crate::TextShaping::Advanced
         } else {
             crate::TextShaping::Auto
@@ -1786,8 +1668,8 @@ impl UiWorld {
     /// Shape against the last published content box when it exists so wrap
     /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
     fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
-        let source = self.component::<NodeStyle>(id);
-        let layout = *self.component::<LayoutBox>(id);
+        let source = &self.record(id).style;
+        let layout = self.record(id).layout;
         let presentation = self.text_input_presentation_source(id);
         let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
         let is_text_input = presentation.is_some();
@@ -1816,7 +1698,7 @@ impl UiWorld {
         }
         let padding = source.layout.resolved_padding_against(Some(layout.width));
         let border = source.layout.resolved_border_edges();
-        let leading_visual = match self.world.get::<StandardVisual>(self.entities[&id]) {
+        let leading_visual = match self.nodes.visual(id) {
             Some(StandardVisual::Checkbox { .. }) => 24.0,
             Some(StandardVisual::Switch { .. }) => 38.0,
             _ => 0.0,
@@ -1866,35 +1748,28 @@ impl UiWorld {
                 if !self.contains(id) {
                     return Err(UiWorldError::MissingNode(id));
                 }
-                let hierarchy = self.component::<Hierarchy>(id);
-                let has_text = matches!(self.component::<Kind>(id).0.as_ref(), NodeKind::Text)
-                    || !self.component::<TextContent>(id).value.is_empty();
+                let hierarchy = &self.record(id).hierarchy;
+                let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                    || !self.record(id).text.value.is_empty();
                 Ok(LayoutInput {
                     id,
                     parent: hierarchy.parent,
                     children: Arc::clone(&hierarchy.children),
                     style: self.effective_layout_style(id),
-                    text_metrics: has_text.then(|| *self.component::<TextMetrics>(id)),
-                    modal: self
-                        .world
-                        .get::<StandardVisual>(self.entities[&id])
-                        .and_then(|visual| {
-                            let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
-                                return None;
-                            };
-                            let presentation = self
-                                .world
-                                .get::<ModalTextPresentation>(self.entities[&id])
-                                .copied()
-                                .unwrap_or_default();
-                            Some(crate::ModalLayoutInput {
-                                kind: *kind,
-                                slots: slots.clone(),
-                                title: presentation.title,
-                                description: presentation.description,
-                                body_text: presentation.body,
-                            })
-                        }),
+                    text_metrics: has_text.then(|| self.record(id).text_metrics),
+                    modal: self.nodes.visual(id).and_then(|visual| {
+                        let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
+                            return None;
+                        };
+                        let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
+                        Some(crate::ModalLayoutInput {
+                            kind: *kind,
+                            slots: slots.clone(),
+                            title: presentation.title,
+                            description: presentation.description,
+                            body_text: presentation.body,
+                        })
+                    }),
                 })
             })
             .collect()
@@ -1909,7 +1784,7 @@ impl UiWorld {
     }
 
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
-        let mut style = Arc::clone(&self.component::<NodeStyle>(id).layout);
+        let mut style = Arc::clone(&self.record(id).style.layout);
         if style.omits_box()
             || !self.presence_live(id)
             || !self.overlay_branch_active(id)
@@ -1982,7 +1857,7 @@ impl UiWorld {
                 // A despawned node was already spliced out by `retain_hit_tree`.
                 continue;
             }
-            if self.component::<Identity>(id).document != document {
+            if self.record(id).document != document {
                 return None;
             }
             pending.insert(id);
@@ -2058,10 +1933,10 @@ impl UiWorld {
             // parent is itself not hit-visible; otherwise the index is stale.
             return !self.node_hit_visible(parent);
         };
-        let scroll = *self.component::<ScrollOffset>(parent);
+        let scroll = self.record(parent).scroll_offset;
         let child_transform =
             then_affine(parent_transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
-        let siblings = Arc::clone(&self.component::<Hierarchy>(parent).children);
+        let siblings = Arc::clone(&self.record(parent).hierarchy.children);
         let position = siblings.iter().position(|id| *id == root);
         let Some(position) = position else {
             return false;
@@ -2104,7 +1979,7 @@ impl UiWorld {
 
     /// Whether `id` would contribute an entry to the hit index.
     fn node_hit_visible(&self, id: StableNodeId) -> bool {
-        self.contains(id) && self.component::<ResolvedStyle>(id).0.visible
+        self.contains(id) && self.record(id).resolved.0.visible
     }
 
     /// Every build path funnels through here, so recording once keeps the
@@ -2146,9 +2021,9 @@ impl UiWorld {
         while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
             stack.pop()
         {
-            let style = self.component::<ResolvedStyle>(id).0.as_ref();
-            let layout = *self.component::<LayoutBox>(id);
-            let node_style = self.component::<NodeStyle>(id).layout.as_ref();
+            let style = self.record(id).resolved.0.as_ref();
+            let layout = self.record(id).layout;
+            let node_style = self.record(id).style.layout.as_ref();
             let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {
@@ -2157,13 +2032,13 @@ impl UiWorld {
                     .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
             };
             let (transform, persp) = then_hit(parent_hit, local);
-            let scroll = *self.component::<ScrollOffset>(id);
+            let scroll = self.record(id).scroll_offset;
             let child_transform = then_hit(
                 (transform, persp),
                 ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
             );
             let child_blocks_3d = parent_blocks_3d || node_style.fails_closed_3d_context();
-            let children = Arc::clone(&self.component::<Hierarchy>(id).children);
+            let children = Arc::clone(&self.record(id).hierarchy.children);
             let used_pe =
                 PointerEventsSpec::inherit_from(node_style.pointer_events, parent_used_pe);
             if !style.visible {
@@ -2198,7 +2073,7 @@ impl UiWorld {
             }
             if self.clip_visuals != 0 {
                 if matches!(
-                    self.world.get::<StandardVisual>(self.entities[&id]),
+                    self.nodes.visual(id),
                     Some(StandardVisual::EmptyState { .. })
                 ) {
                     child_clips.push((layout, transform));
@@ -2210,7 +2085,7 @@ impl UiWorld {
                 }
                 if let Some(parent_id) = self.parent_id(id)
                     && let Some(StandardVisual::ModalFrame { slots, .. }) =
-                        self.world.get::<StandardVisual>(self.entities[&parent_id])
+                        self.nodes.visual(parent_id)
                     && slots.body == Some(id)
                     && let Some(crate::ComponentGeometry::ModalFrame { body, .. }) =
                         self.component_geometry(parent_id)
@@ -2218,7 +2093,7 @@ impl UiWorld {
                     self_clips.push((body, parent_hit.0));
                 }
             }
-            let interaction = self.component::<InteractionState>(id);
+            let interaction = self.record(id).interaction;
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
@@ -2333,7 +2208,7 @@ impl UiWorld {
         while index < subtree.len() {
             let id = subtree[index];
             index += 1;
-            subtree.extend(self.component::<Hierarchy>(id).children.iter().copied());
+            subtree.extend(self.record(id).hierarchy.children.iter().copied());
         }
         let subtree = subtree
             .into_iter()
@@ -2482,46 +2357,17 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Result<(DocumentId, Option<StableNodeId>), UiWorldError> {
-        let entity = *self
-            .entities
-            .get(&id)
-            .ok_or(UiWorldError::MissingNode(id))?;
-        let identity = self
-            .world
-            .get::<Identity>(entity)
-            .ok_or(UiWorldError::MissingNode(id))?;
-        let hierarchy = self
-            .world
-            .get::<Hierarchy>(entity)
-            .ok_or(UiWorldError::MissingNode(id))?;
-        Ok((identity.document, hierarchy.parent))
+        let node = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
+        Ok((node.document, node.hierarchy.parent))
     }
 
     fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
         match mutation {
             UiMutation::Create { id, document, kind } => {
-                let entity = self
-                    .world
-                    .spawn((
-                        Identity {
-                            stable: *id,
-                            document: *document,
-                        },
-                        Kind(intern_kind(kind)),
-                        Hierarchy::default(),
-                        MountState::default(),
-                        NodeStyle::default(),
-                        ResolvedStyle(Arc::clone(&INTERNED_DEFAULT_STYLE), 0),
-                        TextContent::default(),
-                        TextMetrics::default(),
-                        LayoutBox::default(),
-                        ScrollOffset::default(),
-                        initial_interaction(kind),
-                        AccessibilityState::default(),
-                        DirtyMask::all(),
-                    ))
-                    .id();
-                self.entities.insert(*id, entity);
+                self.nodes.insert(
+                    *id,
+                    NodeRecord::new(*document, kind, initial_interaction(kind)),
+                );
                 self.dirty_entities.insert(*id);
                 self.spawned_since_drain += 1;
                 report.created += 1;
@@ -2540,11 +2386,11 @@ impl UiWorld {
                     return;
                 }
                 if let Some(old_parent) = old_parent {
-                    let mut hierarchy = self.hierarchy_mut(old_parent);
+                    let hierarchy = self.hierarchy_mut(old_parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|id| id != child);
                     intern_empty_children(&mut hierarchy.children);
                 }
-                let mut parent_hierarchy = self.hierarchy_mut(*parent);
+                let parent_hierarchy = self.hierarchy_mut(*parent);
                 let siblings = Arc::make_mut(&mut parent_hierarchy.children);
                 let index = before
                     .and_then(|before| siblings.iter().position(|id| *id == before))
@@ -2552,8 +2398,8 @@ impl UiWorld {
                 siblings.insert(index, *child);
                 let _parent_hierarchy = parent_hierarchy;
                 self.hierarchy_mut(*child).parent = Some(*parent);
-                let parent_mount = *self.component::<MountState>(*parent);
-                if *self.component::<MountState>(*child) != parent_mount {
+                let parent_mount = self.record(*parent).mount;
+                if self.record(*child).mount != parent_mount {
                     self.set_subtree_mount_state(*child, parent_mount);
                 }
                 if old_parent == Some(*parent) {
@@ -2602,7 +2448,7 @@ impl UiWorld {
             UiMutation::DespawnSubtree { root } => {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
-                    let mut hierarchy = self.hierarchy_mut(parent);
+                    let hierarchy = self.hierarchy_mut(parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
                     intern_empty_children(&mut hierarchy.children);
                     let _hierarchy = hierarchy;
@@ -2615,10 +2461,8 @@ impl UiWorld {
                 while let Some(id) = stack.pop() {
                     let snapshot = self.node(id).expect("validated subtree must exist");
                     stack.extend(snapshot.children.iter().rev().copied());
-                    let entity = self
-                        .entities
-                        .remove(&id)
-                        .expect("entity index must contain node");
+                    self.forget_visual_presence(id);
+                    let _removed = self.nodes.remove(id);
                     self.dirty_entities.remove(&id);
                     self.refresh_root_membership(id);
                     if self.focused.get(&snapshot.document) == Some(&id) {
@@ -2660,8 +2504,6 @@ impl UiWorld {
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
                     self.detached.remove(&id);
-                    self.forget_visual_presence(entity);
-                    let _ = self.world.despawn(entity);
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);
                     self.pending_accessibility_removals.push(id);
@@ -2671,7 +2513,7 @@ impl UiWorld {
                 self.refresh_root_membership(*root);
             }
             UiMutation::SetStyle { id, style } => {
-                let previous = self.component::<NodeStyle>(*id).clone();
+                let previous = self.record(*id).style.clone();
                 let inherited_text_changed = previous.layout.font_size != style.layout.font_size
                     || previous.layout.font_weight != style.layout.font_weight
                     || previous.layout.font_italic != style.layout.font_italic
@@ -2703,7 +2545,7 @@ impl UiWorld {
                     || previous.layout.isolation != style.layout.isolation;
                 let layout_changed =
                     layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
-                *self.component_mut::<NodeStyle>(*id) = style.clone();
+                self.record_mut(*id).style = style.clone();
                 self.sync_node_presence(*id);
 
                 if !style_excluding_transform_eq(&previous, style) {
@@ -2793,14 +2635,14 @@ impl UiWorld {
                 ));
             }
             UiMutation::SetText { id, text } => {
-                *self.component_mut::<TextContent>(*id) = text.clone();
+                self.record_mut(*id).text = text.clone();
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
             }
             UiMutation::WriteLayout { id, layout } => {
-                *self.component_mut::<LayoutBox>(*id) = *layout;
+                self.record_mut(*id).layout = *layout;
                 // Scoped layout already emits every recomputed box, including
                 // shifted descendants. Mark only this node so a bit-identical
                 // child is not extracted solely because an ancestor was written.
@@ -2811,9 +2653,9 @@ impl UiWorld {
             }
             UiMutation::SetScrollOffset { id, offset } => {
                 let offset = self.clamp_scroll_offset(*id, *offset);
-                let previous = *self.component::<ScrollOffset>(*id);
+                let previous = self.record(*id).scroll_offset;
                 if previous != offset {
-                    *self.component_mut::<ScrollOffset>(*id) = offset;
+                    self.record_mut(*id).scroll_offset = offset;
                     // Hit-index patch + Scene extract of this scroller only.
                     // Descendants keep LayoutBox; paint uses scroll_offset.
                     self.scroll_hit_updates
@@ -2822,23 +2664,18 @@ impl UiWorld {
                 }
             }
             UiMutation::SetScrollMetrics { id, metrics } => {
-                let entity = self.entities[id];
-                if let Some(metrics) = metrics {
-                    self.world.entity_mut(entity).insert(*metrics);
-                } else {
-                    self.world.entity_mut(entity).remove::<ScrollMetrics>();
-                }
-                let current = *self.component::<ScrollOffset>(*id);
+                self.nodes.set_scroll_metrics(*id, *metrics);
+                let current = self.record(*id).scroll_offset;
                 let clamped = self.clamp_scroll_offset(*id, current);
                 if current != clamped {
-                    *self.component_mut::<ScrollOffset>(*id) = clamped;
+                    self.record_mut(*id).scroll_offset = clamped;
                     self.scroll_hit_updates
                         .push((*id, [current.x - clamped.x, current.y - clamped.y]));
                     self.mark(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetInteraction { id, interaction } => {
-                *self.component_mut::<InteractionState>(*id) = *interaction;
+                self.record_mut(*id).interaction = *interaction;
                 if !interaction.pointer_events {
                     self.pointer_hover.retain(|_, target| target != id);
                     self.pointer_press.retain(|_, target| target != id);
@@ -2853,41 +2690,25 @@ impl UiWorld {
                 );
             }
             UiMutation::SetCustomRender { id, content } => {
-                let entity = self.entities[id];
-                if let Some(content) = content {
-                    self.world.entity_mut(entity).insert(content.clone());
-                } else {
-                    self.world.entity_mut(entity).remove::<CustomRenderNode>();
-                }
+                self.nodes.set_custom_render(*id, content.clone());
                 self.mark(*id, DirtyMask::RENDER);
             }
             UiMutation::SetEventListener { id, event, enabled } => {
-                let entity = self.entities[id];
-                let mut listeners = self
-                    .world
-                    .get::<EventListeners>(entity)
-                    .cloned()
-                    .unwrap_or_default();
+                let mut listeners = self.nodes.event_listeners(*id).cloned().unwrap_or_default();
                 listeners.set(event.clone(), *enabled);
                 if listeners.is_empty() {
-                    self.world.entity_mut(entity).remove::<EventListeners>();
+                    self.nodes.set_event_listeners(*id, None);
                 } else {
-                    self.world.entity_mut(entity).insert(listeners);
+                    self.nodes.set_event_listeners(*id, Some(listeners));
                 }
             }
             UiMutation::SetComponentType { id, type_id } => {
-                let entity = self.entities[id];
-                let current = self.world.get::<ComponentTypeId>(entity);
+                let current = self.nodes.component_type(*id);
                 if current != type_id.as_ref() {
-                    if let Some(type_id) = type_id {
-                        self.world.entity_mut(entity).insert(type_id.clone());
-                    } else {
-                        self.world.entity_mut(entity).remove::<ComponentTypeId>();
-                    }
+                    self.nodes.set_component_type(*id, type_id.clone());
                 }
             }
             UiMutation::SetStandardVisual { id, visual } => {
-                let entity = self.entities[id];
                 let (
                     text_input_presentation_changed,
                     empty_state_presentation_changed,
@@ -2895,7 +2716,7 @@ impl UiWorld {
                     modal_state_changed,
                     menu_state_changed,
                 ) = {
-                    let previous_visual = self.world.get::<StandardVisual>(entity);
+                    let previous_visual = self.nodes.visual(*id);
                     (
                         matches!(previous_visual, Some(StandardVisual::TextInput { .. }))
                             || matches!(visual, Some(StandardVisual::TextInput { .. })),
@@ -2920,26 +2741,16 @@ impl UiWorld {
                         menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
                     )
                 };
-                if let Some(visual) = visual {
-                    self.world.entity_mut(entity).insert(visual.clone());
-                } else {
-                    self.world.entity_mut(entity).remove::<StandardVisual>();
-                }
+                self.nodes.set_visual(*id, visual.clone());
                 self.sync_node_presence(*id);
                 if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
-                    self.world
-                        .entity_mut(entity)
-                        .remove::<TextInputPresentation>();
+                    self.nodes.set_text_input_presentation(*id, None);
                 }
                 if !matches!(visual, Some(StandardVisual::EmptyState { .. })) {
-                    self.world
-                        .entity_mut(entity)
-                        .remove::<EmptyStateTextPresentation>();
+                    self.nodes.set_empty_state_text(*id, None);
                 }
                 if !matches!(visual, Some(StandardVisual::ModalFrame { .. })) {
-                    self.world
-                        .entity_mut(entity)
-                        .remove::<ModalTextPresentation>();
+                    self.nodes.set_modal_text(*id, None);
                 }
                 self.mark(
                     *id,
@@ -2977,25 +2788,22 @@ impl UiWorld {
                 }
             }
             UiMutation::SetAccessibility { id, accessibility } => {
-                let previous = self.component::<AccessibilityState>(*id);
+                let previous = &self.record(*id).accessibility;
                 let interaction_style_changed = previous.disabled != accessibility.disabled
                     || previous.checked != accessibility.checked
                     || previous.selected != accessibility.selected;
-                *self.component_mut::<AccessibilityState>(*id) = accessibility.clone();
+                self.record_mut(*id).accessibility = accessibility.clone();
                 self.mark(*id, DirtyMask::ACCESSIBILITY);
-                if interaction_style_changed
-                    && !self.component::<NodeStyle>(*id).interaction.is_empty()
-                {
+                if interaction_style_changed && !self.record(*id).style.interaction.is_empty() {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetOverlayHost { host, state } => {
-                let entity = self.entities[host];
-                let previous = self.world.get::<OverlayHostState>(entity).copied();
+                let previous = self.nodes.overlay_host(*host).copied();
                 if previous == Some(*state) {
                     return;
                 }
-                self.world.entity_mut(entity).insert(*state);
+                self.nodes.set_overlay_host(*host, Some(*state));
                 self.overlay_host_nodes.insert(*host);
                 self.mark(*host, DirtyMask::ACCESSIBILITY);
                 if let Some(inactive) = previous
@@ -3005,7 +2813,7 @@ impl UiWorld {
                     let mut inactive_nodes = HashSet::new();
                     let mut stack = vec![inactive];
                     while let Some(id) = stack.pop() {
-                        stack.extend(self.component::<Hierarchy>(id).children.iter().copied());
+                        stack.extend(self.record(id).hierarchy.children.iter().copied());
                         inactive_nodes.insert(id);
                     }
                     let released = self
@@ -3049,7 +2857,7 @@ impl UiWorld {
                 }
             }
             UiMutation::CapturePointer { pointer_id, target } => {
-                let document = self.component::<Identity>(*target).document;
+                let document = self.record(*target).document;
                 let previous = self
                     .pointer_captures
                     .insert((document, *pointer_id), *target);
@@ -3072,7 +2880,7 @@ impl UiWorld {
                     });
             }
             UiMutation::ReleasePointer { pointer_id, target } => {
-                let document = self.component::<Identity>(*target).document;
+                let document = self.record(*target).document;
                 self.pointer_captures.remove(&(document, *pointer_id));
                 self.pending_pointer_capture_changes
                     .push(PointerCaptureChange {
@@ -3105,12 +2913,7 @@ impl UiWorld {
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
                     self.remove_ime(old);
                     self.mark(old, DirtyMask::STATE);
-                    if !self
-                        .component::<NodeStyle>(old)
-                        .interaction
-                        .focused
-                        .is_empty()
-                    {
+                    if !self.record(old).style.interaction.focused.is_empty() {
                         self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
                     }
                     self.mark(
@@ -3120,12 +2923,7 @@ impl UiWorld {
                 }
                 if let Some(target) = target {
                     self.mark(*target, DirtyMask::STATE);
-                    if !self
-                        .component::<NodeStyle>(*target)
-                        .interaction
-                        .focused
-                        .is_empty()
-                    {
+                    if !self.record(*target).style.interaction.focused.is_empty() {
                         self.mark(*target, DirtyMask::STYLE | DirtyMask::RENDER);
                     }
                     self.mark(
@@ -3135,27 +2933,21 @@ impl UiWorld {
                 }
             }
             UiMutation::SetIme { id, composition } => {
-                let entity = self.entities[id];
-                if let Some(composition) = composition {
-                    self.world.entity_mut(entity).insert(composition.clone());
-                } else {
-                    self.world.entity_mut(entity).remove::<ImeComposition>();
-                }
+                self.nodes.set_ime(*id, composition.clone());
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::FOCUS_IME | DirtyMask::RENDER,
                 );
             }
             UiMutation::SetTextInput { id, state } => {
-                let entity = self.entities[id];
                 if let Some(state) = state {
-                    self.world.entity_mut(entity).insert(state.clone());
-                    *self.component_mut::<TextContent>(*id) = TextContent {
+                    self.nodes.set_text_input(*id, Some(state.clone()));
+                    self.record_mut(*id).text = TextContent {
                         value: state.value.clone(),
                     };
                 } else {
-                    self.world.entity_mut(entity).remove::<TextInputState>();
-                    *self.component_mut::<TextContent>(*id) = TextContent::default();
+                    self.nodes.set_text_input(*id, None);
+                    self.record_mut(*id).text = TextContent::default();
                     self.remove_ime(*id);
                 }
                 self.mark(
@@ -3167,7 +2959,10 @@ impl UiWorld {
                 );
             }
             UiMutation::SetTextSelection { id, selection } => {
-                self.component_mut::<TextInputState>(*id).selection = *selection;
+                self.nodes
+                    .text_input_mut(*id)
+                    .expect("entity must have runtime component")
+                    .selection = *selection;
                 self.mark(
                     *id,
                     DirtyMask::TEXT
@@ -3178,12 +2973,15 @@ impl UiWorld {
             }
             UiMutation::ReplaceTextSelection { id, text } => {
                 let (replaced, value) = {
-                    let mut state = self.component_mut::<TextInputState>(*id);
+                    let state = self
+                        .nodes
+                        .text_input_mut(*id)
+                        .expect("entity must have runtime component");
                     let replaced = state.replace_selection(text);
                     (replaced, state.value.clone())
                 };
                 debug_assert!(replaced, "validated selection must remain valid");
-                *self.component_mut::<TextContent>(*id) = TextContent { value };
+                self.record_mut(*id).text = TextContent { value };
                 self.mark(
                     *id,
                     DirtyMask::TEXT
@@ -3193,36 +2991,33 @@ impl UiWorld {
                 );
             }
             UiMutation::SetHighlightRequest { id, request } => {
-                let entity = self.entities[id];
-                if let Some(request) = request {
-                    self.world.entity_mut(entity).insert(request.clone());
-                } else {
-                    self.world.entity_mut(entity).remove::<HighlightRequest>();
-                    self.world.entity_mut(entity).remove::<TextPresentation>();
+                self.nodes.set_highlight(*id, request.clone());
+                if request.is_none() {
+                    self.nodes.set_text_presentation(*id, None);
                 }
                 self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
             }
         }
     }
 
-    fn extracted_text_spans(&self, entity: Entity) -> Vec<ExtractedTextSpan> {
-        if self.world.get::<ImeComposition>(entity).is_some() {
+    fn extracted_text_spans(&self, id: StableNodeId) -> Vec<ExtractedTextSpan> {
+        if self.nodes.ime(id).is_some() {
             return Vec::new();
         }
         if self
-            .world
-            .get::<TextInputPresentation>(entity)
+            .nodes
+            .text_input_presentation(id)
             .is_some_and(|presentation| presentation.placeholder)
         {
             return Vec::new();
         }
         if matches!(
-            self.world.get::<StandardVisual>(entity),
+            self.nodes.visual(id),
             Some(StandardVisual::TextInput { secure: true, .. })
         ) {
             return Vec::new();
         }
-        let Some(presentation) = self.world.get::<TextPresentation>(entity) else {
+        let Some(presentation) = self.nodes.text_presentation(id) else {
             return Vec::new();
         };
         presentation
@@ -3236,15 +3031,20 @@ impl UiWorld {
             .collect()
     }
 
-    fn component<T: Component>(&self, id: StableNodeId) -> &T {
-        self.world
-            .get::<T>(self.entities[&id])
+    fn record(&self, id: StableNodeId) -> &NodeRecord {
+        self.nodes
+            .get(id)
+            .expect("entity must have runtime component")
+    }
+
+    fn record_mut(&mut self, id: StableNodeId) -> &mut NodeRecord {
+        self.nodes
+            .get_mut(id)
             .expect("entity must have runtime component")
     }
 
     pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
-        let entity = *self.entities.get(&id)?;
-        self.world.get::<Hierarchy>(entity)?.parent
+        self.nodes.get(id)?.hierarchy.parent
     }
 
     fn live_input_target_count(&self) -> usize {
@@ -3294,9 +3094,9 @@ impl UiWorld {
         live
     }
 
-    fn presence_flags_of(&self, entity: Entity) -> PresenceFlags {
-        let visual = self.world.get::<StandardVisual>(entity);
-        let style = self.world.get::<NodeStyle>(entity);
+    fn presence_flags_of(&self, id: StableNodeId) -> PresenceFlags {
+        let visual = self.nodes.visual(id);
+        let style = self.nodes.get(id).map(|n| &n.style);
         PresenceFlags {
             confirm: is_confirm_modal(visual),
             clip: is_clip_visual(visual),
@@ -3305,16 +3105,9 @@ impl UiWorld {
         }
     }
 
-    fn apply_presence_flags(
-        &mut self,
-        id: Option<StableNodeId>,
-        entity: Entity,
-        next: PresenceFlags,
-    ) {
-        let previous = self
-            .presence_flags
-            .get(&entity)
-            .copied()
+    fn apply_presence_flags(&mut self, id: Option<StableNodeId>, next: PresenceFlags) {
+        let previous = id
+            .and_then(|id| self.presence_flags.get(&id).copied())
             .unwrap_or(PresenceFlags::NONE);
         if previous == next {
             return;
@@ -3333,23 +3126,25 @@ impl UiWorld {
                 self.viewport_basis.remove(&id);
             }
         }
-        if next == PresenceFlags::NONE {
-            self.presence_flags.remove(&entity);
-        } else {
-            self.presence_flags.insert(entity, next);
+        if let Some(id) = id {
+            if next == PresenceFlags::NONE {
+                self.presence_flags.remove(&id);
+            } else {
+                self.presence_flags.insert(id, next);
+            }
         }
     }
 
     fn sync_node_presence(&mut self, id: StableNodeId) {
-        let Some(&entity) = self.entities.get(&id) else {
+        if !self.nodes.contains(id) {
             return;
-        };
+        }
         let next = if self.presence_live(id) {
-            self.presence_flags_of(entity)
+            self.presence_flags_of(id)
         } else {
             PresenceFlags::NONE
         };
-        self.apply_presence_flags(Some(id), entity, next);
+        self.apply_presence_flags(Some(id), next);
     }
 
     fn sync_subtree_presence(&mut self, root: StableNodeId) {
@@ -3381,12 +3176,8 @@ impl UiWorld {
         bump_presence(&mut self.clip_visuals, was_clip, now_clip);
     }
 
-    fn forget_visual_presence(&mut self, entity: Entity) {
-        let id = self
-            .world
-            .get::<Identity>(entity)
-            .map(|identity| identity.stable);
-        self.apply_presence_flags(id, entity, PresenceFlags::NONE);
+    fn forget_visual_presence(&mut self, id: StableNodeId) {
+        self.apply_presence_flags(Some(id), PresenceFlags::NONE);
     }
 
     fn extract_node_memo(
@@ -3397,14 +3188,41 @@ impl UiWorld {
         if !self.presence_live_memo(id, memo) {
             return None;
         }
-        let entity = *self.entities.get(&id)?;
-        let identity = self.world.get::<Identity>(entity)?;
-        let (mut style, resolved_epoch) = {
-            let resolved = self.world.get::<ResolvedStyle>(entity)?;
-            (Arc::clone(&resolved.0), resolved.1)
+        let (
+            mut style,
+            resolved_epoch,
+            parent,
+            kind,
+            has_text,
+            source_style,
+            hierarchy_parent,
+            hierarchy_children,
+            layout,
+            scroll_offset,
+            text,
+            text_metrics,
+            document,
+        ) = {
+            let node = self.nodes.get(id)?;
+            let kind = Arc::clone(&node.kind);
+            let has_text = matches!(kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty();
+            (
+                Arc::clone(&node.resolved.0),
+                node.resolved.1,
+                node.hierarchy.parent,
+                kind,
+                has_text,
+                node.style.clone(),
+                node.hierarchy.parent,
+                Arc::clone(&node.hierarchy.children),
+                node.layout,
+                node.scroll_offset,
+                has_text.then(|| node.text.clone()),
+                has_text.then_some(node.text_metrics),
+                node.document,
+            )
         };
         if resolved_epoch != self.palette_epoch {
-            let parent = self.world.get::<Hierarchy>(entity)?.parent;
             let inherited_color = parent.and_then(|parent| {
                 memo.color
                     .get(&parent)
@@ -3428,15 +3246,7 @@ impl UiWorld {
                 style.border_color = border_color;
             }
         }
-        let kind = Arc::clone(&self.world.get::<Kind>(entity)?.0);
-        let has_text = matches!(kind.as_ref(), NodeKind::Text)
-            || self
-                .world
-                .get::<TextContent>(entity)
-                .is_some_and(|text| !text.value.is_empty());
-        let source_style = self.world.get::<NodeStyle>(entity)?.clone();
-        let hierarchy = self.world.get::<Hierarchy>(entity)?;
-        let mut standard_visual = self.world.get::<StandardVisual>(entity).cloned();
+        let mut standard_visual = self.nodes.visual(id).cloned();
         if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
             if busy && !is_confirm {
                 Arc::make_mut(&mut style).color =
@@ -3532,35 +3342,27 @@ impl UiWorld {
         Some(ExtractedNode {
             id,
             kind,
-            parent: hierarchy.parent,
-            children: Arc::clone(&hierarchy.children),
-            layout: *self.world.get::<LayoutBox>(entity)?,
-            scroll_offset: *self.world.get::<ScrollOffset>(entity)?,
+            parent: hierarchy_parent,
+            children: hierarchy_children,
+            layout,
+            scroll_offset,
             z_index: self.stacking_z_index_memo(id, memo),
             source_style,
             style,
-            text: if has_text {
-                self.world.get::<TextContent>(entity).cloned()
-            } else {
-                None
-            },
-            text_metrics: if has_text {
-                self.world.get::<TextMetrics>(entity).copied()
-            } else {
-                None
-            },
-            focused: self.focused.get(&identity.document) == Some(&id),
-            ime: self.world.get::<ImeComposition>(entity).cloned(),
-            text_input: self.world.get::<TextInputState>(entity).cloned(),
+            text,
+            text_metrics,
+            focused: self.focused.get(&document) == Some(&id),
+            ime: self.nodes.ime(id).cloned(),
+            text_input: self.nodes.text_input(id).cloned(),
             text_spans: if has_text {
-                self.extracted_text_spans(entity)
+                self.extracted_text_spans(id)
             } else {
                 Vec::new()
             },
             standard_visual,
             component_geometry,
             standard_visual_foreground,
-            custom_render: self.world.get::<CustomRenderNode>(entity).cloned(),
+            custom_render: self.nodes.custom_render(id).cloned(),
         })
     }
 
@@ -3576,13 +3378,13 @@ impl UiWorld {
                 z_index = known;
                 break;
             }
-            let Some(&entity) = self.entities.get(&node) else {
+            if !self.nodes.contains(node) {
                 break;
             };
             if let Some(authored) = self
-                .world
-                .get::<NodeStyle>(entity)
-                .and_then(|style| style.layout.z_index)
+                .nodes
+                .get(node)
+                .and_then(|record| record.style.layout.z_index)
             {
                 z_index = authored;
                 memo.stacking.insert(node, authored);
@@ -3590,9 +3392,9 @@ impl UiWorld {
             }
             memo.chain.push(node);
             current = self
-                .world
-                .get::<Hierarchy>(entity)
-                .and_then(|hierarchy| hierarchy.parent);
+                .nodes
+                .get(node)
+                .and_then(|record| record.hierarchy.parent);
         }
         for node in memo.chain.drain(..) {
             memo.stacking.insert(node, z_index);
@@ -3606,8 +3408,10 @@ impl UiWorld {
         visual: &StandardVisual,
         style: &ComputedStyle,
     ) -> Option<crate::ComponentGeometry> {
-        let bounds = *self.world.get::<LayoutBox>(self.entities[&id])?;
-        let source = self.world.get::<NodeStyle>(self.entities[&id])?;
+        let (bounds, source) = {
+            let node = self.nodes.get(id)?;
+            (node.layout, node.style.clone())
+        };
         let padding = source.layout.resolved_padding_against(Some(bounds.width));
         let border = source.layout.resolved_border_width();
         let content = LayoutBox {
@@ -3640,11 +3444,7 @@ impl UiWorld {
                 slots,
                 ..
             } => {
-                let presentation = self
-                    .world
-                    .get::<ModalTextPresentation>(self.entities[&id])
-                    .copied()
-                    .unwrap_or_default();
+                let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
                 let has_close = slots.close_action.is_some();
                 let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
                 let chrome = crate::overlay_surfaces::ModalChrome::measure(
@@ -3810,10 +3610,8 @@ impl UiWorld {
                 steppers,
                 ..
             } => {
-                let presentation = self
-                    .world
-                    .get::<TextInputPresentation>(self.entities[&id])?;
-                let accessibility = self.world.get::<AccessibilityState>(self.entities[&id]);
+                let presentation = self.nodes.text_input_presentation(id)?;
+                let accessibility = self.nodes.get(id).map(|n| &n.accessibility);
                 let disabled = accessibility.is_some_and(|state| state.disabled);
                 let steppers = steppers
                     .then(|| {
@@ -3868,11 +3666,10 @@ impl UiWorld {
                     },
                     None => content,
                 };
-                let focused =
-                    self.focused.get(&self.component::<Identity>(id).document) == Some(&id);
+                let focused = self.focused.get(&self.record(id).document) == Some(&id);
                 let metrics = self.text_metrics(id).unwrap_or_default();
                 let multiline = accessibility.is_some_and(|state| state.multiline);
-                let requested_scroll = *self.component::<ScrollOffset>(id);
+                let requested_scroll = self.record(id).scroll_offset;
                 let mut scroll_x = if multiline {
                     requested_scroll.x
                 } else {
@@ -4045,7 +3842,7 @@ impl UiWorld {
                 let palette = self.style_model.palette;
                 let hovered = self.pointer_hover.values().any(|target| *target == id);
                 let pressed = self.pointer_press.values().any(|target| *target == id);
-                let disabled = self.component::<AccessibilityState>(id).disabled;
+                let disabled = self.record(id).accessibility.disabled;
                 let mix = |foreground: [f32; 4], background: [f32; 4], amount: f32| {
                     let amount = amount.clamp(0.0, 1.0);
                     std::array::from_fn(|channel| {
@@ -4492,11 +4289,7 @@ impl UiWorld {
                     (16.0, 24.0, 13.0, 12.0, 6.0)
                 };
                 let width = (bounds.width - horizontal * 2.0).max(0.0);
-                let presentation = self
-                    .world
-                    .get::<EmptyStateTextPresentation>(self.entities[&id])
-                    .copied()
-                    .unwrap_or_default();
+                let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
                 let text_bounds = |metrics: TextMetrics, y: f32| {
                     let shaped_width = metrics.width.clamp(0.0, width);
                     crate::LayoutBox {
@@ -4713,7 +4506,7 @@ impl UiWorld {
                         Some(500),
                     ),
                     focus_ring: (*show_focus_ring
-                        && self.focused.get(&self.component::<Identity>(id).document) == Some(&id))
+                        && self.focused.get(&self.record(id).document) == Some(&id))
                     .then(|| self.style_model.palette.accent.as_rgba_array()),
                     indicator: ring,
                 })
@@ -4884,7 +4677,7 @@ impl UiWorld {
                 options,
                 *highlighted,
                 style,
-                source,
+                &source,
                 &self.style_model.palette,
             )),
             StandardVisual::MenuSurface {
@@ -5097,64 +4890,61 @@ impl UiWorld {
         if !self.is_mounted(id) {
             return None;
         }
-        let entity = *self.entities.get(&id)?;
-        let identity = self.world.get::<Identity>(entity)?;
-        let style = self.world.get::<ResolvedStyle>(entity)?.0.as_ref();
-        if !style.visible {
+        let (parent, children, kind, state, text_value, document, visible) = {
+            let node = self.nodes.get(id)?;
+            (
+                node.hierarchy.parent,
+                Arc::clone(&node.hierarchy.children),
+                Arc::clone(&node.kind),
+                node.accessibility.clone(),
+                node.text.value.clone(),
+                node.document,
+                node.resolved.0.visible,
+            )
+        };
+        if !visible {
             return None;
         }
-        let hierarchy = self.world.get::<Hierarchy>(entity)?;
-        let state = self.world.get::<AccessibilityState>(entity)?;
-        let kind = self.world.get::<Kind>(entity)?.0.as_ref();
-        if matches!(kind, NodeKind::Comment) {
+        if matches!(kind.as_ref(), NodeKind::Comment) {
             return None;
         }
-        let role = match (state.role, kind) {
+        let role = match (state.role, kind.as_ref()) {
             (AccessibilityRole::Generic, NodeKind::Document) => AccessibilityRole::Document,
             (AccessibilityRole::Generic, NodeKind::Text) => AccessibilityRole::Text,
             (role, _) => role,
         };
-        let label = state.label.clone().or_else(|| {
-            self.world
-                .get::<TextContent>(entity)
-                .filter(|text| !text.value.is_empty())
-                .map(|text| Arc::<str>::from(text.value.as_str()))
-        });
+        let label = state
+            .label
+            .clone()
+            .or_else(|| (!text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str())));
         let bounds = match self.component_geometry(id) {
             Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => surface,
             _ => self.visible_accessibility_bounds(id)?,
         };
         Some(AccessibilityNode {
             id,
-            parent: hierarchy.parent,
-            children: hierarchy
-                .children
+            parent,
+            children: children
                 .iter()
                 .copied()
                 .filter(|child| {
                     let child_id = *child;
-                    let child = self.entities[&child_id];
-                    self.world
-                        .get::<ResolvedStyle>(child)
-                        .is_some_and(|style| style.0.visible)
-                        && self
-                            .world
-                            .get::<Kind>(child)
-                            .is_some_and(|kind| !matches!(kind.0.as_ref(), NodeKind::Comment))
-                        && self.visible_accessibility_bounds(child_id).is_some()
+                    self.nodes.get(child_id).is_some_and(|node| {
+                        node.resolved.0.visible && !matches!(node.kind.as_ref(), NodeKind::Comment)
+                    }) && self.visible_accessibility_bounds(child_id).is_some()
                 })
                 .collect(),
             role,
             label,
             description: state.description.clone(),
             value: if matches!(
-                self.world.get::<StandardVisual>(entity),
+                self.nodes.visual(id),
                 Some(StandardVisual::TextInput { secure: true, .. })
             ) {
                 None
             } else {
-                self.world
-                    .get::<TextInputState>(entity)
+                self.nodes
+                    .text_input(id)
                     .map(|input| Arc::<str>::from(input.value.as_str()))
                     .or_else(|| state.value.clone())
             },
@@ -5168,10 +4958,7 @@ impl UiWorld {
             selected: state.selected,
             multiline: state.multiline,
             editable: state.editable,
-            selection: self
-                .world
-                .get::<TextInputState>(entity)
-                .map(|input| input.selection),
+            selection: self.nodes.text_input(id).map(|input| input.selection),
             modal: state.modal,
             busy: state.busy,
             invalid: state.invalid,
@@ -5179,34 +4966,29 @@ impl UiWorld {
             numeric_maximum: state.numeric_maximum,
             numeric_step: state.numeric_step,
             numeric_value: state.numeric_value,
-            focused: self.focused.get(&identity.document) == Some(&id),
+            focused: self.focused.get(&document) == Some(&id),
             bounds,
         })
     }
 
     fn visible_accessibility_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let mut bounds = *self.world.get::<LayoutBox>(*self.entities.get(&id)?)?;
+        let mut bounds = self.nodes.get(id)?.layout;
         if self.clip_visuals == 0 {
             return Some(bounds);
         }
-        let mut parent = self
-            .world
-            .get::<Hierarchy>(*self.entities.get(&id)?)?
-            .parent;
+        let mut parent = self.nodes.get(id)?.hierarchy.parent;
         while let Some(ancestor) = parent {
-            let entity = *self.entities.get(&ancestor)?;
             if matches!(
-                self.world.get::<StandardVisual>(entity),
+                self.nodes.visual(ancestor),
                 Some(StandardVisual::EmptyState { .. })
             ) {
-                bounds = intersect_layout_boxes(bounds, *self.world.get::<LayoutBox>(entity)?)?;
+                bounds = intersect_layout_boxes(bounds, self.nodes.get(ancestor)?.layout)?;
             }
             if let Some(crate::ComponentGeometry::ModalFrame { surface, body, .. }) =
                 self.component_geometry(ancestor)
             {
                 bounds = intersect_layout_boxes(bounds, surface)?;
-                if let Some(StandardVisual::ModalFrame { slots, .. }) =
-                    self.world.get::<StandardVisual>(entity)
+                if let Some(StandardVisual::ModalFrame { slots, .. }) = self.nodes.visual(ancestor)
                     && slots
                         .body
                         .is_some_and(|body_root| self.is_descendant_or_self(id, body_root))
@@ -5214,18 +4996,9 @@ impl UiWorld {
                     bounds = intersect_layout_boxes(bounds, body)?;
                 }
             }
-            parent = self.world.get::<Hierarchy>(entity)?.parent;
+            parent = self.nodes.get(ancestor)?.hierarchy.parent;
         }
         Some(bounds)
-    }
-
-    fn component_mut<T: Component<Mutability = Mutable>>(
-        &mut self,
-        id: StableNodeId,
-    ) -> bevy_ecs::world::Mut<'_, T> {
-        self.world
-            .get_mut::<T>(self.entities[&id])
-            .expect("entity must have runtime component")
     }
 
     pub(crate) fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
@@ -5245,14 +5018,13 @@ impl UiWorld {
         }
         let mut current = self.parent_id(id);
         while let Some(ancestor) = current {
-            let entity = *self.entities.get(&ancestor)?;
             if let Some(StandardVisual::ModalFrame {
                 kind: crate::ModalSurfaceKind::Confirm(_),
                 busy,
                 danger,
                 slots,
                 ..
-            }) = self.world.get::<StandardVisual>(entity)
+            }) = self.nodes.visual(ancestor)
             {
                 let close = slots
                     .close_action
@@ -5276,32 +5048,20 @@ impl UiWorld {
         document: DocumentId,
         target: StableNodeId,
     ) -> Result<(), UiWorldError> {
-        let entity = *self
-            .entities
-            .get(&target)
+        let node = self
+            .nodes
+            .get(target)
             .ok_or(UiWorldError::MissingNode(target))?;
-        let identity = self
-            .world
-            .get::<Identity>(entity)
-            .expect("runtime entity must have identity");
-        if identity.document != document {
+        if node.document != document {
             return Err(UiWorldError::PointerDocument { document, target });
         }
         if !self.is_mounted(target) {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
-        let interaction = self
-            .world
-            .get::<InteractionState>(entity)
-            .expect("runtime entity must have interaction state");
-        if !interaction.pointer_events || !self.used_pointer_events(target).hittable() {
+        if !node.interaction.pointer_events || !self.used_pointer_events(target).hittable() {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
-        let computed = self
-            .world
-            .get::<ResolvedStyle>(entity)
-            .expect("runtime entity must have resolved style");
-        if !computed.0.pointer_events.hittable() {
+        if !node.resolved.0.pointer_events.hittable() {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
         Ok(())
@@ -5310,7 +5070,7 @@ impl UiWorld {
     fn used_pointer_events(&self, id: StableNodeId) -> PointerEventsSpec {
         let mut current = Some(id);
         while let Some(node) = current {
-            if let Some(specified) = self.component::<NodeStyle>(node).layout.pointer_events {
+            if let Some(specified) = self.record(node).style.layout.pointer_events {
                 return specified;
             }
             current = self.parent_id(node);
@@ -5337,7 +5097,7 @@ impl UiWorld {
                     cleared.push(id);
                 }
             }
-            stack.extend(self.component::<Hierarchy>(id).children.iter().copied());
+            stack.extend(self.record(id).hierarchy.children.iter().copied());
         }
         if !cleared.is_empty() {
             self.generation = self.generation.wrapping_add(1);
@@ -5349,14 +5109,13 @@ impl UiWorld {
 
     fn mark_interaction_style(&mut self, id: StableNodeId) {
         self.mark(id, DirtyMask::STATE);
-        if !self.component::<NodeStyle>(id).interaction.is_empty() {
+        if !self.record(id).style.interaction.is_empty() {
             self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
         }
     }
 
     fn remove_ime(&mut self, id: StableNodeId) {
-        let entity = self.entities[&id];
-        self.world.entity_mut(entity).remove::<ImeComposition>();
+        self.nodes.set_ime(id, None);
     }
 
     fn clear_overlay_references(&mut self, removed: StableNodeId) {
@@ -5374,9 +5133,8 @@ impl UiWorld {
             .overlay_host_nodes
             .iter()
             .filter_map(|&host| {
-                let entity = *self.entities.get(&host)?;
                 (!removed.contains(&host))
-                    .then(|| self.world.get::<OverlayHostState>(entity).copied())
+                    .then(|| self.nodes.overlay_host(host).copied())
                     .flatten()
                     .and_then(|mut state| {
                         let previous = state;
@@ -5395,20 +5153,20 @@ impl UiWorld {
                         {
                             state.restore_focus = None;
                         }
-                        (state != previous).then_some((host, entity, state, restore_focus))
+                        (state != previous).then_some((host, state, restore_focus))
                     })
             })
             .collect::<Vec<_>>();
-        for (host, entity, state, restore_focus) in updates {
-            self.world.entity_mut(entity).insert(state);
+        for (host, state, restore_focus) in updates {
+            self.nodes.set_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
-            let document = self.component::<Identity>(host).document;
+            let document = self.record(host).document;
             if let Some(restore_focus) = restore_focus.filter(|id| {
                 self.contains(*id)
                     && self.is_mounted(*id)
-                    && self.component::<Identity>(*id).document == document
-                    && self.component::<InteractionState>(*id).focusable
-                    && self.component::<ResolvedStyle>(*id).0.visible
+                    && self.record(*id).document == document
+                    && self.record(*id).interaction.focusable
+                    && self.record(*id).resolved.0.visible
                     && self.active_modal_allows_focus_now(document, *id)
             }) {
                 self.focused.insert(document, restore_focus);
@@ -5473,7 +5231,7 @@ impl UiWorld {
             background: local.background,
             border: local.border,
         };
-        let accessibility = self.component::<AccessibilityState>(id);
+        let accessibility = &self.record(id).accessibility;
         let selected = accessibility.checked == Some(true)
             || accessibility.mixed
             || accessibility.selected == Some(true);
@@ -5498,8 +5256,7 @@ impl UiWorld {
                 },
             );
         }
-        let identity = self.component::<Identity>(id);
-        if self.focused.get(&identity.document) == Some(&id) {
+        if self.focused.get(&self.record(id).document) == Some(&id) {
             paint = paint.overlay(local.interaction.focused);
         }
         if accessibility.disabled && !accessibility.busy {
@@ -5510,7 +5267,7 @@ impl UiWorld {
 
     fn inherited_palette_color(&self, mut parent: Option<StableNodeId>) -> Option<[f32; 4]> {
         while let Some(id) = parent {
-            let local = self.component::<NodeStyle>(id);
+            let local = &self.record(id).style;
             if let Some(color) = local.layout.color {
                 return Some(color);
             }
@@ -5518,7 +5275,7 @@ impl UiWorld {
             if let Some(role) = paint.foreground {
                 return Some(self.style_model.color(role).as_rgba_array());
             }
-            parent = self.component::<Hierarchy>(id).parent;
+            parent = self.record(id).hierarchy.parent;
         }
         None
     }
@@ -5533,12 +5290,12 @@ impl UiWorld {
         Option<[f32; 4]>,
         Option<[f32; 4]>,
     ) {
-        let local = self.component::<NodeStyle>(id);
+        let local = &self.record(id).style;
         let paint = self.semantic_paint(id, local);
         let layout = local.layout.as_ref();
-        let parent = self.component::<Hierarchy>(id).parent;
+        let parent = self.record(id).hierarchy.parent;
         let inherited_foreground = parent
-            .map(|parent| self.component::<ResolvedStyle>(parent).0.foreground)
+            .map(|parent| self.record(parent).resolved.0.foreground)
             .unwrap_or(SemanticColorRole::Text);
         let foreground = paint.foreground.unwrap_or(inherited_foreground);
         let color = layout.color.or_else(|| {
@@ -5572,16 +5329,15 @@ impl UiWorld {
         if !resolved.insert(id) {
             return Ok(());
         }
-        let parent = self.component::<Hierarchy>(id).parent;
+        let parent = self.record(id).hierarchy.parent;
         if let Some(parent) = parent {
             self.resolve_style(parent, resolved)?;
         }
-        let layout = Arc::clone(&self.component::<NodeStyle>(id).layout);
+        let layout = Arc::clone(&self.record(id).style.layout);
         let inherited = parent
-            .map(|parent| self.component::<ResolvedStyle>(parent).0.as_ref().clone())
+            .map(|parent| self.record(parent).resolved.0.as_ref().clone())
             .unwrap_or_default();
-        let inherited_color =
-            parent.and_then(|parent| self.component::<ResolvedStyle>(parent).0.color);
+        let inherited_color = parent.and_then(|parent| self.record(parent).resolved.0.color);
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
@@ -5626,13 +5382,12 @@ impl UiWorld {
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
         };
         {
-            let resolved = self.component::<ResolvedStyle>(id);
+            let resolved = &self.record(id).resolved;
             if resolved.0.as_ref() == &next && resolved.1 == self.palette_epoch {
                 return Ok(());
             }
         }
-        *self.component_mut::<ResolvedStyle>(id) =
-            ResolvedStyle(Arc::new(next), self.palette_epoch);
+        self.record_mut(id).resolved = ResolvedStyle(Arc::new(next), self.palette_epoch);
         Ok(())
     }
 
@@ -5640,7 +5395,7 @@ impl UiWorld {
         if self.overlay_host_nodes.is_empty() {
             return true;
         }
-        let Some(parent) = self.component::<Hierarchy>(id).parent else {
+        let Some(parent) = self.record(id).hierarchy.parent else {
             return true;
         };
         self.overlay_host(parent)
@@ -5651,13 +5406,13 @@ impl UiWorld {
     /// would otherwise stretch the trigger they hang under, since the trigger
     /// and the surface share one box.
     fn menu_branch_open(&self, id: StableNodeId) -> bool {
-        let Some(parent) = self.component::<Hierarchy>(id).parent else {
+        let Some(parent) = self.record(id).hierarchy.parent else {
             return true;
         };
-        let Some(&entity) = self.entities.get(&parent) else {
+        if !self.nodes.contains(parent) {
             return true;
         };
-        menu_surface_open(self.world.get::<StandardVisual>(entity)) != Some(false)
+        menu_surface_open(self.nodes.visual(parent)) != Some(false)
     }
 
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -5671,24 +5426,17 @@ impl UiWorld {
     }
 
     fn refresh_root_membership(&mut self, id: StableNodeId) {
-        let Some(&entity) = self.entities.get(&id) else {
+        if !self.nodes.contains(id) {
             for roots in self.live_document_roots.values_mut() {
                 roots.remove(&id);
             }
             self.live_document_roots
                 .retain(|_, roots| !roots.is_empty());
             return;
-        };
-        let document = self
-            .world
-            .get::<Identity>(entity)
-            .expect("entity must have identity")
-            .document;
-        let parent = self
-            .world
-            .get::<Hierarchy>(entity)
-            .expect("entity must have hierarchy")
-            .parent;
+        }
+        let node = self.record(id);
+        let document = node.document;
+        let parent = node.hierarchy.parent;
         let live_root = parent.is_none() && self.presence_live(id);
         if live_root {
             self.live_document_roots
@@ -5715,32 +5463,18 @@ impl UiWorld {
         let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
         while let Some(id) = stack.pop() {
             order.push(id);
-            stack.extend(
-                self.component::<Hierarchy>(id)
-                    .children
-                    .iter()
-                    .rev()
-                    .copied(),
-            );
+            stack.extend(self.record(id).hierarchy.children.iter().rev().copied());
         }
         self.record_id_list_alloc(order.len());
         order
     }
 
-    fn hierarchy_mut(&mut self, id: StableNodeId) -> bevy_ecs::world::Mut<'_, Hierarchy> {
-        let entity = *self.entities.get(&id).expect("validated node must exist");
-        self.world
-            .get_mut::<Hierarchy>(entity)
-            .expect("entity must have hierarchy")
+    fn hierarchy_mut(&mut self, id: StableNodeId) -> &mut Hierarchy {
+        &mut self.record_mut(id).hierarchy
     }
 
     fn mark(&mut self, id: StableNodeId, bits: u16) -> bool {
-        let entity = self.entities[&id];
-        let changed = self
-            .world
-            .get_mut::<DirtyMask>(entity)
-            .expect("entity must have dirty component")
-            .insert(bits);
+        let changed = self.record_mut(id).dirty.insert(bits);
         if changed {
             self.dirty_entities.insert(id);
         }
@@ -5770,7 +5504,7 @@ impl UiWorld {
     fn set_subtree_mount_state(&mut self, root: StableNodeId, state: MountState) {
         let ids = self.subtree_ids(root);
         for id in &ids {
-            *self.component_mut::<MountState>(*id) = state;
+            self.record_mut(*id).mount = state;
         }
         if state == MountState::Mounted {
             self.mark_subtree(root, DirtyMask::ALL);
@@ -5781,7 +5515,7 @@ impl UiWorld {
         let Some(parent) = self.node(id).expect("validated node must exist").parent else {
             return false;
         };
-        let mut hierarchy = self.hierarchy_mut(parent);
+        let hierarchy = self.hierarchy_mut(parent);
         Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
         intern_empty_children(&mut hierarchy.children);
         let _hierarchy = hierarchy;
@@ -5803,7 +5537,7 @@ impl UiWorld {
     fn retire_subtree_from_document(&mut self, subtree: &[StableNodeId]) {
         let parked = subtree.iter().copied().collect::<HashSet<_>>();
         for &id in subtree {
-            let document = self.component::<Identity>(id).document;
+            let document = self.record(id).document;
             if self.focused.get(&document) == Some(&id) {
                 self.focused.remove(&document);
             }
@@ -5854,9 +5588,8 @@ impl UiWorld {
 
         for &id in subtree {
             if self.overlay_host(id).is_some() {
-                self.world
-                    .entity_mut(self.entities[&id])
-                    .insert(OverlayHostState::default());
+                self.nodes
+                    .set_overlay_host(id, Some(OverlayHostState::default()));
             }
         }
         self.clear_overlay_references_for(subtree);
@@ -7135,9 +6868,9 @@ impl<'a> ValidationPlan<'a> {
                         let interaction =
                             self.interactions.get(target).copied().unwrap_or_else(|| {
                                 self.source
-                                    .entities
-                                    .get(target)
-                                    .map(|_| *self.source.component::<InteractionState>(*target))
+                                    .nodes
+                                    .get(*target)
+                                    .map(|node| node.interaction)
                                     .unwrap_or_default()
                             });
                         let visible = self.focus_target_visible(*target)?;
@@ -7647,9 +7380,8 @@ impl<'a> ValidationPlan<'a> {
     ) -> Result<Vec<StableNodeId>, UiWorldError> {
         let ids = self
             .source
-            .entities
+            .nodes
             .keys()
-            .copied()
             .chain(self.nodes.keys().copied())
             .collect::<HashSet<_>>();
         self.scanned = self.scanned.saturating_add(ids.len());
@@ -8494,14 +8226,13 @@ mod tests {
     fn document_roots_indexes_live_parentless_nodes_without_scanning() {
         fn scanned(world: &UiWorld, document: DocumentId) -> Vec<StableNodeId> {
             let mut roots = world
-                .entities
+                .nodes
                 .keys()
-                .copied()
                 .filter(|id| {
-                    let identity = world.component::<super::Identity>(*id);
-                    identity.document == document
+                    let node = world.nodes.get(*id).expect("live key");
+                    node.document == document
                         && world.presence_live(*id)
-                        && world.component::<super::Hierarchy>(*id).parent.is_none()
+                        && node.hierarchy.parent.is_none()
                 })
                 .collect::<Vec<_>>();
             roots.sort_unstable();
@@ -10724,8 +10455,6 @@ mod tests {
 
     #[test]
     fn set_component_type_is_noop_when_unchanged() {
-        use bevy_ecs::change_detection::DetectChanges;
-
         let mut world = UiWorld::new();
         let mut queue = MutationQueue::new();
         queue.create(
@@ -10743,26 +10472,11 @@ mod tests {
         queue.set_component_type(node(1), Some(button.clone()));
         world.commit(queue).unwrap();
         let _ = world.take_system_work();
-        let entity = world.entities[&node(1)];
-        let tick_before = world
-            .world
-            .entity(entity)
-            .get_ref::<ComponentTypeId>()
-            .expect("stamped type")
-            .last_changed();
-        world.world.increment_change_tick();
 
         let mut queue = MutationQueue::new();
         queue.set_component_type(node(1), Some(button));
         world.commit(queue).unwrap();
         assert!(world.take_system_work().is_empty());
-        let tick_after = world
-            .world
-            .entity(entity)
-            .get_ref::<ComponentTypeId>()
-            .expect("stamped type")
-            .last_changed();
-        assert_eq!(tick_before, tick_after);
 
         let mut queue = MutationQueue::new();
         queue.set_component_type(node(1), Some(ComponentTypeId::new("nana.select").unwrap()));

@@ -67,7 +67,7 @@ scene_gpu_renderers / scene_resource_producers
 
 应用**不要**自己跑一套布局或把控件坐标写进树。`flush` 会调宿主文字整形（`NanaTextShaper`）和 `RuntimeLayoutEngine`。
 
-对外身份是 `DocumentId` / `StableNodeId`（以及类型化的 `Entity<V>`）。内部用什么 ECS 存储不是 API。
+对外身份是 `DocumentId` / `StableNodeId`（以及类型化的 `Entity<V>`）。内部节点存储不是 API。
 
 ## 实时画面怎么成为节点
 

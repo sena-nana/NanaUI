@@ -1,14 +1,13 @@
 //! Registered text presentation.
 //!
 //! Intent ([`HighlightRequest`]) and derived spans ([`TextPresentation`]) are
-//! retained ECS components. Algorithms live on [`UiWorld`] as named
+//! retained node fields. Algorithms live on [`UiWorld`] as named
 //! [`TextPresenter`] values so Vue flush and `AppContext` share one registry.
 //! Presenters color committed text only; IME preedit stays solid.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use bevy_ecs::component::Component;
 use nana_ui_core::SemanticColorRole;
 
 /// Built-in presenter name for syntax highlighting.
@@ -23,7 +22,7 @@ pub struct TextSpan {
 }
 
 /// Application intent: which presenter should color this node's committed text.
-#[derive(Component, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HighlightRequest {
     pub presenter: Arc<str>,
     pub language: Arc<str>,
@@ -44,7 +43,7 @@ impl HighlightRequest {
 }
 
 /// Derived committed-text spans. Recomputed only when the source hash changes.
-#[derive(Component, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextPresentation {
     pub spans: Vec<TextSpan>,
     pub source: u64,

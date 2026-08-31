@@ -192,7 +192,7 @@ fn main() {
         } else {
             "release"
         },
-        storage: "bevy_ecs 0.19.1 (default features disabled, std only)",
+        storage: "nana-ui-runtime node table",
         frame_budget_ms: FRAME_BUDGET_MS,
         frame_budget_hz: 60,
         warmup_iterations: SMALL_WARMUP,
