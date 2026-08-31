@@ -228,6 +228,12 @@ impl RuntimeInputAdapter {
                                 modifiers.shift,
                             )?
                             || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
+                            || context.update_graph_minimap_pointer(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                            )?
                             || context.update_reorder_list_pointer(document, *pointer_id, *x, *y)?
                             || context.update_split_resize(document, *pointer_id, *x, *y)?
                             || context.update_dock_split_resize(document, *pointer_id, *x, *y)?
@@ -308,6 +314,8 @@ impl RuntimeInputAdapter {
                                     *y,
                                     graph_button,
                                 )?;
+                            } else if context.is_graph_minimap(target) {
+                                context.begin_graph_minimap_pointer(*pointer_id, target, *x, *y)?;
                             } else if *button == 0
                                 && context.begin_reorder_list_pointer(
                                     document,
@@ -391,6 +399,7 @@ impl RuntimeInputAdapter {
                                 *y,
                                 false,
                             )?
+                            || context.end_graph_minimap_pointer(document, *pointer_id, false)?
                             || context.end_reorder_list_pointer(
                                 document,
                                 *pointer_id,
@@ -429,6 +438,8 @@ impl RuntimeInputAdapter {
                             *y,
                             true,
                         )?;
+                        let minimap =
+                            context.end_graph_minimap_pointer(document, *pointer_id, true)?;
                         let reorder = context.end_reorder_list_pointer(
                             document,
                             *pointer_id,
@@ -449,6 +460,7 @@ impl RuntimeInputAdapter {
                             || range
                             || xy_pad
                             || graph
+                            || minimap
                             || reorder
                             || split
                             || dock_split
@@ -843,10 +855,12 @@ mod tests {
     };
     use nana_ui_runtime::{
         ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Card,
-        ComponentGeometry, Dialog, Dock, DockAxis, DockNode, Entity, LayoutBox, MeasureTextShaper,
-        ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost, OverlayHostState, RangeField,
-        ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl, SegmentedOption,
-        SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea, TextInput,
+        ComponentGeometry, Dialog, Dock, DockAxis, DockNode, Entity, GraphMinimap,
+        GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphSize, GraphViewport, LayoutBox,
+        MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
+        OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
+        SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
+        TextInput,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1079,6 +1093,76 @@ mod tests {
         }
         adapter.dispatch(&mut context, document, &release).unwrap();
         assert_eq!(context.world().text(button.stable_id()), Some("Build"));
+    }
+
+    #[test]
+    fn pointer_drag_on_a_graph_minimap_requests_viewport_navigation() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let model = GraphModel::new(
+            vec![GraphNode::new(
+                "node",
+                "Node",
+                GraphPoint::ZERO,
+                GraphSize::new(200.0, 100.0),
+            )],
+            Vec::new(),
+        )
+        .expect("valid graph");
+        let minimap = context
+            .create_component(
+                document,
+                GraphMinimap::new(model).canvas_size(GraphSize::new(400.0, 200.0)),
+            )
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        context
+            .on(minimap, move |_minimap, event: &GraphMinimapEvent, _cx| {
+                observed.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            minimap.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 50.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        for (phase, x, y) in [
+            (PointerPhase::Down, 50.0, 25.0),
+            (PointerPhase::Move, 60.0, 30.0),
+            (PointerPhase::Up, 60.0, 30.0),
+        ] {
+            assert!(
+                adapter
+                    .dispatch(&mut context, document, &pointer(phase, x, y))
+                    .unwrap()
+                    .prevent_default
+            );
+        }
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                GraphMinimapEvent::ViewportRequested(GraphViewport::new(
+                    GraphPoint::new(100.0, 50.0),
+                    1.0
+                )),
+                GraphMinimapEvent::ViewportRequested(GraphViewport::new(
+                    GraphPoint::new(80.0, 40.0),
+                    1.0
+                )),
+            ]
+        );
+        assert!(context.world().pointer_capture(document, 1).is_none());
     }
 
     #[test]

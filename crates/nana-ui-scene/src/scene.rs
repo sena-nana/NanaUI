@@ -2982,6 +2982,48 @@ impl UiScene {
                         ));
                     }
                 }
+                Some(ComponentGeometry::GraphMinimap {
+                    nodes,
+                    node_fill,
+                    indicator,
+                    indicator_fill,
+                    indicator_border,
+                }) => {
+                    let context = VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips: &clips,
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                    };
+                    if !nodes.is_empty() {
+                        self.insert_primitive(visual_quad_batch(
+                            &context,
+                            10,
+                            nodes.iter().copied().map(scene_rect),
+                            VisualQuadStyle {
+                                background: Some(*node_fill),
+                                border_color: None,
+                                border_width: 0.0,
+                                corner_radius: corner_radii(0.0),
+                            },
+                        ));
+                    }
+                    if let Some(indicator) = indicator {
+                        self.insert_primitive(visual_quad(
+                            &context,
+                            11,
+                            scene_rect(*indicator),
+                            VisualQuadStyle {
+                                background: Some(*indicator_fill),
+                                border_color: Some(*indicator_border),
+                                border_width: 1.5,
+                                corner_radius: corner_radii(0.0),
+                            },
+                        ));
+                    }
+                }
                 Some(ComponentGeometry::ImageViewer {
                     scrim,
                     surface,
@@ -3700,6 +3742,7 @@ impl UiScene {
                     | StandardVisual::NativeMarkdown { .. }
                     | StandardVisual::SelectableRichText { .. }
                     | StandardVisual::GraphCanvas { .. }
+                    | StandardVisual::GraphMinimap { .. }
                     | StandardVisual::ImageViewer { .. }
                     | StandardVisual::KeyCaptureLayer { .. }
                     | StandardVisual::KeymapLayer,
