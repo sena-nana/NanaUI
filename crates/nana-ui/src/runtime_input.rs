@@ -192,6 +192,7 @@ impl RuntimeInputAdapter {
                 y,
                 button,
                 is_primary,
+                activation_click,
                 modifiers,
                 ..
             } => {
@@ -352,7 +353,9 @@ impl RuntimeInputAdapter {
                                     )?;
                                 } else {
                                     context.press_pointer(document, *pointer_id, target)?;
-                                    if context.press_number_stepper(target, *x, *y)? {
+                                    if !*activation_click
+                                        && context.press_number_stepper(target, *x, *y)?
+                                    {
                                         context.release_pointer(document, *pointer_id);
                                     } else if context.is_range_field(target) {
                                         context.begin_range_drag(
@@ -407,7 +410,7 @@ impl RuntimeInputAdapter {
                         }
                         let pressed = context.release_pointer(document, *pointer_id);
                         if let Some(pressed) = pressed {
-                            if Some(pressed) == target {
+                            if Some(pressed) == target && !*activation_click {
                                 context.activate_node_at(pressed, *x, *y)?;
                             }
                             true
@@ -894,6 +897,10 @@ mod tests {
     }
 
     fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
+        pointer_with(phase, x, y, false)
+    }
+
+    fn pointer_with(phase: PointerPhase, x: f32, y: f32, activation_click: bool) -> InputEvent {
         InputEvent::Pointer {
             phase,
             pointer_id: 1,
@@ -910,6 +917,7 @@ mod tests {
             tilt_y: 0,
             twist: 0,
             is_primary: true,
+            activation_click,
             modifiers: InputModifiers::default(),
         }
     }
@@ -962,6 +970,51 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(button.stable_id()), Some("Running"));
+    }
+
+    #[test]
+    fn macos_activation_click_does_not_activate_the_hit_target() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let button = context
+            .create_component(document, Button::new("Build"))
+            .unwrap();
+        context
+            .on(button, |button, _event: &Activate, _cx| {
+                button.label = "Running".into();
+            })
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            button.stable_id(),
+            LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 120.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer_with(PointerPhase::Down, 30.0, 30.0, true)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        let _ = adapter.dispatch(
+            &mut context,
+            document,
+            &pointer_with(PointerPhase::Up, 30.0, 30.0, true),
+        );
+        assert_eq!(context.world().text(button.stable_id()), Some("Build"));
     }
 
     #[test]

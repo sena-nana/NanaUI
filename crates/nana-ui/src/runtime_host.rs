@@ -479,6 +479,54 @@ pub(crate) fn runtime_text_input_request(
     }
 }
 
+/// Focused editor excerpt for winit surrounding text. Password / unfocused: `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImeSurroundingSnapshot {
+    pub text: String,
+    pub cursor: usize,
+    pub anchor: usize,
+}
+
+const IME_SURROUNDING_MAX_BYTES: usize = 4000;
+
+pub(crate) fn runtime_ime_surrounding(
+    document: &RuntimeDocument,
+) -> Option<ImeSurroundingSnapshot> {
+    let request = runtime_text_input_request(document);
+    if !request.enabled || request.purpose == nana_ui_platform::TextInputPurpose::Password {
+        return None;
+    }
+    let (_, state) = document.context().focused_text_input(document.document())?;
+    clip_ime_surrounding(&state.value, state.selection.focus, state.selection.anchor)
+}
+
+fn clip_ime_surrounding(
+    text: &str,
+    cursor: usize,
+    anchor: usize,
+) -> Option<ImeSurroundingSnapshot> {
+    if !text.is_char_boundary(cursor) || !text.is_char_boundary(anchor) {
+        return None;
+    }
+    if text.len() <= IME_SURROUNDING_MAX_BYTES {
+        return Some(ImeSurroundingSnapshot {
+            text: text.to_string(),
+            cursor,
+            anchor,
+        });
+    }
+    let start = text.floor_char_boundary(cursor.saturating_sub(IME_SURROUNDING_MAX_BYTES / 2));
+    let end = text.floor_char_boundary((start + IME_SURROUNDING_MAX_BYTES).min(text.len()));
+    if end <= start {
+        return None;
+    }
+    Some(ImeSurroundingSnapshot {
+        text: text[start..end].to_string(),
+        cursor: cursor.saturating_sub(start).min(end - start),
+        anchor: anchor.saturating_sub(start).min(end - start),
+    })
+}
+
 pub fn run_runtime<Program: RuntimeProgram>(
     settings: WindowSettings,
 ) -> Result<(), crate::HostedRunError> {
@@ -488,7 +536,8 @@ pub fn run_runtime<Program: RuntimeProgram>(
 #[cfg(test)]
 mod tests {
     use super::{
-        gated_runtime_input_update, gated_runtime_window_update, runtime_text_input_request,
+        IME_SURROUNDING_MAX_BYTES, clip_ime_surrounding, gated_runtime_input_update,
+        gated_runtime_window_update, runtime_ime_surrounding, runtime_text_input_request,
     };
     use nana_ui_platform::{InputDisposition, InputEvent, InputModifiers, WindowId};
     use nana_ui_runtime::{AppContext, Dialog, DocumentId, OverlayHost, TextArea};
@@ -558,6 +607,53 @@ mod tests {
         let request = runtime_text_input_request(&document);
         assert!(!request.enabled);
         assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
+    }
+
+    #[test]
+    fn runtime_ime_surrounding_follows_focus_and_skips_password() {
+        let document_id = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
+        let input = document
+            .context_mut()
+            .create_component(document_id, nana_ui_runtime::TextInput::new("NanaUI"))
+            .unwrap();
+        assert!(runtime_ime_surrounding(&document).is_none());
+
+        assert!(
+            document
+                .context_mut()
+                .focus_node(document_id, input.stable_id())
+                .unwrap()
+        );
+        let surrounding = runtime_ime_surrounding(&document).expect("focused editor");
+        assert_eq!(surrounding.text, "NanaUI");
+        assert_eq!(surrounding.cursor, "NanaUI".len());
+        assert_eq!(surrounding.anchor, "NanaUI".len());
+
+        let password = document
+            .context_mut()
+            .create_component(
+                document_id,
+                nana_ui_runtime::TextInput::new("secret").secure(true),
+            )
+            .unwrap();
+        assert!(
+            document
+                .context_mut()
+                .focus_node(document_id, password.stable_id())
+                .unwrap()
+        );
+        assert!(runtime_ime_surrounding(&document).is_none());
+    }
+
+    #[test]
+    fn clip_ime_surrounding_stays_within_winit_limit() {
+        let text = "字".repeat(IME_SURROUNDING_MAX_BYTES);
+        let caret = text.len();
+        let clip = clip_ime_surrounding(&text, caret, caret).expect("excerpt");
+        assert!(clip.text.len() <= IME_SURROUNDING_MAX_BYTES);
+        assert!(clip.text.is_char_boundary(clip.cursor));
+        assert!(clip.text.is_char_boundary(clip.anchor));
     }
 
     #[test]

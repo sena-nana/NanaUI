@@ -208,6 +208,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 tilt_y,
                 twist,
                 is_primary,
+                activation_click: _,
                 modifiers,
             } => {
                 let kind = match phase {
@@ -996,6 +997,7 @@ mod tests {
             tilt_y: 0,
             twist: 0,
             is_primary: true,
+            activation_click: false,
             modifiers: nana_ui_platform::InputModifiers::default(),
         }
     }

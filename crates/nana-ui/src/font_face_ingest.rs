@@ -84,8 +84,10 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         let Some(bytes) = load_font_src_bytes(&resolved) else {
             continue;
         };
-        if register_host_font_face(bytes, spec.family.as_deref(), spec.weight, spec.style).is_err()
-        {
+        let Some(family) = spec.family.as_deref().filter(|family| !family.is_empty()) else {
+            continue;
+        };
+        if register_host_font_face(family, bytes, spec.weight, None) == 0 {
             continue;
         }
         mark_loaded(key);

@@ -26,6 +26,8 @@ pub enum InputEvent {
         tilt_y: i16,
         twist: u16,
         is_primary: bool,
+        /// macOS click that brought the window forward. Skip activate / chrome buttons.
+        activation_click: bool,
         modifiers: InputModifiers,
     },
     Wheel {
@@ -101,6 +103,7 @@ mod tests {
             tilt_y: -10,
             twist: 180,
             is_primary: true,
+            activation_click: false,
             modifiers: InputModifiers {
                 shift: true,
                 ..InputModifiers::default()

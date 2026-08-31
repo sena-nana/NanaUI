@@ -166,25 +166,32 @@ impl TitleBarDragTracker {
                 phase: PointerPhase::Down,
                 button: 0,
                 is_primary: true,
+                activation_click,
                 x,
                 y,
                 ..
-            } => match title_bar_pointer_hit(context, document, *x, *y) {
-                TitleBarHit::None => Vec::new(),
-                TitleBarHit::Control(action) => {
-                    self.pressed = true;
-                    self.control = Some(action);
-                    Vec::new()
+            } => {
+                let hit = title_bar_pointer_hit(context, document, *x, *y);
+                if *activation_click && matches!(hit, TitleBarHit::Control(_)) {
+                    return Vec::new();
                 }
-                TitleBarHit::Drag => {
-                    self.pressed = true;
-                    self.control = None;
-                    vec![
-                        WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
-                        WindowChromeEvent::PointerPressed,
-                    ]
+                match hit {
+                    TitleBarHit::None => Vec::new(),
+                    TitleBarHit::Control(action) => {
+                        self.pressed = true;
+                        self.control = Some(action);
+                        Vec::new()
+                    }
+                    TitleBarHit::Drag => {
+                        self.pressed = true;
+                        self.control = None;
+                        vec![
+                            WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
+                            WindowChromeEvent::PointerPressed,
+                        ]
+                    }
                 }
-            },
+            }
             InputEvent::Pointer {
                 phase: PointerPhase::Move,
                 x,
@@ -581,6 +588,19 @@ mod tests {
         assert!(!WindowChrome::custom().native_control_hit(bar, 12.0, 18.0));
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn with_activation_click(
+        mut event: nana_ui_platform::InputEvent,
+    ) -> nana_ui_platform::InputEvent {
+        if let nana_ui_platform::InputEvent::Pointer {
+            activation_click, ..
+        } = &mut event
+        {
+            *activation_click = true;
+        }
+        event
+    }
+
     fn pointer_down(x: f32, y: f32) -> nana_ui_platform::InputEvent {
         nana_ui_platform::InputEvent::Pointer {
             phase: nana_ui_platform::PointerPhase::Down,
@@ -598,6 +618,7 @@ mod tests {
             tilt_y: 0,
             twist: 0,
             is_primary: true,
+            activation_click: false,
             modifiers: nana_ui_platform::InputModifiers::default(),
         }
     }
@@ -756,6 +777,29 @@ mod tests {
                 &pointer_up(x, y),
             ),
             Some(WindowChromeAction::Close)
+        );
+
+        let mut activation = TitleBarDragTracker::default();
+        let mut activation_state = WindowChromeState::default();
+        assert_eq!(
+            apply_title_bar_pointer(
+                &mut activation_state,
+                &mut activation,
+                &context,
+                document,
+                &with_activation_click(pointer_down(x, y)),
+            ),
+            None
+        );
+        assert_eq!(
+            apply_title_bar_pointer(
+                &mut activation_state,
+                &mut activation,
+                &context,
+                document,
+                &with_activation_click(pointer_up(x, y)),
+            ),
+            None
         );
     }
 }

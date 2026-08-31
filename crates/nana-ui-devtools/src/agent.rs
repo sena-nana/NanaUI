@@ -517,6 +517,7 @@ fn dispatch_runtime_pointer(
                 tilt_y: 0,
                 twist: 0,
                 is_primary: true,
+                activation_click: false,
                 modifiers: InputModifiers::default(),
             },
         )

@@ -1064,7 +1064,7 @@ struct LayerUniform {
     mask_pos2: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 320);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 336);
 
 fn make_layer_uniform(
     layer: &HostTextureLayer,
@@ -1081,7 +1081,7 @@ fn make_layer_uniform(
         1.0
     };
     let clip = layer.clip.unwrap_or(bounds);
-    let mask = pack_layer_mask(layer.mask.as_ref(), url_mask_loaded);
+    let mask = pack_layer_mask(layer.mask.as_ref(), url_mask_loaded, bounds);
     LayerUniform {
         params: [
             layer.opacity,
@@ -1134,7 +1134,11 @@ struct PackedLayerMask {
     pos2: [f32; 4],
 }
 
-fn pack_layer_mask(mask: Option<&nana_ui_core::MaskImage>, url_loaded: bool) -> PackedLayerMask {
+fn pack_layer_mask(
+    mask: Option<&nana_ui_core::MaskImage>,
+    url_loaded: bool,
+    bounds: LogicalRect,
+) -> PackedLayerMask {
     let mut packed = PackedLayerMask {
         meta: [0.0; 4],
         center: [0.0; 4],
@@ -1153,13 +1157,18 @@ fn pack_layer_mask(mask: Option<&nana_ui_core::MaskImage>, url_loaded: bool) -> 
             0.0,
             linear.stops.as_slice(),
         ),
-        nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Radial(radial)) => (
-            2.0,
-            0.0,
-            radial.center,
-            if radial.circle { 0.0 } else { 1.0 },
-            radial.stops.as_slice(),
-        ),
+        nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Radial(radial)) => {
+            let Some(center) = radial.resolved_center(bounds.width, bounds.height) else {
+                return packed;
+            };
+            (
+                2.0,
+                0.0,
+                center,
+                if radial.circle { 0.0 } else { 1.0 },
+                radial.stops.as_slice(),
+            )
+        }
         nana_ui_core::MaskImage::Url(_) if url_loaded => {
             packed.meta = [3.0, 0.0, 0.0, 0.0];
             return packed;
