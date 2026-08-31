@@ -78,7 +78,7 @@ impl HostTextureSceneResolver {
             let Some(primitive) = scene.primitive(*id) else {
                 continue;
             };
-            let ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
+            let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
                 continue;
             };
             // Scene GPU painters such as `"gpu-view"` are resolved by
@@ -108,7 +108,7 @@ pub(crate) fn validate_scene(
         .frame_graph(ResourceId(1))
         .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
     for primitive in scene.primitives() {
-        if let ScenePrimitiveKind::Custom(custom) = &primitive.kind {
+        if let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind {
             if custom.renderer.as_ref() == "nana.host-texture" {
                 let Some(host_textures) = host_textures else {
                     return Err(ScenePaintError::CustomPrimitive(primitive.id));
@@ -218,7 +218,7 @@ mod tests {
                 && scene.primitive(*primitive).is_some_and(|primitive| {
                     matches!(
                         &primitive.kind,
-                        ScenePrimitiveKind::Custom(custom)
+                        ScenePrimitiveKind::Custom { node: custom, .. }
                             if custom.renderer.as_ref() == GPU_VIEW_RENDERER
                     )
                 })

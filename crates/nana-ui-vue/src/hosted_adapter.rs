@@ -502,7 +502,18 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let Ok(mut doc) = document_slot.lock() else {
             return false;
         };
-        bridge.apply_css_animation_samples(&mut doc, frame)
+        let changed = bridge.apply_css_animation_samples(&mut doc, frame);
+        drop(doc);
+        drop(bridge);
+        drop(host);
+        // Same beat as sample apply so T_end does not wait for the next pump
+        // (where a class-arm fallback timeout could fire first).
+        if let Ok(host) = self.require_host(VueWindowId(id.0))
+            && let Ok(host) = host.lock()
+        {
+            let _ = host.flush_motion_complete(&mut self.engine);
+        }
+        changed
     }
 
     pub fn sync_animation_clock(&self, epoch: std::time::Instant) {
@@ -517,6 +528,11 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             return;
         };
         host.prepare_canvas_gpu();
+        if let Ok(mut document) = host.document().lock() {
+            document.sync_svg_rasters();
+        }
+        host.prepare_svg_gpu();
+        host.prepare_media_gpu();
         // Stamp packed HostTexture generation/version onto CustomRenderNode
         // before extract; content invalidation must not leave revision at 0.
         if let Ok(mut document) = host.document().lock() {
@@ -541,6 +557,15 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             }
         }
         host.resolve_layout();
+        if let Ok(mut document) = host.document().lock() {
+            document.sync_svg_rasters();
+        }
+        host.prepare_svg_gpu();
+        host.prepare_media_gpu();
+        if let Ok(mut document) = host.document().lock() {
+            document.flush_host_frame();
+            host.report_commit_rejections(&mut document);
+        }
     }
 
     pub fn host_textures_for(&self, id: WindowId) -> Option<HostTextureRegistry> {

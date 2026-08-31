@@ -766,6 +766,7 @@ mod tests {
                     .max_width
                     .map_or(natural_width, |width| natural_width.min(width)),
                 height: lines as f32 * style.font_size * 1.2,
+                ascent: None,
             }
         }
     }

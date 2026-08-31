@@ -6,7 +6,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::icon::Icon;
 use crate::theme::{ThemeMetrics, ThemeMode, UI_METRICS};
 
-const RADIUS_STEP: f32 = 4.0;
+/// CSS px for the four exposed radius steps (micro / control / card / page).
+const DEFAULT_RADIUS_XS: f32 = 2.0;
+const DEFAULT_RADIUS_SM: f32 = 6.0;
+const DEFAULT_RADIUS_MD: f32 = 10.0;
+const DEFAULT_RADIUS_LG: f32 = 14.0;
 
 /// Window backdrop selected by the app or Appearance settings.
 ///
@@ -61,9 +65,12 @@ impl BackdropTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppearanceSettings {
-    standard_radius: f32,
+    radius_xs: f32,
+    radius_sm: f32,
+    radius_md: f32,
+    radius_lg: f32,
     workspace_corners_enabled: bool,
     window_material: WindowMaterialMode,
     backdrop_target: BackdropTarget,
@@ -89,8 +96,12 @@ impl AppearanceSettings {
     pub const RESET_THEME: ThemeMode = ThemeMode::Light;
 
     pub fn new(standard_radius: f32) -> Self {
+        let radius_md = normalize_radius(standard_radius, DEFAULT_RADIUS_MD);
         Self {
-            standard_radius: normalize_standard_radius(standard_radius),
+            radius_xs: DEFAULT_RADIUS_XS,
+            radius_sm: DEFAULT_RADIUS_SM,
+            radius_md,
+            radius_lg: DEFAULT_RADIUS_LG,
             workspace_corners_enabled: true,
             window_material: WindowMaterialMode::Solid,
             backdrop_target: BackdropTarget::Sidebar,
@@ -99,8 +110,25 @@ impl AppearanceSettings {
         }
     }
 
+    /// Page / "standard" radius (`radius_md`). Kept for persisted hosts.
     pub fn standard_radius(&self) -> f32 {
-        self.standard_radius
+        self.radius_md
+    }
+
+    pub fn radius_xs(&self) -> f32 {
+        self.radius_xs
+    }
+
+    pub fn radius_sm(&self) -> f32 {
+        self.radius_sm
+    }
+
+    pub fn radius_md(&self) -> f32 {
+        self.radius_md
+    }
+
+    pub fn radius_lg(&self) -> f32 {
+        self.radius_lg
     }
 
     pub fn workspace_corners_enabled(&self) -> bool {
@@ -125,21 +153,32 @@ impl AppearanceSettings {
 
     pub fn metrics(&self) -> ThemeMetrics {
         ThemeMetrics {
-            radius_xs: self.standard_radius - RADIUS_STEP * 2.0,
-            radius_sm: self.standard_radius - RADIUS_STEP,
-            radius_md: self.standard_radius,
-            radius_lg: self.standard_radius + RADIUS_STEP,
+            radius_xs: self.radius_xs,
+            radius_sm: self.radius_sm,
+            radius_md: self.radius_md,
+            radius_lg: self.radius_lg,
             ..UI_METRICS
         }
     }
 
     pub fn set_standard_radius(&mut self, standard_radius: f32) -> bool {
-        let standard_radius = normalize_standard_radius(standard_radius);
-        if (self.standard_radius - standard_radius).abs() < f32::EPSILON {
-            return false;
-        }
-        self.standard_radius = standard_radius;
-        true
+        self.set_radius_md(standard_radius)
+    }
+
+    pub fn set_radius_xs(&mut self, radius: f32) -> bool {
+        replace_radius(&mut self.radius_xs, radius, DEFAULT_RADIUS_XS)
+    }
+
+    pub fn set_radius_sm(&mut self, radius: f32) -> bool {
+        replace_radius(&mut self.radius_sm, radius, DEFAULT_RADIUS_SM)
+    }
+
+    pub fn set_radius_md(&mut self, radius: f32) -> bool {
+        replace_radius(&mut self.radius_md, radius, DEFAULT_RADIUS_MD)
+    }
+
+    pub fn set_radius_lg(&mut self, radius: f32) -> bool {
+        replace_radius(&mut self.radius_lg, radius, DEFAULT_RADIUS_LG)
     }
 
     pub fn set_workspace_corners_enabled(&mut self, enabled: bool) -> bool {
@@ -216,6 +255,27 @@ impl Default for AppearanceSettings {
     }
 }
 
+impl Serialize for AppearanceSettings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("AppearanceSettings", 10)?;
+        state.serialize_field("radius_xs", &self.radius_xs)?;
+        state.serialize_field("radius_sm", &self.radius_sm)?;
+        state.serialize_field("radius_md", &self.radius_md)?;
+        state.serialize_field("radius_lg", &self.radius_lg)?;
+        state.serialize_field("standard_radius", &self.radius_md)?;
+        state.serialize_field("workspace_corners_enabled", &self.workspace_corners_enabled)?;
+        state.serialize_field("window_material", &self.window_material)?;
+        state.serialize_field("backdrop_target", &self.backdrop_target)?;
+        state.serialize_field("backdrop_opacity", &self.backdrop_opacity)?;
+        state.serialize_field("titlebar_follows_sidebar", &self.titlebar_follows_sidebar)?;
+        state.end()
+    }
+}
+
 impl<'de> Deserialize<'de> for AppearanceSettings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -223,7 +283,16 @@ impl<'de> Deserialize<'de> for AppearanceSettings {
     {
         #[derive(Deserialize)]
         struct PersistedAppearance {
-            standard_radius: f32,
+            #[serde(default)]
+            radius_xs: Option<f32>,
+            #[serde(default)]
+            radius_sm: Option<f32>,
+            #[serde(default)]
+            radius_md: Option<f32>,
+            #[serde(default)]
+            radius_lg: Option<f32>,
+            #[serde(default)]
+            standard_radius: Option<f32>,
             workspace_corners_enabled: bool,
             #[serde(default)]
             window_material: WindowMaterialMode,
@@ -236,8 +305,48 @@ impl<'de> Deserialize<'de> for AppearanceSettings {
         }
 
         let persisted = PersistedAppearance::deserialize(deserializer)?;
+        let has_scale = persisted.radius_xs.is_some()
+            || persisted.radius_sm.is_some()
+            || persisted.radius_md.is_some()
+            || persisted.radius_lg.is_some();
+        let radius_md = if has_scale {
+            persisted
+                .radius_md
+                .or(persisted.standard_radius)
+                .map(|value| normalize_radius(value, DEFAULT_RADIUS_MD))
+                .unwrap_or(DEFAULT_RADIUS_MD)
+        } else if let Some(standard) = persisted.standard_radius {
+            normalize_legacy_standard_radius(standard)
+        } else {
+            DEFAULT_RADIUS_MD
+        };
+        let (radius_xs, radius_sm, radius_lg) = if has_scale {
+            (
+                persisted
+                    .radius_xs
+                    .map(|value| normalize_radius(value, DEFAULT_RADIUS_XS))
+                    .unwrap_or(DEFAULT_RADIUS_XS),
+                persisted
+                    .radius_sm
+                    .map(|value| normalize_radius(value, DEFAULT_RADIUS_SM))
+                    .unwrap_or(DEFAULT_RADIUS_SM),
+                persisted
+                    .radius_lg
+                    .map(|value| normalize_radius(value, DEFAULT_RADIUS_LG))
+                    .unwrap_or(DEFAULT_RADIUS_LG),
+            )
+        } else if let Some(standard) = persisted.standard_radius {
+            // Legacy single-slider JSON: keep the four-step offset for that restore only.
+            let md = normalize_legacy_standard_radius(standard);
+            (md - 8.0, md - 4.0, md + 4.0)
+        } else {
+            (DEFAULT_RADIUS_XS, DEFAULT_RADIUS_SM, DEFAULT_RADIUS_LG)
+        };
         Ok(Self {
-            standard_radius: normalize_standard_radius(persisted.standard_radius),
+            radius_xs,
+            radius_sm,
+            radius_md,
+            radius_lg,
             workspace_corners_enabled: persisted.workspace_corners_enabled,
             window_material: persisted.window_material,
             backdrop_target: persisted.backdrop_target,
@@ -255,14 +364,31 @@ fn default_titlebar_follows_sidebar() -> bool {
     true
 }
 
-fn normalize_standard_radius(radius: f32) -> f32 {
+fn replace_radius(slot: &mut f32, radius: f32, fallback: f32) -> bool {
+    let radius = normalize_radius(radius, fallback);
+    if (*slot - radius).abs() < f32::EPSILON {
+        return false;
+    }
+    *slot = radius;
+    true
+}
+
+fn normalize_radius(radius: f32, fallback: f32) -> f32 {
+    if radius.is_finite() {
+        radius.clamp(0.0, f32::from(AppearanceSettings::MAX_STANDARD_RADIUS))
+    } else {
+        fallback
+    }
+}
+
+fn normalize_legacy_standard_radius(radius: f32) -> f32 {
     if radius.is_finite() {
         radius.clamp(
             f32::from(AppearanceSettings::MIN_STANDARD_RADIUS),
             f32::from(AppearanceSettings::MAX_STANDARD_RADIUS),
         )
     } else {
-        UI_METRICS.radius_md
+        DEFAULT_RADIUS_MD
     }
 }
 
@@ -601,10 +727,14 @@ mod tests {
     }
 
     #[test]
-    fn standard_radius_derives_the_full_scale_and_can_be_reset() {
+    fn appearance_exposes_four_radii_without_deriving() {
         let mut appearance = AppearanceSettings::default();
 
         assert_eq!(appearance.standard_radius(), 10.0);
+        assert_eq!(appearance.radius_xs(), 2.0);
+        assert_eq!(appearance.radius_sm(), 6.0);
+        assert_eq!(appearance.radius_md(), 10.0);
+        assert_eq!(appearance.radius_lg(), 14.0);
         assert!(appearance.workspace_corners_enabled());
         assert_eq!(appearance.window_material(), WindowMaterialMode::Solid);
         assert!(!WindowMaterialMode::Translucent.wants_native());
@@ -620,10 +750,22 @@ mod tests {
 
         assert!(appearance.set_standard_radius(24.0));
         assert_eq!(appearance.standard_radius(), 24.0);
-        assert_eq!(appearance.metrics().radius_xs, 16.0);
-        assert_eq!(appearance.metrics().radius_sm, 20.0);
+        assert_eq!(appearance.metrics().radius_xs, 2.0);
+        assert_eq!(appearance.metrics().radius_sm, 6.0);
         assert_eq!(appearance.metrics().radius_md, 24.0);
-        assert_eq!(appearance.metrics().radius_lg, 28.0);
+        assert_eq!(appearance.metrics().radius_lg, 14.0);
+
+        assert!(appearance.set_radius_xs(4.0));
+        assert!(appearance.set_radius_sm(8.0));
+        assert!(appearance.set_radius_lg(18.0));
+        assert_eq!(
+            (
+                appearance.radius_xs(),
+                appearance.radius_sm(),
+                appearance.radius_lg()
+            ),
+            (4.0, 8.0, 18.0)
+        );
 
         assert!(appearance.set_standard_radius(80.0));
         assert_eq!(appearance.standard_radius(), 28.0);
@@ -652,19 +794,29 @@ mod tests {
 
     #[test]
     fn appearance_round_trip_normalizes_persisted_values() {
-        let persisted = AppearanceSettings {
-            standard_radius: -4.0,
-            workspace_corners_enabled: false,
-            window_material: WindowMaterialMode::Translucent,
-            backdrop_target: BackdropTarget::Main,
-            backdrop_opacity: 2.0,
-            titlebar_follows_sidebar: false,
-        };
+        let persisted = AppearanceSettings::default();
         let encoded = persisted.to_json().expect("appearance serializes");
         let mut restored = AppearanceSettings::default();
         restored
             .restore_json(&encoded)
             .expect("appearance restores");
+        assert_eq!(restored.radius_xs(), 2.0);
+        assert_eq!(restored.radius_sm(), 6.0);
+        assert_eq!(restored.radius_md(), 10.0);
+        assert_eq!(restored.radius_lg(), 14.0);
+
+        restored
+            .restore_json(
+                r#"{
+                    "standard_radius": -4.0,
+                    "workspace_corners_enabled": false,
+                    "window_material": "translucent",
+                    "backdrop_target": "main",
+                    "backdrop_opacity": 2.0,
+                    "titlebar_follows_sidebar": false
+                }"#,
+            )
+            .expect("legacy standard_radius restores");
 
         assert_eq!(restored.standard_radius(), 8.0);
         assert_eq!(restored.metrics().radius_xs, 0.0);
@@ -702,5 +854,9 @@ mod tests {
                 < f32::EPSILON
         );
         assert!(restored.titlebar_follows_sidebar());
+        assert_eq!(restored.standard_radius(), 12.0);
+        assert_eq!(restored.radius_xs(), 4.0);
+        assert_eq!(restored.radius_sm(), 8.0);
+        assert_eq!(restored.radius_lg(), 16.0);
     }
 }

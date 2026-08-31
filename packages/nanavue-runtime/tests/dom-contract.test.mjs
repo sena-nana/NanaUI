@@ -16,6 +16,7 @@ const shimSrc = readFileSync(
 );
 const rendererSrc = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
 const layoutSrc = readFileSync(join(root, "src/layoutMetrics.js"), "utf8");
+const transitionSrc = readFileSync(join(root, "src/transitionContract.js"), "utf8");
 
 /** In-memory host tree for wrapNode getters. */
 function makeTreeHost() {
@@ -140,16 +141,20 @@ function loadRuntime(host) {
   vm.runInNewContext(shimSrc, sandbox, { filename: "shim.js" });
 
   const layoutBody = layoutSrc.replace(/^export\s+/gm, "");
+  const transitionBody = transitionSrc.replace(/^export\s+/gm, "");
   const rendererBody = rendererSrc
     .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']@vue\/runtime-core["'];?/, "")
     .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']\.\/layoutMetrics\.js["'];?/, "")
+    .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']\.\/transitionContract\.js["'];?/, "")
     .replace(/export\s+\{\s*hostCall\s*\}\s+from\s+["']\.\/layoutMetrics\.js["'];?/, "")
+    .replace(/export\s+\{[^}]+\}\s+from\s+["']\.\/transitionContract\.js["'];?/, "")
     .replace(/^export\s+function\s+/gm, "function ")
     .replace(/^export\s+const\s+/gm, "const ")
     .replace(/^export\s+\{[^}]+\};?/gm, "");
 
   const bundled = `
 ${layoutBody}
+${transitionBody}
 const createRenderer = () => ({ createApp() {}, render() {} });
 ${rendererBody}
 globalThis.__exports = { wrapNode, nodeId, hostOps };

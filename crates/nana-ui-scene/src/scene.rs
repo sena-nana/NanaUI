@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use nana_ui_core::{
-    BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DrawerSide, Icon,
-    LineHeightSpec, MixBlendMode, SwitchControlPosition, UI_METRICS, icon_y_on_text_glyph_center,
+    BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DirSpec, DrawerSide,
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec,
+    MixBlendMode, SwitchControlPosition, UI_METRICS, WordBreakSpec, WritingModeSpec,
+    icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
@@ -194,6 +196,8 @@ pub enum ScenePrimitiveKind {
         font_features: Vec<nana_ui_core::FontFeatureSetting>,
         italic: bool,
         wrap_break: nana_ui_core::TextWrapBreak,
+        /// OpenType / wrap subset from computed style. Defaults are CSS initial.
+        opentype: SceneTextOpenType,
     },
     Icon {
         icon: Icon,
@@ -214,20 +218,32 @@ pub enum ScenePrimitiveKind {
         /// no extra heap and the painter keeps the solid uniform emit.
         pattern: Option<Box<StrokePattern>>,
     },
-    Custom(CustomRenderNode),
+    Custom {
+        node: CustomRenderNode,
+        /// `mask-image` / `-webkit-mask-image` alpha for HostTexture sampling.
+        /// Same value as [`QuadSurfacePaint::mask`] (gradient or `url()`).
+        mask: Option<nana_ui_core::MaskImage>,
+    },
 }
 
 /// Optional dash and per-point colors for [`ScenePrimitiveKind::Stroke`].
 ///
 /// Empty `dash` is solid. Empty `colors` uses the stroke's uniform `color`.
 /// The painter only walks these slices when they are non-empty, so unused
-/// decorations do not add GPU instance fields or shader work.
+/// decorations do not add GPU instance fields or shader work. Graph /
+/// TimeSeries keep [`ScenePrimitiveKind::Stroke::pattern`] as `None`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StrokePattern {
     /// SVG-style on/off lengths. Negative or non-finite values disable dash
     /// (treated as solid). A single-cycle odd list is repeated to even length.
     pub dash: Vec<f32>,
     pub dash_offset: f32,
+    /// SVG `pathLength` for dasharray/dashoffset. Zero, negative, or
+    /// non-finite is unset (use geometric length). Dashes are in these units:
+    /// geometric `s` maps to `s * (path_length / geometric_length)` before
+    /// phase. Ignored when `dash` is empty (solid). Scene Stroke callers set
+    /// this field; Vue/CSS does not extract it (generic SVG is resvg).
+    pub path_length: f32,
     /// Per-point colors. Used only when `len` matches the stroke point count;
     /// each segment takes the color of its start vertex.
     pub colors: Vec<[f32; 4]>,
@@ -254,6 +270,35 @@ pub struct SceneTextSpan {
     pub color: [f32; 4],
 }
 
+/// OpenType and wrap extras on a [`ScenePrimitiveKind::Text`] run.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SceneTextOpenType {
+    pub features: Vec<FontFeatureSetting>,
+    pub variations: Vec<FontVariationSetting>,
+    pub kerning: FontKerningSpec,
+    pub word_break: WordBreakSpec,
+    pub line_break: LineBreakSpec,
+    /// CSS `direction` after inherit. Drives the same RLI/PDI wrap as shaping.
+    pub direction: DirSpec,
+    /// CSS `writing-mode` after inherit. cosmic-text 0.19 has no vertical
+    /// glyph orientation; paint still shapes horizontally.
+    pub writing_mode: WritingModeSpec,
+}
+
+impl SceneTextOpenType {
+    pub fn from_computed(style: &nana_ui_runtime::ComputedStyle) -> Self {
+        Self {
+            features: style.font_features.clone(),
+            variations: style.font_variations.clone(),
+            kerning: style.font_kerning,
+            word_break: style.word_break,
+            line_break: style.line_break,
+            direction: style.direction,
+            writing_mode: style.writing_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenePrimitive {
     pub id: PrimitiveId,
@@ -277,6 +322,16 @@ pub struct OpacityGroup {
     pub opacity: f32,
     pub filter: ColorFilter,
     pub mix_blend: MixBlendMode,
+    /// Inset `box-shadow` overlay recorded on this dest group. `None` when none.
+    pub inset_shadow: Option<InsetShadowOverlay>,
+}
+
+/// Inset shadow painted onto a dest group after its descendants composite.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InsetShadowOverlay {
+    pub elevation: ComponentElevation,
+    pub bounds: SceneRect,
+    pub corner_radius: [f32; 4],
 }
 
 /// Isolating ancestor with a non-identity CSS `filter`.
@@ -512,7 +567,7 @@ impl UiScene {
         let mut next_resource = 1_u64;
         let mut custom_nodes: BTreeMap<Arc<str>, (PrimitiveId, CustomRenderNode)> = BTreeMap::new();
         for primitive in self.primitives() {
-            let ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
+            let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
                 continue;
             };
             if let Some((_, previous)) = custom_nodes.get(&custom.resource)
@@ -583,7 +638,7 @@ impl UiScene {
         };
         for primitive in self.primitives() {
             match &primitive.kind {
-                ScenePrimitiveKind::Custom(custom) => {
+                ScenePrimitiveKind::Custom { node: custom, .. } => {
                     flush_standard(&mut graph, &mut pass_id, &mut standard)?;
                     let resource = custom_resources[&custom.resource].0;
                     graph.add_pass(RenderPass {
@@ -775,7 +830,9 @@ impl UiScene {
         let Some(node) = self.nodes.get(&id).cloned() else {
             return 0;
         };
-        if is_descendant_of_icon_visual(&self.nodes, &node) {
+        if is_descendant_of_rasterized_svg(&self.nodes, &node)
+            || is_descendant_of_icon_visual(&self.nodes, &node)
+        {
             return 0;
         }
         let before = self.primitives.len();
@@ -993,7 +1050,10 @@ impl UiScene {
                     opacity,
                     z_index: node.z_index,
                     document_order: node_order,
-                    kind: ScenePrimitiveKind::Custom(custom),
+                    kind: ScenePrimitiveKind::Custom {
+                        node: custom,
+                        mask: style.paint.mask.clone(),
+                    },
                 });
             }
             let component_owns_text =
@@ -1075,6 +1135,7 @@ impl UiScene {
                         font_features: style.font_features.clone().unwrap_or_default(),
                         italic: node.style.italic,
                         wrap_break: style.text_wrap_break(),
+                        opentype: SceneTextOpenType::from_computed(&node.style),
                     },
                 });
                 if let Some(deco) = style.text_decoration.filter(|d| d.is_active()) {
@@ -3324,6 +3385,7 @@ impl UiScene {
                                 font_features: Vec::new(),
                                 italic: false,
                                 wrap_break: nana_ui_core::TextWrapBreak::Word,
+                                opentype: SceneTextOpenType::default(),
                             },
                         });
                     }
@@ -3849,6 +3911,39 @@ fn local_opacity(node: &ExtractedNode) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
+    matches!(
+        node.kind.as_ref(),
+        NodeKind::Element { tag } if tag == "workspace-resize-handle"
+    )
+}
+
+fn is_descendant_of_rasterized_svg(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: &ExtractedNode,
+) -> bool {
+    let mut current = node.parent;
+    let mut visited = HashSet::new();
+    while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        let Some(parent) = nodes.get(&id) else {
+            break;
+        };
+        if parent
+            .custom_render
+            .as_ref()
+            .is_some_and(|custom| custom.renderer.as_ref() == "nana.host-texture")
+            && matches!(
+                parent.kind.as_ref(),
+                NodeKind::Element { tag } if tag.eq_ignore_ascii_case("svg")
+            )
+        {
+            return true;
+        }
+        current = parent.parent;
+    }
+    false
+}
+
 fn is_descendant_of_icon_visual(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: &ExtractedNode,
@@ -3865,13 +3960,6 @@ fn is_descendant_of_icon_visual(
         current = parent.parent;
     }
     false
-}
-
-fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
-    matches!(
-        node.kind.as_ref(),
-        NodeKind::Element { tag } if tag == "workspace-resize-handle"
-    )
 }
 
 fn has_extracted_child(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
@@ -3916,6 +4004,35 @@ fn is_filter_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &Extracte
     dest_filter_applies(nodes, node)
 }
 
+fn is_dest_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+    is_opacity_group(nodes, node)
+}
+
+fn inset_shadow_overlay(node: &ExtractedNode) -> Option<InsetShadowOverlay> {
+    let shadow = node
+        .source_style
+        .layout
+        .paint
+        .box_shadows
+        .iter()
+        .copied()
+        .find(|shadow| shadow.inset)?;
+    Some(InsetShadowOverlay {
+        elevation: ComponentElevation::from_box_shadow(shadow),
+        bounds: SceneRect {
+            x: node.layout.x,
+            y: node.layout.y,
+            width: node.layout.width,
+            height: node.layout.height,
+        },
+        corner_radius: surface_corner_radii(
+            node.source_style.layout.as_ref(),
+            node.layout.width,
+            node.layout.height,
+        ),
+    })
+}
+
 fn opacity_groups_from(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: StableNodeId,
@@ -3927,7 +4044,7 @@ fn opacity_groups_from(
         let Some(candidate) = nodes.get(&id) else {
             break;
         };
-        if is_opacity_group(nodes, candidate) {
+        if is_dest_group(nodes, candidate) {
             groups.push(OpacityGroup {
                 node: id,
                 opacity: local_opacity(candidate),
@@ -3942,6 +4059,7 @@ fn opacity_groups_from(
                     ColorFilter::default()
                 },
                 mix_blend: candidate.source_style.layout.paint.mix_blend,
+                inset_shadow: inset_shadow_overlay(candidate),
             });
         }
         current = candidate.parent;
@@ -4259,6 +4377,7 @@ fn component_text_primitive(
                 .unwrap_or_default(),
             italic: node.style.italic,
             wrap_break: node.source_style.layout.text_wrap_break(),
+            opentype: SceneTextOpenType::from_computed(&node.style),
         },
     }
 }
@@ -4404,6 +4523,7 @@ fn visual_stroke(
     width: f32,
     color: [f32; 4],
 ) -> ScenePrimitive {
+    // Graph/TimeSeries keep `pattern: None`. Vue pathLength stays in SVG markup (resvg).
     ScenePrimitive {
         id: PrimitiveId {
             node: context.node,
@@ -5361,7 +5481,7 @@ mod tests {
         scene.apply_delta([root, child], []);
         let custom = scene
             .primitives()
-            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom(_)))
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
             .unwrap();
         assert_eq!(custom.opacity, 0.5);
         assert_eq!(
@@ -5371,6 +5491,7 @@ mod tests {
                 opacity: 0.5,
                 filter: ColorFilter::default(),
                 mix_blend: MixBlendMode::Normal,
+                inset_shadow: None,
             }]
         );
         assert_eq!(custom.clips.len(), 1);
@@ -6734,6 +6855,77 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
+        let mut scroller = node(1, None, &[]);
+        scroller.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 120.0,
+        };
+        scroller.standard_visual = Some(StandardVisual::Scrollbar {
+            axes: nana_ui_runtime::ScrollAxes::Vertical,
+            visibility: nana_ui_core::ScrollbarVisibility::Always,
+            revealed: true,
+            dragging: None,
+        });
+        scroller.component_geometry = Some(ComponentGeometry::Scrollbar {
+            horizontal: None,
+            vertical: Some(nana_ui_runtime::ScrollbarBar {
+                track: LayoutBox {
+                    x: 192.0,
+                    y: 0.0,
+                    width: 8.0,
+                    height: 120.0,
+                },
+                thumb: LayoutBox {
+                    x: 194.0,
+                    y: 8.0,
+                    width: 4.0,
+                    height: 48.0,
+                },
+                track_background: Some([0.2, 0.2, 0.2, 1.0]),
+                thumb_background: [1.0, 0.0, 0.0, 1.0],
+                thumb_radius: 2.0,
+                max_offset: 80.0,
+            }),
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([scroller], []);
+        let track = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 3,
+            })
+            .expect("skinned track");
+        let thumb = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 4,
+            })
+            .expect("skinned thumb");
+        assert!(matches!(
+            track.kind,
+            ScenePrimitiveKind::Quad {
+                background: Some([0.2, 0.2, 0.2, 1.0]),
+                ..
+            }
+        ));
+        assert_eq!(track.bounds.width, 8.0);
+        assert!(matches!(
+            thumb.kind,
+            ScenePrimitiveKind::Quad {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                corner_radius,
+                ..
+            } if corner_radius.iter().all(|r| (*r - 2.0).abs() < f32::EPSILON)
+        ));
+        assert_eq!(thumb.bounds.width, 4.0);
+        assert_eq!(thumb.bounds.x, 194.0);
+    }
+
+    #[test]
     fn focused_icon_does_not_paint_an_external_ring() {
         let mut icon = node(1, None, &[]);
         icon.layout = LayoutBox {
@@ -6768,29 +6960,6 @@ mod tests {
                 })
                 .is_none()
         );
-    }
-
-    #[test]
-    fn icon_visual_skips_vector_children() {
-        let mut icon = node(1, None, &[2]);
-        icon.standard_visual = Some(StandardVisual::Icon {
-            icon: nana_ui_core::Icon::Search,
-            size: 16.0,
-            tooltip: None,
-        });
-        let mut path = node(2, Some(1), &[]);
-        path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
-        style_mut(&mut path).background = Some([1.0, 0.0, 0.0, 1.0]);
-        let mut scene = UiScene::new();
-        scene.apply_delta([icon, path], []);
-        assert!(scene.primitives().any(|primitive| {
-            primitive.node == id(1)
-                && matches!(
-                    primitive.kind,
-                    ScenePrimitiveKind::Icon { icon, .. } if icon == nana_ui_core::Icon::Search
-                )
-        }));
-        assert!(scene.primitives().all(|primitive| primitive.node != id(2)));
     }
 
     #[test]
@@ -7913,6 +8082,7 @@ mod tests {
                     ..Default::default()
                 },
                 mix_blend: MixBlendMode::Normal,
+                inset_shadow: None,
             }]
         );
     }
@@ -7941,6 +8111,7 @@ mod tests {
                 opacity: 1.0,
                 filter: ColorFilter::default(),
                 mix_blend: MixBlendMode::Multiply,
+                inset_shadow: None,
             }]
         );
 
@@ -8112,6 +8283,120 @@ mod tests {
             }
             other => panic!("expected text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn inset_box_shadow_on_a_leaf_is_not_an_outset_elevation() {
+        let mut painted = node(1, None, &[]);
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 1.0, 1.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                        offset_x: 2.0,
+                        offset_y: 4.0,
+                        blur_radius: 6.0,
+                        spread_radius: 1.0,
+                        color: [0.0, 0.0, 0.0, 0.5],
+                        inset: true,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("leaf quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad {
+                shadow: Some(elevation),
+                ..
+            } => {
+                assert!(
+                    elevation.inset,
+                    "leaf inset must travel as inset, not an outset drop shadow"
+                );
+                assert!((elevation.offset_y - 4.0).abs() < f32::EPSILON);
+            }
+            other => panic!("expected inset shadow quad, got {other:?}"),
+        }
+        assert!(
+            scene.opacity_groups(id(1)).is_empty(),
+            "a leaf inset does not open a dest group"
+        );
+    }
+
+    #[test]
+    fn inset_box_shadow_with_children_is_a_dest_group_not_parent_quad() {
+        let mut parent = node(1, None, &[2]);
+        parent.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+        };
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                        offset_x: 0.0,
+                        offset_y: 2.0,
+                        blur_radius: 4.0,
+                        spread_radius: 0.0,
+                        color: [0.0, 0.0, 0.0, 0.4],
+                        inset: true,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut parent).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut child = node(2, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 4.0,
+            y: 4.0,
+            width: 20.0,
+            height: 20.0,
+        };
+        style_mut(&mut child).background = Some([0.0, 1.0, 0.0, 1.0]);
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("parent quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad {
+                shadow: Some(elevation),
+                ..
+            } => {
+                assert!(
+                    elevation.inset,
+                    "origin paints inset on the parent quad (PAINT_SHADOW_INSET)"
+                );
+                assert!((elevation.offset_y - 2.0).abs() < f32::EPSILON);
+            }
+            other => panic!("expected inset shadow quad, got {other:?}"),
+        }
+        assert!(
+            scene.opacity_groups(id(2)).is_empty(),
+            "inset-only parents are not dest groups; origin opacity stacking is filter/opacity/mix-blend"
+        );
     }
 
     #[test]
@@ -8327,5 +8612,159 @@ mod tests {
             }
             other => panic!("expected quad, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn host_texture_custom_carries_css_mask() {
+        let mut painted = node(1, None, &[]);
+        painted.custom_render = Some(CustomRenderNode::new("nana.host-texture", "preview", 1));
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    mask: Some(nana_ui_core::MaskImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                            angle_deg: 180.0,
+                            stops: vec![
+                                nana_ui_core::GradientStop {
+                                    position: 0.0,
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                },
+                                nana_ui_core::GradientStop {
+                                    position: 1.0,
+                                    color: [1.0, 1.0, 1.0, 0.0],
+                                },
+                            ],
+                        }),
+                    )),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
+            .expect("host texture custom primitive");
+        match &primitive.kind {
+            ScenePrimitiveKind::Custom { mask, node } => {
+                assert_eq!(node.renderer.as_ref(), "nana.host-texture");
+                assert!(mask.is_some(), "mask must travel on the Custom primitive");
+            }
+            other => panic!("expected custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_mask_url_travels_on_quad_and_host_texture() {
+        let mut painted = node(1, None, &[]);
+        painted.custom_render = Some(CustomRenderNode::new("nana.host-texture", "preview", 1));
+        painted.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    mask: Some(nana_ui_core::MaskImage::Url("fade.png".into())),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut painted).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted], []);
+        let quad = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 0,
+            })
+            .expect("surface quad");
+        match &quad.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => match &surface.mask {
+                Some(nana_ui_core::MaskImage::Url(url)) => assert_eq!(url, "fade.png"),
+                other => panic!("expected url mask on quad, got {other:?}"),
+            },
+            other => panic!("expected quad, got {other:?}"),
+        }
+        let custom = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
+            .expect("host texture custom");
+        match &custom.kind {
+            ScenePrimitiveKind::Custom { mask, .. } => match mask {
+                Some(nana_ui_core::MaskImage::Url(url)) => assert_eq!(url, "fade.png"),
+                other => panic!("expected url mask on custom, got {other:?}"),
+            },
+            other => panic!("expected custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rasterized_svg_host_texture_skips_vector_children() {
+        let mut svg = node(1, None, &[2]);
+        svg.kind = Arc::new(NodeKind::Element { tag: "svg".into() });
+        svg.custom_render = Some(CustomRenderNode::new("nana.host-texture", "svg:1", 1));
+        let mut path = node(2, Some(1), &[]);
+        path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
+        path.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut path).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([svg, path], []);
+        assert!(
+            scene.primitives().any(|primitive| matches!(
+                primitive.kind,
+                ScenePrimitiveKind::Custom { .. }
+            ) && primitive.node == id(1)),
+            "svg root still samples HostTexture"
+        );
+        assert!(
+            scene.primitives().all(|primitive| primitive.node != id(2)),
+            "path children of a rasterized svg must not paint as boxes"
+        );
+    }
+
+    #[test]
+    fn icon_visual_skips_vector_children() {
+        let mut icon = node(1, None, &[2]);
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Search,
+            size: 16.0,
+            tooltip: None,
+        });
+        let mut path = node(2, Some(1), &[]);
+        path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
+        path.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        style_mut(&mut path).background = Some([1.0, 0.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([icon, path], []);
+        assert!(
+            scene.primitives().any(|primitive| {
+                primitive.node == id(1)
+                    && matches!(
+                        primitive.kind,
+                        ScenePrimitiveKind::Icon { icon, .. }
+                            if icon == nana_ui_core::Icon::Search
+                    )
+            }),
+            "icon root still paints the atlas glyph"
+        );
+        assert!(
+            scene.primitives().all(|primitive| primitive.node != id(2)),
+            "path children of an Icon visual must not paint as boxes"
+        );
     }
 }

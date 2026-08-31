@@ -63,7 +63,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 `ScrollView::scrollbars` 选三种：`AutoHide`（默认，指针进容器才现，overlay 式不占布局）、`Always`（能滚就常驻，画轨道底）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。Vue 侧用 `scrollbars="always|hidden"`。
 
-轨道与滑块几何在 `nana-ui-core` 的 `scrollbar` 模块，颜色取 `border_strong`（拖拽时 `muted`）与 `subtle`。Scene 侧就是两个普通 quad，不走特殊通道。滑块拖拽与轨道点击（按下即把滑块居中到落点）由 `AppContext::begin_scrollbar_drag` 一族处理，走指针 capture。
+轨道与滑块几何在 `nana-ui-core` 的 `scrollbar` 模块，颜色默认取 `border_strong`（拖拽时 `muted`）与 `subtle`。`::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` 可覆盖厚度和这些颜色，仍走同一份 `scrollbar_track` 与普通 Scene quad，不另做一套 thumb 几何引擎。滑块拖拽与轨道点击（按下即把滑块居中到落点）由 `AppContext::begin_scrollbar_drag` 一族处理，走指针 capture。
 
 滚动条是 overlay，不占布局宽度；两轴都能滚时各让出末端一个轨道厚度，避免拐角重叠。
 

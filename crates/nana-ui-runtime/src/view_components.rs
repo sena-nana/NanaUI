@@ -2477,11 +2477,13 @@ impl ComponentView for Switch {
         if layout.width.is_none() {
             layout.width = Some(nana_ui_core::LengthSpec::Fill);
         }
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(if self.hint.is_some() {
-            42.0
-        } else {
-            self.size.height()
-        }));
+        if layout.height.is_none() {
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(if self.hint.is_some() {
+                42.0
+            } else {
+                self.size.height()
+            }));
+        }
         layout.padding_left = Some(nana_ui_core::LengthSpec::Px(self.size.padding_x()));
         layout.padding_right = layout.padding_left;
         if self.invalid {
@@ -2651,7 +2653,9 @@ impl ComponentView for RangeField {
         if layout.width.is_none() {
             layout.width = Some(nana_ui_core::LengthSpec::Fill);
         }
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        if layout.height.is_none() {
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        }
         layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
             nana_ui_core::UI_METRICS.field_padding_x,
         ));

@@ -324,8 +324,12 @@ impl Dropdown {
             border: Some(nana_ui_core::SemanticColorRole::Border),
         };
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(nana_ui_core::LengthSpec::Fill);
-        layout.height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        if layout.width.is_none() {
+            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        }
+        if layout.height.is_none() {
+            layout.height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        }
         layout.border_width = Some(if self.invalid && self.opened {
             2.0
         } else {
@@ -474,6 +478,34 @@ mod tests {
         assert!(!options[1].checked);
         assert!(options[2].checked);
         assert_eq!(options[2].hint.as_deref(), Some("峰值"));
+    }
+
+    #[test]
+    fn dropdown_projects_overlay_css_size_into_world_style() {
+        let mut dropdown = sample();
+        Arc::make_mut(&mut dropdown.style.layout).overlay_css_size_overrides(
+            &nana_ui_core::LayoutStyle {
+                height: Some(nana_ui_core::LengthSpec::Px(48.0)),
+                width: Some(nana_ui_core::LengthSpec::Px(120.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+        );
+        let mut context = AppContext::new();
+        let dropdown = context.create_component(document(), dropdown).unwrap();
+        let layout = context
+            .world()
+            .node_style(dropdown.stable_id())
+            .unwrap()
+            .layout
+            .as_ref();
+        assert_eq!(layout.height, Some(nana_ui_core::LengthSpec::Px(48.0)));
+        assert_eq!(layout.width, Some(nana_ui_core::LengthSpec::Px(120.0)));
+        assert_ne!(
+            layout.height,
+            Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height()
+            ))
+        );
     }
 
     #[test]

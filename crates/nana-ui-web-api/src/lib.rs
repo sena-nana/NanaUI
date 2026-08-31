@@ -8,6 +8,7 @@
 
 mod canvas;
 mod fetch;
+mod media;
 mod ws;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -21,6 +22,11 @@ pub use canvas::{
     SharedCanvasRuntime, shared_canvas_runtime,
 };
 use fetch::{FetchCompletion, FetchRuntime};
+pub use media::{
+    MediaCaptureMode, MediaError, MediaId, MediaKind, MediaLiveSets, MediaRuntime, MediaStreamId,
+    MediaTreeRef, MediaUpload, SharedMediaRuntime, media_live_sets_from_tree,
+    released_media_gpu_slots, shared_media_runtime,
+};
 use ws::{SocketEvent, SocketRuntime};
 
 /// Fallback gap between host frames while rAF is pending. `pump_frame` consumes
@@ -422,6 +428,12 @@ pub fn register_web_api_host_ops_with_resources(
     register_web_api_storage_and_timer_ops(api, state);
     register_clipboard_host_ops(api, clipboard);
     canvas::register_canvas_host_ops(api, canvas);
+    media::register_media_host_ops(api, shared_media_runtime());
+}
+
+/// Register media element / getUserMedia host ops against a caller-owned store.
+pub fn register_media_host_ops(api: &mut HostApiRegistry, media: SharedMediaRuntime) {
+    media::register_media_host_ops(api, media);
 }
 
 /// Like [`register_web_api_host_ops`], but with an injected clipboard (tests).
@@ -714,7 +726,10 @@ mod tests {
         assert!(WEB_API_SHIM_JS.contains("parseHtmlFragment"));
         assert!(WEB_API_SHIM_JS.contains("createTemplateContent"));
         assert!(!WEB_API_SHIM_JS.contains("content stays empty"));
-        assert!(WEB_API_SHIM_JS.len() > 1000);
+        assert!(WEB_API_SHIM_JS.contains("mediaDevices"));
+        assert!(WEB_API_SHIM_JS.contains("mediaDevicesGetUserMedia"));
+        assert!(WEB_API_SHIM_JS.contains("HTMLVideoElement"));
+        assert!(WEB_API_SHIM_JS.contains("HTMLAudioElement"));
     }
 
     #[test]

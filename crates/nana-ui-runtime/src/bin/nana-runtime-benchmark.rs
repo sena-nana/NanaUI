@@ -280,6 +280,10 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
                 },
                 frame_interval: Duration::from_millis(16),
                 easing: Easing::Linear,
+                iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
+                direction: nana_ui_runtime::AnimationDirection::Normal,
+                fill_mode: nana_ui_runtime::AnimationFillMode::None,
+                play_state: nana_ui_runtime::AnimationPlayState::Running,
             });
         }
         world.commit(animations).unwrap();
@@ -735,6 +739,10 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
                 },
                 frame_interval: Duration::from_millis(16),
                 easing: Easing::Linear,
+                iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
+                direction: nana_ui_runtime::AnimationDirection::Normal,
+                fill_mode: nana_ui_runtime::AnimationFillMode::None,
+                play_state: nana_ui_runtime::AnimationPlayState::Running,
             });
         }
         world.commit(animations).unwrap();

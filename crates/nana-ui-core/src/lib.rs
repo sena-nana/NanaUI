@@ -30,6 +30,7 @@ pub mod style_model;
 pub mod tab_drag;
 pub mod theme;
 pub mod tree;
+pub mod typography;
 pub mod url_jail;
 pub mod virtual_list;
 pub mod virtual_table;
@@ -44,17 +45,18 @@ pub use action::{
 pub use box_layout::{
     AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
     BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
-    BoxShadowSpec, BoxSizing, ClearSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint,
-    ClipShapeRadius, ColorFilter, CssGradient, DirSpec, DisplaySpec, FilterDropShadow,
-    FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting, FontSizeContext, GradientStop,
-    GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
-    LinearGradient, LogicalInlineEdges, MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage,
-    MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaddingSpec,
-    PaintMat4, PaintStyle, PaintTransform, ParentBox, PointerEventsSpec, PositionSpec,
-    RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec, TextDecorationLine, TextShadowSpec,
-    TextWrapBreak, TransformBox, TransformOrigin, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
-    WordBreakSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClearSpec, ClipCircle, ClipEllipse,
+    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, CssGradient, DirSpec,
+    DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
+    FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
+    GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
+    LengthSpec, LineHeightSpec, LinearGradient, LogicalInlineEdges, LogicalInsets,
+    MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle,
+    OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
+    PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
+    TextDecorationLine, TextShadowSpec, TextWrapBreak, TransformBox, TransformOrigin, ViewportAxis,
+    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+    glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
     resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
@@ -80,8 +82,8 @@ pub use menu::{MenuConfirmation, MenuSelection};
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
 pub use scrollbar::{
-    SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarTrack, ScrollbarVisibility,
-    scrollbar_track,
+    SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,
+    ScrollbarVisibility, scrollbar_track,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use semantics::{
@@ -104,6 +106,7 @@ pub use tab_drag::{
 };
 pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
+pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
     href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network,

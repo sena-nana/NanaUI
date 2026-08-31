@@ -13,6 +13,7 @@
 use std::{
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    hash::{Hash, Hasher},
     sync::Arc,
     time::Instant,
 };
@@ -25,9 +26,9 @@ use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind,
     ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
-    Entity, HOST_TEXTURE_RENDERER, HighlightRequest, ImeComposition, InteractionState,
-    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
-    NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle,
+    Entity, GraphCanvas as RuntimeGraphCanvas, HOST_TEXTURE_RENDERER, HighlightRequest,
+    ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue,
+    NativeMarkdown as RuntimeNativeMarkdown, NodeKind, NodeStyle, RegisterableComponent,
     SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
     SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
     SplitPane as RuntimeSplitPane, StableNodeId, TextContent, TextInputState, UiMutation, UiWorld,
@@ -311,6 +312,7 @@ pub(crate) struct PendingAssembly {
     app_shells: Vec<(StableNodeId, RuntimeAppShell)>,
     markdowns: Vec<(StableNodeId, RuntimeNativeMarkdown)>,
     settings_pages: Vec<(StableNodeId, RuntimeSettingsPage)>,
+    graph_canvases: Vec<(StableNodeId, RuntimeGraphCanvas)>,
 }
 
 impl PendingAssembly {
@@ -350,6 +352,11 @@ impl PendingAssembly {
                 let _ = context.assemble_settings_page(entity);
             }
         }
+        for (id, component) in self.graph_canvases {
+            if let Ok(entity) = context.bind_component(id, component) {
+                let _ = context.assemble_graph_canvas_contents(entity);
+            }
+        }
     }
 }
 
@@ -386,6 +393,8 @@ pub struct NanaTreeDocument {
     /// Facade nodes that currently expose a host-texture slot. Flush stamps
     /// only these instead of scanning the whole Vue node map.
     host_texture_nodes: HashSet<u64>,
+    /// Cached generic SVG rasters keyed by the root `<svg>` node id.
+    svg_rasters: HashMap<u64, CachedSvgRaster>,
     /// Shared slot registry handle. Device/Queue stay on the hosted renderer.
     #[cfg(feature = "scene-view")]
     host_textures: Option<nana_ui::HostTextureRegistry>,
@@ -499,6 +508,7 @@ impl NanaTreeDocument {
             accessibility_full_required: false,
             commit_rejections: Vec::new(),
             host_texture_nodes: HashSet::new(),
+            svg_rasters: HashMap::new(),
             #[cfg(feature = "scene-view")]
             host_textures: None,
             #[cfg(test)]
@@ -561,6 +571,7 @@ impl NanaTreeDocument {
         layouts: impl IntoIterator<Item = (u64, &'a nana_ui_core::LayoutStyle)>,
     ) {
         let mut mutations = MutationQueue::new();
+        let mut surface_ids = Vec::new();
         for (raw_id, layout) in layouts {
             let Some(id) = StableNodeId::new(raw_id) else {
                 continue;
@@ -580,14 +591,24 @@ impl NanaTreeDocument {
             let mut style = current.cloned().unwrap_or_default();
             style.layout = Arc::new(layout.clone());
             mutations.set_style(id, style);
+            if self.host_texture_nodes.contains(&raw_id) {
+                surface_ids.push(raw_id);
+            }
         }
         if !mutations.is_empty() {
             self.commit_extra(mutations).ok();
+        }
+        if !surface_ids.is_empty() {
+            for raw_id in surface_ids {
+                self.sync_surface_custom_render(NodeHandle(raw_id));
+            }
+            self.commit_pending_queue().ok();
         }
     }
 
     /// Commit queued Vue host ops, then drain Runtime systems.
     pub fn flush_host_frame(&mut self) {
+        self.sync_svg_rasters();
         self.stamp_host_texture_revisions();
         self.commit_pending_queue().ok();
         self.flush_runtime_systems();
@@ -646,6 +667,136 @@ impl NanaTreeDocument {
     ) {
         self.host_texture_revision_overrides
             .insert(slot.into(), revision);
+    }
+
+    /// Rasterize non-Lucide `<svg>` roots into HostTexture slots.
+    pub(crate) fn sync_svg_rasters(&mut self) {
+        let roots: Vec<u64> = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|&id| {
+                self.element_tag(NodeHandle(id))
+                    .is_some_and(|tag| tag.eq_ignore_ascii_case("svg"))
+            })
+            .collect();
+        for id in roots {
+            let el = NodeHandle(id);
+            if self.is_catalog_icon_svg(el) {
+                if self.svg_rasters.remove(&id).is_some() {
+                    self.index_host_texture_node(el);
+                    self.sync_surface_custom_render(el);
+                }
+                continue;
+            }
+            let Some(element) = self.collect_svg_element(el) else {
+                continue;
+            };
+            let markup = crate::svg_raster::serialize_svg(&element);
+            let markup_hash = hash_svg_markup(&markup);
+            let (width, height) = self.svg_raster_size(el);
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let unchanged = self.svg_rasters.get(&id).is_some_and(|cached| {
+                cached.markup_hash == markup_hash
+                    && cached.pixel_width == width
+                    && cached.pixel_height == height
+            });
+            if !unchanged {
+                let Some(raster) = crate::svg_raster::rasterize_svg(&markup, width, height) else {
+                    continue;
+                };
+                let version = self
+                    .svg_rasters
+                    .get(&id)
+                    .map(|cached| cached.version.saturating_add(1))
+                    .unwrap_or(1);
+                self.svg_rasters.insert(
+                    id,
+                    CachedSvgRaster {
+                        markup_hash,
+                        pixel_width: width,
+                        pixel_height: height,
+                        raster,
+                        version,
+                    },
+                );
+            }
+            self.index_host_texture_node(el);
+            self.sync_surface_custom_render(el);
+        }
+    }
+
+    #[cfg_attr(not(any(test, feature = "hosted")), allow(dead_code))]
+    pub(crate) fn svg_host_uploads(&self) -> Vec<crate::svg_raster::SvgHostUpload> {
+        self.svg_rasters
+            .iter()
+            .map(|(&id, cached)| crate::svg_raster::SvgHostUpload {
+                slot: format!("svg:{id}"),
+                node: id,
+                raster: cached.raster.clone(),
+                version: cached.version,
+            })
+            .collect()
+    }
+
+    fn is_catalog_icon_svg(&self, el: NodeHandle) -> bool {
+        self.get_attribute(el, "class")
+            .or_else(|| self.get_attribute(el, "className"))
+            .is_some_and(|class| {
+                class
+                    .split_whitespace()
+                    .any(|token| nana_ui_core::Icon::parse_name(token).is_some())
+            })
+    }
+
+    fn svg_raster_size(&self, el: NodeHandle) -> (u32, u32) {
+        let scale = self.scale_factor.max(0.01);
+        if let Some(box_) = self.layout_box(el) {
+            let width = (box_.width * scale).round() as u32;
+            let height = (box_.height * scale).round() as u32;
+            if width > 0 && height > 0 {
+                return (width.min(2048), height.min(2048));
+            }
+        }
+        parse_svg_intrinsic_size(
+            self.get_attribute(el, "width").as_deref(),
+            self.get_attribute(el, "height").as_deref(),
+            self.get_attribute(el, "viewBox").as_deref(),
+        )
+    }
+
+    fn collect_svg_element(&self, el: NodeHandle) -> Option<crate::svg_raster::SvgElement> {
+        let tag = self.element_tag(el)?;
+        let attrs = match self.nodes.get(&el.0).map(|node| &node.data) {
+            Some(NodeData::Element { attrs, .. }) => attrs
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut children = Vec::new();
+        for child in self.children_of(el) {
+            match self.node_kind(child) {
+                DomNodeKind::Element => {
+                    if let Some(element) = self.collect_svg_element(child) {
+                        children.push(crate::svg_raster::SvgNode::Element(element));
+                    }
+                }
+                DomNodeKind::Text => {
+                    if let Some(text) = self.runtime_text(child).filter(|text| !text.is_empty()) {
+                        children.push(crate::svg_raster::SvgNode::Text(text));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(crate::svg_raster::SvgElement {
+            tag,
+            attrs,
+            children,
+        })
     }
 
     /// Transactional pending-ops commit used by input/IME/focus paths that
@@ -1206,6 +1357,11 @@ impl NanaTreeDocument {
                 // now owns this node's LayoutStyle. Record it so the cascade
                 // writeback leaves the projected geometry alone.
                 component_owned_layout.insert(id.get());
+                if widget.kind == crate::WidgetKind::GraphCanvas {
+                    for child in &widget.children {
+                        component_owned_layout.insert(*child);
+                    }
+                }
                 continue;
             }
             let style = NodeStyle {
@@ -1826,6 +1982,30 @@ impl NanaTreeDocument {
             })
     }
 
+    /// CPU media ids still on the tree (video **and** audio) plus visual `video:{id}` slots.
+    pub fn live_media_sets(&self) -> nana_ui_web_api::MediaLiveSets {
+        let nodes: Vec<(String, Option<String>, Option<String>)> = self
+            .nodes
+            .keys()
+            .copied()
+            .map(|id| {
+                let handle = NodeHandle(id);
+                (
+                    self.element_tag(handle).unwrap_or_default(),
+                    self.get_attribute(handle, "data-nana-media"),
+                    self.get_attribute(handle, "data-nana-video"),
+                )
+            })
+            .collect();
+        nana_ui_web_api::media_live_sets_from_tree(nodes.iter().map(|(tag, media_id, video_id)| {
+            nana_ui_web_api::MediaTreeRef {
+                tag,
+                media_id: media_id.as_deref(),
+                video_id: video_id.as_deref(),
+            }
+        }))
+    }
+
     pub fn gpu_slots(&self) -> Vec<(NodeHandle, String)> {
         let mut slots: Vec<_> = self
             .nodes
@@ -1853,7 +2033,7 @@ impl NanaTreeDocument {
         }
         let content = self.surface_host_texture_slot(el).map(|slot| {
             let revision = self.packed_host_texture_revision(&slot);
-            host_texture_content(slot, revision)
+            host_texture_content(slot, revision).with_fit(self.surface_object_fit(el))
         });
         if self.live_custom_render(el) == content {
             return;
@@ -1877,8 +2057,41 @@ impl NanaTreeDocument {
             return Some(slot);
         }
         self.get_attribute(el, "data-nana-canvas")
+            .or_else(|| self.get_attribute(el, "data-nana-image"))
             .as_deref()
             .and_then(canvas_host_texture_slot)
+            .or_else(|| {
+                self.get_attribute(el, "data-nana-video")
+                    .as_deref()
+                    .and_then(video_host_texture_slot)
+            })
+            .or_else(|| {
+                self.svg_rasters
+                    .contains_key(&el.0)
+                    .then(|| format!("svg:{}", el.0))
+            })
+    }
+
+    fn surface_object_fit(&self, el: NodeHandle) -> nana_ui_core::ContentFit {
+        if let Ok(id) = StableNodeId::try_from(el)
+            && let Some(fit) = self
+                .runtime
+                .node_style(id)
+                .and_then(|style| style.layout.paint.object_fit)
+        {
+            return background_image_fit_to_content(fit);
+        }
+        if let Some(fit) = self
+            .get_attribute(el, "object-fit")
+            .as_deref()
+            .and_then(nana_ui_core::ContentFit::from_object_fit)
+        {
+            return fit;
+        }
+        self.get_attribute(el, "style")
+            .as_deref()
+            .and_then(object_fit_from_css_text)
+            .unwrap_or(nana_ui_core::ContentFit::Fill)
     }
 
     pub fn insert(&mut self, child: NodeHandle, parent: NodeHandle, anchor: Option<NodeHandle>) {
@@ -1949,14 +2162,34 @@ impl NanaTreeDocument {
             changed = attrs.get(name).is_none_or(|current| current != value);
             attrs.insert(name.to_string(), value.to_string());
         }
-        if changed
-            && (name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas")
-                || name.eq_ignore_ascii_case("data-nana-video"))
-        {
+        if changed && is_host_texture_slot_attr(name) {
             self.index_host_texture_node(el);
             self.sync_surface_custom_render(el);
+        } else if changed && is_host_texture_fit_attr(name) {
+            self.sync_surface_custom_render(el);
         }
+    }
+
+    /// Paint-only CSS `transform` overlay (TransitionGroup FLIP).
+    ///
+    /// Writes Runtime `LayoutStyle.transform` so extract → UiScene →
+    /// SceneWgpuPainter sees the affine. Never writes Runtime `LayoutBox`
+    /// and never recascades selectors.
+    pub fn set_paint_transform(&mut self, el: NodeHandle, css: &str) {
+        if !self.nodes.contains_key(&el.0) {
+            return;
+        }
+        let Ok(id) = StableNodeId::try_from(el) else {
+            return;
+        };
+        let transform = crate::css_map::parse_inline_paint_transform(css);
+        let mut style = self.runtime.node_style(id).cloned().unwrap_or_default();
+        if style.layout.transform == transform {
+            return;
+        }
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.transform = transform;
+        self.pending.mutations.set_style(id, style);
     }
 
     pub fn get_attribute(&self, el: NodeHandle, name: &str) -> Option<String> {
@@ -1978,12 +2211,10 @@ impl NanaTreeDocument {
         {
             removed = attrs.remove(name).is_some();
         }
-        if removed
-            && (name.eq_ignore_ascii_case("data-nana-gpu")
-                || name.eq_ignore_ascii_case("data-nana-canvas")
-                || name.eq_ignore_ascii_case("data-nana-video"))
-        {
+        if removed && is_host_texture_slot_attr(name) {
             self.index_host_texture_node(el);
+            self.sync_surface_custom_render(el);
+        } else if removed && is_host_texture_fit_attr(name) {
             self.sync_surface_custom_render(el);
         }
     }
@@ -2707,6 +2938,7 @@ impl NanaTreeDocument {
         for id in ids {
             self.nodes.remove(&id);
             self.host_texture_nodes.remove(&id);
+            self.svg_rasters.remove(&id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);
             self.pending.kinds.remove(&id);
@@ -2792,6 +3024,91 @@ impl NanaTreeDocument {
             self.accessibility_full_required = true;
         }
     }
+}
+
+struct CachedSvgRaster {
+    markup_hash: u64,
+    pixel_width: u32,
+    pixel_height: u32,
+    #[cfg_attr(not(any(test, feature = "hosted")), allow(dead_code))]
+    raster: crate::svg_raster::RasterizedSvg,
+    version: u64,
+}
+
+fn hash_svg_markup(markup: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    markup.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_svg_intrinsic_size(
+    width: Option<&str>,
+    height: Option<&str>,
+    view_box: Option<&str>,
+) -> (u32, u32) {
+    let parse_len = |raw: &str| {
+        raw.trim()
+            .trim_end_matches("px")
+            .parse::<f32>()
+            .ok()
+            .filter(|value| *value > 0.0)
+            .map(|value| value.round() as u32)
+    };
+    if let (Some(width), Some(height)) = (width.and_then(parse_len), height.and_then(parse_len)) {
+        return (width.min(2048), height.min(2048));
+    }
+    if let Some(view_box) = view_box {
+        let parts: Vec<f32> = view_box
+            .split(|ch: char| ch.is_whitespace() || ch == ',')
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        if parts.len() == 4 && parts[2] > 0.0 && parts[3] > 0.0 {
+            return (
+                parts[2].round().max(1.0) as u32,
+                parts[3].round().max(1.0) as u32,
+            );
+        }
+    }
+    (0, 0)
+}
+
+fn is_host_texture_slot_attr(name: &str) -> bool {
+    name.eq_ignore_ascii_case("data-nana-gpu")
+        || name.eq_ignore_ascii_case("data-nana-canvas")
+        || name.eq_ignore_ascii_case("data-nana-image")
+        || name.eq_ignore_ascii_case("data-nana-video")
+}
+
+fn is_host_texture_fit_attr(name: &str) -> bool {
+    name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("object-fit")
+}
+
+fn background_image_fit_to_content(
+    fit: nana_ui_core::BackgroundImageFit,
+) -> nana_ui_core::ContentFit {
+    use nana_ui_core::{BackgroundImageFit, ContentFit};
+    match fit {
+        BackgroundImageFit::Cover => ContentFit::Cover,
+        BackgroundImageFit::Contain => ContentFit::Contain,
+        BackgroundImageFit::Stretch | BackgroundImageFit::Length => ContentFit::Fill,
+        BackgroundImageFit::Auto => ContentFit::None,
+        BackgroundImageFit::ScaleDown => ContentFit::ScaleDown,
+    }
+}
+
+fn object_fit_from_css_text(css: &str) -> Option<nana_ui_core::ContentFit> {
+    let mut found = None;
+    for decl in css.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("object-fit")
+            && let Some(fit) = nana_ui_core::ContentFit::from_object_fit(value)
+        {
+            found = Some(fit);
+        }
+    }
+    found
 }
 
 #[cfg(test)]
@@ -3401,7 +3718,7 @@ mod tests {
             .primitives()
             .find(|primitive| primitive.node.get() == node.0)
             .expect("GPU node must be extracted into UiScene");
-        let nana_ui_scene::ScenePrimitiveKind::Custom(content) = &custom.kind else {
+        let nana_ui_scene::ScenePrimitiveKind::Custom { node: content, .. } = &custom.kind else {
             panic!("GPU node must compile to a custom scene primitive");
         };
         assert_eq!(content.renderer.as_ref(), "nana.host-texture");
@@ -3477,7 +3794,7 @@ mod tests {
             .primitives()
             .find(|primitive| primitive.node.get() == canvas.0)
             .expect("canvas must extract a scene primitive");
-        let nana_ui_scene::ScenePrimitiveKind::Custom(custom) = &primitive.kind else {
+        let nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
             panic!("canvas must compile to a custom scene primitive");
         };
         assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
@@ -3485,22 +3802,515 @@ mod tests {
     }
 
     #[test]
-    fn catalog_icons_bind_iconglyph() {
+    fn image_attr_projects_host_texture_custom_render() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let image = doc.create_element("img");
+        doc.insert(image, doc.mount_root(), None);
+        doc.set_attribute(image, "data-nana-image", "7");
+        doc.apply_layout_boxes(&[(
+            image,
+            LayoutBox {
+                handle: image,
+                x: 12.0,
+                y: 80.0,
+                width: 96.0,
+                height: 48.0,
+            },
+        )]);
+
+        let id = StableNodeId::try_from(image).expect("img id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("decoded <img> must attach a HostTexture CustomRender");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), "canvas:7");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Fill);
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .any(|(handle, slot)| *handle == image && slot == "canvas:7"),
+            "img must appear in gpu_slots as the canvas upload key"
+        );
+
+        let primitive = doc
+            .scene()
+            .primitives()
+            .find(|primitive| {
+                primitive.node.get() == image.0
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom { .. }
+                    )
+            })
+            .expect("img must extract a HostTexture scene primitive");
+        let nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
+            panic!("img must compile to a custom scene primitive");
+        };
+        assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(custom.resource.as_ref(), "canvas:7");
+        assert_eq!(custom.fit, nana_ui_core::ContentFit::Fill);
+        assert_eq!(doc.hit_test(20.0, 90.0), Some(image));
+
+        doc.remove_attribute(image, "data-nana-image");
+        doc.apply_layout_boxes(&[]);
+        assert!(doc.runtime.custom_render(id).is_none());
+        assert!(
+            doc.scene()
+                .primitives()
+                .all(|primitive| primitive.node.get() != image.0
+                    || !matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom { .. }
+                    ))
+        );
+    }
+
+    #[test]
+    fn image_object_fit_projects_content_fit_on_host_texture() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let image = doc.create_element("img");
+        doc.insert(image, doc.mount_root(), None);
+        doc.set_attribute(image, "data-nana-image", "9");
+        doc.set_attribute(image, "style", "width:96px;object-fit:cover;height:48px");
+        doc.apply_layout_boxes(&[(
+            image,
+            LayoutBox {
+                handle: image,
+                x: 0.0,
+                y: 0.0,
+                width: 96.0,
+                height: 48.0,
+            },
+        )]);
+
+        let id = StableNodeId::try_from(image).expect("img id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("img object-fit must land on CustomRenderNode");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Cover);
+
+        doc.set_attribute(image, "object-fit", "contain");
+        doc.apply_layout_boxes(&[]);
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("object-fit attribute must update CustomRenderNode");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Contain);
+
+        doc.set_attribute(image, "style", "object-fit: scale-down");
+        doc.remove_attribute(image, "object-fit");
+        doc.apply_layout_boxes(&[]);
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("inline object-fit must survive attr removal");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::ScaleDown);
+    }
+
+    #[test]
+    fn stylesheet_object_fit_on_layout_projects_custom_render_fit() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let image = doc.create_element("img");
+        doc.insert(image, doc.mount_root(), None);
+        doc.set_attribute(image, "data-nana-image", "3");
+        doc.apply_layout_boxes(&[(
+            image,
+            LayoutBox {
+                handle: image,
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 32.0,
+            },
+        )]);
+        let id = StableNodeId::try_from(image).expect("img id");
+        let mut layout = nana_ui_core::LayoutStyle::default();
+        layout.paint.object_fit = Some(nana_ui_core::BackgroundImageFit::Cover);
+        doc.sync_widget_layouts([(image.0, &layout)]);
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("cascaded object-fit must land on CustomRenderNode");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Cover);
+    }
+
+    #[test]
+    fn video_attr_projects_host_texture_custom_render() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let video = doc.create_element("video");
+        doc.insert(video, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "11");
+        doc.apply_layout_boxes(&[(
+            video,
+            LayoutBox {
+                handle: video,
+                x: 8.0,
+                y: 16.0,
+                width: 320.0,
+                height: 180.0,
+            },
+        )]);
+
+        let id = StableNodeId::try_from(video).expect("video id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("video must attach a HostTexture CustomRender");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), "video:11");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Fill);
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .any(|(handle, slot)| *handle == video && slot == "video:11"),
+            "video must appear in gpu_slots as video:{{id}}"
+        );
+
+        let primitive = doc
+            .scene()
+            .primitives()
+            .find(|primitive| {
+                primitive.node.get() == video.0
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom { .. }
+                    )
+            })
+            .expect("video must extract a HostTexture scene primitive");
+        let nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
+            panic!("video must compile to a custom scene primitive");
+        };
+        assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(custom.resource.as_ref(), "video:11");
+        assert_eq!(doc.hit_test(20.0, 24.0), Some(video));
+    }
+
+    #[test]
+    fn audio_does_not_project_host_texture_slot() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let audio = doc.create_element("audio");
+        doc.insert(audio, doc.mount_root(), None);
+        doc.set_attribute(audio, "src", "track.ogg");
+        doc.set_attribute(audio, "controls", "");
+        doc.apply_layout_boxes(&[(
+            audio,
+            LayoutBox {
+                handle: audio,
+                x: 0.0,
+                y: 0.0,
+                width: 240.0,
+                height: 32.0,
+            },
+        )]);
+        doc.flush_host_frame();
+        let id = StableNodeId::try_from(audio).expect("audio id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "audio without a picture must not pretend to have a video frame"
+        );
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .all(|(_, slot)| !slot.starts_with("video:")),
+            "audio must not occupy a video HostTexture slot"
+        );
+    }
+
+    #[test]
+    fn live_media_sets_keep_audio_identity_out_of_visual_slots() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let video = doc.create_element("video");
+        let audio = doc.create_element("audio");
+        doc.insert(video, doc.mount_root(), None);
+        doc.insert(audio, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "11");
+        doc.set_attribute(video, "data-nana-media", "11");
+        doc.set_attribute(audio, "data-nana-media", "22");
+        doc.apply_layout_boxes(&[
+            (
+                video,
+                LayoutBox {
+                    handle: video,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 36.0,
+                },
+            ),
+            (
+                audio,
+                LayoutBox {
+                    handle: audio,
+                    x: 0.0,
+                    y: 40.0,
+                    width: 240.0,
+                    height: 32.0,
+                },
+            ),
+        ]);
+        let sets = doc.live_media_sets();
+        assert!(sets.retain.iter().any(|id| id.0 == 11));
+        assert!(sets.retain.iter().any(|id| id.0 == 22));
+        assert!(sets.visual.iter().any(|id| id.0 == 11));
+        assert!(sets.visual.iter().all(|id| id.0 != 22));
+        let audio_id = StableNodeId::try_from(audio).expect("audio id");
+        assert!(
+            doc.runtime.custom_render(audio_id).is_none(),
+            "data-nana-media must not project a HostTexture for audio"
+        );
+    }
+
+    fn prepare_video_gpu_slots(
+        doc: &NanaTreeDocument,
+        held: &mut std::collections::HashSet<String>,
+    ) {
+        let live: Vec<String> = doc
+            .gpu_slots()
+            .into_iter()
+            .map(|(_, slot)| slot)
+            .filter(|slot| slot.starts_with("video:"))
+            .collect();
+        for slot in nana_ui_web_api::released_media_gpu_slots(
+            held.iter().map(String::as_str),
+            live.iter().map(String::as_str),
+        ) {
+            held.remove(&slot);
+        }
+        held.extend(live);
+    }
+
+    #[test]
+    fn video_gpu_slot_is_pruned_after_remove() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let video = doc.create_element("video");
+        doc.insert(video, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "5");
+        doc.apply_layout_boxes(&[(
+            video,
+            LayoutBox {
+                handle: video,
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 36.0,
+            },
+        )]);
+        doc.flush_host_frame();
+        let slot = "video:5".to_string();
+        let mut held = std::collections::HashSet::new();
+        prepare_video_gpu_slots(&doc, &mut held);
+        assert!(
+            held.contains(&slot),
+            "create+flush+prepare must register video:{{id}}"
+        );
+
+        doc.remove(video);
+        doc.flush_host_frame();
+        prepare_video_gpu_slots(&doc, &mut held);
+        assert!(
+            !held.contains(&slot),
+            "remove+flush+prepare must prune video:{{id}} from the GPU slot set"
+        );
+        let id = StableNodeId::try_from(video).expect("video id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "disposed video must despawn CustomRenderNode"
+        );
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .all(|(_, gpu_slot)| gpu_slot != &slot)
+        );
+    }
+
+    #[test]
+    fn video_object_fit_projects_content_fit_on_host_texture() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let video = doc.create_element("video");
+        doc.insert(video, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "8");
+        doc.set_attribute(video, "style", "object-fit:contain");
+        doc.apply_layout_boxes(&[(
+            video,
+            LayoutBox {
+                handle: video,
+                x: 0.0,
+                y: 0.0,
+                width: 128.0,
+                height: 72.0,
+            },
+        )]);
+        let id = StableNodeId::try_from(video).expect("video id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("video object-fit must land on CustomRenderNode");
+        assert_eq!(content.fit, nana_ui_core::ContentFit::Contain);
+    }
+
+    #[test]
+    fn video_src_size_change_invalidates_host_texture_revision() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let video = doc.create_element("video");
+        doc.insert(video, doc.mount_root(), None);
+        doc.set_attribute(video, "data-nana-video", "4");
+        doc.apply_layout_boxes(&[(
+            video,
+            LayoutBox {
+                handle: video,
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 36.0,
+            },
+        )]);
+        let id = StableNodeId::try_from(video).expect("video id");
+        doc.override_host_texture_revision("video:4", nana_ui_runtime::pack_gpu_revision(2, 1));
+        doc.flush_host_frame();
+        let first = doc.runtime.custom_render(id).expect("video HostTexture");
+        assert_eq!(first.revision, nana_ui_runtime::pack_gpu_revision(2, 1));
+        doc.override_host_texture_revision("video:4", nana_ui_runtime::pack_gpu_revision(3, 2));
+        doc.set_attribute(video, "src", "nana:mock-b");
+        doc.flush_host_frame();
+        let second = doc
+            .runtime
+            .custom_render(id)
+            .expect("src change must keep HostTexture");
+        assert_eq!(second.resource.as_ref(), "video:4");
+        assert_eq!(
+            second.revision,
+            nana_ui_runtime::pack_gpu_revision(3, 2),
+            "src / size uploads must stamp a new generation/version"
+        );
+    }
+
+    #[test]
+    fn generic_svg_projects_host_texture_custom_render() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let svg = doc.create_element("svg");
-        let i = doc.create_element("i");
         doc.insert(svg, doc.mount_root(), None);
-        doc.insert(i, doc.mount_root(), None);
-        let mut bridge = crate::MessageBridge::new();
-        bridge.register(
-            svg.0,
-            crate::WidgetKind::Icon,
-            crate::WidgetProps {
-                class_names: vec!["lucide".into(), "lucide-search".into()],
-                element_tag: "svg".into(),
-                ..Default::default()
+        doc.set_attribute(svg, "viewBox", "0 0 32 32");
+        let rect = doc.create_element_ns("rect", crate::ElementNamespace::Svg, None);
+        doc.insert(rect, svg, None);
+        doc.set_attribute(rect, "x", "4");
+        doc.set_attribute(rect, "y", "4");
+        doc.set_attribute(rect, "width", "24");
+        doc.set_attribute(rect, "height", "24");
+        doc.set_attribute(rect, "fill", "#00aa00");
+        doc.apply_layout_boxes(&[(
+            svg,
+            LayoutBox {
+                handle: svg,
+                x: 8.0,
+                y: 8.0,
+                width: 32.0,
+                height: 32.0,
             },
+        )]);
+        doc.flush_host_frame();
+
+        let id = StableNodeId::try_from(svg).expect("svg id");
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("generic svg must attach a HostTexture CustomRender");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), &format!("svg:{}", svg.0));
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .any(|(handle, slot)| *handle == svg && slot == &format!("svg:{}", svg.0)),
+            "generic svg must appear in gpu_slots"
         );
+        let primitive = doc
+            .scene()
+            .primitives()
+            .find(|primitive| {
+                primitive.node.get() == svg.0
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Custom { .. }
+                    )
+            })
+            .expect("svg must extract a HostTexture scene primitive");
+        let nana_ui_scene::ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
+            panic!("svg must compile to a custom scene primitive");
+        };
+        assert_eq!(custom.renderer.as_ref(), "nana.host-texture");
+        assert!(
+            doc.scene()
+                .primitives()
+                .all(|primitive| primitive.node.get() != rect.0),
+            "svg vector children must not paint as boxes"
+        );
+        assert!(!doc.svg_host_uploads().is_empty());
+    }
+
+    #[test]
+    fn lucide_svg_does_not_use_generic_svg_host_texture() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let svg = doc.create_element("svg");
+        doc.insert(svg, doc.mount_root(), None);
+        doc.set_attribute(svg, "class", "lucide lucide-search");
+        doc.set_attribute(svg, "viewBox", "0 0 24 24");
+        doc.apply_layout_boxes(&[(
+            svg,
+            LayoutBox {
+                handle: svg,
+                x: 0.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+            },
+        )]);
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            value: "search".into(),
+            class_names: vec!["lucide".into(), "lucide-search".into()],
+            element_tag: "svg".into(),
+            ..Default::default()
+        };
+        props.layout.width = Some(nana_ui_core::LengthSpec::Px(24.0));
+        props.layout.height = Some(nana_ui_core::LengthSpec::Px(24.0));
+        bridge.register(svg.0, crate::WidgetKind::Icon, props);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        doc.flush_host_frame();
+        let id = StableNodeId::try_from(svg).expect("svg id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "Lucide stays on the Icon atlas path"
+        );
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(id),
+                Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                    if icon == nana_ui_core::Icon::Search
+            ),
+            "catalog Lucide must project StandardVisual::Icon"
+        );
+        assert!(
+            doc.scene().primitives().any(|primitive| {
+                primitive.node.get() == svg.0
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Icon { icon, .. }
+                            if icon == nana_ui_core::Icon::Search
+                    )
+            }),
+            "catalog Lucide must extract ScenePrimitiveKind::Icon"
+        );
+    }
+
+    #[test]
+    fn i_and_nana_icon_project_icon_atlas() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let i = doc.create_element("i");
+        let nana_icon = doc.create_element("nana-icon");
+        doc.insert(i, doc.mount_root(), None);
+        doc.insert(nana_icon, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
         bridge.register(
             i.0,
             crate::WidgetKind::Icon,
@@ -3510,36 +4320,131 @@ mod tests {
                 ..Default::default()
             },
         );
+        bridge.register(
+            nana_icon.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                value: "search".into(),
+                element_tag: "nana-icon".into(),
+                ..Default::default()
+            },
+        );
         doc.sync_semantic_styles(&bridge.snapshot());
-        let svg_id = StableNodeId::try_from(svg).unwrap();
         let i_id = StableNodeId::try_from(i).unwrap();
-        assert!(matches!(
-            doc.runtime.standard_visual(svg_id),
-            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
-                if icon == nana_ui_core::Icon::Search
-        ));
+        let nana_id = StableNodeId::try_from(nana_icon).unwrap();
         assert!(matches!(
             doc.runtime.standard_visual(i_id),
             Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
                 if icon == nana_ui_core::Icon::Settings
         ));
-        assert!(doc.scene().primitives().any(|primitive| {
-            primitive.node.get() == svg.0
-                && matches!(
-                    primitive.kind,
-                    nana_ui_scene::ScenePrimitiveKind::Icon { icon, .. }
-                        if icon == nana_ui_core::Icon::Search
-                )
-        }));
+        assert!(matches!(
+            doc.runtime.standard_visual(nana_id),
+            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                if icon == nana_ui_core::Icon::Search
+        ));
+        assert!(doc.runtime.custom_render(i_id).is_none());
+        assert!(doc.runtime.custom_render(nana_id).is_none());
     }
 
     #[test]
-    fn icon_button_child_icon_is_not_bound_twice() {
+    fn unknown_lucide_falls_back_to_host_texture() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let svg = doc.create_element("svg");
+        doc.insert(svg, doc.mount_root(), None);
+        doc.set_attribute(svg, "class", "lucide lucide-puzzle");
+        doc.set_attribute(svg, "viewBox", "0 0 24 24");
+        let rect = doc.create_element_ns("rect", crate::ElementNamespace::Svg, None);
+        doc.insert(rect, svg, None);
+        doc.set_attribute(rect, "width", "24");
+        doc.set_attribute(rect, "height", "24");
+        doc.set_attribute(rect, "fill", "#00aa00");
+        doc.apply_layout_boxes(&[(
+            svg,
+            LayoutBox {
+                handle: svg,
+                x: 0.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+            },
+        )]);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            svg.0,
+            crate::WidgetKind::Icon,
+            crate::WidgetProps {
+                value: "puzzle".into(),
+                class_names: vec!["lucide".into(), "lucide-puzzle".into()],
+                element_tag: "svg".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        doc.flush_host_frame();
+        let id = StableNodeId::try_from(svg).expect("svg id");
+        assert!(
+            doc.runtime.standard_visual(id).is_none(),
+            "unknown lucide names stay off the catalog atlas"
+        );
+        let content = doc
+            .runtime
+            .custom_render(id)
+            .expect("unknown lucide must rasterize to HostTexture");
+        assert_eq!(content.renderer.as_ref(), "nana.host-texture");
+        assert_eq!(content.resource.as_ref(), &format!("svg:{}", svg.0));
+        assert!(
+            doc.scene().primitives().all(|primitive| {
+                !matches!(
+                    primitive.kind,
+                    nana_ui_scene::ScenePrimitiveKind::Icon { .. }
+                ) || primitive.node.get() != svg.0
+            }),
+            "unknown lucide must not extract an Icon primitive"
+        );
+    }
+
+    #[test]
+    fn icon_button_inner_lucide_does_not_bind_iconglyph() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let button = doc.create_element("button");
         let svg = doc.create_element("svg");
+        let path = doc.create_element_ns("path", crate::ElementNamespace::Svg, None);
         doc.insert(button, doc.mount_root(), None);
         doc.insert(svg, button, None);
+        doc.insert(path, svg, None);
+        doc.set_attribute(svg, "class", "lucide lucide-search");
+        doc.apply_layout_boxes(&[
+            (
+                button,
+                LayoutBox {
+                    handle: button,
+                    x: 0.0,
+                    y: 0.0,
+                    width: 32.0,
+                    height: 32.0,
+                },
+            ),
+            (
+                svg,
+                LayoutBox {
+                    handle: svg,
+                    x: 4.0,
+                    y: 4.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+            ),
+            (
+                path,
+                LayoutBox {
+                    handle: path,
+                    x: 4.0,
+                    y: 4.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+            ),
+        ]);
         let mut bridge = crate::MessageBridge::new();
         bridge.register(
             button.0,
@@ -3562,14 +4467,138 @@ mod tests {
         );
         bridge.insert_child(svg.0, button.0, None);
         doc.sync_semantic_styles(&bridge.snapshot());
+        doc.flush_host_frame();
         let button_id = StableNodeId::try_from(button).unwrap();
         let svg_id = StableNodeId::try_from(svg).unwrap();
-        assert!(matches!(
-            doc.runtime.standard_visual(button_id),
-            Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
-                if icon == nana_ui_core::Icon::Search
-        ));
-        assert!(doc.runtime.standard_visual(svg_id).is_none());
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(button_id),
+                Some(nana_ui_runtime::StandardVisual::Icon { icon, .. })
+                    if icon == nana_ui_core::Icon::Search
+            ),
+            "IconButton promotion owns the atlas glyph"
+        );
+        assert!(
+            doc.runtime.standard_visual(svg_id).is_none(),
+            "inner Lucide svg must not bind a second IconGlyph"
+        );
+        assert!(
+            doc.scene()
+                .primitives()
+                .filter(|primitive| matches!(
+                    primitive.kind,
+                    nana_ui_scene::ScenePrimitiveKind::Icon { .. }
+                ))
+                .all(|primitive| primitive.node.get() == button.0),
+            "only the IconButton node paints an Icon primitive"
+        );
+        assert!(
+            doc.scene()
+                .primitives()
+                .all(|primitive| primitive.node.get() != path.0),
+            "inner path must not paint as a CSS box"
+        );
+    }
+
+    fn mount_generic_svg_host_texture(doc: &mut NanaTreeDocument) -> NodeHandle {
+        let svg = doc.create_element("svg");
+        doc.insert(svg, doc.mount_root(), None);
+        doc.set_attribute(svg, "viewBox", "0 0 32 32");
+        let rect = doc.create_element_ns("rect", crate::ElementNamespace::Svg, None);
+        doc.insert(rect, svg, None);
+        doc.set_attribute(rect, "x", "4");
+        doc.set_attribute(rect, "y", "4");
+        doc.set_attribute(rect, "width", "24");
+        doc.set_attribute(rect, "height", "24");
+        doc.set_attribute(rect, "fill", "#00aa00");
+        doc.apply_layout_boxes(&[(
+            svg,
+            LayoutBox {
+                handle: svg,
+                x: 8.0,
+                y: 8.0,
+                width: 32.0,
+                height: 32.0,
+            },
+        )]);
+        doc.flush_host_frame();
+        svg
+    }
+
+    fn prepare_svg_gpu_slots(doc: &NanaTreeDocument, held: &mut std::collections::HashSet<String>) {
+        let live: Vec<String> = doc
+            .svg_host_uploads()
+            .into_iter()
+            .map(|upload| upload.slot)
+            .collect();
+        for slot in crate::svg_raster::released_svg_gpu_slots(
+            held.iter().map(String::as_str),
+            live.iter().map(String::as_str),
+        ) {
+            held.remove(&slot);
+        }
+        held.extend(live);
+    }
+
+    #[test]
+    fn svg_gpu_slot_is_pruned_after_remove() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let svg = mount_generic_svg_host_texture(&mut doc);
+        let slot = format!("svg:{}", svg.0);
+        let mut held = std::collections::HashSet::new();
+        prepare_svg_gpu_slots(&doc, &mut held);
+        assert!(
+            held.contains(&slot),
+            "create+flush+prepare must register svg:{{id}}"
+        );
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .any(|(_, gpu_slot)| gpu_slot == &slot)
+        );
+
+        doc.remove(svg);
+        doc.flush_host_frame();
+        prepare_svg_gpu_slots(&doc, &mut held);
+        assert!(
+            !held.contains(&slot),
+            "remove+flush+prepare must prune svg:{{id}} from the GPU slot set"
+        );
+        assert!(doc.svg_host_uploads().is_empty());
+        assert!(
+            doc.gpu_slots()
+                .iter()
+                .all(|(_, gpu_slot)| gpu_slot != &slot)
+        );
+        let id = StableNodeId::try_from(svg).expect("svg id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "disposed svg must despawn CustomRenderNode"
+        );
+    }
+
+    #[test]
+    fn svg_gpu_slot_is_pruned_after_lucide_conversion() {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let svg = mount_generic_svg_host_texture(&mut doc);
+        let slot = format!("svg:{}", svg.0);
+        let mut held = std::collections::HashSet::new();
+        prepare_svg_gpu_slots(&doc, &mut held);
+        assert!(held.contains(&slot));
+
+        doc.set_attribute(svg, "class", "lucide lucide-search");
+        doc.flush_host_frame();
+        prepare_svg_gpu_slots(&doc, &mut held);
+        assert!(
+            !held.contains(&slot),
+            "Lucide conversion+prepare must drop the generic svg:{{id}} GPU slot"
+        );
+        assert!(doc.svg_host_uploads().is_empty());
+        let id = StableNodeId::try_from(svg).expect("svg id");
+        assert!(
+            doc.runtime.custom_render(id).is_none(),
+            "Lucide conversion must detach HostTexture CustomRender"
+        );
     }
 
     #[test]
@@ -3598,8 +4627,8 @@ mod tests {
                 primitive.node.get() != canvas.0
                     || !matches!(
                         &primitive.kind,
-                        nana_ui_scene::ScenePrimitiveKind::Custom(custom)
-                            if custom.renderer.as_ref() == "nana.host-texture"
+                        nana_ui_scene::ScenePrimitiveKind::Custom { node, .. }
+                            if node.renderer.as_ref() == "nana.host-texture"
                     )
             }),
             "bare <canvas> must not sample host-texture as a 2d bitmap"
@@ -5801,6 +6830,77 @@ mod tests {
     }
 
     #[test]
+    fn graph_node_content_slot_is_a_document_order_child() {
+        let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+        let canvas = doc.create_element("nana-graph-canvas");
+        let interior = doc.create_element("div");
+        doc.insert(canvas, doc.mount_root(), None);
+        doc.insert(interior, canvas, None);
+        doc.set_attribute(interior, "data-slot", "source");
+        doc.set_gpu_slot(interior, "formula.source");
+        let mut bridge = crate::MessageBridge::new();
+        let mut props = crate::WidgetProps {
+            label: "Graph".into(),
+            ..Default::default()
+        };
+        props.apply_prop(
+            "nodes",
+            &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+                [
+                    ("id".into(), nana_js_engine::HostValue::string("source")),
+                    ("title".into(), nana_js_engine::HostValue::string("Source")),
+                    ("x".into(), nana_js_engine::HostValue::Number(20.0)),
+                    ("y".into(), nana_js_engine::HostValue::Number(24.0)),
+                    ("width".into(), nana_js_engine::HostValue::Number(160.0)),
+                    ("height".into(), nana_js_engine::HostValue::Number(80.0)),
+                ]
+                .into_iter()
+                .collect(),
+            )]),
+        );
+        let mut interior_props = crate::WidgetProps::default();
+        interior_props
+            .attrs
+            .insert("data-slot".into(), "source".into());
+        bridge.register(canvas.0, crate::WidgetKind::GraphCanvas, props);
+        bridge.register(interior.0, crate::WidgetKind::Box, interior_props);
+        bridge.insert_child(interior.0, canvas.0, None);
+        doc.flush_host_frame();
+        doc.sync_semantic_styles(&bridge.snapshot());
+
+        let canvas_id = StableNodeId::try_from(canvas).unwrap();
+        let interior_id = StableNodeId::try_from(interior).unwrap();
+        assert!(
+            matches!(
+                doc.runtime.standard_visual(canvas_id),
+                Some(nana_ui_runtime::StandardVisual::GraphCanvas { nodes, .. })
+                    if nodes.len() == 1
+            ),
+            "default grid/frame paint must stay on the canvas"
+        );
+        assert!(
+            doc.runtime.custom_render(canvas_id).is_none(),
+            "node interiors must not attach GPU content on the canvas itself"
+        );
+        let custom = doc
+            .runtime
+            .custom_render(interior_id)
+            .expect("data-nana-gpu child is a HostTexture slot");
+        assert_eq!(custom.renderer.as_ref(), HOST_TEXTURE_RENDERER);
+        assert_eq!(custom.resource.as_ref(), "formula.source");
+        assert_eq!(
+            doc.runtime.node(canvas_id).unwrap().children,
+            vec![interior_id]
+        );
+        let style = doc.runtime.node_style(interior_id).unwrap();
+        assert_eq!(style.layout.position, nana_ui_core::PositionSpec::Absolute);
+        assert!(style.layout.offset_left.is_some());
+        assert!(style.layout.offset_top.is_some());
+        assert!(style.layout.width.is_some());
+        assert!(style.layout.height.is_some());
+    }
+
+    #[test]
     fn app_shell_with_title_and_child_projects_title_bar_and_body() {
         let mut doc = NanaTreeDocument::new(800, 600, 1.0);
         let shell = doc.create_element("nana-app-shell");
@@ -7431,6 +8531,147 @@ mod tests {
         );
         assert_ne!(doc.hit_test(20.0, 20.0), Some(overlay));
         assert_eq!(doc.hit_test(20.0, 20.0), Some(under));
+
+    }
+
+    #[test]
+    fn pointer_events_none_skips_hit_and_auto_child_punches_through() {
+        use nana_ui_core::PointerEventsSpec;
+
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let parent = doc.create_element("div");
+        let child = doc.create_element("div");
+        let inherited = doc.create_element("div");
+        doc.insert(parent, doc.mount_root(), None);
+        doc.insert(child, parent, None);
+        doc.insert(inherited, parent, None);
+
+        let mut parent_props = crate::WidgetProps::default();
+        parent_props.layout.pointer_events = Some(PointerEventsSpec::None);
+        let mut child_props = crate::WidgetProps::default();
+        child_props.layout.pointer_events = Some(PointerEventsSpec::Auto);
+        let snapshot = crate::SemanticSnapshot {
+            revision: 1,
+            theme: nana_ui_core::ThemeMode::Light,
+            appearance: nana_ui_core::AppearanceSettings::default(),
+            roots: vec![parent.0],
+            changes: Default::default(),
+            widgets: vec![
+                crate::SemanticWidget {
+                    id: parent.0,
+                    kind: crate::WidgetKind::Column,
+                    props: parent_props,
+                    children: vec![child.0, inherited.0],
+                    parent: Some(doc.mount_root().0),
+                },
+                crate::SemanticWidget {
+                    id: child.0,
+                    kind: crate::WidgetKind::Column,
+                    props: child_props,
+                    children: Vec::new(),
+                    parent: Some(parent.0),
+                },
+                crate::SemanticWidget {
+                    id: inherited.0,
+                    kind: crate::WidgetKind::Column,
+                    props: crate::WidgetProps::default(),
+                    children: Vec::new(),
+                    parent: Some(parent.0),
+                },
+            ],
+        };
+        doc.sync_semantic_styles(&snapshot);
+        doc.apply_layout_boxes(&[
+            (
+                parent,
+                LayoutBox {
+                    handle: parent,
+                    x: 10.0,
+                    y: 10.0,
+                    width: 50.0,
+                    height: 50.0,
+                },
+            ),
+            (
+                child,
+                LayoutBox {
+                    handle: child,
+                    x: 15.0,
+                    y: 15.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+            ),
+            (
+                inherited,
+                LayoutBox {
+                    handle: inherited,
+                    x: 40.0,
+                    y: 40.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+            ),
+        ]);
+
+        let parent_id = StableNodeId::try_from(parent).expect("parent id");
+        let child_id = StableNodeId::try_from(child).expect("child id");
+        assert!(!doc.runtime.interaction(parent_id).unwrap().pointer_events);
+        assert!(doc.runtime.interaction(child_id).unwrap().pointer_events);
+        assert_eq!(doc.hit_test(25.0, 25.0), Some(child));
+        assert_ne!(doc.hit_test(12.0, 12.0), Some(parent));
+        assert_ne!(doc.hit_test(44.0, 44.0), Some(inherited));
+    }
+
+    #[test]
+    fn paint_transform_overlay_does_not_write_runtime_layout_box() {
+        use nana_ui_core::PaintTransform;
+        use nana_ui_runtime::StableNodeId;
+
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let node = doc.create_element("li");
+        doc.insert(node, doc.mount_root(), None);
+        doc.flush_host_frame();
+        doc.inject_layout_boxes(&[(
+            node,
+            LayoutBox {
+                handle: node,
+                x: 10.0,
+                y: 20.0,
+                width: 40.0,
+                height: 16.0,
+            },
+        )]);
+        let before = doc.layout_box(node).expect("box");
+        doc.set_paint_transform(node, "translate(12px, 4px)");
+        doc.flush_host_frame();
+        let after = doc.layout_box(node).expect("box after transform");
+        assert_eq!(before.x, after.x);
+        assert_eq!(before.y, after.y);
+        assert_eq!(before.width, after.width);
+        assert_eq!(before.height, after.height);
+        let style = doc
+            .world()
+            .node_style(StableNodeId::try_from(node).unwrap())
+            .expect("style");
+        assert_eq!(
+            style.layout.transform,
+            Some(PaintTransform {
+                e: 12.0,
+                f: 4.0,
+                ..PaintTransform::default()
+            })
+        );
+        doc.set_paint_transform(node, "");
+        doc.flush_host_frame();
+        let cleared = doc
+            .world()
+            .node_style(StableNodeId::try_from(node).unwrap())
+            .expect("cleared style");
+        assert_eq!(cleared.layout.transform, None);
+        let still = doc.layout_box(node).expect("box after clear");
+        assert_eq!(still.x, before.x);
+        assert_eq!(still.y, before.y);
     }
 
     #[test]

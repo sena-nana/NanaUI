@@ -66,6 +66,10 @@ mod tests {
                     duration: Duration::from_millis(20),
                     frame_interval: Duration::from_millis(5),
                     easing: Easing::Linear,
+                    iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
+                    direction: nana_ui_runtime::AnimationDirection::Normal,
+                    fill_mode: nana_ui_runtime::AnimationFillMode::None,
+                    play_state: nana_ui_runtime::AnimationPlayState::Running,
                 });
             })
             .unwrap();

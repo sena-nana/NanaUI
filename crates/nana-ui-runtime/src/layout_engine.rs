@@ -5,7 +5,8 @@ use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
     AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
     FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, resolve_grid_track_sizes,
+    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec, WritingModeSpec,
+    resolve_grid_track_sizes,
 };
 
 use crate::{
@@ -169,6 +170,7 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 &mut output,
                 scope_ref,
+                None,
             )?;
         }
         // Publish recomputed boxes from the placed set; no document_order walk.
@@ -359,6 +361,13 @@ impl<'a> LayoutInputMap<'a> {
         self.world.layout_style(id)
     }
 
+    fn text_ascent(&self, id: StableNodeId) -> Option<f32> {
+        self.nodes
+            .get(&id)
+            .and_then(|node| node.text_metrics)
+            .and_then(|metrics| metrics.ascent)
+    }
+
     fn load(&mut self, id: StableNodeId) -> Result<bool, UiWorldError> {
         if self.nodes.contains_key(&id) {
             return Ok(true);
@@ -417,15 +426,22 @@ fn subtree_unchanged(
 fn collect_flow_children(
     children: &[StableNodeId],
     nodes: &mut LayoutInputMap<'_>,
+    parent_display: Option<DisplaySpec>,
 ) -> Result<Vec<StableNodeId>, UiWorldError> {
     let mut out = Vec::new();
-    collect_flow_children_into(children, nodes, &mut out)?;
+    collect_flow_children_into(children, nodes, parent_display, &mut out)?;
     Ok(out)
+}
+
+fn parent_unboxes_inline(parent_display: Option<DisplaySpec>) -> bool {
+    !parent_display
+        .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
 }
 
 fn collect_flow_children_into(
     children: &[StableNodeId],
     nodes: &mut LayoutInputMap<'_>,
+    parent_display: Option<DisplaySpec>,
     out: &mut Vec<StableNodeId>,
 ) -> Result<(), UiWorldError> {
     for child in children.iter().copied() {
@@ -440,15 +456,52 @@ fn collect_flow_children_into(
                 Some(node) => (*node.children).clone(),
                 None => continue,
             };
-            collect_flow_children_into(&nested, nodes, out)?;
+            collect_flow_children_into(&nested, nodes, parent_display, out)?;
             continue;
         }
         if style.position.is_out_of_flow() {
             continue;
         }
+        if parent_unboxes_inline(parent_display)
+            && style.is_inline_level()
+            && inline_contains_block(child, nodes)?
+        {
+            let nested = match nodes.get(child)? {
+                Some(node) => (*node.children).clone(),
+                None => continue,
+            };
+            collect_flow_children_into(&nested, nodes, parent_display, out)?;
+            continue;
+        }
         out.push(child);
     }
     Ok(())
+}
+
+fn inline_contains_block(
+    id: StableNodeId,
+    nodes: &mut LayoutInputMap<'_>,
+) -> Result<bool, UiWorldError> {
+    let Some(node) = nodes.get(id)? else {
+        return Ok(false);
+    };
+    let children = (*node.children).clone();
+    for grandchild in children {
+        let Some(style) = nodes.style(grandchild) else {
+            continue;
+        };
+        if style.omits_box() || style.position.is_out_of_flow() {
+            continue;
+        }
+        if style.display.is_some_and(DisplaySpec::is_contents) || style.is_inline_level() {
+            if inline_contains_block(grandchild, nodes)? {
+                return Ok(true);
+            }
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn collect_positioned_children(
@@ -716,6 +769,8 @@ fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputM
         || style.active_grid_rows().is_some()
         || style.grid_columns_repeat.is_some()
         || style.grid_rows_repeat.is_some()
+        || style.is_subgrid_columns()
+        || style.is_subgrid_rows()
         || style.grid_auto_flow.is_some()
         || style
             .grid_auto_columns
@@ -834,10 +889,17 @@ fn intrinsic_size_scoped(
         (available.width - chrome.width).max(0.0),
         (available.height - chrome.height).max(0.0),
     );
-    let direction = style.direction.unwrap_or(FlexDirection::Column);
-    let flow_children = collect_flow_children(&children, nodes)?;
-    let mut child_sizes = Vec::with_capacity(flow_children.len());
+    let flow_children = collect_flow_children(&children, nodes, style.display)?;
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
+    let ifc = !grid_measure
+        && !style
+            .display
+            .is_some_and(|d| d.is_flex_container() || d.is_grid_container())
+        && flow_children
+            .iter()
+            .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
+    let direction = used_flow_direction(style, ifc);
+    let mut child_sizes = Vec::with_capacity(flow_children.len());
     for child in &flow_children {
         let child_available = nodes
             .style(*child)
@@ -859,12 +921,14 @@ fn intrinsic_size_scoped(
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let wrap = style.flex_wrap;
-    let wrapping = match direction {
-        FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
-        FlexDirection::Column => {
-            matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) && content_available.height > 0.5
-        }
-    };
+    let wrapping = ifc
+        || match direction {
+            FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+            FlexDirection::Column => {
+                matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+                    && content_available.height > 0.5
+            }
+        };
     let grid_tracks = match direction {
         FlexDirection::Row => style.active_grid_columns(),
         FlexDirection::Column => style.active_grid_rows(),
@@ -877,6 +941,7 @@ fn intrinsic_size_scoped(
             content_available,
             fonts,
             nodes,
+            None,
         );
         Size::new(
             grid_axis_extent(&grid.col_sizes, grid.col_gap),
@@ -1068,6 +1133,7 @@ fn place_node(
         intrinsic,
         output,
         None,
+        None,
     )
 }
 
@@ -1083,6 +1149,7 @@ fn place_node_scoped(
     intrinsic: &mut IntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
+    inherited_grid: Option<&InheritedGridTracks>,
 ) -> Result<(), UiWorldError> {
     let Some(node) = nodes.get(id)? else {
         output.insert(
@@ -1156,8 +1223,7 @@ fn place_node_scoped(
         size.width - padding.left - padding.right - border.left - border.right,
         size.height - padding.top - padding.bottom - border.top - border.bottom,
     );
-    let mut direction = style.direction.unwrap_or(FlexDirection::Column);
-    let mut flow = collect_flow_children(&child_ids, nodes)?;
+    let mut flow = collect_flow_children(&child_ids, nodes, style.display)?;
     let mut positioned = collect_positioned_children(&child_ids, nodes)?;
     let floated = if style
         .display
@@ -1196,10 +1262,17 @@ fn place_node_scoped(
         && flow
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
-    if ifc {
-        direction = FlexDirection::Row;
-    }
-    if style.flex_reverse && !grid_2d && !ifc {
+    let direction = used_flow_direction(style, ifc);
+    let rtl_inline = style.is_rtl() && !style.resolved_writing_mode().is_vertical();
+    let reverse_main = !grid_2d
+        && !ifc
+        && if direction.is_row() {
+            let block_rev = style.resolved_writing_mode().block_start_is_right();
+            style.flex_reverse != (rtl_inline || block_rev)
+        } else {
+            style.flex_reverse
+        };
+    if reverse_main {
         flow.reverse();
         positioned.reverse();
     }
@@ -1225,7 +1298,15 @@ fn place_node_scoped(
         )?);
     }
     if grid_2d {
-        let grid = layout_grid_2d(style, &flow, &child_sizes, content, fonts, nodes);
+        let grid = layout_grid_2d(
+            style,
+            &flow,
+            &child_sizes,
+            content,
+            fonts,
+            nodes,
+            inherited_grid,
+        );
         place_grid_2d_items(
             &grid,
             content_origin,
@@ -1252,16 +1333,20 @@ fn place_node_scoped(
             FlexDirection::Column => style.active_grid_rows(),
         };
         let mut justify = if ifc {
-            style.text_align.to_justify(style.is_rtl())
+            ifc_justify(
+                style.text_align,
+                style.is_rtl(),
+                style.resolved_writing_mode(),
+            )
         } else {
             style.justify_content
         };
-        if style.flex_reverse && !ifc {
+        if reverse_main {
             justify = flip_justify_for_reverse(justify);
         }
         let full_main = main_extent(content, direction);
         let mut line_slots = if wrapping {
-            if ifc {
+            if ifc && style.resolved_writing_mode().is_horizontal() {
                 pack_ifc_line_boxes(
                     &flow,
                     &child_sizes,
@@ -1285,7 +1370,7 @@ fn place_node_scoped(
                     viewport,
                     child_font_px,
                     nodes,
-                    false,
+                    ifc,
                 )
                 .into_iter()
                 .map(|indices| LineBoxSlot {
@@ -1312,13 +1397,17 @@ fn place_node_scoped(
         let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
             Vec::with_capacity(line_slots.len());
         for slot in &line_slots {
-            let line_flow: Vec<StableNodeId> =
+            let mut line_flow: Vec<StableNodeId> =
                 slot.indices.iter().map(|&index| flow[index]).collect();
             let mut line_sizes: Vec<Size> = slot
                 .indices
                 .iter()
                 .map(|&index| child_sizes[index])
                 .collect();
+            if ifc && rtl_inline {
+                line_flow.reverse();
+                line_sizes.reverse();
+            }
             let mut line_content = content;
             set_main_extent(&mut line_content, direction, slot.main_available);
             let line_tracks = grid_tracks.map(|tracks| {
@@ -1384,6 +1473,15 @@ fn place_node_scoped(
                 slot.pin_cross,
             ));
         }
+        let from_block_end = pack_block_from_end(style, direction);
+        if from_block_end {
+            packed.reverse();
+        }
+        let align_content = if from_block_end {
+            flip_justify_for_reverse(style.align_content)
+        } else {
+            style.align_content
+        };
         let line_count = packed.len();
         let container_cross = cross_extent(content, direction);
         let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
@@ -1392,10 +1490,8 @@ fn place_node_scoped(
                 .map(|(_, _, cross, _, _, _, _)| *cross)
                 .sum::<f32>()
                 + cross_gap * line_count.saturating_sub(1) as f32;
-            if matches!(
-                style.align_content,
-                JustifySpec::Stretch | JustifySpec::Start
-            ) && style.align_content == JustifySpec::Stretch
+            if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
+                && align_content == JustifySpec::Stretch
             {
                 let leftover = (container_cross - total).max(0.0);
                 let extra = leftover / line_count as f32;
@@ -1404,14 +1500,14 @@ fn place_node_scoped(
                 }
                 (0.0, cross_gap)
             } else {
-                justify_offsets(
-                    style.align_content,
-                    container_cross,
-                    total,
-                    cross_gap,
-                    line_count,
-                )
+                justify_offsets(align_content, container_cross, total, cross_gap, line_count)
             }
+        } else if from_block_end {
+            let line_cross = packed
+                .first()
+                .map(|(_, _, cross, _, _, _, _)| *cross)
+                .unwrap_or(0.0);
+            ((container_cross - line_cross).max(0.0), cross_gap)
         } else {
             (0.0, cross_gap)
         };
@@ -1451,7 +1547,7 @@ fn place_node_scoped(
                 .filter_map(|id| {
                     nodes
                         .style(*id)
-                        .map(|s| s.approximate_baseline(child_font_px))
+                        .map(|s| s.baseline_from_ascent(child_font_px, nodes.text_ascent(*id)))
                 })
                 .fold(0.0f32, f32::max);
             for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
@@ -1500,7 +1596,8 @@ fn place_node_scoped(
                         cross_cursor + cross_start_margin(margin, direction)
                     }
                     AlignSpec::Baseline => {
-                        let base = child_style.approximate_baseline(child_fonts.element_px);
+                        let base = child_style
+                            .baseline_from_ascent(child_fonts.element_px, nodes.text_ascent(child));
                         cross_cursor + (line_baseline - base).max(0.0)
                     }
                     AlignSpec::Center => {
@@ -1547,6 +1644,7 @@ fn place_node_scoped(
                         intrinsic,
                         output,
                         scope,
+                        None,
                     )?;
                 }
                 cursor += main_extent(child_size, direction)
@@ -1583,6 +1681,7 @@ fn place_node_scoped(
                 intrinsic,
                 output,
                 scope,
+                None,
             )?;
         }
     }
@@ -1682,6 +1781,7 @@ fn place_node_scoped(
                 intrinsic,
                 output,
                 scope,
+                None,
             )?;
         }
     }
@@ -1919,6 +2019,7 @@ fn place_modal_slot(
         intrinsic,
         output,
         scope,
+        None,
     )
 }
 
@@ -1938,6 +2039,31 @@ fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::Par
     nana_ui_core::ParentBox::new(Some(content.width).filter(|value| *value > 0.0), height)
 }
 
+/// Physical main axis for this formatting context.
+///
+/// IFC always follows the writing-mode inline axis. Flex `row`/`column` are
+/// remapped through writing-mode; block containers without an explicit
+/// `flex-direction` stack along the block axis.
+fn used_flow_direction(style: &LayoutStyle, ifc: bool) -> FlexDirection {
+    let mode = style.resolved_writing_mode();
+    if ifc {
+        return mode.inline_flex_direction();
+    }
+    let css = style.direction.unwrap_or(FlexDirection::Column);
+    mode.physical_flex_direction(css)
+}
+
+/// `vertical-rl` packs lines from the physical right (block-start) when the
+/// cross axis is horizontal.
+fn pack_block_from_end(style: &LayoutStyle, direction: FlexDirection) -> bool {
+    style.resolved_writing_mode().block_start_is_right() && direction.is_column()
+}
+
+fn ifc_justify(align: TextAlignSpec, rtl: bool, writing_mode: WritingModeSpec) -> JustifySpec {
+    // Vertical writing-mode skips RTL so inline-start stays physical top.
+    align.to_justify(rtl && !writing_mode.is_vertical())
+}
+
 fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {
     match justify {
         JustifySpec::Start => JustifySpec::End,
@@ -1948,13 +2074,7 @@ fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {
 
 fn demote_fill_spec(spec: Option<LengthSpec>) -> Option<LengthSpec> {
     match spec {
-        Some(LengthSpec::Fill) => None,
-        Some(LengthSpec::Percent(percent)) if (percent - 100.0).abs() < 0.5 => None,
-        Some(LengthSpec::CalcPercentOffset { percent, offset_px })
-            if (percent - 100.0).abs() < 0.5 && offset_px <= 0.0 =>
-        {
-            None
-        }
+        Some(s) if s.is_full_percent_fill() => None,
         other => other,
     }
 }
@@ -2056,6 +2176,15 @@ struct GridPlacedItem {
     col_span: usize,
     row_span: usize,
     intrinsic: Size,
+}
+
+/// Parent track geometry for a subgrid item (already-resolved sizes, not templates).
+#[derive(Debug, Clone)]
+struct InheritedGridTracks {
+    columns: Option<Vec<f32>>,
+    column_gap: f32,
+    rows: Option<Vec<f32>>,
+    row_gap: f32,
 }
 
 struct Grid2DLayout {
@@ -2465,17 +2594,43 @@ fn layout_grid_2d(
     content: Size,
     fonts: FontSizeContext,
     nodes: &LayoutInputMap<'_>,
+    inherited: Option<&InheritedGridTracks>,
 ) -> Grid2DLayout {
-    let col_gap = style
+    let mut col_gap = style
         .resolved_column_gap_against_fonts(Some(content.width).filter(|width| *width > 0.0), fonts);
-    let row_gap = style.resolved_row_gap_against_fonts(
+    let mut row_gap = style.resolved_row_gap_against_fonts(
         Some(content.height)
             .filter(|height| *height > 0.0)
             .or(Some(content.width).filter(|width| *width > 0.0)),
         fonts,
     );
-    let mut col_tracks = explicit_column_tracks(style, content.width, col_gap);
-    let mut row_tracks = explicit_row_tracks(style, content.height, row_gap);
+    let mut col_tracks = if style.is_subgrid_columns() {
+        if let Some(sizes) = inherited
+            .and_then(|grid| grid.columns.as_deref())
+            .filter(|sizes| !sizes.is_empty())
+        {
+            col_gap = inherited.map(|grid| grid.column_gap).unwrap_or(col_gap);
+            sizes.iter().copied().map(GridTrack::Px).collect()
+        } else {
+            // No parent tracks: `subgrid` computes to `none`. Do not invent auto tracks.
+            Vec::new()
+        }
+    } else {
+        explicit_column_tracks(style, content.width, col_gap)
+    };
+    let mut row_tracks = if style.is_subgrid_rows() {
+        if let Some(sizes) = inherited
+            .and_then(|grid| grid.rows.as_deref())
+            .filter(|sizes| !sizes.is_empty())
+        {
+            row_gap = inherited.map(|grid| grid.row_gap).unwrap_or(row_gap);
+            sizes.iter().copied().map(GridTrack::Px).collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        explicit_row_tracks(style, content.height, row_gap)
+    };
     let explicit_cols = col_tracks.len();
     let explicit_rows = row_tracks.len();
     let auto_cols = style.grid_auto_columns.as_deref().filter(|t| !t.is_empty());
@@ -2740,18 +2895,36 @@ fn grid_span_extent(sizes: &[f32], start: usize, span: usize, gap: f32) -> f32 {
     sum + gap * (end - start).saturating_sub(1) as f32
 }
 
+fn spanned_track_sizes(sizes: &[f32], start: usize, span: usize) -> Vec<f32> {
+    if span == 0 || start >= sizes.len() {
+        return Vec::new();
+    }
+    let end = start.saturating_add(span).min(sizes.len());
+    sizes[start..end].to_vec()
+}
+
 fn size_is_indefinite(spec: Option<LengthSpec>) -> bool {
     !spec.is_some_and(LengthSpec::is_definite_declared)
 }
 
-/// After tracks exist, percent / Fill resolve against the final cell.
-fn used_in_grid_cell(spec: Option<LengthSpec>, intrinsic: f32, cell: f32) -> f32 {
+/// After tracks exist, percent / Fill / calc resolve against the final cell.
+fn used_in_grid_cell(
+    spec: Option<LengthSpec>,
+    intrinsic: f32,
+    cell: f32,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
+) -> f32 {
     match spec {
         Some(LengthSpec::Fill) => cell.max(0.0),
-        Some(LengthSpec::Percent(percent)) => (cell * percent / 100.0).max(0.0),
-        Some(LengthSpec::CalcPercentOffset { percent, offset_px }) => {
-            (cell * percent / 100.0 + offset_px).max(0.0)
-        }
+        Some(other) if other.is_definite_declared() => other
+            .resolve_with_fonts(
+                Some(cell.max(0.0)),
+                Some((viewport.width, viewport.height)),
+                fonts,
+            )
+            .map(|value| value.max(0.0))
+            .unwrap_or(intrinsic),
         _ => intrinsic,
     }
 }
@@ -2806,8 +2979,20 @@ fn place_grid_2d_items(
         let stretch_y = align == AlignSpec::Stretch
             && size_is_indefinite(child_style.height)
             && !ratio_filled_height;
-        let measured_w = used_in_grid_cell(child_style.width, item.intrinsic.width, cell_w);
-        let measured_h = used_in_grid_cell(child_style.height, item.intrinsic.height, cell_h);
+        let measured_w = used_in_grid_cell(
+            child_style.width,
+            item.intrinsic.width,
+            cell_w,
+            viewport,
+            child_fonts,
+        );
+        let measured_h = used_in_grid_cell(
+            child_style.height,
+            item.intrinsic.height,
+            cell_h,
+            viewport,
+            child_fonts,
+        );
         let (off_x, used_w) = align_in_grid_cell(justify, measured_w, cell_w, stretch_x);
         let (off_y, used_h) = align_in_grid_cell(align, measured_h, cell_h, stretch_y);
         let mut child_size = Size::new(used_w, used_h);
@@ -2832,6 +3017,20 @@ fn place_grid_2d_items(
             child_fonts,
             scope,
         ) {
+            let inherited = if child_style.is_subgrid_columns() || child_style.is_subgrid_rows() {
+                Some(InheritedGridTracks {
+                    columns: child_style
+                        .is_subgrid_columns()
+                        .then(|| spanned_track_sizes(&grid.col_sizes, item.col, item.col_span)),
+                    column_gap: grid.col_gap,
+                    rows: child_style
+                        .is_subgrid_rows()
+                        .then(|| spanned_track_sizes(&grid.row_sizes, item.row, item.row_span)),
+                    row_gap: grid.row_gap,
+                })
+            } else {
+                None
+            };
             place_node_scoped(
                 item.id,
                 child_origin,
@@ -2843,6 +3042,7 @@ fn place_grid_2d_items(
                 intrinsic,
                 output,
                 scope,
+                inherited.as_ref(),
             )?;
         }
     }
@@ -3928,9 +4128,10 @@ mod tests {
     use std::sync::Arc;
 
     use nana_ui_core::{
-        AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, GridLine,
-        GridPlacement, GridRepeatAuto, GridTrack, GridTrackListUnsupported, JustifySpec,
-        LayoutStyle, LengthSpec, LineHeightSpec, PositionSpec, WhiteSpaceSpec,
+        AlignSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec, DisplaySpec,
+        FlexDirection, FlexWrap, FloatSpec, GridLine, GridPlacement, GridRepeatAuto, GridTrack,
+        GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec,
+        PositionSpec, WhiteSpaceSpec, WritingModeSpec,
     };
 
     use crate::{
@@ -4260,6 +4461,7 @@ mod tests {
                 TextMetrics {
                     width: 40.0,
                     height: 18.0,
+                    ascent: None,
                 }
             }
         }
@@ -4528,11 +4730,13 @@ mod tests {
                     TextMetrics {
                         width: 180.0,
                         height: 16.0,
+                        ascent: None,
                     }
                 } else {
                     TextMetrics {
                         width: 74.0,
                         height: 16.0,
+                        ascent: None,
                     }
                 }
             }
@@ -4819,6 +5023,7 @@ mod tests {
                 TextMetrics {
                     width: 100.0,
                     height: 8.0,
+                    ascent: None,
                 }
             }
         }
@@ -5579,6 +5784,80 @@ mod tests {
     }
 
     #[test]
+    fn demote_fill_spec_treats_full_percent_calc_as_indefinite() {
+        let calc_100 = LengthSpec::from_calc(CalcExpr::Min(
+            Box::new(CalcExpr::Percent(100.0)),
+            Box::new(CalcExpr::Percent(100.0)),
+        ));
+        assert!(calc_100.is_full_percent_fill());
+        assert_eq!(demote_fill_spec(Some(calc_100)), None);
+        assert_eq!(demote_fill_spec(Some(LengthSpec::Fill)), None);
+        assert_eq!(
+            demote_fill_spec(Some(LengthSpec::Px(40.0))),
+            Some(LengthSpec::Px(40.0))
+        );
+    }
+
+    #[test]
+    fn grid_cell_resolves_unsimplified_calc_against_cell() {
+        let spec = LengthSpec::from_calc(CalcExpr::Binary {
+            op: CalcBinOp::Add,
+            left: Box::new(CalcExpr::Min(
+                Box::new(CalcExpr::Px(100.0)),
+                Box::new(CalcExpr::Percent(80.0)),
+            )),
+            right: Box::new(CalcExpr::Px(10.0)),
+        });
+        assert!(
+            matches!(spec, LengthSpec::Calc(_)),
+            "min() + px must stay as Calc AST"
+        );
+        assert!(
+            (used_in_grid_cell(
+                Some(spec),
+                0.0,
+                400.0,
+                LayoutViewport::new(400.0, 80.0),
+                FontSizeContext::default(),
+            ) - 110.0)
+                .abs()
+                < 0.01,
+            "grid used size must resolve calc against the cell, not intrinsic 0"
+        );
+
+        let child = StyleLayoutNode {
+            id: "child".into(),
+            style: LayoutStyle {
+                width: Some(spec),
+                height: Some(LengthSpec::Px(30.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(400.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns: Some(vec![GridTrack::Px(400.0)]),
+                align_items: AlignSpec::Start,
+                justify_items: Some(AlignSpec::Start),
+                ..LayoutStyle::default()
+            },
+            children: vec![child],
+            text: None,
+        };
+        let boxes = box_map(&tree, 400.0, 40.0);
+        assert!(
+            (boxes["child"].width - 110.0).abs() < 0.5,
+            "placed grid item must be 110px, got {:?}",
+            boxes["child"]
+        );
+    }
+
+    #[test]
     fn empty_grid_item_stretches_into_track() {
         let empty = |id: &str| StyleLayoutNode {
             id: id.into(),
@@ -5684,6 +5963,159 @@ mod tests {
     }
 
     #[test]
+    fn subgrid_inherits_parent_column_track_sizes() {
+        let cell = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                height: Some(LengthSpec::Fill),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let sub = StyleLayoutNode {
+            id: "sub".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                grid_columns_subgrid: true,
+                grid_placement: GridPlacement {
+                    column_start: GridLine::Index(1),
+                    column_end: GridLine::Index(-1),
+                    ..GridPlacement::default()
+                },
+                align_items: AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            },
+            children: vec![cell("a"), cell("b")],
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+                align_items: AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            },
+            children: vec![sub],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            (boxes["a"].width - 80.0).abs() < 0.5 && (boxes["a"].x - 0.0).abs() < 0.5,
+            "subgrid col 1 must inherit 80px, not split the 200px cell, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].width - 120.0).abs() < 0.5 && (boxes["b"].x - 80.0).abs() < 0.5,
+            "subgrid col 2 must inherit 120px, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn ifc_wraps_inline_around_left_float() {
+        let inline = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(70.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                StyleLayoutNode {
+                    id: "float".into(),
+                    style: LayoutStyle {
+                        float: FloatSpec::Left,
+                        width: Some(LengthSpec::Px(80.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                },
+                inline("a"),
+                inline("b"),
+                inline("c"),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["float"].x - 0.0).abs() < 0.5 && (boxes["float"].y - 0.0).abs() < 0.5,
+            "float stays packed at origin, got {:?}",
+            boxes["float"]
+        );
+        assert!(
+            (boxes["a"].x - 80.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "first inline must start after the left float band, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].x - 80.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+            "second inline wraps in the shortened band, got {:?}",
+            boxes["b"]
+        );
+        assert!(
+            (boxes["c"].y - 40.0).abs() < 0.5 && (boxes["c"].x - 0.0).abs() < 0.5,
+            "third inline drops below the float to full width, got {:?}",
+            boxes["c"]
+        );
+    }
+
+    #[test]
+    fn flex_item_float_is_blockified_not_floated() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                StyleLayoutNode {
+                    id: "a".into(),
+                    style: LayoutStyle {
+                        float: FloatSpec::Left,
+                        width: Some(LengthSpec::Px(50.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                },
+                px_box("b", 50.0, 40.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            (boxes["a"].x - 0.0).abs() < 0.5 && (boxes["b"].x - 50.0).abs() < 0.5,
+            "flex item float must stay a flex item, not pack as a float, got a={:?} b={:?}",
+            boxes["a"],
+            boxes["b"]
+        );
+    }
+
+    #[test]
     fn ifc_block_sibling_starts_new_line() {
         let inline = |id: &str, x: f32| StyleLayoutNode {
             id: id.into(),
@@ -5733,6 +6165,129 @@ mod tests {
     }
 
     #[test]
+    fn ifc_block_in_inline_unboxes_like_block_siblings() {
+        let inline_block = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let mid = StyleLayoutNode {
+            id: "mid".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "span".into(),
+                style: LayoutStyle {
+                    display: Some(DisplaySpec::Inline),
+                    ..LayoutStyle::default()
+                },
+                children: vec![inline_block("a"), mid, inline_block("c")],
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 80.0);
+        assert!(
+            (boxes["a"].y - 0.0).abs() < 0.5,
+            "first inline-block stays on the first line, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["mid"].y - 20.0).abs() < 0.5,
+            "block inside inline must hoist onto its own line, got {:?}",
+            boxes["mid"]
+        );
+        assert!(
+            (boxes["c"].y - 40.0).abs() < 0.5,
+            "trailing inline-block starts after the hoisted block, got {:?}",
+            boxes["c"]
+        );
+    }
+
+    #[test]
+    fn flex_item_inline_with_block_is_not_unboxed() {
+        let mid = StyleLayoutNode {
+            id: "mid".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(50.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                gap: Some(LengthSpec::Px(10.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                StyleLayoutNode {
+                    id: "span".into(),
+                    style: LayoutStyle {
+                        display: Some(DisplaySpec::Inline),
+                        ..LayoutStyle::default()
+                    },
+                    children: vec![mid],
+                    text: None,
+                },
+                px_box("b", 50.0, 40.0),
+            ],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            boxes.contains_key("span"),
+            "inline flex item must stay one flex item, got {:?}",
+            boxes.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            (boxes["span"].x - 0.0).abs() < 0.5 && (boxes["span"].width - 50.0).abs() < 0.5,
+            "blockified inline item keeps its block child, got {:?}",
+            boxes["span"]
+        );
+        assert!(
+            (boxes["mid"].x - boxes["span"].x).abs() < 0.5,
+            "block descendant stays inside the flex item, got mid={:?} span={:?}",
+            boxes["mid"],
+            boxes["span"]
+        );
+        assert!(
+            (boxes["b"].x - 60.0).abs() < 0.5,
+            "second flex item follows the inline item, not a hoisted block, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
     fn ifc_text_align_start_packs_to_right_in_rtl() {
         let inline = StyleLayoutNode {
             id: "a".into(),
@@ -5751,7 +6306,7 @@ mod tests {
                 display: Some(DisplaySpec::Block),
                 width: Some(LengthSpec::Px(200.0)),
                 height: Some(LengthSpec::Px(40.0)),
-                dir: Some(nana_ui_core::DirSpec::Rtl),
+                dir: Some(DirSpec::Rtl),
                 text_align: nana_ui_core::TextAlignSpec::Start,
                 ..LayoutStyle::default()
             },
@@ -5763,6 +6318,44 @@ mod tests {
             (boxes["a"].x - 160.0).abs() < 0.5,
             "text-align:start in rtl must pack to inline-start (right), got {:?}",
             boxes["a"]
+        );
+    }
+
+    #[test]
+    fn ifc_rtl_places_first_tree_item_at_inline_start() {
+        let inline = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                dir: Some(DirSpec::Rtl),
+                ..LayoutStyle::default()
+            },
+            children: vec![inline("a"), inline("c")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 40.0);
+        assert!(
+            (boxes["a"].x - 160.0).abs() < 0.5,
+            "first tree-order item sits at RTL inline-start (right), got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["c"].x - 120.0).abs() < 0.5,
+            "second tree-order item sits to the left of the first, got {:?}",
+            boxes["c"]
         );
     }
 
@@ -5970,6 +6563,254 @@ mod tests {
             (boxes["block"].x - 0.0).abs() < 0.5 && (boxes["block"].y - 0.0).abs() < 0.5,
             "block formatting does not shrink beside floats, got {:?}",
             boxes["block"]
+        );
+    }
+
+    #[test]
+    fn writing_mode_vertical_rl_ifc_advances_inline_down_block_from_right() {
+        let inline = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(20.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                writing_mode: Some(WritingModeSpec::VerticalRl),
+                ..LayoutStyle::default()
+            },
+            children: vec![inline("a"), inline("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!(
+            (boxes["a"].x - 60.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "vertical-rl first inline sits at block-start (right) and inline-start (top), got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].x - 60.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
+            "second inline advances down the inline axis, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn writing_mode_vertical_lr_ifc_places_first_line_on_the_left() {
+        let inline = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(20.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                writing_mode: Some(WritingModeSpec::VerticalLr),
+                ..LayoutStyle::default()
+            },
+            children: vec![inline("a"), inline("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!(
+            (boxes["a"].x - 0.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "vertical-lr first inline sits at block-start (left), got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].x - 0.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
+            "second inline advances down the inline axis, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn writing_mode_vertical_flex_row_uses_inline_axis() {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                writing_mode: Some(WritingModeSpec::VerticalRl),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![px_box("a", 20.0, 40.0), px_box("b", 20.0, 40.0)],
+            text: None,
+        };
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!(
+            (boxes["a"].x - 60.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+            "flex-direction:row in vertical-rl follows the inline axis from the right, got {:?}",
+            boxes["a"]
+        );
+        assert!(
+            (boxes["b"].x - 60.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
+            "second flex item stacks down the inline axis, got {:?}",
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn writing_mode_vertical_rtl_skips_inline_reverse() {
+        let inline = |id: &str| StyleLayoutNode {
+            id: id.into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::InlineBlock),
+                width: Some(LengthSpec::Px(20.0)),
+                height: Some(LengthSpec::Px(40.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(80.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                writing_mode: Some(WritingModeSpec::VerticalRl),
+                dir: Some(DirSpec::Rtl),
+                ..LayoutStyle::default()
+            },
+            children: vec![inline("a"), inline("b")],
+            text: None,
+        };
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!(
+            (boxes["a"].y - 0.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
+            "RTL + vertical is skipped: inlines still go top-to-bottom, got a={:?} b={:?}",
+            boxes["a"],
+            boxes["b"]
+        );
+    }
+
+    #[test]
+    fn writing_mode_vertical_shaper_keeps_horizontal_metrics() {
+        let metrics = crate::MeasureTextShaper.shape(
+            id(1),
+            &TextContent {
+                value: "Hello".into(),
+            },
+            &ComputedStyle {
+                writing_mode: WritingModeSpec::VerticalRl,
+                font_size: 10.0,
+                ..ComputedStyle::default()
+            },
+            crate::TextShapeConstraints::default(),
+        );
+        assert!(
+            metrics.width > metrics.height,
+            "layout shaper must not swap metrics to fake glyph rotation, got {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn align_items_baseline_uses_shaped_ascent_not_approx_em() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(2), None);
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    direction: Some(FlexDirection::Row),
+                    align_items: AlignSpec::Baseline,
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(80.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        for (value, font) in [(3u64, 20.0), (4u64, 20.0)] {
+            queue.create(id(value), document, NodeKind::Text);
+            queue.insert(id(2), id(value), None);
+            queue.set_style(
+                id(value),
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        font_size: Some(font),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.set_text(
+                id(value),
+                TextContent {
+                    value: if value == 3 { "low" } else { "high" }.into(),
+                },
+            );
+        }
+        world.commit(queue).unwrap();
+        struct AscentShaper;
+        impl TextShaper for AscentShaper {
+            fn shape(
+                &mut self,
+                id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: crate::TextShapeConstraints,
+            ) -> TextMetrics {
+                if id.get() == 3 {
+                    TextMetrics {
+                        width: 40.0,
+                        height: 20.0,
+                        ascent: Some(8.0),
+                    }
+                } else {
+                    TextMetrics {
+                        width: 40.0,
+                        height: 20.0,
+                        ascent: Some(16.0),
+                    }
+                }
+            }
+        }
+        world
+            .shape_text(&[id(3), id(4)], &mut AscentShaper)
+            .unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(200.0, 80.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let approx = nana_ui_core::TEXT_APPROX_ASCENT_EM * 20.0;
+        assert!(
+            (layouts[&id(4)].y - 0.0).abs() < 0.5,
+            "taller ascent anchors the line, got {:?}",
+            layouts[&id(4)]
+        );
+        assert!(
+            (layouts[&id(3)].y - 8.0).abs() < 0.5,
+            "shaped ascent 8 vs 16 must shift y by 8, not 0.8em ({approx}), got {:?}",
+            layouts[&id(3)]
         );
     }
 

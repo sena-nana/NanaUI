@@ -55,6 +55,55 @@ impl Default for ScrollbarMetrics {
     }
 }
 
+/// CSS `::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` overlay on the
+/// existing [`SCROLLBAR_METRICS`] chrome. Does not invent a second thumb
+/// geometry engine: [`scrollbar_track`] still derives the thumb.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScrollbarSkin {
+    /// Cross-axis track extent. `None` keeps [`SCROLLBAR_METRICS::thickness`].
+    pub thickness: Option<f32>,
+    /// Cross-axis thumb extent. `None` scales the default thumb with thickness.
+    pub thumb_thickness: Option<f32>,
+    /// Track fill. `None` keeps `subtle` (resident) / transparent (overlay).
+    pub track_color: Option<[f32; 4]>,
+    /// Thumb fill. `None` keeps `border_strong` (idle) / `muted` (dragging).
+    pub thumb_color: Option<[f32; 4]>,
+}
+
+impl ScrollbarSkin {
+    pub fn is_empty(self) -> bool {
+        self.thickness.is_none()
+            && self.thumb_thickness.is_none()
+            && self.track_color.is_none()
+            && self.thumb_color.is_none()
+    }
+
+    /// Apply this skin onto shared Lilia metrics without replacing track math.
+    pub fn metrics(self, base: ScrollbarMetrics) -> ScrollbarMetrics {
+        let thickness = self
+            .thickness
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(base.thickness);
+        let thumb_thickness = self
+            .thumb_thickness
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| {
+                if base.thickness > 0.0 {
+                    thickness * (base.thumb_thickness / base.thickness)
+                } else {
+                    base.thumb_thickness
+                }
+            })
+            .min(thickness)
+            .max(0.0);
+        ScrollbarMetrics {
+            thickness,
+            thumb_thickness,
+            ..base
+        }
+    }
+}
+
 impl ScrollbarMetrics {
     /// Thumb corner radius: a fully rounded capsule.
     pub fn thumb_radius(self) -> f32 {
@@ -201,5 +250,31 @@ mod tests {
         assert!(track.thumb_contains(24.0));
         assert!(!track.thumb_contains(25.0));
         assert!(!track.thumb_contains(-1.0));
+    }
+
+    #[test]
+    fn scrollbar_skin_overrides_thickness_and_scales_the_thumb() {
+        let skin = ScrollbarSkin {
+            thickness: Some(8.0),
+            ..ScrollbarSkin::default()
+        };
+        let metrics = skin.metrics(SCROLLBAR_METRICS);
+        assert_eq!(metrics.thickness, 8.0);
+        assert!((metrics.thumb_thickness - 4.0).abs() < f32::EPSILON);
+        assert_eq!(metrics.thumb_min_length, SCROLLBAR_METRICS.thumb_min_length);
+        let thick_thumb = ScrollbarSkin {
+            thickness: Some(16.0),
+            thumb_thickness: Some(10.0),
+            ..ScrollbarSkin::default()
+        }
+        .metrics(SCROLLBAR_METRICS);
+        assert_eq!(thick_thumb.thumb_thickness, 10.0);
+        let clamped = ScrollbarSkin {
+            thickness: Some(6.0),
+            thumb_thickness: Some(20.0),
+            ..ScrollbarSkin::default()
+        }
+        .metrics(SCROLLBAR_METRICS);
+        assert_eq!(clamped.thumb_thickness, 6.0);
     }
 }

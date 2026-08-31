@@ -23,6 +23,8 @@ pub mod dialog;
 /// Host adapter (`nana_ui::dock::*`): pointer/dwell/frame → [`dock::DockMutation`].
 /// Product dock is Runtime [`DockWorkspace`], re-exported at crate root.
 pub mod dock;
+#[cfg(feature = "gpu")]
+mod font_face_ingest;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
@@ -95,8 +97,8 @@ pub use nana_ui_runtime::{
 pub use nana_ui_runtime::{GpuTextureView, GpuView, GpuViewMode, GpuViewPalette};
 #[cfg(feature = "graph-canvas")]
 pub use nana_ui_runtime::{
-    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphInteraction, GraphPointerButton,
-    GraphScrollDelta,
+    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphInteraction, GraphNodeContent,
+    GraphPointerButton, GraphScrollDelta,
 };
 #[cfg(feature = "syntax-highlighting")]
 pub use nana_ui_runtime::{HIGHLIGHT_PRESENTER, HighlightPresentation, SyntectHighlighter};
@@ -125,6 +127,8 @@ pub use default_gpu_view::{
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "hosted")]
 pub use dock::hosted_dock_update;
+#[cfg(feature = "gpu")]
+pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry};
@@ -154,7 +158,11 @@ pub use layout::{
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
 pub use nana_app_icon::{default_window_icon, window_icon_from_png};
-pub use nana_text::{NanaTextShaper, alias_host_font_face_local, register_host_font_face};
+pub use nana_text::{
+    HostFontError, HostFontStyle, NanaTextShaper, alias_host_font_face_local,
+    register_host_font_bytes, register_host_font_face, register_host_font_file,
+    set_sans_serif_family, shaped_face_families,
+};
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
@@ -226,7 +234,7 @@ pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
     HostTextureSceneResolver, ScenePaintError, ScenePaintViewport, SceneWgpuPainter,
-    set_background_image_url_base,
+    resolve_background_image_url, set_background_image_url_base,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

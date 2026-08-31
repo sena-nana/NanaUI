@@ -11,7 +11,7 @@ mod color;
 mod dest;
 mod host_texture;
 mod icon;
-mod image_url;
+pub(crate) mod image_url;
 mod mesh;
 mod quad;
 mod text;
@@ -38,15 +38,17 @@ use crate::{
 /// How many distinct scene instances keep a validated operation stream.
 const VALIDATED_SCENE_CACHE: usize = 8;
 
-pub use image_url::set_background_image_url_base;
+pub use image_url::{
+    resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
+};
 pub(crate) use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use backdrop::BackdropPipeline;
 use clip::{
     FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips, local_rect,
-    paint_origin, paint_transform, physical_bounds, physical_scissor, transformed_aabb,
-    transformed_aabb_projective,
+    mesh_extra_fragment_clips, paint_origin, paint_transform, physical_bounds, physical_scissor,
+    transformed_aabb, transformed_aabb_projective,
 };
 use color::{pack_linear, with_opacity};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
@@ -489,6 +491,7 @@ impl SceneWgpuPainter {
                     font_features,
                     italic,
                     wrap_break,
+                    opentype,
                 } => {
                     let mut push_text =
                         |extra_offset: [f32; 2], color_override: Option<[f32; 4]>| {
@@ -516,6 +519,7 @@ impl SceneWgpuPainter {
                                 spans,
                                 *letter_spacing,
                                 font_features,
+                                opentype,
                                 affine,
                                 persp,
                                 frag_clip,
@@ -580,15 +584,16 @@ impl SceneWgpuPainter {
                     cap,
                     pattern,
                 } => {
-                    let (dash, dash_offset, colors) = match pattern.as_deref() {
+                    let (dash, dash_offset, colors, path_length) = match pattern.as_deref() {
                         Some(pattern) => (
                             pattern.dash.as_slice(),
                             pattern.dash_offset,
                             pattern.colors.as_slice(),
+                            pattern.path_length,
                         ),
-                        None => ([].as_slice(), 0.0, [].as_slice()),
+                        None => ([].as_slice(), 0.0, [].as_slice(), 0.0),
                     };
-                    if let Some(range) = self.meshes.push_stroke(
+                    if let Some(range) = self.meshes.push_stroke_with_path_length(
                         points,
                         StrokeStyle {
                             width: *width,
@@ -602,11 +607,12 @@ impl SceneWgpuPainter {
                         *color,
                         primitive.opacity,
                         frag_clip,
+                        path_length,
                     ) {
                         push_mesh_draw(&mut commands, range, scissor);
                     }
                 }
-                ScenePrimitiveKind::Custom(custom) => {
+                ScenePrimitiveKind::Custom { node: custom, mask } => {
                     if custom.renderer.as_ref() == "nana.host-texture" {
                         // The registry is a shared RwLock: an entry validated at
                         // frame start can be removed before prepare. Skip the
@@ -657,6 +663,7 @@ impl SceneWgpuPainter {
                             frag_clip,
                             dest_physical,
                             scale,
+                            mask.clone(),
                             Some(&gpu_work),
                         )));
                     } else {
@@ -925,12 +932,17 @@ fn clip_dests_for(
     // Custom has no vertex clip so wrap every rotated parallelogram; built-ins wrap extras only.
     let keep_innermost = matches!(
         kind,
-        ScenePrimitiveKind::Custom(custom) if custom.renderer.as_ref() != "nana.host-texture"
+        ScenePrimitiveKind::Custom { node: custom, .. } if custom.renderer.as_ref() != "nana.host-texture"
     );
     if keep_innermost {
         let mut dest = clip::rotated_fragment_clips(clips, origin);
         dest.extend(clip::polygon_fragment_clips(clips, origin));
         dest
+    } else if matches!(
+        kind,
+        ScenePrimitiveKind::Stroke { .. } | ScenePrimitiveKind::Spinner { .. }
+    ) {
+        mesh_extra_fragment_clips(clips, origin)
     } else {
         extra_fragment_clips(clips, origin)
     }
@@ -2088,6 +2100,87 @@ mod tests {
     }
 
     #[test]
+    fn non_uniform_affine_stroke_covers_stretched_ellipse_on_gpu() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        let mut canvas = graph_canvas_stroke_node(
+            1,
+            vec![(vec![[24.0, 32.0], [40.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        // scale-x 2, scale-y 0.5 about the 64×64 node center. Local disc r=4
+        // becomes an ellipse 8 × 2, not a min-axis disc of 2. Affine reaches
+        // push_stroke via ScenePrimitive.transform (same path as Quad/Mesh).
+        Arc::make_mut(&mut canvas.source_style.layout).transform = Some(PaintTransform {
+            a: 2.0,
+            b: 0.0,
+            c: 0.0,
+            d: 0.5,
+            e: 0.0,
+            f: 0.0,
+        });
+        scene.apply_delta([canvas], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. }))
+            .expect("extracted stroke");
+        let stroke_id = primitive.id;
+        let [a, b, c, d, ..] = primitive.transform.0;
+        assert!(
+            (a - 2.0).abs() < 1e-5 && b.abs() < 1e-5 && c.abs() < 1e-5 && (d - 0.5).abs() < 1e-5,
+            "stroke must keep the non-uniform node affine, got {:?}",
+            primitive.transform.0
+        );
+        assert!(scene.replace_primitive_kind(
+            stroke_id,
+            ScenePrimitiveKind::Stroke {
+                points: vec![[24.0, 32.0], [40.0, 32.0]],
+                width: 8.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+                widths: Vec::new(),
+                cap: StrokeCap::Round,
+                pattern: None,
+            },
+        ));
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        // World start is (16, 32). 4px left sits outside the old min-axis
+        // disc (radius 2) and inside the true ellipse (rx 8).
+        let stretched = pixel(&pixels, 64, 12, 32);
+        assert!(
+            is_red_slot(stretched),
+            "stretched-axis sample must ink the ellipse, got {stretched:?}"
+        );
+        let outside = pixel(&pixels, 64, 4, 32);
+        assert!(
+            is_blue_slot(outside),
+            "12px left of the start must stay GraphCanvas fill, got {outside:?}"
+        );
+        let squashed_ink = pixel(&pixels, 64, 16, 33);
+        assert!(
+            squashed_ink[0] > 120,
+            "1px off the start along the squashed axis must ink the ellipse, got {squashed_ink:?}"
+        );
+        let squashed_out = pixel(&pixels, 64, 16, 36);
+        assert!(
+            is_blue_slot(squashed_out),
+            "4px off the start along the squashed axis must stay fill, got {squashed_out:?}"
+        );
+        // AA-fringe evenness along the rim is not asserted (fwidth thresholds
+        // are flaky). The stretched/squashed ink+outside pair is the covering
+        // check that the 1/σ_min pad reached the GPU.
+    }
+
+    #[test]
     fn butt_stroke_cuts_round_end_caps_on_gpu() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2221,6 +2314,7 @@ mod tests {
                 pattern: Some(Box::new(StrokePattern {
                     dash: vec![8.0, 8.0],
                     dash_offset: 0.0,
+                    path_length: 0.0,
                     colors: Vec::new(),
                 })),
             },
@@ -2371,6 +2465,7 @@ mod tests {
                 pattern: Some(Box::new(StrokePattern {
                     dash: Vec::new(),
                     dash_offset: 0.0,
+                    path_length: 0.0,
                     colors: vec![
                         [1.0, 0.0, 0.0, 1.0],
                         [0.0, 1.0, 0.0, 1.0],
@@ -2646,6 +2741,12 @@ mod tests {
             &mut painter,
             &graph_canvas_scene(Vec::new()),
         );
+        let work_16 = encode_scene_gpu_work(
+            &device,
+            &queue,
+            &mut painter,
+            &graph_canvas_scene(l_stroke_edges(16)),
+        );
         let work_32 = encode_scene_gpu_work(
             &device,
             &queue,
@@ -2658,6 +2759,9 @@ mod tests {
             &mut painter,
             &graph_canvas_scene(l_stroke_edges(64)),
         );
+        let mesh_16 = work_16
+            .gpu_upload_bytes
+            .saturating_sub(fill.gpu_upload_bytes);
         let mesh_32 = work_32
             .gpu_upload_bytes
             .saturating_sub(fill.gpu_upload_bytes);
@@ -3119,7 +3223,10 @@ mod tests {
                 polygon_clip: None,
             }]
         };
-        let custom = ScenePrimitiveKind::Custom(CustomRenderNode::new("test.fill", "slot", 1));
+        let custom = ScenePrimitiveKind::Custom {
+            node: CustomRenderNode::new("test.fill", "slot", 1),
+            mask: None,
+        };
         let quad = ScenePrimitiveKind::Quad {
             background: Some([1.0, 0.0, 0.0, 1.0]),
             border_color: None,
@@ -3182,6 +3289,76 @@ mod tests {
     }
 
     #[test]
+    fn mesh_polygon_clip_stays_in_gpu_clip_not_dest() {
+        let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let polygon = [ClipRegion {
+            bounds: SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            transform: AffineTransform::IDENTITY,
+            corner_radius: 0.0,
+            polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
+        }];
+        let stroke = ScenePrimitiveKind::Stroke {
+            points: vec![[8.0, 32.0], [56.0, 32.0]],
+            width: 8.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+            widths: Vec::new(),
+            cap: StrokeCap::Round,
+            pattern: None,
+        };
+        let quad = ScenePrimitiveKind::Quad {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            border_color: None,
+            border_width: 0.0,
+            corner_radius: [0.0; 4],
+            shadow: None,
+            surface: nana_ui_scene::QuadSurfacePaint::default(),
+        };
+        assert_eq!(
+            clip_dests_for(&quad, &polygon, origin).len(),
+            1,
+            "quads dest-wrap ancestor polygon (vertex locations full)"
+        );
+        assert!(
+            clip_dests_for(&stroke, &polygon, origin).is_empty(),
+            "mesh GpuClip owns the innermost polygon; no dest pass"
+        );
+        let inset_and_polygon = [
+            ClipRegion {
+                bounds: SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 64.0,
+                },
+                transform: AffineTransform::IDENTITY,
+                corner_radius: 16.0,
+                polygon_clip: None,
+            },
+            polygon[0].clone(),
+        ];
+        let mesh_dests = clip_dests_for(&stroke, &inset_and_polygon, origin);
+        assert_eq!(
+            mesh_dests.len(),
+            1,
+            "mesh dest must keep displaced inset(round) when GpuClip owns the polygon"
+        );
+        assert!(
+            mesh_dests[0].corner_radius > 0.0 && mesh_dests[0].polygon_count < 3,
+            "mesh dest is the inset(round), not a second polygon, got {mesh_dests:?}"
+        );
+        assert_eq!(
+            clip_dests_for(&quad, &inset_and_polygon, origin).len(),
+            2,
+            "quads dest-wrap inset(round) and the polygon"
+        );
+    }
+
+    #[test]
     fn translucent_parent_composites_overlapping_children_as_a_group() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -3202,6 +3379,7 @@ mod tests {
                 opacity: 0.5,
                 filter: nana_ui_core::ColorFilter::default(),
                 mix_blend: nana_ui_core::MixBlendMode::Normal,
+                inset_shadow: None,
             }]
         );
         let viewport = ScenePaintViewport {
@@ -3467,7 +3645,7 @@ mod tests {
             .primitives()
             .map(|primitive| match &primitive.kind {
                 ScenePrimitiveKind::Quad { .. } => "quad",
-                ScenePrimitiveKind::Custom(_) => "custom",
+                ScenePrimitiveKind::Custom { .. } => "custom",
                 ScenePrimitiveKind::Text { .. } => "text",
                 _ => "other",
             })
@@ -3528,7 +3706,7 @@ mod tests {
         assert_mixed_gpu_pass_counts(&painter);
         let custom = scene
             .primitives()
-            .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom(_)))
+            .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
             .count();
         assert_eq!(custom, 2, "layered scene must sample two HostTexture nodes");
         let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
@@ -3568,7 +3746,7 @@ mod tests {
         );
         let has_gpu = scene
             .primitives()
-            .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom(_)));
+            .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }));
         assert!(!has_gpu);
         let target = test_target(&device, format, 64, 64);
         let viewport = ScenePaintViewport {
@@ -5743,6 +5921,303 @@ mod tests {
         assert!(
             right[2] > 180 && right[0] < 80,
             "mask fade must reveal clear blue, not opaque red {right:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn host_texture_mask_linear_fade_samples_in_document_order() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut node = extracted_div(
+            1,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    mask: Some(nana_ui_core::MaskImage::Gradient(
+                        nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                            angle_deg: 90.0,
+                            stops: vec![
+                                nana_ui_core::GradientStop {
+                                    position: 0.0,
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                },
+                                nana_ui_core::GradientStop {
+                                    position: 1.0,
+                                    color: [1.0, 1.0, 1.0, 0.0],
+                                },
+                            ],
+                        }),
+                    )),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        node.custom_render = Some(CustomRenderNode::new("nana.host-texture", "layer", 1));
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let primitive = scene
+            .primitives()
+            .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
+            .expect("host texture custom");
+        match &primitive.kind {
+            ScenePrimitiveKind::Custom { mask, .. } => {
+                assert!(mask.is_some(), "mask must travel onto HostTexture custom");
+            }
+            other => panic!("expected custom, got {other:?}"),
+        }
+        let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::RED);
+        let registry = register_host_texture("layer", &view, 64, 64);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, target_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui host texture mask fade"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let left = pixel(&pixels, 64, 4, 32);
+        let right = pixel(&pixels, 64, 56, 32);
+        assert!(
+            left[0] > 200 && left[1] < 40 && left[2] < 40,
+            "masked HostTexture left must stay red {left:?}"
+        );
+        assert!(
+            right[2] > 180 && right[0] < 80,
+            "HostTexture mask fade must reveal clear blue, not opaque red {right:?}"
+        );
+        drop(view);
+        drop(texture);
+    }
+
+    fn alpha_split_mask_png_data_url() -> String {
+        let mut img = image::RgbaImage::new(64, 64);
+        for y in 0..64 {
+            for x in 0..64 {
+                let a = if x < 32 { 255 } else { 0 };
+                img.put_pixel(x, y, image::Rgba([255, 255, 255, a]));
+            }
+        }
+        let mut bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode mask png");
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    #[test]
+    fn mask_url_alpha_scales_quad_in_document_order() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let masked_surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 0.0,
+                    stops: vec![nana_ui_core::GradientStop {
+                        position: 0.0,
+                        color: [1.0, 0.0, 0.0, 1.0],
+                    }],
+                }),
+            )),
+            mask: Some(nana_ui_core::MaskImage::Url(alpha_split_mask_png_data_url())),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [1.0, 0.0, 0.0, 1.0],
+                masked_surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui mask url alpha"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let left = pixel(&pixels, 64, 4, 32);
+        let right = pixel(&pixels, 64, 56, 32);
+        assert!(
+            left[0] > 200 && left[1] < 40 && left[2] < 40,
+            "url-mask quad left must stay red (image alpha=1) {left:?}"
+        );
+        assert!(
+            right[2] > 180 && right[0] < 80,
+            "url-mask uses image alpha, not luminance: right must reveal clear blue {right:?}"
+        );
+        drop(texture);
+    }
+
+    #[test]
+    fn host_texture_mask_url_alpha_samples_in_document_order() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut node = extracted_div(
+            1,
+            &[],
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            nana_ui_core::LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    mask: Some(nana_ui_core::MaskImage::Url(alpha_split_mask_png_data_url())),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        node.custom_render = Some(CustomRenderNode::new("nana.host-texture", "layer", 1));
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::RED);
+        let registry = register_host_texture("layer", &view, 64, 64);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, target_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui host texture mask url"),
+        });
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let left = pixel(&pixels, 64, 4, 32);
+        let right = pixel(&pixels, 64, 56, 32);
+        assert!(
+            left[0] > 200 && left[1] < 40 && left[2] < 40,
+            "url-mask HostTexture left must stay red {left:?}"
+        );
+        assert!(
+            right[2] > 180 && right[0] < 80,
+            "HostTexture url-mask uses image alpha; right must reveal clear blue {right:?}"
+        );
+        drop(view);
+        drop(texture);
+    }
+
+    #[test]
+    fn mask_url_unloadable_is_ignored_not_gradient() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let masked_surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                    angle_deg: 0.0,
+                    stops: vec![nana_ui_core::GradientStop {
+                        position: 0.0,
+                        color: [1.0, 0.0, 0.0, 1.0],
+                    }],
+                }),
+            )),
+            mask: Some(nana_ui_core::MaskImage::Url(
+                "nana-missing-mask-image-xyz.png".into(),
+            )),
+            ..Default::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [paint_surface_quad_node(
+                1,
+                0.0,
+                0.0,
+                64.0,
+                64.0,
+                [1.0, 0.0, 0.0, 1.0],
+                masked_surface,
+            )],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [64, 64],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 1.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui mask url ignored"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        let left = pixel(&pixels, 64, 4, 32);
+        let right = pixel(&pixels, 64, 56, 32);
+        assert!(
+            left[0] > 200 && left[1] < 40 && left[2] < 40,
+            "unloadable mask url must not hide the fill {left:?}"
+        );
+        assert!(
+            right[0] > 200 && right[1] < 40 && right[2] < 40,
+            "unloadable mask url must not pretend to be a gradient fade {right:?}"
         );
         drop(texture);
     }

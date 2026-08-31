@@ -211,7 +211,8 @@ pub fn resolve_kind_from_hints(
             }
         }
         "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "defs"
-        | "use" | "symbol" | "clippath" | "mask" | "lineargradient" | "radialgradient" | "stop" => {
+        | "use" | "symbol" | "clippath" | "mask" | "lineargradient" | "radialgradient" | "stop"
+        | "textpath" | "tspan" => {
             WidgetKind::Box
         }
         "text" => WidgetKind::Text,
@@ -261,6 +262,8 @@ fn is_svg_structural_tag(tag: &str) -> bool {
             | "lineargradient"
             | "radialgradient"
             | "stop"
+            | "textpath"
+            | "tspan"
     )
 }
 
@@ -337,6 +340,8 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "radialgradient"
             | "stop"
             | "text"
+            | "textpath"
+            | "tspan"
             | "body"
             | "template"
             | "fragment"
@@ -1191,6 +1196,11 @@ mod tests {
             Some(WidgetKind::Column),
             "structural SVG must not become GraphCanvas"
         );
+        assert_eq!(
+            resolve_kind_from_hints("textPath", None, None, None),
+            Some(WidgetKind::Box),
+            "textPath stays a serializable SVG child, not a Text widget"
+        );
     }
 
     #[test]
@@ -1239,6 +1249,24 @@ mod tests {
             resolve_kind_from_hints("div", Some("panel-horizontal"), None, None),
             Some(WidgetKind::Column),
             "must not invent Row from horizontal substring"
+        );
+    }
+
+    #[test]
+    fn video_and_audio_map_to_box_like_img() {
+        assert_eq!(
+            resolve_kind_from_hints("img", None, None, None),
+            Some(WidgetKind::Box)
+        );
+        assert_eq!(
+            resolve_kind_from_hints("video", None, None, None),
+            Some(WidgetKind::Box),
+            "video stays a HostTexture surface, not a new WidgetKind"
+        );
+        assert_eq!(
+            resolve_kind_from_hints("audio", None, None, None),
+            Some(WidgetKind::Box),
+            "audio is a control slot without a video frame"
         );
     }
 

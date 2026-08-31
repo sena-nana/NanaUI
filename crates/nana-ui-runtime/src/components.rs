@@ -3,8 +3,9 @@ use std::sync::{Arc, LazyLock};
 
 use bevy_ecs::component::Component;
 use nana_ui_core::{
-    CardKind, ControlSize, Icon, LayoutStyle, LineHeightSpec, SemanticColorRole,
-    SwitchControlPosition, UI_BASE_TEXT_SIZE,
+    CardKind, ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon,
+    LayoutStyle, LineBreakSpec, LineHeightSpec, SemanticColorRole, SwitchControlPosition,
+    UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
 pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
@@ -454,6 +455,7 @@ pub struct ComponentElevation {
     pub offset_y: f32,
     pub blur_radius: f32,
     pub spread_radius: f32,
+    /// CSS `box-shadow: inset`. Outset drop shadows keep this `false`.
     pub inset: bool,
 }
 
@@ -840,13 +842,23 @@ pub struct ComputedStyle {
     /// `visibility`, a descendant cannot override it back to `true`.
     pub box_visible: bool,
     pub visible: bool,
+    /// CSS `pointer-events` after inheritance (`auto` / `none`).
+    pub pointer_events: nana_ui_core::PointerEventsSpec,
     pub font_size: f32,
     pub font_weight: Option<u16>,
     pub italic: bool,
     pub font_family: Option<Arc<str>>,
     pub line_height: Option<LineHeightSpec>,
     pub letter_spacing: f32,
-    pub font_features: Vec<nana_ui_core::FontFeatureSetting>,
+    pub font_features: Vec<FontFeatureSetting>,
+    pub font_variations: Vec<FontVariationSetting>,
+    pub font_kerning: FontKerningSpec,
+    pub word_break: WordBreakSpec,
+    pub line_break: LineBreakSpec,
+    /// CSS `direction` after inherit (initial LTR).
+    pub direction: nana_ui_core::DirSpec,
+    /// CSS `writing-mode` after inherit (initial `horizontal-tb`).
+    pub writing_mode: nana_ui_core::WritingModeSpec,
 }
 
 impl Default for ComputedStyle {
@@ -860,6 +872,7 @@ impl Default for ComputedStyle {
             visibility: nana_ui_core::VisibilitySpec::Visible,
             box_visible: true,
             visible: true,
+            pointer_events: nana_ui_core::PointerEventsSpec::Auto,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,
             italic: false,
@@ -867,6 +880,12 @@ impl Default for ComputedStyle {
             line_height: None,
             letter_spacing: 0.0,
             font_features: Vec::new(),
+            font_variations: Vec::new(),
+            font_kerning: FontKerningSpec::Auto,
+            word_break: WordBreakSpec::Normal,
+            line_break: LineBreakSpec::Auto,
+            direction: nana_ui_core::DirSpec::Ltr,
+            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
         }
     }
 }
@@ -880,6 +899,9 @@ pub struct TextContent {
 pub struct TextMetrics {
     pub width: f32,
     pub height: f32,
+    /// First-line ascent in CSS px (line box top to alphabetic baseline).
+    /// `None` = layout falls back to [`nana_ui_core::TEXT_APPROX_ASCENT_EM`].
+    pub ascent: Option<f32>,
 }
 
 /// Shaped intrinsic text owned by an EmptyState rather than application child
@@ -1091,6 +1113,7 @@ fn measure_em_text(
     constraints: TextShapeConstraints,
 ) -> TextMetrics {
     let em = style.font_size.max(1.0);
+    let _ = style.writing_mode;
     if constraints.preserve_lines {
         let line_height = resolved_text_line_height(style).max(em);
         let mut max_w = 0.0f32;
@@ -1111,6 +1134,7 @@ fn measure_em_text(
         return TextMetrics {
             width: max_w,
             height: line_height * lines.max(1) as f32,
+            ascent: Some(em * nana_ui_core::TEXT_APPROX_ASCENT_EM),
         };
     }
     em_metrics(text.value.chars().count() as f32 * em, em, constraints)
@@ -1123,7 +1147,11 @@ fn em_metrics(intrinsic: f32, em: f32, constraints: TextShapeConstraints) -> Tex
     } else {
         em
     };
-    TextMetrics { width, height }
+    TextMetrics {
+        width,
+        height,
+        ascent: Some(em * nana_ui_core::TEXT_APPROX_ASCENT_EM),
+    }
 }
 
 fn explicit_lines(value: &str) -> Vec<(usize, usize, usize)> {

@@ -1,8 +1,8 @@
 use crate::{
-    AccessibilityState, AnimationId, AnimationSpec, ComponentTypeId, CustomRenderNode, DocumentId,
-    HighlightRequest, ImeComposition, InteractionState, LayoutBox, NodeKind, NodeStyle,
-    OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId, StandardVisual, TextContent,
-    TextInputState, TextSelection,
+    AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec, ComponentTypeId,
+    CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
+    NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
+    StandardVisual, TextContent, TextInputState, TextSelection,
 };
 use nana_ui_core::ThemeMode;
 
@@ -284,6 +284,14 @@ impl MutationQueue {
     pub fn start_animation(&mut self, animation: AnimationSpec) {
         self.mutations
             .push(UiMutation::StartAnimation { animation });
+    }
+
+    pub fn start_animation_with_playback(
+        &mut self,
+        animation: AnimationSpec,
+        playback: AnimationPlayback,
+    ) {
+        self.start_animation(animation.with_playback(playback));
     }
 
     pub fn stop_animation(&mut self, id: AnimationId) {

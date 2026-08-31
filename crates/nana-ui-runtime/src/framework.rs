@@ -2171,6 +2171,10 @@ impl AppContext {
                     duration: crate::SidebarSectionState::animation_duration(),
                     frame_interval: COMPONENT_FRAME_INTERVAL,
                     easing: crate::Easing::EaseOutCubic,
+                    iteration_count: crate::AnimationIteration::ONCE,
+                    direction: crate::AnimationDirection::Normal,
+                    fill_mode: crate::AnimationFillMode::None,
+                    play_state: crate::AnimationPlayState::Running,
                 });
             }
             cx.emit(ToggleChanged {
@@ -8820,6 +8824,7 @@ mod tests {
                 crate::TextMetrics {
                     width: text.value.chars().count() as f32 * 7.0,
                     height: 16.0,
+                    ascent: None,
                 }
             }
         }
@@ -9822,6 +9827,10 @@ mod tests {
                     duration: Duration::from_millis(80),
                     frame_interval: Duration::from_millis(10),
                     easing: Easing::Linear,
+                    iteration_count: crate::AnimationIteration::ONCE,
+                    direction: crate::AnimationDirection::Normal,
+                    fill_mode: crate::AnimationFillMode::None,
+                    play_state: crate::AnimationPlayState::Running,
                 });
             })
             .unwrap();

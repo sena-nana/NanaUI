@@ -12,6 +12,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::scrollbar::ScrollbarSkin;
+use crate::typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
+
+mod calc;
+pub use calc::{CalcBinOp, CalcExpr, CalcExprRef, intern_calc};
+
 /// Flex 主轴方向（`row` / `column`；`*-reverse` 见 [`LayoutStyle::flex_reverse`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FlexDirection {
@@ -37,16 +43,90 @@ impl FlexDirection {
 /// Vertical `writing-mode` stays fail-closed. This remaps logical box edges
 /// and `text-align: start | end` only — it does **not** flip flex/grid
 /// main/cross start or item order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum DirSpec {
     #[default]
     Ltr,
     Rtl,
 }
 
+/// Alias kept so stash / CSS `direction` call sites compile.
+pub type DirectionSpec = DirSpec;
+
 impl DirSpec {
-    pub fn is_rtl(self) -> bool {
+    pub const fn is_rtl(self) -> bool {
         matches!(self, Self::Rtl)
+    }
+}
+
+/// CSS `writing-mode` 子集。`sideways-*` 不进此枚举（解析期跳过，fail-closed）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum WritingModeSpec {
+    #[default]
+    HorizontalTb,
+    /// Inline axis is vertical; block-start is the physical right edge.
+    VerticalRl,
+    /// Inline axis is vertical; block-start is the physical left edge.
+    VerticalLr,
+}
+
+impl WritingModeSpec {
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::HorizontalTb)
+    }
+
+    pub const fn is_vertical(self) -> bool {
+        matches!(self, Self::VerticalRl | Self::VerticalLr)
+    }
+
+    /// Block-start is the physical right edge (`vertical-rl`).
+    pub const fn block_start_is_right(self) -> bool {
+        matches!(self, Self::VerticalRl)
+    }
+
+    /// Physical flex direction of the inline axis (`flex-direction: row`).
+    pub const fn inline_flex_direction(self) -> FlexDirection {
+        if self.is_vertical() {
+            FlexDirection::Column
+        } else {
+            FlexDirection::Row
+        }
+    }
+
+    /// Map CSS `flex-direction` (row = inline, column = block) onto physical axes.
+    pub const fn physical_flex_direction(self, css: FlexDirection) -> FlexDirection {
+        match css {
+            FlexDirection::Row => self.inline_flex_direction(),
+            FlexDirection::Column => {
+                if self.is_vertical() {
+                    FlexDirection::Row
+                } else {
+                    FlexDirection::Column
+                }
+            }
+        }
+    }
+}
+
+/// CSS 逻辑边长手（`*-inline-start` 等）。按 writing-mode + direction 映射到 physical。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LogicalInsets {
+    #[serde(default)]
+    pub inline_start: Option<LengthSpec>,
+    #[serde(default)]
+    pub inline_end: Option<LengthSpec>,
+    #[serde(default)]
+    pub block_start: Option<LengthSpec>,
+    #[serde(default)]
+    pub block_end: Option<LengthSpec>,
+}
+
+impl LogicalInsets {
+    pub fn is_empty(&self) -> bool {
+        self.inline_start.is_none()
+            && self.inline_end.is_none()
+            && self.block_start.is_none()
+            && self.block_end.is_none()
     }
 }
 
@@ -234,12 +314,14 @@ impl WhiteSpaceSpec {
 }
 
 /// CSS `word-break` subset mapped to cosmic-text wrap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum WordBreakSpec {
     #[default]
     Normal,
     /// `break-all` → glyph wrap.
     BreakAll,
+    /// Legacy `break-word` → word wrap, then glyph if a word cannot fit.
+    BreakWord,
 }
 
 /// CSS `overflow-wrap` / `word-wrap` subset.
@@ -988,7 +1070,9 @@ pub fn icon_y_on_text_glyph_center(
     }
 }
 
-/// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；calc 在解析期折进这些变体，非完整 AST）。
+/// 可参与 `min`/`max`/`clamp` 的轻量长度原子（Copy；简单 calc 在解析期折进这些变体）。
+///
+/// Nested `calc()` / `min()` beyond two atoms can use [`LengthSpec::Calc`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthAtom {
     Px(f32),
@@ -1037,6 +1121,18 @@ impl LengthAtom {
         matches!(self, Self::Viewport { .. } | Self::CalcViewport { .. })
     }
 
+    pub fn is_full_percent_fill(self) -> bool {
+        match self {
+            Self::Percent(percent) if (percent - 100.0).abs() < 0.5 => true,
+            Self::CalcPercent { percent, offset_px }
+                if (percent - 100.0).abs() < 0.5 && offset_px <= 0.0 =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn resolve_with_fonts(
         self,
         percent_base: Option<f32>,
@@ -1066,6 +1162,10 @@ impl LengthAtom {
 }
 
 /// 宽度 / 高度规格。
+///
+/// Simple variants stay `Copy`. Full `calc()` trees are
+/// [`Self::Calc`] — an interned [`Box<CalcExpr>`] handle — so this enum
+/// remains `Copy` and layout can keep copying specs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthSpec {
     Px(f32),
@@ -1107,6 +1207,8 @@ pub enum LengthSpec {
     Max2(LengthAtom, LengthAtom),
     /// `clamp(min, val, max)`。
     Clamp3(LengthAtom, LengthAtom, LengthAtom),
+    /// Full calc AST (`Box<CalcExpr>` interned so this enum stays Copy).
+    Calc(CalcExprRef),
     Fill,
     Shrink,
     Auto,
@@ -1119,6 +1221,14 @@ pub enum LengthSpec {
 }
 
 impl LengthSpec {
+    /// Intern `expr` as [`Self::Calc`], or fold it to a simple Copy variant.
+    pub fn from_calc(expr: CalcExpr) -> Self {
+        if let Some(simple) = expr.simplify_to_length_spec() {
+            return simple;
+        }
+        Self::Calc(intern_calc(Box::new(expr)))
+    }
+
     /// 解析为逻辑像素；无 viewport 时视口单位返回 `None`。
     pub fn resolve_px(self, percent_base: Option<f32>) -> Option<f32> {
         self.resolve_with(percent_base, None)
@@ -1135,6 +1245,7 @@ impl LengthSpec {
             Self::Clamp3(a, b, c) => {
                 a.depends_on_viewport() || b.depends_on_viewport() || c.depends_on_viewport()
             }
+            Self::Calc(expr) => expr.inner().depends_on_viewport(),
             _ => false,
         }
     }
@@ -1190,6 +1301,9 @@ impl LengthSpec {
                 let hi = max.resolve_with_fonts(percent_base, viewport, fonts)?;
                 Some(v.clamp(lo.min(hi), lo.max(hi)))
             }
+            Self::Calc(expr) => expr
+                .inner()
+                .resolve_with_fonts(percent_base, viewport, fonts),
             Self::Fill
             | Self::Shrink
             | Self::Auto
@@ -1243,7 +1357,30 @@ impl LengthSpec {
                 | Self::Min2(_, _)
                 | Self::Max2(_, _)
                 | Self::Clamp3(_, _, _)
+                | Self::Calc(_)
         )
+    }
+
+    /// `100%` / `Fill` / `calc(100% - Npx)` with `N ≥ 0` — treat as indefinite
+    /// during grid auto-track measure so the item does not inflate the track.
+    pub fn is_full_percent_fill(self) -> bool {
+        match self {
+            Self::Fill => true,
+            Self::Percent(percent) if (percent - 100.0).abs() < 0.5 => true,
+            Self::CalcPercentOffset { percent, offset_px }
+                if (percent - 100.0).abs() < 0.5 && offset_px <= 0.0 =>
+            {
+                true
+            }
+            Self::Min2(a, b) | Self::Max2(a, b) => {
+                a.is_full_percent_fill() && b.is_full_percent_fill()
+            }
+            Self::Clamp3(a, b, c) => {
+                a.is_full_percent_fill() && b.is_full_percent_fill() && c.is_full_percent_fill()
+            }
+            Self::Calc(expr) => expr.inner().is_full_percent_fill(),
+            _ => false,
+        }
     }
 }
 
@@ -1489,6 +1626,12 @@ impl TextDecorationLine {
 pub struct FontFeatureSetting {
     pub tag: [u8; 4],
     pub value: u32,
+}
+
+impl FontFeatureSetting {
+    pub const fn new(tag: [u8; 4], value: u32) -> Self {
+        Self { tag, value }
+    }
 }
 
 /// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
@@ -2222,6 +2365,11 @@ pub struct PaintStyle {
     /// [`MAX_BOX_SHADOWS`].
     #[serde(default)]
     pub box_shadows: Vec<BoxShadowSpec>,
+    /// `::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` skin. Geometry still
+    /// comes from [`crate::scrollbar_track`]; this only overrides thickness and
+    /// the default `border_strong` / `muted` / `subtle` colors.
+    #[serde(default)]
+    pub scrollbar: Option<ScrollbarSkin>,
     #[serde(default)]
     pub text_shadow: Option<TextShadowSpec>,
     /// Extra stroke outside the border box. Does not affect layout.
@@ -2782,6 +2930,10 @@ pub struct LayoutStyle {
     /// and `text-align: start | end` only — not flex/grid start or item order.
     #[serde(default)]
     pub dir: Option<DirSpec>,
+    /// CSS `writing-mode`. `None` = inherit, then `horizontal-tb`.
+    /// `sideways-*` stay fail-closed via [`Self::unsupported_writing_mode`].
+    #[serde(default)]
+    pub writing_mode: Option<WritingModeSpec>,
     /// Vertical / sideways `writing-mode` is fail-closed (no axis remap).
     #[serde(default)]
     pub unsupported_writing_mode: bool,
@@ -2868,6 +3020,15 @@ pub struct LayoutStyle {
     pub offset_left: Option<LengthSpec>,
     #[serde(default)]
     pub logical_inset: LogicalInlineEdges,
+    /// Logical padding longhands including block axis; baked by writing-mode.
+    #[serde(default)]
+    pub padding_logical: LogicalInsets,
+    /// Logical margin longhands including block axis.
+    #[serde(default)]
+    pub margin_logical: LogicalInsets,
+    /// Logical inset longhands (`inset-inline-start` …).
+    #[serde(default)]
+    pub inset_logical: LogicalInsets,
     pub width: Option<LengthSpec>,
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
@@ -2963,6 +3124,16 @@ pub struct LayoutStyle {
     /// CSS `font-feature-settings`. `None` = inherit; `Some([])` = `normal`.
     #[serde(default)]
     pub font_features: Option<Vec<FontFeatureSetting>>,
+    /// CSS `font-variation-settings`. `None` = inherit; `Some([])` = `normal`.
+    /// Shaping applies `wght` / `wdth` only.
+    #[serde(default)]
+    pub font_variation_settings: Option<Vec<FontVariationSetting>>,
+    /// CSS `font-kerning`. `None` = inherit.
+    #[serde(default)]
+    pub font_kerning: Option<FontKerningSpec>,
+    /// CSS `line-break` subset. `None` = inherit. `strict` / `loose` skipped.
+    #[serde(default)]
+    pub line_break: Option<LineBreakSpec>,
     /// `font-variation-settings` axes other than `wght`. cosmic-text 0.19
     /// `FontSystem` only instantiates `wght` (via [`Self::font_weight`]);
     /// `BEVL` / `wdth` / other axes fail this declaration only and are never
@@ -3003,6 +3174,13 @@ pub struct LayoutStyle {
     /// 同行模式，针对 `grid-template-rows`。
     #[serde(default)]
     pub grid_rows_repeat: Option<GridRepeatAuto>,
+    /// `grid-template-columns: subgrid`：布局时继承父网格所跨列轨几何。
+    /// 不是轨列表；没有父轨时该轴按 `none` 处理，不假装成 `auto`。
+    #[serde(default)]
+    pub grid_columns_subgrid: bool,
+    /// `grid-template-rows: subgrid`：继承父网格所跨行轨几何。
+    #[serde(default)]
+    pub grid_rows_subgrid: bool,
     /// `grid-column` / `grid-row` 项放置。
     #[serde(default)]
     pub grid_placement: GridPlacement,
@@ -3068,6 +3246,7 @@ impl Default for LayoutStyle {
         Self {
             direction: None,
             dir: None,
+            writing_mode: None,
             unsupported_writing_mode: false,
             flex_reverse: false,
             order: 0,
@@ -3104,6 +3283,9 @@ impl Default for LayoutStyle {
             offset_bottom: None,
             offset_left: None,
             logical_inset: LogicalInlineEdges::default(),
+            padding_logical: LogicalInsets::default(),
+            margin_logical: LogicalInsets::default(),
+            inset_logical: LogicalInsets::default(),
             width: None,
             height: None,
             min_width: None,
@@ -3142,6 +3324,9 @@ impl Default for LayoutStyle {
             color: None,
             text_decoration: None,
             font_features: None,
+            font_variation_settings: None,
+            font_kerning: None,
+            line_break: None,
             unsupported_font_variation: false,
             placeholder_color: None,
             placeholder_opacity: None,
@@ -3154,6 +3339,8 @@ impl Default for LayoutStyle {
             grid_auto_flow: None,
             grid_columns_repeat: None,
             grid_rows_repeat: None,
+            grid_columns_subgrid: false,
+            grid_rows_subgrid: false,
             grid_placement: GridPlacement::default(),
             grid_template_areas: None,
             grid_column_line_names: None,
@@ -3786,6 +3973,9 @@ impl LayoutStyle {
         if self.dir.is_none() {
             self.dir = parent.dir;
         }
+        if self.writing_mode.is_none() {
+            self.writing_mode = parent.writing_mode;
+        }
         self.resolve_logical_box_edges();
         if self.font_size.is_none() {
             self.font_size = parent.font_size;
@@ -3819,6 +4009,15 @@ impl LayoutStyle {
         }
         if self.font_features.is_none() {
             self.font_features = parent.font_features.clone();
+        }
+        if self.font_variation_settings.is_none() {
+            self.font_variation_settings = parent.font_variation_settings.clone();
+        }
+        if self.font_kerning.is_none() {
+            self.font_kerning = parent.font_kerning;
+        }
+        if self.line_break.is_none() {
+            self.line_break = parent.line_break;
         }
     }
 
@@ -3880,6 +4079,18 @@ impl LayoutStyle {
             self.logical_inset.end,
             self.logical_inset.phys_left,
             self.logical_inset.phys_right,
+            self.padding_logical.inline_start,
+            self.padding_logical.inline_end,
+            self.padding_logical.block_start,
+            self.padding_logical.block_end,
+            self.margin_logical.inline_start,
+            self.margin_logical.inline_end,
+            self.margin_logical.block_start,
+            self.margin_logical.block_end,
+            self.inset_logical.inline_start,
+            self.inset_logical.inline_end,
+            self.inset_logical.block_start,
+            self.inset_logical.block_end,
             self.width,
             self.height,
             self.min_width,
@@ -3938,6 +4149,149 @@ impl LayoutStyle {
         let pad = self.resolved_padding_against(None);
         let border = self.resolved_border_edges();
         pad.top + border.top + font * 0.8
+    }
+
+    /// 第一行基线相对 border-box 顶边。
+    ///
+    /// `shaped_ascent` 来自 cosmic-text / `TextMetrics`（第一行 `line_y - line_top`）。
+    /// 缺省仍用 [`TEXT_APPROX_ASCENT_EM`]（0.8em）。
+    pub fn baseline_from_ascent(&self, fallback_font_px: f32, shaped_ascent: Option<f32>) -> f32 {
+        let font = self.font_size.unwrap_or(fallback_font_px).max(0.0);
+        let pad = self.resolved_padding_against(None);
+        let border = self.resolved_border_width();
+        let ascent = shaped_ascent
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(font * TEXT_APPROX_ASCENT_EM);
+        pad.top + border + ascent
+    }
+
+    /// CSS `direction` after inherit; initial is LTR.
+    pub fn resolved_direction(&self) -> DirSpec {
+        self.dir.unwrap_or(DirSpec::Ltr)
+    }
+
+    /// CSS `writing-mode` after inherit; initial is `horizontal-tb`.
+    pub fn resolved_writing_mode(&self) -> WritingModeSpec {
+        self.writing_mode.unwrap_or(WritingModeSpec::HorizontalTb)
+    }
+
+    /// Inline-start is the physical left edge in `horizontal-tb` + LTR.
+    /// Vertical writing-mode uses [`Self::bake_logical_edges`] instead.
+    pub fn inline_start_is_left(&self) -> bool {
+        self.resolved_writing_mode().is_horizontal() && !self.resolved_direction().is_rtl()
+    }
+
+    /// Bake logical padding/margin/inset onto physical fields for the current
+    /// writing-mode + direction.
+    pub fn bake_logical_edges(&mut self) {
+        let map = logical_physical_map(
+            self.resolved_writing_mode(),
+            !self.resolved_direction().is_rtl(),
+        );
+        bake_logical_insets(
+            &self.padding_logical,
+            map,
+            &mut self.padding_top,
+            &mut self.padding_right,
+            &mut self.padding_bottom,
+            &mut self.padding_left,
+        );
+        bake_logical_insets(
+            &self.margin_logical,
+            map,
+            &mut self.margin_top,
+            &mut self.margin_right,
+            &mut self.margin_bottom,
+            &mut self.margin_left,
+        );
+        bake_logical_insets(
+            &self.inset_logical,
+            map,
+            &mut self.offset_top,
+            &mut self.offset_right,
+            &mut self.offset_bottom,
+            &mut self.offset_left,
+        );
+        self.resolve_logical_box_edges();
+    }
+
+    fn unbake_logical_edges(&mut self) {
+        let map = logical_physical_map(
+            self.resolved_writing_mode(),
+            !self.resolved_direction().is_rtl(),
+        );
+        unbake_logical_insets(
+            &self.padding_logical,
+            map,
+            &mut self.padding_top,
+            &mut self.padding_right,
+            &mut self.padding_bottom,
+            &mut self.padding_left,
+        );
+        unbake_logical_insets(
+            &self.margin_logical,
+            map,
+            &mut self.margin_top,
+            &mut self.margin_right,
+            &mut self.margin_bottom,
+            &mut self.margin_left,
+        );
+        unbake_logical_insets(
+            &self.inset_logical,
+            map,
+            &mut self.offset_top,
+            &mut self.offset_right,
+            &mut self.offset_bottom,
+            &mut self.offset_left,
+        );
+    }
+
+    /// Update CSS `direction` and re-bake logical longhands onto physical sides.
+    pub fn set_writing_direction(&mut self, next: DirSpec) {
+        if self.dir == Some(next) {
+            return;
+        }
+        self.unbake_logical_edges();
+        self.dir = Some(next);
+        self.bake_logical_edges();
+    }
+
+    /// Update CSS `writing-mode` and re-bake logical longhands onto physical sides.
+    pub fn set_writing_mode(&mut self, next: WritingModeSpec) {
+        if self.writing_mode == Some(next) {
+            return;
+        }
+        self.unbake_logical_edges();
+        self.writing_mode = Some(next);
+        self.bake_logical_edges();
+    }
+
+    /// Vue/CSS explicit width/height/min-*/border-radius overlay ControlSize tokens.
+    pub fn overlay_css_size_overrides(&mut self, css: &Self) {
+        if css.width.is_some() {
+            self.width = css.width;
+        }
+        if css.height.is_some() {
+            self.height = css.height;
+            if css.min_height.is_none() {
+                self.min_height = None;
+            }
+        }
+        if css.min_width.is_some() {
+            self.min_width = css.min_width;
+        }
+        if css.min_height.is_some() {
+            self.min_height = css.min_height;
+        }
+        if css.max_width.is_some() {
+            self.max_width = css.max_width;
+        }
+        if css.max_height.is_some() {
+            self.max_height = css.max_height;
+        }
+        if css.border_radius.is_some() {
+            self.border_radius = css.border_radius;
+        }
     }
 
     /// 查找命名网格线（1-based）。含 `name-start` / `name-end` 由 areas 推导。
@@ -4040,6 +4394,8 @@ impl LayoutStyle {
     ///
     /// Implicit columns come from [`Self::grid_auto_columns`] / auto-placement.
     /// [`Self::grid_columns_repeat`] expands `repeat(auto-fit|auto-fill)` at layout.
+    /// [`Self::grid_columns_subgrid`] inherits parent track sizes at layout; it
+    /// does not populate this list.
     /// If [`Self::grid_columns_unsupported`] is set, the author wrote
     /// mixed/unexpandable syntax (not a successful `repeat(auto-fit|fill)`).
     pub fn active_grid_columns(&self) -> Option<&[GridTrack]> {
@@ -4057,6 +4413,16 @@ impl LayoutStyle {
             return None;
         }
         self.grid_rows.as_deref().filter(|t| !t.is_empty())
+    }
+
+    /// `grid-template-columns: subgrid` on a non-flex grid container.
+    pub fn is_subgrid_columns(&self) -> bool {
+        self.grid_columns_subgrid && !self.display.is_some_and(DisplaySpec::is_flex_container)
+    }
+
+    /// `grid-template-rows: subgrid` on a non-flex grid container.
+    pub fn is_subgrid_rows(&self) -> bool {
+        self.grid_rows_subgrid && !self.display.is_some_and(DisplaySpec::is_flex_container)
     }
 
     /// Author wrote `grid-auto-*` / `grid-auto-flow` (consumed by 2D placement).
@@ -4347,6 +4713,137 @@ fn resolve_max_size(
     }
 }
 
+#[derive(Clone, Copy)]
+enum PhysicalEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+#[derive(Clone, Copy)]
+struct LogicalPhysicalMap {
+    inline_start: PhysicalEdge,
+    inline_end: PhysicalEdge,
+    block_start: PhysicalEdge,
+    block_end: PhysicalEdge,
+}
+
+fn logical_physical_map(writing_mode: WritingModeSpec, ltr: bool) -> LogicalPhysicalMap {
+    match writing_mode {
+        WritingModeSpec::HorizontalTb => {
+            if ltr {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Left,
+                    inline_end: PhysicalEdge::Right,
+                    block_start: PhysicalEdge::Top,
+                    block_end: PhysicalEdge::Bottom,
+                }
+            } else {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Right,
+                    inline_end: PhysicalEdge::Left,
+                    block_start: PhysicalEdge::Top,
+                    block_end: PhysicalEdge::Bottom,
+                }
+            }
+        }
+        WritingModeSpec::VerticalRl => {
+            if ltr {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Top,
+                    inline_end: PhysicalEdge::Bottom,
+                    block_start: PhysicalEdge::Right,
+                    block_end: PhysicalEdge::Left,
+                }
+            } else {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Bottom,
+                    inline_end: PhysicalEdge::Top,
+                    block_start: PhysicalEdge::Right,
+                    block_end: PhysicalEdge::Left,
+                }
+            }
+        }
+        WritingModeSpec::VerticalLr => {
+            if ltr {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Top,
+                    inline_end: PhysicalEdge::Bottom,
+                    block_start: PhysicalEdge::Left,
+                    block_end: PhysicalEdge::Right,
+                }
+            } else {
+                LogicalPhysicalMap {
+                    inline_start: PhysicalEdge::Bottom,
+                    inline_end: PhysicalEdge::Top,
+                    block_start: PhysicalEdge::Left,
+                    block_end: PhysicalEdge::Right,
+                }
+            }
+        }
+    }
+}
+
+fn physical_slot<'a>(
+    edge: PhysicalEdge,
+    top: &'a mut Option<LengthSpec>,
+    right: &'a mut Option<LengthSpec>,
+    bottom: &'a mut Option<LengthSpec>,
+    left: &'a mut Option<LengthSpec>,
+) -> &'a mut Option<LengthSpec> {
+    match edge {
+        PhysicalEdge::Top => top,
+        PhysicalEdge::Right => right,
+        PhysicalEdge::Bottom => bottom,
+        PhysicalEdge::Left => left,
+    }
+}
+
+fn bake_logical_insets(
+    logical: &LogicalInsets,
+    map: LogicalPhysicalMap,
+    top: &mut Option<LengthSpec>,
+    right: &mut Option<LengthSpec>,
+    bottom: &mut Option<LengthSpec>,
+    left: &mut Option<LengthSpec>,
+) {
+    if let Some(value) = logical.inline_start {
+        *physical_slot(map.inline_start, top, right, bottom, left) = Some(value);
+    }
+    if let Some(value) = logical.inline_end {
+        *physical_slot(map.inline_end, top, right, bottom, left) = Some(value);
+    }
+    if let Some(value) = logical.block_start {
+        *physical_slot(map.block_start, top, right, bottom, left) = Some(value);
+    }
+    if let Some(value) = logical.block_end {
+        *physical_slot(map.block_end, top, right, bottom, left) = Some(value);
+    }
+}
+
+fn unbake_logical_insets(
+    logical: &LogicalInsets,
+    map: LogicalPhysicalMap,
+    top: &mut Option<LengthSpec>,
+    right: &mut Option<LengthSpec>,
+    bottom: &mut Option<LengthSpec>,
+    left: &mut Option<LengthSpec>,
+) {
+    if logical.inline_start.is_some() {
+        *physical_slot(map.inline_start, top, right, bottom, left) = None;
+    }
+    if logical.inline_end.is_some() {
+        *physical_slot(map.inline_end, top, right, bottom, left) = None;
+    }
+    if logical.block_start.is_some() {
+        *physical_slot(map.block_start, top, right, bottom, left) = None;
+    }
+    if logical.block_end.is_some() {
+        *physical_slot(map.block_end, top, right, bottom, left) = None;
+    }
+}
+
 fn resolve_box_edge_specs(
     uniform: Option<LengthSpec>,
     top: Option<LengthSpec>,
@@ -4394,12 +4891,14 @@ fn resolve_box_edge_specs_signed(
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundImage, BorderImageSlice, BorderImageSpec, BorderStyle, BoxSizing, DisplaySpec,
-        FlexDirection, FontSizeContext, GridRepeatAuto, LayoutStyle, LengthSpec, LineHeightSpec,
-        OverflowSpec, PaintMat4, PaintTransform, ParentBox, PointerEventsSpec,
-        TEXT_APPROX_ASCENT_EM, TransformBox, TransformOrigin, VisibilitySpec,
-        glyph_box_center_from_line_top, icon_y_on_text_glyph_center, text_line_box_height_px,
+        BackgroundImage, BorderImageSlice, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing,
+        DirSpec, DisplaySpec, FlexDirection, FontFeatureSetting, FontSizeContext, GridRepeatAuto,
+        LayoutStyle, LengthSpec, LineHeightSpec, OverflowSpec, PaintMat4, PaintTransform,
+        ParentBox, PointerEventsSpec, TEXT_APPROX_ASCENT_EM, TransformBox, TransformOrigin,
+        VisibilitySpec, WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top,
+        icon_y_on_text_glyph_center, text_line_box_height_px,
     };
+    use crate::typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 
     #[test]
     fn scrollable_overflow_is_also_a_paint_clip() {
@@ -5222,5 +5721,166 @@ mod tests {
                 b.m[i]
             );
         }
+    }
+
+    #[test]
+    fn inherit_typography_fills_opentype_fields() {
+        let parent = LayoutStyle {
+            font_features: Some(vec![FontFeatureSetting::new(*b"liga", 0)]),
+            font_variation_settings: Some(vec![FontVariationSetting::new(*b"wght", 600.0)]),
+            font_kerning: Some(FontKerningSpec::None),
+            word_break: Some(WordBreakSpec::BreakAll),
+            line_break: Some(LineBreakSpec::Anywhere),
+            letter_spacing: Some(0.5),
+            ..LayoutStyle::default()
+        };
+        let mut child = LayoutStyle::default();
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.font_features, parent.font_features);
+        assert_eq!(child.font_kerning, Some(FontKerningSpec::None));
+        assert_eq!(child.word_break, Some(WordBreakSpec::BreakAll));
+        assert_eq!(child.line_break, Some(LineBreakSpec::Anywhere));
+        assert_eq!(child.letter_spacing, Some(0.5));
+        child.word_break = Some(WordBreakSpec::Normal);
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.word_break, Some(WordBreakSpec::Normal));
+    }
+
+    #[test]
+    fn logical_padding_rebakes_when_direction_becomes_rtl() {
+        let mut layout = LayoutStyle::default();
+        layout.logical_padding.set_start(Some(LengthSpec::Px(12.0)));
+        layout.logical_padding.set_end(Some(LengthSpec::Px(4.0)));
+        layout.resolve_logical_box_edges();
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(4.0)));
+        layout.set_writing_direction(DirSpec::Rtl);
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(4.0)));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+        let pad = layout.resolved_padding();
+        assert_eq!((pad.left, pad.right), (4.0, 12.0));
+    }
+
+    #[test]
+    fn bake_logical_edges_vertical_rl_maps_block_start_to_right() {
+        let mut layout = LayoutStyle::default();
+        layout.writing_mode = Some(WritingModeSpec::VerticalRl);
+        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
+        layout.padding_logical.inline_start = Some(LengthSpec::Px(3.0));
+        layout.bake_logical_edges();
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(8.0)));
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(3.0)));
+        assert!(layout.padding_left.is_none());
+        assert!(layout.padding_bottom.is_none());
+    }
+
+    #[test]
+    fn bake_logical_edges_vertical_lr_maps_block_start_to_left() {
+        let mut layout = LayoutStyle::default();
+        layout.writing_mode = Some(WritingModeSpec::VerticalLr);
+        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
+        layout.padding_logical.block_end = Some(LengthSpec::Px(2.0));
+        layout.bake_logical_edges();
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(8.0)));
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(2.0)));
+    }
+
+    #[test]
+    fn writing_mode_rebakes_logical_padding_from_top_to_right() {
+        let mut layout = LayoutStyle::default();
+        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
+        layout.bake_logical_edges();
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
+        layout.set_writing_mode(WritingModeSpec::VerticalRl);
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(8.0)));
+        assert!(layout.padding_top.is_none());
+    }
+
+    #[test]
+    fn writing_mode_physical_flex_direction_swaps_row_and_column() {
+        assert_eq!(
+            WritingModeSpec::VerticalRl.physical_flex_direction(FlexDirection::Row),
+            FlexDirection::Column
+        );
+        assert_eq!(
+            WritingModeSpec::VerticalLr.physical_flex_direction(FlexDirection::Column),
+            FlexDirection::Row
+        );
+        assert_eq!(
+            WritingModeSpec::HorizontalTb.physical_flex_direction(FlexDirection::Row),
+            FlexDirection::Row
+        );
+    }
+
+    #[test]
+    fn baseline_from_ascent_uses_shaped_metrics_not_fixed_em() {
+        let layout = LayoutStyle {
+            font_size: Some(20.0),
+            padding_top: Some(LengthSpec::Px(2.0)),
+            border_width: Some(1.0),
+            ..LayoutStyle::default()
+        };
+        let approx = layout.approximate_baseline(20.0);
+        assert!((approx - (2.0 + 1.0 + 16.0)).abs() < 1e-4);
+        let shaped = layout.baseline_from_ascent(20.0, Some(9.0));
+        assert!((shaped - 12.0).abs() < 1e-4);
+        assert!((shaped - approx).abs() > 1.0);
+    }
+
+    #[test]
+    fn overlay_css_size_overrides_control_tokens() {
+        let mut layout = LayoutStyle {
+            min_height: Some(LengthSpec::Px(32.0)),
+            border_radius: Some(6.0),
+            ..LayoutStyle::default()
+        };
+        let css = LayoutStyle {
+            height: Some(LengthSpec::Px(48.0)),
+            width: Some(LengthSpec::Px(120.0)),
+            min_width: Some(LengthSpec::Px(80.0)),
+            border_radius: Some(2.0),
+            ..LayoutStyle::default()
+        };
+        layout.overlay_css_size_overrides(&css);
+        assert_eq!(layout.height, Some(LengthSpec::Px(48.0)));
+        assert_eq!(layout.width, Some(LengthSpec::Px(120.0)));
+        assert_eq!(layout.min_width, Some(LengthSpec::Px(80.0)));
+        assert!(layout.min_height.is_none());
+        assert_eq!(layout.border_radius, Some(2.0));
+    }
+
+    #[test]
+    fn inherit_typography_fills_writing_direction() {
+        let parent = LayoutStyle {
+            dir: Some(DirSpec::Rtl),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            ..LayoutStyle::default()
+        };
+        let mut child = LayoutStyle::default();
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.dir, Some(DirSpec::Rtl));
+        assert_eq!(child.writing_mode, Some(WritingModeSpec::VerticalRl));
+        child.dir = Some(DirSpec::Ltr);
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.dir, Some(DirSpec::Ltr));
+    }
+
+    #[test]
+    fn inset_box_shadow_is_distinct_from_outset() {
+        let outset = BoxShadowSpec {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur_radius: 4.0,
+            spread_radius: 0.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+            inset: false,
+        };
+        let inset = BoxShadowSpec {
+            inset: true,
+            ..outset
+        };
+        assert_ne!(outset, inset);
+        assert!(inset.inset);
+        assert!(!outset.inset);
     }
 }

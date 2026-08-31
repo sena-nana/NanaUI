@@ -879,7 +879,8 @@ impl UiWorld {
                 let sample = animation
                     .sample(now)
                     .expect("due animation must produce a sample");
-                let next_deadline = (!sample.finished).then_some(animation.next_deadline);
+                let next_deadline = (!sample.finished && animation.has_follow_up_deadline())
+                    .then_some(animation.next_deadline);
                 (sample, next_deadline)
             };
             if sample.finished {
@@ -2221,7 +2222,10 @@ impl UiWorld {
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
-            let hittable = interaction.pointer_events && used_pe.hittable() && !confirm_busy;
+            let hittable = interaction.pointer_events
+                && used_pe.hittable()
+                && style.pointer_events.hittable()
+                && !confirm_busy;
             let menu = hittable
                 .then(|| self.component_geometry(id))
                 .flatten()
@@ -2673,7 +2677,13 @@ impl UiWorld {
                     || previous.layout.font_italic != style.layout.font_italic
                     || previous.layout.font_family != style.layout.font_family
                     || previous.layout.line_height != style.layout.line_height
-                    || previous.layout.letter_spacing != style.layout.letter_spacing;
+                    || previous.layout.letter_spacing != style.layout.letter_spacing
+                    || previous.layout.font_features != style.layout.font_features
+                    || previous.layout.font_variation_settings
+                        != style.layout.font_variation_settings
+                    || previous.layout.font_kerning != style.layout.font_kerning
+                    || previous.layout.word_break != style.layout.word_break
+                    || previous.layout.line_break != style.layout.line_break;
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.opacity != style.layout.opacity;
@@ -3073,12 +3083,13 @@ impl UiWorld {
             }
             UiMutation::StartAnimation { animation } => {
                 let active = ActiveAnimation::new(*animation);
+                let next_deadline = active.next_deadline;
                 if let Some(previous) = self.animations.insert(animation.id, active) {
                     self.animation_deadlines
                         .remove(&(previous.next_deadline, animation.id));
                 }
                 self.animation_deadlines
-                    .insert((animation.start, animation.id));
+                    .insert((next_deadline, animation.id));
             }
             UiMutation::StopAnimation { id } => {
                 if let Some(animation) = self.animations.remove(id) {
@@ -4120,11 +4131,15 @@ impl UiWorld {
                 }
                 let metrics = self.scroll_metrics(id)?;
                 let offset = self.scroll_offset(id).unwrap_or_default();
-                let chrome = nana_ui_core::SCROLLBAR_METRICS;
+                let skin = source.layout.paint.scrollbar;
+                let chrome = skin
+                    .map(|skin| skin.metrics(nana_ui_core::SCROLLBAR_METRICS))
+                    .unwrap_or(nana_ui_core::SCROLLBAR_METRICS);
                 let palette = &self.style_model.palette;
-                let track_background =
+                let track_background = skin.and_then(|skin| skin.track_color).or_else(|| {
                     matches!(visibility, nana_ui_core::ScrollbarVisibility::Always)
-                        .then(|| palette.subtle.as_rgba_array());
+                        .then(|| palette.subtle.as_rgba_array())
+                });
                 let scrolls = |axis: nana_ui_core::ScrollbarAxis| match axis {
                     nana_ui_core::ScrollbarAxis::Horizontal => {
                         axes.horizontal() && metrics.content_width > metrics.viewport_width
@@ -4212,11 +4227,15 @@ impl UiWorld {
                         track: track_box,
                         thumb: thumb_box,
                         track_background,
-                        thumb_background: if active {
-                            palette.muted.as_rgba_array()
-                        } else {
-                            palette.border_strong.as_rgba_array()
-                        },
+                        thumb_background: skin.and_then(|skin| skin.thumb_color).unwrap_or_else(
+                            || {
+                                if active {
+                                    palette.muted.as_rgba_array()
+                                } else {
+                                    palette.border_strong.as_rgba_array()
+                                }
+                            },
+                        ),
                         thumb_radius: chrome.thumb_radius(),
                         max_offset: track.max_offset,
                     })
@@ -5278,6 +5297,13 @@ impl UiWorld {
         if !interaction.pointer_events || !self.used_pointer_events(target).hittable() {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
+        let computed = self
+            .world
+            .get::<ResolvedStyle>(entity)
+            .expect("runtime entity must have resolved style");
+        if !computed.0.pointer_events.hittable() {
+            return Err(UiWorldError::NotPointerInteractive(target));
+        }
         Ok(())
     }
 
@@ -5560,6 +5586,8 @@ impl UiWorld {
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
         let box_visible = !layout.omits_box() && inherited.box_visible;
+        let pointer_events =
+            PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events);
         let next = ComputedStyle {
             foreground,
             color,
@@ -5572,6 +5600,7 @@ impl UiWorld {
                 && visibility != nana_ui_core::VisibilitySpec::Hidden
                 && self.overlay_branch_active(id)
                 && self.menu_branch_open(id),
+            pointer_events,
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
             italic: layout.font_italic.unwrap_or(inherited.italic),
@@ -5586,6 +5615,15 @@ impl UiWorld {
                 .font_features
                 .clone()
                 .unwrap_or(inherited.font_features),
+            font_variations: layout
+                .font_variation_settings
+                .clone()
+                .unwrap_or(inherited.font_variations),
+            font_kerning: layout.font_kerning.unwrap_or(inherited.font_kerning),
+            word_break: layout.word_break.unwrap_or(inherited.word_break),
+            line_break: layout.line_break.unwrap_or(inherited.line_break),
+            direction: layout.dir.unwrap_or(inherited.direction),
+            writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
         };
         {
             let resolved = self.component::<ResolvedStyle>(id);
@@ -6775,8 +6813,11 @@ fn layout_semantics_changed(
         || previous.aspect_ratio != next.aspect_ratio
         || previous.font_italic != next.font_italic
         || previous.text_align != next.text_align
+        || previous.word_break != next.word_break
+        || previous.line_break != next.line_break
         || previous.float != next.float
         || previous.clear != next.clear
+        || previous.writing_mode != next.writing_mode
         || previous.grid_template_areas != next.grid_template_areas
         || previous.grid_column_line_names != next.grid_column_line_names
         || previous.grid_row_line_names != next.grid_row_line_names
@@ -8089,7 +8130,6 @@ fn graph_edge_stroke_color(palette: &SemanticPalette, edge: &crate::GraphEdgePai
 }
 
 const CURVE_FLATNESS: f32 = 0.75;
-const CURVE_MAX_SEGMENT: f32 = 8.0;
 
 fn sample_curve(bounds: LayoutBox, curve: [GraphPoint; 4]) -> Vec<[f32; 2]> {
     let origin = [bounds.x, bounds.y];
@@ -8098,15 +8138,15 @@ fn sample_curve(bounds: LayoutBox, curve: [GraphPoint; 4]) -> Vec<[f32; 2]> {
     points
 }
 
+/// Screen-space flatness (`edge_curve` is already in view space).
 fn flatten_cubic(
     points: &mut Vec<[f32; 2]>,
     [p0, p1, p2, p3]: [GraphPoint; 4],
     origin: [f32; 2],
     depth: u32,
 ) {
-    let chord = p0.distance_squared(p3).sqrt();
     let deviation = line_offset(p1, p0, p3).max(line_offset(p2, p0, p3));
-    if depth >= 16 || (deviation <= CURVE_FLATNESS && chord <= CURVE_MAX_SEGMENT) {
+    if depth >= 16 || deviation <= CURVE_FLATNESS {
         points.push([origin[0] + p3.x, origin[1] + p3.y]);
         return;
     }
@@ -9106,6 +9146,10 @@ mod tests {
             duration: Duration::from_millis(100),
             frame_interval: Duration::from_millis(10),
             easing: Easing::Linear,
+            iteration_count: crate::AnimationIteration::ONCE,
+            direction: crate::AnimationDirection::Normal,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Running,
         });
         world.commit(create).unwrap();
         world.take_system_work();
@@ -9683,6 +9727,76 @@ mod tests {
             !world
                 .hit_test_candidates(document(1), 20.0, 20.0)
                 .contains(&node(2))
+        );
+    }
+
+    #[test]
+    fn pointer_events_none_skips_hit_and_auto_child_punches_through() {
+        use nana_ui_core::PointerEventsSpec;
+
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        create.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        create.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        create.create(
+            node(4),
+            document(1),
+            NodeKind::Element {
+                tag: "inert".into(),
+            },
+        );
+        create.insert(node(1), node(2), None);
+        create.insert(node(2), node(3), None);
+        create.insert(node(2), node(4), None);
+        create.write_layout(node(2), box_at(10.0, 10.0, 50.0, 50.0));
+        create.write_layout(node(3), box_at(15.0, 15.0, 20.0, 20.0));
+        create.write_layout(node(4), box_at(40.0, 40.0, 10.0, 10.0));
+        let mut parent = NodeStyle::default();
+        Arc::make_mut(&mut parent.layout).pointer_events = Some(PointerEventsSpec::None);
+        create.set_style(node(2), parent);
+        let mut child = NodeStyle::default();
+        Arc::make_mut(&mut child.layout).pointer_events = Some(PointerEventsSpec::Auto);
+        create.set_style(node(3), child);
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.rebuild_hit_test(document(1));
+
+        let painted = world.extract_nodes(&[node(2), node(3), node(4)]);
+        assert_eq!(painted.len(), 3);
+        assert!(painted.iter().all(|node| node.style.visible));
+        assert!(
+            world
+                .extract_document(document(1))
+                .iter()
+                .any(|extracted| extracted.id == node(2)),
+            "pointer-events:none must still paint"
+        );
+
+        assert_eq!(world.hit_test(document(1), 25.0, 25.0), Some(node(3)));
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 12.0, 12.0)
+                .contains(&node(2))
+        );
+        assert!(
+            !world
+                .hit_test_candidates(document(1), 44.0, 44.0)
+                .contains(&node(4)),
+            "unset child must inherit none"
         );
     }
 
@@ -10297,6 +10411,10 @@ mod tests {
             duration: Duration::from_millis(100),
             frame_interval: Duration::from_millis(16),
             easing: Easing::EaseOutCubic,
+            iteration_count: crate::AnimationIteration::ONCE,
+            direction: crate::AnimationDirection::Normal,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Running,
         };
         let generation = world.generation();
         let mut invalid = MutationQueue::new();
@@ -10380,6 +10498,10 @@ mod tests {
             duration: Duration::from_secs(1),
             frame_interval: Duration::from_millis(16),
             easing: Easing::Linear,
+            iteration_count: crate::AnimationIteration::ONCE,
+            direction: crate::AnimationDirection::Normal,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Running,
         });
         world.commit(queue).unwrap();
         assert_eq!(
@@ -10414,6 +10536,10 @@ mod tests {
                 duration: Duration::from_millis(1),
                 frame_interval: Duration::from_millis(16),
                 easing: Easing::Linear,
+                iteration_count: crate::AnimationIteration::ONCE,
+                direction: crate::AnimationDirection::Normal,
+                fill_mode: crate::AnimationFillMode::None,
+                play_state: crate::AnimationPlayState::Running,
             });
         }
         world.commit(queue).unwrap();
@@ -10432,6 +10558,10 @@ mod tests {
                 duration: Duration::from_millis(1),
                 frame_interval: Duration::from_millis(16),
                 easing: Easing::Linear,
+                iteration_count: crate::AnimationIteration::ONCE,
+                direction: crate::AnimationDirection::Normal,
+                fill_mode: crate::AnimationFillMode::None,
+                play_state: crate::AnimationPlayState::Running,
             });
         }
         world.commit(all_due).unwrap();
@@ -10439,6 +10569,63 @@ mod tests {
         assert_eq!(full.samples.len(), 63);
         assert_eq!(full.animation_deadlines_scanned, 63);
         assert_eq!(full.animations_considered, 63);
+    }
+
+    #[test]
+    fn infinite_animation_keeps_waking_and_paused_animation_does_not() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.start_animation(AnimationSpec {
+            id: AnimationId::new(1).unwrap(),
+            target: node(1),
+            start: Duration::ZERO,
+            duration: Duration::from_millis(100),
+            frame_interval: Duration::from_millis(16),
+            easing: Easing::Linear,
+            iteration_count: crate::AnimationIteration::Infinite,
+            direction: crate::AnimationDirection::Alternate,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Running,
+        });
+        queue.start_animation(AnimationSpec {
+            id: AnimationId::new(2).unwrap(),
+            target: node(2),
+            start: Duration::ZERO,
+            duration: Duration::from_millis(100),
+            frame_interval: Duration::from_millis(16),
+            easing: Easing::Linear,
+            iteration_count: crate::AnimationIteration::ONCE,
+            direction: crate::AnimationDirection::Normal,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Paused,
+        });
+        world.commit(queue).unwrap();
+
+        let first = world.advance_animations(Duration::ZERO);
+        assert_eq!(first.samples.len(), 2);
+        let infinite = first
+            .samples
+            .iter()
+            .find(|sample| sample.id == AnimationId::new(1).unwrap())
+            .unwrap();
+        let paused = first
+            .samples
+            .iter()
+            .find(|sample| sample.id == AnimationId::new(2).unwrap())
+            .unwrap();
+        assert!(!infinite.finished);
+        assert_eq!(infinite.progress, 0.0);
+        assert!(!paused.finished);
+        assert_eq!(paused.progress, 0.0);
+        assert_eq!(first.next_deadline, Some(Duration::from_millis(16)));
+
+        let later = world.advance_animations(Duration::from_millis(150));
+        assert_eq!(later.samples.len(), 1);
+        assert_eq!(later.samples[0].id, AnimationId::new(1).unwrap());
+        assert!(!later.samples[0].finished);
+        assert!((later.samples[0].progress - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -11946,6 +12133,7 @@ mod tests {
             TextMetrics {
                 width: text.value.chars().count() as f32 * style.font_size,
                 height: style.font_size,
+                ascent: None,
             }
         }
     }
@@ -11966,6 +12154,7 @@ mod tests {
                 return TextMetrics {
                     width: intrinsic,
                     height: em,
+                    ascent: None,
                 };
             };
             let mut lines = 1_u32;
@@ -11985,6 +12174,7 @@ mod tests {
             TextMetrics {
                 width: intrinsic.min(max_width),
                 height: em * lines as f32,
+                ascent: None,
             }
         }
     }
@@ -13055,48 +13245,113 @@ mod tests {
 
     #[test]
     fn diagonal_stroke_segments_overlap_so_curves_do_not_break() {
-        let points = sample_curve(
-            LayoutBox {
-                x: 0.0,
-                y: 0.0,
-                width: 200.0,
-                height: 120.0,
-            },
-            [
-                GraphPoint::new(10.0, 40.0),
-                GraphPoint::new(80.0, 40.0),
-                GraphPoint::new(120.0, 80.0),
-                GraphPoint::new(190.0, 80.0),
-            ],
-        );
-        assert_curve_spacing(&points);
+        let bounds = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 120.0,
+        };
+        let curve = [
+            GraphPoint::new(10.0, 40.0),
+            GraphPoint::new(80.0, 40.0),
+            GraphPoint::new(120.0, 80.0),
+            GraphPoint::new(190.0, 80.0),
+        ];
+        let points = sample_curve(bounds, curve);
+        assert_curve_connected_and_flat(bounds, curve, &points);
     }
 
     #[test]
     fn long_zoomed_curves_keep_segment_spacing() {
-        let points = sample_curve(
-            LayoutBox {
-                x: 0.0,
-                y: 0.0,
-                width: 4000.0,
-                height: 800.0,
-            },
-            [
-                GraphPoint::new(0.0, 40.0),
-                GraphPoint::new(800.0, 40.0),
-                GraphPoint::new(1600.0, 760.0),
-                GraphPoint::new(2400.0, 760.0),
-            ],
+        let bounds = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 4000.0,
+            height: 800.0,
+        };
+        let curve = [
+            GraphPoint::new(0.0, 40.0),
+            GraphPoint::new(800.0, 40.0),
+            GraphPoint::new(1600.0, 760.0),
+            GraphPoint::new(2400.0, 760.0),
+        ];
+        let points = sample_curve(bounds, curve);
+        assert_curve_connected_and_flat(bounds, curve, &points);
+        let max_chord = max_polyline_chord(&points);
+        assert!(
+            max_chord > 8.0,
+            "flat pieces may be longer than 8px, max chord {max_chord}"
         );
-        assert!(points.len() > 96);
-        assert_curve_spacing(&points);
+        assert!(
+            points.len() < 96,
+            "flatness-only flattening must not explode instances, got {}",
+            points.len()
+        );
+
+        let straight = [
+            GraphPoint::new(0.0, 40.0),
+            GraphPoint::new(800.0, 40.0),
+            GraphPoint::new(1600.0, 40.5),
+            GraphPoint::new(2400.0, 40.0),
+        ];
+        let straight_points = sample_curve(bounds, straight);
+        assert_curve_connected_and_flat(bounds, straight, &straight_points);
+        assert!(
+            straight_points.len() < 8,
+            "a long nearly-straight cubic should stay a handful of capsules, got {}",
+            straight_points.len()
+        );
+        assert!(max_polyline_chord(&straight_points) > 8.0);
     }
 
-    fn assert_curve_spacing(points: &[[f32; 2]]) {
+    fn assert_curve_connected_and_flat(
+        bounds: LayoutBox,
+        curve: [GraphPoint; 4],
+        points: &[[f32; 2]],
+    ) {
         assert!(points.len() > 1);
+        let origin = [bounds.x, bounds.y];
+        let start = [origin[0] + curve[0].x, origin[1] + curve[0].y];
+        let end = [origin[0] + curve[3].x, origin[1] + curve[3].y];
+        assert_eq!(points[0], start);
+        let last = *points.last().expect("polyline");
+        assert!((last[0] - end[0]).abs() < 1e-3 && (last[1] - end[1]).abs() < 1e-3);
         assert!(points.windows(2).all(|pair| {
-            (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) <= CURVE_MAX_SEGMENT
+            let chord = (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
+            chord.is_finite() && chord > 0.0
         }));
+        for index in 0..=64 {
+            let sample = cubic_point(curve, index as f32 / 64.0);
+            let point = [origin[0] + sample.x, origin[1] + sample.y];
+            let distance = points
+                .windows(2)
+                .map(|pair| distance_to_segment(point, pair[0], pair[1]))
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                distance <= CURVE_FLATNESS + 0.05,
+                "cubic sample t={} is {distance}px off the polyline",
+                index as f32 / 64.0
+            );
+        }
+    }
+
+    fn max_polyline_chord(points: &[[f32; 2]]) -> f32 {
+        points
+            .windows(2)
+            .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
+            .fold(0.0_f32, f32::max)
+    }
+
+    fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
+        let abx = end[0] - start[0];
+        let aby = end[1] - start[1];
+        let length_sq = abx * abx + aby * aby;
+        if length_sq <= f32::EPSILON {
+            return (point[0] - start[0]).hypot(point[1] - start[1]);
+        }
+        let t = ((point[0] - start[0]) * abx + (point[1] - start[1]) * aby) / length_sq;
+        let t = t.clamp(0.0, 1.0);
+        (point[0] - (start[0] + abx * t)).hypot(point[1] - (start[1] + aby * t))
     }
 
     #[test]

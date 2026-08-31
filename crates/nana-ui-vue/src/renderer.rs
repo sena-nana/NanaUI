@@ -428,6 +428,27 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                     };
                     bridge.set_label(widget_id(el), label);
                 }
+                if key == "class" || key == "className" {
+                    let mut guard = lock_doc(&host.document)?;
+                    bridge.maybe_release_flip_paint_transform(widget_id(el), &mut guard);
+                }
+            }
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let host = host.clone();
+        api.register("setPaintTransform", move |args| {
+            let el = arg_handle(args, 0)?;
+            let css = arg_str(args, 1).unwrap_or_default();
+            {
+                let mut guard = lock_doc(&host.document)?;
+                guard.set_paint_transform(el, &css);
+            }
+            let mut bridge = lock_bridge(&host.bridge)?;
+            if bridge.contains(widget_id(el)) {
+                let mut guard = lock_doc(&host.document)?;
+                bridge.set_paint_transform(widget_id(el), &css, &mut guard);
             }
             Ok(HostValue::Null)
         });
@@ -1494,6 +1515,27 @@ fn seed_element_attrs(guard: &mut NanaTreeDocument, handle: NodeHandle, props: &
         .filter(|id| !id.is_empty())
     {
         guard.set_attribute(handle, "data-nana-canvas", canvas);
+    }
+    if let Some(image) = props
+        .attrs
+        .get("data-nana-image")
+        .filter(|id| !id.is_empty())
+    {
+        guard.set_attribute(handle, "data-nana-image", image);
+    }
+    if let Some(video) = props
+        .attrs
+        .get("data-nana-video")
+        .filter(|id| !id.is_empty())
+    {
+        guard.set_attribute(handle, "data-nana-video", video);
+    }
+    if let Some(media) = props
+        .attrs
+        .get("data-nana-media")
+        .filter(|id| !id.is_empty())
+    {
+        guard.set_attribute(handle, "data-nana-media", media);
     }
 }
 
@@ -2749,6 +2791,99 @@ mod tests {
             (second.x - (first.x + first.width)).abs() < 0.5,
             "second={second:?}"
         );
+    }
+
+    #[test]
+    fn set_paint_transform_host_op_writes_runtime_style_not_layout_box() {
+        use nana_ui_core::PaintTransform;
+        use nana_ui_runtime::StableNodeId;
+
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let id = api
+            .call("createElement", &[HostValue::string("li")])
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(id),
+                HostValue::Number(body),
+                HostValue::Null,
+            ],
+        )
+        .unwrap();
+        {
+            let mut guard = doc.lock().unwrap();
+            let node = NodeHandle(id as u64);
+            guard.flush_host_frame();
+            guard.inject_layout_boxes(&[(
+                node,
+                crate::tree::LayoutBox {
+                    handle: node,
+                    x: 8.0,
+                    y: 16.0,
+                    width: 24.0,
+                    height: 12.0,
+                },
+            )]);
+        }
+        api.call(
+            "setPaintTransform",
+            &[
+                HostValue::Number(id),
+                HostValue::string("translate(12px, 4px)"),
+            ],
+        )
+        .unwrap();
+        {
+            let mut guard = doc.lock().unwrap();
+            guard.flush_host_frame();
+            let node = NodeHandle(id as u64);
+            let box_ = guard.layout_box(node).expect("layout box");
+            assert_eq!(box_.x, 8.0);
+            assert_eq!(box_.y, 16.0);
+            let style = guard
+                .world()
+                .node_style(StableNodeId::new(id as u64).unwrap())
+                .expect("style");
+            assert_eq!(
+                style.layout.transform,
+                Some(PaintTransform {
+                    e: 12.0,
+                    f: 4.0,
+                    ..PaintTransform::default()
+                })
+            );
+        }
+        api.call(
+            "setPaintTransform",
+            &[HostValue::Number(id), HostValue::string("")],
+        )
+        .unwrap();
+        {
+            let mut guard = doc.lock().unwrap();
+            guard.flush_host_frame();
+            let style = guard
+                .world()
+                .node_style(StableNodeId::new(id as u64).unwrap())
+                .expect("style");
+            assert_eq!(style.layout.transform, None);
+            let box_ = guard
+                .layout_box(NodeHandle(id as u64))
+                .expect("layout box after clear");
+            assert_eq!(box_.x, 8.0);
+            assert_eq!(box_.y, 16.0);
+        }
     }
 
     #[test]

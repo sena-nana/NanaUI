@@ -12,8 +12,10 @@
  */
 import { createRenderer } from "@vue/runtime-core";
 import { defineLayoutMetrics, hostCall, layoutRect, nanaWindowIdFromNode, scrollNodeIntoView, withNanaWindowContext } from "./layoutMetrics.js";
+import { appearEnterPhaseAfter, armMotionEndFromStyles, cancelArmedMotionEnd, createMotionEndEvent, isPaintOnlyStyleKey, isVueTransitionClass, preserveMotionClasses, resolveTransitionComputedStyles, vueTransitionClassKind } from "./transitionContract.js";
 
 export { hostCall } from "./layoutMetrics.js";
+export { applyFlipPaintTransform, clearFlipPaintTransform, readFlipBox } from "./transitionContract.js";
 
 /** nid:event → [{ listener, capture, once, passive }] — multi-listener + options subset. */
 const listeners = new Map();
@@ -634,7 +636,7 @@ function flushPendingStyles() {
 }
 
 function queueStyleFlush(nid, store) {
-  pendingStyleStores.set(nid, store);
+  pendingStyleStores.set(nid, hostStyleStore(store));
   if (styleFlushScheduled) return;
   styleFlushScheduled = true;
   const run = () => {
@@ -799,6 +801,9 @@ export function wrapNode(id, kind, tag) {
       if (event.target == null) event.target = this;
       invokeNanaListenerPhase(nid, type, event, true);
       if (!event._immediateStopped) invokeNanaListenerPhase(nid, type, event, false);
+      if (type === "transitionend" || type === "animationend") {
+        cancelArmedMotionEnd(nid);
+      }
       return !event.defaultPrevented;
     },
     setAttribute(name, value) {
@@ -1070,6 +1075,27 @@ function parseCssText(cssText) {
   return store;
 }
 
+function hostStyleStore(store) {
+  const out = {};
+  for (const [key, value] of Object.entries(store)) {
+    if (isPaintOnlyStyleKey(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function paintTransformCssValue(store) {
+  const value =
+    store.transform ?? store.webkitTransform ?? store.MozTransform ?? store.msTransform;
+  return value == null ? "" : String(value);
+}
+
+function syncPaintTransform(nid, store) {
+  try {
+    hostCall("setPaintTransform", [nid, paintTransformCssValue(store)]);
+  } catch (_err) {}
+}
+
 function createStyleProxy(nid) {
   const store = Object.create(null);
   const markDirty = () => queueStyleFlush(nid, store);
@@ -1078,13 +1104,15 @@ function createStyleProxy(nid) {
       if (prop === "setProperty") {
         return (name, value) => {
           target[name] = value;
-          markDirty();
+          if (isPaintOnlyStyleKey(name)) syncPaintTransform(nid, target);
+          else markDirty();
         };
       }
       if (prop === "removeProperty") {
         return (name) => {
           delete target[name];
-          markDirty();
+          if (isPaintOnlyStyleKey(name)) syncPaintTransform(nid, target);
+          else markDirty();
         };
       }
       if (prop === "cssText") {
@@ -1099,10 +1127,14 @@ function createStyleProxy(nid) {
         for (const k of Object.keys(target)) delete target[k];
         Object.assign(target, parseCssText(value));
         markDirty();
+        syncPaintTransform(nid, target);
         return true;
       }
       target[prop] = value;
-      markDirty();
+      // FLIP / Vue TransitionGroup translate is paint-only: Scene transform,
+      // not LayoutBox, not a style recascade.
+      if (isPaintOnlyStyleKey(prop)) syncPaintTransform(nid, target);
+      else markDirty();
       return true;
     },
   });
@@ -1168,6 +1200,19 @@ function createClassList(nid, el) {
       hostCall("patchProp", [nid, "class", joined || null]);
     } catch (_err) {}
   };
+  const armFromClasses = () => {
+    if (!el) return;
+    const phase = appearEnterPhaseAfter(set);
+    el.__nanaTransitionPhase = phase;
+    if (!phase) {
+      const hasMove = [...set].some((token) => vueTransitionClassKind(token) === "move");
+      if (!hasMove && ![...set].some(isVueTransitionClass)) {
+        cancelArmedMotionEnd(nid);
+        return;
+      }
+    }
+    armElementMotionEnd(el, nid);
+  };
   return {
     add(...tokens) {
       tokens.forEach((t) => {
@@ -1175,10 +1220,12 @@ function createClassList(nid, el) {
         if (s) set.add(s);
       });
       sync();
+      armFromClasses();
     },
     remove(...tokens) {
       tokens.forEach((t) => set.delete(String(t)));
       sync();
+      armFromClasses();
     },
     toggle(token, force) {
       const t = String(token);
@@ -1187,6 +1234,7 @@ function createClassList(nid, el) {
       else if (set.has(t)) set.delete(t);
       else set.add(t);
       sync();
+      armFromClasses();
       return set.has(t);
     },
     contains(token) {
@@ -1194,11 +1242,9 @@ function createClassList(nid, el) {
     },
     /** Replace tokens from a Vue `class` patch without re-entering patchProp loops. */
     __replace(classValue) {
+      const kept = preserveMotionClasses(classValue, [...set]);
       set.clear();
-      String(classValue || "")
-        .split(/\s+/)
-        .filter(Boolean)
-        .forEach((t) => set.add(t));
+      kept.forEach((t) => set.add(t));
       writeLocal();
     },
     get value() {
@@ -1208,6 +1254,26 @@ function createClassList(nid, el) {
       return set.size;
     },
   };
+}
+
+function readElementMotionStyles(el) {
+  try {
+    const view =
+      (el && el.ownerDocument && el.ownerDocument.defaultView) || globalThis;
+    if (view && typeof view.getComputedStyle === "function" && el) {
+      return view.getComputedStyle(el);
+    }
+  } catch (_err) {}
+  return resolveTransitionComputedStyles(null);
+}
+
+function armElementMotionEnd(el, nid) {
+  const styles = readElementMotionStyles(el);
+  armMotionEndFromStyles(nid, styles, (detail) => {
+    const node = wrapById(nid) || el;
+    if (!node || typeof node.dispatchEvent !== "function") return;
+    node.dispatchEvent(createMotionEndEvent(detail.type, node, detail));
+  });
 }
 
 export function nodeId(node) {
@@ -1295,6 +1361,16 @@ function releaseNodeResources(node) {
     node.__nanaCanvasResource = null;
     node.__nanaResource = null;
   }
+  if (node.__nanaOwnsMediaResource && node.__nanaMediaResource) {
+    hostCall("mediaRelease", [node.__nanaMediaResource.id]);
+    node.__nanaOwnsMediaResource = false;
+    node.__nanaMediaResource = null;
+    const nid = nodeId(node);
+    if (nid != null) {
+      hostCall("patchProp", [nid, "data-nana-media", ""]);
+      hostCall("patchProp", [nid, "data-nana-video", ""]);
+    }
+  }
 }
 
 function bindImageSource(el, nid, source) {
@@ -1334,6 +1410,40 @@ function bindImageSource(el, nid, source) {
     }
   };
   image.src = href;
+}
+
+function bindMediaProp(el, nid, key, next) {
+  if (typeof globalThis.__nanaEnhanceMedia === "function" && !el.__nanaMediaResource) {
+    const tag = String(el && (el.tag || el.tagName || "")).toLowerCase();
+    globalThis.__nanaEnhanceMedia(el, tag === "audio" ? "audio" : "video");
+  }
+  const resource = el.__nanaMediaResource;
+  if (!resource || resource.id == null) {
+    hostCall("patchProp", [nid, key, next == null ? null : next]);
+    return;
+  }
+  if (key === "srcObject") {
+    el.srcObject = next;
+    return;
+  }
+  if (key === "currentTime") {
+    el.currentTime = Number(next) || 0;
+    hostCall("patchProp", [nid, "currentTime", String(el.currentTime)]);
+    return;
+  }
+  el.src = next == null ? "" : String(next);
+  el.attributes = el.attributes || {};
+  el.attributes.src = el.src;
+  hostCall("patchProp", [nid, "src", el.src]);
+  const tag = String(el && (el.tag || el.tagName || "")).toLowerCase();
+  if (el.__nanaMediaResource && el.__nanaMediaResource.id != null) {
+    hostCall("patchProp", [nid, "data-nana-media", String(el.__nanaMediaResource.id)]);
+  }
+  if (tag === "video" && el.__nanaMediaResource) {
+    const id = el.__nanaMediaResource.id;
+    const slot = el.__nanaMediaResource.hasVideoFrame && id != null ? String(id) : "";
+    hostCall("patchProp", [nid, "data-nana-video", slot]);
+  }
 }
 
 /**
@@ -1440,6 +1550,13 @@ export const hostOps = {
       bindImageSource(el, nid, next);
       return;
     }
+    if (
+      ["video", "audio"].includes(String(el && (el.tag || el.tagName || "")).toLowerCase()) &&
+      (key === "src" || key === "srcObject" || key === "currentTime")
+    ) {
+      bindMediaProp(el, nid, key, next);
+      return;
+    }
 
     if (key === "class" || key === "className") {
       const value = next == null ? null : String(next);
@@ -1463,8 +1580,19 @@ export const hostOps = {
       }
       if (typeof next === "object") {
         const cleaned = {};
+        let sawPaintTransform = false;
         for (const [k, v] of Object.entries(next)) {
+          if (isPaintOnlyStyleKey(k)) {
+            if (el && el.style) el.style[k] = v == null ? "" : v;
+            sawPaintTransform = true;
+            continue;
+          }
           if (v != null && v !== "") cleaned[k] = Array.isArray(v) ? v[v.length - 1] : v;
+        }
+        if (sawPaintTransform && el && el.style) {
+          try {
+            hostCall("setPaintTransform", [nid, paintTransformCssValue(el.style)]);
+          } catch (_err) {}
         }
         hostCall("patchProp", [nid, "style", cleaned]);
       }
@@ -1584,6 +1712,7 @@ export const hostOps = {
     const nid = nodeId(child);
     releaseNodeResources(child);
     unlinkChild(child);
+    cancelArmedMotionEnd(nid);
     for (const key of [...listeners.keys()]) {
       if (key.startsWith(`${nid}:`)) listeners.delete(key);
     }
@@ -1645,8 +1774,26 @@ export const hostOps = {
     if (lower === "canvas" && typeof globalThis.__nanaEnhanceCanvas === "function") {
       globalThis.__nanaEnhanceCanvas(node);
     }
+    if (
+      (lower === "video" || lower === "audio") &&
+      typeof globalThis.__nanaEnhanceMedia === "function"
+    ) {
+      globalThis.__nanaEnhanceMedia(node, lower);
+      const resource = node.__nanaMediaResource;
+      if (resource && resource.id != null) {
+        hostCall("patchProp", [id, "data-nana-media", String(resource.id)]);
+      }
+    }
     if (lower === "img" && vnodeProps && typeof vnodeProps === "object" && vnodeProps.src != null) {
       bindImageSource(node, id, vnodeProps.src);
+    }
+    if (
+      (lower === "video" || lower === "audio") &&
+      vnodeProps &&
+      typeof vnodeProps === "object"
+    ) {
+      if (vnodeProps.src != null) bindMediaProp(node, id, "src", vnodeProps.src);
+      if (vnodeProps.srcObject != null) bindMediaProp(node, id, "srcObject", vnodeProps.srcObject);
     }
     return node;
   },
@@ -1862,6 +2009,24 @@ export function installEventBridge() {
     detail,
   ) {
     return fireWindowEvent(Number(windowId || 0), nid, event, detail);
+  };
+
+  /**
+   * Host-callable motion completion. Dispatches `transitionend` / `animationend`
+   * on the wrapNode — not WAAPI, not Element.animate.
+   */
+  globalThis.__nanaMotionCancel = function __nanaMotionCancel(nid) {
+    cancelArmedMotionEnd(nid);
+  };
+
+  globalThis.__nanaMotionComplete = function __nanaMotionComplete(nid, detail) {
+    const extra = detail && typeof detail === "object" ? detail : {};
+    const type = extra.type || extra.event || "transitionend";
+    cancelArmedMotionEnd(nid);
+    const target = wrapById(nid);
+    if (!target) return false;
+    const event = createMotionEndEvent(type, target, extra);
+    return target.dispatchEvent(event);
   };
 
   /** Rust → Vue unidirectional theme inject (`VueHost::inject_theme`). */

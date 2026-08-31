@@ -245,14 +245,20 @@ impl Select {
             border: Some(SemanticColorRole::Border),
         };
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(self.size.height()));
+        if layout.width.is_none() {
+            layout.width = Some(LengthSpec::Fill);
+        }
+        if layout.height.is_none() {
+            layout.height = Some(LengthSpec::Px(self.size.height()));
+        }
         layout.border_width = Some(if self.invalid && self.opened {
             2.0
         } else {
             1.0
         });
-        layout.border_radius = Some(UI_METRICS.radius_sm);
+        if layout.border_radius.is_none() {
+            layout.border_radius = Some(UI_METRICS.radius_sm);
+        }
         layout.padding_left = Some(LengthSpec::Px(self.size.padding_x()));
         layout.padding_right = Some(LengthSpec::Px(self.size.padding_x()));
         layout.white_space_nowrap = true;
@@ -592,6 +598,49 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn select_projects_overlay_css_size_into_world_style() {
+        let mut select = sample();
+        Arc::make_mut(&mut select.style.layout).overlay_css_size_overrides(
+            &nana_ui_core::LayoutStyle {
+                height: Some(LengthSpec::Px(48.0)),
+                width: Some(LengthSpec::Px(120.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+        );
+        let mut context = AppContext::new();
+        let select = context.create_component(document(), select).unwrap();
+        let layout = context
+            .world()
+            .node_style(select.stable_id())
+            .unwrap()
+            .layout
+            .as_ref();
+        assert_eq!(layout.height, Some(LengthSpec::Px(48.0)));
+        assert_eq!(layout.width, Some(LengthSpec::Px(120.0)));
+        assert_ne!(
+            layout.height,
+            Some(LengthSpec::Px(ControlSize::Medium.height()))
+        );
+    }
+
+    #[test]
+    fn select_projects_without_css_keeps_control_size() {
+        let mut context = AppContext::new();
+        let select = context.create_component(document(), sample()).unwrap();
+        let layout = context
+            .world()
+            .node_style(select.stable_id())
+            .unwrap()
+            .layout
+            .as_ref();
+        assert_eq!(
+            layout.height,
+            Some(LengthSpec::Px(ControlSize::Medium.height()))
+        );
+        assert_eq!(layout.width, Some(LengthSpec::Fill));
     }
 
     #[test]

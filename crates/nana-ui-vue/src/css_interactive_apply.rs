@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use nana_ui_runtime::{AnimationId, AnimationSpec, Easing, StableNodeId};
+use nana_ui_runtime::{
+    AnimationDirection, AnimationFillMode, AnimationId, AnimationIteration, AnimationPlayState,
+    AnimationPlayback, AnimationSpec, Easing, StableNodeId,
+};
 
 use crate::css_cascade::{DeclarationEntry, MatchContext};
 use crate::css_interactive::{
     InteractivePseudo, InteractiveStyleRule, KeyframeBlock, KeyframeSelector, KeyframesRule,
-    MotionDeclarations, MotionStyleRule, matched_interactive_rules, matched_motion_rules,
-    partition_motion_entries,
+    MotionDeclarations, MotionStyleRule, ScrollbarPseudo, matched_interactive_rules,
+    matched_motion_rules, matched_scrollbar_pseudo, partition_motion_entries,
 };
 use crate::css_map::{LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode};
 
@@ -23,6 +26,46 @@ pub struct CssComputedMotion {
     pub animation_name: String,
     pub animation_duration: String,
     pub animation_delay: String,
+    pub animation_timing_function: String,
+    pub animation_iteration_count: String,
+    pub animation_direction: String,
+    pub animation_fill_mode: String,
+    pub animation_play_state: String,
+}
+
+/// Host → JS `__nanaMotionComplete` payload. Not WAAPI / `Element.animate`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CssMotionComplete {
+    pub widget_id: u64,
+    pub event_type: &'static str,
+    pub property_name: String,
+    pub animation_name: String,
+    pub transition_property: String,
+    pub elapsed_time: f32,
+}
+
+impl CssMotionComplete {
+    pub fn transition_end(widget_id: u64, motion: &CssComputedMotion, elapsed_time: f32) -> Self {
+        Self {
+            widget_id,
+            event_type: "transitionend",
+            property_name: motion.transition_property.clone(),
+            animation_name: String::new(),
+            transition_property: motion.transition_property.clone(),
+            elapsed_time,
+        }
+    }
+
+    pub fn animation_end(widget_id: u64, motion: &CssComputedMotion, elapsed_time: f32) -> Self {
+        Self {
+            widget_id,
+            event_type: "animationend",
+            property_name: motion.animation_name.clone(),
+            animation_name: motion.animation_name.clone(),
+            transition_property: String::new(),
+            elapsed_time,
+        }
+    }
 }
 
 impl CssComputedMotion {
@@ -30,6 +73,79 @@ impl CssComputedMotion {
         parse_css_time_ms(&self.transition_duration).unwrap_or(0.0) > 0.0
             && self.transition_property != "none"
             && !self.transition_property.is_empty()
+    }
+}
+
+/// Serialized used/computed longhands for `getComputedStyle` (not a CSSOM object).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CssComputedStyle {
+    pub width: String,
+    pub height: String,
+    pub color: String,
+    pub background_color: String,
+    pub font_size: String,
+    pub font_family: String,
+    pub font_weight: String,
+}
+
+pub fn serialize_computed_style(
+    layout: &LayoutStyle,
+    used_width: Option<f32>,
+    used_height: Option<f32>,
+) -> CssComputedStyle {
+    CssComputedStyle {
+        width: used_width
+            .map(format_px)
+            .or_else(|| layout.width.map(serialize_length_spec))
+            .unwrap_or_else(|| "auto".into()),
+        height: used_height
+            .map(format_px)
+            .or_else(|| layout.height.map(serialize_length_spec))
+            .unwrap_or_else(|| "auto".into()),
+        color: layout.color.map(serialize_rgba).unwrap_or_default(),
+        background_color: layout
+            .background
+            .map(serialize_rgba)
+            .unwrap_or_else(|| "rgba(0, 0, 0, 0)".into()),
+        font_size: layout.font_size.map(format_px).unwrap_or_default(),
+        font_family: layout.font_family.clone().unwrap_or_default(),
+        font_weight: layout
+            .font_weight
+            .map(|w| w.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+fn format_px(v: f32) -> String {
+    if v == v.trunc() {
+        format!("{v:.0}px")
+    } else {
+        format!("{v}px")
+    }
+}
+
+fn serialize_rgba(color: [f32; 4]) -> String {
+    let r = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+    let a = color[3].clamp(0.0, 1.0);
+    if (a - 1.0).abs() < 0.001 {
+        format!("rgb({r}, {g}, {b})")
+    } else {
+        format!("rgba({r}, {g}, {b}, {a})")
+    }
+}
+
+fn serialize_length_spec(spec: crate::css_map::LengthSpec) -> String {
+    use crate::css_map::LengthSpec;
+    match spec {
+        LengthSpec::Px(v) => format_px(v),
+        LengthSpec::Percent(p) => format!("{p}%"),
+        LengthSpec::Fill => "100%".into(),
+        LengthSpec::Auto => "auto".into(),
+        LengthSpec::Em(v) => format!("{v}em"),
+        LengthSpec::Rem(v) => format!("{v}rem"),
+        _ => "auto".into(),
     }
 }
 
@@ -84,6 +200,15 @@ pub struct CssPaintSnapshot {
 
 impl CssPaintSnapshot {
     pub fn from_layout(layout: &LayoutStyle) -> Self {
+        Self::from_layout_resolved(layout, None, None, None)
+    }
+
+    pub fn from_layout_resolved(
+        layout: &LayoutStyle,
+        _percent_w: Option<f32>,
+        _percent_h: Option<f32>,
+        _viewport: Option<(f32, f32)>,
+    ) -> Self {
         Self {
             opacity: layout.opacity,
             color: layout.color,
@@ -155,6 +280,7 @@ pub fn apply_interactive_declarations(
 ) {
     let mut entries: Vec<(
         bool,
+        u32,
         crate::css_cascade::Specificity,
         u32,
         u32,
@@ -164,6 +290,7 @@ pub fn apply_interactive_declarations(
         for entry in &rule.declaration_entries {
             entries.push((
                 entry.important,
+                crate::css_cascade::cascade_layer_key(entry.important, rule.layer),
                 rule.selector.specificity,
                 rule.source_order,
                 entry.index,
@@ -176,11 +303,12 @@ pub fn apply_interactive_declarations(
             .then(a.1.cmp(&b.1))
             .then(a.2.cmp(&b.2))
             .then(a.3.cmp(&b.3))
+            .then(a.4.cmp(&b.4))
     });
     let (dir_entries, rest): (Vec<_>, Vec<_>) = entries
         .into_iter()
-        .partition(|(_, _, _, _, entry)| css_key_is_direction_or_writing_mode(&entry.property));
-    for (_, _, _, _, entry) in dir_entries.into_iter().chain(rest) {
+        .partition(|(_, _, _, _, _, entry)| css_key_is_direction_or_writing_mode(&entry.property));
+    for (_, _, _, _, _, entry) in dir_entries.into_iter().chain(rest) {
         layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
     }
 }
@@ -220,6 +348,77 @@ pub fn apply_placeholder_paint(
     }
     if paint.opacity.is_some() {
         layout.placeholder_opacity = paint.opacity;
+    }
+}
+
+/// Overlay `::-webkit-scrollbar` / thumb color and thickness onto the originating layout.
+pub fn apply_scrollbar_pseudo_skin(
+    layout: &mut LayoutStyle,
+    rules: &[crate::css_interactive::ScrollbarPseudoRule],
+    ctx: &MatchContext<'_>,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) {
+    let matched = matched_scrollbar_pseudo(rules, ctx);
+    if matched.is_empty() {
+        return;
+    }
+    let mut skin = layout.paint.scrollbar.unwrap_or_default();
+    for (pseudo, entries) in matched {
+        for entry in entries {
+            apply_scrollbar_decl(
+                &mut skin,
+                pseudo,
+                &entry.property,
+                &entry.value,
+                percent_w,
+                percent_h,
+            );
+        }
+    }
+    if !skin.is_empty() {
+        layout.paint.scrollbar = Some(skin);
+    }
+}
+
+fn apply_scrollbar_decl(
+    skin: &mut nana_ui_core::ScrollbarSkin,
+    pseudo: ScrollbarPseudo,
+    property: &str,
+    value: &str,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) {
+    let key = property.trim().to_ascii_lowercase();
+    match key.as_str() {
+        "width" | "height" => {
+            let Some(px) = crate::css_map::parse_css_length_px(value, percent_w.or(percent_h))
+            else {
+                return;
+            };
+            let px = px.max(0.0);
+            match pseudo {
+                ScrollbarPseudo::Scrollbar => skin.thickness = Some(px),
+                ScrollbarPseudo::Thumb => skin.thumb_thickness = Some(px),
+            }
+        }
+        "background" | "background-color" => {
+            let color = if value.trim().eq_ignore_ascii_case("transparent")
+                || value.trim().eq_ignore_ascii_case("none")
+            {
+                Some([0.0, 0.0, 0.0, 0.0])
+            } else {
+                crate::style::parse_css_color(value)
+            };
+            let Some(color) = color else {
+                return;
+            };
+            match pseudo {
+                ScrollbarPseudo::Scrollbar => skin.track_color = Some(color),
+                ScrollbarPseudo::Thumb => skin.thumb_color = Some(color),
+            }
+        }
+        _ => {}
     }
 }
 
@@ -325,9 +524,15 @@ fn motion_to_computed(motion: &MotionDeclarations) -> CssComputedMotion {
     }
 
     if let Some(shorthand) = motion.animation.as_deref() {
-        if let Some(parsed) = parse_animation_shorthand_name_duration(shorthand) {
-            out.animation_name = parsed.0;
-            out.animation_duration = parsed.1;
+        if let Some(parsed) = parse_animation_shorthand(shorthand) {
+            out.animation_name = parsed.name;
+            out.animation_duration = parsed.duration;
+            out.animation_delay = parsed.delay;
+            out.animation_timing_function = parsed.timing_function;
+            out.animation_iteration_count = parsed.iteration_count;
+            out.animation_direction = parsed.direction;
+            out.animation_fill_mode = parsed.fill_mode;
+            out.animation_play_state = parsed.play_state;
         }
     }
     if let Some(v) = &motion.animation_name {
@@ -339,6 +544,21 @@ fn motion_to_computed(motion: &MotionDeclarations) -> CssComputedMotion {
     if let Some(v) = &motion.animation_delay {
         out.animation_delay = v.clone();
     }
+    if let Some(v) = &motion.animation_timing_function {
+        out.animation_timing_function = v.clone();
+    }
+    if let Some(v) = &motion.animation_iteration_count {
+        out.animation_iteration_count = v.clone();
+    }
+    if let Some(v) = &motion.animation_direction {
+        out.animation_direction = v.clone();
+    }
+    if let Some(v) = &motion.animation_fill_mode {
+        out.animation_fill_mode = v.clone();
+    }
+    if let Some(v) = &motion.animation_play_state {
+        out.animation_play_state = v.clone();
+    }
     if out.animation_name.is_empty() {
         out.animation_name = "none".into();
     }
@@ -347,6 +567,21 @@ fn motion_to_computed(motion: &MotionDeclarations) -> CssComputedMotion {
     }
     if out.animation_delay.is_empty() {
         out.animation_delay = "0s".into();
+    }
+    if out.animation_timing_function.is_empty() {
+        out.animation_timing_function = "ease".into();
+    }
+    if out.animation_iteration_count.is_empty() {
+        out.animation_iteration_count = "1".into();
+    }
+    if out.animation_direction.is_empty() {
+        out.animation_direction = "normal".into();
+    }
+    if out.animation_fill_mode.is_empty() {
+        out.animation_fill_mode = "none".into();
+    }
+    if out.animation_play_state.is_empty() {
+        out.animation_play_state = "running".into();
     }
     out
 }
@@ -403,33 +638,90 @@ fn parse_transition_shorthand(raw: &str) -> Option<TransitionShorthand> {
     })
 }
 
-fn parse_animation_shorthand_name_duration(raw: &str) -> Option<(String, String)> {
+struct AnimationShorthand {
+    name: String,
+    duration: String,
+    delay: String,
+    timing_function: String,
+    iteration_count: String,
+    direction: String,
+    fill_mode: String,
+    play_state: String,
+}
+
+fn parse_animation_shorthand(raw: &str) -> Option<AnimationShorthand> {
     let tokens = split_css_tokens(raw);
     let mut name = String::new();
     let mut duration = String::new();
+    let mut delay = String::new();
+    let mut timing_function = String::new();
+    let mut iteration_count = String::new();
+    let mut direction = String::new();
+    let mut fill_mode = String::new();
+    let mut play_state = String::new();
     for token in tokens {
-        if token.ends_with("ms") || token.ends_with('s') {
+        let lower = token.to_ascii_lowercase();
+        if lower.ends_with("ms") || lower.ends_with('s') {
             if duration.is_empty() {
                 duration = token;
+            } else if delay.is_empty() {
+                delay = token;
             }
             continue;
         }
-        if name.is_empty() && token != "infinite" {
+        if is_css_timing_function(&lower) {
+            timing_function = token;
+            continue;
+        }
+        if lower == "infinite" || lower.parse::<f32>().is_ok() {
+            iteration_count = token;
+            continue;
+        }
+        if matches!(
+            lower.as_str(),
+            "normal" | "reverse" | "alternate" | "alternate-reverse"
+        ) {
+            direction = token;
+            continue;
+        }
+        if matches!(lower.as_str(), "forwards" | "backwards" | "both")
+            || (lower == "none" && !name.is_empty())
+        {
+            fill_mode = token;
+            continue;
+        }
+        if matches!(lower.as_str(), "running" | "paused") {
+            play_state = token;
+            continue;
+        }
+        if name.is_empty() {
             name = token;
         }
     }
     if name.is_empty() {
-        None
-    } else {
-        Some((
-            name,
-            if duration.is_empty() {
-                "0s".into()
-            } else {
-                duration
-            },
-        ))
+        return None;
     }
+    Some(AnimationShorthand {
+        name,
+        duration: if duration.is_empty() {
+            "0s".into()
+        } else {
+            duration
+        },
+        delay,
+        timing_function,
+        iteration_count,
+        direction,
+        fill_mode,
+        play_state,
+    })
+}
+
+fn is_css_timing_function(token: &str) -> bool {
+    matches!(
+        token,
+        "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" | "step-start" | "step-end"
+    ) || token.starts_with("cubic-bezier(")
 }
 
 fn split_css_tokens(raw: &str) -> Vec<String> {
@@ -497,6 +789,7 @@ pub fn lerp_paint_for_properties(
             .iter()
             .any(|property| property.eq_ignore_ascii_case(name))
     };
+    let applies_edge = |prefix: &str, side: &str| applies(prefix) || applies(side);
     CssPaintSnapshot {
         opacity: if applies("opacity") {
             Some(lerp_opt(from.opacity, to.opacity, 1.0, t))
@@ -550,6 +843,13 @@ fn lerp_opt(from: Option<f32>, to: Option<f32>, default: f32, t: f32) -> f32 {
     let a = from.unwrap_or(default);
     let b = to.unwrap_or(a);
     a + (b - a) * t
+}
+
+fn lerp_resolved(from: Option<f32>, to: Option<f32>, t: f32) -> Option<f32> {
+    match (from, to) {
+        (Some(a), Some(b)) => Some(a + (b - a) * t),
+        _ => None,
+    }
 }
 
 fn lerp_color(from: Option<[f32; 4]>, to: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
@@ -824,14 +1124,14 @@ pub fn build_transition_spec(
     let duration = Duration::from_secs_f32(duration_ms / 1000.0);
     let delay = Duration::from_secs_f32(delay_ms / 1000.0);
     let start = now.checked_add(delay)?;
-    Some(AnimationSpec {
-        id: css_transition_animation_id(widget_id),
-        target: StableNodeId::new(widget_id)?,
+    Some(AnimationSpec::new(
+        css_transition_animation_id(widget_id),
+        StableNodeId::new(widget_id)?,
         start,
         duration,
-        frame_interval: Duration::from_millis(16),
-        easing: easing_from_css(&motion.transition_timing_function),
-    })
+        Duration::from_millis(16),
+        easing_from_css(&motion.transition_timing_function),
+    ))
 }
 
 pub fn build_keyframes_spec(
@@ -850,14 +1150,77 @@ pub fn build_keyframes_spec(
     let duration = Duration::from_secs_f32(duration_ms / 1000.0);
     let delay = Duration::from_secs_f32(delay_ms / 1000.0);
     let start = now.checked_add(delay)?;
-    Some(AnimationSpec {
-        id: css_keyframes_animation_id(widget_id),
-        target: StableNodeId::new(widget_id)?,
-        start,
-        duration,
-        frame_interval: Duration::from_millis(16),
-        easing: Easing::Linear,
-    })
+    Some(
+        AnimationSpec::new(
+            css_keyframes_animation_id(widget_id),
+            StableNodeId::new(widget_id)?,
+            start,
+            duration,
+            Duration::from_millis(16),
+            easing_from_css(&motion.animation_timing_function),
+        )
+        .with_playback(playback_from_computed(motion)),
+    )
+}
+
+pub fn playback_from_computed(motion: &CssComputedMotion) -> AnimationPlayback {
+    AnimationPlayback {
+        iteration_count: parse_animation_iteration(&motion.animation_iteration_count),
+        direction: parse_animation_direction(&motion.animation_direction),
+        fill_mode: parse_animation_fill_mode(&motion.animation_fill_mode),
+        play_state: parse_animation_play_state(&motion.animation_play_state),
+    }
+}
+
+pub fn parse_animation_iteration(raw: &str) -> AnimationIteration {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed == "infinite" {
+        return AnimationIteration::INFINITE;
+    }
+    if let Ok(count) = trimmed.parse::<u32>() {
+        return AnimationIteration::Count(count);
+    }
+    if let Ok(count) = trimmed.parse::<f32>() {
+        return AnimationIteration::Count(count.max(0.0) as u32);
+    }
+    AnimationIteration::ONCE
+}
+
+pub fn parse_animation_direction(raw: &str) -> AnimationDirection {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "reverse" => AnimationDirection::Reverse,
+        "alternate" => AnimationDirection::Alternate,
+        "alternate-reverse" => AnimationDirection::AlternateReverse,
+        _ => AnimationDirection::Normal,
+    }
+}
+
+pub fn parse_animation_fill_mode(raw: &str) -> AnimationFillMode {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "forwards" => AnimationFillMode::Forwards,
+        "backwards" => AnimationFillMode::Backwards,
+        "both" => AnimationFillMode::Both,
+        _ => AnimationFillMode::None,
+    }
+}
+
+pub fn parse_animation_play_state(raw: &str) -> AnimationPlayState {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "paused" => AnimationPlayState::Paused,
+        _ => AnimationPlayState::Running,
+    }
+}
+
+pub fn animation_elapsed_secs(motion: &CssComputedMotion) -> f32 {
+    let duration = parse_css_time_ms(&motion.animation_duration).unwrap_or(0.0) / 1000.0;
+    match parse_animation_iteration(&motion.animation_iteration_count) {
+        AnimationIteration::Count(count) => duration * count as f32,
+        AnimationIteration::Infinite => duration,
+    }
+}
+
+pub fn transition_elapsed_secs(motion: &CssComputedMotion) -> f32 {
+    parse_css_time_ms(&motion.transition_duration).unwrap_or(0.0) / 1000.0
 }
 
 pub fn apply_interactive_layers(
@@ -911,6 +1274,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let motion = resolve_computed_motion(&sheet.motion_rules, None, None, &ctx);
         assert!(motion.has_transition());
@@ -941,6 +1314,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let mut base = LayoutStyle::default();
         crate::css_cascade::apply_stylesheet_to_layout(
@@ -1000,6 +1383,16 @@ mod tests {
             focus_within: false,
             is_empty: true,
             checked: false,
+            media: crate::css_cascade::MediaEnv::default(),
+            children: &[],
+            following_siblings: &[],
+            all_siblings: &[],
+            ancestor_subtrees: &[],
+            owned_children: &[],
+            owned_following: &[],
+            owned_ancestor_trees: &[],
+            relative: None,
+            relative_id: 0,
         };
         let mut layout = LayoutStyle::default();
         apply_interactive_layers(

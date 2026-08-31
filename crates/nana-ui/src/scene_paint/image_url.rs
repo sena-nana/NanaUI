@@ -1,5 +1,6 @@
 //! Resolve `background-image: url(...)` for GPU texture upload.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -45,6 +46,29 @@ fn url_base() -> PathBuf {
             .get()
             .cloned()
             .unwrap_or_else(fallback_cwd)
+    }
+}
+
+/// Whether a resolved fetch key may be loaded for `@font-face` (and similar).
+///
+/// `data:` / `http(s):` pass. Filesystem paths must stay under the document
+/// URL base (cwd when unset) so `file:` / `..` cannot escape.
+pub fn resolved_resource_is_allowed(resolved: &str) -> bool {
+    let resolved = resolved.trim();
+    if resolved.starts_with("data:")
+        || resolved.starts_with("http://")
+        || resolved.starts_with("https://")
+    {
+        return true;
+    }
+    if resolved.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(resolved);
+    let base = url_base();
+    match (path.canonicalize(), base.canonicalize()) {
+        (Ok(path), Ok(base)) => path.starts_with(base),
+        _ => path.starts_with(&base),
     }
 }
 
@@ -184,6 +208,99 @@ const MAX_SVG_EDGE: u32 = 2048;
 fn decode_svg_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let raster = nana_svg_raster::rasterize_document_capped(bytes, MAX_SVG_EDGE)?;
     Some((raster.width, raster.height, raster.rgba.to_vec()))
+}
+
+pub(crate) struct CachedUrlTexture {
+    pub view: wgpu::TextureView,
+}
+
+pub(crate) fn load_url_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<String, CachedUrlTexture>,
+    url: &str,
+) -> bool {
+    if cache.contains_key(url) {
+        return true;
+    }
+    let Some((width, height, rgba)) = decode_url_rgba(url) else {
+        return false;
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui.scene.url"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&Default::default());
+    cache.insert(url.to_string(), CachedUrlTexture { view });
+    true
+}
+
+fn decode_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let resolved = resolve_background_image_url(url)?;
+    if resolved.starts_with("data:") {
+        return decode_data_url_rgba(&resolved);
+    }
+    if resolved.starts_with("http://") || resolved.starts_with("https://") {
+        return decode_http_rgba(&resolved);
+    }
+    let bytes = std::fs::read(&resolved).ok()?;
+    decode_image_bytes(&bytes)
+}
+
+fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let payload = url
+        .strip_prefix("data:image/png;base64,")
+        .or_else(|| url.strip_prefix("data:image/jpeg;base64,"))?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .ok()?;
+    decode_image_bytes(&bytes)
+}
+
+fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
+    let mut response = ureq::get(url).call().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = response.body_mut().read_to_vec().ok()?;
+    decode_image_bytes(&bytes)
+}
+
+fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some((width, height, rgba.into_raw()))
 }
 
 #[cfg(test)]

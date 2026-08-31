@@ -13,9 +13,10 @@
 //! |------------------|------------------|------|
 //! | flex / gap / padding / 尺寸 | **Layout**（[`LayoutStyle`]） | 把盒模型塞进 ThemeTokens |
 //! | `opacity` | **Layout**（可选；供诊断投影，产品 paint 可忽略） | 在 `style` 二次扫串 |
-//! | `font-size` / `font-family` / `font-weight` / `line-height` / `letter-spacing` / `color` | **Layout**（排版子集 → Scene 文本） | 业务 class 特判字号 |
+//! | `font-size` / `font-family` / `font-weight` / `line-height` / `letter-spacing` / `font-feature-settings` / `font-variation-settings` / `font-kerning` / `word-break` / `line-break` / `color` | **Layout**（排版子集 → Scene 文本；OpenType 诚实子集） | 业务 class 特判字号 |
 //! | 已知控件 class（`nana-btn--primary` 等） | **Semantics**（经 `widget_map`） | 用任意 paint CSS 当 token 工厂 |
 //! | 主题色 / 间距 / 圆角档位 | **Tokens**（`ThemeMetrics` / 语义色） | 业务 `#rrggbb` 发明正式 token |
+//! | `pointer-events` (`auto` / `none`) | **Layout** paint/hit（[`PointerEventsSpec`]） | 异形窗 / 窗口 alpha / SVG 命中模型 |
 //!
 //! 纯数据 [`LayoutStyle`] / [`LengthSpec`] / [`ParentBox`] 住在 `nana-ui-core::box_layout`。
 //! **本模块只做 CSS 子集解析**；禁止把解析器放进 `nana-ui` / `nana-ui-core`。
@@ -41,7 +42,7 @@
 //! 或无法展开的语法才置 [`GridTrackListUnsupported`]（不假装继承父轨）。
 //!
 //! ## margin / padding / gap
-//! 边长与 gap 存 [`LengthSpec`]（px / `%` / 轻量 calc）。margin/padding `%`
+//! 边长与 gap 存 [`LengthSpec`]（px / `%` / `calc()` AST，简单 `%±px` 仍走 Copy 变体）。margin/padding `%`
 //! （含上下边）相对包含块**宽度**；`column-gap` `%` 相对宽度、`row-gap` `%`
 //! 相对高度（缺省回退宽度）。均在 measure / Scene 布局时解析；解析期无 CB
 //! 时不得静默丢弃 `%`。
@@ -57,8 +58,11 @@
 //!（`padding-inline-start` → `padding-right`）。block 轴仍是 top/bottom。
 //! `text-align: start | end` 随 `direction`；`left` / `right` 保持物理边。
 //! **不**翻转 flex/grid 主轴 / 交叉轴起点或 item 序（不是完整 rtl 映射）。
-//! `writing-mode` 竖排 / `unicode-bidi` 隔离 / 完整 IFC 双向 **fail-closed**
-//!（勿假翻轴，勿假装 bidi isolation）。
+//! `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 写入
+//! [`LayoutStyle::writing_mode`]（`horizontal-tb` 清除 unsupported；竖排不再 fail-closed）。
+//! `sideways-*` 置 [`LayoutStyle::unsupported_writing_mode`]。`unicode-bidi` 隔离 /
+//! 完整 IFC 双向仍 **fail-closed**（勿假装 bidi isolation）。逻辑 inline 仍走
+//! [`LogicalInlineEdges`]；竖排轴 remap 由 layout bake 消费 `writing_mode`。
 //!
 //! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them
 //!（feature `scene-view`）。
@@ -66,12 +70,16 @@
 #[cfg(test)]
 use nana_ui_core::box_layout::PaintTransform;
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClearSpec, DirSpec, DisplaySpec,
-    FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine, GridPlacement,
-    GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
-    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges, OverflowSpec,
-    PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec, ViewportAxis,
-    VisibilitySpec, WhiteSpaceSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
+    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec,
+    DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine,
+    GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+    JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges,
+    OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
+    ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec, resolve_grid_column_widths,
+    resolve_grid_track_sizes,
+};
+pub use nana_ui_core::{
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, WordBreakSpec,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums (L1 only).
@@ -153,6 +161,10 @@ impl CssLayoutParse for LengthSpec {
         if s.eq_ignore_ascii_case("fit-content") {
             return Some(Self::FitContent);
         }
+        // CSS lengths may be unitless 0; other unitless numbers are not lengths.
+        if s == "0" {
+            return Some(Self::Px(0.0));
+        }
         // min() / max() / clamp() before bare calc / units.
         if let Some(spec) = parse_css_min_max_clamp(s) {
             return Some(spec);
@@ -160,11 +172,38 @@ impl CssLayoutParse for LengthSpec {
         if let Some(calc) = parse_calc_percent_offset(s) {
             return Some(calc);
         }
+        if let Some(spec) = parse_full_length_math(s) {
+            return Some(spec);
+        }
         // Bare `100vh - 32px` (common inside min() args; also accept top-level).
         if let Some(spec) = parse_viewport_px_sum(s) {
             return Some(spec);
         }
         parse_length_term_to_spec(s)
+    }
+}
+
+fn looks_like_length_math(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.len() < 4 {
+        return false;
+    }
+    let head = s[..s.len().min(6)].to_ascii_lowercase();
+    head.starts_with("calc(")
+        || (head.starts_with("min(") && !head.starts_with("minmax"))
+        || head.starts_with("max(")
+        || head.starts_with("clamp(")
+}
+
+fn assign_parsed_length(
+    slot: &mut Option<LengthSpec>,
+    val: &str,
+    parse: impl Fn(&str) -> Option<LengthSpec>,
+) {
+    if let Some(spec) = parse(val) {
+        *slot = Some(spec);
+    } else if !looks_like_length_math(val) {
+        *slot = None;
     }
 }
 
@@ -496,6 +535,7 @@ fn calc_sum_from_length_spec(spec: LengthSpec) -> Option<CalcSum> {
         LengthSpec::Min2(_, _)
         | LengthSpec::Max2(_, _)
         | LengthSpec::Clamp3(_, _, _)
+        | LengthSpec::Calc(_)
         | LengthSpec::Shrink
         | LengthSpec::Auto
         | LengthSpec::MinContent
@@ -656,6 +696,308 @@ fn scale_cmp_spec(spec: LengthSpec, k: f32) -> Option<LengthSpec> {
         }
         _ => None,
     }
+}
+
+/// Full calc AST: nested `calc()` / `min()` / `max()` / `clamp()`, `*`, `/`, parens.
+/// Simple `%±px` / `vh±px` already returned by [`parse_calc_percent_offset`].
+fn parse_full_length_math(raw: &str) -> Option<LengthSpec> {
+    let expr = parse_calc_expr_top(raw.trim())?;
+    if !expr.is_length_typed() {
+        return None;
+    }
+    Some(LengthSpec::from_calc(expr))
+}
+
+fn parse_calc_expr_top(raw: &str) -> Option<CalcExpr> {
+    let mut parser = CalcExprParser { s: raw, i: 0 };
+    parser.skip_ws();
+    if !parser.starts_math_fn() {
+        return None;
+    }
+    let expr = parser.parse_value()?;
+    parser.skip_ws();
+    if parser.i != parser.s.len() {
+        return None;
+    }
+    Some(expr)
+}
+
+struct CalcExprParser<'a> {
+    s: &'a str,
+    i: usize,
+}
+
+impl<'a> CalcExprParser<'a> {
+    fn rest(&self) -> &'a str {
+        &self.s[self.i..]
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.rest().chars().next()
+    }
+
+    fn skip_ws(&mut self) {
+        while self.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+            self.i += 1;
+        }
+    }
+
+    fn starts_with_ci(&self, prefix: &str) -> bool {
+        self.rest().len() >= prefix.len()
+            && self.rest()[..prefix.len()].eq_ignore_ascii_case(prefix)
+    }
+
+    fn bump(&mut self, n: usize) {
+        self.i += n;
+    }
+
+    fn starts_math_fn(&self) -> bool {
+        self.starts_with_ci("calc(")
+            || (self.starts_with_ci("min(") && !self.starts_with_ci("minmax("))
+            || self.starts_with_ci("max(")
+            || self.starts_with_ci("clamp(")
+    }
+
+    fn parse_sum(&mut self) -> Option<CalcExpr> {
+        let mut left = self.parse_product()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some('+') => CalcBinOp::Add,
+                Some('-') => CalcBinOp::Sub,
+                _ => break,
+            };
+            self.bump(1);
+            let right = self.parse_product()?;
+            left = CalcExpr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Some(left)
+    }
+
+    fn parse_product(&mut self) -> Option<CalcExpr> {
+        let mut left = self.parse_prefixed_value()?;
+        loop {
+            self.skip_ws();
+            let op = match self.peek() {
+                Some('*') => CalcBinOp::Mul,
+                Some('/') => CalcBinOp::Div,
+                _ => break,
+            };
+            self.bump(1);
+            let right = self.parse_prefixed_value()?;
+            if matches!(op, CalcBinOp::Div) && matches!(&right, CalcExpr::Number(n) if *n == 0.0) {
+                return None;
+            }
+            left = CalcExpr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Some(left)
+    }
+
+    fn parse_prefixed_value(&mut self) -> Option<CalcExpr> {
+        self.skip_ws();
+        match self.peek() {
+            Some('+') => {
+                let next = self.s.get(self.i + 1..).and_then(|s| s.chars().next());
+                if next.is_some_and(|c| c == '(' || c.is_ascii_alphabetic()) {
+                    self.bump(1);
+                    return self.parse_prefixed_value();
+                }
+            }
+            Some('-') => {
+                let next = self.s.get(self.i + 1..).and_then(|s| s.chars().next());
+                if next.is_some_and(|c| c == '(' || c.is_ascii_alphabetic()) {
+                    self.bump(1);
+                    return Some(CalcExpr::Neg(Box::new(self.parse_prefixed_value()?)));
+                }
+            }
+            _ => {}
+        }
+        self.parse_value()
+    }
+
+    fn parse_value(&mut self) -> Option<CalcExpr> {
+        self.skip_ws();
+        if self.peek() == Some('(') {
+            self.bump(1);
+            let inner = self.parse_sum()?;
+            self.skip_ws();
+            if self.peek() != Some(')') {
+                return None;
+            }
+            self.bump(1);
+            return Some(inner);
+        }
+        if self.starts_with_ci("calc(") {
+            self.bump(5);
+            let inner = self.parse_sum()?;
+            self.skip_ws();
+            if self.peek() != Some(')') {
+                return None;
+            }
+            self.bump(1);
+            return Some(inner);
+        }
+        if self.starts_with_ci("minmax(") {
+            return None;
+        }
+        if self.starts_with_ci("min(") {
+            self.bump(4);
+            return self.parse_min_max_args(false);
+        }
+        if self.starts_with_ci("max(") {
+            self.bump(4);
+            return self.parse_min_max_args(true);
+        }
+        if self.starts_with_ci("clamp(") {
+            self.bump(6);
+            return self.parse_clamp_args();
+        }
+        self.parse_leaf()
+    }
+
+    fn parse_min_max_args(&mut self, is_max: bool) -> Option<CalcExpr> {
+        let a = self.parse_sum()?;
+        self.skip_ws();
+        if self.peek() != Some(',') {
+            return None;
+        }
+        self.bump(1);
+        let b = self.parse_sum()?;
+        self.skip_ws();
+        if self.peek() != Some(')') {
+            return None;
+        }
+        self.bump(1);
+        if is_max {
+            Some(CalcExpr::Max(Box::new(a), Box::new(b)))
+        } else {
+            Some(CalcExpr::Min(Box::new(a), Box::new(b)))
+        }
+    }
+
+    fn parse_clamp_args(&mut self) -> Option<CalcExpr> {
+        let min = self.parse_sum()?;
+        self.skip_ws();
+        if self.peek() != Some(',') {
+            return None;
+        }
+        self.bump(1);
+        let val = self.parse_sum()?;
+        self.skip_ws();
+        if self.peek() != Some(',') {
+            return None;
+        }
+        self.bump(1);
+        let max = self.parse_sum()?;
+        self.skip_ws();
+        if self.peek() != Some(')') {
+            return None;
+        }
+        self.bump(1);
+        Some(CalcExpr::Clamp {
+            min: Box::new(min),
+            val: Box::new(val),
+            max: Box::new(max),
+        })
+    }
+
+    fn parse_leaf(&mut self) -> Option<CalcExpr> {
+        self.skip_ws();
+        let start = self.i;
+        if matches!(self.peek(), Some('+') | Some('-')) {
+            self.bump(1);
+        }
+        let mut seen_digit = false;
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            seen_digit = true;
+            self.bump(1);
+        }
+        if self.peek() == Some('.') {
+            self.bump(1);
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                seen_digit = true;
+                self.bump(1);
+            }
+        }
+        if !seen_digit {
+            self.i = start;
+            return None;
+        }
+        let number: f32 = self.s[start..self.i].parse().ok()?;
+        self.parse_unit(number)
+    }
+
+    fn parse_unit(&mut self, number: f32) -> Option<CalcExpr> {
+        let rest = self.rest();
+        if rest.starts_with('%') {
+            self.bump(1);
+            return Some(CalcExpr::Percent(number));
+        }
+        let lower = rest.to_ascii_lowercase();
+        if let Some(n) = consume_calc_unit(&lower, "vmin") {
+            self.bump(n);
+            return Some(CalcExpr::Viewport {
+                axis: ViewportAxis::Min,
+                value: number,
+            });
+        }
+        if let Some(n) = consume_calc_unit(&lower, "vmax") {
+            self.bump(n);
+            return Some(CalcExpr::Viewport {
+                axis: ViewportAxis::Max,
+                value: number,
+            });
+        }
+        if let Some(n) = consume_calc_unit(&lower, "rem") {
+            self.bump(n);
+            return Some(CalcExpr::Rem(number));
+        }
+        if let Some(n) = consume_calc_unit(&lower, "em") {
+            self.bump(n);
+            return Some(CalcExpr::Em(number));
+        }
+        if let Some(n) = consume_calc_unit(&lower, "vw") {
+            self.bump(n);
+            return Some(CalcExpr::Viewport {
+                axis: ViewportAxis::Width,
+                value: number,
+            });
+        }
+        if let Some(n) = consume_calc_unit(&lower, "vh") {
+            self.bump(n);
+            return Some(CalcExpr::Viewport {
+                axis: ViewportAxis::Height,
+                value: number,
+            });
+        }
+        if let Some(n) = consume_calc_unit(&lower, "px") {
+            self.bump(n);
+            return Some(CalcExpr::Px(number));
+        }
+        Some(CalcExpr::Number(number))
+    }
+}
+
+fn consume_calc_unit(lower_rest: &str, unit: &str) -> Option<usize> {
+    if lower_rest.starts_with(unit) {
+        let after = &lower_rest[unit.len()..];
+        if after
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphabetic())
+        {
+            return Some(unit.len());
+        }
+    }
+    None
 }
 
 struct CalcParser<'a> {
@@ -974,11 +1316,13 @@ fn parse_percent_term(raw: &str) -> Option<f32> {
 
 fn parse_px_term(raw: &str) -> Option<f32> {
     let s = raw.trim();
-    let num: f32 = s
-        .trim_end_matches("px")
-        .trim_end_matches("PX")
+    // Require a `px` unit so unitless numbers stay out of the lightweight
+    // additive path (`calc(2 + 10px)` must not become `Px(12)`).
+    let num = s
+        .strip_suffix("px")
+        .or_else(|| s.strip_suffix("PX"))?
         .trim()
-        .parse()
+        .parse::<f32>()
         .ok()?;
     Some(num)
 }
@@ -1602,6 +1946,8 @@ impl LayoutStyleCss for LayoutStyle {
                 self.grid_rows_unsupported = None;
                 self.grid_columns_repeat = None;
                 self.grid_rows_repeat = None;
+                self.grid_columns_subgrid = false;
+                self.grid_rows_subgrid = false;
                 self.grid_auto_columns = None;
                 self.grid_auto_rows = None;
                 self.grid_auto_flow = None;
@@ -1681,9 +2027,7 @@ impl LayoutStyleCss for LayoutStyle {
                     self.flex_shrink = Some(s.max(0.0));
                 }
             }
-            "flex-basis" => {
-                self.flex_basis = LengthSpec::parse(val);
-            }
+            "flex-basis" => assign_parsed_length(&mut self.flex_basis, val, LengthSpec::parse),
             "gap" => apply_gap_shorthand(val, self),
             "row-gap" => {
                 if let Some(spec) = parse_gap_length(val) {
@@ -1782,13 +2126,13 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "margin-block-start" => self.margin_top = parse_margin_length(val),
             "margin-block-end" => self.margin_bottom = parse_margin_length(val),
-            "width" => self.width = LengthSpec::parse(val),
+            "width" => assign_parsed_length(&mut self.width, val, LengthSpec::parse),
             "height" => {
                 // Keep Fill for 100% even without percent base (定高链 P0-4)。
                 if val.trim() == "100%" {
                     self.height = Some(LengthSpec::Fill);
                 } else {
-                    self.height = LengthSpec::parse(val);
+                    assign_parsed_length(&mut self.height, val, LengthSpec::parse);
                 }
             }
             // Box-model sizes: store LengthSpec (defer %/em/vh until measure).
@@ -1981,6 +2325,9 @@ impl LayoutStyleCss for LayoutStyle {
                 crate::css_paint::apply_css_paint_property(self, &key, val);
             }
             "stroke" => {
+                // SVG `stroke` paints CSS border on boxes. Generic `<svg>`
+                // charts rasterize via resvg (attrs including pathLength).
+                // There is no Vue/CSS extract into Scene StrokePattern.
                 if let Some(c) = resolve_paint_color(val) {
                     self.border_color = Some(c);
                     if self.border_width.is_none() {
@@ -2285,6 +2632,16 @@ impl LayoutStyleCss for LayoutStyle {
                     self.letter_spacing = Some(px);
                 }
             }
+            "font-kerning" => {
+                if let Some(kerning) = parse_css_font_kerning(val) {
+                    self.font_kerning = Some(kerning);
+                }
+            }
+            "line-break" => {
+                if let Some(mode) = parse_css_line_break(val) {
+                    self.line_break = Some(mode);
+                }
+            }
             "color" => {
                 if let Some(c) = resolve_paint_color(val) {
                     self.color = Some(c);
@@ -2586,7 +2943,8 @@ pub fn parse_gap_length(input: &str) -> Option<LengthSpec> {
         | LengthSpec::CalcRemOffset { .. }
         | LengthSpec::Min2(_, _)
         | LengthSpec::Max2(_, _)
-        | LengthSpec::Clamp3(_, _, _) => Some(spec),
+        | LengthSpec::Clamp3(_, _, _)
+        | LengthSpec::Calc(_) => Some(spec),
         LengthSpec::Fill
         | LengthSpec::Shrink
         | LengthSpec::Auto
@@ -2716,9 +3074,18 @@ fn apply_css_writing_mode(layout: &mut LayoutStyle, val: &str) {
     let v = val.trim().to_ascii_lowercase();
     match v.as_str() {
         "horizontal-tb" | "initial" | "unset" | "inherit" | "lr-tb" | "lr" => {
+            layout.set_writing_mode(WritingModeSpec::HorizontalTb);
             layout.unsupported_writing_mode = false;
         }
-        "vertical-rl" | "vertical-lr" | "sideways-rl" | "sideways-lr" | "tb-rl" | "tb" | "bt" => {
+        "vertical-rl" | "tb-rl" | "tb" => {
+            layout.set_writing_mode(WritingModeSpec::VerticalRl);
+            layout.unsupported_writing_mode = false;
+        }
+        "vertical-lr" => {
+            layout.set_writing_mode(WritingModeSpec::VerticalLr);
+            layout.unsupported_writing_mode = false;
+        }
+        "sideways-rl" | "sideways-lr" | "bt" => {
             layout.unsupported_writing_mode = true;
         }
         _ => {}
@@ -2839,12 +3206,14 @@ fn recompute_grid_axis_direction(layout: &mut LayoutStyle) {
     }
 }
 
-/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / 明确 Unsupported / 非法。
+/// 解析结果：支持轨列表 / auto-fit|auto-fill 模式 / subgrid / 明确 Unsupported / 非法。
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridTrackListParse {
     Tracks(Vec<GridTrack>),
     /// 整表 `repeat(auto-fit|auto-fill, <track-list>)`；布局按容器展开。
     RepeatAuto(GridRepeatAuto),
+    /// `subgrid`（可跟线名 `[a] [b]`）。布局继承父轨几何，不是轨列表。
+    Subgrid,
     /// 混写 auto-fit/auto-fill 等无法展开的语法；**不是**解析失败、也不是 `none`。
     Unsupported(GridTrackListUnsupported),
     Invalid,
@@ -2862,11 +3231,13 @@ fn set_grid_template_axis(
         layout.grid_columns = tracks;
         layout.grid_columns_unsupported = unsupported;
         layout.grid_columns_repeat = repeat;
+        layout.grid_columns_subgrid = false;
         layout.grid_column_line_names = names;
     } else {
         layout.grid_rows = tracks;
         layout.grid_rows_unsupported = unsupported;
         layout.grid_rows_repeat = repeat;
+        layout.grid_rows_subgrid = false;
         layout.grid_row_line_names = names;
     }
 }
@@ -2926,6 +3297,19 @@ fn apply_grid_template_axis(
             }
             recompute_grid_axis_direction(layout);
         }
+        GridTrackListParse::Subgrid => {
+            let names = parse_subgrid_line_names(raw);
+            set_grid_template_axis(layout, columns, None, None, None, names);
+            if columns {
+                layout.grid_columns_subgrid = true;
+            } else {
+                layout.grid_rows_subgrid = true;
+            }
+            if layout.display.is_none() {
+                layout.display = Some(DisplaySpec::Grid);
+            }
+            recompute_grid_axis_direction(layout);
+        }
         GridTrackListParse::Invalid => {
             // Do not keep a previous template when the new value fails to parse
             // (`80px repeat(auto-fit, garbage)` must not silently stay `80px`).
@@ -2947,8 +3331,9 @@ fn apply_grid_auto_tracks(raw: &str, percent_base: Option<f32>, dest: &mut Optio
     }
     match parse_grid_track_list_result(trimmed, percent_base) {
         GridTrackListParse::Tracks(tracks) => *dest = Some(tracks),
-        // auto-fit/fill on auto tracks: leave unchanged.
+        // auto-fit/fill / subgrid on auto tracks: leave unchanged.
         GridTrackListParse::RepeatAuto(_)
+        | GridTrackListParse::Subgrid
         | GridTrackListParse::Unsupported(_)
         | GridTrackListParse::Invalid => {}
     }
@@ -3128,6 +3513,58 @@ fn parse_grid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
     Some(names)
 }
 
+/// Remainder after `subgrid` may only be `[line-name]` groups (no tracks).
+fn is_only_line_name_groups(raw: &str) -> bool {
+    let mut rest = raw.trim();
+    if rest.is_empty() {
+        return true;
+    }
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        if !rest.starts_with('[') {
+            return false;
+        }
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        rest = rest[end + 1..].trim_start();
+    }
+    true
+}
+
+/// `subgrid [a] [b]`：每个 `[]` 是一根独立的线（不像普通轨表那样合并相邻名）。
+fn parse_subgrid_line_names(raw: &str) -> Option<Vec<Vec<String>>> {
+    let rest = strip_prefix_ci(raw.trim(), "subgrid")
+        .map(|s| s.trim())
+        .unwrap_or(raw.trim());
+    if rest.is_empty() {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut leftover = rest;
+    while !leftover.is_empty() {
+        leftover = leftover.trim_start();
+        if leftover.is_empty() {
+            break;
+        }
+        if !leftover.starts_with('[') {
+            break;
+        }
+        let end = leftover.find(']')?;
+        let group: Vec<String> = leftover[1..end]
+            .split_whitespace()
+            .filter(|s| is_css_ident(s))
+            .map(|s| s.to_string())
+            .collect();
+        names.push(group);
+        leftover = leftover[end + 1..].trim_start();
+    }
+    names.iter().any(|line| !line.is_empty()).then_some(names)
+}
+
 /// CSS `<grid-line>` subset: `auto` / integer / `span N` / custom-ident.
 fn parse_grid_line(raw: &str) -> Option<GridLine> {
     let s = raw.trim();
@@ -3261,6 +3698,7 @@ fn apply_grid_area(placement: &mut GridPlacement, raw: &str) {
 /// `fit-content(<length-percentage>)`、`minmax(min, Nfr|px|%|auto|*-content)`、
 /// `repeat(N, …)`（固定次数）。
 ///
+/// 整表 `subgrid`（可跟 `[line]` 名）→ [`GridTrackListParse::Subgrid`]。
 /// 整表或混写 `repeat(auto-fit|auto-fill, <track-list>)` →
 /// [`GridTrackListParse::RepeatAuto`]（`prefix` / pattern / `suffix`）。
 /// 嵌套 auto-fit / auto-fill 或无法展开的 pattern → [`GridTrackListParse::Unsupported`]。
@@ -3288,6 +3726,13 @@ pub fn parse_grid_template_columns(raw: &str, percent_base: Option<f32>) -> Opti
 }
 
 fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListParse {
+    if let Some(rest) = strip_prefix_ci(raw.trim(), "subgrid") {
+        let rest = rest.trim_start();
+        if rest.is_empty() || is_only_line_name_groups(rest) {
+            return GridTrackListParse::Subgrid;
+        }
+        return GridTrackListParse::Invalid;
+    }
     let mut tracks = Vec::new();
     let mut rest = raw;
     while !rest.is_empty() {
@@ -3320,7 +3765,9 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid | GridTrackListParse::Tracks(_) => {
+                    GridTrackListParse::Invalid
+                    | GridTrackListParse::Subgrid
+                    | GridTrackListParse::Tracks(_) => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3330,7 +3777,7 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                     GridTrackListParse::RepeatAuto(_) | GridTrackListParse::Unsupported(_) => {
                         return GridTrackListParse::Unsupported(kind);
                     }
-                    GridTrackListParse::Invalid => {
+                    GridTrackListParse::Invalid | GridTrackListParse::Subgrid => {
                         return GridTrackListParse::Invalid;
                     }
                 };
@@ -3360,7 +3807,9 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
                 GridTrackListParse::RepeatAuto(rep) => {
                     return GridTrackListParse::Unsupported(rep.kind);
                 }
-                GridTrackListParse::Tracks(_) => return GridTrackListParse::Invalid,
+                GridTrackListParse::Subgrid | GridTrackListParse::Tracks(_) => {
+                    return GridTrackListParse::Invalid;
+                }
             }
             rest = next;
             continue;
@@ -4072,15 +4521,32 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
         .map(|v| v.max(0.0))
 }
 
-/// CSS `font-variation-settings`. cosmic-text 0.19 `FontSystem` / `Attrs` only
-/// instantiate the `wght` axis (via [`LayoutStyle::font_weight`]). Other
-/// OpenType variation tags (`BEVL`, `wdth`, …) fail this declaration only —
-/// they are not remapped to `wght` and are not stuffed into `FontFeatures`
-/// (that path is `font-feature-settings`).
+/// CSS `font-variation-settings`. `wght` maps to [`LayoutStyle::font_weight`].
+/// `wdth` is stored and allowed; other axes set
+/// [`LayoutStyle::unsupported_font_variation`] and are never remapped to weight
+/// or stuffed into `font-feature-settings`.
 pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
         style.unsupported_font_variation = false;
+        style.font_variation_settings = Some(Vec::new());
+        return;
+    }
+    if let Some(axes) = parse_css_font_variation_settings(trimmed) {
+        let mut unsupported = false;
+        let mut wght = None;
+        for axis in &axes {
+            if axis.tag == *b"wght" {
+                wght = Some(axis.value);
+            } else if axis.tag != *b"wdth" {
+                unsupported = true;
+            }
+        }
+        style.font_variation_settings = Some(axes);
+        style.unsupported_font_variation = unsupported;
+        if let Some(wght) = wght {
+            style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
+        }
         return;
     }
     let Some(axes) = parse_font_variation_settings(trimmed) else {
@@ -4089,13 +4555,16 @@ pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) 
     };
     let mut unsupported = false;
     let mut wght = None;
+    let mut stored = Vec::new();
     for (tag, value) in axes {
+        stored.push(FontVariationSetting::new(tag, value));
         if &tag == b"wght" {
             wght = Some(value);
-        } else {
+        } else if &tag != b"wdth" {
             unsupported = true;
         }
     }
+    style.font_variation_settings = Some(stored);
     style.unsupported_font_variation = unsupported;
     if let Some(wght) = wght {
         style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
@@ -4332,6 +4801,128 @@ pub fn parse_css_letter_spacing(input: &str) -> Option<f32> {
         return Some(0.0);
     }
     LengthSpec::parse(s)?.resolve_with_fonts(None, active_viewport(), active_font_sizes())
+}
+
+/// CSS `font-feature-settings` → tag/value list. `normal` → empty (reset).
+/// Invalid tags skip the whole declaration.
+pub fn parse_css_font_feature_settings(input: &str) -> Option<Vec<FontFeatureSetting>> {
+    let expanded = expand_css_var_fallback(input.trim());
+    let s = expanded.trim();
+    if s.is_empty()
+        || s.eq_ignore_ascii_case("inherit")
+        || s.eq_ignore_ascii_case("unset")
+        || s.eq_ignore_ascii_case("revert")
+    {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("normal") || s.eq_ignore_ascii_case("initial") {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for item in split_font_family_list(s) {
+        out.push(parse_feature_setting_item(item)?);
+    }
+    Some(out)
+}
+
+/// CSS `font-variation-settings` → axis list. `normal` → empty (reset).
+/// Unknown axes are stored; shaping applies `wght` / `wdth` only.
+pub fn parse_css_font_variation_settings(input: &str) -> Option<Vec<FontVariationSetting>> {
+    let expanded = expand_css_var_fallback(input.trim());
+    let s = expanded.trim();
+    if s.is_empty()
+        || s.eq_ignore_ascii_case("inherit")
+        || s.eq_ignore_ascii_case("unset")
+        || s.eq_ignore_ascii_case("revert")
+    {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("normal") || s.eq_ignore_ascii_case("initial") {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for item in split_font_family_list(s) {
+        out.push(parse_variation_setting_item(item)?);
+    }
+    Some(out)
+}
+
+/// CSS `font-kerning`. Unknown keywords skipped.
+pub fn parse_css_font_kerning(input: &str) -> Option<FontKerningSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "auto" | "initial" => Some(FontKerningSpec::Auto),
+        "normal" => Some(FontKerningSpec::Normal),
+        "none" => Some(FontKerningSpec::None),
+        "inherit" | "unset" | "revert" | "" => None,
+        _ => None,
+    }
+}
+
+/// CSS `word-break` subset. `keep-all` is skipped (no CJK keep-all in cosmic-text).
+pub fn parse_css_word_break(input: &str) -> Option<WordBreakSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "normal" | "initial" => Some(WordBreakSpec::Normal),
+        "break-all" => Some(WordBreakSpec::BreakAll),
+        "break-word" => Some(WordBreakSpec::BreakWord),
+        "keep-all" | "inherit" | "unset" | "revert" | "" => None,
+        _ => None,
+    }
+}
+
+/// CSS `line-break` subset. `strict` / `loose` skipped (no Japanese line tables).
+pub fn parse_css_line_break(input: &str) -> Option<LineBreakSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "auto" | "initial" => Some(LineBreakSpec::Auto),
+        "normal" => Some(LineBreakSpec::Normal),
+        "anywhere" => Some(LineBreakSpec::Anywhere),
+        "strict" | "loose" | "inherit" | "unset" | "revert" | "" => None,
+        _ => None,
+    }
+}
+
+fn parse_feature_setting_item(item: &str) -> Option<FontFeatureSetting> {
+    let (tag, rest) = split_quoted_ot_tag(item.trim())?;
+    let value = match rest.trim().to_ascii_lowercase().as_str() {
+        "" | "on" => 1,
+        "off" => 0,
+        other => {
+            let n: i32 = other.parse().ok()?;
+            n.max(0) as u32
+        }
+    };
+    Some(FontFeatureSetting::new(tag, value))
+}
+
+fn parse_variation_setting_item(item: &str) -> Option<FontVariationSetting> {
+    let (tag, rest) = split_quoted_ot_tag(item.trim())?;
+    let value: f32 = rest.trim().parse().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some(FontVariationSetting::new(tag, value))
+}
+
+/// `"liga" 0` / `'wght' 700` → tag + remainder. Tags 1..=4 chars, space-padded.
+fn split_quoted_ot_tag(item: &str) -> Option<([u8; 4], &str)> {
+    let item = item.trim();
+    let quote = item.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let rest = &item[quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    let raw = &rest[..end];
+    let tag = ot_tag(raw)?;
+    Some((tag, rest[end + quote.len_utf8()..].trim_start()))
+}
+
+fn ot_tag(raw: &str) -> Option<[u8; 4]> {
+    if raw.is_empty() || raw.len() > 4 || !raw.is_ascii() {
+        return None;
+    }
+    let mut tag = [b' '; 4];
+    tag[..raw.len()].copy_from_slice(raw.as_bytes());
+    Some(tag)
 }
 
 fn host_value_debug(value: &nana_js_engine::HostValue) -> String {
@@ -4762,6 +5353,15 @@ pub(crate) fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropS
     })
 }
 
+pub(crate) fn parse_inline_paint_transform(
+    raw: &str,
+) -> Option<nana_ui_core::box_layout::PaintTransform> {
+    match crate::css_paint_transform::parse_css_transform(raw)? {
+        crate::css_paint_transform::ParsedPaintTransform::Affine(t) if !t.is_identity() => Some(t),
+        _ => None,
+    }
+}
+
 /// Parse single-layer `text-shadow` (`offset-x offset-y [blur-radius] color`).
 pub(crate) fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
     let trimmed = input.trim();
@@ -5102,6 +5702,33 @@ mod tests {
     }
 
     #[test]
+    fn writing_mode_vertical_rl_is_stored_not_fail_closed() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("writing-mode: vertical-rl", None, None);
+        assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalRl));
+        assert!(!layout.unsupported_writing_mode);
+        layout.apply_css_text("writing-mode: vertical-lr", None, None);
+        assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalLr));
+        assert!(!layout.unsupported_writing_mode);
+        layout.apply_css_text("writing-mode: horizontal-tb", None, None);
+        assert_eq!(layout.writing_mode, Some(WritingModeSpec::HorizontalTb));
+        assert!(!layout.unsupported_writing_mode);
+    }
+
+    #[test]
+    fn writing_mode_sideways_is_unsupported() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "writing-mode: sideways-rl; padding-block-start: 8px",
+            None,
+            None,
+        );
+        assert!(layout.writing_mode.is_none());
+        assert!(layout.unsupported_writing_mode);
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
+    }
+
+    #[test]
     fn direction_rtl_maps_margin_and_inset_inline() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
@@ -5189,16 +5816,18 @@ mod tests {
     }
 
     #[test]
-    fn writing_mode_vertical_fail_closed_does_not_flip_axis() {
+    fn writing_mode_vertical_rl_maps_padding_inline_start_to_block_axis() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
             "writing-mode: vertical-rl; padding-inline-start: 12px",
             None,
             None,
         );
-        assert!(layout.unsupported_writing_mode);
+        assert!(!layout.unsupported_writing_mode);
+        assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalRl));
+        // LogicalInlineEdges still bakes inline-start as physical left until
+        // layout consumes writing_mode for the vertical axis.
         assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
-        assert!(layout.padding_top.is_none());
     }
 
     #[test]
@@ -5520,6 +6149,54 @@ mod tests {
     }
 
     #[test]
+    fn calc_ast_nested_ops_parens_and_var_expand() {
+        let halved = LengthSpec::parse("calc((100% - 40px) / 2)");
+        match halved {
+            Some(LengthSpec::CalcPercentOffset { percent, offset_px }) => {
+                assert!((percent - 50.0).abs() < 1e-5);
+                assert!((offset_px + 20.0).abs() < 1e-5);
+            }
+            Some(LengthSpec::Calc(expr)) => {
+                let px = expr
+                    .inner()
+                    .resolve_with_fonts(Some(100.0), None, FontSizeContext::default())
+                    .expect("calc((100% - 40px) / 2) against 100px");
+                assert!((px - 30.0).abs() < 1e-5);
+            }
+            other => panic!("expected flattened or calc AST, got {other:?}"),
+        }
+        assert_eq!(
+            LengthSpec::parse("calc(2 * 50px)"),
+            Some(LengthSpec::Px(100.0))
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(2)"),
+            None,
+            "unitless calc is not a length"
+        );
+        assert_eq!(
+            LengthSpec::parse("calc(2 + 10px)"),
+            None,
+            "number + length is not length-typed"
+        );
+        let mut keep = LayoutStyle::default();
+        keep.apply_css_text("width: 80px", None, None);
+        keep.apply_css_text("width: calc(10px * 10px)", None, None);
+        assert_eq!(
+            keep.width,
+            Some(LengthSpec::Px(80.0)),
+            "invalid calc must ignore the declaration"
+        );
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("--w".into(), "40px".into());
+        with_active_css_vars(&vars, || {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text("width: calc(2 * var(--w) + 10px)", None, None);
+            assert_eq!(layout.width, Some(LengthSpec::Px(90.0)));
+        });
+    }
+
+    #[test]
     fn typography_css_parses_into_layout_style() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
@@ -5582,6 +6259,55 @@ mod tests {
             Some(18.0),
             "authored size must not be overwritten"
         );
+    }
+
+    #[test]
+    fn opentype_css_parses_into_layout_style() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            r#"font-feature-settings: "liga" 0, "tnum"; font-variation-settings: "wght" 650, "wdth" 125; font-kerning: none; word-break: break-all; line-break: anywhere"#,
+            None,
+            None,
+        );
+        assert_eq!(
+            layout.font_features,
+            Some(vec![
+                FontFeatureSetting::new(*b"liga", 0),
+                FontFeatureSetting::new(*b"tnum", 1),
+            ])
+        );
+        assert_eq!(
+            layout.font_variation_settings,
+            Some(vec![
+                FontVariationSetting::new(*b"wght", 650.0),
+                FontVariationSetting::new(*b"wdth", 125.0),
+            ])
+        );
+        assert_eq!(layout.font_kerning, Some(FontKerningSpec::None));
+        assert_eq!(layout.word_break, Some(WordBreakSpec::BreakAll));
+        assert_eq!(layout.line_break, Some(LineBreakSpec::Anywhere));
+
+        let mut skipped = LayoutStyle::default();
+        skipped.apply_css_text(
+            "word-break: keep-all; line-break: strict; font-kerning: orange",
+            None,
+            None,
+        );
+        assert_eq!(
+            skipped.word_break,
+            Some(WordBreakSpec::Normal),
+            "origin keep-all maps to normal rather than skipping"
+        );
+        assert!(skipped.line_break.is_none());
+        assert!(skipped.font_kerning.is_none());
+
+        assert_eq!(
+            parse_css_font_feature_settings("normal").as_deref(),
+            Some(&[][..])
+        );
+        assert!(parse_css_font_feature_settings("\"toolongtag\" 1").is_none());
+        assert!(parse_css_word_break("keep-all").is_none());
+        assert!(parse_css_line_break("loose").is_none());
     }
 
     #[test]
@@ -5767,20 +6493,16 @@ mod tests {
     fn subgrid_is_explicit_grid_track_unsupported() {
         assert_eq!(
             parse_grid_track_list_result("subgrid", None),
-            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+            GridTrackListParse::Subgrid
         );
         assert_eq!(
             parse_grid_track_list_result("subgrid [foo] [bar]", None),
-            GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid)
+            GridTrackListParse::Subgrid
         );
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("display:grid;grid-template-columns:subgrid", None, None);
-        assert_eq!(
-            layout.grid_columns_unsupported,
-            Some(GridTrackListUnsupported::Subgrid)
-        );
+        assert!(layout.grid_columns_subgrid);
         assert!(layout.grid_columns.is_none());
-        assert!(layout.has_unsupported_grid_template());
     }
 
     #[test]
@@ -6374,6 +7096,30 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.unsupported_transform, None);
     }
 
+    fn parse_inline_paint_transform(raw: &str) -> Option<PaintTransform> {
+        match crate::css_paint_transform::parse_css_transform(raw)? {
+            crate::css_paint_transform::ParsedPaintTransform::Affine(t) if !t.is_identity() => {
+                Some(t)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn inline_paint_transform_parses_translate_and_treats_none_as_clear() {
+        assert_eq!(
+            parse_inline_paint_transform("translate(12px, 4px)"),
+            Some(PaintTransform {
+                e: 12.0,
+                f: 4.0,
+                ..PaintTransform::default()
+            })
+        );
+        assert_eq!(parse_inline_paint_transform(""), None);
+        assert_eq!(parse_inline_paint_transform("none"), None);
+        assert_eq!(parse_inline_paint_transform("translate(0px, 0px)"), None);
+    }
+
     #[test]
     fn flex_flow_and_align_self_place_self_parse() {
         let mut flow = LayoutStyle::default();
@@ -6534,6 +7280,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!((shadow.blur_radius - 8.0).abs() < 0.01);
         assert!((shadow.spread_radius - 2.0).abs() < 0.01);
         assert!((shadow.color[3] - 0.25).abs() < 0.01);
+        assert!(!shadow.inset);
     }
 
     #[test]
@@ -6580,6 +7327,23 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
+    fn pointer_events_none_and_auto_parse() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("pointer-events:none", None, None);
+        assert_eq!(layout.pointer_events, Some(nana_ui_core::PointerEventsSpec::None));
+        layout.apply_css_text("pointer-events:auto", None, None);
+        assert_eq!(layout.pointer_events, Some(nana_ui_core::PointerEventsSpec::Auto));
+        layout.apply_css_text("pointer-events:stroke", None, None);
+        assert_eq!(
+            layout.pointer_events,
+            Some(nana_ui_core::PointerEventsSpec::Auto),
+            "SVG values must not overwrite the CSS hit subset"
+        );
+        assert!(!layout.omits_box());
+        assert!(layout.is_paint_visible());
+    }
+
+    #[test]
     fn box_shadow_parses_negative_offsets_and_spread() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("box-shadow: -4px 6px 8px -24px", None, None);
@@ -6598,6 +7362,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!((shadow.offset_y - 10.0).abs() < 0.01);
         assert!((shadow.blur_radius - 30.0).abs() < 0.01);
         assert!((shadow.spread_radius + 24.0).abs() < 0.01);
+        assert!(!shadow.inset);
     }
 
     #[test]
@@ -6735,6 +7500,26 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert!(!layout.paints_any_border());
         assert!((layout.resolved_border_edges().top - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn object_fit_parses_cover_contain_fill() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("object-fit: cover", None, None);
+        assert_eq!(
+            layout.paint.object_fit,
+            Some(nana_ui_core::BackgroundImageFit::Cover)
+        );
+        layout.apply_css_text("object-fit: contain", None, None);
+        assert_eq!(
+            layout.paint.object_fit,
+            Some(nana_ui_core::BackgroundImageFit::Contain)
+        );
+        layout.apply_css_text("object-fit: fill", None, None);
+        assert_eq!(
+            layout.paint.object_fit,
+            Some(nana_ui_core::BackgroundImageFit::Stretch)
+        );
     }
 
     #[test]
@@ -6984,6 +7769,62 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.display, Some(DisplaySpec::Flex));
         assert!(layout.grid_columns_repeat.is_none());
         assert!(layout.grid_rows_repeat.is_none());
+        assert!(layout.grid_columns_unsupported.is_none());
+        assert!(!layout.grid_columns_subgrid);
+        assert!(!layout.grid_rows_subgrid);
+    }
+
+    #[test]
+    fn grid_template_subgrid_sets_flag_not_tracks() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:subgrid;grid-template-rows:subgrid [a] [b]",
+            None,
+            None,
+        );
+        assert!(layout.grid_columns_subgrid);
+        assert!(layout.grid_rows_subgrid);
+        assert!(layout.grid_columns.is_none());
+        assert!(layout.grid_rows.is_none());
+        assert!(layout.grid_columns_repeat.is_none());
+        assert!(layout.grid_columns_unsupported.is_none());
+        assert!(layout.is_subgrid_columns());
+        assert!(layout.is_subgrid_rows());
+        assert_eq!(
+            layout.grid_row_line_names.as_ref().map(|n| n.len()),
+            Some(2)
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid", None),
+            GridTrackListParse::Subgrid
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid [start] [end]", None),
+            GridTrackListParse::Subgrid
+        );
+        assert_eq!(
+            parse_grid_track_list_result("masonry", None),
+            GridTrackListParse::Invalid
+        );
+        assert_eq!(
+            parse_grid_track_list_result("subgrid 80px", None),
+            GridTrackListParse::Invalid
+        );
+        layout.apply_css_text("grid-template-columns:none", None, None);
+        assert!(!layout.grid_columns_subgrid);
+        assert!(layout.grid_rows_subgrid);
+    }
+
+    #[test]
+    fn unknown_grid_template_keyword_is_ignored() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:grid;grid-template-columns:80px 1fr", None, None);
+        layout.apply_css_text("grid-template-columns:masonry", None, None);
+        assert!(
+            layout.grid_columns.is_none(),
+            "unknown keyword must not keep the previous track list"
+        );
+        assert!(!layout.grid_columns_subgrid);
         assert!(layout.grid_columns_unsupported.is_none());
     }
 
