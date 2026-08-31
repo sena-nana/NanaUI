@@ -630,6 +630,7 @@ pub(crate) fn split_pane_from_widget(
             second,
             handle,
             model,
+            style: NodeStyle::default(),
         },
     }
 }

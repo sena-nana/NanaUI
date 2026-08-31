@@ -20,13 +20,16 @@ pub(crate) const INDICATOR_SIZE: f32 = 2.0;
 ///
 /// Host applies [`SplitPaneMutation`]; this view reflects the model. Application
 /// content stays in the `first` / `second` slots. Assign `handle` to a
-/// host-created node; its optional first child is the 2px indicator.
+/// host-created node; its optional first child is the 2px indicator. Host paint
+/// set through [`SplitPane::surface`] survives re-projection; geometry stays
+/// model-driven.
 #[derive(Debug, Clone)]
 pub struct SplitPane {
     pub first: Option<StableNodeId>,
     pub second: Option<StableNodeId>,
     pub handle: Option<StableNodeId>,
     pub model: SplitPaneModel,
+    pub style: NodeStyle,
 }
 
 impl SplitPane {
@@ -36,11 +39,18 @@ impl SplitPane {
             second: Some(second),
             handle: None,
             model: model.clone(),
+            style: NodeStyle::default(),
         }
     }
 
     pub fn handle(mut self, handle: StableNodeId) -> Self {
         self.handle = Some(handle);
+        self
+    }
+
+    /// 语义背景色。装配重投影时保留，宿主借此承载工作区区域底色。
+    pub fn surface(mut self, role: SemanticColorRole) -> Self {
+        self.style.background = Some(role);
         self
     }
 
@@ -65,7 +75,7 @@ impl SplitPane {
     }
 
     fn root_style(&self) -> NodeStyle {
-        let mut style = NodeStyle::default();
+        let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(split_direction(self.model.axis()));
         layout.align_items = AlignSpec::Stretch;
@@ -769,6 +779,30 @@ mod tests {
         assert_eq!(second_layout.min_width, Some(LengthSpec::Px(120.0)));
         assert_eq!(second_layout.max_width, Some(LengthSpec::Px(240.0)));
         assert_eq!(second_layout.flex_grow, Some(0.0));
+    }
+
+    #[test]
+    fn assemble_reprojection_keeps_host_surface() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let handle = slot(&mut context, "handle");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = context
+            .create_component(
+                document(),
+                SplitPane::from_model(&model, first, second)
+                    .handle(handle)
+                    .surface(SemanticColorRole::Background),
+            )
+            .unwrap();
+
+        context.assemble_split_pane(split).unwrap();
+
+        let style = context.world().node_style(split.stable_id()).unwrap();
+        assert_eq!(style.background, Some(SemanticColorRole::Background));
+        assert_eq!(style.layout.direction, Some(FlexDirection::Row));
+        assert_eq!(style.layout.width, Some(LengthSpec::Fill));
     }
 
     #[test]
