@@ -5,7 +5,9 @@
 //!   (US-QWERTY subset + named editing keys).
 //!
 //! Hit-testing uses the same viewport-bottom rect as [`crate::control_slot`].
-//! Soft IME / AccessKit are not implemented on this host.
+//! The soft keyboard is driven by the activity loop's focus mirror (no
+//! InputConnection, so no composition/preedit); accessibility publication
+//! lives in [`crate::slot_ax`].
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 

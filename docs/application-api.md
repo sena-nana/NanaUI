@@ -31,8 +31,9 @@ Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`，把 Ui
 | `bundled-fonts` | 嵌入 Noto Sans SC |
 | `components` | 下面组件族的聚合 |
 | `full` | fonts + components + hosted + syntax-highlighting |
-| `calendar` / `charts` / `controls` / `feedback` / `graph-canvas` / `image-viewer` / `overlays` / `popover` / `qr-code` / `rich-text` / `math` / `diagrams` / `selects` / `settings-components` / `surfaces` / `xy-pad` | 适配器再导出。`math` / `diagrams` 是 `rich-text` 别名（mermaid / 公式由应用画） |
+| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 适配器再导出。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
+| `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
 
 Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 

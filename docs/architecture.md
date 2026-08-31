@@ -62,4 +62,4 @@ WebView 不是产品 UI。`nana-ui` 没有 `browser` feature。盒模型对照�
 
 `nana-ui` 默认 feature 为空。消费者显式打开 `hosted`、`bundled-fonts`、各控件族。`gpu` 与字体是独立上层边界，`hosted` / `gpu` 确实控制 `mod` 是否编译。
 
-控件族 feature（`calendar`、`charts`、`controls`、`overlays`、`selects` 等）是空 feature，只切 `nana-ui` 的再导出与 `ComponentSupport::compiled`。控件本体在 `nana-ui-runtime`，`nana_ui::runtime` 的全量再导出让它们始终可达，也始终参与编译。见 [应用 API](application-api.md)。
+控件族 feature（`calendar`、`charts`、`controls`、`graph-canvas` 等）是空 feature，只切 `nana-ui` 的再导出与 `ComponentSupport::compiled`。控件本体在 `nana-ui-runtime`，`nana_ui::runtime` 的全量再导出让它们始终可达，也始终参与编译。见 [应用 API](application-api.md)。
