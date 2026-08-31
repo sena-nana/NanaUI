@@ -6632,14 +6632,7 @@ mod tests {
     fn background_image_file_url_paints_fixture_png() {
         let (fixture_dir, png_path) = blue_tile_fixture_png();
         super::set_background_image_url_base(fixture_dir);
-        let file_url = url::Url::from_file_path(&png_path)
-            .map(|parsed| parsed.to_string())
-            .unwrap_or_else(|_| {
-                format!(
-                    "file:///{}",
-                    png_path.display().to_string().replace('\\', "/")
-                )
-            });
+        let file_url = nana_ui_core::url_jail::path_to_file_url(&png_path);
         let sample = paint_url_quad_and_sample_center(file_url);
         super::image_url::reset_test_url_base();
         assert!(

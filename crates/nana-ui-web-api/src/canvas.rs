@@ -8,7 +8,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use fontdue::{Font, FontSettings};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 use image::{DynamicImage, ImageFormat};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use tiny_skia::{
@@ -20,6 +20,68 @@ use tiny_skia::{
 const DEFAULT_WIDTH: u32 = 300;
 const DEFAULT_HEIGHT: u32 = 150;
 const FONT_BYTES: &[u8] = include_bytes!("../../nana-ui/assets/fonts/NotoSansSC-Regular.ttf");
+const FONT_FAMILY: &str = "Noto Sans SC";
+
+/// One shaped, rasterizable glyph positioned relative to the text baseline.
+struct ShapedCanvasGlyph {
+    cache_key: cosmic_text::CacheKey,
+    /// X offset from the line start to the glyph origin.
+    dx: i32,
+    /// Y offset from the baseline to the glyph origin.
+    dy: i32,
+}
+
+struct ShapedCanvasText {
+    width: f32,
+    glyphs: Vec<ShapedCanvasGlyph>,
+}
+
+/// Canvas text engine: shapes with the same cosmic-text stack as the product
+/// font system and rasterizes through the swash cache.
+struct CanvasTextEngine {
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+}
+
+impl CanvasTextEngine {
+    fn new() -> Self {
+        Self {
+            font_system: FontSystem::new_with_fonts([cosmic_text::fontdb::Source::Binary(
+                Arc::new(FONT_BYTES),
+            )]),
+            swash_cache: SwashCache::new(),
+        }
+    }
+
+    /// Shape a single line at `size`. Only the first layout line is used, which
+    /// matches the Canvas 2D `fillText` spec for multi-line strings.
+    fn shape(&mut self, size: f32, text: &str) -> ShapedCanvasText {
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        buffer.set_text(
+            text,
+            &Attrs::new().family(Family::Name(FONT_FAMILY)),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        let mut shaped = ShapedCanvasText {
+            width: 0.0,
+            glyphs: Vec::new(),
+        };
+        if let Some(run) = buffer.layout_runs().next() {
+            shaped.width = run.line_w;
+            for glyph in run.glyphs {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                shaped.glyphs.push(ShapedCanvasGlyph {
+                    cache_key: physical.cache_key,
+                    dx: physical.x,
+                    dy: physical.y,
+                });
+            }
+        }
+        shaped
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CanvasId(pub u64);
@@ -360,7 +422,7 @@ pub struct CanvasRuntime {
     resources: HashMap<CanvasId, BinaryResource>,
     references: HashMap<CanvasId, usize>,
     object_urls: HashMap<String, CanvasId>,
-    font: Font,
+    text: CanvasTextEngine,
 }
 
 impl fmt::Debug for CanvasRuntime {
@@ -388,8 +450,7 @@ impl CanvasRuntime {
             resources: HashMap::new(),
             references: HashMap::new(),
             object_urls: HashMap::new(),
-            font: Font::from_bytes(FONT_BYTES, FontSettings::default())
-                .expect("bundled NanaUI font must be valid"),
+            text: CanvasTextEngine::new(),
         }
     }
 
@@ -1129,8 +1190,8 @@ impl CanvasRuntime {
             .get(&id)
             .ok_or_else(|| CanvasError::new("unknown canvas"))?;
         let size = canvas.state.font_size.max(1.0);
-        let metrics: Vec<_> = text.chars().map(|ch| self.font.metrics(ch, size)).collect();
-        let width: f32 = metrics.iter().map(|metric| metric.advance_width).sum();
+        let shaped = self.text.shape(size, text);
+        let width = shaped.width;
         if operation == "measureText" {
             return Ok(HostValue::Object(
                 [
@@ -1153,19 +1214,30 @@ impl CanvasRuntime {
         let mut glyph_mask =
             Mask::new(canvas.pixmap.width(), canvas.pixmap.height()).expect("canvas text mask");
         let transform = canvas.state.transform;
-        let mut pen_x = x;
-        for ch in text.chars() {
-            let (metric, alpha) = self.font.rasterize(ch, size);
-            for row in 0..metric.height {
-                for col in 0..metric.width {
-                    let coverage = alpha[row * metric.width + col];
+        for shaped_glyph in &shaped.glyphs {
+            let Some(image) = self
+                .text
+                .swash_cache
+                .get_image(&mut self.text.font_system, shaped_glyph.cache_key)
+                .clone()
+            else {
+                continue;
+            };
+            if image.data.is_empty() || image.content == SwashContent::Color {
+                continue;
+            }
+            // Swash placement: baseline sits `placement.top` pixels below the
+            // image top, pen origin sits `placement.left` pixels left of it.
+            let left = x + shaped_glyph.dx as f32 + image.placement.left as f32;
+            let top = y + shaped_glyph.dy as f32 - image.placement.top as f32;
+            for row in 0..image.placement.height {
+                for col in 0..image.placement.width {
+                    let coverage =
+                        image.data[row as usize * image.placement.width as usize + col as usize];
                     if coverage == 0 {
                         continue;
                     }
-                    let mut point = Point::from_xy(
-                        pen_x + metric.xmin as f32 + col as f32,
-                        y - metric.height as f32 - metric.ymin as f32 + row as f32,
-                    );
+                    let mut point = Point::from_xy(left + col as f32, top + row as f32);
                     transform.map_point(&mut point);
                     let px = point.x.round() as i32;
                     let py = point.y.round() as i32;
@@ -1179,7 +1251,6 @@ impl CanvasRuntime {
                     }
                 }
             }
-            pen_x += metric.advance_width;
         }
         if let Some(clip) = &canvas.state.clip {
             for (value, clip_value) in glyph_mask.data_mut().iter_mut().zip(clip.data()) {
@@ -2027,6 +2098,44 @@ fn unpremultiply_rgba(rgba: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fill_text_paints_glyph_coverage_and_measures_width() {
+        let mut runtime = CanvasRuntime::new();
+        let canvas = runtime.create_canvas(64, 24).unwrap();
+        runtime
+            .set_state(canvas, "font", &HostValue::string("16px sans-serif"))
+            .unwrap();
+        runtime
+            .set_state(canvas, "fillStyle", &HostValue::string("#ffffff"))
+            .unwrap();
+        let measured = runtime
+            .command(canvas, "measureText", &[HostValue::string("Test")])
+            .unwrap();
+        let width = measured
+            .as_object()
+            .and_then(|map| map.get("width"))
+            .and_then(HostValue::as_f64)
+            .expect("measureText must return width");
+        assert!(
+            width > 0.0,
+            "measureText width must be positive, got {width}"
+        );
+        runtime
+            .command(
+                canvas,
+                "fillText",
+                &[
+                    HostValue::string("Test"),
+                    HostValue::Number(2.0),
+                    HostValue::Number(18.0),
+                ],
+            )
+            .unwrap();
+        let pixels = runtime.get_image_data(canvas, 0, 0, 64, 24).unwrap();
+        let painted = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(painted > 0, "fillText must paint glyph coverage");
+    }
 
     #[test]
     fn svg_image_decodes_to_reusable_rgba_pixels() {

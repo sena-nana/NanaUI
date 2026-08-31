@@ -19,8 +19,9 @@ pub use clipboard::{
 };
 #[cfg(feature = "fetch")]
 pub use fetch::{
-    FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
-    FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
+    DEFAULT_FETCH_TIMEOUT, FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy,
+    FetchRequest, FetchResponse, NativeFetchHost, SharedFetchHost, fetch_bytes_blocking,
+    shared_fetch_host,
 };
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};

@@ -38,14 +38,13 @@ accesskit-tree = ["dep:accesskit"]
 graph-canvas = []
 image-viewer = []
 rich-text = []
-gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:ureq", "dep:url", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "nana-ui-platform/fetch", "dep:wgpu"]
 hosted = [
     "gpu",
     "accesskit-tree",
     "dep:accesskit_macos",
     "dep:accesskit_unix",
     "dep:accesskit_windows",
-    "dep:android-activity",
     "dep:image",
     "dep:nana-app-icon",
     "dep:nana-window",
@@ -62,8 +61,6 @@ cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b1
 image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true }
-ureq = { workspace = true, optional = true }
-url = { workspace = true, optional = true }
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
@@ -76,10 +73,6 @@ serde.workspace = true
 serde_json.workspace = true
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
-
-# winit → android-activity has no default activity backend; align with Nana host.
-[target.'cfg(target_os = "android")'.dependencies]
-android-activity = { version = "0.6", features = ["native-activity"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 accesskit_macos = { workspace = true, optional = true }

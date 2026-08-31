@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+use nana_ui_core::path_to_file_url;
 use nana_ui_core::{
     MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, path_looks_network,
     percent_decode_bytes, read_bytes_within_jail, resolve_filesystem_href,
@@ -137,19 +139,11 @@ fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let mut response = ureq::get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_LOCAL_URL_BYTES)
-        .read_to_vec()
-        .ok()?;
-    if bytes.len() as u64 > MAX_LOCAL_URL_BYTES {
-        return None;
-    }
+    let bytes = nana_ui_platform::fetch_bytes_blocking(
+        url,
+        nana_ui_platform::DEFAULT_FETCH_TIMEOUT,
+        MAX_LOCAL_URL_BYTES,
+    )?;
     decode_image_bytes_with_hint(&bytes, looks_like_svg_url(url))
 }
 
@@ -356,9 +350,7 @@ mod tests {
             decode_url_rgba(&ok.to_string_lossy()).expect("absolute path inside jail");
         assert_eq!((aw, ah), (2, 2));
         assert_eq!(&argb[..4], &[1, 2, 3, 255]);
-        let file_url = url::Url::from_file_path(&ok)
-            .map(|parsed| parsed.to_string())
-            .unwrap_or_else(|_| format!("file:///{}", ok.display().to_string().replace('\\', "/")));
+        let file_url = path_to_file_url(&ok);
         let (fw, fh, frgba) = decode_url_rgba(&file_url).expect("file url inside jail");
         assert_eq!((fw, fh), (2, 2));
         assert_eq!(&frgba[..4], &[1, 2, 3, 255]);

@@ -55,9 +55,9 @@ pub use box_layout::{
     OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
     TextDecorationLine, TextShadowSpec, TextWrapBreak, TransformBox, TransformOrigin, ViewportAxis,
-    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
-    glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
-    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
+    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top,
+    icon_y_on_text_glyph_center, resolve_grid_column_widths, resolve_grid_track_sizes,
+    text_line_box_height_px,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;
@@ -109,7 +109,7 @@ pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
-    href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network,
+    href_is_protocol_relative_or_unc, is_remote_or_data_href, path_looks_network, path_to_file_url,
     percent_decode_bytes, read_bytes_within_jail, read_file_within_jail, resolve_filesystem_href,
     stylesheet_base_from_href,
 };

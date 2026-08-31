@@ -57,7 +57,6 @@ v8 = "152.2.0"
 tiny-skia = "0.12"
 resvg = { version = "0.48.1", default-features = false, features = ["text"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-fontdue = "0.9"
 unicode-segmentation = "1.13.0"
 raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"

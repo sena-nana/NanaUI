@@ -21,7 +21,7 @@ offscreen = [
     "dep:nana-ui",
     "nana-ui/gpu",
     "nana-ui/bundled-fonts",
-    "dep:png",
+    "dep:image",
     "dep:pollster",
     "dep:wgpu",
 ]
@@ -43,7 +43,7 @@ nana-ui-platform = { workspace = true, optional = true }
 nana-ui = { workspace = true, optional = true }
 nana-ui-vue = { workspace = true, optional = true }
 nana-js-v8 = { workspace = true, optional = true }
-png = { version = "0.18.1", optional = true }
+image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

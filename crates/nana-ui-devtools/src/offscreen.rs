@@ -2,8 +2,7 @@
 //!
 //! Product windows never use this path. The host owns one Device/Queue.
 
-use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use nana_ui::runtime::UiScene;
@@ -233,32 +232,20 @@ pub fn write_png(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let file = File::create(path)?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), size.width, size.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(pixels)?;
-    writer.finish()?;
+    image::save_buffer(
+        path,
+        pixels,
+        size.width,
+        size.height,
+        image::ExtendedColorType::Rgba8,
+    )?;
     Ok(())
 }
 
 pub fn read_png(path: &Path) -> Option<(Size<u32>, Vec<u8>)> {
-    let file = File::open(path).ok()?;
-    let decoder = png::Decoder::new(BufReader::new(file));
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()?];
-    let info = reader.next_frame(&mut buf).ok()?;
-    let raw = &buf[..info.buffer_size()];
-    let pixels = match info.color_type {
-        png::ColorType::Rgba => raw.to_vec(),
-        png::ColorType::Rgb => raw
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
-            .collect(),
-        _ => return None,
-    };
-    Some((Size::new(info.width, info.height), pixels))
+    let image = image::open(path).ok()?.into_rgba8();
+    let size = Size::new(image.width(), image.height());
+    Some((size, image.into_raw()))
 }
 
 #[allow(clippy::too_many_arguments)]
