@@ -1649,6 +1649,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 nana_window::LiveFrameResize::begin(window.as_ref(), frame_resize_edge(edge))
             {
                 self.live_frame_resize = Some((id, live));
+                // Apply the live present policy before the first moved frame.
+                // The mode switch reconfigures the swapchain; paying it on the
+                // gesture's first redraw would stall exactly the frame the
+                // window starts following the pointer. The native size-move
+                // path does not need this: its ENTER hook forces a repaint
+                // before the first size change.
+                self.resize_window(id);
                 return;
             }
         }
