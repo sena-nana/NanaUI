@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    FlexDirection, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement, PositionSpec,
-    SemanticColorRole, SemanticPalette, UI_METRICS,
+    FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
+    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE, UI_METRICS,
 };
 
 use crate::view_components::project_common;
@@ -23,6 +23,8 @@ const MENU_MIN_WIDTH: f32 = 120.0;
 /// rather than hugging its glyphs.
 pub(crate) const TRIGGER_HEIGHT: f32 = UI_METRICS.compact_control_height;
 const TRIGGER_PADDING_X: f32 = 10.0;
+/// Icon triggers draw the standard control glyph size, centered in the chrome.
+const TRIGGER_ICON_SIZE: f32 = UI_BASE_TEXT_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopoverToggled {
@@ -36,6 +38,8 @@ pub struct PopoverClosed;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Popover {
     pub trigger: Arc<str>,
+    pub trigger_icon: Option<Icon>,
+    pub trigger_label: Option<Arc<str>>,
     pub open: bool,
     pub placement: PopoverPlacement,
     pub alignment: PopoverAlignment,
@@ -50,6 +54,8 @@ impl Popover {
     pub fn new() -> Self {
         Self {
             trigger: Arc::from(""),
+            trigger_icon: None,
+            trigger_label: None,
             open: false,
             placement: PopoverPlacement::Bottom,
             alignment: PopoverAlignment::Center,
@@ -63,6 +69,15 @@ impl Popover {
 
     pub fn trigger(mut self, trigger: impl Into<Arc<str>>) -> Self {
         self.trigger = trigger.into();
+        self
+    }
+
+    /// Icon trigger with an accessible name; the glyph is drawn centered in a
+    /// square chrome instead of a text label.
+    pub fn trigger_icon(mut self, icon: Icon, label: impl Into<Arc<str>>) -> Self {
+        self.trigger = Arc::from("");
+        self.trigger_icon = Some(icon);
+        self.trigger_label = Some(label.into());
         self
     }
 
@@ -127,6 +142,8 @@ impl crate::ComponentView for Popover {
             mutations,
             MenuSurfaceKind::Popover,
             Some(Arc::clone(&self.trigger)).filter(|value| !value.is_empty()),
+            self.trigger_icon,
+            self.trigger_label.clone(),
             self.open,
             self.width,
             self.padding,
@@ -155,6 +172,11 @@ impl ActionMenu {
 
     pub fn trigger(mut self, trigger: impl Into<Arc<str>>) -> Self {
         self.popover = self.popover.trigger(trigger);
+        self
+    }
+
+    pub fn trigger_icon(mut self, icon: Icon, label: impl Into<Arc<str>>) -> Self {
+        self.popover = self.popover.trigger_icon(icon, label);
         self
     }
 
@@ -194,6 +216,8 @@ impl crate::ComponentView for ActionMenu {
             mutations,
             MenuSurfaceKind::ActionMenu,
             Some(Arc::clone(&self.popover.trigger)).filter(|value| !value.is_empty()),
+            self.popover.trigger_icon,
+            self.popover.trigger_label.clone(),
             self.popover.open,
             self.popover.width,
             self.popover.padding,
@@ -209,18 +233,22 @@ pub(crate) fn project_menu_surface(
     mutations: &mut MutationQueue,
     kind: MenuSurfaceKind,
     trigger: Option<Arc<str>>,
+    trigger_icon: Option<Icon>,
+    trigger_label: Option<Arc<str>>,
     open: bool,
     width: f32,
     padding: f32,
     gap: f32,
     label: &str,
 ) {
-    let has_chrome = open || trigger.is_some();
+    let has_trigger = trigger.is_some() || trigger_icon.is_some();
+    let has_chrome = open || has_trigger;
     if has_chrome {
         let visual = StandardVisual::MenuSurface {
             kind,
             open,
             trigger: trigger.clone(),
+            trigger_icon,
             gap,
             query: None,
             rows: Arc::from([]),
@@ -233,7 +261,8 @@ pub(crate) fn project_menu_surface(
         mutations.set_standard_visual(id, None);
     }
     // The trigger label is measured like any other button label, so the closed
-    // surface can size itself to the text instead of a fixed box.
+    // surface can size itself to the text instead of a fixed box. Icon
+    // triggers carry no label text; their square chrome comes from the style.
     let trigger_text = trigger.as_deref().unwrap_or("");
     if world.text(id) != Some(trigger_text) {
         mutations.set_text(
@@ -247,32 +276,44 @@ pub(crate) fn project_menu_surface(
         id,
         world,
         mutations,
-        &triggered_menu_style(trigger.as_deref(), open, width, padding, gap),
+        &triggered_menu_style(
+            trigger_icon.is_some(),
+            trigger.as_deref(),
+            open,
+            width,
+            padding,
+            gap,
+        ),
         InteractionState {
-            pointer_events: open || trigger.is_some(),
-            focusable: trigger.is_some(),
+            pointer_events: open || has_trigger,
+            focusable: has_trigger,
         },
         AccessibilityState {
             role: AccessibilityRole::Menu,
-            label: Some(trigger.clone().unwrap_or_else(|| Arc::from(label))),
+            label: Some(
+                trigger
+                    .or(trigger_label.filter(|value| !value.is_empty()))
+                    .unwrap_or_else(|| Arc::from(label)),
+            ),
             ..AccessibilityState::default()
         },
     );
 }
 
 fn triggered_menu_style(
+    icon_trigger: bool,
     trigger: Option<&str>,
     open: bool,
     width: f32,
     padding: f32,
     gap: f32,
 ) -> NodeStyle {
-    let trigger_h = if trigger.is_some() {
-        TRIGGER_HEIGHT
-    } else {
-        0.0
-    };
+    let has_trigger = trigger.is_some() || icon_trigger;
+    let trigger_h = if has_trigger { TRIGGER_HEIGHT } else { 0.0 };
     if !open {
+        if icon_trigger {
+            return trigger_icon_button_style();
+        }
         if trigger.is_some() {
             return trigger_button_style();
         }
@@ -334,6 +375,15 @@ fn trigger_button_style() -> NodeStyle {
     style
 }
 
+/// Icon triggers share the text trigger's chrome but take a square min box, so
+/// the glyph centers geometrically instead of riding text metrics.
+fn trigger_icon_button_style() -> NodeStyle {
+    let mut style = trigger_button_style();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.min_width = Some(LengthSpec::Px(TRIGGER_HEIGHT));
+    style
+}
+
 pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -372,6 +422,7 @@ pub(crate) fn project_anchored_menu(
             kind,
             open,
             trigger: None,
+            trigger_icon: None,
             gap: 0.0,
             query: None,
             rows: Arc::from([]),
@@ -405,16 +456,14 @@ pub(crate) fn project_anchored_menu(
 pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
+    trigger_icon: Option<Icon>,
     gap: f32,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
-    let trigger_h = if trigger.is_some() {
-        TRIGGER_HEIGHT
-    } else {
-        0.0
-    };
+    let has_trigger = trigger.is_some() || trigger_icon.is_some();
+    let trigger_h = if has_trigger { TRIGGER_HEIGHT } else { 0.0 };
     let surface = if trigger_h > 0.0 {
         LayoutBox {
             x: bounds.x,
@@ -432,6 +481,10 @@ pub(crate) fn menu_surface_geometry(
         width: bounds.width,
         height: trigger_h,
     };
+    let icon_extent = TRIGGER_ICON_SIZE
+        .max(0.0)
+        .min(trigger_bounds.width)
+        .min(trigger_bounds.height);
     ComponentGeometry::MenuSurface {
         trigger: label.map(|value| ComponentTextRegion {
             bounds: LayoutBox {
@@ -444,9 +497,20 @@ pub(crate) fn menu_surface_geometry(
             font_size: 13.0,
             font_weight: None,
         }),
+        trigger_icon: trigger_icon.map(|icon| {
+            (
+                icon,
+                LayoutBox {
+                    x: trigger_bounds.x + (trigger_bounds.width - icon_extent) / 2.0,
+                    y: trigger_bounds.y + (trigger_bounds.height - icon_extent) / 2.0,
+                    width: icon_extent,
+                    height: icon_extent,
+                },
+            )
+        }),
         // Hover and press already resolved into the computed style, so the
         // trigger reads its chrome from there rather than the raw palette.
-        trigger_surface: label.map(|_| crate::ComponentTriggerSurface {
+        trigger_surface: has_trigger.then_some(crate::ComponentTriggerSurface {
             bounds: trigger_bounds,
             background: style.background,
             border: style.border_color,
@@ -556,6 +620,7 @@ mod tests {
                 kind: MenuSurfaceKind::ActionMenu,
                 open: false,
                 trigger: Some(Arc::from("Actions")),
+                trigger_icon: None,
                 gap: 0.0,
                 query: None,
                 rows: Arc::from([]),
@@ -658,6 +723,97 @@ mod tests {
             Some(LengthSpec::Px(POPOVER_PADDING))
         );
         assert!(open.background.is_none());
+    }
+
+    #[test]
+    fn trigger_icon_swaps_the_label_for_an_accessible_glyph_trigger() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ActionMenu::new().trigger_icon(Icon::Add, "添加"),
+            )
+            .unwrap();
+        let id = menu.stable_id();
+        assert!(matches!(
+            context.world().standard_visual(id),
+            Some(StandardVisual::MenuSurface {
+                trigger: None,
+                trigger_icon: Some(icon),
+                ..
+            }) if icon == Icon::Add
+        ));
+        // An icon trigger has no label text to measure; its hit target is the
+        // square trigger box.
+        assert!(context.world().text(id).is_none_or(|text| text.is_empty()));
+        let style = context.world().node_style(id).unwrap();
+        assert_eq!(style.layout.min_width, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(
+            style.layout.min_height,
+            Some(LengthSpec::Px(TRIGGER_HEIGHT))
+        );
+    }
+
+    /// The icon trigger's glyph must center geometrically in the chrome, not
+    /// ride text line metrics — bare symbols ride high inside their em box.
+    #[test]
+    fn an_icon_trigger_centers_its_glyph_in_the_chrome() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        let id = StableNodeId::new(1).unwrap();
+        queue.create(
+            id,
+            document(),
+            NodeKind::Element {
+                tag: "action-menu".into(),
+            },
+        );
+        queue.write_layout(
+            id,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: TRIGGER_HEIGHT,
+                height: TRIGGER_HEIGHT,
+            },
+        );
+        queue.set_style(id, trigger_icon_button_style());
+        queue.set_standard_visual(
+            id,
+            Some(StandardVisual::MenuSurface {
+                kind: MenuSurfaceKind::ActionMenu,
+                open: false,
+                trigger: None,
+                trigger_icon: Some(Icon::Add),
+                gap: 0.0,
+                query: None,
+                rows: Arc::from([]),
+                highlighted: None,
+            }),
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[id]).unwrap();
+        let Some(ComponentGeometry::MenuSurface {
+            trigger,
+            trigger_icon,
+            trigger_surface,
+            ..
+        }) = world.component_geometry(id)
+        else {
+            panic!("expected menu surface geometry");
+        };
+        assert!(trigger.is_none(), "icon trigger carries no text region");
+        let (icon, icon_bounds) = trigger_icon.expect("trigger glyph box");
+        assert_eq!(icon, Icon::Add);
+        let chrome = trigger_surface.expect("trigger chrome").bounds;
+        assert_eq!(
+            icon_bounds.x + icon_bounds.width / 2.0,
+            chrome.x + chrome.width / 2.0
+        );
+        assert_eq!(
+            icon_bounds.y + icon_bounds.height / 2.0,
+            chrome.y + chrome.height / 2.0
+        );
     }
 
     #[test]

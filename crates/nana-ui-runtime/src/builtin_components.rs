@@ -731,9 +731,13 @@ impl RegisterableComponent for Popover {
     const TYPE_ID: &'static str = "nana.popover";
     const TAGS: &'static [&'static str] = &["popover"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Popover::new()
+        let mut popover = Popover::new()
             .trigger(spec.display_label())
-            .open(spec.active || spec.toggled)
+            .open(spec.active || spec.toggled);
+        if let Some(icon) = spec.icon {
+            popover = popover.trigger_icon(icon, spec.display_label());
+        }
+        popover
     }
 }
 
@@ -775,9 +779,13 @@ impl RegisterableComponent for ActionMenu {
     const TYPE_ID: &'static str = "nana.action-menu";
     const TAGS: &'static [&'static str] = &["action-menu"];
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        ActionMenu::new()
+        let mut menu = ActionMenu::new()
             .trigger(spec.display_label())
-            .open(spec.active || spec.toggled)
+            .open(spec.active || spec.toggled);
+        if let Some(icon) = spec.icon {
+            menu = menu.trigger_icon(icon, spec.display_label());
+        }
+        menu
     }
 }
 
