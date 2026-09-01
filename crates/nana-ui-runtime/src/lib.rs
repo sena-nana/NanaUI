@@ -33,6 +33,7 @@ mod menus;
 mod mutation;
 mod overlay_surfaces;
 mod pane;
+mod pane_section;
 mod path_field;
 mod placeholders;
 mod popover;
@@ -169,6 +170,7 @@ pub use overlay_surfaces::{
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use pane::{PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode};
+pub use pane_section::PaneSection;
 pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
 pub use popover::{ActionMenu, Popover, PopoverClosed, PopoverToggled, resolve_popover_origin};
