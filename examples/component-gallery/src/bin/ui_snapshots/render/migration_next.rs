@@ -3139,7 +3139,7 @@ fn exercise_segmented_contract(
     segmented: &SegmentedFixture,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let adapter = RuntimeInputAdapter::default();
+    let mut adapter = RuntimeInputAdapter::default();
     let ids = segmented
         .options
         .iter()
@@ -3475,7 +3475,7 @@ fn exercise_feedback_action_lifecycle(
         .world()
         .layout_box(action.action.stable_id())
         .expect("mounted feedback action layout");
-    let adapter = RuntimeInputAdapter::default();
+    let mut adapter = RuntimeInputAdapter::default();
     let action_x = action_bounds.x + action_bounds.width / 2.0;
     let action_y = action_bounds.y + action_bounds.height / 2.0;
     adapter.dispatch(
@@ -3635,7 +3635,7 @@ fn apply_runtime_state(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let context = document.context_mut();
-    let adapter = RuntimeInputAdapter::default();
+    let mut adapter = RuntimeInputAdapter::default();
     let bounds = context.world().layout_box(target).expect("target layout");
     let center_x = bounds.x + bounds.width / 2.0;
     let center_y = bounds.y + bounds.height / 2.0;
@@ -3860,7 +3860,7 @@ fn dispatch_range_key(
     context: &mut nana_ui::runtime::AppContext,
     document: DocumentId,
     target: StableNodeId,
-    adapter: RuntimeInputAdapter,
+    mut adapter: RuntimeInputAdapter,
     key: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     context.focus_node(document, target)?;

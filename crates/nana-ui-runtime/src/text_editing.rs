@@ -831,6 +831,138 @@ fn remove_indent(text: &str, indent_unit: &str) -> usize {
     (spaces / unit) * unit
 }
 
+/// Literal search options for [`find_matches`] and friends. Regex search is
+/// deliberately out of scope for this layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextSearchOptions {
+    /// When `false` (the default), ASCII letters match case-insensitively;
+    /// non-ASCII characters always compare by exact codepoint.
+    pub case_sensitive: bool,
+    /// Require the bytes flanking a match to be non-identifier characters
+    /// (`[A-Za-z0-9_]`) so `ser` does not match inside `user` or `ser1`.
+    pub whole_word: bool,
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn starts_with_query(haystack: &str, query: &str, case_sensitive: bool) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = query.as_bytes();
+    haystack.len() >= needle.len()
+        && haystack[..needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(value, query)| {
+                if case_sensitive {
+                    value == query
+                } else {
+                    value.eq_ignore_ascii_case(query)
+                }
+            })
+}
+
+fn is_word_bounded(value: &str, start: usize, end: usize) -> bool {
+    let bytes = value.as_bytes();
+    let before = start == 0 || !is_ident_byte(bytes[start - 1]);
+    let after = end >= bytes.len() || !is_ident_byte(bytes[end]);
+    before && after
+}
+
+/// First match starting at or after `from`. `from` is clamped to the nearest
+/// char boundary; an empty query never matches.
+fn first_match_from(
+    value: &str,
+    query: &str,
+    options: TextSearchOptions,
+    from: usize,
+) -> Option<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let mut start = clamp_boundary(value, from);
+    while start + query.len() <= value.len() {
+        if starts_with_query(&value[start..], query, options.case_sensitive) {
+            let end = start + query.len();
+            if !options.whole_word || is_word_bounded(value, start, end) {
+                return Some(start..end);
+            }
+        }
+        start += value[start..].chars().next()?.len_utf8();
+    }
+    None
+}
+
+/// All literal matches of `query` in `value`, left to right and
+/// non-overlapping: scanning resumes at the end of each match, so `"aa"` in
+/// `"aaa"` yields one match.
+pub fn find_matches(
+    value: &str,
+    query: &str,
+    options: TextSearchOptions,
+) -> Vec<std::ops::Range<usize>> {
+    let mut matches = Vec::new();
+    let mut from = 0;
+    while let Some(found) = first_match_from(value, query, options, from) {
+        matches.push(found.clone());
+        from = found.end;
+    }
+    matches
+}
+
+/// Next match at or after `from`, wrapping to the first match when none
+/// follows. Match ranges come from [`find_matches`].
+pub fn find_next_match(
+    matches: &[std::ops::Range<usize>],
+    from: usize,
+) -> Option<std::ops::Range<usize>> {
+    matches
+        .iter()
+        .find(|found| found.start >= from)
+        .cloned()
+        .or_else(|| matches.first().cloned())
+}
+
+/// Previous match ending at or before `from`, wrapping to the last match when
+/// none precedes. A match ending exactly at `from` counts as previous.
+pub fn find_previous_match(
+    matches: &[std::ops::Range<usize>],
+    from: usize,
+) -> Option<std::ops::Range<usize>> {
+    matches
+        .iter()
+        .rev()
+        .find(|found| found.end <= from)
+        .cloned()
+        .or_else(|| matches.last().cloned())
+}
+
+/// Replace every match ([`find_matches`] semantics: left to right,
+/// non-overlapping) with `replacement`, returning the new value and the
+/// replacement count. Matching runs on the original text, so a replacement
+/// containing the query cannot rescan.
+pub fn replace_all_matches(
+    value: &str,
+    query: &str,
+    replacement: &str,
+    options: TextSearchOptions,
+) -> (String, usize) {
+    let matches = find_matches(value, query, options);
+    if matches.is_empty() {
+        return (value.to_owned(), 0);
+    }
+    let mut next = String::with_capacity(value.len() + replacement.len());
+    let mut cursor = 0;
+    for found in &matches {
+        next.push_str(&value[cursor..found.start]);
+        next.push_str(replacement);
+        cursor = found.end;
+    }
+    next.push_str(&value[cursor..]);
+    (next, matches.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,5 +1277,125 @@ mod tests {
             indent_selection(value, crate::TextSelection::caret(1), "  ").unwrap();
         assert_eq!(inserted, "a  \nb\nc");
         assert_eq!(inserted_selection.focus, 3);
+    }
+
+    #[test]
+    fn find_matches_respects_case_and_whole_word_options() {
+        let value = "Ser ser user SER ser1 _ser";
+        let all = find_matches(value, "ser", TextSearchOptions::default());
+        // 默认不区分大小写、不做全词约束：包含 "user"、"ser1"、"_ser" 的字面子串。
+        assert_eq!(
+            all,
+            vec![
+                0..3,   // "Ser"
+                4..7,   // "ser"
+                9..12,  // "user"
+                13..16, // "SER"
+                17..20, // "ser1"
+                23..26, // "_ser"
+            ]
+        );
+        let sensitive = find_matches(
+            value,
+            "ser",
+            TextSearchOptions {
+                case_sensitive: true,
+                ..TextSearchOptions::default()
+            },
+        );
+        assert_eq!(sensitive, vec![4..7, 9..12, 17..20, 23..26]);
+        let words = find_matches(
+            value,
+            "ser",
+            TextSearchOptions {
+                whole_word: true,
+                ..TextSearchOptions::default()
+            },
+        );
+        // 全词边界按 [A-Za-z0-9_] 判定："user"、"ser1"、"_ser" 都不算；
+        // "Ser"、"ser"、"SER" 是独立词。
+        assert_eq!(words, vec![0..3, 4..7, 13..16]);
+        let sensitive_words = find_matches(
+            value,
+            "Ser",
+            TextSearchOptions {
+                case_sensitive: true,
+                whole_word: true,
+            },
+        );
+        assert_eq!(sensitive_words, vec![0..3]);
+    }
+
+    #[test]
+    fn find_matches_is_utf8_safe_and_ignores_empty_queries() {
+        let value = "界界 héllo 界";
+        let found = find_matches(value, "界", TextSearchOptions::default());
+        assert_eq!(
+            found,
+            vec![
+                0.."界".len(),
+                "界".len().."界界".len(),
+                "界界 héllo ".len().."界界 héllo 界".len(),
+            ]
+        );
+        for range in &found {
+            assert!(value.is_char_boundary(range.start) && value.is_char_boundary(range.end));
+        }
+        // 查询与周围文本都是多字节字符时不产生跨字符的假匹配；大小写折叠
+        // 只作用于 ASCII，"HÉLLO" 不会匹配 "é"。
+        let accented = find_matches("héllo HÉLLO", "é", TextSearchOptions::default());
+        assert_eq!(accented, vec![1..3]);
+        assert!(find_matches("abc", "", TextSearchOptions::default()).is_empty());
+        assert!(find_matches("", "abc", TextSearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn find_matches_are_left_to_right_and_non_overlapping() {
+        assert_eq!(
+            find_matches("aaaa", "aa", TextSearchOptions::default()),
+            vec![0..2, 2..4]
+        );
+        assert_eq!(
+            find_matches("aaa", "aa", TextSearchOptions::default()),
+            vec![0..2]
+        );
+    }
+
+    #[test]
+    fn match_navigation_wraps_around_the_document() {
+        let value = "ab ab ab";
+        let matches = find_matches(value, "ab", TextSearchOptions::default());
+        // 下一个从选区末尾起找。
+        assert_eq!(find_next_match(&matches, 0), Some(0..2));
+        assert_eq!(find_next_match(&matches, 2), Some(3..5));
+        // 越过最后一个匹配后环绕到开头。
+        assert_eq!(find_next_match(&matches, 7), Some(0..2));
+        // 上一个从选区起点起找，匹配恰好结束在起点也算。
+        assert_eq!(find_previous_match(&matches, 0), Some(6..8)); // 环绕
+        assert_eq!(find_previous_match(&matches, 3), Some(0..2));
+        assert_eq!(find_previous_match(&matches, 8), Some(6..8));
+        assert!(find_next_match(&[], 0).is_none());
+        assert!(find_previous_match(&[], 0).is_none());
+    }
+
+    #[test]
+    fn replace_all_counts_left_to_right_replacements() {
+        let (replaced, count) =
+            replace_all_matches("a界b a界b", "界", "CJK", TextSearchOptions::default());
+        assert_eq!(replaced, "aCJKb aCJKb");
+        assert_eq!(count, 2);
+        // 替换文本包含查询时不重扫。
+        let (grown, grown_count) =
+            replace_all_matches("aa", "a", "aa", TextSearchOptions::default());
+        assert_eq!(grown, "aaaa");
+        assert_eq!(grown_count, 2);
+        let (untouched, zero) =
+            replace_all_matches("abc", "xyz", "q", TextSearchOptions::default());
+        assert_eq!(untouched, "abc");
+        assert_eq!(zero, 0);
+        let (empty, empty_count) =
+            replace_all_matches("abc", "", "q", TextSearchOptions::default());
+        assert_eq!(empty, "abc");
+        assert_eq!(empty_count, 0);
     }
 }

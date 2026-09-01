@@ -14,6 +14,7 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{
     EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
+    TextMatchMark, TextMatchMarker, TextMatchSpan,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
@@ -1770,10 +1771,12 @@ impl UiWorld {
         let extras = match self.nodes.visual(id) {
             Some(StandardVisual::TextInput {
                 diagnostics,
+                matches,
                 line_numbers,
                 ..
             }) => TextInputEditorExtras {
                 diagnostics: Arc::clone(diagnostics),
+                matches: Arc::clone(matches),
                 line_numbers: *line_numbers,
             },
             _ => TextInputEditorExtras::default(),
@@ -3893,6 +3896,30 @@ impl UiWorld {
                         )
                     })
                     .collect();
+                // 查找匹配：普通匹配用 accent 软色令牌，当前匹配用同一 accent
+                // 色相加深（本地强调系数，与诊断条带的 2px 常量同级的局部约定）。
+                let match_color = |current: bool| -> [f32; 4] {
+                    if current {
+                        let accent = self.style_model.palette.accent.as_rgba_array();
+                        [accent[0], accent[1], accent[2], 0.45]
+                    } else {
+                        self.style_model.palette.accent_soft_hover.as_rgba_array()
+                    }
+                };
+                let match_markers = presentation
+                    .match_marks
+                    .iter()
+                    .map(|mark| TextMatchMarker {
+                        rect: LayoutBox {
+                            x: field_x(mark.rect.x),
+                            y: content.y + mark.rect.y - scroll_y,
+                            width: mark.rect.width,
+                            height: mark.rect.height,
+                        },
+                        color: match_color(mark.current),
+                        current: mark.current,
+                    })
+                    .collect();
                 let line_labels = if multiline {
                     presentation
                         .line_tops
@@ -3909,6 +3936,7 @@ impl UiWorld {
                 };
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
+                    match_markers,
                     line_labels,
                     line_labels_color: self.style_model.palette.faint.as_rgba_array(),
                     line_labels_font_size: (size.text_size() - 1.0).max(10.0),
@@ -6244,8 +6272,9 @@ struct TextInputPresentationSource {
     caret: usize,
     preedit: Option<(usize, usize)>,
     multiline: bool,
-    /// 代码编辑器扩展：诊断标记 / 行号栏（占位符态跳过）。
+    /// 代码编辑器扩展：诊断标记 / 查找匹配高亮 / 行号栏（占位符态跳过行号）。
     diagnostics: Arc<[TextDiagnosticSpan]>,
+    matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
 }
 
@@ -6253,6 +6282,7 @@ struct TextInputPresentationSource {
 #[derive(Debug, Clone, Default)]
 struct TextInputEditorExtras {
     diagnostics: Arc<[TextDiagnosticSpan]>,
+    matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
 }
 
@@ -6291,6 +6321,7 @@ fn build_text_input_presentation_source(
             preedit: None,
             multiline,
             diagnostics: extras.diagnostics,
+            matches: extras.matches,
             line_numbers: false,
         };
     }
@@ -6321,6 +6352,7 @@ fn build_text_input_presentation_source(
             preedit: Some((preedit_start, preedit_end)),
             multiline,
             diagnostics: extras.diagnostics,
+            matches: extras.matches,
             line_numbers: false,
         };
     }
@@ -6337,6 +6369,7 @@ fn build_text_input_presentation_source(
         preedit: None,
         multiline,
         diagnostics: extras.diagnostics,
+        matches: extras.matches,
         line_numbers: extras.line_numbers,
     }
 }
@@ -6417,6 +6450,32 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
+    // 查找匹配高亮：与选区一致的整行高条带（非诊断式下划线）。
+    let match_marks = if source.multiline {
+        let mut marks = Vec::new();
+        for span in source.matches.iter() {
+            let start = clamp_boundary(&source.text.value, span.offset);
+            let end = clamp_boundary(&source.text.value, span.offset + span.length.max(1));
+            if end <= start {
+                continue;
+            }
+            for rect in shaper.text_highlights(
+                id,
+                &source.text,
+                (start, end),
+                style,
+                presentation_constraints,
+            ) {
+                marks.push(TextMatchMark {
+                    rect,
+                    current: span.current,
+                });
+            }
+        }
+        marks
+    } else {
+        Vec::new()
+    };
     let line_tops = if source.line_numbers && source.multiline {
         let value = source.text.value.as_str();
         let mut starts: Vec<usize> = vec![0];
@@ -6469,6 +6528,7 @@ fn shape_text_input_presentation(
             Vec::new()
         },
         diagnostic_marks,
+        match_marks,
         line_tops,
     }
 }
@@ -10275,6 +10335,7 @@ mod tests {
                         crate::TextDiagnosticSeverity::Warning,
                     ),
                 ]),
+                matches: Arc::from([]),
                 line_numbers: true,
             }),
         );
@@ -10369,6 +10430,107 @@ mod tests {
         assert_eq!(line_labels_color[3], 1.0);
         // 文本区域随滚动整体上移两像素（scroll_y = 42 - 40）。
         assert_eq!(text.bounds.y, -2.0);
+    }
+
+    #[test]
+    fn match_spans_shape_into_highlights_and_derive_into_geometry() {
+        let value = "甲乙\nthird\n末";
+        let mut world = UiWorld::default();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([
+                    crate::TextMatchSpan::new(0, "甲乙".len()),
+                    crate::TextMatchSpan::new("甲乙\n".len(), "third".len()).current(),
+                ]),
+                line_numbers: false,
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 60.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 匹配高亮是整行高条带（区别于 2px 诊断下划线），当前匹配带标记。
+        assert_eq!(presentation.match_marks.len(), 2);
+        assert!(!presentation.match_marks[0].current);
+        assert_eq!(
+            presentation.match_marks[0].rect,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 20.0,
+                height: 14.0,
+            }
+        );
+        assert!(presentation.match_marks[1].current);
+        assert_eq!(presentation.match_marks[1].rect.y, 14.0);
+
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput { match_markers, .. } = geometry else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(match_markers.len(), 2);
+        assert!(!match_markers[0].current);
+        assert!(match_markers[1].current);
+        // 当前匹配用更强的 accent 强调色，普通匹配用 accent 软色令牌。
+        assert_ne!(match_markers[0].color, match_markers[1].color);
+        assert_eq!(match_markers[0].color[3], 0.20);
+        assert_eq!(match_markers[1].color[3], 0.45);
     }
 
     #[test]

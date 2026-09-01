@@ -96,8 +96,9 @@ pub use components::{
     OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
     ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
     StandardVisual, TextContent, TextDiagnosticMark, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
+    TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMatchMark, TextMatchMarker,
+    TextMatchSpan, TextMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextVerticalAlignment, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -211,7 +212,10 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
-pub use text_editing::TextCaretIntent;
+pub use text_editing::{
+    TextCaretIntent, TextSearchOptions, find_matches, find_next_match, find_previous_match,
+    replace_all_matches,
+};
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;

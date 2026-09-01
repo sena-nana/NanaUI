@@ -99,6 +99,47 @@ impl TextDiagnosticSpan {
     }
 }
 
+/// 编辑器查找匹配 span。`offset`/`length` 为字节偏移，`current` 标记"当前
+/// 匹配"（渲染强调样式）。与诊断 span 相同，宿主负责在文本变化后更新或
+/// 清除；越界部分在几何计算时被钳制。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextMatchSpan {
+    pub offset: usize,
+    pub length: usize,
+    pub current: bool,
+}
+
+impl TextMatchSpan {
+    pub fn new(offset: usize, length: usize) -> Self {
+        Self {
+            offset,
+            length,
+            current: false,
+        }
+    }
+
+    /// 标记为"当前匹配"。
+    pub fn current(mut self) -> Self {
+        self.current = true;
+        self
+    }
+}
+
+/// 文本空间内的查找匹配高亮条带（按折行拆分后可能一条 span 对应多条）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextMatchMark {
+    pub rect: LayoutBox,
+    pub current: bool,
+}
+
+/// 节点空间内的查找匹配高亮条带，颜色由世界按当前/普通匹配解析。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextMatchMarker {
+    pub rect: LayoutBox,
+    pub color: [f32; 4],
+    pub current: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StandardVisual {
     ModalFrame {
@@ -130,6 +171,9 @@ pub enum StandardVisual {
         /// 代码编辑器扩展：编译诊断 span 标记。偏移由宿主维护——文本变化后
         /// 由宿主更新或清除，渲染层仅做越界钳制，不做偏移迁移。
         diagnostics: Arc<[TextDiagnosticSpan]>,
+        /// 查找匹配高亮 span（普通匹配与当前匹配，见 [`TextMatchSpan`]）。
+        /// 偏移同样由宿主维护。
+        matches: Arc<[TextMatchSpan]>,
         /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
         line_numbers: bool,
     },
@@ -573,6 +617,9 @@ pub enum ComponentGeometry {
         preedit: Vec<LayoutBox>,
         /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
         diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
+        /// 匹配，绘制层级在普通匹配之上）。
+        match_markers: Vec<TextMatchMarker>,
         /// 行号标签（节点空间 y，行号从 1 起）。
         line_labels: Vec<LineLabel>,
         /// 行号文本颜色与字号。
@@ -1274,6 +1321,8 @@ pub struct TextInputPresentation {
     pub preedit_lines: Vec<LayoutBox>,
     /// 诊断下划线条带（文本空间），仅多行态计算。
     pub diagnostic_marks: Vec<TextDiagnosticMark>,
+    /// 查找匹配高亮条带（文本空间），仅多行态计算。
+    pub match_marks: Vec<TextMatchMark>,
     /// 各逻辑行的 y 起点（启用行号栏时计算）。
     pub line_tops: Vec<f32>,
 }
