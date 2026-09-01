@@ -9,8 +9,8 @@ use crate::component_registry::ComponentTypeId;
 use crate::components::{
     AccessibilityState, CustomRenderNode, EmptyStateTextPresentation, EventListeners,
     ImeComposition, InteractionState, LayoutBox, ModalTextPresentation, MountState, NodeStyle,
-    OverlayHostState, ScrollMetrics, ScrollOffset, StandardVisual, TextContent,
-    TextInputPresentation, TextInputState, TextMetrics,
+    OverlayHostState, ScrollMetrics, ScrollOffset, StandardVisual, TextCodeFold, TextContent,
+    TextInputPresentation, TextInputState, TextMetrics, TextSnippetSession,
 };
 use crate::presentation::{HighlightRequest, TextPresentation};
 use crate::schedule::DirtyMask;
@@ -119,6 +119,15 @@ macro_rules! sparse {
     };
 }
 
+/// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TextFoldViewState {
+    /// 宿主上一次喂入的折叠区间（用于重喂时的漂移匹配）。
+    pub offered: Arc<[TextCodeFold]>,
+    /// 当前折叠态的区间（`offered` 的子集，按 `start` 排序）。
+    pub collapsed: Vec<TextCodeFold>,
+}
+
 #[derive(Default)]
 pub(crate) struct NodeStore {
     nodes: HashMap<StableNodeId, NodeRecord>,
@@ -135,6 +144,10 @@ pub(crate) struct NodeStore {
     text_input_presentations: HashMap<StableNodeId, TextInputPresentation>,
     empty_state_text: HashMap<StableNodeId, EmptyStateTextPresentation>,
     modal_text: HashMap<StableNodeId, ModalTextPresentation>,
+    /// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
+    text_fold_views: HashMap<StableNodeId, TextFoldViewState>,
+    /// 活跃 snippet 会话（仅会话进行中的编辑器持有条目）。
+    text_snippets: HashMap<StableNodeId, TextSnippetSession>,
 }
 
 impl NodeStore {
@@ -186,6 +199,8 @@ impl NodeStore {
         self.text_input_presentations.remove(&id);
         self.empty_state_text.remove(&id);
         self.modal_text.remove(&id);
+        self.text_fold_views.remove(&id);
+        self.text_snippets.remove(&id);
         Some(record)
     }
 
@@ -246,6 +261,18 @@ impl NodeStore {
         ModalTextPresentation,
         modal_text,
         set_modal_text
+    );
+    sparse!(
+        text_fold_views,
+        TextFoldViewState,
+        text_fold_view,
+        set_text_fold_view
+    );
+    sparse!(
+        text_snippets,
+        TextSnippetSession,
+        text_snippet_session,
+        set_text_snippet_session
     );
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {

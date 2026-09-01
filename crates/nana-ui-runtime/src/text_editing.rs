@@ -1383,13 +1383,30 @@ pub fn find_matches(
     query: &str,
     options: TextSearchOptions,
 ) -> Vec<std::ops::Range<usize>> {
+    find_matches_capped(value, query, options, usize::MAX).0
+}
+
+/// [`find_matches`] with an early-stop cap: at most `cap` matches are
+/// returned, and `truncated` reports that scanning stopped early because a
+/// `cap + 1`-th match exists. Results are always a prefix of the uncapped
+/// [`find_matches`] result; `cap == 0` returns no matches and only reports
+/// whether any match exists.
+pub fn find_matches_capped(
+    value: &str,
+    query: &str,
+    options: TextSearchOptions,
+    cap: usize,
+) -> (Vec<std::ops::Range<usize>>, bool) {
     let mut matches = Vec::new();
     let mut from = 0;
     while let Some(found) = first_match_from(value, query, options, from) {
-        matches.push(found.clone());
+        if matches.len() == cap {
+            return (matches, true);
+        }
         from = found.end;
+        matches.push(found);
     }
-    matches
+    (matches, false)
 }
 
 /// Next match at or after `from`, wrapping to the first match when none
@@ -2156,6 +2173,41 @@ mod tests {
             find_matches("aaa", "aa", TextSearchOptions::default()),
             vec![0..2]
         );
+    }
+
+    #[test]
+    fn find_matches_capped_stops_early_and_reports_truncation() {
+        let options = TextSearchOptions::default();
+        let value = "ab ab ab ab";
+        let all = find_matches(value, "ab", options);
+        assert_eq!(all, vec![0..2, 3..5, 6..8, 9..11]);
+
+        // 达到 cap 即停：只保留前缀，truncated 标记还有更多匹配。
+        let (capped, truncated) = find_matches_capped(value, "ab", options, 2);
+        assert_eq!(capped, vec![0..2, 3..5]);
+        assert!(truncated);
+
+        // cap 覆盖全部匹配：结果与 find_matches 一致且不标记截断。
+        let (complete, truncated) = find_matches_capped(value, "ab", options, all.len());
+        assert_eq!(complete, all);
+        assert!(!truncated);
+
+        // cap = 0：不返回匹配，仅在存在匹配时报告截断。
+        let (empty, truncated) = find_matches_capped(value, "ab", options, 0);
+        assert!(empty.is_empty());
+        assert!(truncated);
+        let (none, truncated) = find_matches_capped(value, "xy", options, 0);
+        assert!(none.is_empty());
+        assert!(!truncated);
+
+        // 任意 cap 下都是全量结果的前缀，截断语义一致（UTF-8 文本同验）。
+        let cjk = find_matches("界ab界 ab", "ab", options);
+        assert_eq!(cjk, vec![3..5, 9..11]);
+        for cap in 0..=all.len() + 1 {
+            let (prefix, truncated) = find_matches_capped(value, "ab", options, cap);
+            assert_eq!(prefix, all.iter().take(cap).cloned().collect::<Vec<_>>());
+            assert_eq!(truncated, cap < all.len());
+        }
     }
 
     #[test]

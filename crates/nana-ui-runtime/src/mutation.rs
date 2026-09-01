@@ -2,9 +2,10 @@ use crate::{
     AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec, ComponentTypeId,
     CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
     NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
-    StandardVisual, TextContent, TextInputState, TextSelection,
+    StandardVisual, TextCodeFold, TextContent, TextInputState, TextSelection, TextSnippetSession,
 };
 use nana_ui_core::ThemeMode;
+use std::sync::Arc;
 
 /// One retained-tree mutation. Mutations are validated as a batch before the
 /// authoritative world changes.
@@ -132,6 +133,18 @@ pub enum UiMutation {
     SetHighlightRequest {
         id: StableNodeId,
         request: Option<HighlightRequest>,
+    },
+    /// Replace the collapsed code-fold set of one editor (view state; the
+    /// committed value is untouched).
+    SetTextInputFoldCollapsed {
+        id: StableNodeId,
+        folds: Arc<[TextCodeFold]>,
+    },
+    /// Start, advance-side-effect-free replace, or end (`None`) the snippet
+    /// session of one editor.
+    SetTextInputSnippet {
+        id: StableNodeId,
+        session: Option<TextSnippetSession>,
     },
 }
 
@@ -326,6 +339,20 @@ impl MutationQueue {
     pub fn set_highlight_request(&mut self, id: StableNodeId, request: Option<HighlightRequest>) {
         self.mutations
             .push(UiMutation::SetHighlightRequest { id, request });
+    }
+
+    pub fn set_text_input_fold_collapsed(&mut self, id: StableNodeId, folds: Arc<[TextCodeFold]>) {
+        self.mutations
+            .push(UiMutation::SetTextInputFoldCollapsed { id, folds });
+    }
+
+    pub fn set_text_input_snippet(
+        &mut self,
+        id: StableNodeId,
+        session: Option<TextSnippetSession>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetTextInputSnippet { id, session });
     }
 
     pub fn len(&self) -> usize {

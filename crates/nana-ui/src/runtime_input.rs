@@ -152,6 +152,18 @@ impl RuntimeInputAdapter {
                     prevent_default: true,
                 });
             }
+            // overlay 未消费的 Esc：先结束 snippet 会话，再塌缩多光标到主
+            // 光标。两者都只在聚焦多行编辑器且状态存在时消费事件，否则
+            // 穿透给宿主（首次按下才生效，repeat 不消费）。
+            if matches!(overlay_key, Some(OverlayKey::Escape)) && !repeat {
+                if context.cancel_focused_text_snippet(document)?
+                    || context.collapse_focused_text_selections(document)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+            }
         }
         // Focused plain text editors own their editing keys (caret moves,
         // selection, deletion, indent, pairing) before any generic routing.
@@ -1069,6 +1081,13 @@ impl RuntimeInputAdapter {
             return Ok(true);
         }
         if key == "Tab" && !meta {
+            // snippet 会话内 Tab 跳位优先于缩进；无会话时 `Ok(false)`，
+            // 代码编辑器的缩进行为接手。
+            if focused.multiline
+                && context.advance_focused_text_snippet(document, modifiers.shift)?
+            {
+                return Ok(true);
+            }
             if focused.code_editing.is_some() {
                 return context.code_edit_indent(document, modifiers.shift);
             }
@@ -3644,6 +3663,7 @@ mod tests {
                 matches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
+                folds: std::sync::Arc::from([]),
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -3757,6 +3777,7 @@ mod tests {
                 matches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
+                folds: std::sync::Arc::from([]),
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -4471,6 +4492,329 @@ mod tests {
     }
 
     #[test]
+    fn pointer_press_on_fold_gutter_toggles_the_fold() {
+        let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
+        let fold = nana_ui_runtime::TextCodeFold::new(7, 28);
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        std::sync::Arc::make_mut(&mut style.layout).padding_left =
+            Some(nana_ui_core::LengthSpec::Px(46.0));
+        let area = context
+            .create_component(
+                document,
+                TextArea::new(value)
+                    .code_editor(true)
+                    .line_numbers(true)
+                    .code_folds(std::sync::Arc::from([fold]))
+                    .style(style),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 40.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 光标移到折叠起始行，避免聚焦滚动把该行推出视口。
+        context
+            .update_component(area, |area_view, _| {
+                area_view.state.selection = nana_ui_runtime::TextSelection::caret(3);
+            })
+            .unwrap();
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        let click = |x: f32, y: f32, phase: PointerPhase| InputEvent::Pointer {
+            phase,
+            pointer_id: 7,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: u16::from(phase == PointerPhase::Down || phase == PointerPhase::Move),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        // 折叠前：文档末行的 reveal 行距按 5 行计。
+        let reveal_before = context
+            .world()
+            .text_input_reveal_scroll(node, value.len())
+            .unwrap();
+        let gutter = context
+            .world()
+            .component_geometry(node)
+            .map(|geometry| match geometry {
+                nana_ui_runtime::ComponentGeometry::TextInput { folds, .. } => {
+                    folds.gutters.first().copied()
+                }
+                _ => None,
+            })
+            .flatten()
+            .expect("fold gutter geometry");
+        let center = (
+            gutter.bounds.x + gutter.bounds.width / 2.0,
+            gutter.bounds.y + gutter.bounds.height / 2.0,
+        );
+
+        // 点击 gutter 箭头：折叠该区间（消费事件、不落光标）。
+        assert!(
+            context
+                .pointer_target(document, center.0, center.1)
+                .is_some(),
+            "no hit target at {:?}",
+            center
+        );
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &click(center.0, center.1, PointerPhase::Down),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &click(center.0, center.1, PointerPhase::Up),
+                Duration::from_millis(1_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(context.world().text_fold_collapsed(node), vec![fold]);
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
+
+        // 折叠后渲染行数减少：同一偏移的 reveal 行距按显示视图换算变小。
+        let reveal_after = context
+            .world()
+            .text_input_reveal_scroll(node, value.len())
+            .unwrap();
+        assert!(reveal_after.y < reveal_before.y);
+
+        // 再次点击箭头：展开。
+        let gutter = context
+            .world()
+            .component_geometry(node)
+            .map(|geometry| match geometry {
+                nana_ui_runtime::ComponentGeometry::TextInput { folds, .. } => {
+                    folds.gutters.first().copied()
+                }
+                _ => None,
+            })
+            .flatten()
+            .expect("fold gutter geometry");
+        let center = (
+            gutter.bounds.x + gutter.bounds.width / 2.0,
+            gutter.bounds.y + gutter.bounds.height / 2.0,
+        );
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &click(center.0, center.1, PointerPhase::Down),
+                    Duration::from_millis(2_000),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &click(center.0, center.1, PointerPhase::Up),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert!(context.world().text_fold_collapsed(node).is_empty());
+    }
+
+    #[test]
+    fn escape_collapses_additional_cursors_and_single_cursor_escape_passes_through() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd\nef"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let escape = || InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".into(),
+            text: None,
+            code: "Escape".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        // 多光标：Esc 塌缩到主光标并消费事件。
+        set_selections(&mut context, area, (1, 1), vec![(4, 4)]);
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape())
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab\ncd\nef".into(), (1, 1), vec![])
+        );
+
+        // 单光标：Esc 不消费（宿主继续处理），选区不变。
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &escape())
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab\ncd\nef".into(), (1, 1), vec![])
+        );
+    }
+
+    #[test]
+    fn escape_ends_snippet_session_before_collapsing_cursors() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        set_selections(&mut context, area, (0, 0), vec![(5, 5)]);
+        assert!(
+            context
+                .insert_focused_text_snippet(
+                    document,
+                    &nana_ui_runtime::TextSnippet::new("s", "[$1]$0"),
+                )
+                .unwrap()
+        );
+        let mut adapter = RuntimeInputAdapter::default();
+        let escape = InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".into(),
+            text: None,
+            code: "Escape".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        // 第一个 Esc：只结束 snippet 会话，多光标保留。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("[]ab\ncd".into(), (2, 2), vec![(7, 7)])
+        );
+
+        // 第二个 Esc：塌缩多光标。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("[]ab\ncd".into(), (2, 2), vec![])
+        );
+    }
+
+    #[test]
+    fn snippet_session_tab_routes_through_the_adapter_before_indent() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("").code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        assert!(
+            context
+                .insert_focused_text_snippet(
+                    document,
+                    &nana_ui_runtime::TextSnippet::new("if", "if $1 {$0"),
+                )
+                .unwrap()
+        );
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 会话内 Tab 跳位（消费且不插入缩进）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("if  {".into(), 3, 3));
+
+        // 会话结束后 Tab 回到缩进行为。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_ne!(textarea_selection(&context, node).0, "if  {");
+    }
+
+    #[test]
     fn multi_cursor_typing_deleting_and_newline_edit_every_selection() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -4858,6 +5202,7 @@ mod tests {
                 matches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
+                folds: std::sync::Arc::from([]),
             }),
         );
         context.commit_mutations(layout).unwrap();

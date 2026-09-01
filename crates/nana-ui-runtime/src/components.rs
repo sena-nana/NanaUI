@@ -125,11 +125,105 @@ impl TextMatchSpan {
     }
 }
 
+/// 代码折叠区间。字节偏移覆盖整个块（含首尾花括号），`start < end`。
+///
+/// 宿主在每次文本变化后重新喂 [`crate::TextArea::code_folds`]；哪些区间
+/// 处于折叠态由组件内部（Runtime 侧按节点维护）管理，宿主不感知折叠
+/// 状态的存储。折叠是纯视图状态：不改变 committed value。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCodeFold {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl TextCodeFold {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    /// 是否可折叠：区间内至少有一个换行（单行区间没有可隐藏的行）。
+    pub fn collapsible_in(self, value: &str) -> bool {
+        self.start < self.end
+            && self.end <= value.len()
+            && value[self.start.min(value.len())..self.end].contains('\n')
+    }
+
+    /// 折叠后第一个被隐藏的字节：`start` 所在行的行尾换行符位置
+    /// （区间无换行时等于 `end`，即无可隐藏内容）。
+    pub fn hidden_start_in(self, value: &str) -> usize {
+        value[self.start.min(value.len())..]
+            .find('\n')
+            .map_or(self.end, |index| self.start + index)
+            .min(self.end.max(self.start))
+    }
+}
+
+/// 宿主触发的代码片段。`body` 中的 `$N`（N 为十进制数字）是占位标记：
+/// 插入时从文本中移除，`$1..$N` 按序号成为 Tab 跳位，`$0` 是插入后的
+/// 初始光标位置（缺省为插入文本末尾）。其余字符原样插入，`$` 后不跟
+/// 数字时保持字面量。不支持 `${N:default}` 与占位镜显。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSnippet {
+    pub label: String,
+    pub body: String,
+}
+
+impl TextSnippet {
+    pub fn new(label: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            body: body.into(),
+        }
+    }
+}
+
+/// 活跃的 snippet 会话（每个编辑器节点至多一个）。`stops` 是 `$1..$N`
+/// 在 committed value 中的光标偏移，`index` 指向当前跳位。文本被外部
+/// 编辑时跳位按最小变更区间重映射，失效即结束会话。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextSnippetSession {
+    pub stops: Vec<usize>,
+    pub index: usize,
+}
+
 /// 文本空间内的查找匹配高亮条带（按折行拆分后可能一条 span 对应多条）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextMatchMark {
     pub rect: LayoutBox,
     pub current: bool,
+}
+
+/// 折叠摘要标记（文本空间）：折叠起始行尾的 ` …N` 文本框，可点击
+/// 切换该折叠。矩形由 shape 管线用真实字形度量计算。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextFoldMark {
+    pub rect: LayoutBox,
+    pub fold: TextCodeFold,
+}
+
+/// gutter 折叠箭头（节点空间）：可点击切换的命中框，`collapsed` 决定
+/// 画收起（右箭头）还是展开（下箭头）形态。颜色由世界按低对比令牌解析。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextFoldGutter {
+    pub bounds: LayoutBox,
+    pub fold: TextCodeFold,
+    pub collapsed: bool,
+    pub color: [f32; 4],
+}
+
+/// 折叠摘要标记命中框（节点空间），落在折叠起始行行尾。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextFoldMarker {
+    pub bounds: LayoutBox,
+    pub fold: TextCodeFold,
+}
+
+/// [`crate::ComponentGeometry::TextInput`] 的折叠几何集合。空集合即
+/// 默认值，零额外成本。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextFoldGeometry {
+    pub gutters: Vec<TextFoldGutter>,
+    pub markers: Vec<TextFoldMarker>,
 }
 
 /// 节点空间内的查找匹配高亮条带，颜色由世界按当前/普通匹配解析。
@@ -179,6 +273,9 @@ pub enum StandardVisual {
         /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
         /// 缩进单位宽度画竖线（仅多行态生效）。
         indent_guides: Option<Arc<str>>,
+        /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
+        /// 哪些区间处于折叠态由组件内部维护，渲染按折叠后的视图展示。
+        folds: Arc<[TextCodeFold]>,
     },
     Checkbox {
         checked: bool,
@@ -636,6 +733,8 @@ pub enum ComponentGeometry {
         indent_guides: Vec<(LayoutBox, [f32; 4])>,
         /// 行号标签（节点空间 y，行号从 1 起）。
         line_labels: Vec<LineLabel>,
+        /// 折叠几何：gutter 箭头（可点击切换）与折叠摘要标记命中框。
+        folds: TextFoldGeometry,
         /// 行号文本颜色与字号。
         line_labels_color: [f32; 4],
         line_labels_font_size: f32,
@@ -1348,6 +1447,11 @@ pub struct TextInputPresentation {
     pub indent_guides: Vec<LayoutBox>,
     /// 各逻辑行的 y 起点（启用行号栏时计算）。
     pub line_tops: Vec<f32>,
+    /// 与 `line_tops` 对齐的原始逻辑行号（折叠隐藏行后显示行索引不再
+    /// 等于行号；为空时行号 = 索引 + 1）。
+    pub line_numbers: Vec<u32>,
+    /// 折叠摘要标记（文本空间，存在折叠态区间时计算）。
+    pub fold_marks: Vec<TextFoldMark>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

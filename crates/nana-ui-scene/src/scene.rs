@@ -9,8 +9,8 @@ use nana_ui_core::{
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
-    LayoutBox, NodeKind, StableNodeId, StandardVisual, TextHorizontalAlignment, TextShaping,
-    TextVerticalAlignment, TimeSeriesChart,
+    LayoutBox, NodeKind, StableNodeId, StandardVisual, TextFoldGutter, TextHorizontalAlignment,
+    TextShaping, TextVerticalAlignment, TimeSeriesChart,
 };
 
 use crate::{
@@ -3317,9 +3317,60 @@ impl UiScene {
                         line_labels,
                         line_labels_color,
                         line_labels_font_size,
+                        folds,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
+                        // 折叠 gutter 标记：折叠态（实心，slot 14）与展开态
+                        // （描边，slot 15）各一个 quad 批次，与行号同级的外层
+                        // 裁剪；合批后数量不受 slot 上限约束，点击切换由
+                        // Runtime 指针路径处理。
+                        if !folds.gutters.is_empty() {
+                            let gutter_context = VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            };
+                            let collapsed: Vec<&TextFoldGutter> = folds
+                                .gutters
+                                .iter()
+                                .filter(|gutter| gutter.collapsed)
+                                .collect();
+                            let expanded: Vec<&TextFoldGutter> = folds
+                                .gutters
+                                .iter()
+                                .filter(|gutter| !gutter.collapsed)
+                                .collect();
+                            if !collapsed.is_empty() {
+                                self.insert_primitive(visual_quad_batch(
+                                    &gutter_context,
+                                    14,
+                                    collapsed.iter().map(|gutter| scene_rect(gutter.bounds)),
+                                    VisualQuadStyle {
+                                        background: Some(collapsed[0].color),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: corner_radii(0.0),
+                                    },
+                                ));
+                            }
+                            if !expanded.is_empty() {
+                                self.insert_primitive(visual_quad_batch(
+                                    &gutter_context,
+                                    15,
+                                    expanded.iter().map(|gutter| scene_rect(gutter.bounds)),
+                                    VisualQuadStyle {
+                                        background: None,
+                                        border_color: Some(expanded[0].color),
+                                        border_width: 1.0,
+                                        corner_radius: corner_radii(0.0),
+                                    },
+                                ));
+                            }
+                        }
                         // 行号标签绘制在左内边距区域，使用外层裁剪。
                         if !line_labels.is_empty() {
                             let padding = node
@@ -5103,6 +5154,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -5139,6 +5191,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
@@ -6009,6 +6062,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: true,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6067,6 +6121,7 @@ mod tests {
             ],
             line_labels_color: [0.6, 0.6, 0.6, 1.0],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
             background: None,
             border: None,
             border_width: 0.0,
@@ -6125,6 +6180,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6182,6 +6238,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
             background: None,
             border: None,
             border_width: 0.0,
@@ -6232,6 +6289,136 @@ mod tests {
     }
 
     #[test]
+    fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
+        const FOLDS: usize = 25;
+        let mut gutters = Vec::with_capacity(FOLDS);
+        for index in 0..FOLDS {
+            gutters.push(nana_ui_runtime::TextFoldGutter {
+                bounds: LayoutBox {
+                    x: 2.0,
+                    y: index as f32 * 14.0,
+                    width: 14.0,
+                    height: 14.0,
+                },
+                fold: nana_ui_runtime::TextCodeFold::new(index * 10, index * 10 + 8),
+                collapsed: index % 2 == 0,
+                color: [0.5, 0.5, 0.5, 0.4],
+            });
+        }
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 18.0,
+                    y: 0.0,
+                    width: 180.0,
+                    height: 350.0,
+                },
+                content: Arc::from("fn a() {}"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry {
+                gutters,
+                markers: Vec::new(),
+            },
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        // 折叠态（slot 14，实心）与展开态（slot 15，描边）各一个批次，
+        // 超过旧 slot 上限（21）后仍全部渲染。
+        let batch = |slot: u8| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .expect("gutter batch")
+        };
+        let collapsed = batch(14);
+        let collapsed_len = match &collapsed.kind {
+            ScenePrimitiveKind::QuadBatch {
+                bounds, background, ..
+            } => {
+                assert_eq!(bounds.len(), 13);
+                assert_eq!(*background, Some([0.5, 0.5, 0.5, 0.4]));
+                assert_eq!(
+                    bounds[0],
+                    SceneRect {
+                        x: 2.0,
+                        y: 0.0,
+                        width: 14.0,
+                        height: 14.0,
+                    }
+                );
+                bounds.len()
+            }
+            _ => panic!("expected collapsed gutter quad batch"),
+        };
+        let expanded = batch(15);
+        let expanded_len = match &expanded.kind {
+            ScenePrimitiveKind::QuadBatch {
+                bounds,
+                background,
+                border_color,
+                border_width,
+                ..
+            } => {
+                assert_eq!(bounds.len(), 12);
+                assert_eq!(*background, None);
+                assert_eq!(*border_color, Some([0.5, 0.5, 0.5, 0.4]));
+                assert_eq!(*border_width, 1.0);
+                assert_eq!(
+                    bounds[11],
+                    SceneRect {
+                        x: 2.0,
+                        y: 23.0 * 14.0,
+                        width: 14.0,
+                        height: 14.0,
+                    }
+                );
+                bounds.len()
+            }
+            _ => panic!("expected expanded gutter quad batch"),
+        };
+        // 全部 25 个箭头（>21）都渲染为批次内的 quad，不再互相覆盖。
+        assert_eq!(collapsed_len + expanded_len, FOLDS);
+    }
+
+    #[test]
     fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         let mut input = node(1, None, &[]);
         input.standard_visual = Some(StandardVisual::TextInput {
@@ -6244,6 +6431,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6298,6 +6486,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
         });
 
         let mut scene = UiScene::new();
@@ -6342,6 +6531,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: Some(Arc::from("\t")),
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6419,6 +6609,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
             background: None,
             border: None,
             border_width: 0.0,
@@ -6500,6 +6691,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6561,6 +6753,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
         });
 
         let mut scene = UiScene::new();
@@ -6602,6 +6795,7 @@ mod tests {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         });
         single_line.component_geometry = input_component_geometry(false);
         scene.apply_delta([single_line], []);
@@ -6657,6 +6851,7 @@ mod tests {
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
         })
     }
 
