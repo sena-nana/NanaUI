@@ -522,11 +522,9 @@ fn mesh_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(if sample_count > 1 {
-                "solid_fs_msaa"
-            } else {
-                "solid_fs_main"
-            }),
+            // Both sample counts share the analytic-coverage fragment: MSAA
+            // samples geometry, not the SDF, so it cannot own the edge.
+            entry_point: Some("solid_fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 // Premultiplied alpha, not BlendState::MAX (MAX would also
