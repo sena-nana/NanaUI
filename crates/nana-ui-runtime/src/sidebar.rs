@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
+    AlignSpec, ButtonKind, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
     LineHeightSpec, OverflowSpec, SemanticColorRole, TooltipConfig, UI_METRICS,
 };
 
@@ -30,6 +30,11 @@ const SECTION_HEADER_GAP: f32 = 5.0;
 const SECTION_HEADER_TITLE_SIZE: f32 = 11.0;
 const SECTION_HEADER_TITLE_WEIGHT: u16 = 700;
 const SECTION_DISCLOSURE_SIZE: f32 = 12.0;
+const SECTION_TOOL_EDGE: f32 = 20.0;
+/// Trailing sidebar tools share one glyph column: whatever a tool's own edge,
+/// its box centers on this inset from the frame content edge, so the padded
+/// section header rows and the unpadded top bar align their glyphs.
+const TOOL_COLUMN_CENTER_INSET: f32 = ROW_PADDING_RIGHT + UI_METRICS.icon_button_size / 2.0;
 const SECTION_COUNT_SIZE: f32 = 11.0;
 const SECTION_BODY_GAP: f32 = 1.0;
 const SECTION_EMPTY_HEIGHT: f32 = 30.0;
@@ -62,6 +67,52 @@ pub fn sidebar_row_depth_inset(depth: u16) -> f32 {
     } else {
         ROW_TREE_FIRST_DEPTH_INSET + f32::from(depth - 1) * ROW_TREE_DEPTH_STEP
     }
+}
+
+/// Standard trailing tool for the sidebar top bar; drops into an unpadded
+/// `Stack::bar` and lands on the shared tool column by itself.
+pub fn sidebar_top_bar_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
+    sidebar_tool_button(
+        icon,
+        label,
+        UI_METRICS.icon_button_size,
+        TOOL_COLUMN_CENTER_INSET - UI_METRICS.icon_button_size / 2.0,
+    )
+}
+
+/// Inline small tool for section headers, sized to the header row while its
+/// glyph stays on the shared tool column.
+pub fn sidebar_section_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
+    sidebar_tool_button(
+        icon,
+        label,
+        SECTION_TOOL_EDGE,
+        TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0,
+    )
+}
+
+fn sidebar_tool_button(
+    icon: Icon,
+    label: impl Into<Arc<str>>,
+    edge: f32,
+    trailing_margin: f32,
+) -> IconButton {
+    let label: Arc<str> = label.into();
+    let mut button = IconButton::new(icon, Arc::clone(&label))
+        .kind(ButtonKind::Text)
+        .size(ControlSize::Small)
+        .with_tooltip(label);
+    let layout = Arc::make_mut(&mut button.style.layout);
+    let edge = LengthSpec::Px(edge);
+    layout.min_width = Some(edge);
+    layout.min_height = Some(edge);
+    layout.width = Some(edge);
+    layout.height = Some(edge);
+    layout.padding_left = Some(LengthSpec::Px(0.0));
+    layout.padding_right = Some(LengthSpec::Px(0.0));
+    layout.border_radius = Some(UI_METRICS.radius_sm);
+    layout.margin_right = Some(LengthSpec::Px(trailing_margin));
+    button
 }
 
 /// Host-sampled expand/collapse. The host owns the clock; this type never starts a thread.
@@ -1430,6 +1481,52 @@ mod tests {
         assert_eq!(sidebar_row_depth_inset(0), 8.0);
         assert_eq!(sidebar_row_depth_inset(1), 30.0);
         assert_eq!(sidebar_row_depth_inset(2), 42.0);
+    }
+
+    #[test]
+    fn sidebar_tools_land_on_one_glyph_column_after_layout() {
+        use crate::Stack;
+
+        let mut context = AppContext::new();
+        let doc = document();
+        let column = context.create_component(doc, Stack::column(6.0)).unwrap();
+
+        // Top bar replica: unpadded full-width row, filler, then the 28px tool.
+        let bar = context.create_component(doc, Stack::bar(6.0)).unwrap();
+        let search = context
+            .create_component(doc, sidebar_top_bar_tool_button(Icon::Search, "搜索"))
+            .unwrap();
+        let bar_filler = context.create_component(doc, Stack::fill_row(0.0)).unwrap();
+        context.append_child(column, bar).unwrap();
+        context.append_child(bar, bar_filler).unwrap();
+        context.append_child(bar, search).unwrap();
+
+        // Section header replica: full-width row padded 8 both sides, fill
+        // title, then the 20px inline tool.
+        let header = context
+            .create_component(doc, SidebarSection::new("项目").header_item())
+            .unwrap();
+        let add = context
+            .create_component(doc, sidebar_section_tool_button(Icon::Add, "添加"))
+            .unwrap();
+        let header_filler = context.create_component(doc, Stack::fill_row(0.0)).unwrap();
+        context.append_child(column, header).unwrap();
+        context.append_child(header, header_filler).unwrap();
+        context.append_child(header, add).unwrap();
+
+        context
+            .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
+            .unwrap();
+        let search_box = context.world().layout_box(search.stable_id()).unwrap();
+        let add_box = context.world().layout_box(add.stable_id()).unwrap();
+        let search_center = search_box.x + search_box.width / 2.0;
+        let add_center = add_box.x + add_box.width / 2.0;
+        assert_eq!(search_box.width, UI_METRICS.icon_button_size);
+        assert_eq!(add_box.width, SECTION_TOOL_EDGE);
+        assert_eq!(
+            search_center, add_center,
+            "sidebar tool glyphs must share one column"
+        );
     }
 
     #[test]

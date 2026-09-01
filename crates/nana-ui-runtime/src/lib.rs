@@ -205,7 +205,7 @@ pub use shell::{AppShell, AppTitleBar, AppTitleBarControls, DesktopShell, Window
 pub use sidebar::{
     SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
     SidebarRowTone, SidebarSection, SidebarSectionSlots, SidebarSectionState,
-    sidebar_row_depth_inset,
+    sidebar_row_depth_inset, sidebar_section_tool_button, sidebar_top_bar_tool_button,
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
