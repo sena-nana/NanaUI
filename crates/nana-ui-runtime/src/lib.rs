@@ -112,10 +112,10 @@ pub use feedback::{
 };
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
-    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FocusedTextEditor,
-    FrameworkError, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind,
-    Subscription, Task, TextDeleteKind, TextPointerClick, UiBuilder, UiExtension, View,
-    ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
+    OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription,
+    Task, TextDeleteKind, UiBuilder, UiExtension, View, ViewContext, VirtualListItems,
+    VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
@@ -209,14 +209,7 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
-pub use text_editing::{
-    TextCaretIntent, TextReplacement, apply_replacement, auto_indent_newline, auto_pair_edit,
-    caret_focus, caret_offset_at_point, delete_backward, delete_forward, delete_to_line_end,
-    delete_to_line_start, delete_word_backward, delete_word_forward, indent_selection,
-    line_content_start, logical_line_range, moved_selection, next_grapheme, normalize_newlines,
-    outdent_selection, prev_grapheme, toggle_line_comment, vertical_caret_focus,
-    vertical_caret_focus_logical, word_end_after, word_range_at, word_start_before,
-};
+pub use text_editing::TextCaretIntent;
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
