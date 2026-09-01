@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, TextHorizontalAlignment, TextInputState, TextVerticalAlignment,
-    UiWorld,
+    StandardVisual, TextContent, TextDiagnosticSpan, TextHorizontalAlignment, TextInputState,
+    TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1332,6 +1332,8 @@ impl ComponentView for TextInput {
             secure: self.secure,
             invalid: self.invalid,
             steppers: false,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1539,6 +1541,8 @@ impl ComponentView for NumberInput {
             secure: false,
             invalid: self.invalid,
             steppers: true,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1587,6 +1591,11 @@ pub struct TextArea {
     pub scroll_offset: ScrollOffset,
     pub style: NodeStyle,
     pub highlight: Option<HighlightRequest>,
+    /// 编译诊断 span 标记（错误/警告下划线）。宿主在文本变化后负责更新或
+    /// 清除；渲染层只钳制越界偏移。
+    pub diagnostics: Arc<[TextDiagnosticSpan]>,
+    /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
+    pub line_numbers: bool,
     pub(crate) style_override: bool,
 }
 
@@ -1601,8 +1610,22 @@ impl TextArea {
             scroll_offset: ScrollOffset::default(),
             style: text_field_style(true),
             highlight: None,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
             style_override: false,
         }
+    }
+
+    /// 设置诊断 span 标记（见 [`TextDiagnosticSpan`]）。
+    pub fn diagnostics(mut self, diagnostics: Arc<[TextDiagnosticSpan]>) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    /// 启用行号栏（行号绘制在节点左内边距区域）。
+    pub fn line_numbers(mut self, line_numbers: bool) -> Self {
+        self.line_numbers = line_numbers;
+        self
     }
 
     /// Color committed text with the registered `"highlight"` presenter.
@@ -1675,6 +1698,8 @@ impl ComponentView for TextArea {
             secure: false,
             invalid: self.invalid,
             steppers: false,
+            diagnostics: Arc::clone(&self.diagnostics),
+            line_numbers: self.line_numbers,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

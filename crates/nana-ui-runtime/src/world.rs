@@ -12,7 +12,9 @@ use nana_ui_core::{
 };
 
 use crate::animation::ActiveAnimation;
-use crate::components::{EmptyStateTextPresentation, ModalTextPresentation};
+use crate::components::{
+    EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
+};
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
 use crate::{
@@ -1236,6 +1238,49 @@ impl UiWorld {
         self.derive_component_geometry(id, visual, style)
     }
 
+    /// 计算使多行文本输入内 `offset` 所在逻辑行进入可视区所需的滚动偏移。
+    /// 只读查询：不改世界状态；宿主将返回值写回组件的 `scroll_offset`。
+    /// 行高按逻辑行均匀假设（忽略软折行），定位场景下足够精确。
+    pub fn text_input_reveal_scroll(
+        &self,
+        id: StableNodeId,
+        offset: usize,
+    ) -> Option<ScrollOffset> {
+        let state = self.nodes.text_input(id)?;
+        if !self.nodes.get(id)?.accessibility.multiline {
+            return None;
+        }
+        if !matches!(self.nodes.visual(id), Some(StandardVisual::TextInput { .. })) {
+            return None;
+        }
+        let presentation = self.nodes.text_input_presentation(id)?;
+        let line_height = presentation.line_height.max(1.0);
+        let offset = offset.min(state.value.len());
+        let line_index =
+            state.value.as_str()[..offset].bytes().filter(|byte| *byte == b'\n').count() as f32;
+        let reveal_y = line_index * line_height;
+        let node = self.nodes.get(id)?;
+        let padding = node
+            .style
+            .layout
+            .resolved_padding_against(Some(node.layout.width));
+        let border = node.style.layout.resolved_border_width();
+        let content_height =
+            (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
+        let metrics = self.text_metrics(id).unwrap_or_default();
+        let max_scroll = (metrics.height - content_height).max(0.0);
+        let mut scroll_y = self.record(id).scroll_offset.y;
+        if reveal_y < scroll_y {
+            scroll_y = reveal_y;
+        } else if reveal_y + line_height > scroll_y + content_height {
+            scroll_y = reveal_y + line_height - content_height;
+        }
+        Some(ScrollOffset {
+            x: self.record(id).scroll_offset.x,
+            y: scroll_y.clamp(0.0, max_scroll),
+        })
+    }
+
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
         self.nodes.get(id).map(|node| &node.accessibility)
     }
@@ -1648,12 +1693,24 @@ impl UiWorld {
             .nodes
             .get(id)
             .is_some_and(|node| node.accessibility.multiline);
+        let extras = match self.nodes.visual(id) {
+            Some(StandardVisual::TextInput {
+                diagnostics,
+                line_numbers,
+                ..
+            }) => TextInputEditorExtras {
+                diagnostics: Arc::clone(diagnostics),
+                line_numbers: *line_numbers,
+            },
+            _ => TextInputEditorExtras::default(),
+        };
         Some(build_text_input_presentation_source(
             state,
             ime,
             placeholder,
             *secure,
             multiline,
+            extras,
         ))
     }
 
@@ -3726,7 +3783,48 @@ impl UiWorld {
                     width: 1.0,
                     height: line_height,
                 });
+                let marker_color = |severity| match severity {
+                    crate::TextDiagnosticSeverity::Error => {
+                        self.style_model.palette.danger.as_rgba_array()
+                    }
+                    crate::TextDiagnosticSeverity::Warning => {
+                        self.style_model.palette.warning.as_rgba_array()
+                    }
+                };
+                let diagnostic_markers = presentation
+                    .diagnostic_marks
+                    .iter()
+                    .map(|mark| {
+                        (
+                            LayoutBox {
+                                x: field_x(mark.rect.x),
+                                y: content.y + mark.rect.y - scroll_y,
+                                width: mark.rect.width,
+                                height: mark.rect.height,
+                            },
+                            marker_color(mark.severity),
+                        )
+                    })
+                    .collect();
+                let line_labels = if multiline {
+                    presentation
+                        .line_tops
+                        .iter()
+                        .enumerate()
+                        .map(|(index, top)| crate::LineLabel {
+                            y: content.y + top - scroll_y,
+                            height: line_height,
+                            number: index as u32 + 1,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 Some(crate::ComponentGeometry::TextInput {
+                    diagnostic_markers,
+                    line_labels,
+                    line_labels_color: self.style_model.palette.faint.as_rgba_array(),
+                    line_labels_font_size: (size.text_size() - 1.0).max(10.0),
                     text: crate::ComponentTextRegion {
                         bounds: LayoutBox {
                             x: content.x - scroll_x,
@@ -6044,6 +6142,16 @@ struct TextInputPresentationSource {
     caret: usize,
     preedit: Option<(usize, usize)>,
     multiline: bool,
+    /// 代码编辑器扩展：诊断标记 / 行号栏（占位符态跳过）。
+    diagnostics: Arc<[TextDiagnosticSpan]>,
+    line_numbers: bool,
+}
+
+/// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
+#[derive(Debug, Clone, Default)]
+struct TextInputEditorExtras {
+    diagnostics: Arc<[TextDiagnosticSpan]>,
+    line_numbers: bool,
 }
 
 fn build_text_input_presentation_source(
@@ -6052,6 +6160,7 @@ fn build_text_input_presentation_source(
     placeholder: &str,
     secure: bool,
     multiline: bool,
+    extras: TextInputEditorExtras,
 ) -> TextInputPresentationSource {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -6079,6 +6188,8 @@ fn build_text_input_presentation_source(
             caret: 0,
             preedit: None,
             multiline,
+            diagnostics: extras.diagnostics,
+            line_numbers: false,
         };
     }
 
@@ -6107,6 +6218,8 @@ fn build_text_input_presentation_source(
             caret: preedit_start + ime_focus,
             preedit: Some((preedit_start, preedit_end)),
             multiline,
+            diagnostics: extras.diagnostics,
+            line_numbers: false,
         };
     }
 
@@ -6121,6 +6234,8 @@ fn build_text_input_presentation_source(
         caret: focus,
         preedit: None,
         multiline,
+        diagnostics: extras.diagnostics,
+        line_numbers: extras.line_numbers,
     }
 }
 
@@ -6161,6 +6276,68 @@ fn shape_text_input_presentation(
     let preedit_lines = source.preedit.map_or_else(Vec::new, |preedit| {
         shaper.text_highlights(id, &source.text, preedit, style, presentation_constraints)
     });
+
+    // 编辑器扩展：诊断下划线 / 滚动意图几何 / 行号 y 表（仅多行态）。
+    let clamp_boundary = |value: &str, mut index: usize| {
+        index = index.min(value.len());
+        while index > 0 && !value.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
+    };
+    let diagnostic_marks = if source.multiline {
+        let mut marks = Vec::new();
+        for span in source.diagnostics.iter() {
+            let start = clamp_boundary(&source.text.value, span.offset);
+            let end = clamp_boundary(&source.text.value, span.offset + span.length.max(1));
+            if end <= start {
+                continue;
+            }
+            for rect in shaper.text_highlights(
+                id,
+                &source.text,
+                (start, end),
+                style,
+                presentation_constraints,
+            ) {
+                marks.push(TextDiagnosticMark {
+                    rect: LayoutBox {
+                        x: rect.x,
+                        y: rect.y + rect.height - 2.0,
+                        width: rect.width.max(1.0),
+                        height: 2.0,
+                    },
+                    severity: span.severity,
+                });
+            }
+        }
+        marks
+    } else {
+        Vec::new()
+    };
+    let line_tops = if source.line_numbers && source.multiline {
+        let value = source.text.value.as_str();
+        let mut starts: Vec<usize> = vec![0];
+        for (index, byte) in value.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
+            }
+        }
+        if value.ends_with('\n') {
+            starts.pop();
+        }
+        starts
+            .iter()
+            .map(|&start| {
+                shaper
+                    .text_position(id, &source.text, start, style, presentation_constraints)
+                    .1
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     TextInputPresentation {
         display_value: source.text.value.clone(),
         placeholder: source.placeholder,
@@ -6189,6 +6366,8 @@ fn shape_text_input_presentation(
         } else {
             Vec::new()
         },
+        diagnostic_marks,
+        line_tops,
     }
 }
 
@@ -9935,7 +10114,14 @@ mod tests {
                 focus: "A👩‍💻".len(),
             },
         };
-        let masked = build_text_input_presentation_source(&state, None, "", true, false);
+        let masked = build_text_input_presentation_source(
+            &state,
+            None,
+            "",
+            true,
+            false,
+            TextInputEditorExtras::default(),
+        );
         assert_eq!(masked.text.value, "•••");
         assert_eq!(masked.selection, Some(("•".len(), "••".len())));
 
@@ -9948,10 +10134,136 @@ mod tests {
             "",
             true,
             false,
+            TextInputEditorExtras::default(),
         );
         assert_eq!(preedit.text.value, "•输入•");
         assert_eq!(preedit.preedit, Some(("•".len(), "•输入".len())));
         assert_eq!(preedit.caret, "•输".len());
+    }
+
+    #[test]
+    fn editor_extras_shape_and_derive_into_geometry() {
+        let value = "甲乙\nthird\n末";
+        let mut world = UiWorld::default();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "textarea".into() },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([
+                    crate::TextDiagnosticSpan::new(0, "甲乙".len(), crate::TextDiagnosticSeverity::Error),
+                    crate::TextDiagnosticSpan::new(
+                        "甲乙\n".len(),
+                        "third".len(),
+                        crate::TextDiagnosticSeverity::Warning,
+                    ),
+                ]),
+                line_numbers: true,
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    height: Some(nana_ui_core::LengthSpec::Px(40.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 40.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 诊断切分到所在行并生成下划线条带（条带贴行底、高 2）。
+        let line_height = presentation.line_height;
+        assert_eq!(presentation.diagnostic_marks.len(), 2);
+        assert_eq!(
+            presentation.diagnostic_marks[0].severity,
+            crate::TextDiagnosticSeverity::Error
+        );
+        assert_eq!(
+            presentation.diagnostic_marks[0].rect.y,
+            line_height - 2.0
+        );
+        assert_eq!(
+            presentation.diagnostic_marks[1].severity,
+            crate::TextDiagnosticSeverity::Warning
+        );
+        assert_eq!(presentation.diagnostic_marks[1].rect.y, 26.0);
+        // 三个逻辑行的 y 起点。
+        assert_eq!(presentation.line_tops, vec![0.0, 14.0, 28.0]);
+        // 滚动查询：定位第 3 行（y=28）需要 scroll_y = 42 - 40 = 2。
+        let scroll = world
+            .text_input_reveal_scroll(node(1), "甲乙\nthird\n".len())
+            .expect("reveal scroll");
+        assert_eq!(scroll.y, 2.0);
+
+        let mut scrolled = MutationQueue::new();
+        scrolled.set_scroll_offset(node(1), scroll);
+        world.commit(scrolled).unwrap();
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            diagnostic_markers,
+            ref line_labels,
+            line_labels_color,
+            ref text,
+            ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(diagnostic_markers.len(), 2);
+        assert_ne!(diagnostic_markers[0].1, diagnostic_markers[1].1);
+        // 视口高 40、三行共 42px，reveal 把第 3 行推到视口底部。
+        assert_eq!(line_labels.len(), 3);
+        assert_eq!(line_labels[0].y, 40.0 - 42.0);
+        assert_eq!(line_labels[1].y, 40.0 - 28.0);
+        assert_eq!(line_labels[2].y, 40.0 - 14.0);
+        assert_eq!(line_labels[0].number, 1);
+        assert_eq!(line_labels_color[3], 1.0);
+        // 文本区域随滚动整体上移两像素（scroll_y = 42 - 40）。
+        assert_eq!(text.bounds.y, -2.0);
     }
 
     #[test]
@@ -9969,7 +10281,14 @@ mod tests {
             line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
             ..ComputedStyle::default()
         };
-        let source = build_text_input_presentation_source(&state, None, "", false, true);
+        let source = build_text_input_presentation_source(
+            &state,
+            None,
+            "",
+            false,
+            true,
+            TextInputEditorExtras::default(),
+        );
         let mut shaper = FunctionalShaper::default();
         let presentation = shape_text_input_presentation(
             node(1),
@@ -10015,6 +10334,7 @@ mod tests {
             "",
             false,
             true,
+            TextInputEditorExtras::default(),
         );
         let presentation = shape_text_input_presentation(
             node(1),
@@ -10149,7 +10469,14 @@ mod tests {
         let style = ComputedStyle::default();
         let mut probe = ConstraintProbe::default();
 
-        let multiline = build_text_input_presentation_source(&state, None, "", false, true);
+        let multiline = build_text_input_presentation_source(
+            &state,
+            None,
+            "",
+            false,
+            true,
+            TextInputEditorExtras::default(),
+        );
         shape_text_input_presentation(node(1), multiline, &style, resolved, &mut probe);
         assert_eq!(
             probe.positions.pop(),
@@ -10165,7 +10492,14 @@ mod tests {
             })
         );
 
-        let single_line = build_text_input_presentation_source(&state, None, "", false, false);
+        let single_line = build_text_input_presentation_source(
+            &state,
+            None,
+            "",
+            false,
+            false,
+            TextInputEditorExtras::default(),
+        );
         shape_text_input_presentation(node(1), single_line, &style, resolved, &mut probe);
         assert_eq!(
             probe.positions.pop(),

@@ -73,6 +73,32 @@ pub struct TooltipVisual {
     pub open: bool,
 }
 
+/// 诊断标记的严重级别（编辑器下划线颜色随之变化）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+/// 编辑器诊断 span。`offset`/`length` 为字节偏移，宿主负责在文本变化后
+/// 更新或清除；越界部分在几何计算时被钳制。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDiagnosticSpan {
+    pub offset: usize,
+    pub length: usize,
+    pub severity: TextDiagnosticSeverity,
+}
+
+impl TextDiagnosticSpan {
+    pub fn new(offset: usize, length: usize, severity: TextDiagnosticSeverity) -> Self {
+        Self {
+            offset,
+            length,
+            severity,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StandardVisual {
     ModalFrame {
@@ -101,6 +127,11 @@ pub enum StandardVisual {
         /// text input that also steps, so it reuses this visual instead of
         /// growing a second editable contract.
         steppers: bool,
+        /// 代码编辑器扩展：编译诊断 span 标记。偏移由宿主维护——文本变化后
+        /// 由宿主更新或清除，渲染层仅做越界钳制，不做偏移迁移。
+        diagnostics: Arc<[TextDiagnosticSpan]>,
+        /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
+        line_numbers: bool,
     },
     Checkbox {
         checked: bool,
@@ -540,6 +571,13 @@ pub enum ComponentGeometry {
         selection: Vec<LayoutBox>,
         caret: Option<LayoutBox>,
         preedit: Vec<LayoutBox>,
+        /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
+        diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 行号标签（节点空间 y，行号从 1 起）。
+        line_labels: Vec<LineLabel>,
+        /// 行号文本颜色与字号。
+        line_labels_color: [f32; 4],
+        line_labels_font_size: f32,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
@@ -1206,6 +1244,21 @@ fn resolved_text_line_height(style: &ComputedStyle) -> f32 {
     }
 }
 
+/// 诊断标记的可视矩形（文本空间坐标，随行折叠切分）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDiagnosticMark {
+    pub rect: LayoutBox,
+    pub severity: TextDiagnosticSeverity,
+}
+
+/// 行号标签（文本空间 y 坐标，逻辑行序号从 1 起）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineLabel {
+    pub y: f32,
+    pub height: f32,
+    pub number: u32,
+}
+
 /// Shaped editing presentation. The committed value remains in
 /// [`TextInputState`]; this derived component only carries renderer geometry.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1219,6 +1272,10 @@ pub struct TextInputPresentation {
     pub line_height: f32,
     pub preedit: Option<(f32, f32)>,
     pub preedit_lines: Vec<LayoutBox>,
+    /// 诊断下划线条带（文本空间），仅多行态计算。
+    pub diagnostic_marks: Vec<TextDiagnosticMark>,
+    /// 各逻辑行的 y 起点（启用行号栏时计算）。
+    pub line_tops: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

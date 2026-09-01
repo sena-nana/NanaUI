@@ -3307,9 +3307,65 @@ impl UiScene {
                         focus_ring,
                         caret_color,
                         preedit_color,
+                        diagnostic_markers,
+                        line_labels,
+                        line_labels_color,
+                        line_labels_font_size,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
+                        // 行号标签绘制在左内边距区域，使用外层裁剪。
+                        if !line_labels.is_empty() {
+                            let padding = node
+                                .source_style
+                                .layout
+                                .resolved_padding_against(Some(bounds.width));
+                            let border = node.source_style.layout.resolved_border_width();
+                            let gutter_width = padding.left;
+                            if gutter_width > 4.0 {
+                                for (label_index, label) in line_labels.iter().enumerate() {
+                                    let region = ComponentTextRegion {
+                                        bounds: LayoutBox {
+                                            x: bounds.x + border + 2.0,
+                                            y: label.y,
+                                            width: (gutter_width - 4.0).max(0.0),
+                                            height: label.height,
+                                        },
+                                        content: Arc::from(label.number.to_string().as_str()),
+                                        color: Some(*line_labels_color),
+                                        font_size: *line_labels_font_size,
+                                        font_weight: None,
+                                    };
+                                    self.insert_primitive(component_text_primitive(
+                                        id,
+                                        40 + label_index as u8,
+                                        &region,
+                                        TextHorizontalAlignment::End,
+                                        false,
+                                        &node,
+                                        transform,
+                                        std::sync::Arc::clone(&clips),
+                                        opacity,
+                                        node_order,
+                                    ));
+                                }
+                            }
+                        }
+                        for (marker_index, (rect, color)) in
+                            diagnostic_markers.iter().enumerate()
+                        {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                20 + marker_index as u8,
+                                scene_rect(*rect),
+                                VisualQuadStyle {
+                                    background: Some(*color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
                         if let Some(caret) = caret {
                             self.insert_primitive(visual_quad(
                                 &visual_context,
@@ -4948,6 +5004,8 @@ mod tests {
             secure: false,
             invalid: false,
             steppers: false,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -4974,6 +5032,10 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             steppers: None,
+            diagnostic_markers: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
@@ -5824,6 +5886,124 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn text_input_editor_markers_and_line_labels_paint() {
+        let mut input = node(1, None, &[]);
+        input.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                padding_left: Some(nana_ui_core::LengthSpec::Px(40.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        };
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            line_numbers: true,
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 40.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 48.0,
+                },
+                content: Arc::from("a\nb\nc"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            preedit: Vec::new(),
+            diagnostic_markers: vec![
+                (
+                    LayoutBox {
+                        x: 40.0,
+                        y: 12.0,
+                        width: 10.0,
+                        height: 2.0,
+                    },
+                    [0.9, 0.1, 0.1, 1.0],
+                ),
+                (
+                    LayoutBox {
+                        x: 40.0,
+                        y: 30.0,
+                        width: 10.0,
+                        height: 2.0,
+                    },
+                    [0.9, 0.7, 0.1, 1.0],
+                ),
+            ],
+            line_labels: vec![
+                nana_ui_runtime::LineLabel {
+                    y: 0.0,
+                    height: 16.0,
+                    number: 1,
+                },
+                nana_ui_runtime::LineLabel {
+                    y: 16.0,
+                    height: 16.0,
+                    number: 2,
+                },
+            ],
+            line_labels_color: [0.6, 0.6, 0.6, 1.0],
+            line_labels_font_size: 11.0,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        for primitive in scene.primitives() {
+            eprintln!("DBG slot={} y={} kind={:?}", primitive.id.slot, primitive.bounds.y, primitive.kind);
+        }
+        // 每个标记一条 quad（颜色不同）。
+        let marker = |slot: u8, y: f64| {
+            scene
+                .primitives()
+                .find(|primitive| {
+                    primitive.id.slot == slot && (primitive.bounds.y - y as f32).abs() < 0.5
+                })
+                .expect("marker quad")
+        };
+        let error_quad = marker(20, 12.0);
+        let ScenePrimitiveKind::Quad { background, .. } = &error_quad.kind else {
+            panic!("expected quad");
+        };
+        assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
+        let warning_quad = marker(21, 30.0);
+        let ScenePrimitiveKind::Quad { background, .. } = &warning_quad.kind else {
+            panic!("expected quad");
+        };
+        assert_eq!(*background, Some([0.9, 0.7, 0.1, 1.0]));
+        // 行号标签为右对齐文本图元。
+        let label = scene
+            .primitives()
+            .find(|primitive| {
+                primitive.id.slot == 41
+                    && matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. } if content == "2")
+            })
+            .expect("line label");
+        let ScenePrimitiveKind::Text { content, .. } = &label.kind else {
+            unreachable!()
+        };
+        assert_eq!(&**content, "2");
+    }
+
     fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() {
         let mut input = node(1, None, &[]);
         input.source_style = NodeStyle {
@@ -5849,6 +6029,8 @@ mod tests {
             secure: false,
             invalid: false,
             steppers: false,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -5900,6 +6082,10 @@ mod tests {
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             steppers: None,
+            diagnostic_markers: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
         });
 
         let mut scene = UiScene::new();
@@ -5937,6 +6123,8 @@ mod tests {
             secure: false,
             invalid: false,
             steppers: false,
+            diagnostics: Arc::from([]),
+            line_numbers: false,
         });
         single_line.component_geometry = input_component_geometry(false);
         scene.apply_delta([single_line], []);
@@ -5982,6 +6170,10 @@ mod tests {
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             steppers: None,
+            diagnostic_markers: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
         })
     }
 
