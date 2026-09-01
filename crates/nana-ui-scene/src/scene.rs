@@ -2480,9 +2480,8 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Icon {
                                 icon: *icon,
                                 color: node
-                                    .style
-                                    .color
-                                    .or(node.standard_visual_foreground),
+                                    .standard_visual_foreground
+                                    .or(node.style.color),
                             },
                         });
                     } else if let Some(trigger) = trigger {

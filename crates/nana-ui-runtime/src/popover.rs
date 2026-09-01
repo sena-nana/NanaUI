@@ -37,9 +37,10 @@ pub struct PopoverClosed;
 /// In-flow trigger with an optional surface painted below it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Popover {
+    /// Text trigger label, or the accessible name when [`Popover::trigger_icon`]
+    /// switches the trigger to a glyph.
     pub trigger: Arc<str>,
     pub trigger_icon: Option<Icon>,
-    pub trigger_label: Option<Arc<str>>,
     pub open: bool,
     pub placement: PopoverPlacement,
     pub alignment: PopoverAlignment,
@@ -55,7 +56,6 @@ impl Popover {
         Self {
             trigger: Arc::from(""),
             trigger_icon: None,
-            trigger_label: None,
             open: false,
             placement: PopoverPlacement::Bottom,
             alignment: PopoverAlignment::Center,
@@ -73,11 +73,10 @@ impl Popover {
     }
 
     /// Icon trigger with an accessible name; the glyph is drawn centered in a
-    /// square chrome instead of a text label.
+    /// square chrome instead of riding the label's text metrics.
     pub fn trigger_icon(mut self, icon: Icon, label: impl Into<Arc<str>>) -> Self {
-        self.trigger = Arc::from("");
+        self.trigger = label.into();
         self.trigger_icon = Some(icon);
-        self.trigger_label = Some(label.into());
         self
     }
 
@@ -143,7 +142,6 @@ impl crate::ComponentView for Popover {
             MenuSurfaceKind::Popover,
             Some(Arc::clone(&self.trigger)).filter(|value| !value.is_empty()),
             self.trigger_icon,
-            self.trigger_label.clone(),
             self.open,
             self.width,
             self.padding,
@@ -217,7 +215,6 @@ impl crate::ComponentView for ActionMenu {
             MenuSurfaceKind::ActionMenu,
             Some(Arc::clone(&self.popover.trigger)).filter(|value| !value.is_empty()),
             self.popover.trigger_icon,
-            self.popover.trigger_label.clone(),
             self.popover.open,
             self.popover.width,
             self.popover.padding,
@@ -234,7 +231,6 @@ pub(crate) fn project_menu_surface(
     kind: MenuSurfaceKind,
     trigger: Option<Arc<str>>,
     trigger_icon: Option<Icon>,
-    trigger_label: Option<Arc<str>>,
     open: bool,
     width: f32,
     padding: f32,
@@ -262,8 +258,13 @@ pub(crate) fn project_menu_surface(
     }
     // The trigger label is measured like any other button label, so the closed
     // surface can size itself to the text instead of a fixed box. Icon
-    // triggers carry no label text; their square chrome comes from the style.
-    let trigger_text = trigger.as_deref().unwrap_or("");
+    // triggers keep their label as the accessible name only; the square chrome
+    // comes from the style instead of text measurement.
+    let trigger_text = if trigger_icon.is_some() {
+        ""
+    } else {
+        trigger.as_deref().unwrap_or("")
+    };
     if world.text(id) != Some(trigger_text) {
         mutations.set_text(
             id,
@@ -290,11 +291,7 @@ pub(crate) fn project_menu_surface(
         },
         AccessibilityState {
             role: AccessibilityRole::Menu,
-            label: Some(
-                trigger
-                    .or(trigger_label.filter(|value| !value.is_empty()))
-                    .unwrap_or_else(|| Arc::from(label)),
-            ),
+            label: Some(trigger.unwrap_or_else(|| Arc::from(label))),
             ..AccessibilityState::default()
         },
     );
@@ -474,7 +471,13 @@ pub(crate) fn menu_surface_geometry(
     } else {
         bounds
     };
-    let label = trigger.filter(|value| !value.is_empty());
+    // In icon mode the trigger text is only the accessible name, so no text
+    // region is emitted and the glyph owns the chrome.
+    let label = if trigger_icon.is_none() {
+        trigger.filter(|value| !value.is_empty())
+    } else {
+        None
+    };
     let trigger_bounds = LayoutBox {
         x: bounds.x,
         y: bounds.y,
@@ -482,7 +485,6 @@ pub(crate) fn menu_surface_geometry(
         height: trigger_h,
     };
     let icon_extent = TRIGGER_ICON_SIZE
-        .max(0.0)
         .min(trigger_bounds.width)
         .min(trigger_bounds.height);
     ComponentGeometry::MenuSurface {
@@ -738,13 +740,13 @@ mod tests {
         assert!(matches!(
             context.world().standard_visual(id),
             Some(StandardVisual::MenuSurface {
-                trigger: None,
+                trigger: Some(trigger),
                 trigger_icon: Some(icon),
                 ..
-            }) if icon == Icon::Add
+            }) if trigger.as_ref() == "添加" && icon == Icon::Add
         ));
-        // An icon trigger has no label text to measure; its hit target is the
-        // square trigger box.
+        // The label stays the accessible name only; the icon trigger measures
+        // no text and its hit target is the square trigger box.
         assert!(context.world().text(id).is_none_or(|text| text.is_empty()));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.min_width, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
