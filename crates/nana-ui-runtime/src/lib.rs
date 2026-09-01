@@ -95,7 +95,8 @@ pub use components::{
     SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
     TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics,
     TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
-    TooltipVisual,
+    TextDiagnosticMark, TextDiagnosticSpan, TextDiagnosticSeverity, TooltipVisual,
+    LineLabel,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
