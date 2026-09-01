@@ -24,23 +24,24 @@ use crate::component_registry::{
 };
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, Button, Checkbox, CommandPalette, ComponentView, ContextMenu, ContextMenuEvent,
-    DocumentId, Dropdown, EmptyState, FormField, FrameProfile, FrameProfiler, FrameStage,
-    IconButton, LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
-    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover,
-    PopoverClosed, PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged,
-    RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset,
-    ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
-    SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
-    SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, StandardVisual, Switch, Table,
-    TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter,
-    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, XYPad, XYPadDragState,
-    XYPadEvent,
+    AnimationFrame, Button, Checkbox, CodeEditing, CommandPalette, ComponentView, ContextMenu,
+    ContextMenuEvent, DocumentId, Dropdown, EmptyState, FormField, FrameProfile, FrameProfiler,
+    FrameStage, IconButton, LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface,
+    MountState, MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost,
+    Popover, PopoverClosed, PopoverToggled, Progress, ProgressCancelled, RangeAdjustment,
+    RangeChanged, RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics,
+    ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
+    StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
+    TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
+    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod assemble;
 mod build;
 mod overlay;
+mod text_edit;
 pub use assemble::AssemblyScope;
 pub use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
@@ -48,6 +49,7 @@ pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
+pub use text_edit::{FocusedTextEditor, TextDeleteKind};
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -68,6 +70,14 @@ trait EditableText: ComponentView {
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
     fn change(&self) -> Self::Change;
+    /// Whether the value lays out across multiple lines.
+    fn is_multiline(&self) -> bool {
+        false
+    }
+    /// Code-editor behaviors when the component opted in.
+    fn code_editing(&self) -> Option<&CodeEditing> {
+        None
+    }
     fn set_value(&mut self, value: String) -> bool {
         if self.state().value == value {
             return false;
@@ -145,6 +155,14 @@ impl EditableText for TextArea {
 
     fn accepts_input(&self) -> bool {
         !self.disabled
+    }
+
+    fn is_multiline(&self) -> bool {
+        true
+    }
+
+    fn code_editing(&self) -> Option<&CodeEditing> {
+        self.code_editing.as_ref()
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {
@@ -677,6 +695,23 @@ pub struct AppContext {
     /// Layout passes on this context, scoped and full.
     layout_invocations: usize,
     program_messages: Vec<ProgramMessage>,
+    /// Live text drag-selection: pointer id, node, and the anchor offset.
+    text_pointer_drag: Option<(u64, StableNodeId, usize)>,
+    /// Last press inside a text editor for double/triple click counting.
+    text_pointer_click: Option<TextPointerClick>,
+    /// Horizontal goal column retained across chained vertical moves.
+    caret_goal_x: Option<(StableNodeId, f32)>,
+}
+
+/// Bookkeeping for multi-click selection inside a text editor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextPointerClick {
+    pub pointer_id: u64,
+    pub node: StableNodeId,
+    pub at: std::time::Duration,
+    pub x: f32,
+    pub y: f32,
+    pub count: u8,
 }
 
 /// Application-owned mapping between visible data keys and retained component
@@ -819,6 +854,9 @@ impl AppContext {
             layout_full_invocations: 0,
             layout_invocations: 0,
             program_messages: Vec::new(),
+            text_pointer_drag: None,
+            text_pointer_click: None,
+            caret_goal_x: None,
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)

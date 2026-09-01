@@ -1581,6 +1581,33 @@ pub struct NumberChanged {
     pub value: f64,
 }
 
+/// Code-editor behaviors enabled on a [`TextArea`].
+///
+/// The runtime applies bracket pairing, indentation, and line comments on the
+/// raw committed text; syntax coloring stays with the `"highlight"`
+/// presenter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeEditing {
+    /// Line comment token for toggle commands (for example `"//"`).
+    pub comment_prefix: Arc<str>,
+    /// Indentation inserted by Tab and copied by auto-indent.
+    pub indent_unit: Arc<str>,
+}
+
+impl CodeEditing {
+    pub fn new(comment_prefix: impl Into<Arc<str>>, indent_unit: impl Into<Arc<str>>) -> Self {
+        Self {
+            comment_prefix: comment_prefix.into(),
+            indent_unit: indent_unit.into(),
+        }
+    }
+
+    /// Default WGSL-style configuration: `//` comments, tab indentation.
+    pub fn wgsl() -> Self {
+        Self::new("//", "\t")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextArea {
     pub state: TextInputState,
@@ -1596,6 +1623,8 @@ pub struct TextArea {
     pub diagnostics: Arc<[TextDiagnosticSpan]>,
     /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
     pub line_numbers: bool,
+    /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
+    pub code_editing: Option<CodeEditing>,
     pub(crate) style_override: bool,
 }
 
@@ -1612,8 +1641,19 @@ impl TextArea {
             highlight: None,
             diagnostics: Arc::from([]),
             line_numbers: false,
+            code_editing: None,
             style_override: false,
         }
+    }
+
+    /// 启用代码编辑行为：括号配对、Enter 自动缩进、Tab/Shift+Tab 缩进、
+    /// 注释切换与软折行关闭。
+    pub fn code_editor(mut self, enabled: bool) -> Self {
+        self.code_editing = enabled.then(CodeEditing::wgsl);
+        if enabled {
+            Arc::make_mut(&mut self.style.layout).white_space_nowrap = true;
+        }
+        self
     }
 
     /// 设置诊断 span 标记（见 [`TextDiagnosticSpan`]）。
@@ -1680,7 +1720,8 @@ impl TextArea {
     }
 
     pub fn replace_selection(&mut self, text: &str) -> bool {
-        self.state.replace_selection(text)
+        let normalized = crate::text_editing::normalize_newlines(text);
+        self.state.replace_selection(&normalized)
     }
 }
 
