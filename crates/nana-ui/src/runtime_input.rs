@@ -159,7 +159,7 @@ impl RuntimeInputAdapter {
             pressed: true,
             key,
             text,
-            repeat,
+            repeat: _,
             modifiers,
             ..
         } = event
@@ -170,7 +170,6 @@ impl RuntimeInputAdapter {
                 key,
                 text.as_deref(),
                 *modifiers,
-                *repeat,
                 reborrow_text_shaper(&mut text_shaper),
             )? {
                 return Ok(InputDisposition {
@@ -934,10 +933,8 @@ impl RuntimeInputAdapter {
         key: &str,
         text: Option<&str>,
         modifiers: nana_ui_platform::InputModifiers,
-        repeat: bool,
         shaper: Option<&mut dyn TextShaper>,
     ) -> Result<bool, FrameworkError> {
-        let _ = repeat;
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };

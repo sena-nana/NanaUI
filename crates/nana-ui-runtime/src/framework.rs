@@ -49,7 +49,7 @@ pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
-pub use text_edit::{FocusedTextEditor, TextDeleteKind};
+pub use text_edit::TextDeleteKind;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -705,7 +705,7 @@ pub struct AppContext {
 
 /// Bookkeeping for multi-click selection inside a text editor.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TextPointerClick {
+pub(crate) struct TextPointerClick {
     pub pointer_id: u64,
     pub node: StableNodeId,
     pub at: std::time::Duration,
