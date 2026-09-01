@@ -49,6 +49,8 @@ struct LayerUniform {
     mask_stops7: vec4<f32>,
     mask_pos: vec4<f32>,
     mask_pos2: vec4<f32>,
+    // editor: checkerboard flag, zoom, checker cell (logical px), reserved
+    editor: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -228,13 +230,22 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if !inside_overflow_clip(input.world) {
         discard;
     }
-    let sampled = textureSample(source, source_sampler, input.uv);
+    let zoom = max(layer.editor.y, 1.0);
+    let sample_uv = (input.uv - vec2(0.5)) / zoom + vec2(0.5);
+    let sampled = textureSample(source, source_sampler, sample_uv);
     let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
     let has_clip = layer.clip.z > 0.0 && layer.clip.w > 0.0;
     let box_pos = select(layer.origin.zw, layer.clip.xy, has_clip);
     let box_size = select(layer.params.zw, layer.clip.zw, has_clip);
     let mask_uv = (input.local - box_pos) / max(box_size, vec2(0.0001));
     var color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x * mask_alpha(mask_uv);
+    if (layer.editor.x > 0.5) {
+        // 棋盘底：把纹理（含透明区域）合成在不透明棋盘上。
+        let cell = max(layer.editor.z, 2.0);
+        let p = floor((input.local - box_pos) / vec2<f32>(cell, cell));
+        let tone = select(0.45, 0.75, ((p.x + p.y) % 2.0) < 0.5);
+        color = vec4(mix(vec3(tone), color.rgb, color.a), 1.0);
+    }
     let radius = min(layer.params.y, min(box_size.x, box_size.y) * 0.5);
     if radius <= 0.0 {
         return color;
@@ -567,6 +578,8 @@ pub(crate) struct HostTextureLayer {
     fragment_clip_corner_radius: f32,
     alpha_mode: Option<HostTextureAlphaMode>,
     mask: Option<nana_ui_core::MaskImage>,
+    checkerboard: bool,
+    zoom: f32,
 }
 
 impl HostTextureLayer {
@@ -586,6 +599,8 @@ impl HostTextureLayer {
             fragment_clip_corner_radius: 0.0,
             alpha_mode: None,
             mask: None,
+            checkerboard: false,
+            zoom: 1.0,
         }
     }
     pub fn from_binding(binding: HostTextureBinding) -> Self {
@@ -599,6 +614,8 @@ impl HostTextureLayer {
             fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
             fragment_clip_corner_radius: 0.0,
             alpha_mode: Some(binding.alpha_mode),
+            checkerboard: false,
+            zoom: 1.0,
             mask: None,
         }
     }
@@ -652,6 +669,16 @@ impl HostTextureLayer {
 
     pub fn with_mask(mut self, mask: Option<nana_ui_core::MaskImage>) -> Self {
         self.mask = mask;
+        self
+    }
+
+    pub const fn with_checkerboard(mut self, checkerboard: bool) -> Self {
+        self.checkerboard = checkerboard;
+        self
+    }
+
+    pub const fn with_zoom(mut self, zoom: f32) -> Self {
+        self.zoom = zoom;
         self
     }
 
@@ -1062,9 +1089,10 @@ struct LayerUniform {
     mask_stops7: [f32; 4],
     mask_pos: [f32; 4],
     mask_pos2: [f32; 4],
+    editor: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 336);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 352);
 
 fn make_layer_uniform(
     layer: &HostTextureLayer,
@@ -1123,6 +1151,12 @@ fn make_layer_uniform(
         mask_stops7: mask.stops[7],
         mask_pos: mask.pos,
         mask_pos2: mask.pos2,
+        editor: [
+            if layer.checkerboard { 1.0 } else { 0.0 },
+            layer.zoom,
+            8.0,
+            0.0,
+        ],
     }
 }
 
@@ -1440,6 +1474,73 @@ mod tests {
         assert_eq!(rounded_clip.origin[3], 40.0);
         assert_eq!(rounded_clip.clip, [0.0, 0.0, 320.0, 180.0]);
         assert_eq!(rounded_clip.mask_meta[0], 0.0);
+    }
+
+    #[test]
+    fn layer_uniform_carries_checkerboard_and_zoom() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let binding = registry.register(
+            "editor",
+            texture,
+            32,
+            16,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let layer = HostTextureLayer::from_binding(binding)
+            .with_checkerboard(true)
+            .with_zoom(2.0);
+        assert!(layer.checkerboard);
+        assert_eq!(layer.zoom, 2.0);
+        let uniform = make_layer_uniform(
+            &layer,
+            LogicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 32.0,
+            },
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [320, 180],
+            false,
+        );
+        assert_eq!(uniform.editor[0], 1.0);
+        assert_eq!(uniform.editor[1], 2.0);
+        assert_eq!(uniform.editor[2], 8.0);
+    }
+
+    #[test]
+    fn layer_uniform_defaults_keep_plain_texture() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let binding = registry.register(
+            "plain",
+            texture,
+            32,
+            16,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let layer = HostTextureLayer::from_binding(binding);
+        assert!(!layer.checkerboard);
+        assert_eq!(layer.zoom, 1.0);
+        let uniform = make_layer_uniform(
+            &layer,
+            LogicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 32.0,
+            },
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [320, 180],
+            false,
+        );
+        assert_eq!(uniform.editor[0], 0.0);
+        assert_eq!(uniform.editor[1], 1.0);
     }
 
     #[test]

@@ -665,6 +665,8 @@ impl SceneWgpuPainter {
                             scale,
                             mask.clone(),
                             Some(&gpu_work),
+                            custom.checkerboard,
+                            custom.zoom,
                         )));
                     } else {
                         let Some(renderer) = gpu_renderers

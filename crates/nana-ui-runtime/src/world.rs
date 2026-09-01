@@ -1256,8 +1256,8 @@ impl UiWorld {
         let presentation = self.nodes.text_input_presentation(id)?;
         let line_height = presentation.line_height.max(1.0);
         let offset = offset.min(state.value.len());
-        let line_index =
-            state.value.as_str()[..offset].bytes().filter(|byte| *byte == b'\n').count() as f32;
+        let value = state.value.as_str();
+        let line_index = value[..offset].bytes().filter(|byte| *byte == b'\n').count() as f32;
         let reveal_y = line_index * line_height;
         let node = self.nodes.get(id)?;
         let padding = node
@@ -1267,8 +1267,9 @@ impl UiWorld {
         let border = node.style.layout.resolved_border_width();
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
-        let metrics = self.text_metrics(id).unwrap_or_default();
-        let max_scroll = (metrics.height - content_height).max(0.0);
+        // 逻辑行数 × 行高 = 无折行下的内容总高；软折行场景会低估（已知限制）。
+        let total_height = (value.matches('\n').count() + 1) as f32 * line_height;
+        let max_scroll = (total_height - content_height).max(0.0);
         let mut scroll_y = self.record(id).scroll_offset.y;
         if reveal_y < scroll_y {
             scroll_y = reveal_y;
@@ -3728,6 +3729,14 @@ impl UiWorld {
                 let metrics = self.text_metrics(id).unwrap_or_default();
                 let multiline = accessibility.is_some_and(|state| state.multiline);
                 let requested_scroll = self.record(id).scroll_offset;
+                // 多行编辑器的内容高度按逻辑行数推导；text_metrics.height
+                // 是单行度量，不能作为滚动上限。
+                let total_text_height = if multiline {
+                    let lines = presentation.display_value.matches('\n').count() + 1;
+                    lines as f32 * presentation.line_height.max(1.0)
+                } else {
+                    metrics.height
+                };
                 let mut scroll_x = if multiline {
                     requested_scroll.x
                 } else {
@@ -3744,7 +3753,7 @@ impl UiWorld {
                 let mut scroll_y = if multiline {
                     requested_scroll
                         .y
-                        .min((metrics.height - content.height).max(0.0))
+                        .min((total_text_height - content.height).max(0.0))
                 } else {
                     0.0
                 };
@@ -3761,7 +3770,7 @@ impl UiWorld {
                     }
                 }
                 scroll_x = scroll_x.clamp(0.0, (metrics.width - content.width).max(0.0));
-                scroll_y = scroll_y.clamp(0.0, (metrics.height - content.height).max(0.0));
+                scroll_y = scroll_y.clamp(0.0, (total_text_height - content.height).max(0.0));
                 let line_y = if multiline {
                     content.y - scroll_y
                 } else {
