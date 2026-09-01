@@ -1646,13 +1646,10 @@ impl TextArea {
         }
     }
 
-    /// 启用代码编辑行为：括号配对、Enter 自动缩进、Tab/Shift+Tab 缩进、
-    /// 注释切换与软折行关闭。
+    /// 启用代码编辑行为：括号配对、Enter 自动缩进、Tab/Shift+Tab 缩进与
+    /// 注释切换。软折行保持组件原有样式。
     pub fn code_editor(mut self, enabled: bool) -> Self {
         self.code_editing = enabled.then(CodeEditing::wgsl);
-        if enabled {
-            Arc::make_mut(&mut self.style.layout).white_space_nowrap = true;
-        }
         self
     }
 
