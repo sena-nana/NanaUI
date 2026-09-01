@@ -8,10 +8,11 @@
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
 use super::{TextArea, TextInput, TextInputState, TextSelection};
 use crate::text_editing::{
-    TextCaretIntent, TextReplacement, apply_replacement, auto_indent_newline, auto_pair_edit,
-    caret_focus, caret_offset_at_point, delete_backward, delete_forward, delete_to_line_end,
-    delete_to_line_start, delete_word_backward, delete_word_forward, indent_selection,
-    logical_line_range, moved_selection, outdent_selection, toggle_line_comment,
+    TextCaretIntent, TextReplacement, TextSearchOptions, apply_replacement, auto_indent_newline,
+    auto_pair_edit, caret_focus, caret_offset_at_point, delete_backward, delete_forward,
+    delete_to_line_end, delete_to_line_start, delete_word_backward, delete_word_forward,
+    find_matches, find_next_match, find_previous_match, indent_selection, logical_line_range,
+    moved_selection, outdent_selection, replace_all_matches, toggle_line_comment,
     vertical_caret_focus, vertical_caret_focus_logical, word_range_at,
 };
 use crate::{CodeEditing, TextContent, TextShapeConstraints};
@@ -329,6 +330,155 @@ impl AppContext {
             let (value, selection) = toggle_line_comment(&state.value, state.selection, &prefix)?;
             Some((value, selection).into())
         })
+    }
+
+    /// Select the next literal match of `query` in the focused text editor,
+    /// searching from the selection's end and wrapping to the document start.
+    ///
+    /// Selection-only move: like [`AppContext::move_focused_text_caret`], no
+    /// change event is emitted. `Ok(false)` means there is no focused editor
+    /// or no match.
+    pub fn find_next_focused_text_match(
+        &mut self,
+        document: DocumentId,
+        query: &str,
+        options: TextSearchOptions,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let matches = find_matches(&state.value, query, options);
+        let Some(found) = find_next_match(&matches, state.selection.ordered().end) else {
+            return Ok(false);
+        };
+        self.caret_goal_x = None;
+        self.write_editor_selection(
+            focused.node,
+            focused.kind,
+            TextSelection {
+                anchor: found.start,
+                focus: found.end,
+            },
+        )
+    }
+
+    /// Select the previous literal match of `query` in the focused text
+    /// editor, searching from the selection's start and wrapping to the
+    /// document end. Selection-only move; see
+    /// [`AppContext::find_next_focused_text_match`].
+    pub fn find_previous_focused_text_match(
+        &mut self,
+        document: DocumentId,
+        query: &str,
+        options: TextSearchOptions,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let matches = find_matches(&state.value, query, options);
+        let Some(found) = find_previous_match(&matches, state.selection.ordered().start) else {
+            return Ok(false);
+        };
+        self.caret_goal_x = None;
+        self.write_editor_selection(
+            focused.node,
+            focused.kind,
+            TextSelection {
+                anchor: found.start,
+                focus: found.end,
+            },
+        )
+    }
+
+    /// Replace the focused editor's selection with `replacement` when the
+    /// selection is exactly a match of `query` under `options`, then select
+    /// the inserted text (so a following replace targets the same span
+    /// semantics) and emit the change event. Advancing to the next match is
+    /// the host's call — compose with
+    /// [`AppContext::find_next_focused_text_match`]. `Ok(false)` means there
+    /// is no focused editor or the selection is not a match.
+    pub fn replace_focused_text_match(
+        &mut self,
+        document: DocumentId,
+        query: &str,
+        options: TextSearchOptions,
+        replacement: &str,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let range = state.selection.ordered();
+            let is_match = find_matches(&state.value, query, options)
+                .iter()
+                .any(|found| *found == range);
+            if !is_match {
+                return None;
+            }
+            let mut value = String::with_capacity(
+                state.value.len() - range.len().min(state.value.len()) + replacement.len(),
+            );
+            value.push_str(&state.value[..range.start]);
+            value.push_str(replacement);
+            value.push_str(&state.value[range.end..]);
+            Some(EditorEdit {
+                value,
+                selection: TextSelection {
+                    anchor: range.start,
+                    focus: range.start + replacement.len(),
+                },
+            })
+        })
+    }
+
+    /// Replace every literal match of `query` in the focused editor with
+    /// `replacement` (left-to-right, non-overlapping on the original text),
+    /// select the first replacement, emit one change event, and return the
+    /// replacement count. `Ok(0)` leaves the editor untouched.
+    pub fn replace_all_focused_text_matches(
+        &mut self,
+        document: DocumentId,
+        query: &str,
+        options: TextSearchOptions,
+        replacement: &str,
+    ) -> Result<usize, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(0);
+        };
+        if !focused.accepts_input {
+            return Ok(0);
+        }
+        self.caret_goal_x = None;
+        let mut replaced = 0usize;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let matches = find_matches(&state.value, query, options);
+            if matches.is_empty() {
+                return None;
+            }
+            let first_start = matches[0].start;
+            let (value, count) = replace_all_matches(&state.value, query, replacement, options);
+            replaced = count;
+            Some(EditorEdit {
+                value,
+                selection: TextSelection {
+                    anchor: first_start,
+                    focus: first_start + replacement.len(),
+                },
+            })
+        })?;
+        Ok(replaced)
     }
 
     /// Place or extend the selection of the focused editor from a pointer

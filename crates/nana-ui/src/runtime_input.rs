@@ -1060,7 +1060,7 @@ mod tests {
         MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
         OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
         SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
-        TextInput,
+        TextChanged, TextInput, TextSearchOptions, TextSelection,
     };
     use std::sync::{Arc, Mutex};
 
@@ -3576,6 +3576,7 @@ mod tests {
                 invalid: false,
                 steppers: false,
                 diagnostics: std::sync::Arc::from([]),
+                matches: std::sync::Arc::from([]),
                 line_numbers: false,
             }),
         );
@@ -3687,6 +3688,7 @@ mod tests {
                 invalid: false,
                 steppers: false,
                 diagnostics: std::sync::Arc::from([]),
+                matches: std::sync::Arc::from([]),
                 line_numbers: false,
             }),
         );
@@ -3750,5 +3752,201 @@ mod tests {
                 Some(&mut shaper),
             )
             .unwrap();
+    }
+
+    /// 挂一个收集 TextChanged 的观察者，供查找/替换命令断言事件发射。
+    fn track_text_changed(
+        context: &mut AppContext,
+        area: Entity<TextArea>,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        context
+            .on(area, move |_area, event: &TextChanged, _cx| {
+                sink.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+        events
+    }
+
+    #[test]
+    fn find_next_and_previous_select_matches_without_text_changed() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab AB ab"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        let sensitive = TextSearchOptions {
+            case_sensitive: true,
+            ..TextSearchOptions::default()
+        };
+
+        // 大小写敏感："ab" 只命中 0..2 与 6..8。
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", sensitive)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab AB ab".into(), 0, 2)
+        );
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", sensitive)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab AB ab".into(), 6, 8)
+        );
+        // 越过末尾后环绕。
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", sensitive)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab AB ab".into(), 0, 2)
+        );
+        // 大小写不敏感：从当前选区末端起下一个命中是 "AB"。
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", TextSearchOptions::default())
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab AB ab".into(), 3, 5)
+        );
+        // 上一个回到第一个 "ab"。
+        assert!(
+            context
+                .find_previous_focused_text_match(document, "ab", sensitive)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab AB ab".into(), 0, 2)
+        );
+        // 纯移动：值不变、不发 TextChanged。
+        assert!(events.lock().unwrap().is_empty());
+        // 空 query 不命中。
+        assert!(
+            !context
+                .find_next_focused_text_match(document, "", sensitive)
+                .unwrap()
+        );
+        assert!(
+            !context
+                .find_previous_focused_text_match(document, "zz", sensitive)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn replace_focused_text_match_replaces_only_a_matching_selection() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab ab"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        let options = TextSearchOptions::default();
+
+        // 选中第一个 "ab" 后替换，并选中替换后的文本。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection {
+                    anchor: 0,
+                    focus: 2,
+                };
+            })
+            .unwrap();
+        assert!(
+            context
+                .replace_focused_text_match(document, "ab", options, "XY")
+                .unwrap()
+        );
+        assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 0, 2));
+        assert_eq!(*events.lock().unwrap(), vec!["XY ab".to_string()]);
+
+        // 选区不再是匹配（现在是 "XY"），替换拒绝且不发射事件。
+        assert!(
+            !context
+                .replace_focused_text_match(document, "ab", options, "XY")
+                .unwrap()
+        );
+        assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 0, 2));
+
+        // 宿主先查找下一个再替换。
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", options)
+                .unwrap()
+        );
+        assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 3, 5));
+        assert!(
+            context
+                .replace_focused_text_match(document, "ab", options, "XY")
+                .unwrap()
+        );
+        assert_eq!(textarea_selection(&context, node), ("XY XY".into(), 3, 5));
+        assert_eq!(events.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn replace_all_focused_text_matches_reports_count_and_lands_on_first() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab cd ab"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+
+        assert_eq!(
+            context
+                .replace_all_focused_text_matches(
+                    document,
+                    "ab",
+                    TextSearchOptions {
+                        whole_word: true,
+                        ..TextSearchOptions::default()
+                    },
+                    "X",
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(textarea_selection(&context, node), ("X cd X".into(), 0, 1));
+        assert_eq!(*events.lock().unwrap(), vec!["X cd X".to_string()]);
+
+        // 没有匹配时不修改、不发射事件、计数为 0。
+        assert_eq!(
+            context
+                .replace_all_focused_text_matches(
+                    document,
+                    "ab",
+                    TextSearchOptions::default(),
+                    "X",
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            context
+                .replace_all_focused_text_matches(document, "", TextSearchOptions::default(), "X")
+                .unwrap(),
+            0
+        );
+        assert_eq!(events.lock().unwrap().len(), 1);
     }
 }

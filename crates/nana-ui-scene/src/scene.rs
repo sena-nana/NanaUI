@@ -3308,6 +3308,7 @@ impl UiScene {
                         caret_color,
                         preedit_color,
                         diagnostic_markers,
+                        match_markers,
                         line_labels,
                         line_labels_color,
                         line_labels_font_size,
@@ -3360,6 +3361,37 @@ impl UiScene {
                                 scene_rect(*rect),
                                 VisualQuadStyle {
                                     background: Some(*color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 查找匹配高亮：普通匹配（slot 3，文本之上、光标之
+                        // 下）与当前匹配（slot 6，更强）各一个 quad 批次，
+                        // 同类共用世界解析出的统一颜色。
+                        let (normal_matches, current_matches): (Vec<_>, Vec<_>) =
+                            match_markers.iter().partition(|marker| !marker.current);
+                        if !normal_matches.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                3,
+                                normal_matches.iter().map(|marker| scene_rect(marker.rect)),
+                                VisualQuadStyle {
+                                    background: Some(normal_matches[0].color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        if !current_matches.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                6,
+                                current_matches.iter().map(|marker| scene_rect(marker.rect)),
+                                VisualQuadStyle {
+                                    background: Some(current_matches[0].color),
                                     border_color: None,
                                     border_width: 0.0,
                                     corner_radius: corner_radii(0.0),
@@ -4764,6 +4796,7 @@ mod tests {
 
     use nana_ui_runtime::{
         ComputedStyle, CustomRenderNode, LayoutBox, NodeKind, NodeStyle, TextContent,
+        TextMatchMarker,
     };
 
     use super::*;
@@ -5005,6 +5038,7 @@ mod tests {
             invalid: false,
             steppers: false,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -5033,6 +5067,7 @@ mod tests {
             preedit_color: [0.0; 4],
             steppers: None,
             diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
@@ -5903,6 +5938,7 @@ mod tests {
             invalid: false,
             steppers: false,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: true,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -5942,6 +5978,7 @@ mod tests {
                     [0.9, 0.7, 0.1, 1.0],
                 ),
             ],
+            match_markers: Vec::new(),
             line_labels: vec![
                 nana_ui_runtime::LineLabel {
                     y: 0.0,
@@ -6004,6 +6041,119 @@ mod tests {
         assert_eq!(&**content, "2");
     }
 
+    #[test]
+    fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 32.0,
+                },
+                content: Arc::from("ab ab"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            preedit: Vec::new(),
+            diagnostic_markers: vec![(
+                LayoutBox {
+                    x: 8.0,
+                    y: 12.0,
+                    width: 10.0,
+                    height: 2.0,
+                },
+                [0.9, 0.1, 0.1, 1.0],
+            )],
+            match_markers: vec![
+                TextMatchMarker {
+                    rect: LayoutBox {
+                        x: 8.0,
+                        y: 0.0,
+                        width: 12.0,
+                        height: 14.0,
+                    },
+                    color: [0.48, 0.73, 0.94, 0.20],
+                    current: false,
+                },
+                TextMatchMarker {
+                    rect: LayoutBox {
+                        x: 8.0,
+                        y: 16.0,
+                        width: 12.0,
+                        height: 14.0,
+                    },
+                    color: [0.48, 0.73, 0.94, 0.45],
+                    current: true,
+                },
+            ],
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        // 普通匹配为 slot 3 的 quad 批次，当前匹配为更强的 slot 6 批次。
+        let batch = |slot: u8| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .expect("match batch")
+        };
+        let normal = batch(3);
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &normal.kind
+        else {
+            panic!("expected quad batch");
+        };
+        assert_eq!(bounds.len(), 1);
+        assert_eq!(*background, Some([0.48, 0.73, 0.94, 0.20]));
+        let current = batch(6);
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &current.kind
+        else {
+            panic!("expected quad batch");
+        };
+        assert_eq!(bounds.len(), 1);
+        assert_eq!(*background, Some([0.48, 0.73, 0.94, 0.45]));
+        // 诊断下划线（slot 20）与匹配高亮共存。
+        let diagnostic = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 20,
+            })
+            .expect("diagnostic quad");
+        let ScenePrimitiveKind::Quad { background, .. } = &diagnostic.kind else {
+            panic!("expected quad");
+        };
+        assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
+    }
+
     fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() {
         let mut input = node(1, None, &[]);
         input.source_style = NodeStyle {
@@ -6030,6 +6180,7 @@ mod tests {
             invalid: false,
             steppers: false,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: false,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -6083,6 +6234,7 @@ mod tests {
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             steppers: None,
             diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
@@ -6124,6 +6276,7 @@ mod tests {
             invalid: false,
             steppers: false,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: false,
         });
         single_line.component_geometry = input_component_geometry(false);
@@ -6171,6 +6324,7 @@ mod tests {
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             steppers: None,
             diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,

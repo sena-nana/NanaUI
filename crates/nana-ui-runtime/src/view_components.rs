@@ -5,7 +5,7 @@ use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextContent, TextDiagnosticSpan, TextHorizontalAlignment, TextInputState,
-    TextVerticalAlignment, UiWorld,
+    TextMatchSpan, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1347,6 +1347,7 @@ impl ComponentView for TextInput {
             invalid: self.invalid,
             steppers: false,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -1556,6 +1557,7 @@ impl ComponentView for NumberInput {
             invalid: self.invalid,
             steppers: true,
             diagnostics: Arc::from([]),
+            matches: Arc::from([]),
             line_numbers: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -1635,6 +1637,9 @@ pub struct TextArea {
     /// 编译诊断 span 标记（错误/警告下划线）。宿主在文本变化后负责更新或
     /// 清除；渲染层只钳制越界偏移。
     pub diagnostics: Arc<[TextDiagnosticSpan]>,
+    /// 查找匹配高亮 span（普通匹配与当前匹配）。宿主在文本变化后负责更新
+    /// 或清除；渲染层只钳制越界偏移。
+    pub match_spans: Arc<[TextMatchSpan]>,
     /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
     pub line_numbers: bool,
     /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
@@ -1654,6 +1659,7 @@ impl TextArea {
             style: text_field_style(true),
             highlight: None,
             diagnostics: Arc::from([]),
+            match_spans: Arc::from([]),
             line_numbers: false,
             code_editing: None,
             style_override: false,
@@ -1670,6 +1676,12 @@ impl TextArea {
     /// 设置诊断 span 标记（见 [`TextDiagnosticSpan`]）。
     pub fn diagnostics(mut self, diagnostics: Arc<[TextDiagnosticSpan]>) -> Self {
         self.diagnostics = diagnostics;
+        self
+    }
+
+    /// 设置查找匹配高亮 span（见 [`TextMatchSpan`]）。
+    pub fn match_spans(mut self, match_spans: Arc<[TextMatchSpan]>) -> Self {
+        self.match_spans = match_spans;
         self
     }
 
@@ -1751,6 +1763,7 @@ impl ComponentView for TextArea {
             invalid: self.invalid,
             steppers: false,
             diagnostics: Arc::clone(&self.diagnostics),
+            matches: Arc::clone(&self.match_spans),
             line_numbers: self.line_numbers,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
