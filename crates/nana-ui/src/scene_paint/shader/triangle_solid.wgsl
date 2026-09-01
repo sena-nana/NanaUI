@@ -275,6 +275,10 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> f32 {
     );
 }
 
+// One fragment entry for every sample count: WebGPU evaluates the fragment
+// shader at the pixel center and broadcasts alpha to all samples, while the
+// hull is padded past the visual edge, so MSAA cannot own an SDF edge — the
+// analytic coverage below is the only AA this stroke gets.
 @fragment
 fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
     let distance_to_path = stroke_clip_and_distance(input);
@@ -284,18 +288,6 @@ fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
         1e-5,
     );
     let alpha = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance_to_path);
-    if alpha <= 0.0 {
-        discard;
-    }
-    return input.color * alpha;
-}
-
-// MSAA dest (`pipeline_msaa`): hard SDF coverage so the sample mask owns the
-// edge. sample_count=1 keeps `solid_fs_main` anisotropic screen-space AA.
-@fragment
-fn solid_fs_msaa(input: SolidVertexOutput) -> @location(0) vec4<f32> {
-    let distance_to_path = stroke_clip_and_distance(input);
-    let alpha = 1.0 - step(0.0, distance_to_path);
     if alpha <= 0.0 {
         discard;
     }

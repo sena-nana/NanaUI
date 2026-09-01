@@ -1990,6 +1990,63 @@ mod tests {
     }
 
     #[test]
+    fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![[16.0, 32.0], [48.0, 32.0]], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 1.0, 1.0],
+            )],
+            [],
+        );
+        let (texture, view) = test_copy_target(&device, format, 256, 256);
+        let viewport = ScenePaintViewport {
+            logical_size: [64.0, 64.0],
+            physical_size: [256, 256],
+            scale_factor: 4.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui stroke msaa coverage"),
+        });
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let counts = painter
+            .last_dest_pass_counts
+            .expect("encoded frame records dest passes");
+        assert_eq!(
+            counts.msaa, 1,
+            "stroke-only frames must render through the 4x MSAA dest, got {counts:?}"
+        );
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 256);
+        drop(texture);
+        // A column crossing the 1.6px capsule at 4× scale must pass through
+        // intermediate stroke/fill blends. WebGPU evaluates the fragment at the
+        // pixel center and the hull is padded past the silhouette, so MSAA
+        // itself cannot provide that blend — only analytic coverage can.
+        let mut soft = 0;
+        for y in 0..256u32 {
+            let color = pixel(&pixels, 256, 128, y);
+            let stroke_share = f32::from(color[0]) / 255.0;
+            if stroke_share > 0.1 && stroke_share < 0.9 {
+                soft += 1;
+            }
+        }
+        assert!(
+            soft >= 2,
+            "MSAA-path stroke silhouette must blend into the fill on both edges, got {soft} soft pixels"
+        );
+    }
+
+    #[test]
     fn graph_canvas_stroke_paints_round_end_caps_on_gpu() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
