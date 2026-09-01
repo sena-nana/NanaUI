@@ -163,6 +163,11 @@ pub enum UiMutation {
     SetTextInputCompletionDismissed {
         id: StableNodeId,
     },
+    /// 重开补全弹层：清除关闭标记并归零选中（宿主显式重触发，如
+    /// Esc 后再次 Ctrl+Space）。
+    SetTextInputCompletionReopened {
+        id: StableNodeId,
+    },
     /// 宿主喂入或撤掉（`None`）hover 文档浮窗。
     SetTextInputHover {
         id: StableNodeId,
@@ -403,6 +408,11 @@ impl MutationQueue {
     pub fn set_text_input_completion_dismissed(&mut self, id: StableNodeId) {
         self.mutations
             .push(UiMutation::SetTextInputCompletionDismissed { id });
+    }
+
+    pub fn set_text_input_completion_reopened(&mut self, id: StableNodeId) {
+        self.mutations
+            .push(UiMutation::SetTextInputCompletionReopened { id });
     }
 
     pub fn set_text_input_hover(&mut self, id: StableNodeId, hover: Option<TextHover>) {

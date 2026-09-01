@@ -3577,6 +3577,20 @@ impl UiWorld {
                     self.mark(*id, DirtyMask::RENDER);
                 }
             }
+            UiMutation::SetTextInputCompletionReopened { id } => {
+                let changed = self
+                    .nodes
+                    .text_completion_view(*id)
+                    .is_some_and(|state| state.dismissed);
+                if changed {
+                    if let Some(state) = self.nodes.text_completion_view_mut(*id) {
+                        state.dismissed = false;
+                        state.selected = 0;
+                        state.scroll = 0;
+                    }
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
             UiMutation::SetTextInputHover { id, hover } => {
                 let changed = match (hover, self.nodes.text_hover_view(*id)) {
                     (None, None) => false,
@@ -8823,6 +8837,7 @@ impl<'a> ValidationPlan<'a> {
                 | UiMutation::SetTextInputCompletions { id, .. }
                 | UiMutation::SetTextInputCompletionView { id, .. }
                 | UiMutation::SetTextInputCompletionDismissed { id }
+                | UiMutation::SetTextInputCompletionReopened { id }
                 | UiMutation::SetTextInputHover { id, .. }
                 | UiMutation::SetTextInputHoverScroll { id, .. } => {
                     self.node(*id)?;
@@ -16244,6 +16259,26 @@ mod tests {
         };
         assert!(completion_popup.is_none());
         assert!(!world.text_completion_panel_hit(id, 10.0, 10.0));
+
+        // 宿主显式重开：清除关闭标记、选中归零，弹层几何恢复。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_completion_reopened(id);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let state = world
+            .text_completion_view(id)
+            .expect("completion session kept");
+        assert!(!state.dismissed);
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.scroll, 0);
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            completion_popup, ..
+        } = geometry
+        else {
+            panic!("text input geometry");
+        };
+        assert!(completion_popup.is_some(), "重开后弹层几何恢复");
     }
 
     #[test]
