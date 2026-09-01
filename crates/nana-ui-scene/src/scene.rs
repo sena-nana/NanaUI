@@ -3303,6 +3303,8 @@ impl UiScene {
                 Some(StandardVisual::TextInput { .. }) => {
                     if let Some(ComponentGeometry::TextInput {
                         caret,
+                        additional_carets,
+                        additional_caret_color,
                         preedit,
                         focus_ring,
                         caret_color,
@@ -3450,6 +3452,21 @@ impl UiScene {
                                 scene_rect(*caret),
                                 VisualQuadStyle {
                                     background: Some(*caret_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 附加多光标：与主光标同形、半透明色的 quad 批次
+                        // （slot 13，与主光标同层）。
+                        if !additional_carets.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                13,
+                                additional_carets.iter().map(|rect| scene_rect(*rect)),
+                                VisualQuadStyle {
+                                    background: Some(*additional_caret_color),
                                     border_color: None,
                                     border_width: 0.0,
                                     corner_radius: corner_radii(0.0),
@@ -5103,6 +5120,8 @@ mod tests {
             },
             selection: Vec::new(),
             caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: Vec::new(),
             background: None,
             border: None,
@@ -6007,6 +6026,8 @@ mod tests {
             },
             selection: Vec::new(),
             caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: Vec::new(),
             diagnostic_markers: vec![
                 (
@@ -6058,12 +6079,6 @@ mod tests {
 
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
-        for primitive in scene.primitives() {
-            eprintln!(
-                "DBG slot={} y={} kind={:?}",
-                primitive.id.slot, primitive.bounds.y, primitive.kind
-            );
-        }
         // 每个标记一条 quad（颜色不同）。
         let marker = |slot: u8, y: f64| {
             scene
@@ -6127,6 +6142,8 @@ mod tests {
             },
             selection: Vec::new(),
             caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: Vec::new(),
             diagnostic_markers: vec![(
                 LayoutBox {
@@ -6215,6 +6232,104 @@ mod tests {
     }
 
     #[test]
+    fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 40.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 48.0,
+                },
+                content: Arc::from("a\nb\nc"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: Some(LayoutBox {
+                x: 48.0,
+                y: 8.0,
+                width: 1.0,
+                height: 16.0,
+            }),
+            additional_carets: vec![
+                LayoutBox {
+                    x: 8.0,
+                    y: 24.0,
+                    width: 1.0,
+                    height: 16.0,
+                },
+                LayoutBox {
+                    x: 20.0,
+                    y: 40.0,
+                    width: 1.0,
+                    height: 16.0,
+                },
+            ],
+            additional_caret_color: [0.2, 0.2, 0.2, 0.55],
+            preedit: Vec::new(),
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+
+        // 主光标保持单矩形 slot 4。
+        let caret = scene
+            .primitives()
+            .find(|primitive| primitive.id.slot == 4)
+            .expect("primary caret");
+        assert_eq!(caret.bounds.y, 8.0);
+
+        // 附加光标合并为一个半透明 quad 批次（slot 13）。
+        let batch = scene
+            .primitives()
+            .find(|primitive| primitive.id.slot == 13)
+            .expect("additional caret batch");
+        let ScenePrimitiveKind::QuadBatch {
+            bounds: rects,
+            background,
+            ..
+        } = &batch.kind
+        else {
+            panic!("expected quad batch");
+        };
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].y, 24.0);
+        assert_eq!(rects[1].y, 40.0);
+        assert_eq!(*background, Some([0.2, 0.2, 0.2, 0.55]));
+    }
+
+    #[test]
     fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         let mut input = node(1, None, &[]);
         input.standard_visual = Some(StandardVisual::TextInput {
@@ -6244,6 +6359,8 @@ mod tests {
             },
             selection: Vec::new(),
             caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
@@ -6412,6 +6529,8 @@ mod tests {
                 width: 1.0,
                 height: 16.0,
             }),
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: vec![
                 LayoutBox {
                     x: 48.0,
@@ -6519,6 +6638,8 @@ mod tests {
             },
             selection: Vec::new(),
             caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
             preedit: Vec::new(),
             background: None,
             border: None,

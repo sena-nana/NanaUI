@@ -4667,6 +4667,7 @@ mod tests {
                         anchor: 0,
                         focus: "你".len(),
                     },
+                    additional_selections: Vec::new(),
                 }
             ));
         }
@@ -5424,6 +5425,7 @@ mod tests {
             Some(TextInputState {
                 value: "你娜好ab".into(),
                 selection: nana_ui_runtime::TextSelection::caret("你娜".len()),
+                additional_selections: Vec::new(),
             })
         );
         drop(document);

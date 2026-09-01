@@ -164,6 +164,7 @@ pub fn moved_selection(
 }
 
 /// Replacement produced by a delete or transform.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextReplacement {
     /// Byte range to remove.
     pub range: std::ops::Range<usize>,
@@ -1443,9 +1444,325 @@ pub fn replace_all_matches(
     (next, matches.len())
 }
 
+/// One cursor's multi-cursor edit, computed against the pre-edit value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CursorEdit {
+    /// Replace `range` with `insert`; `caret` is the post-edit caret when
+    /// this edit applies alone.
+    Span(TextReplacement),
+    /// A whole-value transform: `next` is the transformed document and
+    /// `selection` the transform's mapped selection. The pipeline extracts
+    /// the replaced span by diffing so batched transforms share one output
+    /// string instead of rebuilding the document per cursor.
+    Transform {
+        next: String,
+        selection: crate::TextSelection,
+    },
+}
+
+/// One accepted cursor edit inside the batch pipeline.
+#[derive(Debug, Clone)]
+struct CursorSpan {
+    /// Replaced range on the pre-edit value.
+    range: std::ops::Range<usize>,
+    insert: String,
+    /// Where the inserted text starts in the batched output.
+    output_start: usize,
+}
+
+/// Extract the contiguous replacement a whole-value transform applied by
+/// stripping the shared prefix/suffix. Line transforms replace one contiguous
+/// block, so the diff is exactly that block.
+fn transform_span(value: &str, next: &str) -> (std::ops::Range<usize>, String) {
+    let prefix = value
+        .chars()
+        .zip(next.chars())
+        .take_while(|(current, candidate)| current == candidate)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    let suffix = value[prefix..]
+        .chars()
+        .rev()
+        .zip(next[prefix..].chars().rev())
+        .take_while(|(current, candidate)| current == candidate)
+        .map(|(_, character)| character.len_utf8())
+        .sum::<usize>();
+    if prefix + suffix > value.len().min(next.len()) {
+        // Degenerate diff (equal-length swaps overlap prefix and suffix);
+        // fall back to the whole document so the batch stays correct.
+        return (0..value.len(), next.to_owned());
+    }
+    (
+        prefix..value.len() - suffix,
+        next[prefix..next.len() - suffix].to_owned(),
+    )
+}
+
+/// Map an offset through the accepted spans. Offsets inside a replaced span
+/// land on that span's output start (the surviving edit point); offsets after
+/// a span accumulate its length delta.
+fn remap_offset(offset: usize, spans: &[CursorSpan]) -> usize {
+    let mut delta = 0isize;
+    for span in spans {
+        if span.range.end <= offset {
+            delta += span.insert.len() as isize - span.range.len() as isize;
+        } else if span.range.start < offset {
+            return span.output_start;
+        } else {
+            break;
+        }
+    }
+    ((offset as isize + delta).max(0)) as usize
+}
+
+/// Translate a cursor's own-edit selection into batched-output coordinates:
+/// offsets inside the cursor's inserted text shift by the span's output
+/// start; the rest convert back to pre-edit coordinates and remap through
+/// every accepted span.
+fn translate_selection(
+    selection: crate::TextSelection,
+    own: &CursorSpan,
+    spans: &[CursorSpan],
+) -> crate::TextSelection {
+    let to_output = |offset: usize| -> usize {
+        if offset <= own.range.start {
+            remap_offset(offset, spans)
+        } else if offset >= own.range.start + own.insert.len() {
+            let original = offset - own.insert.len() + own.range.len();
+            remap_offset(original, spans)
+        } else {
+            own.output_start + (offset - own.range.start)
+        }
+    };
+    crate::TextSelection {
+        anchor: to_output(selection.anchor),
+        focus: to_output(selection.focus),
+    }
+}
+
+/// Apply every cursor's edit in one pass: edits are computed per selection
+/// against the pre-edit snapshot, spliced into a single output string, and
+/// every cursor's selection is remapped onto the result. Overlapping edit
+/// spans collapse onto the first cursor (duplicates fuse away on normalize).
+///
+/// Each slot carries the cursor's pre-edit selection; a slot with `None` keeps
+/// that selection remapped through its neighbours' edits. Returns `None` when
+/// no cursor produced an edit. The returned selections keep the input order;
+/// callers split the primary back out and normalize.
+pub fn apply_cursor_edits(
+    value: &str,
+    edits: &[(crate::TextSelection, Option<CursorEdit>)],
+) -> Option<(String, Vec<crate::TextSelection>)> {
+    let mut accepted: Vec<(CursorSpan, crate::TextSelection)> = Vec::new();
+    // Slot -> accepted index; `None` for declined slots and for spans dropped
+    // by the overlap guard (those cursors fall back to offset remapping).
+    let mut slot_accepted: Vec<Option<usize>> = Vec::with_capacity(edits.len());
+    for (_, edit) in edits {
+        let Some(edit) = edit else {
+            slot_accepted.push(None);
+            continue;
+        };
+        let (span, edited_selection) = match edit {
+            CursorEdit::Span(replacement) => (
+                CursorSpan {
+                    range: replacement.range.clone(),
+                    insert: replacement.insert.clone(),
+                    output_start: 0,
+                },
+                crate::TextSelection::caret(replacement.caret),
+            ),
+            CursorEdit::Transform { next, selection } => {
+                let (range, insert) = transform_span(value, next);
+                (
+                    CursorSpan {
+                        range,
+                        insert,
+                        output_start: 0,
+                    },
+                    *selection,
+                )
+            }
+        };
+        if accepted.iter().any(|(other, _)| {
+            span.range.start < other.range.end && other.range.start < span.range.end
+        }) {
+            slot_accepted.push(None);
+            continue;
+        }
+        accepted.push((span, edited_selection));
+        slot_accepted.push(Some(accepted.len() - 1));
+    }
+    if accepted.is_empty() {
+        return None;
+    }
+    accepted.sort_by_key(|(span, _)| (span.range.start, span.range.end));
+    let inserted_bytes: usize = accepted.iter().map(|(span, _)| span.insert.len()).sum();
+    let mut next = String::with_capacity(value.len() + inserted_bytes);
+    let mut cursor = 0usize;
+    for (span, _) in accepted.iter_mut() {
+        let end = span.range.end.min(value.len()).max(span.range.start);
+        next.push_str(&value[cursor..span.range.start.min(value.len())]);
+        span.output_start = next.len();
+        next.push_str(&span.insert);
+        cursor = end;
+    }
+    next.push_str(&value[cursor..]);
+    let spans: Vec<CursorSpan> = accepted.iter().map(|(span, _)| span.clone()).collect();
+    let mut result = Vec::with_capacity(edits.len());
+    for (index, (selection, _)) in edits.iter().enumerate() {
+        let output = match slot_accepted[index] {
+            Some(accepted_index) => {
+                let (span, edited) = &accepted[accepted_index];
+                translate_selection(*edited, span, &spans)
+            }
+            None => crate::TextSelection {
+                anchor: remap_offset(selection.anchor, &spans),
+                focus: remap_offset(selection.focus, &spans),
+            },
+        };
+        result.push(output);
+    }
+    Some((next, result))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_edits_splice_in_one_pass_and_remap_carets() {
+        let value = "ab_cd";
+        let edits = vec![
+            (
+                crate::TextSelection::caret(2),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 2..2,
+                    insert: "X".into(),
+                    caret: 3,
+                })),
+            ),
+            (
+                crate::TextSelection::caret(5),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 5..5,
+                    insert: "X".into(),
+                    caret: 6,
+                })),
+            ),
+        ];
+        let (next, selections) = apply_cursor_edits(value, &edits).unwrap();
+        // 一次拼接：既不是逐光标重写字符串，也不是从前往后反复搬移。
+        assert_eq!(next, "abX_cdX");
+        assert_eq!(
+            selections,
+            vec![
+                crate::TextSelection::caret(3),
+                // 末尾插入后光标停在新串末尾（偏移 7）。
+                crate::TextSelection::caret(7)
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_edits_remap_slots_that_declined_to_edit() {
+        let value = "abcd";
+        let edits = vec![
+            // 末尾光标没有编辑（例如无可删除内容），随其他编辑平移。
+            (crate::TextSelection::caret(4), None),
+            (
+                crate::TextSelection::caret(1),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 0..1,
+                    insert: String::new(),
+                    caret: 0,
+                })),
+            ),
+        ];
+        let (next, selections) = apply_cursor_edits(value, &edits).unwrap();
+        assert_eq!(next, "bcd");
+        assert_eq!(selections[0], crate::TextSelection::caret(3));
+        assert_eq!(selections[1], crate::TextSelection::caret(0));
+    }
+
+    #[test]
+    fn cursor_edits_drop_overlapping_spans_onto_the_first_cursor() {
+        let value = "abcdef";
+        // 两个光标同行 delete-to-line-end：后者的范围被前者覆盖，丢弃。
+        let edits = vec![
+            (
+                crate::TextSelection::caret(1),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 1..6,
+                    insert: String::new(),
+                    caret: 1,
+                })),
+            ),
+            (
+                crate::TextSelection::caret(3),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 3..6,
+                    insert: String::new(),
+                    caret: 3,
+                })),
+            ),
+        ];
+        let (next, selections) = apply_cursor_edits(value, &edits).unwrap();
+        assert_eq!(next, "a");
+        assert_eq!(selections[0], crate::TextSelection::caret(1));
+        // 被丢弃的光标映射到幸存编辑点，随后在 normalize 中合并。
+        assert_eq!(selections[1], crate::TextSelection::caret(1));
+    }
+
+    #[test]
+    fn cursor_edits_extract_transform_spans_by_diffing() {
+        let value = "a\nb";
+        let edits = vec![(
+            crate::TextSelection::caret(3),
+            Some(CursorEdit::Transform {
+                next: "a\nb\nc".to_string(),
+                selection: crate::TextSelection::caret(5),
+            }),
+        )];
+        let (next, selections) = apply_cursor_edits(value, &edits).unwrap();
+        assert_eq!(next, "a\nb\nc");
+        assert_eq!(selections, vec![crate::TextSelection::caret(5)]);
+
+        // 多光标 transform：后一个光标的位移叠加在前一个编辑之后。
+        let value = "a\nb";
+        let edits = vec![
+            (
+                crate::TextSelection::caret(1),
+                Some(CursorEdit::Transform {
+                    next: "a\nx\nb".to_string(),
+                    selection: crate::TextSelection::caret(3),
+                }),
+            ),
+            (
+                crate::TextSelection::caret(3),
+                Some(CursorEdit::Span(TextReplacement {
+                    range: 3..3,
+                    insert: "y".into(),
+                    caret: 4,
+                })),
+            ),
+        ];
+        let (next, selections) = apply_cursor_edits(value, &edits).unwrap();
+        assert_eq!(next, "a\nx\nby");
+        assert_eq!(
+            selections,
+            vec![
+                crate::TextSelection::caret(3),
+                crate::TextSelection::caret(6)
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_edits_return_none_when_no_cursor_edits() {
+        let value = "abc";
+        let edits = vec![(crate::TextSelection::caret(1), None)];
+        assert!(apply_cursor_edits(value, &edits).is_none());
+    }
 
     #[test]
     fn grapheme_steps_never_split_clusters() {

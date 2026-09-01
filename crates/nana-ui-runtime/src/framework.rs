@@ -62,7 +62,16 @@ impl<T: Send + 'static> View for T {}
 trait EditableText: ComponentView {
     type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
+    /// Replace the text of every active selection (single cursor replaces its
+    /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
+    /// IME commit path: replace only the primary selection's text. This is
+    /// the documented multi-cursor IME restriction — composition commits to
+    /// the primary cursor alone and other cursors survive via offset
+    /// remapping.
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        self.state_mut().replace_primary_selection(text)
+    }
     fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
         self.state_mut()
             .delete_surrounding(before_bytes, after_bytes)
@@ -193,6 +202,12 @@ impl EditableText for SearchDropdown {
         self.replace_selection(text)
     }
 
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        // Composite search surfaces are single-selection and keep `query`
+        // synchronized through their own replace path.
+        self.replace_selection(text)
+    }
+
     fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
         self.delete_surrounding(before_bytes, after_bytes)
     }
@@ -233,6 +248,12 @@ impl EditableText for ContextMenu {
         true
     }
 
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        // Searchable menus keep `query` synchronized with the committed
+        // state through their own replace path.
+        self.replace_selection(text)
+    }
+
     fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
         if !self.state.delete_surrounding(before_bytes, after_bytes) {
             return false;
@@ -270,6 +291,12 @@ impl EditableText for CommandPalette {
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {
+        self.replace_selection(text)
+    }
+
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        // Composite palettes are single-selection and keep `query`
+        // synchronized through their own replace path.
         self.replace_selection(text)
     }
 
@@ -4142,11 +4169,20 @@ impl AppContext {
     fn editable_selected_text<C: EditableText>(&self, entity: Entity<C>) -> Option<String> {
         self.read(entity, |editable| {
             let state = editable.state();
-            if !state.selection.is_valid_for(&state.value) {
-                return None;
+            // Zed copy semantics: every selection's text, in document order,
+            // joined with newlines. An empty set (bare carets only) reports
+            // None so a copy never blanks the pasteboard.
+            let mut parts: Vec<&str> = Vec::new();
+            for selection in state.selections().iter() {
+                if !selection.is_valid_for(&state.value) {
+                    continue;
+                }
+                let range = selection.ordered();
+                if !range.is_empty() {
+                    parts.push(&state.value[range]);
+                }
             }
-            let range = state.selection.ordered();
-            (!range.is_empty()).then(|| state.value[range].to_owned())
+            (!parts.is_empty()).then(|| parts.join("\n"))
         })
         .ok()
         .flatten()
@@ -4161,10 +4197,15 @@ impl AppContext {
                 anchor: 0,
                 focus: editable.state().value.len(),
             };
-            if editable.state().selection == selection {
+            if editable.state().selection == selection
+                && !editable.state().has_additional_selections()
+            {
                 return false;
             }
-            editable.state_mut().selection = selection;
+            let state = editable.state_mut();
+            state.selection = selection;
+            // Select-all is a wholesale replacement of the selection set.
+            state.additional_selections.clear();
             cx.emit(TextChanged {
                 value: editable.state().value.clone(),
                 selection,
@@ -4218,7 +4259,7 @@ impl AppContext {
         }
         self.update_component(entity, |editable, cx| {
             cx.mutations().set_ime(entity.stable_id(), None);
-            if !editable.replace_selection(text) {
+            if !editable.commit_ime_text(text) {
                 return false;
             }
             cx.emit(editable.change());

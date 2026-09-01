@@ -384,6 +384,7 @@ impl RuntimeInputAdapter {
                                 *x,
                                 *y,
                                 modifiers.shift,
+                                modifiers.alt,
                                 now,
                                 shaper,
                             )?;
@@ -878,6 +879,11 @@ impl RuntimeInputAdapter {
     /// only editing authority. A
     /// focused editable field, or a blocking overlay, consumes the event so a
     /// second host IME path cannot also mutate it.
+    ///
+    /// Multi-cursor restriction: composition is anchored to the primary
+    /// cursor only. While preedit is active the editor paints a single caret
+    /// and, on commit, only the primary selection's text is replaced; the
+    /// additional cursors survive through offset remapping.
     pub fn dispatch_ime(
         &self,
         context: &mut AppContext,
@@ -933,7 +939,7 @@ impl RuntimeInputAdapter {
         key: &str,
         text: Option<&str>,
         modifiers: nana_ui_platform::InputModifiers,
-        shaper: Option<&mut dyn TextShaper>,
+        mut shaper: Option<&mut dyn TextShaper>,
     ) -> Result<bool, FrameworkError> {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
@@ -941,6 +947,22 @@ impl RuntimeInputAdapter {
         let control = modifiers.control;
         let meta = modifiers.meta;
         let word_modifier = control || modifiers.alt;
+        // Alt+Cmd/Ctrl+Up/Down adds cursors above/below the selection(s)
+        // (Zed-style multi-cursor). Multiline editors own the gesture even
+        // when every target already holds a cursor; single-line fields
+        // reject multi-cursor entirely and keep plain movement.
+        if modifiers.alt
+            && (control || meta)
+            && focused.multiline
+            && matches!(key, "ArrowUp" | "ArrowDown")
+        {
+            context.add_focused_text_cursor(
+                document,
+                key == "ArrowUp",
+                reborrow_text_shaper(&mut shaper),
+            )?;
+            return Ok(true);
+        }
         // Alt+Up/Down moves the caret's line block; Alt+Shift+Up/Down
         // duplicates it. Multiline editors own the gesture even at the
         // document edge; single-line fields keep plain caret movement.
@@ -1013,6 +1035,14 @@ impl RuntimeInputAdapter {
             return context.delete_focused_text(document, kind);
         }
         if control || meta {
+            // Cmd/Ctrl+D selects the next occurrence of the primary
+            // selection's word (Zed-style multi-cursor). Multiline only.
+            // Cmd/Ctrl+Shift+D is deliberately unbound for now; hosts can
+            // call `select_focused_text_occurrence(document, true)` for the
+            // reverse direction.
+            if key.eq_ignore_ascii_case("d") && focused.multiline && !modifiers.shift {
+                return context.select_focused_text_occurrence(document, false);
+            }
             // Comment toggle is the only code-editing modified key.
             if key == "/" && focused.code_editing.is_some() {
                 return context.code_edit_toggle_comment(document);
@@ -4402,5 +4432,612 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(events.lock().unwrap().len(), 2);
+    }
+
+    fn textarea_selections(
+        context: &AppContext,
+        node: StableNodeId,
+    ) -> (String, (usize, usize), Vec<(usize, usize)>) {
+        let state = context.world().text_input(node).unwrap();
+        (
+            state.value.clone(),
+            (state.selection.anchor, state.selection.focus),
+            state
+                .additional_selections
+                .iter()
+                .map(|selection| (selection.anchor, selection.focus))
+                .collect(),
+        )
+    }
+
+    fn set_selections(
+        context: &mut AppContext,
+        area: Entity<TextArea>,
+        primary: (usize, usize),
+        additional: Vec<(usize, usize)>,
+    ) {
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection {
+                    anchor: primary.0,
+                    focus: primary.1,
+                };
+                area.state.additional_selections = additional
+                    .into_iter()
+                    .map(|(anchor, focus)| TextSelection { anchor, focus })
+                    .collect();
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn multi_cursor_typing_deleting_and_newline_edit_every_selection() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        let mut adapter = RuntimeInputAdapter::default();
+        set_selections(&mut context, area, (1, 1), vec![(4, 4)]);
+
+        // 打字：每个光标各插入一个字符，一次事件。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("x", Some("x"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("axb\ncxd".into(), (2, 2), vec![(6, 6)])
+        );
+        assert_eq!(events.lock().unwrap().len(), 1);
+
+        // 退格：每个光标各删除一个字符。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("Backspace", None, InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            // 第二个光标删掉 c 后的 x，落在 c、d 之间（偏移 4）。
+            ("ab\ncd".into(), (1, 1), vec![(4, 4)])
+        );
+        assert_eq!(events.lock().unwrap().len(), 2);
+
+        // Enter：每个光标各换一行（无代码编辑，无自动缩进）。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("Enter", Some("\n"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("a\nb\nc\nd".into(), (2, 2), vec![(6, 6)])
+        );
+        assert_eq!(events.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn alt_cmd_arrows_add_cursors_by_column_skip_duplicates_and_stay_at_edges() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("abcd\nef\nghij"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let alt_cmd = InputModifiers {
+            alt: true,
+            meta: true,
+            ..InputModifiers::default()
+        };
+        set_selections(&mut context, area, (2, 2), vec![]);
+
+        // Alt+Cmd+Down 在下一行按列加光标；列超出则贴到行尾。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("ArrowDown", None, alt_cmd)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("abcd\nef\nghij".into(), (2, 2), vec![(7, 7)])
+        );
+
+        // 再按一次：第二个光标下方按列对齐，第一行光标的候选与已有重复合。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("ArrowDown", None, alt_cmd)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("abcd\nef\nghij".into(), (2, 2), vec![(7, 7), (10, 10)])
+        );
+
+        // 文档边缘：手势仍被消费，但不再新增光标。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("ArrowDown", None, alt_cmd)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node).2,
+            vec![(7, 7), (10, 10)]
+        );
+
+        // Alt+Cmd+Up 回程同样按列对齐（10 -> 7 -> 2 依次被已有光标去重）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("ArrowUp", None, alt_cmd))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node).2,
+            vec![(7, 7), (10, 10)]
+        );
+    }
+
+    #[test]
+    fn cmd_d_selects_occurrences_wrapping_and_skipping_covered_spans() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab cd ab"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let meta = InputModifiers {
+            meta: true,
+            ..InputModifiers::default()
+        };
+        set_selections(&mut context, area, (0, 2), vec![]);
+
+        // Cmd+D 选中下一个 "ab"（全词匹配）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("d", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab cd ab".into(), (0, 2), vec![(6, 8)])
+        );
+
+        // 全部出现都已有光标：不再新增（键不被消费）。
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &edit_key("d", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+
+        // 环形：只留末尾选区时，Cmd+D 绕回文档开头。
+        set_selections(&mut context, area, (6, 8), vec![]);
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("d", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab cd ab".into(), (6, 8), vec![(0, 2)])
+        );
+
+        // 全部选中：裸光标取光标下的词，选中所有出现。
+        set_selections(&mut context, area, (1, 1), vec![]);
+        assert!(
+            context
+                .select_all_focused_text_occurrences(document)
+                .unwrap()
+        );
+        // 裸光标被它所在的词选区吸收（并集后主光标即该词）。
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab cd ab".into(), (0, 2), vec![(6, 8)])
+        );
+
+        // 收回到主光标；再次收回是空操作。
+        assert!(context.collapse_focused_text_selections(document).unwrap());
+        assert_eq!(textarea_selections(&context, node).2, vec![]);
+        assert!(!context.collapse_focused_text_selections(document).unwrap());
+    }
+
+    #[test]
+    fn copy_joins_multi_cursor_selections_and_paste_hits_every_cursor() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab cd"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        let mut adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        let meta = |key: &str| {
+            edit_key(
+                key,
+                None,
+                InputModifiers {
+                    meta: true,
+                    ..InputModifiers::default()
+                },
+            )
+        };
+        set_selections(&mut context, area, (0, 2), vec![(3, 5)]);
+
+        // Cmd+C：多选区按序拼接（Zed 语义，换行连接）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("ab\ncd")
+        );
+
+        // Cmd+V：同一段文本插入到每个光标。
+        set_selections(&mut context, area, (0, 0), vec![(5, 5)]);
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta("v"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab\ncdab cdab\ncd".into(), (5, 5), vec![(15, 15)])
+        );
+
+        // Cmd+X：多选区剪切一并删除。
+        set_selections(&mut context, area, (0, 2), vec![(8, 10)]);
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta("x"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selections(&context, node).0, "\ncdab ab\ncd");
+    }
+
+    #[test]
+    fn ime_commit_scopes_to_the_primary_cursor_and_remaps_others() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        set_selections(&mut context, area, (2, 2), vec![(4, 4)]);
+
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("X".into()))
+                .unwrap()
+                .prevent_default
+        );
+        // 只有主光标收到提交文本，附加光标随编辑平移。
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("abX\ncd".into(), (3, 3), vec![(5, 5)])
+        );
+    }
+
+    #[test]
+    fn single_line_fields_reject_multi_cursor_gestures() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("hi"))
+            .unwrap();
+        let node = input.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let alt_cmd = InputModifiers {
+            alt: true,
+            meta: true,
+            ..InputModifiers::default()
+        };
+        let meta = InputModifiers {
+            meta: true,
+            ..InputModifiers::default()
+        };
+
+        // 命令层直接拒绝。
+        assert!(
+            !context
+                .add_focused_text_cursor(document, false, None)
+                .unwrap()
+        );
+        assert!(
+            !context
+                .select_focused_text_occurrence(document, false)
+                .unwrap()
+        );
+
+        // Alt+Cmd+Down 回落到普通移动（meta=DocEnd），不加光标。
+        // 先把光标挪到行首，DocEnd 才有位移。
+        context
+            .update_component(input, |input, _cx| {
+                input.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("ArrowDown", None, alt_cmd)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selections(&context, node).1, (2, 2));
+        assert_eq!(textarea_selections(&context, node).2, vec![]);
+
+        // Cmd+D 不消费、不产生附加光标。
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &edit_key("d", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selections(&context, node).2, vec![]);
+    }
+
+    #[test]
+    fn alt_click_adds_and_removes_cursors_and_plain_click_collapses() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("first\nsecond"))
+            .unwrap();
+        let node = area.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 64.0,
+            },
+        );
+        layout.set_standard_visual(
+            node,
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                placeholder: std::sync::Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: std::sync::Arc::from([]),
+                matches: std::sync::Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+            }),
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        let click = |x: f32, y: f32, alt: bool| InputEvent::Pointer {
+            phase: PointerPhase::Down,
+            pointer_id: 7,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: 1,
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: if alt {
+                InputModifiers {
+                    alt: true,
+                    ..InputModifiers::default()
+                }
+            } else {
+                InputModifiers::default()
+            },
+        };
+        struct Ctx<'a> {
+            context: &'a mut AppContext,
+            shaper: &'a mut MeasureTextShaper,
+        }
+        let mut ctx = Ctx {
+            context: &mut context,
+            shaper: &mut shaper,
+        };
+        let mut dispatch_down = |ctx: &mut Ctx, event: &InputEvent, at: u64| -> bool {
+            adapter
+                .dispatch_with_shaper(
+                    ctx.context,
+                    document,
+                    event,
+                    Duration::from_millis(at),
+                    Some(&mut *ctx.shaper),
+                )
+                .unwrap()
+                .prevent_default
+        };
+
+        // 先用普通点击探出 (2, 20) 落点的字符偏移（不依赖具体行高）。
+        assert!(dispatch_down(&mut ctx, &click(2.0, 20.0, false), 1_000));
+        let probe = textarea_selections(ctx.context, node).1;
+        assert_eq!(probe.0, probe.1);
+        // 把主光标挪到文档末尾，让目标点空出来。
+        ctx.context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret("first\nsecond".len());
+            })
+            .unwrap();
+
+        // Alt+点击同一点：新增一个光标。
+        assert!(dispatch_down(&mut ctx, &click(2.0, 20.0, true), 2_000));
+        assert_eq!(
+            textarea_selections(ctx.context, node),
+            ("first\nsecond".into(), (12, 12), vec![probe])
+        );
+
+        // 时间错开避免双击判定；再次 Alt+点击同一点：移除该光标。
+        assert!(dispatch_down(&mut ctx, &click(2.0, 20.0, true), 3_000));
+        assert_eq!(textarea_selections(ctx.context, node).2, vec![]);
+
+        // Alt+点击第一行行首（主光标不在该处）：新增光标。
+        assert!(dispatch_down(&mut ctx, &click(2.0, 4.0, true), 4_000));
+        assert_eq!(textarea_selections(ctx.context, node).2, vec![(0, 0)]);
+
+        // 普通点击：天然塌缩回单光标。
+        assert!(dispatch_down(&mut ctx, &click(2.0, 4.0, false), 5_000));
+        assert_eq!(
+            textarea_selections(ctx.context, node),
+            ("first\nsecond".into(), (0, 0), vec![])
+        );
+    }
+
+    #[test]
+    fn multi_cursor_code_editing_indents_comments_moves_lines_and_deletes_words() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("  a\n  b").code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let control = InputModifiers {
+            control: true,
+            ..InputModifiers::default()
+        };
+        let alt = InputModifiers {
+            alt: true,
+            ..InputModifiers::default()
+        };
+
+        // Enter 自动缩进：两个缩进行上的光标各起新行并继承缩进。
+        set_selections(&mut context, area, (3, 3), vec![(7, 7)]);
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("Enter", Some("\n"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("  a\n  \n  b\n  ".into(), (6, 6), vec![(13, 13)])
+        );
+
+        // Ctrl+/ 注释切换：每个光标注释自己所在的行。
+        context
+            .update_component(area, |area, _cx| {
+                area.state = nana_ui_runtime::TextInputState::new("aa\nbb");
+                area.state.selection = TextSelection::caret(1);
+                area.state.additional_selections = vec![TextSelection::caret(4)];
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("/", None, control))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("//aa\n//bb".into(), (3, 3), vec![(8, 8)])
+        );
+
+        // Alt+Backspace 词删除：每个光标删到词首。
+        context
+            .update_component(area, |area, _cx| {
+                area.state = nana_ui_runtime::TextInputState::new("aa\nbb");
+                area.state.selection = TextSelection::caret(1);
+                area.state.additional_selections = vec![TextSelection::caret(4)];
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("Backspace", None, alt))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("a\nb".into(), (0, 0), vec![(2, 2)])
+        );
+
+        // Alt+Down 行移动：首行光标把行下移；末行光标在边缘保持不动。
+        context
+            .update_component(area, |area, _cx| {
+                area.state = nana_ui_runtime::TextInputState::new("aa\nbb\ncc");
+                area.state.selection = TextSelection::caret(1);
+                area.state.additional_selections = vec![TextSelection::caret(7)];
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("ArrowDown", None, alt))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("bb\naa\ncc".into(), (4, 4), vec![(7, 7)])
+        );
     }
 }

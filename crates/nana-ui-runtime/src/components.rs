@@ -617,6 +617,10 @@ pub enum ComponentGeometry {
         multiline: bool,
         selection: Vec<LayoutBox>,
         caret: Option<LayoutBox>,
+        /// 附加多光标（收起态）的 caret 矩形；主光标仍在 `caret`。
+        additional_carets: Vec<LayoutBox>,
+        /// 附加光标颜色（主光标 `caret_color` 的半透明变体，保持同形）。
+        additional_caret_color: [f32; 4],
         preedit: Vec<LayoutBox>,
         /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
         diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
@@ -1323,12 +1327,17 @@ pub struct TextInputPresentation {
     pub display_value: String,
     pub placeholder: bool,
     pub selection: Option<(f32, f32)>,
+    /// 选区条带（文本空间）：主选区与附加光标选区的视觉行矩形合并在同一
+    /// 向量里（多光标选区集互不重叠，条带天然不重叠）。
     pub selection_lines: Vec<LayoutBox>,
     pub caret_x: f32,
     pub caret_y: f32,
     pub line_height: f32,
     pub preedit: Option<(f32, f32)>,
     pub preedit_lines: Vec<LayoutBox>,
+    /// 附加光标（收起的 additional selection）的文本空间位置；主光标仍在
+    /// `caret_x`/`caret_y`。仅多行态计算。
+    pub additional_carets: Vec<(f32, f32)>,
     /// 诊断下划线条带（文本空间），仅多行态计算。
     pub diagnostic_marks: Vec<TextDiagnosticMark>,
     /// 查找匹配高亮条带（文本空间），仅多行态计算。
@@ -1652,29 +1661,276 @@ fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
             .any(|(boundary, _)| boundary == offset)
 }
 
+/// Sort key for a selection: span start, then span end.
+fn selection_order(selection: TextSelection) -> (usize, usize) {
+    let range = selection.ordered();
+    (range.start, range.end)
+}
+
+/// Merge in-place: sort by span, fuse overlapping/touching spans, and carry a
+/// `primary` flag through fusions so callers can keep the primary cursor's
+/// identity. Returns the primary span plus the remaining sorted spans.
+fn merge_selection_set(
+    selections: &mut Vec<(TextSelection, bool)>,
+) -> (TextSelection, Vec<TextSelection>) {
+    selections.sort_by_key(|(selection, _)| selection_order(*selection));
+    let mut merged: Vec<(TextSelection, bool)> = Vec::with_capacity(selections.len());
+    for &(next, is_primary) in selections.iter() {
+        match merged.last_mut() {
+            Some((last, last_is_primary)) if last.ordered().end >= next.ordered().start => {
+                let start = last.ordered().start;
+                let end = last.ordered().end.max(next.ordered().end);
+                *last = TextSelection {
+                    anchor: start,
+                    focus: end,
+                };
+                *last_is_primary |= is_primary;
+            }
+            _ => merged.push((next, is_primary)),
+        }
+    }
+    let mut primary = None;
+    let mut additional = Vec::new();
+    for (selection, is_primary) in merged {
+        if is_primary && primary.is_none() {
+            primary = Some(selection);
+        } else {
+            additional.push(selection);
+        }
+    }
+    (primary.unwrap_or_default(), additional)
+}
+
 /// Committed editable text and its selection. IME preedit remains separate in
 /// [`ImeComposition`], so cancelling composition never corrupts committed text.
+///
+/// Beyond the primary [`TextSelection`], a multiline editor can hold
+/// `additional_selections` (Zed-style multiple cursors). The invariant set:
+/// spans are valid for `value`, sorted by offset, and pairwise disjoint (the
+/// full collection is the merge of `selection` and `additional_selections`;
+/// [`TextInputState::selections`] reports it). Keep the collection normalized
+/// after every edit with [`TextInputState::normalize_selections`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextInputState {
     pub value: String,
     pub selection: TextSelection,
+    /// Extra cursors/selections, kept empty for the single-cursor fast path.
+    pub additional_selections: Vec<TextSelection>,
 }
 
 impl TextInputState {
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         let selection = TextSelection::caret(value.len());
-        Self { value, selection }
+        Self {
+            value,
+            selection,
+            additional_selections: Vec::new(),
+        }
     }
 
+    /// Whether more than one cursor/selection is active. Hot paths check this
+    /// first so single-cursor editing and painting stay allocation-free.
+    pub fn has_additional_selections(&self) -> bool {
+        !self.additional_selections.is_empty()
+    }
+
+    /// The complete selection set: [`TextInputState::selection`] plus
+    /// [`TextInputState::additional_selections`], sorted by span start with
+    /// overlapping/touching spans fused. With one cursor this borrows a
+    /// one-element slice instead of allocating.
+    pub fn selections(&self) -> std::borrow::Cow<'_, [TextSelection]> {
+        if self.additional_selections.is_empty() {
+            std::borrow::Cow::Borrowed(std::slice::from_ref(&self.selection))
+        } else {
+            let mut flagged: Vec<(TextSelection, bool)> =
+                Vec::with_capacity(self.additional_selections.len() + 1);
+            flagged.push((self.selection, true));
+            flagged.extend(self.additional_selections.iter().map(|&s| (s, false)));
+            let (primary, additional) = merge_selection_set(&mut flagged);
+            let mut all = Vec::with_capacity(additional.len() + 1);
+            all.push(primary);
+            all.extend(additional);
+            all.sort_by_key(|selection| selection_order(*selection));
+            std::borrow::Cow::Owned(all)
+        }
+    }
+
+    /// Restore the multi-selection invariants: invalid spans clamp onto the
+    /// nearest char boundary, overlapping/touching spans fuse, and a span that
+    /// fuses with the primary becomes the primary (the primary cursor's
+    /// identity never moves onto another span). No-op with one cursor.
+    pub fn normalize_selections(&mut self) {
+        if !self.selection.is_valid_for(&self.value) {
+            let fallback = crate::text_editing::clamp_boundary(&self.value, self.selection.focus);
+            self.selection = TextSelection::caret(fallback);
+        }
+        if self.additional_selections.is_empty() {
+            return;
+        }
+        let mut flagged: Vec<(TextSelection, bool)> =
+            Vec::with_capacity(self.additional_selections.len() + 1);
+        flagged.push((self.selection, true));
+        for selection in self.additional_selections.drain(..) {
+            let normalized = if selection.is_valid_for(&self.value) {
+                selection
+            } else {
+                TextSelection::caret(crate::text_editing::clamp_boundary(
+                    &self.value,
+                    selection.focus,
+                ))
+            };
+            flagged.push((normalized, false));
+        }
+        let (primary, additional) = merge_selection_set(&mut flagged);
+        self.selection = primary;
+        self.additional_selections = additional;
+    }
+
+    /// Add candidate selections, fusing overlaps/touching spans and dropping
+    /// candidates that already exist in the set. Reports whether the set grew.
+    pub fn add_selections(&mut self, candidates: &[TextSelection]) -> bool {
+        if candidates.is_empty() {
+            return false;
+        }
+        let existing = self.selections();
+        let mut added = false;
+        let mut flagged: Vec<(TextSelection, bool)> =
+            Vec::with_capacity(self.additional_selections.len() + candidates.len() + 1);
+        flagged.push((self.selection, true));
+        flagged.extend(
+            self.additional_selections
+                .iter()
+                .map(|&selection| (selection, false)),
+        );
+        for &candidate in candidates {
+            let candidate = if candidate.is_valid_for(&self.value) {
+                candidate
+            } else {
+                TextSelection::caret(crate::text_editing::clamp_boundary(
+                    &self.value,
+                    candidate.focus,
+                ))
+            };
+            if existing.contains(&candidate) || flagged.iter().any(|(s, _)| *s == candidate) {
+                continue;
+            }
+            flagged.push((candidate, false));
+            added = true;
+        }
+        if !added {
+            return false;
+        }
+        let (primary, additional) = merge_selection_set(&mut flagged);
+        self.selection = primary;
+        self.additional_selections = additional;
+        true
+    }
+
+    /// Drop every cursor except the primary selection.
+    pub fn collapse_selections(&mut self) {
+        self.additional_selections.clear();
+    }
+
+    /// Remap `additional_selections` across one committed edit that replaced
+    /// `removed` bytes at `start` with `inserted` bytes, then restore the
+    /// invariants. Single-cursor states stay untouched.
+    fn remap_selections_after_edit(&mut self, start: usize, removed: usize, inserted: usize) {
+        if self.additional_selections.is_empty() {
+            return;
+        }
+        let end = start + removed;
+        let delta = inserted as isize - removed as isize;
+        for selection in &mut self.additional_selections {
+            let map = |offset: usize| -> usize {
+                if offset <= start {
+                    offset
+                } else if offset >= end {
+                    ((offset as isize + delta).max(start as isize)) as usize
+                } else {
+                    // Inside the replaced span: collapse onto the edit point.
+                    start + inserted
+                }
+            };
+            selection.anchor = map(selection.anchor);
+            selection.focus = map(selection.focus);
+        }
+    }
+
+    /// Replace the text of every selection with `text` (one cursor replaces
+    /// its own selection; multiple cursors each receive an insertion) and
+    /// park every cursor at the end of its inserted text.
     pub fn replace_selection(&mut self, text: &str) -> bool {
+        if !self.selection.is_valid_for(&self.value) {
+            return false;
+        }
+        if !self.has_additional_selections() {
+            let range = self.selection.ordered();
+            let caret = range.start + text.len();
+            self.value.replace_range(range.clone(), text);
+            self.selection = TextSelection::caret(caret);
+            return true;
+        }
+        // Multi-cursor: one insertion per selection against the pre-edit
+        // value, spliced in a single pass.
+        let selections = self.selections();
+        let primary_index = selections
+            .iter()
+            .position(|selection| *selection == self.selection)
+            .unwrap_or(0);
+        let edits: Vec<(TextSelection, Option<crate::text_editing::CursorEdit>)> = selections
+            .iter()
+            .map(|&selection| {
+                let edit = if selection.is_valid_for(&self.value) {
+                    let range = selection.ordered();
+                    let caret = range.start + text.len();
+                    Some(crate::text_editing::CursorEdit::Span(
+                        crate::text_editing::TextReplacement {
+                            range,
+                            insert: text.to_owned(),
+                            caret,
+                        },
+                    ))
+                } else {
+                    None
+                };
+                (selection, edit)
+            })
+            .collect();
+        let Some((next_value, next_selections)) =
+            crate::text_editing::apply_cursor_edits(&self.value, &edits)
+        else {
+            return false;
+        };
+        self.value = next_value;
+        self.selection = next_selections
+            .get(primary_index)
+            .copied()
+            .unwrap_or_else(|| TextSelection::caret(self.value.len()));
+        self.additional_selections = next_selections
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != primary_index)
+            .map(|(_, selection)| *selection)
+            .collect();
+        self.normalize_selections();
+        true
+    }
+
+    /// Replace only the primary selection's text (IME commit path); every
+    /// other cursor survives the edit through offset remapping. This is the
+    /// documented multi-cursor IME restriction: composition commits to the
+    /// primary cursor alone.
+    pub fn replace_primary_selection(&mut self, text: &str) -> bool {
         if !self.selection.is_valid_for(&self.value) {
             return false;
         }
         let range = self.selection.ordered();
         let caret = range.start + text.len();
-        self.value.replace_range(range, text);
+        self.value.replace_range(range.clone(), text);
         self.selection = TextSelection::caret(caret);
+        self.remap_selections_after_edit(range.start, range.len(), text.len());
+        self.normalize_selections();
         true
     }
 
@@ -1702,17 +1958,21 @@ impl TextInputState {
         }
         self.value.replace_range(start..end, "");
         self.selection = TextSelection::caret(start);
+        self.remap_selections_after_edit(start, end - start, 0);
+        self.normalize_selections();
         true
     }
 
     /// Replace a controlled value while keeping a valid selection when
     /// possible. If the old offsets no longer land on UTF-8 boundaries, move
-    /// the caret to the new end.
+    /// the caret to the new end. A wholesale value replacement also drops any
+    /// additional cursors: their offsets have no meaning in foreign text.
     pub fn replace_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
         if !self.selection.is_valid_for(&self.value) {
             self.selection = TextSelection::caret(self.value.len());
         }
+        self.additional_selections.clear();
     }
 
     /// Accept a complete value snapshot from a native editor.
@@ -1743,6 +2003,8 @@ impl TextInputState {
         let caret = value.len() - suffix;
         self.value = value;
         self.selection = TextSelection::caret(caret);
+        // Native editor snapshots carry a single selection; drop the rest.
+        self.additional_selections.clear();
     }
 }
 
@@ -1870,4 +2132,175 @@ pub struct ExtractedTextSpan {
     pub start: usize,
     pub end: usize,
     pub color: [f32; 4],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TextInputState, TextSelection};
+
+    fn state(
+        value: &str,
+        selection: TextSelection,
+        additional_selections: Vec<TextSelection>,
+    ) -> TextInputState {
+        TextInputState {
+            value: value.into(),
+            selection,
+            additional_selections,
+        }
+    }
+
+    #[test]
+    fn selections_reports_the_sorted_set_and_borrows_a_single_cursor() {
+        let single = state("abcd", TextSelection::caret(2), Vec::new());
+        assert!(matches!(single.selections(), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(single.selections().len(), 1);
+
+        // 附加光标按 offset 排序；主光标保持自身身份（不必排在最前）。
+        let multi = state(
+            "abcd",
+            TextSelection {
+                anchor: 3,
+                focus: 4,
+            },
+            vec![TextSelection::caret(0)],
+        );
+        assert_eq!(
+            multi.selections().into_owned(),
+            vec![
+                TextSelection::caret(0),
+                TextSelection {
+                    anchor: 3,
+                    focus: 4
+                }
+            ]
+        );
+        assert_eq!(
+            multi.selection,
+            TextSelection {
+                anchor: 3,
+                focus: 4
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_fuses_touching_spans_into_the_primary() {
+        let mut multi = state(
+            "abcdef",
+            TextSelection {
+                anchor: 2,
+                focus: 3,
+            },
+            vec![
+                TextSelection {
+                    anchor: 3,
+                    focus: 5,
+                },
+                TextSelection::caret(5),
+                TextSelection::caret(0),
+            ],
+        );
+        multi.normalize_selections();
+        // 主光标吸收与其相接的 span（身份不转移），其余保持附加集合。
+        // caret(5) 与 [2,5) 相接但为空跨度，不延长并集。
+        assert_eq!(
+            multi.selection,
+            TextSelection {
+                anchor: 2,
+                focus: 5
+            }
+        );
+        assert_eq!(multi.additional_selections, vec![TextSelection::caret(0)]);
+    }
+
+    #[test]
+    fn normalize_clamps_invalid_offsets_onto_boundaries() {
+        let value = "ab\u{1F600}cd";
+        let mut multi = state(
+            value,
+            TextSelection::caret(1),
+            vec![TextSelection::caret(3)],
+        );
+        multi.normalize_selections();
+        // 偏移 3 落在 emoji 中间，收敛到最近的字符边界 2。
+        assert_eq!(multi.additional_selections, vec![TextSelection::caret(2)]);
+    }
+
+    #[test]
+    fn replace_selection_splices_every_cursor_in_one_pass() {
+        let mut multi = state(
+            "ab_cd",
+            TextSelection::caret(2),
+            vec![TextSelection::caret(5)],
+        );
+        assert!(multi.replace_selection("X"));
+        assert_eq!(multi.value, "abX_cdX");
+        assert_eq!(multi.selection, TextSelection::caret(3));
+        assert_eq!(multi.additional_selections, vec![TextSelection::caret(7)]);
+
+        // 相邻光标会先合并，只插入一次。
+        let mut touching = state(
+            "abc",
+            TextSelection::caret(1),
+            vec![TextSelection::caret(1)],
+        );
+        assert!(touching.replace_selection("X"));
+        assert_eq!(touching.value, "aXbc");
+        assert!(touching.additional_selections.is_empty());
+    }
+
+    #[test]
+    fn replace_primary_selection_scopes_ime_commits_and_remaps_others() {
+        let mut multi = state(
+            "ab_cd",
+            TextSelection::caret(2),
+            vec![TextSelection::caret(5)],
+        );
+        assert!(multi.replace_primary_selection("X"));
+        assert_eq!(multi.value, "abX_cd");
+        assert_eq!(multi.selection, TextSelection::caret(3));
+        // 附加光标随编辑平移，仍然有效。
+        assert_eq!(multi.additional_selections, vec![TextSelection::caret(6)]);
+    }
+
+    #[test]
+    fn add_selections_skips_duplicates_and_collapses_back() {
+        let mut multi = state("abcdef", TextSelection::caret(0), Vec::new());
+        assert!(multi.add_selections(&[
+            TextSelection::caret(3),
+            TextSelection::caret(3),
+            TextSelection::caret(5),
+        ]));
+        assert_eq!(
+            multi.additional_selections,
+            vec![TextSelection::caret(3), TextSelection::caret(5)]
+        );
+        // 已有光标处不再添加。
+        assert!(!multi.add_selections(&[TextSelection::caret(5)]));
+        multi.collapse_selections();
+        assert!(multi.additional_selections.is_empty());
+        assert_eq!(multi.selection, TextSelection::caret(0));
+    }
+
+    #[test]
+    fn wholesale_value_replacements_drop_additional_cursors() {
+        let mut multi = state(
+            "abcd",
+            TextSelection::caret(1),
+            vec![TextSelection::caret(3)],
+        );
+        multi.replace_value("xy");
+        assert!(multi.additional_selections.is_empty());
+
+        let mut multi = state(
+            "abcd",
+            TextSelection::caret(1),
+            vec![TextSelection::caret(4)],
+        );
+        multi.synchronize_editor_value("abcdefg");
+        assert!(multi.additional_selections.is_empty());
+        // 最小变更区间的末端落在新值的插入点。
+        assert_eq!(multi.selection, TextSelection::caret(7));
+    }
 }
