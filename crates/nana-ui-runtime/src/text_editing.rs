@@ -307,6 +307,11 @@ pub enum TextCaretIntent {
     DocEnd,
     Up,
     Down,
+    /// One viewport-height up; resolved by [`page_caret_focus`] (or the
+    /// logical fallback [`page_caret_focus_logical`]).
+    PageUp,
+    /// One viewport-height down; see [`TextCaretIntent::PageUp`].
+    PageDown,
 }
 
 /// Resolve a geometry-free caret intent against the moving end of the
@@ -339,6 +344,7 @@ pub fn caret_focus(
         TextCaretIntent::DocStart => (focus > 0).then_some(0),
         TextCaretIntent::DocEnd => (focus < value.len()).then_some(value.len()),
         TextCaretIntent::Up | TextCaretIntent::Down => None,
+        TextCaretIntent::PageUp | TextCaretIntent::PageDown => None,
     }
 }
 
@@ -377,6 +383,44 @@ fn visual_line_band(
     Some((start, end.min(value.len())))
 }
 
+/// Pick the offset on the visual band starting at `band_y` whose caret x is
+/// closest to `goal`, retaining the goal column. `fallback` is used when the
+/// backend reports no band at that y (clamped document edges).
+fn select_in_visual_band(
+    value: &str,
+    selection: crate::TextSelection,
+    extend: bool,
+    goal: f32,
+    band_y: f32,
+    line_height: f32,
+    fallback: usize,
+    mut position: impl FnMut(usize) -> (f32, f32, f32),
+) -> (crate::TextSelection, f32) {
+    let Some((band_start, band_end)) = visual_line_band(value, band_y, line_height, &mut position)
+    else {
+        return (
+            moved_selection(selection, clamp_boundary(value, fallback), extend),
+            goal,
+        );
+    };
+    let mut best = band_start;
+    let mut best_distance = f32::INFINITY;
+    let mut cursor = band_start;
+    loop {
+        let (x, _, _) = position(cursor);
+        let distance = (x - goal).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = cursor;
+        }
+        match next_grapheme(value, cursor) {
+            Some(next) if next < band_end || band_end == value.len() => cursor = next,
+            _ => break,
+        }
+    }
+    (moved_selection(selection, best, extend), goal)
+}
+
 /// Resolve a vertical intent onto the visual line above or below the caret,
 /// keeping the horizontal goal column in content-local pixels.
 ///
@@ -399,51 +443,82 @@ pub fn vertical_caret_focus(
     let (current_x, current_y, probed_height) = position(focus);
     let line_height = probed_height.max(1.0);
     let goal = goal_x.unwrap_or(current_x);
-    let clamp_to = |offset: usize| {
-        Some((
-            moved_selection(selection, clamp_boundary(value, offset), extend),
-            goal,
-        ))
-    };
     let last_y = position(value.len()).1;
-    let band_y = match intent {
+    let (band_y, fallback) = match intent {
         TextCaretIntent::Up => {
             if current_y <= f32::EPSILON {
-                return clamp_to(0);
+                return Some((moved_selection(selection, 0, extend), goal));
             }
-            current_y - line_height
+            (current_y - line_height, 0)
         }
         _ => {
             if current_y + f32::EPSILON >= last_y {
-                return clamp_to(value.len());
+                return Some((moved_selection(selection, value.len(), extend), goal));
             }
-            current_y + line_height
+            (current_y + line_height, value.len())
         }
     };
-    let Some((band_start, band_end)) = visual_line_band(value, band_y, line_height, &mut position)
-    else {
-        return clamp_to(if intent == TextCaretIntent::Up {
-            0
-        } else {
-            value.len()
-        });
-    };
-    let mut best = band_start;
-    let mut best_distance = f32::INFINITY;
-    let mut cursor = band_start;
-    loop {
-        let (x, _, _) = position(cursor);
-        let distance = (x - goal).abs();
-        if distance < best_distance {
-            best_distance = distance;
-            best = cursor;
-        }
-        match next_grapheme(value, cursor) {
-            Some(next) if next < band_end || band_end == value.len() => cursor = next,
-            _ => break,
-        }
+    Some(select_in_visual_band(
+        value,
+        selection,
+        extend,
+        goal,
+        band_y,
+        line_height,
+        fallback,
+        &mut position,
+    ))
+}
+
+/// Logical lines paged by [`page_caret_focus_logical`].
+pub const TEXT_EDITOR_PAGE_LOGICAL_LINES: usize = 15;
+
+/// Resolve a PageUp/PageDown intent against the editor's viewport: the caret
+/// moves by `page_height` pixels of visual lines (the content-box height),
+/// keeping the horizontal goal column exactly like [`vertical_caret_focus`].
+/// Clamps at the document edges.
+pub fn page_caret_focus(
+    value: &str,
+    selection: crate::TextSelection,
+    intent: TextCaretIntent,
+    extend: bool,
+    goal_x: Option<f32>,
+    page_height: f32,
+    mut position: impl FnMut(usize) -> (f32, f32, f32),
+) -> Option<(crate::TextSelection, f32)> {
+    let focus = clamp_boundary(value, selection.focus);
+    if !matches!(intent, TextCaretIntent::PageUp | TextCaretIntent::PageDown) {
+        return None;
     }
-    Some((moved_selection(selection, best, extend), goal))
+    let (current_x, current_y, probed_height) = position(focus);
+    let line_height = probed_height.max(1.0);
+    let goal = goal_x.unwrap_or(current_x);
+    let page = page_height.max(line_height);
+    let last_y = position(value.len()).1;
+    let (band_y, fallback) = match intent {
+        TextCaretIntent::PageUp => {
+            if current_y <= f32::EPSILON {
+                return Some((moved_selection(selection, 0, extend), goal));
+            }
+            ((current_y - page).max(0.0), 0)
+        }
+        _ => {
+            if current_y + f32::EPSILON >= last_y {
+                return Some((moved_selection(selection, value.len(), extend), goal));
+            }
+            ((current_y + page).min(last_y), value.len())
+        }
+    };
+    Some(select_in_visual_band(
+        value,
+        selection,
+        extend,
+        goal,
+        band_y,
+        line_height,
+        fallback,
+        &mut position,
+    ))
 }
 
 /// Byte offset whose caret renders closest to a content-local point.
@@ -530,6 +605,27 @@ pub fn vertical_caret_focus_logical(
         offset = target_start + index + grapheme.len();
     }
     Some(moved_selection(selection, offset, extend))
+}
+
+/// Geometry-free PageUp/PageDown fallback for hosts without a shaper:
+/// [`vertical_caret_focus_logical`] applied
+/// [`TEXT_EDITOR_PAGE_LOGICAL_LINES`] times.
+pub fn page_caret_focus_logical(
+    value: &str,
+    selection: crate::TextSelection,
+    intent: TextCaretIntent,
+    extend: bool,
+) -> Option<crate::TextSelection> {
+    let direction = match intent {
+        TextCaretIntent::PageUp => TextCaretIntent::Up,
+        TextCaretIntent::PageDown => TextCaretIntent::Down,
+        _ => return None,
+    };
+    let mut current = selection;
+    for _ in 0..TEXT_EDITOR_PAGE_LOGICAL_LINES {
+        current = vertical_caret_focus_logical(value, current, direction, extend)?;
+    }
+    Some(current)
 }
 
 /// Bracket and quote pairs completed by code-editor auto-pairing.
@@ -829,6 +925,390 @@ fn remove_indent(text: &str, indent_unit: &str) -> usize {
         .take_while(|&character| character == ' ')
         .count();
     (spaces / unit) * unit
+}
+
+/// Direction for [`move_lines`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextLineDirection {
+    Up,
+    Down,
+}
+
+/// The logical lines a selection touches as `(start, end)` byte ranges
+/// (`end` excludes the newline), using the same convention as
+/// [`toggle_line_comment`]: a range that ends exactly at a line start does
+/// not touch that line.
+fn selected_line_ranges(value: &str, range: std::ops::Range<usize>) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let first_line = logical_line_range(value, range.start).0;
+    let (last_start, _) = logical_line_range(value, range.end);
+    let last_line = if range.end > range.start && range.end == last_start {
+        logical_line_range(value, range.end - 1).0
+    } else {
+        last_start
+    };
+    let mut cursor = first_line;
+    loop {
+        let (line_start, line_end) = logical_line_range(value, cursor);
+        ranges.push((line_start, line_end));
+        if cursor >= last_line || line_end >= value.len() {
+            break;
+        }
+        cursor = line_end + 1;
+    }
+    ranges
+}
+
+/// Move the block of lines the selection touches up or down one line.
+///
+/// The selection follows the moved text (anchor/focus order preserved).
+/// Returns `None` when the block is already at the document edge in that
+/// direction.
+pub fn move_lines(
+    value: &str,
+    selection: crate::TextSelection,
+    direction: TextLineDirection,
+) -> Option<(String, crate::TextSelection)> {
+    let lines = selected_line_ranges(value, selection.ordered());
+    let block_start = lines.first()?.0;
+    let block_end = lines.last()?.1;
+    let (next, delta) = match direction {
+        TextLineDirection::Up => {
+            if block_start == 0 {
+                return None;
+            }
+            // The newline above the block swaps places with the block.
+            let previous_end = block_start - 1;
+            let previous_start = value[..previous_end]
+                .rfind('\n')
+                .map_or(0, |index| index + 1);
+            let mut next = String::with_capacity(value.len());
+            next.push_str(&value[..previous_start]);
+            next.push_str(&value[block_start..block_end]);
+            next.push('\n');
+            next.push_str(&value[previous_start..previous_end]);
+            next.push_str(&value[block_end..]);
+            let delta = previous_start as isize - block_start as isize;
+            (next, delta)
+        }
+        TextLineDirection::Down => {
+            if block_end >= value.len() {
+                return None;
+            }
+            // The newline after the block swaps places with the next line.
+            let next_start = block_end + 1;
+            let next_end = value[next_start..]
+                .find('\n')
+                .map_or(value.len(), |index| next_start + index);
+            let mut next = String::with_capacity(value.len());
+            next.push_str(&value[..block_start]);
+            next.push_str(&value[next_start..next_end]);
+            next.push('\n');
+            next.push_str(&value[block_start..block_end]);
+            next.push_str(&value[next_end..]);
+            let delta = next_end as isize - block_end as isize;
+            (next, delta)
+        }
+    };
+    let map = |offset: usize| clamp_boundary(&next, (offset as isize + delta).max(0) as usize);
+    let anchor = map(selection.anchor);
+    let focus = map(selection.focus);
+    Some((next, crate::TextSelection { anchor, focus }))
+}
+
+/// Copy the block of lines the selection touches and insert the copy on the
+/// line below, returning a selection that covers the copy (Zed-style
+/// duplicate). Always succeeds on a non-empty value; an empty value has no
+/// line to duplicate.
+pub fn duplicate_lines(
+    value: &str,
+    selection: crate::TextSelection,
+) -> Option<(String, crate::TextSelection)> {
+    if value.is_empty() {
+        return None;
+    }
+    let lines = selected_line_ranges(value, selection.ordered());
+    let block_start = lines.first()?.0;
+    let block_end = lines.last()?.1;
+    let mut next = String::with_capacity(value.len() + (block_end - block_start) + 1);
+    next.push_str(&value[..block_end]);
+    next.push('\n');
+    next.push_str(&value[block_start..block_end]);
+    next.push_str(&value[block_end..]);
+    let delta = (block_end + 1 - block_start) as isize;
+    let map = |offset: usize| clamp_boundary(&next, (offset as isize + delta).max(0) as usize);
+    let anchor = map(selection.anchor);
+    let focus = map(selection.focus);
+    Some((next, crate::TextSelection { anchor, focus }))
+}
+
+/// Delete the block of lines the selection touches, including one adjacent
+/// newline so the surrounding lines join cleanly. The caret lands where the
+/// block started (on the previous line's end when the block reached the
+/// document end).
+pub fn delete_lines(
+    value: &str,
+    selection: crate::TextSelection,
+) -> Option<(String, crate::TextSelection)> {
+    if value.is_empty() {
+        return None;
+    }
+    let lines = selected_line_ranges(value, selection.ordered());
+    let block_start = lines.first()?.0;
+    let block_end = lines.last()?.1;
+    let (remove_start, remove_end, caret) = if block_end < value.len() {
+        (block_start, block_end + 1, block_start)
+    } else if block_start > 0 {
+        (block_start - 1, block_end, block_start - 1)
+    } else {
+        (block_start, block_end, block_start)
+    };
+    let next = format!("{}{}", &value[..remove_start], &value[remove_end..]);
+    let caret = caret.min(next.len());
+    Some((next, crate::TextSelection::caret(caret)))
+}
+
+/// Join the lines the selection touches into one line.
+///
+/// With a bare caret this joins the caret line with the following one, like
+/// desktop editors. Line breaks and the following lines' leading whitespace
+/// are removed; each seam receives a single space unless the left side
+/// already ends with whitespace or either joined content is empty. The
+/// selection maps onto the joined line (offsets inside removed indentation
+/// collapse onto the seam). Returns `None` when there is nothing to join (a
+/// single touched line, or the caret on the last line).
+pub fn join_lines(
+    value: &str,
+    selection: crate::TextSelection,
+) -> Option<(String, crate::TextSelection)> {
+    let range = selection.ordered();
+    let lines = if range.start == range.end {
+        // 裸光标：与桌面编辑器一致，把光标行和下一行合并。
+        let (line_start, line_end) = logical_line_range(value, range.start);
+        if line_end >= value.len() {
+            return None;
+        }
+        let next_start = line_end + 1;
+        let next_end = value[next_start..]
+            .find('\n')
+            .map_or(value.len(), |index| next_start + index);
+        vec![(line_start, line_end), (next_start, next_end)]
+    } else {
+        selected_line_ranges(value, range)
+    };
+    if lines.len() < 2 {
+        return None;
+    }
+    let block_start = lines[0].0;
+    let block_end = lines[lines.len() - 1].1;
+    let mut next = String::with_capacity(value.len());
+    next.push_str(&value[..block_start]);
+    // `(line_start, content_start, line_end, new_content_start)` per line.
+    let mut mapping: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(lines.len());
+    let mut left_content = "";
+    for (index, &(line_start, line_end)) in lines.iter().enumerate() {
+        let content_start = if index == 0 {
+            line_start
+        } else {
+            line_content_start(value, line_start)
+        };
+        let content = &value[content_start..line_end];
+        if index > 0 {
+            let seam = !left_content.is_empty()
+                && !content.is_empty()
+                && !left_content.ends_with(char::is_whitespace);
+            if seam {
+                next.push(' ');
+            }
+        }
+        let new_content_start = next.len();
+        next.push_str(content);
+        mapping.push((line_start, content_start, line_end, new_content_start));
+        left_content = content;
+    }
+    next.push_str(&value[block_end..]);
+    let map = |offset: usize| -> usize {
+        for &(line_start, content_start, line_end, new_content_start) in &mapping {
+            if (line_start..=line_end).contains(&offset) {
+                if offset <= content_start {
+                    return new_content_start;
+                }
+                return new_content_start + (offset - content_start);
+            }
+        }
+        offset
+    };
+    let anchor = clamp_boundary(&next, map(selection.anchor));
+    let focus = clamp_boundary(&next, map(selection.focus));
+    Some((next, crate::TextSelection { anchor, focus }))
+}
+
+/// Uppercase (`upper`) or lowercase the selection. UTF-8 safe: case
+/// expansion such as `ß` → `SS` shifts the selection end accordingly, and an
+/// empty selection declines.
+pub fn transform_selection_case(
+    value: &str,
+    selection: crate::TextSelection,
+    upper: bool,
+) -> Option<(String, crate::TextSelection)> {
+    let range = selection.ordered();
+    if range.is_empty() {
+        return None;
+    }
+    let transformed = if upper {
+        value[range.clone()].to_uppercase()
+    } else {
+        value[range.clone()].to_lowercase()
+    };
+    let mut next = String::with_capacity(value.len() + transformed.len());
+    next.push_str(&value[..range.start]);
+    next.push_str(&transformed);
+    next.push_str(&value[range.end..]);
+    let delta = transformed.len() as isize - range.len() as isize;
+    let map = |offset: usize| -> usize {
+        if offset <= range.start {
+            offset
+        } else if offset >= range.end {
+            (offset as isize + delta).max(range.start as isize) as usize
+        } else {
+            range.start
+        }
+    };
+    let anchor = clamp_boundary(&next, map(selection.anchor));
+    let focus = clamp_boundary(&next, map(selection.focus));
+    Some((next, crate::TextSelection { anchor, focus }))
+}
+
+/// Sort the lines the selection touches by byte order (`str` `Ord`, so the
+/// result is deterministic across platforms). `descending` reverses the
+/// order; `unique` drops repeated rows after sorting. The selection then
+/// covers the sorted block. Returns `None` when fewer than two lines are
+/// touched (sorting one line cannot change anything).
+pub fn sort_lines(
+    value: &str,
+    selection: crate::TextSelection,
+    descending: bool,
+    unique: bool,
+) -> Option<(String, crate::TextSelection)> {
+    let lines = selected_line_ranges(value, selection.ordered());
+    if lines.len() < 2 {
+        return None;
+    }
+    let block_start = lines[0].0;
+    let block_end = lines[lines.len() - 1].1;
+    let mut rows: Vec<&str> = lines
+        .iter()
+        .map(|&(start, end)| &value[start..end])
+        .collect();
+    if descending {
+        rows.sort_unstable_by(|left, right| right.cmp(left));
+    } else {
+        rows.sort_unstable();
+    }
+    if unique {
+        rows.dedup();
+    }
+    let suffix = &value[block_end..];
+    let mut next = String::with_capacity(value.len());
+    next.push_str(&value[..block_start]);
+    for row in &rows {
+        next.push_str(row);
+        next.push('\n');
+    }
+    next.pop();
+    next.push_str(suffix);
+    let block_end_next = next.len() - suffix.len();
+    let selection = if selection.anchor <= selection.focus {
+        crate::TextSelection {
+            anchor: block_start,
+            focus: block_end_next,
+        }
+    } else {
+        crate::TextSelection {
+            anchor: block_end_next,
+            focus: block_start,
+        }
+    };
+    Some((next, selection))
+}
+
+fn bracket_closer(open: char) -> Option<char> {
+    match open {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        _ => None,
+    }
+}
+
+fn bracket_opener(close: char) -> Option<char> {
+    match close {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        _ => None,
+    }
+}
+
+/// Byte offsets `(open, close)` of the bracket pair adjacent to `caret`.
+///
+/// A caret immediately before an opener pairs forward, immediately after a
+/// closer pairs backward, and between a matched pair (for example `(|)`) both
+/// brackets pair with each other. Nesting is counted, and unbalanced text
+/// yields `None`. Only `()`, `[]`, `{}` pair here — quotes are left to the
+/// host's language model.
+pub fn matching_bracket_pair(value: &str, caret: usize) -> Option<(usize, usize)> {
+    let caret = clamp_boundary(value, caret);
+    let after = value[caret..].chars().next();
+    let before = value[..caret].chars().next_back();
+    if let Some(open) = after.filter(|character| bracket_closer(*character).is_some()) {
+        return match_bracket_forward(value, caret, open);
+    }
+    if let Some(open) = before.filter(|character| bracket_closer(*character).is_some()) {
+        let open_offset = caret - open.len_utf8();
+        return match_bracket_forward(value, open_offset, open);
+    }
+    if let Some(close) = before.filter(|character| bracket_opener(*character).is_some()) {
+        let close_offset = caret - close.len_utf8();
+        return match_bracket_backward(value, close_offset, close);
+    }
+    if let Some(close) = after.filter(|character| bracket_opener(*character).is_some()) {
+        return match_bracket_backward(value, caret, close);
+    }
+    None
+}
+
+fn match_bracket_forward(value: &str, open_offset: usize, open: char) -> Option<(usize, usize)> {
+    let close = bracket_closer(open)?;
+    let mut depth = 1usize;
+    for (offset, character) in value[open_offset + open.len_utf8()..].char_indices() {
+        let offset = open_offset + open.len_utf8() + offset;
+        if character == open {
+            depth += 1;
+        } else if character == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some((open_offset, offset));
+            }
+        }
+    }
+    None
+}
+
+fn match_bracket_backward(value: &str, close_offset: usize, close: char) -> Option<(usize, usize)> {
+    let open = bracket_opener(close)?;
+    let mut depth = 1usize;
+    for (offset, character) in value[..close_offset].char_indices().rev() {
+        if character == close {
+            depth += 1;
+        } else if character == open {
+            depth -= 1;
+            if depth == 0 {
+                return Some((offset, close_offset));
+            }
+        }
+    }
+    None
 }
 
 /// Literal search options for [`find_matches`] and friends. Regex search is
@@ -1397,5 +1877,409 @@ mod tests {
             replace_all_matches("abc", "", "q", TextSearchOptions::default());
         assert_eq!(empty, "abc");
         assert_eq!(empty_count, 0);
+    }
+
+    #[test]
+    fn lines_move_up_and_down_with_their_selection() {
+        let value = "ab\ncd\nef";
+        let selection = crate::TextSelection {
+            anchor: 3,
+            focus: 5,
+        };
+        // "cd" 与上一行交换，选区跟随移动后的文本。
+        let (up, up_selection) = move_lines(value, selection, TextLineDirection::Up).unwrap();
+        assert_eq!(up, "cd\nab\nef");
+        assert_eq!(
+            up_selection,
+            crate::TextSelection {
+                anchor: 0,
+                focus: 2
+            }
+        );
+        // "cd" 再与下一行交换并回到原位。
+        let (down, _) = move_lines(&up, up_selection, TextLineDirection::Down).unwrap();
+        assert_eq!(down, value);
+        // 多行块整体移动。
+        let block = crate::TextSelection {
+            anchor: 0,
+            focus: 5,
+        };
+        let (down, down_selection) = move_lines(value, block, TextLineDirection::Down).unwrap();
+        assert_eq!(down, "ef\nab\ncd");
+        assert_eq!(
+            down_selection,
+            crate::TextSelection {
+                anchor: 3,
+                focus: 8
+            }
+        );
+        // 已移到顶部后继续上移是空操作；末行继续下移同样是空操作。
+        assert!(move_lines(&up, up_selection, TextLineDirection::Up).is_none());
+        let last = crate::TextSelection {
+            anchor: 6,
+            focus: 8,
+        };
+        assert!(move_lines(value, last, TextLineDirection::Down).is_none());
+    }
+
+    #[test]
+    fn move_lines_handles_edge_line_shapes() {
+        // 无结尾换行：最后一行下移是空操作；光标行（无选区）按整行移动。
+        let value = "a\nb";
+        let caret_on_b = crate::TextSelection::caret(3);
+        assert!(move_lines(value, caret_on_b, TextLineDirection::Down).is_none());
+        let (up, up_selection) = move_lines(value, caret_on_b, TextLineDirection::Up).unwrap();
+        assert_eq!(up, "b\na");
+        assert_eq!(up_selection, crate::TextSelection::caret(1));
+        // 结尾换行后的幻影空行可以上移。
+        let value = "a\n";
+        let phantom = crate::TextSelection::caret(2);
+        let (up, _) = move_lines(value, phantom, TextLineDirection::Up).unwrap();
+        assert_eq!(up, "\na");
+        // 选区结束在行首时该行不算触碰（与注释切换同一约定）。
+        let value = "a\nb\nc";
+        let boundary = crate::TextSelection {
+            anchor: 0,
+            focus: 2,
+        };
+        let (moved, _) = move_lines(value, boundary, TextLineDirection::Down).unwrap();
+        assert_eq!(moved, "b\na\nc");
+    }
+
+    #[test]
+    fn duplicate_lines_copies_below_and_selects_the_copy() {
+        let value = "ab\ncd";
+        let selection = crate::TextSelection {
+            anchor: 3,
+            focus: 5,
+        };
+        let (next, duplicated) = duplicate_lines(value, selection).unwrap();
+        assert_eq!(next, "ab\ncd\ncd");
+        // 选区落在副本上。
+        assert_eq!(
+            duplicated,
+            crate::TextSelection {
+                anchor: 6,
+                focus: 8
+            }
+        );
+        // 纯光标：复制光标所在整行，光标停在副本同一列。
+        let value = "xy";
+        let (next, duplicated) = duplicate_lines(value, crate::TextSelection::caret(1)).unwrap();
+        assert_eq!(next, "xy\nxy");
+        assert_eq!(duplicated, crate::TextSelection::caret(4));
+        // 空文本没有可复制的行。
+        assert!(duplicate_lines("", crate::TextSelection::caret(0)).is_none());
+    }
+
+    #[test]
+    fn delete_lines_removes_the_block_and_one_adjacent_newline() {
+        // 中间行：换行随行一起删除，前后两行拼合。
+        let value = "a\nb\nc";
+        let middle = crate::TextSelection {
+            anchor: 2,
+            focus: 3,
+        };
+        let (next, deleted) = delete_lines(value, middle).unwrap();
+        assert_eq!(next, "a\nc");
+        assert_eq!(deleted, crate::TextSelection::caret(2));
+        // 首行：从块起点删除到下一行起点。
+        let first = crate::TextSelection::caret(0);
+        let (next, _) = delete_lines(value, first).unwrap();
+        assert_eq!(next, "b\nc");
+        // 末行（无结尾换行）：连同前导换行一起删除，光标落在上一行末尾。
+        let last = crate::TextSelection {
+            anchor: 4,
+            focus: 5,
+        };
+        let (next, deleted) = delete_lines(value, last).unwrap();
+        assert_eq!(next, "a\nb");
+        assert_eq!(deleted, crate::TextSelection::caret(3));
+        // 只剩一行：清空文本。
+        let (next, deleted) = delete_lines("only", crate::TextSelection::caret(1)).unwrap();
+        assert_eq!(next, "");
+        assert_eq!(deleted, crate::TextSelection::caret(0));
+        // 空文本无可删除行。
+        assert!(delete_lines("", crate::TextSelection::caret(0)).is_none());
+    }
+
+    #[test]
+    fn join_lines_merges_touched_lines_with_single_space_seams() {
+        // 相邻行合并插入单个空格。
+        let value = "ab\ncd\nef";
+        let selection = crate::TextSelection {
+            anchor: 1,
+            focus: 8,
+        };
+        let (next, joined) = join_lines(value, selection).unwrap();
+        assert_eq!(next, "ab cd ef");
+        // 选区映射到合并后的行（起点不动，终点收缩到行尾）。
+        assert_eq!(
+            joined,
+            crate::TextSelection {
+                anchor: 1,
+                focus: 8
+            }
+        );
+        // 下一行的前导空白被移除；左侧已有尾随空白时不再补空格。
+        let value = "a \n  b";
+        let (next, _) = join_lines(
+            value,
+            crate::TextSelection {
+                anchor: 0,
+                focus: 5,
+            },
+        )
+        .unwrap();
+        assert_eq!(next, "a b");
+        // 空行参与合并不产生空格。
+        let value = "a\n\nb";
+        let (next, _) = join_lines(
+            value,
+            crate::TextSelection {
+                anchor: 0,
+                focus: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(next, "a\nb");
+        // 裸光标：把光标行和下一行合并。
+        let value = "ab\ncd";
+        let (next, joined) = join_lines(value, crate::TextSelection::caret(1)).unwrap();
+        assert_eq!(next, "ab cd");
+        // 光标在未移动的首行上，列保持不变。
+        assert_eq!(joined, crate::TextSelection::caret(1));
+        // 最后一行的光标没有下一行可合并。
+        assert!(join_lines("ab\ncd", crate::TextSelection::caret(4)).is_none());
+        // 单行文本合并是空操作。
+        assert!(join_lines("ab", crate::TextSelection::caret(1)).is_none());
+    }
+
+    #[test]
+    fn join_lines_keeps_utf8_offsets_valid() {
+        // 多字节字符行参与合并时选区映射仍落在字符边界。
+        let value = "界界\nhéllo";
+        let selection = crate::TextSelection {
+            anchor: "界".len(),
+            focus: value.len(),
+        };
+        let (next, joined) = join_lines(value, selection).unwrap();
+        assert_eq!(next, "界界 héllo");
+        for offset in [joined.anchor, joined.focus] {
+            assert!(next.is_char_boundary(offset));
+        }
+        assert_eq!(joined.anchor, "界".len());
+        assert_eq!(joined.focus, next.len());
+    }
+
+    #[test]
+    fn case_transform_is_utf8_safe_and_declines_empty_selections() {
+        // ASCII 直接变换。
+        let value = "ab CD";
+        let selection = crate::TextSelection {
+            anchor: 0,
+            focus: 5,
+        };
+        let (upper, upper_selection) = transform_selection_case(value, selection, true).unwrap();
+        assert_eq!(upper, "AB CD");
+        assert_eq!(upper_selection, selection);
+        let (lower, _) = transform_selection_case(&upper, selection, false).unwrap();
+        assert_eq!(lower, "ab cd");
+        // ﬁ → FI 的字节收缩把选区终点平移到有效边界。
+        let value = "aﬁb";
+        let selection = crate::TextSelection {
+            anchor: 1,
+            focus: 4,
+        };
+        let (upper, upper_selection) = transform_selection_case(value, selection, true).unwrap();
+        assert_eq!(upper, "aFIb");
+        assert_eq!(
+            upper_selection,
+            crate::TextSelection {
+                anchor: 1,
+                focus: 3
+            }
+        );
+        // İ → i + 组合点 的字节膨胀同样保持边界有效。
+        let value = "aİb";
+        let selection = crate::TextSelection {
+            anchor: 1,
+            focus: 3,
+        };
+        let (lower, lower_selection) = transform_selection_case(value, selection, false).unwrap();
+        assert_eq!(lower, "ai\u{307}b");
+        assert_eq!(
+            lower_selection,
+            crate::TextSelection {
+                anchor: 1,
+                focus: 4
+            }
+        );
+        // 空选区拒绝。
+        assert!(transform_selection_case(value, crate::TextSelection::caret(1), true).is_none());
+    }
+
+    #[test]
+    fn sort_lines_orders_reverses_and_dedups() {
+        let value = "pear\napple\npear\nbanana";
+        let whole = crate::TextSelection {
+            anchor: 0,
+            focus: value.len(),
+        };
+        let (asc, asc_selection) = sort_lines(value, whole, false, false).unwrap();
+        assert_eq!(asc, "apple\nbanana\npear\npear");
+        assert_eq!(
+            asc_selection,
+            crate::TextSelection {
+                anchor: 0,
+                focus: asc.len()
+            }
+        );
+        let (desc, _) = sort_lines(value, whole, true, false).unwrap();
+        assert_eq!(desc, "pear\npear\nbanana\napple");
+        let (unique, _) = sort_lines(value, whole, false, true).unwrap();
+        assert_eq!(unique, "apple\nbanana\npear");
+        // 逆序选区（anchor > focus）保持方向并覆盖排序后的块。
+        let reversed = crate::TextSelection {
+            anchor: value.len(),
+            focus: 0,
+        };
+        let (_, sorted_selection) = sort_lines(value, reversed, false, false).unwrap();
+        assert_eq!(
+            sorted_selection,
+            crate::TextSelection {
+                anchor: 22,
+                focus: 0
+            }
+        );
+        // 单行排序无变化。
+        assert!(sort_lines("a\nb", crate::TextSelection::caret(2), false, false).is_none());
+    }
+
+    #[test]
+    fn matching_bracket_pairs_forward_backward_and_nested() {
+        // 光标在 opener 之前。
+        assert_eq!(matching_bracket_pair("fn()", 2), Some((2, 3)));
+        // 光标紧跟 closer 之后。
+        assert_eq!(matching_bracket_pair("fn()", 4), Some((2, 3)));
+        // 夹在配对中间（(|)）：两端互相配对。
+        assert_eq!(matching_bracket_pair("fn()", 3), Some((2, 3)));
+        // 光标在 closer 之前。
+        assert_eq!(matching_bracket_pair("(a)", 2), Some((0, 2)));
+        // 嵌套计数：内层括号不干扰外层匹配。
+        let value = "f(g(h), x)";
+        assert_eq!(matching_bracket_pair(value, 1), Some((1, 9)));
+        assert_eq!(matching_bracket_pair(value, 3), Some((3, 5)));
+        assert_eq!(matching_bracket_pair(value, 9), Some((1, 9)));
+        // 三种括号各自独立配对。
+        assert_eq!(matching_bracket_pair("{[()]}", 0), Some((0, 5)));
+        assert_eq!(matching_bracket_pair("{[()]}", 1), Some((1, 4)));
+        // 未闭合返回 None，且引号不参与。
+        assert_eq!(matching_bracket_pair("(abc", 0), None);
+        assert_eq!(matching_bracket_pair("a\"b\"", 1), None);
+        // 邻近没有括号时返回 None。
+        assert_eq!(matching_bracket_pair("abc", 1), None);
+        assert_eq!(matching_bracket_pair("", 0), None);
+    }
+
+    #[test]
+    fn page_focus_moves_a_viewport_of_visual_lines() {
+        let value = "l0\nl1\nl2\nl3\nl4\nl5\nl6";
+        // 行高 20px，视口 60px = 3 行。PageDown 从第 0 行跳到第 3 行。
+        let caret = crate::TextSelection::caret(1);
+        let (down, goal) = page_caret_focus(
+            value,
+            caret,
+            TextCaretIntent::PageDown,
+            false,
+            None,
+            60.0,
+            monospace_probe(value),
+        )
+        .unwrap();
+        assert_eq!(down.focus, value.find("l3").unwrap() + 1);
+        assert_eq!(goal, 10.0);
+        // 保持目标列：连续 PageDown 后 PageUp 回到同一列。
+        let (down_again, goal) = page_caret_focus(
+            value,
+            down,
+            TextCaretIntent::PageDown,
+            false,
+            Some(goal),
+            60.0,
+            monospace_probe(value),
+        )
+        .unwrap();
+        assert_eq!(down_again.focus, value.find("l6").unwrap() + 1);
+        let (up, _) = page_caret_focus(
+            value,
+            down_again,
+            TextCaretIntent::PageUp,
+            false,
+            Some(goal),
+            60.0,
+            monospace_probe(value),
+        )
+        .unwrap();
+        assert_eq!(up.focus, value.find("l3").unwrap() + 1);
+        // 文档边缘钳制：第一行 PageUp 到文档起点，最后一行 PageDown 到终点。
+        let (top, _) = page_caret_focus(
+            value,
+            caret,
+            TextCaretIntent::PageUp,
+            false,
+            None,
+            60.0,
+            monospace_probe(value),
+        )
+        .unwrap();
+        assert_eq!(top.focus, 0);
+        let last = crate::TextSelection::caret(value.len());
+        let (bottom, _) = page_caret_focus(
+            value,
+            last,
+            TextCaretIntent::PageDown,
+            false,
+            None,
+            60.0,
+            monospace_probe(value),
+        )
+        .unwrap();
+        assert_eq!(bottom.focus, value.len());
+        // 其它意图不受支持。
+        assert!(
+            page_caret_focus(
+                value,
+                caret,
+                TextCaretIntent::Up,
+                false,
+                None,
+                60.0,
+                monospace_probe(value),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn logical_page_fallback_moves_fixed_lines_and_clamps() {
+        // 20 行文档：固定 15 行页幅下移动并保持列，再移回来。
+        let value = (0..20)
+            .map(|index| format!("l{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let caret = crate::TextSelection::caret(1);
+        let down =
+            page_caret_focus_logical(&value, caret, TextCaretIntent::PageDown, false).unwrap();
+        let down_line_start = value.find("l15").unwrap();
+        assert_eq!(down.focus, down_line_start + 1);
+        let up = page_caret_focus_logical(&value, down, TextCaretIntent::PageUp, false).unwrap();
+        assert_eq!(up.focus, caret.focus);
+        // 短文档钳制到文档末尾。
+        let short = "l0\nl1\nl2\nl3";
+        let bottom =
+            page_caret_focus_logical(short, caret, TextCaretIntent::PageDown, false).unwrap();
+        assert_eq!(bottom.focus, short.len());
+        assert!(page_caret_focus_logical(short, caret, TextCaretIntent::Left, false).is_none());
     }
 }

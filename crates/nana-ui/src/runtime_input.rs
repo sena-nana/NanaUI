@@ -8,7 +8,7 @@ use nana_ui_platform::{
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
     GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
-    TextCaretIntent, TextDeleteKind, TextShaper, XYPadAdjustment,
+    TextCaretIntent, TextDeleteKind, TextLineDirection, TextShaper, XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::sync::OnceLock;
@@ -941,6 +941,27 @@ impl RuntimeInputAdapter {
         let control = modifiers.control;
         let meta = modifiers.meta;
         let word_modifier = control || modifiers.alt;
+        // Alt+Up/Down moves the caret's line block; Alt+Shift+Up/Down
+        // duplicates it. Multiline editors own the gesture even at the
+        // document edge; single-line fields keep plain caret movement.
+        if modifiers.alt
+            && !control
+            && !meta
+            && focused.multiline
+            && matches!(key, "ArrowUp" | "ArrowDown")
+        {
+            let direction = if key == "ArrowUp" {
+                TextLineDirection::Up
+            } else {
+                TextLineDirection::Down
+            };
+            if modifiers.shift {
+                context.duplicate_focused_text_lines(document)?;
+            } else {
+                context.move_focused_text_lines(document, direction)?;
+            }
+            return Ok(true);
+        }
         let intent = match key {
             "ArrowLeft" => Some(match (meta, word_modifier) {
                 (true, _) => TextCaretIntent::LineStart,
@@ -972,6 +993,8 @@ impl RuntimeInputAdapter {
             } else {
                 TextCaretIntent::LineEnd
             }),
+            "PageUp" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageUp),
+            "PageDown" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageDown),
             _ => None,
         };
         if let Some(intent) = intent {
@@ -990,9 +1013,21 @@ impl RuntimeInputAdapter {
             return context.delete_focused_text(document, kind);
         }
         if control || meta {
-            // Comment toggle is the only primary-modified editing key.
+            // Comment toggle is the only code-editing modified key.
             if key == "/" && focused.code_editing.is_some() {
                 return context.code_edit_toggle_comment(document);
+            }
+            // Cmd/Ctrl+Shift+K deletes the caret line.
+            if modifiers.shift && key.eq_ignore_ascii_case("k") {
+                return context.delete_focused_text_lines(document);
+            }
+            // Ctrl/Cmd+J joins the touched selection lines.
+            if !modifiers.shift && key.eq_ignore_ascii_case("j") {
+                return context.join_focused_text_lines(document);
+            }
+            // Ctrl/Cmd+Shift+U uppercases, Ctrl/Cmd+U lowercases.
+            if key.eq_ignore_ascii_case("u") {
+                return context.transform_focused_text_case(document, modifiers.shift);
             }
             return Ok(false);
         }
@@ -3578,6 +3613,7 @@ mod tests {
                 diagnostics: std::sync::Arc::from([]),
                 matches: std::sync::Arc::from([]),
                 line_numbers: false,
+                indent_guides: None,
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -3690,6 +3726,7 @@ mod tests {
                 diagnostics: std::sync::Arc::from([]),
                 matches: std::sync::Arc::from([]),
                 line_numbers: false,
+                indent_guides: None,
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -3948,5 +3985,422 @@ mod tests {
             0
         );
         assert_eq!(events.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn alt_arrow_keys_move_and_duplicate_the_caret_line() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd\nef"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        let mut adapter = RuntimeInputAdapter::default();
+        let alt = InputModifiers {
+            alt: true,
+            ..InputModifiers::default()
+        };
+        let alt_shift = InputModifiers {
+            alt: true,
+            shift: true,
+            ..InputModifiers::default()
+        };
+        // 光标停在 "cd" 行内（偏移 4）。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(4);
+            })
+            .unwrap();
+
+        // Alt+Up 把 "cd" 移到顶部，选区（光标）跟随移动后的文本。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("ArrowUp", None, alt))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("cd\nab\nef".into(), 1, 1)
+        );
+        assert_eq!(*events.lock().unwrap(), vec!["cd\nab\nef".to_string()]);
+
+        // Alt+Down 移回原位。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("ArrowDown", None, alt))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab\ncd\nef".into(), 4, 4)
+        );
+
+        // Alt+Shift+Down 在下方复制当前行，光标落在副本上。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("ArrowDown", None, alt_shift)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("ab\ncd\ncd\nef".into(), 7, 7)
+        );
+
+        // 文档边缘：手势仍被消费（不回落为普通光标移动），但没有编辑。
+        context
+            .update_component(area, |area, _cx| {
+                area.state = nana_ui_runtime::TextInputState::new("top\nbottom");
+            })
+            .unwrap();
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("ArrowUp", None, alt))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "top\nbottom");
+    }
+
+    #[test]
+    fn cmd_shift_k_ctrl_j_and_case_keys_transform_the_focused_editor() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab\ncd\nef"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        let mut adapter = RuntimeInputAdapter::default();
+        let ctrl_shift = InputModifiers {
+            control: true,
+            shift: true,
+            ..InputModifiers::default()
+        };
+        let ctrl = InputModifiers {
+            control: true,
+            ..InputModifiers::default()
+        };
+        // 光标停在 "cd" 行内。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(4);
+            })
+            .unwrap();
+
+        // Ctrl+Shift+K 删除光标所在行 "cd"。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("k", None, ctrl_shift))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("ab\nef".into(), 3, 3));
+        assert_eq!(*events.lock().unwrap(), vec!["ab\nef".to_string()]);
+
+        // Ctrl+J 合并剩余两行（单空格接缝）。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(1);
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("j", None, ctrl))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "ab ef");
+        assert_eq!(events.lock().unwrap().len(), 2);
+
+        // Ctrl+Shift+U 转大写选区，Ctrl+U 转小写。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection {
+                    anchor: 0,
+                    focus: 5,
+                };
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("u", None, ctrl_shift))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("AB EF".into(), 0, 5));
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("u", None, ctrl))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("ab ef".into(), 0, 5));
+        assert_eq!(events.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn line_transformation_keys_decline_on_single_line_fields() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("abc"))
+            .unwrap();
+        let node = input.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 单行字段没有行块语义：这些键不消费，留给通用路由。
+        let ctrl_shift = InputModifiers {
+            control: true,
+            shift: true,
+            ..InputModifiers::default()
+        };
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &edit_key("k", None, ctrl_shift))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "abc");
+    }
+
+    #[test]
+    fn page_keys_page_by_logical_lines_without_a_shaper() {
+        let value = (0..40)
+            .map(|index| format!("l{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value.clone()))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(1);
+            })
+            .unwrap();
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 无 shaper：固定 15 个逻辑行。第 15 行起点在 10 个 3 字节行 + 5 个
+        // 4 字节行之后，保持第 1 列。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("PageDown"))
+                .unwrap()
+                .prevent_default
+        );
+        let line15 = 10 * 3 + 5 * 4;
+        assert_eq!(
+            textarea_selection(&context, node),
+            (value.clone(), line15 + 1, line15 + 1)
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("PageUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), (value.clone(), 1, 1));
+
+        // Shift+PageDown 扩展选区（锚点保留在原列）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &shift_key("PageDown"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), (value, 1, line15 + 1));
+    }
+
+    #[test]
+    fn page_keys_with_a_shaper_move_one_viewport_and_clamp() {
+        let value = (0..10)
+            .map(|index| format!("l{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value.clone()))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 300.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 视口高于文档：一次 PageDown 钳制到文档末尾，PageUp 回到首行。
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &plain_key("PageDown"),
+                    Duration::ZERO,
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        // 目标列保持 0：落在最后一行行首（而非文档末尾偏移）。
+        assert_eq!(textarea_selection(&context, node), (value.clone(), 27, 27));
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &plain_key("PageUp"),
+                    Duration::ZERO,
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), (value, 0, 0));
+    }
+
+    #[test]
+    fn goto_focused_text_matching_bracket_jumps_to_the_partner() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("fn main() {}"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+
+        // 光标停在 '{' 之前：跳到配对的 '}' 上（纯移动，不发事件）。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(10);
+            })
+            .unwrap();
+        assert!(
+            context
+                .goto_focused_text_matching_bracket(document)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("fn main() {}".into(), 11, 11)
+        );
+        // 再跳一次回到 '{'。
+        assert!(
+            context
+                .goto_focused_text_matching_bracket(document)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("fn main() {}".into(), 10, 10)
+        );
+        assert!(events.lock().unwrap().is_empty());
+
+        // 邻近没有括号时不消费。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(2);
+            })
+            .unwrap();
+        assert!(
+            !context
+                .goto_focused_text_matching_bracket(document)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn sort_focused_text_lines_sorts_dedups_and_emits_one_change() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("pear\napple\npear"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection {
+                    anchor: 0,
+                    focus: "pear\napple\npear".len(),
+                };
+            })
+            .unwrap();
+
+        // 升序 + 去重，选区覆盖排序后的块。
+        assert!(
+            context
+                .sort_focused_text_lines(document, false, true)
+                .unwrap()
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("apple\npear".into(), 0, 10)
+        );
+        assert_eq!(*events.lock().unwrap(), vec!["apple\npear".to_string()]);
+
+        // 降序还原顺序差异。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection {
+                    anchor: 0,
+                    focus: "apple\npear".len(),
+                };
+            })
+            .unwrap();
+        assert!(
+            context
+                .sort_focused_text_lines(document, true, false)
+                .unwrap()
+        );
+        assert_eq!(textarea_selection(&context, node).0, "pear\napple");
+
+        // 单行无变化：拒绝且不发事件。
+        context
+            .update_component(area, |area, _cx| {
+                area.state.selection = TextSelection::caret(2);
+            })
+            .unwrap();
+        assert!(
+            !context
+                .sort_focused_text_lines(document, false, false)
+                .unwrap()
+        );
+        assert_eq!(events.lock().unwrap().len(), 2);
     }
 }

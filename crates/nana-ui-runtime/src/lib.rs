@@ -213,8 +213,8 @@ pub use sidebar::{
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use text_editing::{
-    TextCaretIntent, TextSearchOptions, find_matches, find_next_match, find_previous_match,
-    replace_all_matches,
+    TextCaretIntent, TextLineDirection, TextSearchOptions, find_matches, find_next_match,
+    find_previous_match, matching_bracket_pair, replace_all_matches, sort_lines,
 };
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};

@@ -3309,6 +3309,9 @@ impl UiScene {
                         preedit_color,
                         diagnostic_markers,
                         match_markers,
+                        caret_line,
+                        bracket_markers,
+                        indent_guides,
                         line_labels,
                         line_labels_color,
                         line_labels_font_size,
@@ -3352,9 +3355,7 @@ impl UiScene {
                                 }
                             }
                         }
-                        for (marker_index, (rect, color)) in
-                            diagnostic_markers.iter().enumerate()
-                        {
+                        for (marker_index, (rect, color)) in diagnostic_markers.iter().enumerate() {
                             self.insert_primitive(visual_quad(
                                 &visual_context,
                                 20 + marker_index as u8,
@@ -3394,6 +3395,50 @@ impl UiScene {
                                     background: Some(current_matches[0].color),
                                     border_color: None,
                                     border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 当前行条：slot 1 与选区同一层级（互斥：选区收起时
+                        // 才有当前行条），绘制在文本之下。
+                        if let Some((rect, color)) = caret_line {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                1,
+                                scene_rect(*rect),
+                                VisualQuadStyle {
+                                    background: Some(*color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 缩进参考线：1px 竖线批次，低对比结构标记。
+                        if !indent_guides.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                10,
+                                indent_guides.iter().map(|(rect, _)| scene_rect(*rect)),
+                                VisualQuadStyle {
+                                    background: Some(indent_guides[0].1),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 括号匹配：两端各一个 1px accent 描边框，绘制在文本
+                        // 之上（描边不遮挡字形）。
+                        if !bracket_markers.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                12,
+                                bracket_markers.iter().map(|(rect, _)| scene_rect(*rect)),
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: Some(bracket_markers[0].1),
+                                    border_width: 1.0,
                                     corner_radius: corner_radii(0.0),
                                 },
                             ));
@@ -5040,6 +5085,7 @@ mod tests {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -5068,6 +5114,9 @@ mod tests {
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
@@ -5940,6 +5989,7 @@ mod tests {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: true,
+            indent_guides: None,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -5978,6 +6028,9 @@ mod tests {
                     [0.9, 0.7, 0.1, 1.0],
                 ),
             ],
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
             match_markers: Vec::new(),
             line_labels: vec![
                 nana_ui_runtime::LineLabel {
@@ -6006,7 +6059,10 @@ mod tests {
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
         for primitive in scene.primitives() {
-            eprintln!("DBG slot={} y={} kind={:?}", primitive.id.slot, primitive.bounds.y, primitive.kind);
+            eprintln!(
+                "DBG slot={} y={} kind={:?}",
+                primitive.id.slot, primitive.bounds.y, primitive.kind
+            );
         }
         // 每个标记一条 quad（颜色不同）。
         let marker = |slot: u8, y: f64| {
@@ -6053,6 +6109,7 @@ mod tests {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6102,6 +6159,9 @@ mod tests {
                     current: true,
                 },
             ],
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
@@ -6154,6 +6214,146 @@ mod tests {
         assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
     }
 
+    #[test]
+    fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: Some(Arc::from("\t")),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 48.0,
+                },
+                content: Arc::from("ab"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            // 当前行条与选区同层（slot 1）。
+            caret_line: Some((
+                LayoutBox {
+                    x: 8.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 16.0,
+                },
+                [0.18, 0.18, 0.18, 1.0],
+            )),
+            // 括号匹配两端共用 accent 描边。
+            bracket_markers: vec![
+                (
+                    LayoutBox {
+                        x: 8.0,
+                        y: 0.0,
+                        width: 6.0,
+                        height: 16.0,
+                    },
+                    [0.48, 0.73, 0.94, 1.0],
+                ),
+                (
+                    LayoutBox {
+                        x: 20.0,
+                        y: 16.0,
+                        width: 6.0,
+                        height: 16.0,
+                    },
+                    [0.48, 0.73, 0.94, 1.0],
+                ),
+            ],
+            // 缩进参考线：两条 1px 竖线一个批次。
+            indent_guides: vec![
+                (
+                    LayoutBox {
+                        x: 10.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 16.0,
+                    },
+                    [0.16, 0.16, 0.16, 1.0],
+                ),
+                (
+                    LayoutBox {
+                        x: 10.0,
+                        y: 16.0,
+                        width: 1.0,
+                        height: 16.0,
+                    },
+                    [0.16, 0.16, 0.16, 1.0],
+                ),
+            ],
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        let primitive = |slot: u8| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .expect("chrome primitive")
+        };
+        // 当前行条是 slot 1 的单个填充 quad。
+        let line = primitive(1);
+        let ScenePrimitiveKind::Quad { background, .. } = &line.kind else {
+            panic!("expected caret line quad");
+        };
+        assert_eq!(*background, Some([0.18, 0.18, 0.18, 1.0]));
+        assert_eq!(line.bounds.width, 84.0);
+        // 缩进参考线是 slot 10 的填充批次，同一颜色合并。
+        let guides = primitive(10);
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &guides.kind
+        else {
+            panic!("expected indent guide batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(*background, Some([0.16, 0.16, 0.16, 1.0]));
+        // 括号匹配是 slot 12 的描边批次（无填充，不遮挡字形）。
+        let brackets = primitive(12);
+        let ScenePrimitiveKind::QuadBatch {
+            bounds,
+            background,
+            border_color,
+            border_width,
+            ..
+        } = &brackets.kind
+        else {
+            panic!("expected bracket batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(*background, None);
+        assert_eq!(*border_color, Some([0.48, 0.73, 0.94, 1.0]));
+        assert_eq!(*border_width, 1.0);
+    }
+
     fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() {
         let mut input = node(1, None, &[]);
         input.source_style = NodeStyle {
@@ -6182,6 +6382,7 @@ mod tests {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6235,6 +6436,9 @@ mod tests {
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
@@ -6278,6 +6482,7 @@ mod tests {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         });
         single_line.component_geometry = input_component_geometry(false);
         scene.apply_delta([single_line], []);
@@ -6325,6 +6530,9 @@ mod tests {
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,

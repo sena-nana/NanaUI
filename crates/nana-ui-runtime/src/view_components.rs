@@ -1349,6 +1349,7 @@ impl ComponentView for TextInput {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1559,6 +1560,7 @@ impl ComponentView for NumberInput {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             line_numbers: false,
+            indent_guides: None,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1765,6 +1767,10 @@ impl ComponentView for TextArea {
             diagnostics: Arc::clone(&self.diagnostics),
             matches: Arc::clone(&self.match_spans),
             line_numbers: self.line_numbers,
+            indent_guides: self
+                .code_editing
+                .as_ref()
+                .map(|code| Arc::clone(&code.indent_unit)),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
