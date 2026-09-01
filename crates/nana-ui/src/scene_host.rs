@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE};
+use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use nana_ui_platform::{
     DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
     TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon,
@@ -370,7 +370,7 @@ fn initialize<Program: RuntimeProgram>(
     );
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
     if !settings.system_caption {
-        let _ = prepare_client_chrome(window.as_ref());
+        let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
         if settings.transparent {
             let _ = suppress_system_caption(window.as_ref());
         }
@@ -1230,7 +1230,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             id == WindowId::PRIMARY,
         );
         if !settings.system_caption {
-            let _ = prepare_client_chrome(window.as_ref());
+            let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
             if settings.transparent {
                 let _ = suppress_system_caption(window.as_ref());
             }

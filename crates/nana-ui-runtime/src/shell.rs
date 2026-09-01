@@ -235,9 +235,13 @@ impl AppTitleBar {
                     patch_layout(world, mutations, child, |layout| {
                         apply_fill_column(layout, JustifySpec::End);
                         layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
-                        layout.padding_right = Some(LengthSpec::Px(
-                            SLOT_PADDING + valid_inset(self.trailing_inset),
-                        ));
+                        // Custom controls hug the window edge; native or
+                        // absent controls keep the shared slot padding.
+                        layout.padding_right = Some(LengthSpec::Px(if self.show_window_controls {
+                            0.0
+                        } else {
+                            SLOT_PADDING + valid_inset(self.trailing_inset)
+                        }));
                         layout.padding_top = Some(LengthSpec::Px(0.0));
                         layout.padding_bottom = Some(LengthSpec::Px(0.0));
                     });
@@ -2157,6 +2161,50 @@ mod tests {
             assert!(snapshot.controls.is_none());
             let columns = context.world().node(bar.stable_id()).unwrap().children;
             assert_eq!(columns.len(), 3, "native chrome still uses three columns");
+        }
+    }
+
+    #[test]
+    fn custom_window_controls_keep_their_look_and_hug_the_trailing_edge() {
+        let window_width = 800.0;
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana")
+                    .leading_inset(0.0)
+                    .trailing_inset(0.0)
+                    .show_window_controls(true),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(window_width, 400.0))
+            .unwrap();
+        let world = context.world();
+        let controls = find_title_bar_controls_child(&context, bar.stable_id())
+            .expect("custom chrome mounts controls");
+        let buttons = world.node(controls).unwrap().children.clone();
+        assert_eq!(buttons.len(), 3);
+        let extent = ControlSize::Small.height();
+        let container = world.layout_box(controls).unwrap();
+        assert_eq!(container.height, TITLE_BAR_HEIGHT);
+        assert_eq!(container.y, 0.0);
+        assert_eq!(
+            container.x + container.width,
+            window_width,
+            "controls must sit flush against the window edge"
+        );
+        for (index, button) in buttons.iter().enumerate() {
+            let bounds = world.layout_box(*button).unwrap();
+            assert_eq!(bounds.width, extent);
+            assert_eq!(bounds.height, extent);
+            assert_eq!(bounds.y, (TITLE_BAR_HEIGHT - extent) / 2.0);
+            assert_eq!(
+                bounds.x,
+                container.x + index as f32 * (extent + CONTROL_GAP),
+                "buttons keep the shared control gap"
+            );
         }
     }
 
