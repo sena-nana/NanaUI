@@ -152,6 +152,9 @@ pub struct ReorderList {
     pub spacing: f32,
     pub size: ControlSize,
     pub tree_drop: bool,
+    /// Declared at construction: live row children own painting and the list
+    /// body follows their layout. Never inferred from the tree at project time.
+    pub live_rows: bool,
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
     drag: Option<ReorderDrag>,
@@ -164,6 +167,7 @@ impl ReorderList {
             spacing: DEFAULT_SPACING,
             size: ControlSize::Small,
             tree_drop: false,
+            live_rows: false,
             label: None,
             style: NodeStyle::default(),
             drag: None,
@@ -182,6 +186,14 @@ impl ReorderList {
 
     pub fn tree_drop(mut self, enabled: bool) -> Self {
         self.tree_drop = enabled;
+        self
+    }
+
+    /// Declare that the host attaches live row children which own painting.
+    /// Retained `items` stay the drag/hit-test model and are never painted as
+    /// self-drawn rows in this mode.
+    pub fn live_rows(mut self, live_rows: bool) -> Self {
+        self.live_rows = live_rows;
         self
     }
 
@@ -408,10 +420,14 @@ impl ComponentView for ReorderList {
         }
     }
 
+    fn wants_child_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         // Live row children paint themselves; retained items only feed
         // hit testing and reorder events.
-        let live_rows = world.node(id).is_some_and(|node| !node.children.is_empty());
+        let live_rows = self.live_rows;
         let visual = StandardVisual::ReorderList {
             rows: if live_rows {
                 Arc::<[ReorderRowPaint]>::from([])
@@ -953,22 +969,12 @@ mod tests {
     }
 
     #[test]
-    fn live_row_children_suppress_self_painted_rows() {
-        use crate::Stack;
-
+    fn declared_live_rows_suppress_self_painted_rows() {
         let mut context = AppContext::new();
-        let list = context.create_component(document(), sample()).unwrap();
-        let id = list.stable_id();
-        for _ in ["Alpha", "Beta"] {
-            let row = context
-                .create_component(document(), Stack::row(0.0))
-                .unwrap();
-            context.append_child(list, row).unwrap();
-        }
-        context.update_component(list, |_, _| {}).unwrap();
-        context
-            .layout_document(document(), crate::LayoutViewport::new(220.0, 120.0))
+        let list = context
+            .create_component(document(), sample().live_rows(true))
             .unwrap();
+        let id = list.stable_id();
         assert_eq!(
             context.world().standard_visual(id),
             Some(StandardVisual::ReorderList {

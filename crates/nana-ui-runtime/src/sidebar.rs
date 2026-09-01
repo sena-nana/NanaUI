@@ -1173,6 +1173,10 @@ impl ComponentView for SidebarSection {
         }
     }
 
+    fn wants_child_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let root_text = if self.header.is_some() {
             ""

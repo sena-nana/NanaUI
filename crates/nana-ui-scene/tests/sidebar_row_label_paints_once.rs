@@ -54,6 +54,7 @@ fn live_sidebar_rows_paint_their_label_exactly_once() {
                 .size(ControlSize::Medium)
                 .spacing(1.0)
                 .tree_drop(true)
+                .live_rows(true)
                 .label("项目"),
             );
             ui.nest(list, |ui| {
@@ -114,6 +115,7 @@ fn stale_rows_projected_before_children_attach_never_paint() {
                 .size(ControlSize::Medium)
                 .spacing(1.0)
                 .tree_drop(true)
+                .live_rows(true)
                 .label("项目"),
             );
             ui.nest(list, |ui| {
@@ -168,6 +170,7 @@ fn relabeled_and_reflowed_rows_never_keep_stale_label_primitives() {
                 .size(ControlSize::Medium)
                 .spacing(1.0)
                 .tree_drop(true)
+                .live_rows(true)
                 .label("项目"),
             );
             let rows = ui.nest(list, |ui| {
@@ -240,4 +243,75 @@ fn relabeled_and_reflowed_rows_never_keep_stale_label_primitives() {
         "stale placeholder labels still in the scene: {relabeled:?}"
     );
     assert!(relabeled.iter().any(|(label, _)| label == "LiliaCode"));
+}
+
+#[test]
+fn declared_live_rows_never_project_self_painted_rows() {
+    // 声明即契约：live_rows(true) 时无论 items 是否非空、子行是否已挂载，
+    // 投影都不携带自绘行；布局交给 live 行。
+    let document = DocumentId::new(4).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let list = runtime
+        .context_mut()
+        .build(document, |ui| {
+            ui.child(
+                "projects-reorder",
+                ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")])
+                    .size(ControlSize::Medium)
+                    .live_rows(true),
+            )
+        })
+        .unwrap();
+
+    let mut shaper = TestShaper;
+    runtime
+        .flush(LayoutViewport::new(240.0, 400.0), &mut shaper)
+        .unwrap();
+
+    let visual = runtime.context().world().standard_visual(list.stable_id());
+    match visual {
+        Some(nana_ui_runtime::StandardVisual::ReorderList { rows, .. }) => {
+            assert!(rows.is_empty(), "declared live rows must not self-paint");
+        }
+        other => panic!("unexpected visual: {other:?}"),
+    }
+}
+
+#[test]
+fn self_painted_mode_with_attached_children_still_paints_the_label_once() {
+    // 误用防线：未声明 live_rows 却挂了行子节点时，绘制端按实际 children
+    // 兜底，过期自绘行不得与行文字叠印。
+    let document = DocumentId::new(5).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    runtime
+        .context_mut()
+        .build(document, |ui| {
+            ui.child("projects-body", SidebarSection::body_port());
+            let list = ui.child(
+                "projects-reorder",
+                ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")])
+                    .size(ControlSize::Medium)
+                    .spacing(1.0),
+            );
+            ui.nest(list, |ui| {
+                ui.child("row-lilia", row("LiliaCode", 0, SidebarRowState::Active));
+            });
+            list
+        })
+        .unwrap();
+
+    let mut shaper = TestShaper;
+    runtime
+        .flush(LayoutViewport::new(240.0, 400.0), &mut shaper)
+        .unwrap();
+
+    let count = runtime
+        .scene()
+        .primitives()
+        .filter(|primitive| match &primitive.kind {
+            ScenePrimitiveKind::Text { content, .. } => content == "LiliaCode",
+            _ => false,
+        })
+        .count();
+    assert_eq!(count, 1, "row label painted {count} times");
 }
