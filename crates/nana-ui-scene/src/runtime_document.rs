@@ -276,6 +276,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn focused_textarea_typing_settles_the_frame() {
+        use nana_ui_runtime::{
+            ComponentView, MeasureTextShaper, MutationQueue, ScrollAxes, StandardVisual, TextArea,
+            TextSelection,
+        };
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let area = runtime
+            .context_mut()
+            .build(document, |ui| {
+                ui.child(
+                    "editor",
+                    TextArea::new("@fragment\nfn fs_main() {\n  return x;\n}\n")
+                        .highlight("wgsl")
+                        .line_numbers(true)
+                        .code_editor(true),
+                )
+            })
+            .unwrap();
+        assert!(
+            runtime
+                .context_mut()
+                .focus_node(document, area.stable_id())
+                .unwrap()
+        );
+
+        let mut shaper = MeasureTextShaper;
+        let viewport = LayoutViewport::new(800.0, 600.0);
+        runtime.flush(viewport, &mut shaper).unwrap();
+
+        // Place the caret mid-document like a pointer press would.
+        let place_caret = std::env::var("SETTLE_CARET").is_ok();
+        if place_caret {
+            runtime
+                .context_mut()
+                .update_component(area, |editor: &mut TextArea, _| {
+                    editor.state.selection = TextSelection::caret(10);
+                })
+                .unwrap();
+            runtime.flush(viewport, &mut shaper).unwrap();
+        }
+
+        // Type one character through the framework editing path.
+        if std::env::var("SETTLE_TYPE").is_ok() {
+            assert!(
+                runtime
+                    .context_mut()
+                    .replace_text_area_selection(area, "A")
+                    .unwrap()
+            );
+        }
+
+        // The next frames must settle instead of re-dirtying layout forever.
+        for pass in 0..6 {
+            let update = runtime.flush(viewport, &mut shaper).unwrap();
+            let world = runtime.context().world();
+            let scroll = world.scroll_offset(area.stable_id());
+            let box_layout = world.layout_box(area.stable_id());
+            let metrics = world.text_metrics(area.stable_id());
+            let counters = runtime.context().last_work_counters();
+            println!(
+                "pass {pass}: idle={} changed={} prims={} gen={} scroll={:?} layout={:?} metrics={:?}",
+                update.is_idle(),
+                counters.entities_changed,
+                update.scene.primitive_count,
+                update.generation,
+                scroll,
+                box_layout,
+                metrics.map(|m| (m.width, m.height)),
+            );
+            assert!(
+                update.is_idle() || counters.entities_changed == 0,
+                "frame did not settle: changed={}",
+                counters.entities_changed
+            );
+        }
+    }
+
+    #[test]
     fn frame_driver_is_incremental_and_static_documents_are_idle() {
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);
