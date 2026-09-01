@@ -52,6 +52,7 @@ mod sidebar;
 mod split_pane;
 mod store;
 mod tabs;
+mod text_editing;
 mod text_layout_cache;
 mod thumbnail;
 mod toast;
@@ -89,14 +90,13 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
     ComputedStyle, CustomRenderNode, EventListeners, EventRoute, ExtractedNode, ExtractedTextSpan,
-    ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput, MeasureTextShaper,
-    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
-    PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset, ScrollbarBar,
-    SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
-    TextContent, TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics,
-    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment,
-    TextDiagnosticMark, TextDiagnosticSpan, TextDiagnosticSeverity, TooltipVisual,
-    LineLabel,
+    ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel,
+    MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
+    OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
+    ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
+    StandardVisual, TextContent, TextDiagnosticMark, TextDiagnosticSeverity, TextDiagnosticSpan,
+    TextHorizontalAlignment, TextInputPresentation, TextInputState, TextMetrics, TextSelection,
+    TextShapeConstraints, TextShaper, TextShaping, TextVerticalAlignment, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -112,10 +112,10 @@ pub use feedback::{
 };
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
-    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
-    OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription,
-    Task, UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
-    VirtualTreeItems,
+    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FocusedTextEditor,
+    FrameworkError, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind,
+    Subscription, Task, TextDeleteKind, TextPointerClick, UiBuilder, UiExtension, View,
+    ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
@@ -209,17 +209,25 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
+pub use text_editing::{
+    TextCaretIntent, TextReplacement, apply_replacement, auto_indent_newline, auto_pair_edit,
+    caret_focus, caret_offset_at_point, delete_backward, delete_forward, delete_to_line_end,
+    delete_to_line_start, delete_word_backward, delete_word_forward, indent_selection,
+    line_content_start, logical_line_range, moved_selection, next_grapheme, normalize_newlines,
+    outdent_selection, prev_grapheme, toggle_line_comment, vertical_caret_focus,
+    vertical_caret_focus_logical, word_end_after, word_range_at, word_start_before,
+};
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use video::Video;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, ComponentView, Dialog, Divider, HostedTextarea, IconButton,
-    IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged, NumberInput,
-    OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged, RangeDragState, RangeField,
-    ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState, SecondaryPress, SliderError, Stack,
-    Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput,
-    ToggleChanged, Tooltip,
+    Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, HostedTextarea,
+    IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged,
+    NumberInput, OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged, RangeDragState,
+    RangeField, ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState, SecondaryPress,
+    SliderError, Stack, Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea,
+    TextChanged, TextInput, ToggleChanged, Tooltip,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

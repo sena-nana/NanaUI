@@ -1831,16 +1831,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         id: WindowId,
         input: InputEvent,
     ) -> nana_ui_platform::InputDisposition {
+        let now = self.animation_clock.runtime_time(Instant::now());
         let disposition = match self
             .program
             .document_mut(id)
             .map(|document| {
                 let document_id = document.document();
-                RuntimeInputAdapter::default().dispatch_at(
+                RuntimeInputAdapter::default().dispatch_with_shaper(
                     document.context_mut(),
                     document_id,
                     &input,
-                    self.animation_clock.runtime_time(Instant::now()),
+                    now,
+                    Some(&mut self.text),
                 )
             })
             .transpose()

@@ -8,7 +8,7 @@ use nana_ui_platform::{
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
     GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
-    XYPadAdjustment,
+    TextCaretIntent, TextDeleteKind, TextShaper, XYPadAdjustment,
 };
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::sync::OnceLock;
@@ -85,24 +85,39 @@ impl RuntimeInputAdapter {
     }
 
     pub fn dispatch(
-        &self,
+        &mut self,
         context: &mut AppContext,
         document: DocumentId,
         event: &InputEvent,
     ) -> Result<InputDisposition, FrameworkError> {
-        self.dispatch_at(context, document, event, Duration::ZERO)
+        self.dispatch_with_shaper(context, document, event, Duration::ZERO, None)
     }
 
     /// Dispatch input at the host's monotonic Runtime timestamp. Timed
     /// component behavior such as tooltip delay uses this clock; no component
     /// owns a timer or requests frames while idle.
     pub fn dispatch_at(
-        &self,
+        &mut self,
         context: &mut AppContext,
         document: DocumentId,
         event: &InputEvent,
         now: Duration,
     ) -> Result<InputDisposition, FrameworkError> {
+        self.dispatch_with_shaper(context, document, event, now, None)
+    }
+
+    /// Dispatch input with the host text shaper so caret movement,
+    /// click-to-caret, and drag selection follow real text geometry. Hosts
+    /// without a shaper fall back to logical-line caret movement.
+    pub fn dispatch_with_shaper(
+        &mut self,
+        context: &mut AppContext,
+        document: DocumentId,
+        event: &InputEvent,
+        now: Duration,
+        text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<InputDisposition, FrameworkError> {
+        let mut text_shaper = text_shaper;
         let keyboard_barrier = matches!(event, InputEvent::Keyboard { .. })
             && context.has_blocking_runtime_overlay(document);
         if let InputEvent::Keyboard {
@@ -133,6 +148,31 @@ impl RuntimeInputAdapter {
             if matches!(overlay_key, Some(OverlayKey::Escape))
                 && context.dismiss_popovers_on_escape()?
             {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
+            }
+        }
+        // Focused plain text editors own their editing keys (caret moves,
+        // selection, deletion, indent, pairing) before any generic routing.
+        if let InputEvent::Keyboard {
+            pressed: true,
+            key,
+            text,
+            repeat,
+            modifiers,
+            ..
+        } = event
+        {
+            if Self::text_editor_key(
+                context,
+                document,
+                key,
+                text.as_deref(),
+                *modifiers,
+                *repeat,
+                reborrow_text_shaper(&mut text_shaper),
+            )? {
                 return Ok(InputDisposition {
                     prevent_default: true,
                 });
@@ -218,47 +258,74 @@ impl RuntimeInputAdapter {
                 };
                 let component_handled = match phase {
                     PointerPhase::Move => {
-                        context.update_scrollbar_drag(document, *pointer_id, *x, *y)?
-                            || context.update_range_drag(document, *pointer_id, *x)?
-                            || context.update_xy_pad_drag(
+                        if let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
+                            && context.text_editor_pointer_drag(
                                 document,
                                 *pointer_id,
                                 *x,
                                 *y,
-                                modifiers.shift,
+                                shaper,
                             )?
-                            || context.update_graph_canvas_pointer(document, *pointer_id, *x, *y)?
-                            || context.update_graph_minimap_pointer(
-                                document,
-                                *pointer_id,
-                                *x,
-                                *y,
-                            )?
-                            || context.update_reorder_list_pointer(document, *pointer_id, *x, *y)?
-                            || context.update_split_resize(document, *pointer_id, *x, *y)?
-                            || context.update_dock_split_resize(document, *pointer_id, *x, *y)?
-                            || context.update_workspace_resize(
-                                document,
-                                *pointer_id,
-                                *x,
-                                *y,
-                                now,
-                            )?
-                            || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
-                            || target
-                                .map(|target| context.hover_graph_canvas(target, *x, *y))
-                                .transpose()?
-                                .unwrap_or(false)
-                            || target
-                                .map(|target| context.hover_calendar_heatmap(target, *x, *y))
-                                .transpose()?
-                                .unwrap_or(false)
-                            || context.clear_calendar_heatmap_hover(document)?
-                            || context.sync_split_handle_hover(
-                                document,
-                                context.split_handle_near(document, *x, *y),
-                            )?
-                            || target.is_some()
+                        {
+                            true
+                        } else {
+                            context.update_scrollbar_drag(document, *pointer_id, *x, *y)?
+                                || context.update_range_drag(document, *pointer_id, *x)?
+                                || context.update_xy_pad_drag(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    modifiers.shift,
+                                )?
+                                || context.update_graph_canvas_pointer(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                )?
+                                || context.update_graph_minimap_pointer(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                )?
+                                || context.update_reorder_list_pointer(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                )?
+                                || context.update_split_resize(document, *pointer_id, *x, *y)?
+                                || context.update_dock_split_resize(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                )?
+                                || context.update_workspace_resize(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    now,
+                                )?
+                                || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
+                                || target
+                                    .map(|target| context.hover_graph_canvas(target, *x, *y))
+                                    .transpose()?
+                                    .unwrap_or(false)
+                                || target
+                                    .map(|target| context.hover_calendar_heatmap(target, *x, *y))
+                                    .transpose()?
+                                    .unwrap_or(false)
+                                || context.clear_calendar_heatmap_hover(document)?
+                                || context.sync_split_handle_hover(
+                                    document,
+                                    context.split_handle_near(document, *x, *y),
+                                )?
+                                || target.is_some()
+                        }
                     }
                     PointerPhase::Down if *button == 2 => {
                         // A secondary press outside an open popover dismisses
@@ -300,10 +367,27 @@ impl RuntimeInputAdapter {
                             .filter(|id| context.is_dock_item_source(*id))
                             .or_else(|| context.dock_tab_strip_near(document, *x, *y));
                         let hit = dock_handle.or(split_handle).or(workspace_handle).or(target);
-                        if let Some(focus) = hit.and_then(|id| nearest_focusable(context, id)) {
+                        let focus_target = hit.and_then(|id| nearest_focusable(context, id));
+                        if let Some(focus) = focus_target {
                             context.focus_node(document, focus)?;
                         } else {
                             context.clear_focus(document)?;
+                        }
+                        if *button == 0
+                            && !activation_click
+                            && let Some(focus) = focus_target
+                            && let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
+                        {
+                            context.text_editor_pointer_press(
+                                document,
+                                focus,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                modifiers.shift,
+                                now,
+                                shaper,
+                            )?;
                         }
                         if let Some(target) = hit {
                             if context.is_graph_canvas(target) {
@@ -390,6 +474,7 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                        context.text_editor_pointer_release(*pointer_id);
                         if context.end_scrollbar_drag(document, *pointer_id, false)?
                             || context.end_range_drag(document, *pointer_id, false)?
                             || context.end_xy_pad_drag(document, *pointer_id, false)?
@@ -429,6 +514,7 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Cancel => {
+                        context.text_editor_pointer_release(*pointer_id);
                         let scrollbar = context.end_scrollbar_drag(document, *pointer_id, true)?;
                         let range = context.end_range_drag(document, *pointer_id, true)?;
                         let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
@@ -836,6 +922,120 @@ impl RuntimeInputAdapter {
     }
 }
 
+impl RuntimeInputAdapter {
+    /// Keyboard editing for the focused plain text editor.
+    ///
+    /// Returns `false` when no plain editor is focused or the key is not an
+    /// editing key, so composite-surface navigation and generic activation
+    /// keep working unchanged.
+    fn text_editor_key(
+        context: &mut AppContext,
+        document: DocumentId,
+        key: &str,
+        text: Option<&str>,
+        modifiers: nana_ui_platform::InputModifiers,
+        repeat: bool,
+        shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<bool, FrameworkError> {
+        let _ = repeat;
+        let Some(focused) = context.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let control = modifiers.control;
+        let meta = modifiers.meta;
+        let word_modifier = control || modifiers.alt;
+        let intent = match key {
+            "ArrowLeft" => Some(match (meta, word_modifier) {
+                (true, _) => TextCaretIntent::LineStart,
+                (_, true) => TextCaretIntent::WordLeft,
+                (false, false) => TextCaretIntent::Left,
+            }),
+            "ArrowRight" => Some(match (meta, word_modifier) {
+                (true, _) => TextCaretIntent::LineEnd,
+                (_, true) => TextCaretIntent::WordRight,
+                _ => TextCaretIntent::Right,
+            }),
+            "ArrowUp" => Some(if meta {
+                TextCaretIntent::DocStart
+            } else {
+                TextCaretIntent::Up
+            }),
+            "ArrowDown" => Some(if meta {
+                TextCaretIntent::DocEnd
+            } else {
+                TextCaretIntent::Down
+            }),
+            "Home" => Some(if control || meta {
+                TextCaretIntent::DocStart
+            } else {
+                TextCaretIntent::LineStart
+            }),
+            "End" => Some(if control || meta {
+                TextCaretIntent::DocEnd
+            } else {
+                TextCaretIntent::LineEnd
+            }),
+            _ => None,
+        };
+        if let Some(intent) = intent {
+            return context.move_focused_text_caret(document, intent, modifiers.shift, shaper);
+        }
+        let delete = match (key, control || meta, modifiers.alt) {
+            ("Backspace", false, false) => Some(TextDeleteKind::Backward),
+            ("Backspace", _, true) => Some(TextDeleteKind::WordBackward),
+            ("Backspace", true, false) => Some(TextDeleteKind::LineStart),
+            ("Delete", false, false) => Some(TextDeleteKind::Forward),
+            ("Delete", _, true) => Some(TextDeleteKind::WordForward),
+            ("Delete", true, false) => Some(TextDeleteKind::LineEnd),
+            _ => None,
+        };
+        if let Some(kind) = delete {
+            return context.delete_focused_text(document, kind);
+        }
+        if control || meta {
+            // Comment toggle is the only primary-modified editing key.
+            if key == "/" && focused.code_editing.is_some() {
+                return context.code_edit_toggle_comment(document);
+            }
+            return Ok(false);
+        }
+        if key == "Enter" {
+            if focused.multiline {
+                return context.insert_focused_text_newline(document);
+            }
+            // Single-line fields never accept a newline character.
+            return Ok(true);
+        }
+        if key == "Tab" && !meta {
+            if focused.code_editing.is_some() {
+                return context.code_edit_indent(document, modifiers.shift);
+            }
+            return Ok(false);
+        }
+        let Some(text) = text.filter(|text| !text.is_empty() && key != "Escape") else {
+            return Ok(false);
+        };
+        let mut typed = text.chars();
+        if let (Some(single), None) = (typed.next(), typed.next())
+            && focused.code_editing.is_some()
+            && context.code_edit_typed(document, single)?
+        {
+            return Ok(true);
+        }
+        context.replace_focused_text(document, text)
+    }
+}
+
+/// Reborrow the per-dispatch shaper so sequential uses never alias.
+fn reborrow_text_shaper<'s>(
+    shaper: &'s mut Option<&mut dyn TextShaper>,
+) -> Option<&'s mut dyn TextShaper> {
+    match shaper.as_mut() {
+        Some(shaper) => Some(&mut **shaper),
+        None => None,
+    }
+}
+
 fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<StableNodeId> {
     loop {
         if context
@@ -965,7 +1165,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -1015,7 +1215,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -1070,7 +1270,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         let mut secondary = pointer(PointerPhase::Down, 30.0, 30.0);
         if let InputEvent::Pointer { button, .. } = &mut secondary {
             *button = 2;
@@ -1139,7 +1339,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         for (phase, x, y) in [
             (PointerPhase::Down, 50.0, 25.0),
             (PointerPhase::Move, 60.0, 30.0),
@@ -1202,7 +1402,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -1344,7 +1544,7 @@ mod tests {
         );
         context.commit_mutations(layout).unwrap();
         context.rebuild_hit_test(document);
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
 
         assert!(
             adapter
@@ -1475,7 +1675,7 @@ mod tests {
                 ..InputModifiers::default()
             },
         };
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         for expected in [first.stable_id(), after.stable_id(), before.stable_id()] {
             assert!(
                 adapter
@@ -1512,7 +1712,7 @@ mod tests {
             modifiers: InputModifiers::default(),
         };
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(&mut context, document, &key("U"))
@@ -1567,7 +1767,7 @@ mod tests {
         assert!(context.focus_node(document, input.stable_id()).unwrap());
 
         let clipboard = shared_clipboard(MemoryClipboard::new());
-        let adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        let mut adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
         let primary = |key: &str| InputEvent::Keyboard {
             pressed: true,
             key: key.into(),
@@ -1650,7 +1850,7 @@ mod tests {
         assert!(context.focus_node(document, input.stable_id()).unwrap());
 
         let clipboard = shared_clipboard(MemoryClipboard::new());
-        let adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        let mut adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
         let primary = |key: &str| InputEvent::Keyboard {
             pressed: true,
             key: key.into(),
@@ -1700,7 +1900,7 @@ mod tests {
             .unwrap();
         assert!(context.focus_node(document, area.stable_id()).unwrap());
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -1761,7 +1961,7 @@ mod tests {
     fn dispatch_ime_commits_a_focused_text_input_without_a_typed_view() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "Nana");
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -1807,7 +2007,7 @@ mod tests {
     fn dispatch_ime_disabled_commits_leftover_preedit_without_a_typed_view() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "Nana");
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -1841,7 +2041,7 @@ mod tests {
     fn dispatch_ime_deletes_surrounding_committed_text_and_skips_invalid_spans() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "你好");
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -1974,7 +2174,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(&mut context, document, &wheel(10.0, 10.0, -1.0))
@@ -2050,7 +2250,7 @@ mod tests {
         context.take_system_work();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(&mut context, document, &wheel(10.0, 10.0, -1.0))
@@ -2150,7 +2350,7 @@ mod tests {
             repeat,
             modifiers,
         };
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -2276,7 +2476,7 @@ mod tests {
             repeat: false,
             modifiers: InputModifiers::default(),
         };
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(&mut context, document, &key("ArrowRight"))
@@ -2366,7 +2566,7 @@ mod tests {
         context.activate_overlay(host, dialog).unwrap();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -2438,7 +2638,7 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let (menu, activations) = popover_over_button(&mut context, document);
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
 
         assert!(
             adapter
@@ -2485,7 +2685,7 @@ mod tests {
         );
         context.commit_mutations(layout).unwrap();
         context.rebuild_hit_test(document);
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
 
         adapter
             .dispatch(
@@ -2503,7 +2703,7 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let (menu, _) = popover_over_button(&mut context, document);
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         let escape = InputEvent::Keyboard {
             pressed: true,
             key: "Escape".into(),
@@ -2533,7 +2733,7 @@ mod tests {
                 menu.popover.close_on_escape = false;
             })
             .unwrap();
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
 
         adapter
             .dispatch(
@@ -2618,7 +2818,7 @@ mod tests {
         let work = context.take_system_work();
         context.resolve_styles(&work.style).unwrap();
         context.rebuild_hit_test(document);
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
 
         assert!(
             adapter
@@ -2688,7 +2888,7 @@ mod tests {
             )
             .unwrap();
         context.activate_overlay(host, dialog).unwrap();
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         let key = |key: &str, repeat: bool, modifiers: InputModifiers| InputEvent::Keyboard {
             pressed: true,
             key: key.into(),
@@ -2811,7 +3011,7 @@ mod tests {
         context.commit_mutations(layout).unwrap();
         context.rebuild_hit_test(document);
 
-        let adapter = RuntimeInputAdapter::default();
+        let mut adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch(
@@ -2973,5 +3173,585 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn edit_key(key: &str, text: Option<&str>, modifiers: InputModifiers) -> InputEvent {
+        InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: text.map(str::to_string),
+            code: key.into(),
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn plain_key(key: &str) -> InputEvent {
+        edit_key(key, None, InputModifiers::default())
+    }
+
+    fn shift_key(key: &str) -> InputEvent {
+        edit_key(
+            key,
+            None,
+            InputModifiers {
+                shift: true,
+                ..InputModifiers::default()
+            },
+        )
+    }
+
+    fn meta_key(key: &str) -> InputEvent {
+        edit_key(
+            key,
+            None,
+            InputModifiers {
+                meta: true,
+                ..InputModifiers::default()
+            },
+        )
+    }
+
+    fn textarea_selection(context: &AppContext, node: StableNodeId) -> (String, usize, usize) {
+        let state = context.world().text_input(node).unwrap();
+        (
+            state.value.clone(),
+            state.selection.anchor,
+            state.selection.focus,
+        )
+    }
+
+    #[test]
+    fn arrow_keys_move_and_extend_the_focused_textarea_caret() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("abcdef"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // The caret starts at the value end; Left steps back one grapheme.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowLeft"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("abcdef".into(), 5, 5));
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Home"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("abcdef".into(), 0, 0));
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("End"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("abcdef".into(), 6, 6));
+
+        // Shift+Left extends the selection; typing replaces it.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &shift_key("ArrowLeft"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &shift_key("ArrowLeft"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("abcdef".into(), 6, 4));
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("x", Some("X"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("abcdX".into(), 5, 5));
+    }
+
+    #[test]
+    fn vertical_arrows_fall_back_to_logical_lines_without_a_shaper() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("abc\ndefg\nhi"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowLeft"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowLeft"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndefg\nhi".into(), 9, 9)
+        );
+
+        // Up keeps the grapheme column: column 0 lands on the line start.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndefg\nhi".into(), 4, 4)
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowDown"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndefg\nhi".into(), 9, 9)
+        );
+
+        // Cmd+Up / Cmd+Down jump to the document edges.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta_key("ArrowUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndefg\nhi".into(), 0, 0)
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta_key("ArrowDown"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndefg\nhi".into(), 11, 11)
+        );
+    }
+
+    #[test]
+    fn delete_keys_remove_selections_words_and_line_spans() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("one two three"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // Forward delete at the caret end is a no-op that still stays owned.
+        let word_modifier = InputModifiers {
+            alt: true,
+            ..InputModifiers::default()
+        };
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("Backspace", None, word_modifier)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "one two ");
+
+        let meta = InputModifiers {
+            meta: true,
+            ..InputModifiers::default()
+        };
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("Backspace", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "");
+
+        // Forward delete at the value end declines; typing still works.
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &plain_key("Delete"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("h", Some("h"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "h");
+    }
+
+    #[test]
+    fn code_editor_newline_copies_indent_and_completes_pairs() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("fn a() {\n  x").code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // Enter after indented content copies the indentation.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("fn a() {\n  x\n  ".into(), 15, 15)
+        );
+
+        // Typing an open brace completes the pair and parks inside it.
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("{", Some("{"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("fn a() {\n  x\n  {}".into(), 16, 16)
+        );
+
+        // Enter between the pair opens a middle line at the deeper level.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node).0,
+            "fn a() {\n  x\n  {\n  \t\n  }"
+        );
+        assert_eq!(textarea_selection(&context, node).2, 20);
+    }
+
+    #[test]
+    fn code_editor_comment_toggle_and_tab_indent_the_line() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("  x").code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let meta = InputModifiers {
+            meta: true,
+            ..InputModifiers::default()
+        };
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("/", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "  //x");
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &edit_key("/", None, meta))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "  x");
+
+        // Tab indents the caret line; Shift+Tab outdents again.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Home"))
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "\t  x");
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &shift_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "  x");
+    }
+
+    #[test]
+    fn plain_textarea_enter_inserts_a_bare_newline_without_pairing() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab"))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "ab\n");
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("(", Some("("), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node).0, "ab\n(");
+    }
+
+    #[test]
+    fn pointer_press_places_the_caret_and_multi_click_selects() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("hello world"))
+            .unwrap();
+        let node = input.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 32.0,
+            },
+        );
+        layout.set_standard_visual(
+            node,
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                placeholder: std::sync::Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: std::sync::Arc::from([]),
+                line_numbers: false,
+            }),
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        let click = |x: f32, y: f32, phase: PointerPhase| InputEvent::Pointer {
+            phase,
+            pointer_id: 7,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: u16::from(phase == PointerPhase::Down || phase == PointerPhase::Move),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        // A press past the line end parks the caret on the line end.
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &click(190.0, 16.0, PointerPhase::Down),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &click(190.0, 16.0, PointerPhase::Up),
+                Duration::from_millis(1_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("hello world".into(), 11, 11)
+        );
+
+        // A quick second press selects the word under the caret.
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &click(190.0, 16.0, PointerPhase::Down),
+                    Duration::from_millis(1_060),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("hello world".into(), 6, 11)
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &click(190.0, 16.0, PointerPhase::Up),
+                Duration::from_millis(1_080),
+                Some(&mut shaper),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn pointer_drag_extends_the_selection_from_the_press_anchor() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("hello world"))
+            .unwrap();
+        let node = input.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 32.0,
+            },
+        );
+        layout.set_standard_visual(
+            node,
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                placeholder: std::sync::Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: std::sync::Arc::from([]),
+                line_numbers: false,
+            }),
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        let pointer_event = |phase: PointerPhase, x: f32| InputEvent::Pointer {
+            phase,
+            pointer_id: 3,
+            pointer_type: PointerType::Mouse,
+            x,
+            y: 16.0,
+            screen_x: x,
+            screen_y: 16.0,
+            button: 0,
+            buttons: u16::from(phase != PointerPhase::Up),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &pointer_event(PointerPhase::Down, 190.0),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &pointer_event(PointerPhase::Move, 0.0),
+                    Duration::from_millis(2_010),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("hello world".into(), 11, 0)
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &pointer_event(PointerPhase::Up, 0.0),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
     }
 }

@@ -1250,14 +1250,20 @@ impl UiWorld {
         if !self.nodes.get(id)?.accessibility.multiline {
             return None;
         }
-        if !matches!(self.nodes.visual(id), Some(StandardVisual::TextInput { .. })) {
+        if !matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { .. })
+        ) {
             return None;
         }
         let presentation = self.nodes.text_input_presentation(id)?;
         let line_height = presentation.line_height.max(1.0);
         let offset = offset.min(state.value.len());
         let value = state.value.as_str();
-        let line_index = value[..offset].bytes().filter(|byte| *byte == b'\n').count() as f32;
+        let line_index = value[..offset]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count() as f32;
         let reveal_y = line_index * line_height;
         let node = self.nodes.get(id)?;
         let padding = node
@@ -1280,6 +1286,52 @@ impl UiWorld {
             x: self.record(id).scroll_offset.x,
             y: scroll_y.clamp(0.0, max_scroll),
         })
+    }
+
+    /// Shape inputs for text-input geometry queries: resolved style and the
+    /// constraints the last layout pass shaped with.
+    pub fn text_input_shape_context(
+        &self,
+        id: StableNodeId,
+    ) -> Option<(ComputedStyle, crate::TextShapeConstraints)> {
+        if !matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { .. })
+        ) {
+            return None;
+        }
+        let node = self.nodes.get(id)?;
+        Some((
+            node.resolved.0.as_ref().clone(),
+            self.text_shape_constraints(id),
+        ))
+    }
+
+    /// Content box and scroll offset used to map pointer coordinates onto
+    /// text-input byte offsets, mirroring the paint-side `field_x`/`line_y`.
+    pub fn text_input_pointer_context(
+        &self,
+        id: StableNodeId,
+    ) -> Option<(LayoutBox, ScrollOffset)> {
+        let node = self.nodes.get(id)?;
+        if !matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { .. })
+        ) {
+            return None;
+        }
+        let padding = node
+            .style
+            .layout
+            .resolved_padding_against(Some(node.layout.width));
+        let border = node.style.layout.resolved_border_width();
+        let content = LayoutBox {
+            x: node.layout.x + border + padding.left,
+            y: node.layout.y + border + padding.top,
+            width: (node.layout.width - border * 2.0 - padding.left - padding.right).max(0.0),
+            height: (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
+        };
+        Some((content, self.record(id).scroll_offset))
     }
 
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
@@ -10158,7 +10210,9 @@ mod tests {
         queue.create(
             node(1),
             document(1),
-            NodeKind::Element { tag: "textarea".into() },
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
         );
         queue.set_standard_visual(
             node(1),
@@ -10169,7 +10223,11 @@ mod tests {
                 invalid: false,
                 steppers: false,
                 diagnostics: Arc::from([
-                    crate::TextDiagnosticSpan::new(0, "甲乙".len(), crate::TextDiagnosticSeverity::Error),
+                    crate::TextDiagnosticSpan::new(
+                        0,
+                        "甲乙".len(),
+                        crate::TextDiagnosticSeverity::Error,
+                    ),
                     crate::TextDiagnosticSpan::new(
                         "甲乙\n".len(),
                         "third".len(),
@@ -10231,10 +10289,7 @@ mod tests {
             presentation.diagnostic_marks[0].severity,
             crate::TextDiagnosticSeverity::Error
         );
-        assert_eq!(
-            presentation.diagnostic_marks[0].rect.y,
-            line_height - 2.0
-        );
+        assert_eq!(presentation.diagnostic_marks[0].rect.y, line_height - 2.0);
         assert_eq!(
             presentation.diagnostic_marks[1].severity,
             crate::TextDiagnosticSeverity::Warning
