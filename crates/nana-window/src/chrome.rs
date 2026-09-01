@@ -68,6 +68,62 @@ pub fn resize_custom_frame<W: HasWindowHandle + ?Sized>(window: &W, edge: FrameR
     }
 }
 
+/// Whether the OS owns an active frame-resize gesture for this window
+/// (AppKit's native live-resize tracking loop). The Win32 size-move hook is
+/// host-side state, so other platforms never report one.
+pub fn native_live_resize_active<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        appkit_window(window).is_some_and(|window| window.inLiveResize())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        false
+    }
+}
+
+/// Pins or unpins the window's Metal layer to present inside Core Animation
+/// transactions. While a resize gesture moves the window frame, the
+/// compositor otherwise scales the previous drawable to the new frame between
+/// the frame change and the next present; a transaction present closes that
+/// window. Returns whether a CAMetalLayer was found and updated.
+pub fn set_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        set_metal_present_transaction(window, enabled)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, enabled);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_metal_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
+    use objc2_app_kit::NSView;
+    use objc2_quartz_core::CAMetalLayer;
+    use raw_window_handle::RawWindowHandle;
+
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+    // SAFETY: the AppKit handle's ns_view is a live NSView owned by this window.
+    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    let Some(layer) = view.layer() else {
+        return false;
+    };
+    let Ok(metal) = layer.downcast::<CAMetalLayer>() else {
+        return false;
+    };
+    metal.setPresentsWithTransaction(enabled);
+    true
+}
+
 /// Captures a window frame so later pointer moves can resize origin and size
 /// without a nested OS size-move loop. The window's minimum track size is
 /// queried once at `begin` and clamps every update; there is no max clamp.
