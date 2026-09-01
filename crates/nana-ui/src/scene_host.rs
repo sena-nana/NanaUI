@@ -2546,13 +2546,11 @@ fn apply_scene_window_icon(
     apply_app_icon: bool,
 ) {
     let icon = resolved_scene_icon(per_window);
-    if let Some(winit_icon) = winit_icon(&icon) {
-        window.set_window_icon(Some(winit_icon.clone()));
-        #[cfg(target_os = "windows")]
-        window.set_taskbar_icon(Some(winit_icon));
-        #[cfg(not(target_os = "windows"))]
-        let _ = winit_icon;
-    }
+    // winit 的 Win32 后端把共享的 RGBA 缓冲原地 R/B 翻转成 BGRA;同一 Icon
+    // 转换第二次会把颜色换回去,所以每个入口都拿到独立缓冲,恰好转换一次。
+    window.set_window_icon(winit_icon(&icon));
+    #[cfg(target_os = "windows")]
+    window.set_taskbar_icon(winit_icon(&icon));
     if apply_app_icon {
         apply_application_icon(&icon);
     }
@@ -3341,7 +3339,7 @@ mod tests {
         resolved_scene_ime_request, route_window_command, scene_clear_color,
         scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, tablet_pointer_id, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -3349,8 +3347,8 @@ mod tests {
     };
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
-        TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowResizeEdge,
-        WindowSettings,
+        TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon, WindowId,
+        WindowResizeEdge, WindowSettings,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -3508,6 +3506,19 @@ mod tests {
         let opaque_caption = windows_scene_chrome(true, false);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
+    }
+
+    #[test]
+    fn window_and_taskbar_icons_convert_independent_buffers() {
+        // winit 的 Win32 后端原地翻转共享缓冲;同一 winit Icon 不允许被转换两次,
+        // 否则任务栏大图标的 R/B 被换回、蓝色标记显示为橙黄。
+        let source = WindowIcon::from_rgba(vec![73; 8 * 8 * 4], 8, 8).expect("valid icon source");
+        let window_icon = winit_icon(&source).expect("window icon");
+        let taskbar_icon = winit_icon(&source).expect("taskbar icon");
+        assert!(
+            !std::sync::Arc::ptr_eq(&window_icon.0, &taskbar_icon.0),
+            "each applied icon must own its RGBA buffer"
+        );
     }
 
     #[test]
