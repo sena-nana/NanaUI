@@ -1810,6 +1810,28 @@ impl AppContext {
         Ok(true)
     }
 
+    /// 重开补全弹层（宿主显式重触发，如 Esc 关闭后再次 Ctrl+Space）：
+    /// 清除关闭标记并把选中归零，候选列表保持不变。弹层未激活或未处
+    /// 于关闭态时返回 `Ok(false)`。
+    pub fn reopen_focused_text_completion(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let Some(state) = self.world.text_completion_view(focused.node) else {
+            return Ok(false);
+        };
+        if !state.dismissed {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_completion_reopened(focused.node);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
     /// 滚轮滚动补全弹层（`rows` 为正表示向列表末尾方向）。滚动位置钳在
     /// 候选范围内；弹层未激活时返回 `Ok(false)`。
     pub fn scroll_focused_text_completion(
