@@ -629,6 +629,8 @@ pub(crate) fn split_pane_from_widget(
             first,
             second,
             handle,
+            first_slot: None,
+            second_slot: None,
             model,
             style: NodeStyle::default(),
         },

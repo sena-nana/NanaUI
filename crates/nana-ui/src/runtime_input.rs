@@ -254,8 +254,9 @@ impl RuntimeInputAdapter {
                                 .transpose()?
                                 .unwrap_or(false)
                             || context.clear_calendar_heatmap_hover(document)?
-                            || context.hover_split_handle(
-                                context.split_handle_near(document, *x, *y).or(target),
+                            || context.sync_split_handle_hover(
+                                document,
+                                context.split_handle_near(document, *x, *y),
                             )?
                             || target.is_some()
                     }
@@ -456,6 +457,7 @@ impl RuntimeInputAdapter {
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
                         let calendar = context.clear_calendar_heatmap_hover(document)?;
+                        let split_hover = context.sync_split_handle_hover(document, None)?;
                         scrollbar
                             || range
                             || xy_pad
@@ -467,6 +469,7 @@ impl RuntimeInputAdapter {
                             || workspace
                             || dock_item
                             || calendar
+                            || split_hover
                             || pressed
                     }
                     _ => false,

@@ -7446,8 +7446,17 @@ mod tests {
             doc.runtime.node_style(pane_id).unwrap().layout.direction,
             Some(nana_ui_core::FlexDirection::Column)
         );
-        let first_style = doc.runtime.node_style(first_id).unwrap();
-        let second_style = doc.runtime.node_style(second_id).unwrap();
+        let (first_slot, second_slot) = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| (pane.first_slot, pane.second_slot),
+            )
+            .unwrap();
+        let first_slot = first_slot.expect("first slot shell");
+        let second_slot = second_slot.expect("second slot shell");
+        let first_style = doc.runtime.node_style(first_slot).unwrap();
+        let second_style = doc.runtime.node_style(second_slot).unwrap();
         assert_eq!(
             first_style.layout.height,
             Some(nana_ui_core::LengthSpec::Px(240.0))
@@ -7458,6 +7467,14 @@ mod tests {
             Some(nana_ui_core::LengthSpec::Fill)
         );
         assert_eq!(second_style.layout.flex_grow, Some(1.0));
+        // Host content keeps projecting itself; the shells carry the geometry.
+        assert_ne!(
+            doc.runtime
+                .node_style(first_id)
+                .map(|style| style.layout.height)
+                .flatten(),
+            Some(nana_ui_core::LengthSpec::Px(240.0))
+        );
     }
 
     #[test]
@@ -7505,12 +7522,25 @@ mod tests {
             doc.context().is_split_handle(handle),
             "assembled handle must be a split-pane resize target"
         );
+        let (first_slot, second_slot) = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| (pane.first_slot, pane.second_slot),
+            )
+            .unwrap();
+        let first_slot = first_slot.expect("first slot shell");
+        let second_slot = second_slot.expect("second slot shell");
         assert_eq!(
             doc.runtime.node(pane_id).unwrap().children,
-            vec![first_id, handle, second_id]
+            vec![first_slot, handle, second_slot]
         );
-        let first_style = doc.runtime.node_style(first_id).unwrap();
-        let second_style = doc.runtime.node_style(second_id).unwrap();
+        assert_eq!(
+            doc.runtime.node(first_slot).unwrap().children,
+            vec![first_id]
+        );
+        let first_style = doc.runtime.node_style(first_slot).unwrap();
+        let second_style = doc.runtime.node_style(second_slot).unwrap();
         assert_eq!(
             first_style.layout.height,
             Some(nana_ui_core::LengthSpec::Px(240.0))
@@ -7585,8 +7615,23 @@ mod tests {
         );
         let children = doc.runtime.node(pane_id).unwrap().children;
         assert!(children.contains(&handle));
-        assert!(children.contains(&first_id));
-        assert!(children.contains(&second_id));
+        let (first_slot, second_slot) = doc
+            .context()
+            .read(
+                Entity::<RuntimeSplitPane>::from_stable_id(pane_id),
+                |pane| (pane.first_slot, pane.second_slot),
+            )
+            .unwrap();
+        let first_slot = first_slot.expect("first slot shell");
+        let second_slot = second_slot.expect("second slot shell");
+        assert_eq!(
+            doc.runtime.node(first_slot).unwrap().children,
+            vec![first_id]
+        );
+        assert_eq!(
+            doc.runtime.node(second_slot).unwrap().children,
+            vec![second_id]
+        );
     }
 
     #[test]

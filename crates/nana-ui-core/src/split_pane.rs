@@ -105,6 +105,10 @@ impl SplitPaneModel {
         self.focused
     }
 
+    pub fn hovered(&self) -> bool {
+        self.hovered
+    }
+
     pub fn is_active(&self) -> bool {
         self.resize.is_some() || self.hovered || self.focused
     }

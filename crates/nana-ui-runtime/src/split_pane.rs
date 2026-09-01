@@ -19,7 +19,10 @@ pub(crate) const INDICATOR_SIZE: f32 = 2.0;
 /// Two children and an 8px resize handle. Size comes from [`SplitPaneModel`].
 ///
 /// Host applies [`SplitPaneMutation`]; this view reflects the model. Application
-/// content stays in the `first` / `second` slots. Assign `handle` to a
+/// content stays in the `first` / `second` slots. [`assemble_split_pane`] wraps
+/// each slot in a split-owned shell so pane geometry has a single writer: host
+/// content (a [`ScrollView`](crate::ScrollView), for one) keeps projecting its
+/// own node without fighting the split over pane sizing. Assign `handle` to a
 /// host-created node; its optional first child is the 2px indicator. Host paint
 /// set through [`SplitPane::surface`] survives re-projection; geometry stays
 /// model-driven.
@@ -28,6 +31,8 @@ pub struct SplitPane {
     pub first: Option<StableNodeId>,
     pub second: Option<StableNodeId>,
     pub handle: Option<StableNodeId>,
+    pub first_slot: Option<StableNodeId>,
+    pub second_slot: Option<StableNodeId>,
     pub model: SplitPaneModel,
     pub style: NodeStyle,
 }
@@ -38,6 +43,8 @@ impl SplitPane {
             first: Some(first),
             second: Some(second),
             handle: None,
+            first_slot: None,
+            second_slot: None,
             model: model.clone(),
             style: NodeStyle::default(),
         }
@@ -112,20 +119,25 @@ impl SplitPane {
         );
     }
 
+    /// Pane geometry lives on the split-owned slot shell, so no other
+    /// component's projection can move the divider.
     fn project_pane(
         &self,
-        id: StableNodeId,
+        slot: Option<StableNodeId>,
         sized: bool,
         world: &UiWorld,
         mutations: &mut MutationQueue,
     ) {
+        let Some(id) = slot else {
+            return;
+        };
         if world.node(id).is_none() {
             return;
         }
         let horizontal = self.model.axis() == SplitAxis::Horizontal;
         let size = self.model.size();
         let (min_size, max_size) = self.model.limits();
-        let mut style = world.node_style(id).cloned().unwrap_or_default();
+        let mut style = NodeStyle::default();
         let layout = Arc::make_mut(&mut style.layout);
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
@@ -309,52 +321,68 @@ impl ComponentView for SplitPane {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         self.project_root(id, world, mutations);
-        if let Some(first) = self.first {
-            self.project_pane(first, self.first_is_sized(), world, mutations);
-        }
+        self.project_pane(self.first_slot, self.first_is_sized(), world, mutations);
         self.project_handle(world, mutations);
-        if let Some(second) = self.second {
-            self.project_pane(second, !self.first_is_sized(), world, mutations);
-        }
+        self.project_pane(self.second_slot, !self.first_is_sized(), world, mutations);
     }
 }
 
 impl AppContext {
-    /// Mount the 8px resize handle between host pane slots, then re-project.
+    /// Mount the 8px resize handle between split-owned slot shells, then
+    /// re-project.
     ///
-    /// Created handle identity is reused. Host first/second content is
-    /// reparented, not recreated.
+    /// Created handle and slot identities are reused. Host first/second content
+    /// is reparented into the slots, not recreated, and stays untouched by
+    /// split projection so its own component views cannot fight pane sizing.
     pub fn assemble_split_pane(&mut self, pane: Entity<SplitPane>) -> Result<bool, FrameworkError> {
         let parent = pane.stable_id();
         let document = document_of(self, parent)?;
-        let snapshot = self.read(pane, |pane| (pane.first, pane.second, pane.handle))?;
-        let (stored_first, stored_second, stored_handle) = snapshot;
-        let first = stored_first.filter(|id| self.world().contains(*id));
-        let second = stored_second.filter(|id| self.world().contains(*id));
-        let handle = match recover_handle(self, parent, first, second, stored_handle) {
+        let (first, second, handle, first_slot, second_slot) = self.read(pane, |pane| {
+            (
+                pane.first,
+                pane.second,
+                pane.handle,
+                pane.first_slot,
+                pane.second_slot,
+            )
+        })?;
+        let first = first.filter(|id| self.world().contains(*id));
+        let second = second.filter(|id| self.world().contains(*id));
+        let first_slot = ensure_split_slot(self, first_slot, document)?;
+        let second_slot = ensure_split_slot(self, second_slot, document)?;
+        let handle = match recover_handle(
+            self,
+            parent,
+            &[first, second, Some(first_slot), Some(second_slot)],
+            handle,
+        ) {
             Some(id) => id,
             None => create_split_handle(self, document)?,
         };
-        let fields_changed =
-            first != stored_first || second != stored_second || stored_handle != Some(handle);
-        if fields_changed {
-            self.update_component(pane, |pane, _| {
-                pane.first = first;
-                pane.second = second;
-                pane.handle = Some(handle);
-            })?;
-        }
+        self.update_component(pane, |pane, _| {
+            pane.first = first;
+            pane.second = second;
+            pane.handle = Some(handle);
+            pane.first_slot = Some(first_slot);
+            pane.second_slot = Some(second_slot);
+        })?;
         let mut children = Vec::new();
-        if let Some(first) = first {
-            children.push(first);
+        if first.is_some() {
+            children.push(first_slot);
         }
         children.push(handle);
-        if let Some(second) = second {
-            children.push(second);
+        if second.is_some() {
+            children.push(second_slot);
         }
-        let changed = reconcile_ids(self, parent, &children)?;
+        let mut changed = reconcile_ids(self, parent, &children)?;
+        if let Some(first) = first {
+            changed |= reconcile_ids(self, first_slot, &[first])?;
+        }
+        if let Some(second) = second {
+            changed |= reconcile_ids(self, second_slot, &[second])?;
+        }
         self.update_component(pane, |_, _| {})?;
-        Ok(changed || fields_changed)
+        Ok(changed)
     }
 
     pub fn is_split_pane(&self, id: StableNodeId) -> bool {
@@ -383,16 +411,18 @@ impl AppContext {
             if self.is_split_handle(target) {
                 return Some(target);
             }
-            if let Some(parent) = self.world().node(target).and_then(|node| node.parent) {
-                if self.is_split_handle(parent) {
-                    return Some(parent);
+            let mut ancestor = self.world().node(target).and_then(|node| node.parent);
+            while let Some(node) = ancestor {
+                if self.is_split_handle(node) {
+                    return Some(node);
                 }
-                if let Some(handle) = self.handle_of_split(parent)
+                if let Some(handle) = self.handle_of_split(node)
                     && let Some(bounds) = self.world().layout_box(handle)
                     && point_near_box(bounds, x, y, SLOP)
                 {
                     return Some(handle);
                 }
+                ancestor = self.world().node(node).and_then(|inner| inner.parent);
             }
         }
         self.world()
@@ -474,17 +504,47 @@ impl AppContext {
         })
     }
 
-    pub fn hover_split_handle(
+    /// Reflect the slop-zone hover onto the split handle highlight.
+    ///
+    /// `None` — or a target that is not a split handle — releases every hovered
+    /// split in the document: the pointermove chain has no exact handle target
+    /// to key a leave off once the pointer drifts out of the handle's slop.
+    pub fn sync_split_handle_hover(
         &mut self,
+        document: crate::DocumentId,
         target: Option<StableNodeId>,
     ) -> Result<bool, crate::FrameworkError> {
-        let Some(target) = target else {
-            return Ok(false);
-        };
-        let Some(entity) = self.split_for_handle(target) else {
-            return Ok(false);
-        };
-        self.update_component(entity, |pane, _| pane.apply(SplitPaneMutation::Hover(true)))
+        let active = target.filter(|id| self.is_split_handle(*id));
+        let hovered: Vec<crate::Entity<SplitPane>> = self
+            .world()
+            .document_order(document)
+            .into_iter()
+            .filter_map(|id| self.split_pane_entity(id))
+            .filter(|entity| {
+                self.read(*entity, |pane| pane.model.hovered())
+                    .unwrap_or(false)
+            })
+            .collect();
+        let mut changed = false;
+        if let Some(handle) = active
+            && let Some(entity) = self.split_for_handle(handle)
+        {
+            changed |= self
+                .update_component(entity, |pane, _| pane.apply(SplitPaneMutation::Hover(true)))?;
+        }
+        for entity in hovered {
+            let keep_hovered = active.is_some_and(|handle| {
+                self.read(entity, |pane| pane.handle == Some(handle))
+                    .unwrap_or(false)
+            });
+            if keep_hovered {
+                continue;
+            }
+            changed |= self.update_component(entity, |pane, _| {
+                pane.apply(SplitPaneMutation::Hover(false))
+            })?;
+        }
+        Ok(changed)
     }
 
     pub fn adjust_focused_split(
@@ -593,6 +653,48 @@ impl ComponentView for SplitHandleMark {
     }
 }
 
+/// Split-owned shell around one host pane. [`SplitPane::project_pane`] writes
+/// all pane geometry here; this view is projected once at creation and never
+/// touches style again, so the split stays the single style writer.
+#[derive(Debug, Clone)]
+struct SplitPaneSlot;
+
+impl ComponentView for SplitPaneSlot {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "split-pane-slot".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id) != Some("") {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
+        }
+        if world.standard_visual(id).is_some() {
+            mutations.set_standard_visual(id, None);
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &NodeStyle::default(),
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
 fn document_of(context: &AppContext, id: StableNodeId) -> Result<DocumentId, FrameworkError> {
     context
         .world()
@@ -604,8 +706,7 @@ fn document_of(context: &AppContext, id: StableNodeId) -> Result<DocumentId, Fra
 fn recover_handle(
     context: &AppContext,
     parent: StableNodeId,
-    first: Option<StableNodeId>,
-    second: Option<StableNodeId>,
+    owned: &[Option<StableNodeId>],
     stored: Option<StableNodeId>,
 ) -> Option<StableNodeId> {
     if let Some(id) = stored.filter(|id| context.world().contains(*id)) {
@@ -617,7 +718,7 @@ fn recover_handle(
         .map(|node| {
             node.children
                 .into_iter()
-                .filter(|id| Some(*id) != first && Some(*id) != second)
+                .filter(|id| !owned.contains(&Some(*id)))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -626,6 +727,19 @@ fn recover_handle(
         .copied()
         .find(|id| is_handle_node(context, *id))
         .or_else(|| extras.first().copied())
+}
+
+fn ensure_split_slot(
+    context: &mut AppContext,
+    stored: Option<StableNodeId>,
+    document: DocumentId,
+) -> Result<StableNodeId, FrameworkError> {
+    if let Some(id) = stored.filter(|id| context.world().contains(*id)) {
+        return Ok(id);
+    }
+    Ok(context
+        .create_detached_component(document, SplitPaneSlot)?
+        .stable_id())
 }
 
 fn is_handle_node(context: &AppContext, id: StableNodeId) -> bool {
@@ -716,6 +830,25 @@ mod tests {
             .unwrap()
     }
 
+    enum SlotSide {
+        First,
+        Second,
+    }
+
+    fn pane_slot(
+        context: &AppContext,
+        split: crate::Entity<SplitPane>,
+        side: SlotSide,
+    ) -> StableNodeId {
+        context
+            .read(split, |pane| match side {
+                SlotSide::First => pane.first_slot,
+                SlotSide::Second => pane.second_slot,
+            })
+            .unwrap()
+            .expect("assembled split owns a slot shell")
+    }
+
     #[test]
     fn from_model_horizontal_size_goes_to_first() {
         let mut context = AppContext::new();
@@ -726,6 +859,9 @@ mod tests {
         model.update(SplitPaneMutation::SetSize(400.0));
         assert_eq!(model.size(), 260.0);
         let split = mount(&mut context, &model, first, second, handle);
+        context.assemble_split_pane(split).unwrap();
+        let first_slot = pane_slot(&context, split, SlotSide::First);
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
 
         assert_eq!(
             context.world().node(split.stable_id()).unwrap().kind,
@@ -741,13 +877,13 @@ mod tests {
                 .role,
             AccessibilityRole::Generic
         );
-        let first_layout = &context.world().node_style(first).unwrap().layout;
+        let first_layout = &context.world().node_style(first_slot).unwrap().layout;
         assert_eq!(first_layout.width, Some(LengthSpec::Px(260.0)));
         assert_eq!(first_layout.min_width, Some(LengthSpec::Px(140.0)));
         assert_eq!(first_layout.max_width, Some(LengthSpec::Px(260.0)));
         assert_eq!(first_layout.height, Some(LengthSpec::Fill));
         assert_eq!(first_layout.flex_grow, Some(0.0));
-        let second_layout = &context.world().node_style(second).unwrap().layout;
+        let second_layout = &context.world().node_style(second_slot).unwrap().layout;
         assert_eq!(second_layout.width, Some(LengthSpec::Fill));
         assert_eq!(second_layout.flex_grow, Some(1.0));
         assert_eq!(
@@ -759,6 +895,17 @@ mod tests {
                 .direction,
             Some(FlexDirection::Row)
         );
+        // Host content keeps its own style; the split only sizes the shells.
+        assert_eq!(
+            context
+                .world()
+                .node_style(first)
+                .cloned()
+                .unwrap_or_default()
+                .layout
+                .width,
+            None
+        );
     }
 
     #[test]
@@ -769,12 +916,18 @@ mod tests {
         let handle = slot(&mut context, "handle");
         let model =
             SplitPaneModel::new(SplitAxis::Horizontal, 180.0, 120.0, 240.0).with_from_end(true);
-        let _ = mount(&mut context, &model, first, second, handle);
+        let split = mount(&mut context, &model, first, second, handle);
+        context.assemble_split_pane(split).unwrap();
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
 
-        let first_layout = &context.world().node_style(first).unwrap().layout;
-        assert_eq!(first_layout.width, Some(LengthSpec::Fill));
-        assert_eq!(first_layout.flex_grow, Some(1.0));
-        let second_layout = &context.world().node_style(second).unwrap().layout;
+        let first_slot_layout = &context
+            .world()
+            .node_style(pane_slot(&context, split, SlotSide::First))
+            .unwrap()
+            .layout;
+        assert_eq!(first_slot_layout.width, Some(LengthSpec::Fill));
+        assert_eq!(first_slot_layout.flex_grow, Some(1.0));
+        let second_layout = &context.world().node_style(second_slot).unwrap().layout;
         assert_eq!(second_layout.width, Some(LengthSpec::Px(180.0)));
         assert_eq!(second_layout.min_width, Some(LengthSpec::Px(120.0)));
         assert_eq!(second_layout.max_width, Some(LengthSpec::Px(240.0)));
@@ -1018,9 +1171,19 @@ mod tests {
             .read(split, |pane| pane.handle)
             .unwrap()
             .expect("assemble creates a handle");
+        let first_slot = pane_slot(&context, split, SlotSide::First);
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
         assert_eq!(
             context.world().node(split.stable_id()).unwrap().children,
-            vec![first, handle, second]
+            vec![first_slot, handle, second_slot]
+        );
+        assert_eq!(
+            context.world().node(first_slot).unwrap().children,
+            vec![first]
+        );
+        assert_eq!(
+            context.world().node(second_slot).unwrap().children,
+            vec![second]
         );
         assert_eq!(
             context.world().node(handle).unwrap().kind,
@@ -1045,6 +1208,8 @@ mod tests {
             .read(split, |pane| pane.handle)
             .unwrap()
             .expect("handle");
+        let first_slot = pane_slot(&context, split, SlotSide::First);
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
 
         assert!(!context.assemble_split_pane(split).unwrap());
         assert_eq!(
@@ -1052,8 +1217,16 @@ mod tests {
             Some(handle)
         );
         assert_eq!(
+            context.read(split, |pane| pane.first_slot).unwrap(),
+            Some(first_slot)
+        );
+        assert_eq!(
+            context.read(split, |pane| pane.second_slot).unwrap(),
+            Some(second_slot)
+        );
+        assert_eq!(
             context.world().node(split.stable_id()).unwrap().children,
-            vec![first, handle, second]
+            vec![first_slot, handle, second_slot]
         );
     }
 
@@ -1065,6 +1238,8 @@ mod tests {
         let model = SplitPaneModel::new(SplitAxis::Vertical, 160.0, 80.0, 280.0);
         let split = mount_without_handle(&mut context, &model, first, second);
         context.assemble_split_pane(split).unwrap();
+        let first_slot = pane_slot(&context, split, SlotSide::First);
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
 
         let (bound_first, bound_second) = context
             .read(split, |pane| (pane.first, pane.second))
@@ -1083,12 +1258,69 @@ mod tests {
                 tag: "second".into(),
             }
         );
-        let first_layout = &context.world().node_style(first).unwrap().layout;
+        // Sizing lands on the split-owned shells; host content is untouched.
+        let first_layout = &context.world().node_style(first_slot).unwrap().layout;
         assert_eq!(first_layout.height, Some(LengthSpec::Px(160.0)));
         assert_eq!(first_layout.flex_grow, Some(0.0));
-        let second_layout = &context.world().node_style(second).unwrap().layout;
+        let second_layout = &context.world().node_style(second_slot).unwrap().layout;
         assert_eq!(second_layout.height, Some(LengthSpec::Fill));
         assert_eq!(second_layout.flex_grow, Some(1.0));
+        assert_eq!(
+            context
+                .world()
+                .node_style(first)
+                .cloned()
+                .unwrap_or_default()
+                .layout
+                .height,
+            None
+        );
+    }
+
+    #[test]
+    fn scroll_view_reprojection_leaves_pane_sizing_to_the_split() {
+        let mut context = AppContext::new();
+        let scroll = context
+            .create_detached_component(
+                document(),
+                crate::view_components::ScrollView::new(
+                    crate::view_components::ScrollAxes::Vertical,
+                )
+                .style(crate::view_components::Stack::fill_column(0.0).node_style()),
+            )
+            .unwrap()
+            .stable_id();
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Vertical, 180.0, 72.0, 420.0);
+        let split = mount_without_handle(&mut context, &model, scroll, second);
+        context.assemble_split_pane(split).unwrap();
+        let first_slot = pane_slot(&context, split, SlotSide::First);
+
+        // Hover plumbing re-projects the scroll view through its own component.
+        context
+            .update_component(
+                crate::Entity::<crate::view_components::ScrollView>::from_stable_id(scroll),
+                |scroll_view, _| scroll_view.hovered = true,
+            )
+            .unwrap();
+
+        // The shell keeps the model-driven pane size; the scroll view keeps
+        // projecting itself without deciding the divider position.
+        let slot_layout = &context.world().node_style(first_slot).unwrap().layout;
+        assert_eq!(slot_layout.height, Some(LengthSpec::Px(180.0)));
+        assert_eq!(slot_layout.flex_grow, Some(0.0));
+        let scroll_layout = &context.world().node_style(scroll).unwrap().layout;
+        assert_eq!(scroll_layout.flex_grow, Some(1.0));
+        assert_eq!(scroll_layout.height, Some(LengthSpec::Fill));
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+        let second_slot = pane_slot(&context, split, SlotSide::Second);
+        assert_eq!(
+            context.world().node(split.stable_id()).unwrap().children,
+            vec![first_slot, handle, second_slot]
+        );
     }
 
     #[test]
@@ -1108,5 +1340,62 @@ mod tests {
             context.split_handle_axis(handle),
             Some(SplitAxis::Horizontal)
         );
+    }
+
+    #[test]
+    fn leaving_the_handle_slop_releases_the_hover_highlight() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        context.assemble_split_pane(split).unwrap();
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+
+        assert!(
+            context
+                .sync_split_handle_hover(document(), Some(handle))
+                .unwrap()
+        );
+        assert!(context.read(split, |pane| pane.model.hovered()).unwrap());
+
+        assert!(context.sync_split_handle_hover(document(), None).unwrap());
+        assert!(!context.read(split, |pane| pane.model.hovered()).unwrap());
+    }
+
+    #[test]
+    fn hovering_a_second_split_releases_the_first() {
+        let mut context = AppContext::new();
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let third = slot(&mut context, "third");
+        let fourth = slot(&mut context, "fourth");
+        let split_a = mount_without_handle(&mut context, &model, first, second);
+        let split_b = mount_without_handle(&mut context, &model, third, fourth);
+        context.assemble_split_pane(split_a).unwrap();
+        context.assemble_split_pane(split_b).unwrap();
+        let handle_a = context
+            .read(split_a, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+        let handle_b = context
+            .read(split_b, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+
+        context
+            .sync_split_handle_hover(document(), Some(handle_a))
+            .unwrap();
+        assert!(context.read(split_a, |pane| pane.model.hovered()).unwrap());
+
+        context
+            .sync_split_handle_hover(document(), Some(handle_b))
+            .unwrap();
+        assert!(!context.read(split_a, |pane| pane.model.hovered()).unwrap());
+        assert!(context.read(split_b, |pane| pane.model.hovered()).unwrap());
     }
 }
