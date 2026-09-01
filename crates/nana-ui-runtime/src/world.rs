@@ -4966,14 +4966,28 @@ impl UiWorld {
                 size,
                 spacing,
                 insert,
-            } => Some(reorder_list_geometry(
-                bounds,
-                rows,
-                *size,
-                *spacing,
-                *insert,
-                &self.style_model.palette,
-            )),
+            } => {
+                // Live row children own their label painting; a stale retained
+                // `rows` (projected before the children were attached) must not
+                // paint a second copy underneath them.
+                let rows = if self
+                    .nodes
+                    .get(id)
+                    .is_some_and(|node| !node.hierarchy.children.is_empty())
+                {
+                    Arc::<[crate::ReorderRowPaint]>::from([])
+                } else {
+                    rows.clone()
+                };
+                Some(reorder_list_geometry(
+                    bounds,
+                    &rows,
+                    *size,
+                    *spacing,
+                    *insert,
+                    &self.style_model.palette,
+                ))
+            }
             StandardVisual::NativeMarkdown { text, selection } => {
                 let (text, selection, selection_color) = selectable_text_regions(
                     content,
