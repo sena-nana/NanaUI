@@ -1140,6 +1140,8 @@ impl RegisterableComponent for SplitPane {
             first: spec.slot("first"),
             second: spec.slot("second"),
             handle: spec.slot("handle"),
+            first_slot: None,
+            second_slot: None,
             model,
             style: NodeStyle::default(),
         }
