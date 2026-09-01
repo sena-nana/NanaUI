@@ -10,14 +10,18 @@ use super::{TextArea, TextInput, TextInputState, TextSelection};
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
     apply_cursor_edits, apply_replacement, auto_indent_newline, auto_pair_edit, caret_focus,
-    caret_offset_at_point, delete_backward, delete_forward, delete_lines, delete_to_line_end,
-    delete_to_line_start, delete_word_backward, delete_word_forward, duplicate_lines, find_matches,
-    find_next_match, find_previous_match, indent_selection, join_lines, logical_line_range,
-    matching_bracket_pair, move_lines, moved_selection, outdent_selection, page_caret_focus,
-    page_caret_focus_logical, replace_all_matches, sort_lines, toggle_line_comment,
-    transform_selection_case, vertical_caret_focus, vertical_caret_focus_logical, word_range_at,
+    caret_offset_at_point, clamp_boundary, delete_backward, delete_forward, delete_lines,
+    delete_to_line_end, delete_to_line_start, delete_word_backward, delete_word_forward,
+    duplicate_lines, find_matches, find_next_match, find_previous_match, indent_selection,
+    join_lines, logical_line_range, matching_bracket_pair, move_lines, moved_selection,
+    outdent_selection, page_caret_focus, page_caret_focus_logical, replace_all_matches, sort_lines,
+    toggle_line_comment, transform_selection_case, vertical_caret_focus,
+    vertical_caret_focus_logical, word_range_at,
 };
-use crate::{CodeEditing, TextContent, TextShapeConstraints};
+use crate::{
+    CodeEditing, TextCodeFold, TextContent, TextShapeConstraints, TextSnippet, TextSnippetSession,
+};
+use std::sync::Arc;
 
 /// Delete semantics for [`AppContext::delete_focused_text`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +280,11 @@ impl AppContext {
     ///
     /// With multiple cursors every selection moves by the same intent; the
     /// shared goal column only tracks the primary cursor.
+    ///
+    /// 折叠语义：存在折叠态区间时，移动意图在显示视图上解析（探针与
+    /// 换行结构与渲染一致），结果映射回值空间——落在折叠隐藏区间上的
+    /// 偏移自然钳到折叠起始行行尾。LineStart/LineEnd/Up/Down/PageUp/
+    /// PageDown/DocStart/DocEnd 因此跳过折叠区间。
     pub fn move_focused_text_caret(
         &mut self,
         document: DocumentId,
@@ -290,6 +299,27 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
+        // 折叠视图：无折叠态区间时为 None，全部按原始值解析（零成本）。
+        let fold_view = self.world.text_display_view(focused.node);
+        let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
+        let to_display = |selection: TextSelection| -> TextSelection {
+            match &fold_view {
+                Some(view) => TextSelection {
+                    anchor: view.display_of(selection.anchor),
+                    focus: view.display_of(selection.focus),
+                },
+                None => selection,
+            }
+        };
+        let to_value = |selection: TextSelection| -> TextSelection {
+            match &fold_view {
+                Some(view) => TextSelection {
+                    anchor: view.value_of(selection.anchor),
+                    focus: view.value_of(selection.focus),
+                },
+                None => selection,
+            }
+        };
         let vertical = matches!(
             intent,
             TextCaretIntent::Up
@@ -315,7 +345,7 @@ impl AppContext {
                         shaper,
                         node: focused.node,
                         text: TextContent {
-                            value: state.value.clone(),
+                            value: probe_value.to_owned(),
                         },
                         style,
                         constraints,
@@ -330,8 +360,8 @@ impl AppContext {
             let mut moved_any = false;
             for (index, &selection) in selections.iter().enumerate() {
                 match Self::resolve_caret_move(
-                    &state.value,
-                    selection,
+                    probe_value,
+                    to_display(selection),
                     intent,
                     extend,
                     focused.multiline,
@@ -343,7 +373,7 @@ impl AppContext {
                         if index == primary_index {
                             next_goal = goal;
                         }
-                        next_selections.push(moved);
+                        next_selections.push(to_value(moved));
                     }
                     None => next_selections.push(selection),
                 }
@@ -363,6 +393,7 @@ impl AppContext {
                 .collect();
             return self.write_editor_selections(focused.node, focused.kind, primary, additional);
         }
+        let selection = to_display(state.selection);
         let selection = if vertical && focused.multiline {
             let goal = self
                 .caret_goal_x
@@ -377,15 +408,15 @@ impl AppContext {
                     shaper,
                     node: focused.node,
                     text: TextContent {
-                        value: state.value.clone(),
+                        value: probe_value.to_owned(),
                     },
                     style,
                     constraints,
                 };
                 let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
                     vertical_caret_focus(
-                        &state.value,
-                        state.selection,
+                        probe_value,
+                        selection,
                         intent,
                         extend,
                         goal,
@@ -399,8 +430,8 @@ impl AppContext {
                         .text_input_pointer_context(focused.node)
                         .map_or(0.0, |(content, _)| content.height);
                     page_caret_focus(
-                        &state.value,
-                        state.selection,
+                        probe_value,
+                        selection,
                         intent,
                         extend,
                         goal,
@@ -417,9 +448,9 @@ impl AppContext {
                 }
             } else {
                 let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
-                    vertical_caret_focus_logical(&state.value, state.selection, intent, extend)
+                    vertical_caret_focus_logical(probe_value, selection, intent, extend)
                 } else {
-                    page_caret_focus_logical(&state.value, state.selection, intent, extend)
+                    page_caret_focus_logical(probe_value, selection, intent, extend)
                 };
                 match moved {
                     Some(selection) => selection,
@@ -433,18 +464,18 @@ impl AppContext {
                 TextCaretIntent::Up | TextCaretIntent::PageUp => TextCaretIntent::LineStart,
                 _ => TextCaretIntent::LineEnd,
             };
-            match caret_focus(&state.value, state.selection, mapped) {
-                Some(focus) => moved_selection(state.selection, focus, extend),
+            match caret_focus(probe_value, selection, mapped) {
+                Some(focus) => moved_selection(selection, focus, extend),
                 None => return Ok(false),
             }
         } else {
             self.caret_goal_x = None;
-            match caret_focus(&state.value, state.selection, intent) {
-                Some(focus) => moved_selection(state.selection, focus, extend),
+            match caret_focus(probe_value, selection, intent) {
+                Some(focus) => moved_selection(selection, focus, extend),
                 None => return Ok(false),
             }
         };
-        self.write_editor_selection(focused.node, focused.kind, selection)
+        self.write_editor_selection(focused.node, focused.kind, to_value(selection))
     }
 
     /// Delete around the caret(s) of the focused text editor. With multiple
@@ -1117,6 +1148,9 @@ impl AppContext {
             return Ok(false);
         };
         let state = self.editor_state(node, focused.kind)?;
+        // 折叠视图：命中测试与双击/三击语义都按显示视图解析。
+        let fold_view = self.world.text_display_view(node);
+        let fold_view_value = fold_view.as_ref().map(|view| view.value.clone());
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
         let count = match &self.text_pointer_click {
@@ -1139,17 +1173,42 @@ impl AppContext {
             y,
             count,
         });
+        // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
+        // 光标（单击且无修饰时）。
+        if count == 1
+            && !extend
+            && !add_cursor
+            && let Some(fold) = self.world.text_fold_hit(node, x, y)
+        {
+            self.text_pointer_drag = None;
+            let collapsed = self
+                .world
+                .text_fold_view_state(node)
+                .map(|state| state.collapsed.contains(&fold))
+                .unwrap_or(false);
+            return self.set_node_text_fold(node, fold, !collapsed);
+        }
         let mut geometry = EditorGeometry {
             shaper,
             node,
+            // 折叠态下命中测试按显示视图解析，再映射回值空间。
             text: TextContent {
-                value: state.value.clone(),
+                value: fold_view_value.as_ref().unwrap_or(&state.value).clone(),
             },
             style,
             constraints,
         };
         let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let offset = caret_offset_at_point(&state.value, local_x, local_y, geometry.probe());
+        let hit = caret_offset_at_point(
+            fold_view_value.as_ref().unwrap_or(&state.value),
+            local_x,
+            local_y,
+            geometry.probe(),
+        );
+        let offset = match &fold_view {
+            Some(view) => view.value_of(hit),
+            None => hit,
+        };
         // Alt+click toggles an extra cursor on multiline editors; single-line
         // fields keep their plain click semantics.
         if add_cursor && focused.multiline && count == 1 {
@@ -1248,17 +1307,23 @@ impl AppContext {
             return Ok(false);
         };
         let state = self.editor_state(node, focused.kind)?;
+        let fold_view = self.world.text_display_view(node);
+        let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
         let mut geometry = EditorGeometry {
             shaper,
             node,
             text: TextContent {
-                value: state.value.clone(),
+                value: probe_value.to_owned(),
             },
             style,
             constraints,
         };
         let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let offset = caret_offset_at_point(&state.value, local_x, local_y, geometry.probe());
+        let hit = caret_offset_at_point(probe_value, local_x, local_y, geometry.probe());
+        let offset = match &fold_view {
+            Some(view) => view.value_of(hit),
+            None => hit,
+        };
         if offset == state.selection.focus {
             return Ok(false);
         }
@@ -1308,6 +1373,9 @@ impl AppContext {
         kind: TextEditorKind,
         selection: TextSelection,
     ) -> Result<bool, FrameworkError> {
+        // 光标落在折叠隐藏区间内 → 该折叠自动展开（reveal 语义；查找导航
+        // 跳转也经由此路径展开）。
+        self.unfold_text_folds_containing(node, &[selection.focus])?;
         match kind {
             TextEditorKind::Area => {
                 let entity = Entity::<TextArea>::from_stable_id(node);
@@ -1342,6 +1410,12 @@ impl AppContext {
         selection: TextSelection,
         additional: Vec<TextSelection>,
     ) -> Result<bool, FrameworkError> {
+        // 任一光标落在折叠隐藏区间内 → 该折叠自动展开（附加光标进入折叠
+        // 的强制展开语义；跨越折叠的范围选择不展开）。
+        let focuses: Vec<usize> = std::iter::once(selection.focus)
+            .chain(additional.iter().map(|selection| selection.focus))
+            .collect();
+        self.unfold_text_folds_containing(node, &focuses)?;
         match kind {
             TextEditorKind::Area => {
                 let entity = Entity::<TextArea>::from_stable_id(node);
@@ -1528,5 +1602,743 @@ impl AppContext {
                 })
             }
         }
+    }
+}
+
+/// 展开 snippet body：`$N` 占位从文本移除，`$1..$N` 按序号记录跳位偏移，
+/// `$0` 记录初始光标位置（缺省为插入文本末尾）。`$` 后不跟数字时保持
+/// 字面量。
+fn expand_snippet_body(body: &str, base: usize) -> (String, Vec<usize>, usize) {
+    let mut text = String::with_capacity(body.len());
+    let mut stops: Vec<(u32, usize)> = Vec::new();
+    let mut final_caret: Option<usize> = None;
+    let mut characters = body.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '$' && characters.peek().is_some_and(|next| next.is_ascii_digit()) {
+            let mut number = characters.next().unwrap().to_digit(10).unwrap_or(0);
+            while let Some(next) = characters.peek()
+                && next.is_ascii_digit()
+            {
+                number = number * 10 + next.to_digit(10).unwrap_or(0);
+                characters.next();
+            }
+            let offset = base + text.len();
+            if number == 0 {
+                final_caret = Some(offset);
+            } else {
+                stops.push((number, offset));
+            }
+            continue;
+        }
+        text.push(character);
+    }
+    stops.sort_by_key(|(number, _)| *number);
+    let caret = final_caret.unwrap_or(base + text.len());
+    (
+        text,
+        stops.into_iter().map(|(_, offset)| offset).collect(),
+        caret,
+    )
+}
+
+impl AppContext {
+    /// 光标落点所在的折叠自动展开。`offsets` 里的偏移严格落在某个折叠
+    /// 的隐藏区间内部（折叠起始行行尾不算）时，该折叠展开。
+    fn unfold_text_folds_containing(
+        &mut self,
+        node: StableNodeId,
+        offsets: &[usize],
+    ) -> Result<(), FrameworkError> {
+        let Some(view) = self.world.text_display_view(node) else {
+            return Ok(());
+        };
+        let to_unfold: Vec<TextCodeFold> = view
+            .spans
+            .iter()
+            .filter(|span| offsets.iter().any(|offset| view.span_hides(span, *offset)))
+            .map(|span| span.fold)
+            .collect();
+        if to_unfold.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.world.text_fold_view_state(node).unwrap_or_default();
+        state.collapsed.retain(|fold| !to_unfold.contains(fold));
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_fold_collapsed(node, state.collapsed.into());
+        self.world.commit(mutations)?;
+        Ok(())
+    }
+
+    /// 写回单个节点的折叠态（toggle 命令与点击交互共用）。
+    fn set_node_text_fold(
+        &mut self,
+        node: StableNodeId,
+        fold: TextCodeFold,
+        collapse: bool,
+    ) -> Result<bool, FrameworkError> {
+        let mut state = self.world.text_fold_view_state(node).unwrap_or_default();
+        let changed = if collapse {
+            if state.collapsed.contains(&fold) {
+                false
+            } else {
+                state.collapsed.push(fold);
+                state.collapsed.sort_by_key(|fold| (fold.start, fold.end));
+                true
+            }
+        } else {
+            let before = state.collapsed.len();
+            state.collapsed.retain(|entry| *entry != fold);
+            state.collapsed.len() != before
+        };
+        if !changed {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_fold_collapsed(node, state.collapsed.into());
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 切换聚焦代码编辑器的一个折叠区间。`offset` 为 `Some` 时取包含该
+    /// 偏移的最内层折叠，`None` 时取主光标所在的；光标不在任何折叠上时
+    /// 返回 `Ok(false)`。折叠是纯视图状态：不改值、不发 change 事件。
+    pub fn toggle_focused_text_fold(
+        &mut self,
+        document: DocumentId,
+        offset: Option<usize>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let view = self.world.text_fold_view_state(focused.node);
+        let offered = view.as_ref().map_or(&[][..], |state| &state.offered);
+        let at = offset.unwrap_or_else(|| state.selection.focus);
+        let at = clamp_boundary(&state.value, at);
+        // 包含该偏移的最内层折叠：区间覆盖，或偏移落在折叠起始行上
+        // （Zed 语义：光标在 `{` 所在行即可切换该折叠）。
+        let fold = offered
+            .iter()
+            .filter(|fold| {
+                let line_start = logical_line_range(&state.value, fold.start).0;
+                line_start <= at && at <= fold.end
+            })
+            .max_by_key(|fold| fold.start)
+            .copied();
+        let Some(fold) = fold else {
+            return Ok(false);
+        };
+        let collapsed = view.is_some_and(|state| state.collapsed.contains(&fold));
+        self.set_node_text_fold(focused.node, fold, !collapsed)
+    }
+
+    /// 展开聚焦编辑器的全部折叠。返回是否发生了变化。
+    pub fn unfold_all_focused_text_folds(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let Some(state) = self.world.text_fold_view_state(focused.node) else {
+            return Ok(false);
+        };
+        if state.collapsed.is_empty() {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_fold_collapsed(focused.node, Arc::from([]));
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 查询聚焦编辑器当前的折叠态区间（值空间，按 `start` 排序）。宿主
+    /// 测试与状态面板的只读入口；无折叠时为空表。
+    pub fn focused_text_collapsed_folds(&self, document: DocumentId) -> Vec<TextCodeFold> {
+        self.focused_text_editor(document)
+            .and_then(|focused| self.world.text_fold_view_state(focused.node))
+            .map(|state| state.collapsed)
+            .unwrap_or_default()
+    }
+
+    /// 在聚焦多行编辑器的当前主选区处插入 snippet。占位 `$N` 从文本中
+    /// 移除，`$1..$N` 按序号成为 Tab 跳位，`$0`（缺省为插入文本末尾）是
+    /// 插入后的光标位置并开启会话；无占位的 snippet 不开启会话。
+    ///
+    /// 多光标限制：snippet 只作用于主光标（附加光标随编辑平移保留），
+    /// 不做占位镜显。
+    pub fn insert_focused_text_snippet(
+        &mut self,
+        document: DocumentId,
+        snippet: &TextSnippet,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        let node = focused.node;
+        self.caret_goal_x = None;
+        let state = self.editor_state(node, focused.kind)?;
+        let (insert, stops, final_caret) =
+            expand_snippet_body(&snippet.body, state.selection.ordered().start);
+        let mut next = state.clone();
+        // 主光标独占：与 IME 提交同款路径，附加光标经偏移重映射保留。
+        if !next.replace_primary_selection(&insert) {
+            return Ok(false);
+        }
+        let session = (!stops.is_empty()).then(|| TextSnippetSession { stops, index: 0 });
+        // 选区落在 $0（缺省为插入文本末尾）。
+        next.selection = TextSelection::caret(final_caret);
+        match focused.kind {
+            TextEditorKind::Area => {
+                let entity = Entity::<TextArea>::from_stable_id(node);
+                self.update_component(entity, |area: &mut TextArea, cx| {
+                    area.state = next.clone();
+                    cx.emit(area.change());
+                    true
+                })?;
+            }
+            TextEditorKind::Field => {
+                let entity = Entity::<TextInput>::from_stable_id(node);
+                self.update_component(entity, |field: &mut TextInput, cx| {
+                    field.state = next.clone();
+                    cx.emit(field.change());
+                    true
+                })?;
+            }
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_snippet(node, session);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// snippet 会话内 Tab/Shift+Tab 跳位：前进到下一个 `$N`、后退到上一
+    /// 个已访问跳位；越过最后一个跳位（或后退越过第一个）时结束会话并
+    /// 放行 Tab（返回 `Ok(false)`，缩进等既有行为接手）。无会话时返回
+    /// `Ok(false)`。
+    pub fn advance_focused_text_snippet(
+        &mut self,
+        document: DocumentId,
+        reverse: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        let node = focused.node;
+        let session = self.world.text_snippet_session(node);
+        let Some(mut session) = session else {
+            return Ok(false);
+        };
+        let mut ended = false;
+        // 不变式：`index` 指向下一个前进跳位（前进落到 `stops[index]` 后
+        // 加一）。后退先回退两步取"上一个已访问跳位"，再恢复不变式。
+        let caret = if reverse {
+            if session.index <= 1 {
+                ended = true;
+                None
+            } else {
+                session.index -= 2;
+                let caret = session.stops[session.index];
+                session.index += 1;
+                Some(caret)
+            }
+        } else if session.index >= session.stops.len() {
+            ended = true;
+            None
+        } else {
+            let caret = session.stops[session.index];
+            session.index += 1;
+            Some(caret)
+        };
+        if let Some(caret) = caret {
+            let state = self.editor_state(node, focused.kind)?;
+            if clamp_boundary(&state.value, caret) != caret {
+                // 跳位失效（文本边界已不在字符边界上）：结束会话。
+                ended = true;
+            } else {
+                self.write_editor_selection(node, focused.kind, TextSelection::caret(caret))?;
+            }
+        }
+        let session = (!ended).then_some(session);
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_snippet(node, session);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 结束聚焦编辑器的 snippet 会话（Esc）。返回是否存在活跃会话。
+    pub fn cancel_focused_text_snippet(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if self.world.text_snippet_session(focused.node).is_none() {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_snippet(focused.node, None);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod fold_snippet_tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, TextSnippet};
+
+    /// "fn a() {\n    x();\n    y();\n}\nfn b() {}"，块折叠区间
+    /// `{`（7）到 `}` 之后（28），隐藏三行。
+    fn fold_value() -> &'static str {
+        "fn a() {\n    x();\n    y();\n}\nfn b() {}"
+    }
+
+    const FOLD_BLOCK: TextCodeFold = TextCodeFold { start: 7, end: 28 };
+
+    fn focused_editor(value: &str) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn offered_editor(
+        value: &str,
+        folds: &[TextCodeFold],
+    ) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new(value)
+                    .code_editor(true)
+                    .code_folds(Arc::from(folds.to_vec().into_boxed_slice())),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn selection_of(context: &AppContext, node: StableNodeId) -> (usize, usize) {
+        let state = context.world().text_input(node).unwrap();
+        (state.selection.anchor, state.selection.focus)
+    }
+
+    #[test]
+    fn toggle_focused_text_fold_switches_and_reports_state() {
+        let (mut context, document, _area, node) = offered_editor(fold_value(), &[FOLD_BLOCK]);
+        // 光标不在任何折叠上：不消费。
+        assert!(!context.toggle_focused_text_fold(document, None).unwrap());
+        assert!(context.focused_text_collapsed_folds(document).is_empty());
+
+        // 光标移到折叠起始行：toggle 折叠，查询接口回报状态。
+        context
+            .update_component(_area, |area, _| {
+                area.state.selection = TextSelection::caret(3);
+            })
+            .unwrap();
+        assert!(context.toggle_focused_text_fold(document, None).unwrap());
+        assert_eq!(
+            context.focused_text_collapsed_folds(document),
+            vec![FOLD_BLOCK]
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            fold_value()
+        );
+        // 折叠是纯视图：值不变、change 事件零条（由宿主值监听保证）。
+
+        // 再次 toggle 展开；指定偏移与光标等价。
+        assert!(context.toggle_focused_text_fold(document, None).unwrap());
+        assert!(context.focused_text_collapsed_folds(document).is_empty());
+        assert!(
+            context
+                .toggle_focused_text_fold(document, Some(10))
+                .unwrap()
+        );
+        assert_eq!(
+            context.focused_text_collapsed_folds(document),
+            vec![FOLD_BLOCK]
+        );
+
+        // 全部展开。
+        assert!(context.unfold_all_focused_text_folds(document).unwrap());
+        assert!(context.focused_text_collapsed_folds(document).is_empty());
+        assert!(!context.unfold_all_focused_text_folds(document).unwrap());
+    }
+
+    #[test]
+    fn caret_movement_skips_collapsed_regions() {
+        let (mut context, document, _area, node) = offered_editor(fold_value(), &[FOLD_BLOCK]);
+        context
+            .update_component(_area, |area, _| {
+                area.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        assert!(context.toggle_focused_text_fold(document, None).unwrap());
+        let mut shaper = crate::MeasureTextShaper;
+
+        // Down：跳过隐藏的三行，落到下一可见行 `fn b()` 行首。
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::Down, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (29, 29));
+
+        // Up：回到文档首行行首（隐藏行的偏移不可达）。
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::Up, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (0, 0));
+
+        // LineEnd 在折叠起始行：落到可见行尾（摘要标记之后），随后
+        // LineStart 回到行首。
+        context
+            .update_component(_area, |area, _| {
+                area.state.selection = TextSelection::caret(3);
+            })
+            .unwrap();
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::LineEnd, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (28, 28));
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::LineStart, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (0, 0));
+
+        // 带几何探针的垂直移动同样按显示视图解析。
+        context
+            .update_component(_area, |area, _| {
+                area.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::Down, false, Some(&mut shaper))
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (29, 29));
+
+        // DocEnd / DocStart 始终到达边界。
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::DocEnd, false, None)
+                .unwrap()
+        );
+        assert_eq!(
+            selection_of(&context, node),
+            (fold_value().len(), fold_value().len())
+        );
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::DocStart, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (0, 0));
+    }
+
+    #[test]
+    fn find_next_match_unfolds_fold_hiding_the_match() {
+        let (mut context, document, _area, node) = offered_editor(fold_value(), &[FOLD_BLOCK]);
+        assert!(
+            context
+                .toggle_focused_text_fold(document, Some(10))
+                .unwrap()
+        );
+        assert_eq!(
+            context.focused_text_collapsed_folds(document),
+            vec![FOLD_BLOCK]
+        );
+
+        // "x();" 只出现在折叠区间内：导航命中后该折叠自动展开（reveal
+        // 语义），选区落在匹配上。
+        let found = context
+            .find_next_focused_text_match(document, "x();", crate::TextSearchOptions::default())
+            .unwrap();
+        assert!(found);
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
+        assert_eq!(selection_of(&context, node), (13, 17));
+    }
+
+    #[test]
+    fn select_all_occurrences_unfolds_fold_containing_new_cursor() {
+        let value = "fn a() {\n    x();\n    y();\n}\nlet x();";
+        let fold = TextCodeFold { start: 7, end: 28 };
+        let (mut context, document, area, node) = offered_editor(value, &[fold]);
+        context
+            .update_component(area, |area_view, _| {
+                area_view.state.selection = TextSelection {
+                    anchor: 13,
+                    focus: 17,
+                };
+            })
+            .unwrap();
+        assert!(
+            context
+                .select_all_focused_text_occurrences(document)
+                .unwrap()
+        );
+        // 新光标（第二处出现）落在折叠外，但主光标在折叠隐藏区间内——
+        // 该折叠自动展开；两个光标都落在真实出现上。
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
+        let state = context.world().text_input(node).unwrap();
+        assert_eq!(
+            state.selections().into_owned(),
+            vec![
+                TextSelection {
+                    anchor: 13,
+                    focus: 17
+                },
+                TextSelection {
+                    anchor: 33,
+                    focus: 37
+                },
+            ]
+        );
+        assert_eq!(state.value, value);
+    }
+
+    #[test]
+    fn snippet_insertion_lands_on_zero_and_tabs_through_stops() {
+        let (mut context, document, _area, node) = focused_editor("fn main() {}");
+        context
+            .update_component(_area, |area, _| {
+                area.state.selection = TextSelection::caret(0);
+            })
+            .unwrap();
+        let snippet = TextSnippet::new("let", "let $1 = $2;$0");
+        assert!(
+            context
+                .insert_focused_text_snippet(document, &snippet)
+                .unwrap()
+        );
+        // `$N` 移除后插入原文，光标停在 `$0`（插入文本末尾）。
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "let  = ;fn main() {}"
+        );
+        assert_eq!(selection_of(&context, node), (8, 8));
+
+        // Tab 依次跳 $1、$2；跳完后会话结束，caret 停在最后跳位。
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (4, 4));
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (7, 7));
+        // 会话仍在：最后一个跳位之后的 Tab 结束会话（消费最后一次）。
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (7, 7));
+        // 会话已结束：Tab 不再被 snippet 消费。
+        assert!(
+            !context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn snippet_shift_tab_walks_stops_backwards_and_ends_session() {
+        let (mut context, document, _area, node) = focused_editor("");
+        let snippet = TextSnippet::new("let", "let $1 = $2;$0");
+        assert!(
+            context
+                .insert_focused_text_snippet(document, &snippet)
+                .unwrap()
+        );
+        // 前进到 $2（第二个跳位）。
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (7, 7));
+        // Shift+Tab 回到 $1；在第一个跳位上再后退即结束会话。
+        assert!(
+            context
+                .advance_focused_text_snippet(document, true)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (4, 4));
+        assert!(
+            context
+                .advance_focused_text_snippet(document, true)
+                .unwrap()
+        );
+        assert!(
+            !context
+                .advance_focused_text_snippet(document, true)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn snippet_tab_precedes_indent_and_escape_ends_session() {
+        let (mut context, document, _area, node) = focused_editor("");
+        let snippet = TextSnippet::new("if", "if $1 {\n\t$2\n}$0");
+        assert!(
+            context
+                .insert_focused_text_snippet(document, &snippet)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "if  {\n\t\n}"
+        );
+
+        // 会话内 Tab 跳位而不是插入缩进（值不变，只有光标移动）。
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (3, 3));
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "if  {\n\t\n}"
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (7, 7));
+
+        // Esc 结束会话；之后再 Esc 没有会话可结束。
+        assert!(context.cancel_focused_text_snippet(document).unwrap());
+        assert!(!context.cancel_focused_text_snippet(document).unwrap());
+
+        // 无会话且代码编辑器：Tab 回到缩进行为。
+        assert!(
+            !context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert!(context.code_edit_indent(document, false).unwrap());
+        assert_ne!(
+            context.world().text_input(node).unwrap().value,
+            "if  {\n\t\n}"
+        );
+    }
+
+    #[test]
+    fn snippet_insert_keeps_additional_cursors_on_primary_only() {
+        let (mut context, document, area, node) = focused_editor("ab\ncd");
+        context
+            .update_component(area, |area_view, _| {
+                area_view.state.selection = TextSelection::caret(2);
+                area_view.state.additional_selections = vec![TextSelection::caret(5)];
+            })
+            .unwrap();
+        let snippet = TextSnippet::new("x", "[$1]$0");
+        assert!(
+            context
+                .insert_focused_text_snippet(document, &snippet)
+                .unwrap()
+        );
+        let state = context.world().text_input(node).unwrap();
+        // 只作用主光标；附加光标随编辑平移保留（多光标限制，声明行为）。
+        assert_eq!(state.value, "ab[]\ncd");
+        assert_eq!((state.selection.anchor, state.selection.focus), (4, 4));
+        assert_eq!(state.additional_selections, vec![TextSelection::caret(7)]);
+    }
+
+    #[test]
+    fn external_edit_shifts_snippet_stops_and_ends_session_on_invalidated_stop() {
+        let (mut context, document, area, node) = focused_editor("");
+        let snippet = TextSnippet::new("let", "let $1 = $2;$0");
+        context
+            .insert_focused_text_snippet(document, &snippet)
+            .unwrap();
+
+        // 在 $0 处打字（插入文本末尾）：跳位不受影响，会话保持。
+        context.replace_focused_text(document, "X").unwrap();
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (4, 4));
+
+        // 编辑区间严格覆盖 $1 跳位（删除覆盖它的 span）→ 会话失效结束。
+        context
+            .update_component(area, |area_view, _| {
+                area_view.state.selection = TextSelection {
+                    anchor: 2,
+                    focus: 6,
+                };
+            })
+            .unwrap();
+        assert!(
+            context
+                .delete_focused_text(document, crate::TextDeleteKind::Backward)
+                .unwrap()
+        );
+        assert!(
+            !context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn snippet_without_stops_never_opens_session() {
+        let (mut context, document, _area, node) = focused_editor("");
+        let snippet = TextSnippet::new("fn", "fn main() {}");
+        assert!(
+            context
+                .insert_focused_text_snippet(document, &snippet)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "fn main() {}"
+        );
+        assert_eq!(selection_of(&context, node), (12, 12));
+        assert!(
+            !context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
     }
 }

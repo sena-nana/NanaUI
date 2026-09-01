@@ -1263,6 +1263,10 @@ impl UiWorld {
     /// 计算使多行文本输入内 `offset` 所在逻辑行进入可视区所需的滚动偏移。
     /// 只读查询：不改世界状态；宿主将返回值写回组件的 `scroll_offset`。
     /// 行高按逻辑行均匀假设（忽略软折行），定位场景下足够精确。
+    ///
+    /// 折叠感知：存在折叠态区间时按显示视图计算行号与总高；被折叠隐藏
+    /// 的偏移钳制到折叠起始行。查找导航到折叠内匹配时的自动展开由框架
+    /// 命令负责（reveal 的展开语义），本查询只做几何换算。
     pub fn text_input_reveal_scroll(
         &self,
         id: StableNodeId,
@@ -1282,7 +1286,15 @@ impl UiWorld {
         let line_height = presentation.line_height.max(1.0);
         let offset = offset.min(state.value.len());
         let value = state.value.as_str();
-        let line_index = value[..offset]
+        // 折叠态：显示视图内的行号才是渲染行号；隐藏偏移钳到折叠起始行。
+        let (display_value, display_offset) = match self.text_display_view(id) {
+            Some(view) => {
+                let display_offset = view.display_of(offset).min(view.value.len());
+                (view.value, display_offset)
+            }
+            None => (value.to_owned(), offset),
+        };
+        let line_index = display_value[..display_offset]
             .bytes()
             .filter(|byte| *byte == b'\n')
             .count() as f32;
@@ -1296,7 +1308,7 @@ impl UiWorld {
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
         // 逻辑行数 × 行高 = 无折行下的内容总高；软折行场景会低估（已知限制）。
-        let total_height = (value.matches('\n').count() + 1) as f32 * line_height;
+        let total_height = (display_value.matches('\n').count() + 1) as f32 * line_height;
         let max_scroll = (total_height - content_height).max(0.0);
         let mut scroll_y = self.record(id).scroll_offset.y;
         if reveal_y < scroll_y {
@@ -1308,6 +1320,126 @@ impl UiWorld {
             x: self.record(id).scroll_offset.x,
             y: scroll_y.clamp(0.0, max_scroll),
         })
+    }
+
+    /// 当前折叠态的区间（值空间，按 `start` 排序）。没有折叠视图的节点
+    /// 返回空表。宿主测试与状态面板的查询入口。
+    pub fn text_fold_collapsed(&self, id: StableNodeId) -> Vec<crate::TextCodeFold> {
+        self.nodes
+            .text_fold_view(id)
+            .map(|entry| entry.collapsed.clone())
+            .unwrap_or_default()
+    }
+
+    /// 折叠后的显示视图；没有折叠态区间时 `None`（零分配短路）。
+    pub(crate) fn text_display_view(&self, id: StableNodeId) -> Option<TextDisplayView> {
+        let state = self.nodes.text_input(id)?;
+        let entry = self.nodes.text_fold_view(id)?;
+        build_text_display_view(&state.value, &entry.collapsed)
+    }
+
+    /// 折叠视图状态快照（供框架命令读取-修改-写回）。
+    pub(crate) fn text_fold_view_state(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::store::TextFoldViewState> {
+        self.nodes.text_fold_view(id).cloned()
+    }
+
+    /// snippet 会话快照。
+    pub(crate) fn text_snippet_session(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::TextSnippetSession> {
+        self.nodes.text_snippet_session(id).cloned()
+    }
+
+    /// 命中折叠交互区域（gutter 箭头优先，其次折叠起始行的摘要标记），
+    /// 返回对应折叠区间。坐标为节点空间。
+    pub fn text_fold_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<crate::TextCodeFold> {
+        match self.component_geometry(id)? {
+            crate::ComponentGeometry::TextInput { folds, .. } => folds
+                .gutters
+                .iter()
+                .find(|gutter| gutter.bounds.contains(x, y))
+                .map(|gutter| gutter.fold)
+                .or_else(|| {
+                    folds
+                        .markers
+                        .iter()
+                        .find(|marker| marker.bounds.contains(x, y))
+                        .map(|marker| marker.fold)
+                }),
+            _ => None,
+        }
+    }
+
+    /// 宿主重喂折叠区间后对账折叠态（`offered` 为 `None` 表示宿主不再
+    /// 喂入折叠，整个视图状态随之移除）。
+    fn reconcile_text_fold_offered(
+        &mut self,
+        id: StableNodeId,
+        offered: Option<Arc<[crate::TextCodeFold]>>,
+    ) {
+        let Some(offered) = offered else {
+            if self.nodes.text_fold_view(id).is_some() {
+                self.nodes.set_text_fold_view(id, None);
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+            return;
+        };
+        let next = match self.nodes.text_fold_view(id) {
+            Some(entry) => {
+                let collapsed =
+                    reconcile_collapsed_folds(&entry.offered, &offered, &entry.collapsed);
+                if collapsed == entry.collapsed && entry.offered == offered {
+                    return;
+                }
+                collapsed
+            }
+            None => Vec::new(),
+        };
+        self.nodes.set_text_fold_view(
+            id,
+            Some(crate::store::TextFoldViewState {
+                offered,
+                collapsed: next,
+            }),
+        );
+        self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+    }
+
+    /// 值被编辑后重映射折叠态与 snippet 会话。
+    fn reconcile_text_view_state(&mut self, id: StableNodeId, old_value: &str, new_value: &str) {
+        let (changed_start, changed_end, delta) = value_edit_span(old_value, new_value);
+        if let Some(entry) = self.nodes.text_fold_view(id).cloned() {
+            let next = remap_collapsed_after_edit(
+                &entry.collapsed,
+                new_value,
+                changed_start,
+                changed_end,
+                delta,
+            );
+            if next != entry.collapsed {
+                self.nodes.set_text_fold_view(
+                    id,
+                    Some(crate::store::TextFoldViewState {
+                        offered: entry.offered,
+                        collapsed: next,
+                    }),
+                );
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+        }
+        if let Some(session) = self.nodes.text_snippet_session(id).cloned() {
+            match remap_snippet_session(&session, new_value, changed_start, changed_end, delta) {
+                Some(next) if next != session => {
+                    self.nodes.set_text_snippet_session(id, Some(next));
+                }
+                Some(_) => {}
+                None => self.nodes.set_text_snippet_session(id, None),
+            }
+        }
     }
 
     /// Shape inputs for text-input geometry queries: resolved style and the
@@ -1783,6 +1915,12 @@ impl UiWorld {
             },
             _ => TextInputEditorExtras::default(),
         };
+        // 折叠显示视图：仅多行态且有折叠态区间时构建（空集合零成本短路）。
+        let fold = if multiline {
+            self.text_display_view(id)
+        } else {
+            None
+        };
         Some(build_text_input_presentation_source(
             state,
             ime,
@@ -1790,6 +1928,7 @@ impl UiWorld {
             *secure,
             multiline,
             extras,
+            fold,
         ))
     }
 
@@ -2856,8 +2995,20 @@ impl UiWorld {
                     modal_presentation_changed,
                     modal_state_changed,
                     menu_state_changed,
+                    text_folds_changed,
                 ) = {
                     let previous_visual = self.nodes.visual(*id);
+                    let text_folds_changed = match (previous_visual, visual.as_ref()) {
+                        (
+                            Some(StandardVisual::TextInput {
+                                folds: previous, ..
+                            }),
+                            Some(StandardVisual::TextInput { folds: next, .. }),
+                        ) => previous != next,
+                        (Some(StandardVisual::TextInput { .. }), _) => true,
+                        (_, Some(StandardVisual::TextInput { folds, .. })) => !folds.is_empty(),
+                        _ => false,
+                    };
                     (
                         matches!(previous_visual, Some(StandardVisual::TextInput { .. }))
                             || matches!(visual, Some(StandardVisual::TextInput { .. })),
@@ -2880,6 +3031,7 @@ impl UiWorld {
                         // surface's own open state, so opening it has to reach
                         // them the way an overlay host reaches its branch.
                         menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
+                        text_folds_changed,
                     )
                 };
                 self.nodes.set_visual(*id, visual.clone());
@@ -2892,6 +3044,15 @@ impl UiWorld {
                 }
                 if !matches!(visual, Some(StandardVisual::ModalFrame { .. })) {
                     self.nodes.set_modal_text(*id, None);
+                }
+                if text_folds_changed {
+                    let offered = match visual.as_ref() {
+                        Some(StandardVisual::TextInput { folds, .. }) if !folds.is_empty() => {
+                            Some(Arc::clone(folds))
+                        }
+                        _ => None,
+                    };
+                    self.reconcile_text_fold_offered(*id, offered);
                 }
                 self.mark(
                     *id,
@@ -3081,6 +3242,17 @@ impl UiWorld {
                 );
             }
             UiMutation::SetTextInput { id, state } => {
+                // 旧值只用于折叠态与 snippet 会话的编辑重映射；不存在这两类
+                // 视图状态时跳过克隆，普通文本输入的值变更不再复制整个旧值。
+                let previous_value = match state {
+                    Some(_)
+                        if self.nodes.text_fold_view(*id).is_some()
+                            || self.nodes.text_snippet_session(*id).is_some() =>
+                    {
+                        self.nodes.text_input(*id).map(|input| input.value.clone())
+                    }
+                    _ => None,
+                };
                 if let Some(state) = state {
                     self.nodes.set_text_input(*id, Some(state.clone()));
                     self.record_mut(*id).text = TextContent {
@@ -3090,6 +3262,17 @@ impl UiWorld {
                     self.nodes.set_text_input(*id, None);
                     self.record_mut(*id).text = TextContent::default();
                     self.remove_ime(*id);
+                }
+                // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
+                // 展开，跳位失效即结束会话。
+                if let (Some(previous), Some(next)) = (&previous_value, &state) {
+                    if previous != &next.value {
+                        self.reconcile_text_view_state(*id, previous, &next.value);
+                    }
+                }
+                if state.is_none() {
+                    self.nodes.set_text_fold_view(*id, None);
+                    self.nodes.set_text_snippet_session(*id, None);
                 }
                 self.mark(
                     *id,
@@ -3137,6 +3320,41 @@ impl UiWorld {
                     self.nodes.set_text_presentation(*id, None);
                 }
                 self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+            UiMutation::SetTextInputFoldCollapsed { id, folds } => {
+                // 规范化：仅保留仍在宿主喂入区间内、且确实可折叠的条目。
+                let offered = match self.nodes.visual(*id) {
+                    Some(StandardVisual::TextInput { folds: offered, .. }) => Arc::clone(offered),
+                    _ => Arc::from([]),
+                };
+                let mut collapsed: Vec<crate::TextCodeFold> = folds
+                    .iter()
+                    .copied()
+                    .filter(|fold| offered.contains(fold))
+                    .collect();
+                collapsed.sort_by_key(|fold| (fold.start, fold.end));
+                collapsed.dedup();
+                let changed = self
+                    .nodes
+                    .text_fold_view(*id)
+                    .map(|entry| entry.collapsed.as_slice() != collapsed.as_slice())
+                    .unwrap_or(!collapsed.is_empty());
+                if collapsed.is_empty() && offered.is_empty() {
+                    self.nodes.set_text_fold_view(*id, None);
+                } else {
+                    self.nodes.set_text_fold_view(
+                        *id,
+                        Some(crate::store::TextFoldViewState { offered, collapsed }),
+                    );
+                }
+                if changed {
+                    self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTextInputSnippet { id, session } => {
+                if self.nodes.text_snippet_session(*id) != session.as_ref() {
+                    self.nodes.set_text_snippet_session(*id, session.clone());
+                }
             }
         }
     }
@@ -4005,12 +4223,88 @@ impl UiWorld {
                         .map(|(index, top)| crate::LineLabel {
                             y: content.y + top - scroll_y,
                             height: line_height,
-                            number: index as u32 + 1,
+                            // 折叠隐藏行后由 presentation 携带原始行号；
+                            // 无折叠时行号就是显示索引 + 1。
+                            number: presentation
+                                .line_numbers
+                                .get(index)
+                                .copied()
+                                .unwrap_or(index as u32 + 1),
                         })
                         .collect()
                 } else {
                     Vec::new()
                 };
+                // 折叠几何：宿主喂入的每个折叠区间在起始行 gutter 画一个
+                // 可点击箭头（折叠态右箭头/展开态下箭头）；折叠态区间在
+                // 起始行行尾还有摘要标记命中框。gutter 空间不足（padding
+                // 左侧小于 18px）时不画箭头，摘要标记仍可点击。
+                let mut fold_geometry = crate::TextFoldGeometry::default();
+                if multiline
+                    && let Some(input) = self.nodes.text_input(id)
+                    && let Some(entry) = self.nodes.text_fold_view(id)
+                {
+                    let offered: Arc<[crate::TextCodeFold]> = match visual {
+                        StandardVisual::TextInput { folds, .. } => Arc::clone(folds),
+                        _ => Arc::from([]),
+                    };
+                    if !offered.is_empty() {
+                        let view = self.text_display_view(id);
+                        let display_of = |offset: usize| match &view {
+                            Some(view) => view
+                                .display_of(offset)
+                                .min(presentation.display_value.len()),
+                            None => offset.min(presentation.display_value.len()),
+                        };
+                        let gutter_width = if padding.left >= 18.0 {
+                            (padding.left - 4.0).min(14.0)
+                        } else {
+                            0.0
+                        };
+                        for fold in offered.iter() {
+                            let collapsed = entry.collapsed.contains(fold);
+                            let fold_start = fold.start.min(input.value.len());
+                            let display_offset = display_of(fold_start);
+                            // 嵌套折叠：起始行被父折叠隐藏时（显示映射钳到
+                            // 别处）不画箭头，避免在父折叠起始行叠加幽灵箭头。
+                            if !collapsed && display_offset != fold_start {
+                                continue;
+                            }
+                            let display_line = presentation.display_value.as_str()
+                                [..display_offset]
+                                .matches('\n')
+                                .count();
+                            if let Some(&top) = presentation.line_tops.get(display_line)
+                                && gutter_width > 0.0
+                            {
+                                let extent = gutter_width.min(line_height);
+                                fold_geometry.gutters.push(crate::TextFoldGutter {
+                                    bounds: LayoutBox {
+                                        x: bounds.x + border + 2.0,
+                                        y: content.y + top - scroll_y
+                                            + (line_height - extent).max(0.0) / 2.0,
+                                        width: extent,
+                                        height: extent,
+                                    },
+                                    fold: *fold,
+                                    collapsed,
+                                    color: self.style_model.palette.faint.as_rgba_array(),
+                                });
+                            }
+                        }
+                        for mark in &presentation.fold_marks {
+                            fold_geometry.markers.push(crate::TextFoldMarker {
+                                bounds: LayoutBox {
+                                    x: field_x(mark.rect.x),
+                                    y: content.y + mark.rect.y - scroll_y,
+                                    width: mark.rect.width + 2.0,
+                                    height: mark.rect.height,
+                                },
+                                fold: mark.fold,
+                            });
+                        }
+                    }
+                }
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
                     match_markers,
@@ -4018,6 +4312,7 @@ impl UiWorld {
                     bracket_markers,
                     indent_guides,
                     line_labels,
+                    folds: fold_geometry,
                     line_labels_color: self.style_model.palette.faint.as_rgba_array(),
                     line_labels_font_size: (size.text_size() - 1.0).max(10.0),
                     text: crate::ComponentTextRegion {
@@ -6344,6 +6639,260 @@ fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
     crate::components::status_tone_role(tone)
 }
 
+/// 折叠摘要标记前缀：折叠起始行行尾显示 ` …N`（N 为隐藏行数）。
+const TEXT_FOLD_MARK_PREFIX: &str = " …";
+
+/// 一个折叠态区间的值空间↔显示空间映射片段。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextDisplaySpan {
+    /// 该片段对应的折叠区间（值空间）。
+    pub fold: crate::TextCodeFold,
+    /// 值空间中被隐藏的字节区间 `[hidden_start, fold.end)`。
+    pub value_start: usize,
+    pub value_end: usize,
+    /// 显示空间中替代文本（` …N`）的起始偏移。
+    pub display_start: usize,
+    /// 替代文本的字节长度。
+    pub display_len: usize,
+    /// 该折叠隐藏的逻辑行数（摘要标记中的 N）。
+    pub hidden_lines: u32,
+}
+
+/// 折叠后的显示视图：`value` 是把折叠态区间替换为 ` …N` 摘要后的显示
+/// 文本；`spans` 按值空间顺序列出每个替换片段。几何、点击命中、光标
+/// 移动都以显示视图为准；编辑命令仍按原始值语义处理（折叠不改值）。
+#[derive(Debug, Clone)]
+pub(crate) struct TextDisplayView {
+    pub value: String,
+    pub spans: Vec<TextDisplaySpan>,
+}
+
+impl TextDisplayView {
+    /// 值空间偏移 → 显示空间偏移。落在隐藏区间内部时钳制到该折叠的
+    /// 替代文本起点（即折叠起始行的行尾）。
+    pub fn display_of(&self, offset: usize) -> usize {
+        let mut delta = 0isize;
+        for span in &self.spans {
+            if offset <= span.value_start {
+                break;
+            }
+            if offset >= span.value_end {
+                delta += span.display_len as isize - (span.value_end - span.value_start) as isize;
+            } else {
+                return span.display_start;
+            }
+        }
+        ((offset as isize + delta).max(0)) as usize
+    }
+
+    /// 显示空间偏移 → 值空间偏移。落在替代文本内部时钳制到折叠起始行
+    /// 的行尾（值空间中该折叠的隐藏起点）。
+    pub fn value_of(&self, display: usize) -> usize {
+        let mut delta = 0isize;
+        for span in &self.spans {
+            let display_end = span.display_start + span.display_len;
+            if display <= span.display_start {
+                break;
+            }
+            if display >= display_end {
+                delta += span.display_len as isize - (span.value_end - span.value_start) as isize;
+            } else {
+                return span.value_start;
+            }
+        }
+        ((display as isize - delta).max(0)) as usize
+    }
+
+    /// 值空间偏移是否严格落在该片段的隐藏区间内部（折叠起始行行尾不算）。
+    pub fn span_hides(&self, span: &TextDisplaySpan, offset: usize) -> bool {
+        offset > span.value_start && offset < span.value_end
+    }
+}
+
+/// 由折叠态区间构建显示视图；`collapsed` 为空时返回 `None`（零分配短路）。
+///
+/// 嵌套折叠：子折叠的隐藏区间与前一个已接受区间重叠（即完全落在父折叠
+/// 的隐藏范围内）时跳过——父折叠已经把这些行隐藏。
+fn build_text_display_view(
+    value: &str,
+    collapsed: &[crate::TextCodeFold],
+) -> Option<TextDisplayView> {
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut display = String::with_capacity(value.len());
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for &fold in collapsed {
+        if fold.start >= fold.end || fold.end > value.len() {
+            continue;
+        }
+        let hidden_start = fold.hidden_start_in(value);
+        if hidden_start >= fold.end || hidden_start < cursor {
+            // 单行区间没有可隐藏的行；与前一个折叠重叠的子折叠不重复隐藏。
+            continue;
+        }
+        display.push_str(&value[cursor..hidden_start]);
+        let display_start = display.len();
+        let hidden_lines = value[hidden_start..fold.end].matches('\n').count();
+        display.push_str(TEXT_FOLD_MARK_PREFIX);
+        display.push_str(&hidden_lines.to_string());
+        spans.push(TextDisplaySpan {
+            fold,
+            value_start: hidden_start,
+            value_end: fold.end,
+            display_start,
+            display_len: display.len() - display_start,
+            hidden_lines: hidden_lines as u32,
+        });
+        cursor = fold.end;
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    display.push_str(&value[cursor..]);
+    Some(TextDisplayView {
+        value: display,
+        spans,
+    })
+}
+
+/// 最小变更区间：`(old 中被替换的 start, old 中被替换的 end, 长度差)`。
+/// 与 [`crate::text_editing`] 的 transform diff 同构：按公共前后缀夹取。
+fn value_edit_span(old: &str, new: &str) -> (usize, usize, isize) {
+    let prefix = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(current, candidate)| current == candidate)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(current, candidate)| current == candidate)
+        .map(|(_, character)| character.len_utf8())
+        .sum::<usize>();
+    let suffix = suffix.min(old.len() - prefix).min(new.len() - prefix);
+    (
+        prefix,
+        old.len() - suffix,
+        new.len() as isize - old.len() as isize,
+    )
+}
+
+/// 值被编辑后的折叠态重映射（确定性策略）：
+/// 1. 折叠区间与被编辑区间相交 → 受影响折叠自动展开；
+/// 2. 完全在被编辑区间之后的折叠按长度差整体平移；
+/// 3. 其余保持不动。平移后再按新值校验可折叠性，失效的展开。
+fn remap_collapsed_after_edit(
+    collapsed: &[crate::TextCodeFold],
+    new_value: &str,
+    changed_start: usize,
+    changed_end: usize,
+    delta: isize,
+) -> Vec<crate::TextCodeFold> {
+    let mut next = Vec::with_capacity(collapsed.len());
+    for &fold in collapsed {
+        if fold.end > changed_start && fold.start < changed_end {
+            continue;
+        }
+        let shift = if fold.start >= changed_end { delta } else { 0 };
+        let start = (fold.start as isize + shift).max(0) as usize;
+        let end = (fold.end as isize + shift).max(0) as usize;
+        let fold = crate::TextCodeFold::new(start.min(new_value.len()), end.min(new_value.len()));
+        if fold.collapsible_in(new_value) {
+            next.push(fold);
+        }
+    }
+    next.sort_by_key(|fold| (fold.start, fold.end));
+    next.dedup();
+    next
+}
+
+/// 值被编辑后的 snippet 跳位重映射：跳位落在被编辑区间内 → 会话失效
+/// （`None`）；否则按长度差平移并钳制到新值的字符边界。
+fn remap_snippet_session(
+    session: &crate::TextSnippetSession,
+    new_value: &str,
+    changed_start: usize,
+    changed_end: usize,
+    delta: isize,
+) -> Option<crate::TextSnippetSession> {
+    let mut stops = Vec::with_capacity(session.stops.len());
+    for &stop in &session.stops {
+        if stop > changed_start && stop < changed_end {
+            return None;
+        }
+        let mapped = if stop >= changed_end {
+            (stop as isize + delta).max(0) as usize
+        } else {
+            stop
+        };
+        let mapped = mapped.min(new_value.len());
+        if !new_value.is_char_boundary(mapped) {
+            return None;
+        }
+        stops.push(mapped);
+    }
+    Some(crate::TextSnippetSession {
+        stops,
+        index: session.index,
+    })
+}
+
+/// 宿主重喂折叠区间后的折叠态保留策略（确定性）：
+/// 1. 与新区间完全一致的条目保留；
+/// 2. 其余条目尝试整体位移匹配：上一次喂入与本次喂入数量相等、逐位
+///    配对长度相等且 start 差唯一非零（典型场景：折叠区上方的编辑使
+///    所有区间平移同一偏移）时，把条目按该位移平移，命中新区间的保留；
+/// 3. 其余失效条目自动展开。
+fn reconcile_collapsed_folds(
+    previous_offered: &[crate::TextCodeFold],
+    offered: &[crate::TextCodeFold],
+    collapsed: &[crate::TextCodeFold],
+) -> Vec<crate::TextCodeFold> {
+    if collapsed.is_empty() {
+        return Vec::new();
+    }
+    let mut next: Vec<crate::TextCodeFold> = collapsed
+        .iter()
+        .filter(|fold| offered.contains(fold))
+        .copied()
+        .collect();
+    let shift = (previous_offered.len() == offered.len())
+        .then(|| {
+            let first = offered.first()?.start as isize - previous_offered.first()?.start as isize;
+            (first != 0
+                && previous_offered
+                    .iter()
+                    .zip(offered.iter())
+                    .all(|(previous, current)| {
+                        current.start as isize - previous.start as isize == first
+                            && current.end - current.start == previous.end - previous.start
+                    }))
+            .then_some(first)
+        })
+        .flatten();
+    if let Some(shift) = shift {
+        for &fold in collapsed {
+            if next.contains(&fold) {
+                continue;
+            }
+            let shifted = crate::TextCodeFold::new(
+                (fold.start as isize + shift).max(0) as usize,
+                (fold.end as isize + shift).max(0) as usize,
+            );
+            if offered.contains(&shifted) && !next.contains(&shifted) {
+                next.push(shifted);
+            }
+        }
+    }
+    next.sort_by_key(|fold| (fold.start, fold.end));
+    next.dedup();
+    next
+}
+
 #[derive(Debug, Clone)]
 struct TextInputPresentationSource {
     text: TextContent,
@@ -6359,6 +6908,8 @@ struct TextInputPresentationSource {
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
+    /// 折叠显示视图（存在折叠态区间时 Some；`text` 等偏移已在显示空间）。
+    fold: Option<TextDisplayView>,
 }
 
 /// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
@@ -6377,6 +6928,7 @@ fn build_text_input_presentation_source(
     secure: bool,
     multiline: bool,
     extras: TextInputEditorExtras,
+    fold: Option<TextDisplayView>,
 ) -> TextInputPresentationSource {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -6409,9 +6961,22 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            fold: None,
         };
     }
 
+    // 折叠视图：secure 掩码与折叠互斥（折叠是代码编辑器特性）；诊断/
+    // 匹配 span 完全落在隐藏区间内时随行隐藏（丢弃，不强制展开）。
+    let (fold_view, base_value): (Option<TextDisplayView>, String) = match fold {
+        Some(view) if !secure => (Some(view.clone()), mask(&view.value)),
+        _ => (None, mask(&state.value)),
+    };
+    let map_offset = |offset: usize| -> usize {
+        match &fold_view {
+            Some(view) => view.display_of(offset),
+            None => offset,
+        }
+    };
     let selection = if state.selection.is_valid_for(&state.value) {
         state.selection
     } else {
@@ -6419,8 +6984,18 @@ fn build_text_input_presentation_source(
     };
     if let Some(ime) = ime {
         let replaced = selection.ordered();
-        let prefix = mask(&state.value[..replaced.start]);
-        let suffix = mask(&state.value[replaced.end..]);
+        // 折叠态：组合拼接在显示视图上进行；普通态保持原语义（先切片后
+        // 掩码，安全输入的显示偏移按字形重算）。
+        let (prefix, suffix) = if let Some(view) = &fold_view {
+            let start = view.display_of(replaced.start).min(base_value.len());
+            let end = view.display_of(replaced.end).min(base_value.len());
+            (base_value[..start].to_owned(), base_value[end..].to_owned())
+        } else {
+            (
+                mask(&state.value[..replaced.start]),
+                mask(&state.value[replaced.end..]),
+            )
+        };
         let preedit_start = prefix.len();
         let preedit_end = preedit_start + ime.text.len();
         let ime_focus = ime
@@ -6443,36 +7018,65 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            fold: fold_view,
         };
     }
 
-    let anchor = display_offset(&state.value, selection.anchor);
-    let focus = display_offset(&state.value, selection.focus);
+    let anchor = map_offset(display_offset(&state.value, selection.anchor));
+    let focus = map_offset(display_offset(&state.value, selection.focus));
     // 附加光标：校验 + 显示空间映射；单光标快速路径下向量为空、零分配。
     let additional = state
         .additional_selections
         .iter()
         .filter(|selection| selection.is_valid_for(&state.value))
         .map(|selection| {
-            let start = display_offset(&state.value, selection.anchor);
-            let end = display_offset(&state.value, selection.focus);
+            let start = map_offset(display_offset(&state.value, selection.anchor));
+            let end = map_offset(display_offset(&state.value, selection.focus));
             (start.min(end), start.max(end))
         })
         .collect();
+    // 诊断/匹配 span 端点映射到显示空间；完全被隐藏的 span 丢弃。
+    let map_span = |span_offset: usize, length: usize| -> Option<(usize, usize)> {
+        let start = span_offset.min(state.value.len());
+        let end = span_offset
+            .saturating_add(length.max(1))
+            .min(state.value.len());
+        if end <= start {
+            return None;
+        }
+        if let Some(view) = &fold_view
+            && view
+                .spans
+                .iter()
+                .any(|span| start >= span.value_start && end <= span.value_end)
+        {
+            return None;
+        }
+        Some((map_offset(start), map_offset(end)))
+    };
+    let diagnostics = extras
+        .diagnostics
+        .iter()
+        .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
+        .collect::<Vec<_>>();
+    let matches = extras
+        .matches
+        .iter()
+        .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
+        .collect::<Vec<_>>();
     TextInputPresentationSource {
-        text: TextContent {
-            value: mask(&state.value),
-        },
+        text: TextContent { value: base_value },
         placeholder: false,
         selection: (anchor != focus).then_some((anchor.min(focus), anchor.max(focus))),
         caret: focus,
         additional,
         preedit: None,
         multiline,
-        diagnostics: extras.diagnostics,
-        matches: extras.matches,
+        diagnostics: Arc::from(diagnostics),
+        matches: Arc::from(matches),
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
+        fold: fold_view,
     }
 }
 
@@ -6674,7 +7278,7 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
-    let line_tops = if source.line_numbers && source.multiline {
+    let (line_tops, line_numbers) = if source.line_numbers && source.multiline {
         let value = source.text.value.as_str();
         let mut starts: Vec<usize> = vec![0];
         for (index, byte) in value.bytes().enumerate() {
@@ -6685,16 +7289,81 @@ fn shape_text_input_presentation(
         if value.ends_with('\n') {
             starts.pop();
         }
-        starts
+        let tops: Vec<f32> = starts
             .iter()
             .map(|&start| {
                 shaper
                     .text_position(id, &source.text, start, style, presentation_constraints)
                     .1
             })
-            .collect()
+            .collect();
+        // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
+        // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
+        let numbers = match &source.fold {
+            Some(view) => {
+                let span_lines: Vec<(usize, u32)> = view
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        (
+                            view.value[..span.display_start].matches('\n').count(),
+                            span.hidden_lines,
+                        )
+                    })
+                    .collect();
+                starts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        let mut number = index as u32;
+                        for &(span_line, hidden) in &span_lines {
+                            if span_line < index {
+                                number += hidden;
+                            }
+                        }
+                        number + 1
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        (tops, numbers)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
+    };
+    // 折叠摘要标记：折叠起始行行尾 ` …N` 的文本框（文本空间），供几何层
+    // 生成点击命中区域。
+    let fold_marks = match &source.fold {
+        Some(view) if source.multiline => view
+            .spans
+            .iter()
+            .map(|span| {
+                let (x, y, height) = shaper.text_position(
+                    id,
+                    &source.text,
+                    span.display_start,
+                    style,
+                    presentation_constraints,
+                );
+                let (end_x, _, _) = shaper.text_position(
+                    id,
+                    &source.text,
+                    span.display_start + span.display_len,
+                    style,
+                    presentation_constraints,
+                );
+                crate::TextFoldMark {
+                    rect: LayoutBox {
+                        x,
+                        y,
+                        width: (end_x - x).max(1.0),
+                        height,
+                    },
+                    fold: span.fold,
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
     };
 
     TextInputPresentation {
@@ -6750,6 +7419,8 @@ fn shape_text_input_presentation(
         bracket_marks,
         indent_guides,
         line_tops,
+        line_numbers,
+        fold_marks,
     }
 }
 
@@ -7528,6 +8199,10 @@ impl<'a> ValidationPlan<'a> {
                     {
                         return Err(UiWorldError::InvalidHighlightRequest(*id));
                     }
+                }
+                UiMutation::SetTextInputFoldCollapsed { id, .. }
+                | UiMutation::SetTextInputSnippet { id, .. } => {
+                    self.node(*id)?;
                 }
             }
         }
@@ -10504,6 +11179,7 @@ mod tests {
             true,
             false,
             TextInputEditorExtras::default(),
+            None,
         );
         assert_eq!(masked.text.value, "•••");
         assert_eq!(masked.selection, Some(("•".len(), "••".len())));
@@ -10518,6 +11194,7 @@ mod tests {
             true,
             false,
             TextInputEditorExtras::default(),
+            None,
         );
         assert_eq!(preedit.text.value, "•输入•");
         assert_eq!(preedit.preedit, Some(("•".len(), "•输入".len())));
@@ -10559,6 +11236,7 @@ mod tests {
                 matches: Arc::from([]),
                 line_numbers: true,
                 indent_guides: None,
+                folds: Arc::from([]),
             }),
         );
         queue.set_style(
@@ -10655,6 +11333,408 @@ mod tests {
         assert_eq!(text.bounds.y, -2.0);
     }
 
+    /// 折叠测试编辑器："fn a() {\n    x();\n    y();\n}\nfn b() {}"。
+    /// 块折叠区间为 `{`（偏移 7）到 `}` 之后（28），隐藏三行
+    /// （两个语句行与 `}` 行）。
+    const FOLD_VALUE: &str = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
+    const FOLD_BLOCK: crate::TextCodeFold = crate::TextCodeFold { start: 7, end: 28 };
+
+    /// world.rs 测试的折叠编辑器：多行 TextInput 视觉 + 可选行号与折叠
+    /// 区间，已布局。样式与布局随 `padding_left`/`line_numbers` 调整。
+    fn fold_editor_world(
+        world: &mut UiWorld,
+        folds: Arc<[crate::TextCodeFold]>,
+        line_numbers: bool,
+        padding_left: Option<f32>,
+    ) {
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        let mut layout = nana_ui_core::LayoutStyle {
+            height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+            width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+            font_size: Some(10.0),
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..nana_ui_core::LayoutStyle::default()
+        };
+        if let Some(padding_left) = padding_left {
+            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding_left));
+        }
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers,
+                indent_guides: None,
+                folds,
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(layout),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: FOLD_VALUE.into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+    }
+
+    #[test]
+    fn text_fold_display_view_substitutes_and_maps_offsets() {
+        // 块折叠：起始行保留，隐藏三行（两个语句行与 `}` 行）替换为 ` …3`。
+        let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+        let marker = format!("{TEXT_FOLD_MARK_PREFIX}3");
+        assert_eq!(view.value, format!("fn a() {{{marker}\nfn b() {{}}"));
+        assert_eq!(view.spans.len(), 1);
+        let span = &view.spans[0];
+        assert_eq!(span.value_start, 8);
+        assert_eq!(span.value_end, 28);
+        assert_eq!(span.hidden_lines, 3);
+
+        // 值↔显示双向映射：隐藏区间内部钳到折叠起始行行尾。
+        assert_eq!(view.display_of(0), 0);
+        assert_eq!(view.display_of(8), 8);
+        assert_eq!(view.display_of(15), 8);
+        assert_eq!(view.display_of(27), 8);
+        assert_eq!(view.display_of(28), 8 + marker.len());
+        assert_eq!(view.display_of(29), 8 + marker.len() + 1);
+        assert_eq!(view.value_of(8), 8);
+        assert_eq!(view.value_of(8 + marker.len() - 1), 8);
+        assert_eq!(view.value_of(8 + marker.len()), 28);
+        let span = &view.spans[0];
+        assert!(view.span_hides(span, 15));
+        assert!(!view.span_hides(span, 8));
+        assert!(view.span_hides(span, 27));
+        assert!(!view.span_hides(span, 28));
+
+        // 嵌套折叠：子折叠的隐藏范围完全落在父折叠内，跳过不重复隐藏。
+        let nested =
+            build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK, crate::TextCodeFold::new(12, 20)])
+                .unwrap();
+        assert_eq!(nested.spans.len(), 1);
+        assert_eq!(nested.value, view.value);
+
+        // 单行区间没有可隐藏的行：不可折叠。
+        let single_line = crate::TextCodeFold::new(29, FOLD_VALUE.len());
+        assert!(!single_line.collapsible_in(FOLD_VALUE));
+        assert!(build_text_display_view(FOLD_VALUE, &[single_line]).is_none());
+    }
+
+    #[test]
+    fn fold_state_survives_host_refeed_and_shift_rescue() {
+        let mut world = UiWorld::default();
+        fold_editor_world(&mut world, Arc::from([FOLD_BLOCK]), false, None);
+        assert!(world.text_fold_collapsed(node(1)).is_empty());
+
+        // 折叠：只有喂入区间之内的条目才被接受。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        assert_eq!(world.text_fold_collapsed(node(1)), vec![FOLD_BLOCK]);
+        let view = world.text_display_view(node(1)).unwrap();
+        assert_eq!(view.spans.len(), 1);
+
+        // 上方插入 100 字节：值编辑平移折叠，宿主重喂平移后的区间——
+        // 折叠态保留。
+        let shifted_value = format!("{}{}", "a".repeat(100), FOLD_VALUE);
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: shifted_value.clone(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world.text_fold_collapsed(node(1)),
+            vec![crate::TextCodeFold::new(107, 128)]
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+                folds: Arc::from([crate::TextCodeFold::new(107, 128)]),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world.text_fold_collapsed(node(1)),
+            vec![crate::TextCodeFold::new(107, 128)]
+        );
+
+        // 宿主不再喂入折叠：视图状态整个移除（全部展开）。
+        let mut queue = MutationQueue::new();
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+                folds: Arc::from([]),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert!(world.text_fold_collapsed(node(1)).is_empty());
+        assert!(world.text_display_view(node(1)).is_none());
+    }
+
+    #[test]
+    fn fold_unfolds_when_edited_inside_and_shifts_after_edit() {
+        let mut world = UiWorld::default();
+        fold_editor_world(&mut world, Arc::from([FOLD_BLOCK]), false, None);
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+
+        // 折叠之后的追加编辑：折叠按自身位移规则保持（编辑区间在其后，
+        // 折叠整体在编辑区间之前，偏移不受影响）。
+        let longer = format!("{}{}", FOLD_VALUE, "\n// tail");
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: longer,
+                selection: crate::TextSelection::caret(FOLD_VALUE.len()),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(world.text_fold_collapsed(node(1)), vec![FOLD_BLOCK]);
+
+        // 被编辑区间与折叠相交 → 自动展开。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: format!("{}{}", &FOLD_VALUE[..15], &FOLD_VALUE[20..]),
+                selection: crate::TextSelection::caret(15),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert!(world.text_fold_collapsed(node(1)).is_empty());
+    }
+
+    #[test]
+    fn text_input_edits_apply_without_fold_or_snippet_view_state() {
+        // 无折叠、无 snippet 的普通输入：值变更不依赖视图状态重映射，
+        // 连续编辑后运行时组件与节点文本保持同步，且不会凭空生成视图状态。
+        let mut world = UiWorld::default();
+        fold_editor_world(&mut world, Arc::from([]), false, None);
+        assert!(world.text_fold_view_state(node(1)).is_none());
+        assert!(world.text_snippet_session(node(1)).is_none());
+
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: "typed".into(),
+                selection: crate::TextSelection::caret(5),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(world.record(node(1)).text.value, "typed");
+        assert_eq!(world.nodes.text_input(node(1)).unwrap().value, "typed");
+
+        // 二次编辑覆盖旧值，再清空输入：文本与视图状态依旧一致。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: "typed more".into(),
+                selection: crate::TextSelection::caret(10),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(world.record(node(1)).text.value, "typed more");
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(node(1), None);
+        world.commit(queue).unwrap();
+        assert_eq!(world.record(node(1)).text.value, "");
+        assert!(world.text_fold_view_state(node(1)).is_none());
+        assert!(world.text_snippet_session(node(1)).is_none());
+    }
+
+    #[test]
+    fn text_input_edit_shifts_snippet_stops_outside_and_ends_session_inside() {
+        // snippet 会话：跳位之外的编辑按最小变更区间平移跳位，会话保持；
+        // 覆盖跳位的编辑使会话失效结束。
+        let mut world = UiWorld::default();
+        fold_editor_world(&mut world, Arc::from([]), false, None);
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_snippet(
+            node(1),
+            Some(crate::TextSnippetSession {
+                stops: vec![10, 20],
+                index: 0,
+            }),
+        );
+        world.commit(queue).unwrap();
+
+        // 开头插入 "// hi\n"：两个跳位都在编辑区间之后，整体 +6 平移。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: format!("// hi\n{FOLD_VALUE}"),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert_eq!(
+            world.text_snippet_session(node(1)),
+            Some(crate::TextSnippetSession {
+                stops: vec![16, 26],
+                index: 0,
+            })
+        );
+
+        // 整值替换吞掉两个跳位：会话结束。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: "x".into(),
+                selection: crate::TextSelection::caret(1),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        assert!(world.text_snippet_session(node(1)).is_none());
+    }
+
+    #[test]
+    fn code_fold_presentation_hides_lines_and_keeps_line_numbers() {
+        // 嵌套折叠：宿主同时喂入父折叠与子折叠。
+        let child = crate::TextCodeFold::new(12, 20);
+        let mut world = UiWorld::default();
+        fold_editor_world(&mut world, Arc::from([FOLD_BLOCK, child]), true, Some(46.0));
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        let marker = format!("{TEXT_FOLD_MARK_PREFIX}3");
+        assert_eq!(
+            presentation.display_value,
+            format!("fn a() {{{marker}\nfn b() {{}}")
+        );
+        // 隐藏行不再产生行 top；行号保留原始编号。
+        assert_eq!(presentation.line_tops.len(), 2);
+        assert_eq!(presentation.line_numbers, vec![1, 5]);
+        // 摘要标记携带折叠区间，供几何层生成点击命中框。
+        assert_eq!(presentation.fold_marks.len(), 1);
+        assert_eq!(presentation.fold_marks[0].fold, FOLD_BLOCK);
+
+        // 几何层：gutter 箭头 + 摘要标记命中框，行号标签使用原始编号。
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            folds, line_labels, ..
+        } = &geometry
+        else {
+            panic!("text input geometry");
+        };
+        assert_eq!(folds.gutters.len(), 1);
+        assert!(folds.gutters[0].collapsed);
+        assert_eq!(folds.gutters[0].fold, FOLD_BLOCK);
+        // 展开态下两个折叠各有一个箭头（子折叠起始行可见）。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([]));
+        world.commit(queue).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            folds: expanded, ..
+        } = &geometry
+        else {
+            panic!("text input geometry");
+        };
+        assert_eq!(expanded.gutters.len(), 2);
+        assert_eq!(folds.markers.len(), 1);
+        assert_eq!(folds.markers[0].fold, FOLD_BLOCK);
+        assert_eq!(
+            line_labels.iter().map(|l| l.number).collect::<Vec<_>>(),
+            vec![1, 5]
+        );
+
+        // gutter 命中测试返回折叠区间。
+        let gutter = folds.gutters[0].bounds;
+        assert_eq!(
+            world.text_fold_hit(node(1), gutter.x + 1.0, gutter.y + 1.0),
+            Some(FOLD_BLOCK)
+        );
+
+        // 展开后回到完整文本与 5 行。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([]));
+        world.commit(queue).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world.text_input_presentation(node(1)).unwrap();
+        assert_eq!(presentation.display_value, FOLD_VALUE);
+        assert_eq!(presentation.line_tops.len(), 5);
+    }
+
     #[test]
     fn match_spans_shape_into_highlights_and_derive_into_geometry() {
         let value = "甲乙\nthird\n末";
@@ -10682,6 +11762,7 @@ mod tests {
                 ]),
                 line_numbers: false,
                 indent_guides: None,
+                folds: Arc::from([]),
             }),
         );
         queue.set_style(
@@ -10782,6 +11863,7 @@ mod tests {
                 matches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: Some(Arc::from("\t")),
+                folds: Arc::from([]),
             }),
         );
         create.set_style(
@@ -10939,6 +12021,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            None,
         );
         let mut shaper = FunctionalShaper::default();
         let presentation = shape_text_input_presentation(
@@ -10987,6 +12070,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            None,
         );
         let presentation = shape_text_input_presentation(
             node(1),
@@ -11016,6 +12100,7 @@ mod tests {
                 false,
                 true,
                 TextInputEditorExtras::default(),
+                None,
             );
             shape_text_input_presentation(
                 node(1),
@@ -11205,6 +12290,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            None,
         );
         shape_text_input_presentation(node(1), multiline, &style, resolved, &mut probe);
         assert_eq!(
@@ -11228,6 +12314,7 @@ mod tests {
             false,
             false,
             TextInputEditorExtras::default(),
+            None,
         );
         shape_text_input_presentation(node(1), single_line, &style, resolved, &mut probe);
         assert_eq!(

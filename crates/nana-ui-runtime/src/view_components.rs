@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, TextDiagnosticSpan, TextHorizontalAlignment, TextInputState,
-    TextMatchSpan, TextVerticalAlignment, UiWorld,
+    StandardVisual, TextCodeFold, TextContent, TextDiagnosticSpan, TextHorizontalAlignment,
+    TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1350,6 +1350,7 @@ impl ComponentView for TextInput {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1561,6 +1562,7 @@ impl ComponentView for NumberInput {
             matches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
+            folds: Arc::from([]),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1646,6 +1648,10 @@ pub struct TextArea {
     pub line_numbers: bool,
     /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
     pub code_editing: Option<CodeEditing>,
+    /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在每次文本变化后重新喂；
+    /// 哪些区间处于折叠态由组件内部维护（宿主重喂时按区间匹配保留，
+    /// 漂移的尽力平移匹配，失效的自动展开）。折叠是纯视图状态，不改值。
+    pub code_folds: Arc<[TextCodeFold]>,
     pub(crate) style_override: bool,
 }
 
@@ -1664,6 +1670,7 @@ impl TextArea {
             match_spans: Arc::from([]),
             line_numbers: false,
             code_editing: None,
+            code_folds: Arc::from([]),
             style_override: false,
         }
     }
@@ -1690,6 +1697,13 @@ impl TextArea {
     /// 启用行号栏（行号绘制在节点左内边距区域）。
     pub fn line_numbers(mut self, line_numbers: bool) -> Self {
         self.line_numbers = line_numbers;
+        self
+    }
+
+    /// 设置代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
+    /// 折叠态由组件内部维护。
+    pub fn code_folds(mut self, folds: Arc<[TextCodeFold]>) -> Self {
+        self.code_folds = folds;
         self
     }
 
@@ -1771,6 +1785,7 @@ impl ComponentView for TextArea {
                 .code_editing
                 .as_ref()
                 .map(|code| Arc::clone(&code.indent_unit)),
+            folds: Arc::clone(&self.code_folds),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

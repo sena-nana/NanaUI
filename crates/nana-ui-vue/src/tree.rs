@@ -300,6 +300,8 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetTextSelection { .. } => "SetTextSelection",
         UiMutation::ReplaceTextSelection { .. } => "ReplaceTextSelection",
         UiMutation::SetHighlightRequest { .. } => "SetHighlightRequest",
+        UiMutation::SetTextInputFoldCollapsed { .. } => "SetTextInputFoldCollapsed",
+        UiMutation::SetTextInputSnippet { .. } => "SetTextInputSnippet",
     }
 }
 
@@ -8576,7 +8578,6 @@ mod tests {
         );
         assert_ne!(doc.hit_test(20.0, 20.0), Some(overlay));
         assert_eq!(doc.hit_test(20.0, 20.0), Some(under));
-
     }
 
     #[test]
