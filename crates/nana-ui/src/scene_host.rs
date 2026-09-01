@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE};
 use nana_ui_platform::{
-    ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType, TextInputPurpose,
-    TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon, WindowId,
-    WindowResizeEdge, clear_registered_application_icon, register_application_icon,
-    window_resize_edge,
+    DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
+    TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon,
+    WindowId, WindowResizeEdge, clamp_position_to_displays, clear_registered_application_icon,
+    register_application_icon, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
@@ -362,7 +362,10 @@ fn initialize<Program: RuntimeProgram>(
 ) -> Result<SceneReady<Program>, String> {
     let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
-            .create_window(scene_window_attributes(&settings).with_visible(false))
+            .create_window(
+                scene_window_attributes(&settings, &scene_display_bounds(event_loop))
+                    .with_visible(false),
+            )
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
@@ -1211,7 +1214,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let parent = settings
             .parent
             .and_then(|parent| self.window(parent).cloned());
-        let attributes = scene_aux_window_attributes(&settings, parent.as_deref())?;
+        let attributes = scene_aux_window_attributes(
+            &settings,
+            parent.as_deref(),
+            &scene_display_bounds(event_loop),
+        )?;
         let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
                 .create_window(attributes)
@@ -2471,7 +2478,10 @@ fn apply_text_input_request(window: &dyn winit::window::Window, apply: ImeApply)
     }
 }
 
-fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::WindowAttributes {
+fn scene_window_attributes(
+    settings: &RuntimeWindowSettings,
+    displays: &[DisplayBounds],
+) -> winit::window::WindowAttributes {
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent)
@@ -2487,6 +2497,7 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
         ))
         .with_maximized(settings.maximized);
     if let Some((x, y)) = settings.initial_position {
+        let (x, y) = clamp_position_to_displays((x, y), settings.initial_size, displays);
         attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
     }
     if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
@@ -2494,6 +2505,29 @@ fn scene_window_attributes(settings: &RuntimeWindowSettings) -> winit::window::W
     }
 
     apply_scene_window_chrome(attributes, settings)
+}
+
+/// Live display bounds in the global logical coordinate space, matching the
+/// coordinate space of `WindowSettings::initial_position`.
+fn scene_display_bounds(event_loop: &dyn ActiveEventLoop) -> Vec<DisplayBounds> {
+    event_loop
+        .available_monitors()
+        .filter_map(|monitor| {
+            let position = monitor.position()?;
+            let size = monitor.current_video_mode()?.size();
+            let scale = monitor.scale_factor();
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            Some(DisplayBounds {
+                position: (f64::from(position.x) / scale, f64::from(position.y) / scale),
+                size: (
+                    f64::from(size.width) / scale,
+                    f64::from(size.height) / scale,
+                ),
+            })
+        })
+        .collect()
 }
 
 fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
@@ -2597,8 +2631,9 @@ fn apply_scene_window_chrome(
 fn scene_aux_window_attributes(
     settings: &RuntimeWindowSettings,
     parent: Option<&dyn winit::window::Window>,
+    displays: &[DisplayBounds],
 ) -> Result<winit::window::WindowAttributes, String> {
-    let attributes = scene_window_attributes(settings).with_visible(false);
+    let attributes = scene_window_attributes(settings, displays).with_visible(false);
     #[cfg(target_os = "windows")]
     let attributes = if settings.modal {
         let parent = parent.ok_or_else(|| "modal window requires a parent".to_string())?;
@@ -3300,13 +3335,13 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        ImeApply, InputTracker, RoutedWindowCommand, ime_apply, invalidate_program_host_textures,
-        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
-        platform_input_modifiers, platform_window_event, resolved_scene_ime_request,
-        route_window_command, scene_clear_color, scene_runtime_input_update,
-        scene_window_attributes, screen_position, should_deliver_program_ime, tablet_pointer_id,
-        window_level, window_surface_effect, window_wants_transparent_surface,
-        windows_scene_chrome, windows_to_redraw,
+        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply,
+        invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
+        platform_input_key, platform_input_modifiers, platform_window_event,
+        resolved_scene_ime_request, route_window_command, scene_clear_color,
+        scene_runtime_input_update, scene_window_attributes, screen_position,
+        should_deliver_program_ime, tablet_pointer_id, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -3436,7 +3471,7 @@ mod tests {
         settings.maximized = true;
         settings.initial_size = (640.0, 480.0);
         settings.minimum_size = (320.0, 240.0);
-        let attributes = scene_window_attributes(&settings);
+        let attributes = scene_window_attributes(&settings, &[]);
 
         assert_eq!(attributes.title, "Scene");
         #[cfg(target_os = "macos")]
@@ -3464,7 +3499,7 @@ mod tests {
         assert!(!opaque_client.no_redirection_bitmap);
 
         settings.system_caption = true;
-        let caption = scene_window_attributes(&settings);
+        let caption = scene_window_attributes(&settings, &[]);
         assert!(caption.decorations);
         let transparent_caption = windows_scene_chrome(true, true);
         assert!(transparent_caption.decorations);
@@ -3473,6 +3508,43 @@ mod tests {
         let opaque_caption = windows_scene_chrome(true, false);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
+    }
+
+    #[test]
+    fn scene_windows_reclamp_offscreen_initial_positions_to_live_displays() {
+        let mut settings = WindowSettings::new("Scene");
+        settings.initial_size = (888.0, 586.0);
+        settings.initial_position = Some((2100.0, 40.0));
+        let main = [DisplayBounds {
+            position: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+        }];
+
+        let attributes = scene_window_attributes(&settings, &main);
+        assert_eq!(
+            attributes.position,
+            Some(winit::dpi::Position::Logical(
+                winit::dpi::LogicalPosition::new(1032.0, 40.0)
+            ))
+        );
+
+        let disconnected = [
+            main[0],
+            DisplayBounds {
+                position: (1920.0, 0.0),
+                size: (1080.0, 1920.0),
+            },
+        ];
+        let attributes = scene_window_attributes(&settings, &disconnected);
+        assert_eq!(
+            attributes.position,
+            Some(winit::dpi::Position::Logical(
+                winit::dpi::LogicalPosition::new(2100.0, 40.0)
+            ))
+        );
+
+        settings.initial_position = None;
+        assert_eq!(scene_window_attributes(&settings, &main).position, None);
     }
 
     #[test]

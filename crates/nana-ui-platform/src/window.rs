@@ -20,6 +20,68 @@ pub struct WindowGeometry {
     pub maximized: bool,
 }
 
+/// Logical bounds of one display in the global logical coordinate space.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DisplayBounds {
+    pub position: (f64, f64),
+    pub size: (f64, f64),
+}
+
+impl DisplayBounds {
+    fn intersects(&self, position: (f64, f64), size: (f64, f64)) -> bool {
+        position.0 < self.position.0 + self.size.0
+            && position.0 + size.0 > self.position.0
+            && position.1 < self.position.1 + self.size.1
+            && position.1 + size.1 > self.position.1
+    }
+
+    fn distance_squared(&self, position: (f64, f64), size: (f64, f64)) -> f64 {
+        let dx = (self.position.0 - (position.0 + size.0))
+            .max(position.0 - (self.position.0 + self.size.0))
+            .max(0.0);
+        let dy = (self.position.1 - (position.1 + size.1))
+            .max(position.1 - (self.position.1 + self.size.1))
+            .max(0.0);
+        dx * dx + dy * dy
+    }
+
+    fn clamp_position(&self, position: (f64, f64), size: (f64, f64)) -> (f64, f64) {
+        let max_x = self.position.0 + (self.size.0 - size.0).max(0.0);
+        let max_y = self.position.1 + (self.size.1 - size.1).max(0.0);
+        (
+            position.0.clamp(self.position.0, max_x),
+            position.1.clamp(self.position.1, max_y),
+        )
+    }
+}
+
+/// Keeps a restored window position on-screen.
+///
+/// Positions persisted from a previous session can point at a display that has
+/// since been disconnected. The position passes through unchanged while the
+/// window frame overlaps any display; otherwise it is clamped fully into the
+/// display nearest to the requested frame. An empty display list also passes
+/// the position through.
+pub fn clamp_position_to_displays(
+    position: (f64, f64),
+    size: (f64, f64),
+    displays: &[DisplayBounds],
+) -> (f64, f64) {
+    if displays
+        .iter()
+        .any(|display| display.intersects(position, size))
+    {
+        return position;
+    }
+    let Some(nearest) = displays.iter().min_by(|a, b| {
+        a.distance_squared(position, size)
+            .total_cmp(&b.distance_squared(position, size))
+    }) else {
+        return position;
+    };
+    nearest.clamp_position(position, size)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
     Ready {
@@ -454,5 +516,68 @@ mod tests {
             WindowEvent::Ready { geometry, .. } if geometry.scale_factor == 2.0
         ));
         assert_eq!(TextInputPurpose::default(), TextInputPurpose::Normal);
+    }
+
+    #[test]
+    fn clamp_position_keeps_frames_that_overlap_any_display() {
+        let main = [DisplayBounds {
+            position: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+        }];
+        assert_eq!(
+            clamp_position_to_displays((100.0, 80.0), (888.0, 586.0), &main),
+            (100.0, 80.0)
+        );
+        assert_eq!(
+            clamp_position_to_displays((1800.0, 900.0), (888.0, 586.0), &main),
+            (1800.0, 900.0)
+        );
+    }
+
+    #[test]
+    fn clamp_position_pulls_frames_from_disconnected_displays_back_in() {
+        let main = [DisplayBounds {
+            position: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+        }];
+        let side = [
+            main[0],
+            DisplayBounds {
+                position: (1920.0, 0.0),
+                size: (1080.0, 1920.0),
+            },
+        ];
+        assert_eq!(
+            clamp_position_to_displays((2100.0, 40.0), (888.0, 586.0), &side),
+            (2100.0, 40.0)
+        );
+        assert_eq!(
+            clamp_position_to_displays((2100.0, 40.0), (888.0, 586.0), &main),
+            (1032.0, 40.0)
+        );
+        assert_eq!(
+            clamp_position_to_displays((-2000.0, -1000.0), (888.0, 586.0), &main),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            clamp_position_to_displays((5000.0, 100.0), (888.0, 586.0), &side),
+            (2112.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn clamp_position_anchors_oversized_frames_and_passthrough_empty_displays() {
+        let main = [DisplayBounds {
+            position: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+        }];
+        assert_eq!(
+            clamp_position_to_displays((-3000.0, 2000.0), (3000.0, 2000.0), &main),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            clamp_position_to_displays((5000.0, 5000.0), (888.0, 586.0), &[]),
+            (5000.0, 5000.0)
+        );
     }
 }
