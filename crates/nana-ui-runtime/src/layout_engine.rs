@@ -1043,15 +1043,21 @@ fn intrinsic_size_scoped(
         _ => max_content_w,
     };
     let default_height = content.height + chrome.height;
+    // `Fill` sizes the border box to the containing block minus the node's own
+    // margins — negative margins widen it, matching the stretch path below;
+    // percentages keep resolving against the raw containing block.
+    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
     let width_spec = resolve_axis(
         demote_fill_spec_if_indefinite(style.width, available.width),
         available.width,
+        available.width - margin.left - margin.right,
         viewport,
         fonts,
     );
     let height_spec = resolve_axis(
         demote_fill_spec_if_indefinite(style.height, available.height),
         available.height,
+        available.height - margin.top - margin.bottom,
         viewport,
         fonts,
     );
@@ -3998,16 +4004,17 @@ fn apply_auto_margins(
 
 fn resolve_axis(
     spec: Option<LengthSpec>,
-    base: f32,
+    percent_base: f32,
+    fill_base: f32,
     viewport: LayoutViewport,
     fonts: FontSizeContext,
 ) -> Option<f32> {
     spec.and_then(|value| {
         if value == LengthSpec::Fill {
-            Some(base)
+            Some(fill_base)
         } else {
             value
-                .resolve_with_fonts(Some(base), Some((viewport.width, viewport.height)), fonts)
+                .resolve_with_fonts(Some(percent_base), Some((viewport.width, viewport.height)), fonts)
                 .map(|value| value.max(0.0))
         }
     })
@@ -4595,6 +4602,49 @@ mod tests {
         assert_eq!(layouts[&id(2)].width, 50.0);
         assert_eq!(layouts[&id(3)].x, 70.0);
         assert_eq!(layouts[&id(3)].width, 230.0);
+    }
+
+    #[test]
+    fn column_fill_width_subtracts_negative_margins_symmetrically() {
+        let document = DocumentId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document, NodeKind::Document);
+        queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(2), None);
+        queue.set_style(
+            id(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(200.0)),
+                    height: Some(LengthSpec::Px(100.0)),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            id(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    height: Some(LengthSpec::Px(10.0)),
+                    margin_left: Some(LengthSpec::Px(-10.0)),
+                    margin_right: Some(LengthSpec::Px(-10.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let layouts = RuntimeLayoutEngine
+            .layout_document(&world, document, LayoutViewport::new(200.0, 100.0))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(layouts[&id(2)].x, -10.0);
+        assert_eq!(layouts[&id(2)].width, 220.0);
     }
 
     #[test]
