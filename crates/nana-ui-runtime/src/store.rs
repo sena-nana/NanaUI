@@ -128,6 +128,30 @@ pub(crate) struct TextFoldViewState {
     pub collapsed: Vec<TextCodeFold>,
 }
 
+/// 补全弹层会话状态（仅候选会话活跃的编辑器节点持有条目）。
+///
+/// 候选列表由宿主喂入（过滤是宿主的职责），组件只维护键盘选中与滚动：
+/// 喂入相同列表不重置选中态（包括 Esc 关闭态）；喂入不同列表时视为新
+/// 会话（选中归零、重新打开）；喂入空列表整个条目移除（零分配待机）。
+#[derive(Clone, Debug)]
+pub(crate) struct TextCompletionViewState {
+    pub items: Arc<[crate::TextCompletion]>,
+    pub selected: usize,
+    /// 第一条可见候选的绝对下标。
+    pub scroll: usize,
+    /// Esc 关闭标记：会话数据保留（宿主重喂相同列表不复活弹层），
+    /// 换新列表或宿主撤空重喂后清除。
+    pub dismissed: bool,
+}
+
+/// hover 文档浮窗状态（仅宿主喂入 hover 的编辑器节点持有条目）。
+#[derive(Clone, Debug)]
+pub(crate) struct TextHoverViewState {
+    pub doc: crate::TextHover,
+    /// 正文滚过的逻辑行数。
+    pub scroll: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct NodeStore {
     nodes: HashMap<StableNodeId, NodeRecord>,
@@ -148,6 +172,10 @@ pub(crate) struct NodeStore {
     text_fold_views: HashMap<StableNodeId, TextFoldViewState>,
     /// 活跃 snippet 会话（仅会话进行中的编辑器持有条目）。
     text_snippets: HashMap<StableNodeId, TextSnippetSession>,
+    /// 补全弹层会话（仅候选会话活跃的编辑器持有条目）。
+    text_completions: HashMap<StableNodeId, TextCompletionViewState>,
+    /// hover 文档浮窗（仅宿主喂入 hover 的编辑器持有条目）。
+    text_hovers: HashMap<StableNodeId, TextHoverViewState>,
 }
 
 impl NodeStore {
@@ -179,6 +207,11 @@ impl NodeStore {
         self.nodes.keys().copied()
     }
 
+    /// 持有 hover 浮窗状态的节点（稀疏表直接迭代，命中测试路由用）。
+    pub fn text_hover_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.text_hovers.keys().copied()
+    }
+
     pub fn insert(&mut self, id: StableNodeId, record: NodeRecord) {
         self.nodes.insert(id, record);
     }
@@ -201,6 +234,8 @@ impl NodeStore {
         self.modal_text.remove(&id);
         self.text_fold_views.remove(&id);
         self.text_snippets.remove(&id);
+        self.text_completions.remove(&id);
+        self.text_hovers.remove(&id);
         Some(record)
     }
 
@@ -274,9 +309,35 @@ impl NodeStore {
         text_snippet_session,
         set_text_snippet_session
     );
+    sparse!(
+        text_completions,
+        TextCompletionViewState,
+        text_completion_view,
+        set_text_completion_view
+    );
+    sparse!(
+        text_hovers,
+        TextHoverViewState,
+        text_hover_view,
+        set_text_hover_view
+    );
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {
         self.text_inputs.get_mut(&id)
+    }
+
+    pub(crate) fn text_completion_view_mut(
+        &mut self,
+        id: StableNodeId,
+    ) -> Option<&mut TextCompletionViewState> {
+        self.text_completions.get_mut(&id)
+    }
+
+    pub(crate) fn text_hover_view_mut(
+        &mut self,
+        id: StableNodeId,
+    ) -> Option<&mut TextHoverViewState> {
+        self.text_hovers.get_mut(&id)
     }
 }
 

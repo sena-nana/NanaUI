@@ -14,7 +14,7 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{
     EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
-    TextMatchMark, TextMatchMarker, TextMatchSpan,
+    TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
@@ -1354,6 +1354,60 @@ impl UiWorld {
         self.nodes.text_snippet_session(id).cloned()
     }
 
+    /// 补全弹层会话快照（供框架命令读取-修改-写回与几何层读取）。
+    pub(crate) fn text_completion_view(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::store::TextCompletionViewState> {
+        self.nodes.text_completion_view(id).cloned()
+    }
+
+    /// 当前喂入的补全候选（供组件投影做喂入去重）。
+    pub(crate) fn text_completion_items(
+        &self,
+        id: StableNodeId,
+    ) -> Option<&Arc<[crate::TextCompletion]>> {
+        self.nodes
+            .text_completion_view(id)
+            .map(|state| &state.items)
+    }
+
+    /// hover 浮窗状态快照。
+    pub(crate) fn text_hover_view(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::store::TextHoverViewState> {
+        self.nodes.text_hover_view(id).cloned()
+    }
+
+    /// 当前喂入的 hover 文档（供组件投影做喂入去重）。
+    pub(crate) fn text_hover_doc(&self, id: StableNodeId) -> Option<&crate::TextHover> {
+        self.nodes.text_hover_view(id).map(|state| &state.doc)
+    }
+
+    /// 补全会话只读快照（宿主查询入口）。无会话时为 `None`。
+    pub fn text_completion_snapshot(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::TextCompletionSnapshot> {
+        self.nodes
+            .text_completion_view(id)
+            .map(|state| crate::TextCompletionSnapshot {
+                count: state.items.len(),
+                selected: state.selected,
+                scroll: state.scroll,
+                dismissed: state.dismissed,
+            })
+    }
+
+    /// hover 浮窗正文的滚动行数（宿主查询入口）；未喂入 hover 时为 0。
+    pub fn text_hover_scroll(&self, id: StableNodeId) -> usize {
+        self.nodes
+            .text_hover_view(id)
+            .map(|state| state.scroll)
+            .unwrap_or(0)
+    }
+
     /// 命中折叠交互区域（gutter 箭头优先，其次折叠起始行的摘要标记），
     /// 返回对应折叠区间。坐标为节点空间。
     pub fn text_fold_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<crate::TextCodeFold> {
@@ -1372,6 +1426,73 @@ impl UiWorld {
                 }),
             _ => None,
         }
+    }
+
+    /// 命中补全弹层的候选行，返回该候选的绝对下标。弹层绘制在折叠
+    /// 之上，调用方（框架指针路径）应先于折叠命中查询。坐标为节点空间。
+    pub fn text_completion_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<usize> {
+        match self.component_geometry(id)? {
+            crate::ComponentGeometry::TextInput {
+                completion_popup, ..
+            } => {
+                let popup = completion_popup.as_ref()?;
+                let row = popup
+                    .rows
+                    .iter()
+                    .position(|row| row.bounds.contains(x, y))?;
+                Some(popup.first_row + row)
+            }
+            _ => None,
+        }
+    }
+
+    /// 指针是否落在补全弹层面板上（含内边距）。坐标为节点空间；滚轮
+    /// 路由用它把弹层内滚动与编辑器滚动分开。
+    pub fn text_completion_panel_hit(&self, id: StableNodeId, x: f32, y: f32) -> bool {
+        let Some(crate::ComponentGeometry::TextInput {
+            completion_popup, ..
+        }) = self.component_geometry(id)
+        else {
+            return false;
+        };
+        completion_popup
+            .as_ref()
+            .is_some_and(|popup| popup.panel.contains(x, y))
+    }
+
+    /// 指针是否落在 hover 浮窗面板上（含内边距）。坐标为节点空间。
+    pub fn text_hover_panel_hit(&self, id: StableNodeId, x: f32, y: f32) -> bool {
+        let Some(crate::ComponentGeometry::TextInput { hover_popup, .. }) =
+            self.component_geometry(id)
+        else {
+            return false;
+        };
+        hover_popup
+            .as_ref()
+            .is_some_and(|popup| popup.panel.contains(x, y))
+    }
+
+    /// 滚轮落点命中的 hover 浮窗面板所属节点。命中测试驱动：hover 显示
+    /// 不要求焦点，任意文档内编辑器的浮窗面板都可能被滚动。重叠时取最小
+    /// 节点 id 保证稳定结果（浮层各自锚定自己的编辑器，正常不重叠）。
+    pub(crate) fn text_hover_panel_at(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Option<StableNodeId> {
+        let mut hits: Vec<StableNodeId> = self
+            .nodes
+            .text_hover_ids()
+            .filter(|&id| {
+                self.nodes
+                    .get(id)
+                    .is_some_and(|node| node.document == document)
+            })
+            .filter(|&id| self.text_hover_panel_hit(id, x, y))
+            .collect();
+        hits.sort_unstable();
+        hits.first().copied()
     }
 
     /// 宿主重喂折叠区间后对账折叠态（`offered` 为 `None` 表示宿主不再
@@ -1632,8 +1753,20 @@ impl UiWorld {
             let constraints = self.text_shape_constraints(id);
             let metrics = shaper.shape(id, &text, &style, constraints);
             validate_text_metrics(id, metrics)?;
+            let previous_overlays = self
+                .nodes
+                .text_input_presentation(id)
+                .map(|stored| stored.overlay_metrics.clone())
+                .unwrap_or_default();
             let presentation = presentation.map(|source| {
-                shape_text_input_presentation(id, source, &style, constraints, &mut shaper)
+                shape_text_input_presentation(
+                    id,
+                    source,
+                    &style,
+                    constraints,
+                    &previous_overlays,
+                    &mut shaper,
+                )
             });
             shaped.push((id, metrics, presentation));
         }
@@ -1792,8 +1925,20 @@ impl UiWorld {
             let constraints = self.text_shape_constraints(id);
             let metrics = shaper.shape(id, &text, computed, constraints);
             validate_text_metrics(id, metrics)?;
+            let previous_overlays = self
+                .nodes
+                .text_input_presentation(id)
+                .map(|stored| stored.overlay_metrics.clone())
+                .unwrap_or_default();
             let presentation = presentation.map(|source| {
-                shape_text_input_presentation(id, source, computed, constraints, &mut shaper)
+                shape_text_input_presentation(
+                    id,
+                    source,
+                    computed,
+                    constraints,
+                    &previous_overlays,
+                    &mut shaper,
+                )
             });
             if self.record(id).text_metrics != metrics
                 || presentation
@@ -1921,6 +2066,21 @@ impl UiWorld {
         } else {
             None
         };
+        // 锚定浮层输入：补全候选与 hover 文档相互独立（仅多行编辑器；
+        // 单行字段没有浮层）。hover 文档按值克隆进 presentation source：
+        // source 是所有权结构，被 shape 约束、几何派生与测试多处消费，
+        // 引用化会把生命周期串进所有构造点；克隆仅在宿主喂入 hover 期间
+        // 发生，成本与浮窗文档自身同阶。
+        let (completions, hover) = if multiline {
+            (
+                self.nodes
+                    .text_completion_view(id)
+                    .map(|state| state.items.clone()),
+                self.nodes.text_hover_view(id).map(|h| h.doc.clone()),
+            )
+        } else {
+            (None, None)
+        };
         Some(build_text_input_presentation_source(
             state,
             ime,
@@ -1929,6 +2089,8 @@ impl UiWorld {
             multiline,
             extras,
             fold,
+            completions,
+            hover,
         ))
     }
 
@@ -3273,6 +3435,8 @@ impl UiWorld {
                 if state.is_none() {
                     self.nodes.set_text_fold_view(*id, None);
                     self.nodes.set_text_snippet_session(*id, None);
+                    self.nodes.set_text_completion_view(*id, None);
+                    self.nodes.set_text_hover_view(*id, None);
                 }
                 self.mark(
                     *id,
@@ -3354,6 +3518,99 @@ impl UiWorld {
             UiMutation::SetTextInputSnippet { id, session } => {
                 if self.nodes.text_snippet_session(*id) != session.as_ref() {
                     self.nodes.set_text_snippet_session(*id, session.clone());
+                }
+            }
+            UiMutation::SetTextInputCompletions { id, items } => {
+                if items.is_empty() {
+                    // 空列表关闭弹层：条目移除，零分配待机。
+                    if self.nodes.text_completion_view(*id).is_some() {
+                        self.nodes.set_text_completion_view(*id, None);
+                        self.mark(*id, DirtyMask::RENDER);
+                    }
+                    return;
+                }
+                let next = match self.nodes.text_completion_view(*id) {
+                    // 相同列表：无操作，键盘选中、滚动与 Esc 关闭态保持。
+                    // 组件投影已过滤未变的喂入，这里的内容比较服务于直接
+                    // 下发变更的调用方：内容相等即同一会话，不能降为指针
+                    // 比较（换 Arc 重喂相同列表会被误判成新会话）。
+                    Some(state) if state.items == *items => None,
+                    // 不同列表：视为新会话（选中归零、重新打开）。
+                    Some(_) | None => Some(crate::store::TextCompletionViewState {
+                        items: Arc::clone(items),
+                        selected: 0,
+                        scroll: 0,
+                        dismissed: false,
+                    }),
+                };
+                if let Some(next) = next {
+                    self.nodes.set_text_completion_view(*id, Some(next));
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTextInputCompletionView {
+                id,
+                selected,
+                scroll,
+            } => {
+                let changed = self
+                    .nodes
+                    .text_completion_view(*id)
+                    .is_some_and(|state| state.selected != *selected || state.scroll != *scroll);
+                if changed {
+                    if let Some(state) = self.nodes.text_completion_view_mut(*id) {
+                        state.selected = *selected;
+                        state.scroll = *scroll;
+                    }
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTextInputCompletionDismissed { id } => {
+                let changed = self
+                    .nodes
+                    .text_completion_view(*id)
+                    .is_some_and(|state| !state.dismissed);
+                if changed {
+                    if let Some(state) = self.nodes.text_completion_view_mut(*id) {
+                        state.dismissed = true;
+                    }
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTextInputHover { id, hover } => {
+                let changed = match (hover, self.nodes.text_hover_view(*id)) {
+                    (None, None) => false,
+                    (None, Some(_)) => true,
+                    (Some(doc), Some(state)) => &state.doc != doc || state.scroll != 0,
+                    (Some(_), None) => true,
+                };
+                if !changed {
+                    return;
+                }
+                match hover {
+                    Some(doc) => {
+                        self.nodes.set_text_hover_view(
+                            *id,
+                            Some(crate::store::TextHoverViewState {
+                                doc: doc.clone(),
+                                scroll: 0,
+                            }),
+                        );
+                    }
+                    None => self.nodes.set_text_hover_view(*id, None),
+                }
+                self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetTextInputHoverScroll { id, scroll } => {
+                let changed = self
+                    .nodes
+                    .text_hover_view(*id)
+                    .is_some_and(|state| state.scroll != *scroll);
+                if changed {
+                    if let Some(state) = self.nodes.text_hover_view_mut(*id) {
+                        state.scroll = *scroll;
+                    }
+                    self.mark(*id, DirtyMask::RENDER);
                 }
             }
         }
@@ -4345,6 +4602,53 @@ impl UiWorld {
                     caret,
                     additional_carets,
                     preedit,
+                    completion_popup: {
+                        // 补全弹层：聚焦多行编辑器 + 未关闭的非空候选会话；
+                        // 锚定主光标行，与其他编辑器覆盖层共用一套定位翻
+                        // 转策略（见 `anchored_overlay_panel`）。
+                        if multiline && focused {
+                            self.nodes
+                                .text_completion_view(id)
+                                .filter(|state| !state.dismissed)
+                                .zip(presentation.overlay_metrics.completion.as_ref())
+                                .and_then(|(state, metrics)| {
+                                    completion_popup_geometry(
+                                        &state,
+                                        metrics,
+                                        OverlayAnchor {
+                                            x: field_x(presentation.caret_x),
+                                            line_top: line_y + presentation.caret_y,
+                                            line_height,
+                                        },
+                                        bounds,
+                                        size.text_size(),
+                                        &self.style_model.palette,
+                                    )
+                                })
+                        } else {
+                            None
+                        }
+                    },
+                    hover_popup: {
+                        // hover 浮窗：宿主喂入即显示（不要求焦点），纯展示。
+                        presentation
+                            .overlay_metrics
+                            .hover_anchor
+                            .zip(self.nodes.text_hover_view(id))
+                            .and_then(|((hover_x, hover_y), state)| {
+                                hover_popup_geometry(
+                                    &state,
+                                    OverlayAnchor {
+                                        x: field_x(hover_x),
+                                        line_top: line_y + hover_y,
+                                        line_height,
+                                    },
+                                    bounds,
+                                    size.text_size(),
+                                    &self.style_model.palette,
+                                )
+                            })
+                    },
                     background: style.background,
                     border: style.border_color,
                     border_width: {
@@ -6910,6 +7214,10 @@ struct TextInputPresentationSource {
     indent_guides: Option<Arc<str>>,
     /// 折叠显示视图（存在折叠态区间时 Some；`text` 等偏移已在显示空间）。
     fold: Option<TextDisplayView>,
+    /// 补全候选（宿主过滤后的非空列表；占位符/组合态不弹出）。
+    completions: Option<Arc<[crate::TextCompletion]>>,
+    /// hover 文档（宿主喂入时 Some）。
+    hover: Option<crate::TextHover>,
 }
 
 /// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
@@ -6921,6 +7229,7 @@ struct TextInputEditorExtras {
     indent_guides: Option<Arc<str>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_text_input_presentation_source(
     state: &TextInputState,
     ime: Option<&ImeComposition>,
@@ -6929,8 +7238,17 @@ fn build_text_input_presentation_source(
     multiline: bool,
     extras: TextInputEditorExtras,
     fold: Option<TextDisplayView>,
+    completions: Option<Arc<[crate::TextCompletion]>>,
+    hover: Option<crate::TextHover>,
 ) -> TextInputPresentationSource {
     use unicode_segmentation::UnicodeSegmentation;
+
+    // 浮层是打字态的编辑辅助：占位符与 IME 组合期间一律不弹出。
+    let (completions, hover) = if !placeholder.is_empty() || ime.is_some() {
+        (None, None)
+    } else {
+        (completions, hover)
+    };
 
     let mask = |value: &str| {
         if secure {
@@ -6962,6 +7280,8 @@ fn build_text_input_presentation_source(
             line_numbers: false,
             indent_guides: None,
             fold: None,
+            completions: None,
+            hover: None,
         };
     }
 
@@ -7019,6 +7339,8 @@ fn build_text_input_presentation_source(
             line_numbers: false,
             indent_guides: None,
             fold: fold_view,
+            completions: None,
+            hover: None,
         };
     }
 
@@ -7077,6 +7399,8 @@ fn build_text_input_presentation_source(
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
         fold: fold_view,
+        completions,
+        hover,
     }
 }
 
@@ -7085,6 +7409,7 @@ fn shape_text_input_presentation(
     source: TextInputPresentationSource,
     style: &ComputedStyle,
     constraints: crate::TextShapeConstraints,
+    previous_overlays: &crate::TextOverlayMetrics,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
     // Editing geometry must remain available outside a clipped viewport so the
@@ -7366,6 +7691,22 @@ fn shape_text_input_presentation(
         _ => Vec::new(),
     };
 
+    // 锚定浮层度量：补全行宽按 items 指针相等短路（列表未变零测量、
+    // 零分配）；hover 锚点跟随文档偏移，每次 shape 一探（缓存字形度量）。
+    let overlay_metrics = TextOverlayMetrics {
+        completion: completion_popup_metrics(id, &source, previous_overlays, style, shaper),
+        hover_anchor: source.hover.as_ref().map(|doc| {
+            let (x, y, _) = shaper.text_position(
+                id,
+                &source.text,
+                doc.offset,
+                style,
+                presentation_constraints,
+            );
+            (x, y)
+        }),
+    };
+
     TextInputPresentation {
         display_value: source.text.value.clone(),
         placeholder: source.placeholder,
@@ -7421,7 +7762,284 @@ fn shape_text_input_presentation(
         line_tops,
         line_numbers,
         fold_marks,
+        overlay_metrics,
     }
+}
+
+/// 锚定浮层的共享输入：锚点行在节点空间的位置（x 为锚点字形左缘）。
+#[derive(Debug, Clone, Copy)]
+struct OverlayAnchor {
+    x: f32,
+    line_top: f32,
+    line_height: f32,
+}
+
+/// 锚定浮层的共享定位（补全弹层与 hover 浮窗共用，避免两套定位代码）：
+/// 优先放在锚点行下方，视口底部放不下且上方放得下时翻转到行上方，
+/// 最后整体钳进视口。返回面板矩形（节点空间）。
+fn anchored_overlay_panel(
+    anchor: OverlayAnchor,
+    width: f32,
+    height: f32,
+    viewport: LayoutBox,
+    gap: f32,
+) -> LayoutBox {
+    const VIEWPORT_PAD: f32 = 2.0;
+    let viewport_bottom = viewport.y + viewport.height;
+    let min_y = viewport.y + VIEWPORT_PAD;
+    let max_y = (viewport_bottom - VIEWPORT_PAD - height).max(min_y);
+    let mut y = anchor.line_top + anchor.line_height + gap;
+    if y > max_y {
+        let flipped = anchor.line_top - gap - height;
+        if flipped >= min_y {
+            y = flipped;
+        }
+    }
+    let y = y.clamp(min_y, max_y);
+    let min_x = viewport.x + VIEWPORT_PAD;
+    let max_x = (viewport.x + viewport.width - VIEWPORT_PAD - width).max(min_x);
+    let x = anchor.x.clamp(min_x, max_x);
+    LayoutBox {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// 补全弹层几何：面板 + 可见行（label 主文本、detail 次要说明、kind 右
+/// 对齐标注）。宽度自适应最长行（label > detail > kind 依次让位，上限
+/// [`crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH`]），高度最多
+/// [`crate::TEXT_COMPLETION_VISIBLE_ROWS`] 行。
+fn completion_popup_geometry(
+    state: &crate::store::TextCompletionViewState,
+    metrics: &crate::TextCompletionPopupMetrics,
+    anchor: OverlayAnchor,
+    viewport: LayoutBox,
+    font_size: f32,
+    palette: &SemanticPalette,
+) -> Option<crate::TextCompletionPopup> {
+    const GAP: f32 = 12.0;
+    const V_PAD: f32 = 4.0;
+    const ROW_GAP_ABOVE_BELOW: f32 = 4.0;
+    let items = &state.items;
+    if items.is_empty() {
+        return None;
+    }
+    let len = items.len();
+    let first_row = state.scroll.min(len.saturating_sub(1));
+    let visible_rows = (len - first_row).min(crate::TEXT_COMPLETION_VISIBLE_ROWS);
+    let row_height = anchor.line_height.max(1.0);
+    let label_w = metrics.label_width;
+    let mut content = label_w;
+    let show_detail = metrics.detail_width > 0.0
+        && content + GAP + metrics.detail_width <= crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
+    if show_detail {
+        content += GAP + metrics.detail_width;
+    }
+    let show_kind = metrics.kind_width > 0.0
+        && content + GAP + metrics.kind_width <= crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
+    if show_kind {
+        content += GAP + metrics.kind_width;
+    }
+    let content = content.min(crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
+    let label_w = label_w.min(content);
+    let panel = anchored_overlay_panel(
+        anchor,
+        (content + crate::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
+        visible_rows as f32 * row_height + V_PAD * 2.0,
+        viewport,
+        ROW_GAP_ABOVE_BELOW,
+    );
+    let rows = items[first_row..first_row + visible_rows]
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let y = panel.y + V_PAD + index as f32 * row_height;
+            let label_rect_w = label_w.min(content);
+            let detail_x = panel.x + crate::TEXT_COMPLETION_PANEL_PAD + label_rect_w + GAP;
+            let detail_rect = show_detail
+                .then_some(())
+                .filter(|_| !item.detail.is_empty())
+                .map(|_| crate::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: detail_x,
+                        y,
+                        width: metrics.detail_width,
+                        height: row_height,
+                    },
+                    content: Arc::from(item.detail.as_str()),
+                    color: Some(palette.muted.as_rgba_array()),
+                    font_size: font_size,
+                    font_weight: None,
+                });
+            let kind_rect = show_kind
+                .then_some(())
+                .filter(|_| !item.kind_label.is_empty())
+                .map(|_| crate::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: panel.x + panel.width
+                            - crate::TEXT_COMPLETION_PANEL_PAD
+                            - metrics.kind_width,
+                        y,
+                        width: metrics.kind_width,
+                        height: row_height,
+                    },
+                    content: Arc::from(item.kind_label.as_str()),
+                    color: Some(palette.faint.as_rgba_array()),
+                    font_size,
+                    font_weight: None,
+                });
+            crate::TextCompletionRow {
+                bounds: LayoutBox {
+                    x: panel.x,
+                    y,
+                    width: panel.width,
+                    height: row_height,
+                },
+                label: crate::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: panel.x + crate::TEXT_COMPLETION_PANEL_PAD,
+                        y,
+                        width: label_rect_w,
+                        height: row_height,
+                    },
+                    content: Arc::from(item.label.as_str()),
+                    color: Some(palette.text.as_rgba_array()),
+                    font_size,
+                    font_weight: None,
+                },
+                detail: detail_rect,
+                kind: kind_rect,
+            }
+        })
+        .collect();
+    Some(crate::TextCompletionPopup {
+        panel,
+        selected: state.selected,
+        first_row,
+        rows,
+        background: palette.surface.as_rgba_array(),
+        border: palette.border_strong.as_rgba_array(),
+        selected_background: palette.hover.as_rgba_array(),
+        label_color: palette.text.as_rgba_array(),
+        detail_color: palette.muted.as_rgba_array(),
+        kind_color: palette.faint.as_rgba_array(),
+    })
+}
+
+/// hover 浮窗几何：面板 + 标题行（强调）+ 正文逻辑行切片。宽度取
+/// 视口与上限的较小值；正文超出 [`crate::TEXT_HOVER_MAX_BODY_ROWS`] 行
+/// 时滚轮滚动（切片由框架命令写回的滚动位置决定）。
+fn hover_popup_geometry(
+    state: &crate::store::TextHoverViewState,
+    anchor: OverlayAnchor,
+    viewport: LayoutBox,
+    font_size: f32,
+    palette: &SemanticPalette,
+) -> Option<crate::TextHoverPopup> {
+    const MAX_WIDTH: f32 = 420.0;
+    const H_PAD: f32 = 10.0;
+    const V_PAD: f32 = 6.0;
+    const TITLE_BODY_GAP: f32 = 4.0;
+    const VIEWPORT_GAP: f32 = 4.0;
+    let line_height = anchor.line_height.max(1.0);
+    let body_lines: Vec<&str> = state.doc.body.lines().collect();
+    let scroll = state.scroll.min(body_lines.len().saturating_sub(1));
+    let visible =
+        &body_lines[scroll..(scroll + crate::TEXT_HOVER_MAX_BODY_ROWS).min(body_lines.len())];
+    let width = MAX_WIDTH.min(viewport.width.max(1.0));
+    let title_height = line_height;
+    let panel = anchored_overlay_panel(
+        anchor,
+        width,
+        V_PAD * 2.0 + title_height + TITLE_BODY_GAP + visible.len() as f32 * line_height,
+        viewport,
+        VIEWPORT_GAP,
+    );
+    let content_width = (width - H_PAD * 2.0).max(0.0);
+    let title = crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: panel.x + H_PAD,
+            y: panel.y + V_PAD,
+            width: content_width,
+            height: title_height,
+        },
+        content: Arc::from(state.doc.title.as_str()),
+        color: Some(palette.text.as_rgba_array()),
+        font_size,
+        font_weight: Some(600),
+    };
+    let body_rows = visible
+        .iter()
+        .enumerate()
+        .map(|(index, line)| crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: panel.x + H_PAD,
+                y: panel.y + V_PAD + title_height + TITLE_BODY_GAP + index as f32 * line_height,
+                width: content_width,
+                height: line_height,
+            },
+            content: Arc::from(*line),
+            color: Some(palette.muted.as_rgba_array()),
+            font_size,
+            font_weight: None,
+        })
+        .collect();
+    Some(crate::TextHoverPopup {
+        panel,
+        title,
+        body_rows,
+        background: palette.surface.as_rgba_array(),
+        border: palette.border_strong.as_rgba_array(),
+        title_color: palette.text.as_rgba_array(),
+        body_color: palette.muted.as_rgba_array(),
+    })
+}
+
+/// 补全弹层行宽度量。`items` 指针与上一次度量一致时整段复用（打字重
+/// 喂之外的每次 shape 不再逐行测量）；测量只发生在宿主喂入新列表之后。
+fn completion_popup_metrics(
+    id: StableNodeId,
+    source: &TextInputPresentationSource,
+    previous: &crate::TextOverlayMetrics,
+    style: &ComputedStyle,
+    shaper: &mut impl TextShaper,
+) -> Option<crate::TextCompletionPopupMetrics> {
+    let items = source.completions.as_ref()?;
+    if let Some(previous) = previous
+        .completion
+        .as_ref()
+        .filter(|previous| Arc::ptr_eq(&previous.items, items))
+    {
+        return Some(previous.clone());
+    }
+    let mut width_of = |value: &str| -> f32 {
+        shaper.horizontal_offset(
+            id,
+            &TextContent {
+                value: value.to_owned(),
+            },
+            value.len(),
+            style,
+        )
+    };
+    let metrics = crate::TextCompletionPopupMetrics {
+        items: Arc::clone(items),
+        label_width: items
+            .iter()
+            .map(|item| width_of(&item.label))
+            .fold(0.0_f32, f32::max),
+        detail_width: items
+            .iter()
+            .map(|item| width_of(&item.detail))
+            .fold(0.0_f32, f32::max),
+        kind_width: items
+            .iter()
+            .map(|item| width_of(&item.kind_label))
+            .fold(0.0_f32, f32::max),
+    };
+    Some(metrics)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8201,7 +8819,12 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetTextInputFoldCollapsed { id, .. }
-                | UiMutation::SetTextInputSnippet { id, .. } => {
+                | UiMutation::SetTextInputSnippet { id, .. }
+                | UiMutation::SetTextInputCompletions { id, .. }
+                | UiMutation::SetTextInputCompletionView { id, .. }
+                | UiMutation::SetTextInputCompletionDismissed { id }
+                | UiMutation::SetTextInputHover { id, .. }
+                | UiMutation::SetTextInputHoverScroll { id, .. } => {
                     self.node(*id)?;
                 }
             }
@@ -11180,6 +11803,8 @@ mod tests {
             false,
             TextInputEditorExtras::default(),
             None,
+            None,
+            None,
         );
         assert_eq!(masked.text.value, "•••");
         assert_eq!(masked.selection, Some(("•".len(), "••".len())));
@@ -11194,6 +11819,8 @@ mod tests {
             true,
             false,
             TextInputEditorExtras::default(),
+            None,
+            None,
             None,
         );
         assert_eq!(preedit.text.value, "•输入•");
@@ -11265,6 +11892,13 @@ mod tests {
                 multiline: true,
                 editable: true,
                 ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
             },
         );
         queue.write_layout(
@@ -11401,6 +12035,13 @@ mod tests {
                 multiline: true,
                 editable: true,
                 ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
             },
         );
         queue.write_layout(
@@ -11793,6 +12434,13 @@ mod tests {
                 ..AccessibilityState::default()
             },
         );
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
         queue.write_layout(
             node(1),
             LayoutBox {
@@ -12022,6 +12670,8 @@ mod tests {
             true,
             TextInputEditorExtras::default(),
             None,
+            None,
+            None,
         );
         let mut shaper = FunctionalShaper::default();
         let presentation = shape_text_input_presentation(
@@ -12029,6 +12679,7 @@ mod tests {
             source,
             &style,
             crate::TextShapeConstraints::default(),
+            &Default::default(),
             &mut shaper,
         );
 
@@ -12071,12 +12722,15 @@ mod tests {
             true,
             TextInputEditorExtras::default(),
             None,
+            None,
+            None,
         );
         let presentation = shape_text_input_presentation(
             node(1),
             source,
             &style,
             crate::TextShapeConstraints::default(),
+            &Default::default(),
             &mut shaper,
         );
         assert_eq!(presentation.display_value, "甲\n输\n入末");
@@ -12101,12 +12755,15 @@ mod tests {
                 true,
                 TextInputEditorExtras::default(),
                 None,
+                None,
+                None,
             );
             shape_text_input_presentation(
                 node(1),
                 source,
                 &style,
                 crate::TextShapeConstraints::default(),
+                &Default::default(),
                 &mut FunctionalShaper::default(),
             )
         };
@@ -12291,8 +12948,17 @@ mod tests {
             true,
             TextInputEditorExtras::default(),
             None,
+            None,
+            None,
         );
-        shape_text_input_presentation(node(1), multiline, &style, resolved, &mut probe);
+        shape_text_input_presentation(
+            node(1),
+            multiline,
+            &style,
+            resolved,
+            &Default::default(),
+            &mut probe,
+        );
         assert_eq!(
             probe.positions.pop(),
             Some(crate::TextShapeConstraints {
@@ -12315,8 +12981,17 @@ mod tests {
             false,
             TextInputEditorExtras::default(),
             None,
+            None,
+            None,
         );
-        shape_text_input_presentation(node(1), single_line, &style, resolved, &mut probe);
+        shape_text_input_presentation(
+            node(1),
+            single_line,
+            &style,
+            resolved,
+            &Default::default(),
+            &mut probe,
+        );
         assert_eq!(
             probe.positions.pop(),
             Some(crate::TextShapeConstraints {
@@ -15409,5 +16084,253 @@ mod tests {
         assert!(!Arc::ptr_eq(&painted[0].children, &reparented[0].children));
         assert_eq!(reparented[0].children.as_slice(), &[node(2), node(3)]);
         assert!(Arc::ptr_eq(&painted[0].kind, &reparented[0].kind));
+    }
+
+    /// 多行编辑器 + 聚焦 + 候选会话的测试节点（几何完整可用）。
+    fn overlay_editor(
+        world: &mut UiWorld,
+        value: &str,
+        caret: usize,
+        items: Arc<[crate::TextCompletion]>,
+    ) -> StableNodeId {
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+                folds: Arc::from([]),
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    height: Some(nana_ui_core::LengthSpec::Px(140.0)),
+                    width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(caret),
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 140.0,
+            },
+        );
+        queue.set_text_input_completions(node(1), items);
+        queue.request_focus(document(1), Some(node(1)));
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+        world.take_system_work();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        node(1)
+    }
+
+    #[test]
+    fn completion_popup_anchors_below_flips_above_and_hit_tests_rows() {
+        let mut world = UiWorld::default();
+        let items: Arc<[crate::TextCompletion]> = (0..4)
+            .map(|index| crate::TextCompletion::new(format!("item{index}"), "fn"))
+            .collect::<Vec<_>>()
+            .into();
+        // 光标在第 0 行（行底 y=14）：弹层出现在光标行下方。
+        let id = overlay_editor(&mut world, "a\nb\nc\nd\ne\nf", 1, items.clone());
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            completion_popup, ..
+        } = geometry
+        else {
+            panic!("text input geometry");
+        };
+        let popup = completion_popup.expect("popup below caret line");
+        assert_eq!(popup.first_row, 0);
+        assert_eq!(popup.selected, 0);
+        assert_eq!(popup.rows.len(), 4);
+        // 行高 14、内边距 4：面板顶 = 行底 14 + 间隙 4 = 18；宽度按
+        // FunctionalShaper 度量（label 5 字×10=50，kind "fn"=20）+ 行距
+        // 12 + 内边距 16。
+        assert_eq!(popup.panel.y, 18.0);
+        assert_eq!(popup.panel.height, 4.0 * 14.0 + 8.0);
+        assert_eq!(popup.panel.width, 50.0 + 12.0 + 20.0 + 16.0);
+        // 行命中返回绝对候选下标。
+        let row = &popup.rows[1];
+        assert_eq!(
+            world.text_completion_hit(id, row.bounds.x + 1.0, row.bounds.y + 1.0),
+            Some(1)
+        );
+        assert_eq!(world.text_completion_hit(id, -100.0, -100.0), None);
+
+        // 光标移到最后一行（行顶 y=70）：下方放不下（70+14+4+64 > 138）
+        // 且上方放得下（70-4-64 = 2 ≥ 2）→ 翻转到光标行上方。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            id,
+            Some(TextInputState {
+                value: "a\nb\nc\nd\ne\nf".into(),
+                selection: crate::TextSelection::caret("a\nb\nc\nd\ne\nf".len()),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[id], &mut shaper).unwrap();
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            completion_popup, ..
+        } = geometry
+        else {
+            panic!("text input geometry");
+        };
+        let popup = completion_popup.expect("popup flips above caret line");
+        assert_eq!(popup.panel.y, 2.0);
+
+        // Esc 关闭：弹层几何消失（会话保留），命中也为 None。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_completion_dismissed(id);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            completion_popup, ..
+        } = geometry
+        else {
+            panic!("text input geometry");
+        };
+        assert!(completion_popup.is_none());
+        assert!(!world.text_completion_panel_hit(id, 10.0, 10.0));
+    }
+
+    #[test]
+    fn completion_feed_marks_render_once_and_same_list_is_a_short_circuit() {
+        let mut world = UiWorld::default();
+        let items: Arc<[crate::TextCompletion]> = vec![crate::TextCompletion::new("fn", "")].into();
+        let id = overlay_editor(&mut world, "fn", 2, items.clone());
+
+        // 首次 shape 的失效先排干，只观察重喂本身的标记。
+        world.take_system_work();
+
+        // 重喂相同列表（组件重投影的常态）：无渲染失效（每帧短路）。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_completions(node(1), items.clone());
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.render_extraction, Vec::<StableNodeId>::new());
+
+        // 新列表：标记渲染。
+        let next: Arc<[crate::TextCompletion]> = vec![crate::TextCompletion::new("fnx", "")].into();
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_completions(node(1), next);
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        assert_eq!(work.render_extraction, vec![node(1)]);
+    }
+
+    #[test]
+    fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
+        let mut world = UiWorld::default();
+        // 锚点偏移定位到第二行 "let x"（y=14）：浮窗在该行下方。
+        let mut queue = MutationQueue::new();
+        let items: Arc<[crate::TextCompletion]> = Arc::from([]);
+        let id = overlay_editor(&mut world, "fn main() {}\nlet x", 0, items);
+        queue.set_text_input_hover(
+            id,
+            Some(crate::TextHover::new(
+                "fn main() {}\n".len(),
+                "let",
+                "declare a binding\nline two",
+            )),
+        );
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[id], &mut shaper).unwrap();
+
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
+            panic!("text input geometry");
+        };
+        let popup = hover_popup.expect("hover popup");
+        // 锚点行底 28 + 间隙 4；标题 + 两行正文 + 上下内边距 12。
+        assert_eq!(popup.panel.y, 32.0);
+        assert_eq!(popup.panel.width, 200.0);
+        assert_eq!(popup.title.content.as_ref(), "let");
+        assert_eq!(popup.body_rows.len(), 2);
+        assert_eq!(popup.body_rows[0].content.as_ref(), "declare a binding");
+        // 面板命中：滚轮路由的判定输入。
+        assert!(world.text_hover_panel_hit(id, popup.panel.x + 2.0, popup.panel.y + 2.0));
+        assert!(!world.text_hover_panel_hit(id, -1.0, -1.0));
+
+        // 滚动一行：正文切片跳过第一行。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_hover_scroll(id, 1);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[id], &mut shaper).unwrap();
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
+            panic!("text input geometry");
+        };
+        let popup = hover_popup.expect("hover popup");
+        assert_eq!(popup.body_rows.len(), 1);
+        assert_eq!(popup.body_rows[0].content.as_ref(), "line two");
+
+        // 宿主撤掉 hover（None）：浮窗几何消失，滚动状态一并清除。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_hover(id, None);
+        world.commit(queue).unwrap();
+        world.take_system_work();
+        let geometry = world.component_geometry(id).unwrap();
+        let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
+            panic!("text input geometry");
+        };
+        assert!(hover_popup.is_none());
+        assert_eq!(world.text_hover_scroll(id), 0);
     }
 }

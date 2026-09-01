@@ -234,6 +234,136 @@ pub struct TextMatchMarker {
     pub current: bool,
 }
 
+/// 一条补全候选。`label` 是接受后插入的主体；`kind_label` 是右侧类型
+/// 标注（如 `fn` / `struct` / `关键字`，宿主决定文案）；`detail` 是签名等
+/// 次要说明，可为空。
+///
+/// 过滤完全由宿主负责：宿主按当前词前缀过滤后喂入
+/// [`crate::TextArea::completions`]，组件只负责展示、键盘导航与接受，
+/// 不做任何候选匹配。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextCompletion {
+    pub label: String,
+    pub kind_label: String,
+    pub detail: String,
+}
+
+impl TextCompletion {
+    pub fn new(label: impl Into<String>, kind_label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            kind_label: kind_label.into(),
+            detail: String::new(),
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
+    }
+}
+
+/// 锚定某个偏移的 hover 文档浮窗内容。纯展示：触发与生命周期完全由
+/// 宿主决定（文本编辑时宿主负责撤掉，组件不自动隐藏）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextHover {
+    pub offset: usize,
+    pub title: String,
+    pub body: String,
+}
+
+impl TextHover {
+    pub fn new(offset: usize, title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            offset,
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+}
+
+/// 补全弹层可见行数上限（同时是键盘导航的滚动窗口大小）。
+pub const TEXT_COMPLETION_VISIBLE_ROWS: usize = 8;
+
+/// 补全弹层面板的水平内边距与内容宽度上限（"宽度自适应最长行"的
+/// 上限；超出后先压缩 detail 区域，label/kind 保持完整）。
+pub const TEXT_COMPLETION_PANEL_PAD: f32 = 8.0;
+pub const TEXT_COMPLETION_MAX_CONTENT_WIDTH: f32 = 344.0;
+
+/// 补全会话的只读快照（宿主查询入口；会话不存在时无值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCompletionSnapshot {
+    /// 当前候选总数。
+    pub count: usize,
+    /// 键盘选中的候选下标。
+    pub selected: usize,
+    /// 第一条可见候选的绝对下标。
+    pub scroll: usize,
+    /// Esc 关闭标记：弹层是否处于关闭态。
+    pub dismissed: bool,
+}
+
+/// shape 管线按候选列表缓存的行宽度量。`items` 是指针相等短路键：
+/// 列表未变时整个度量直接复用，零测量、零分配。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextCompletionPopupMetrics {
+    pub items: Arc<[TextCompletion]>,
+    /// 最宽 label（未裁剪）。
+    pub label_width: f32,
+    /// 最宽 detail（未裁剪）。
+    pub detail_width: f32,
+    /// 最宽 kind 标注（未裁剪）。
+    pub kind_width: f32,
+}
+
+/// hover 浮窗正文的最大可见行数；超出部分滚轮滚动查看。
+pub const TEXT_HOVER_MAX_BODY_ROWS: usize = 10;
+
+/// 补全弹层的一行几何（节点空间）。`bounds` 是整行（选中高亮底），
+/// 文本框带内容与颜色，由场景绘制（不换行，超宽省略号截断）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextCompletionRow {
+    pub bounds: LayoutBox,
+    pub label: ComponentTextRegion,
+    /// 次要说明；`detail` 为空的候选没有。
+    pub detail: Option<ComponentTextRegion>,
+    /// 右对齐类型标注；所有候选的 kind 都为空时整列省略。
+    pub kind: Option<ComponentTextRegion>,
+}
+
+/// [`crate::ComponentGeometry::TextInput`] 的补全弹层几何。仅聚焦多行
+/// 编辑器且候选会话非空时存在；绘制在编辑器所有覆盖层（折叠、诊断、
+/// 行号）之上，点击命中与键盘交互由框架命令处理。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextCompletionPopup {
+    pub panel: LayoutBox,
+    /// 当前选中项的绝对候选下标。
+    pub selected: usize,
+    /// 第一条可见候选的绝对下标（滚动位置）。
+    pub first_row: usize,
+    pub rows: Vec<TextCompletionRow>,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub selected_background: [f32; 4],
+    pub label_color: [f32; 4],
+    pub detail_color: [f32; 4],
+    pub kind_color: [f32; 4],
+}
+
+/// [`crate::ComponentGeometry::TextInput`] 的 hover 文档浮窗几何。宿主
+/// 喂入 [`crate::TextArea::hover`] 时存在，纯展示；滚轮滚动由框架处理。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextHoverPopup {
+    pub panel: LayoutBox,
+    pub title: ComponentTextRegion,
+    /// 可见正文行（按逻辑行滚动切片）。多行、超长裁剪，滚轮消费。
+    pub body_rows: Vec<ComponentTextRegion>,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub title_color: [f32; 4],
+    pub body_color: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StandardVisual {
     ModalFrame {
@@ -738,6 +868,11 @@ pub enum ComponentGeometry {
         /// 行号文本颜色与字号。
         line_labels_color: [f32; 4],
         line_labels_font_size: f32,
+        /// 补全弹层（聚焦多行编辑器 + 非空候选会话时存在）。绘制在
+        /// 全部编辑器覆盖层之上（slot 90+）。
+        completion_popup: Option<TextCompletionPopup>,
+        /// hover 文档浮窗（宿主喂入时存在，纯展示；slot 120+）。
+        hover_popup: Option<TextHoverPopup>,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
@@ -1452,6 +1587,18 @@ pub struct TextInputPresentation {
     pub line_numbers: Vec<u32>,
     /// 折叠摘要标记（文本空间，存在折叠态区间时计算）。
     pub fold_marks: Vec<TextFoldMark>,
+    /// 锚定浮层度量（补全弹层行宽缓存 + hover 锚点）。列表指针相等时
+    /// 行宽度量整段复用；无浮层时全部为 `None`（零分配）。
+    pub overlay_metrics: TextOverlayMetrics,
+}
+
+/// [`TextInputPresentation`] 的浮层度量集合。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextOverlayMetrics {
+    /// 补全弹层行宽度量；候选会话不存在时为 `None`。
+    pub completion: Option<TextCompletionPopupMetrics>,
+    /// hover 锚点（文本空间 `(x, y)`，`offset` 所在行的字形位置）。
+    pub hover_anchor: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

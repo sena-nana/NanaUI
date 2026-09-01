@@ -2,7 +2,8 @@ use crate::{
     AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec, ComponentTypeId,
     CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
     NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
-    StandardVisual, TextCodeFold, TextContent, TextInputState, TextSelection, TextSnippetSession,
+    StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInputState,
+    TextSelection, TextSnippetSession,
 };
 use nana_ui_core::ThemeMode;
 use std::sync::Arc;
@@ -145,6 +146,32 @@ pub enum UiMutation {
     SetTextInputSnippet {
         id: StableNodeId,
         session: Option<TextSnippetSession>,
+    },
+    /// 宿主喂入补全候选（过滤是宿主的职责）。空列表关闭弹层；相同列表
+    /// 不重置键盘选中态。
+    SetTextInputCompletions {
+        id: StableNodeId,
+        items: Arc<[TextCompletion]>,
+    },
+    /// 写回补全弹层的键盘选中与滚动位置（仅会话活跃时有意义）。
+    SetTextInputCompletionView {
+        id: StableNodeId,
+        selected: usize,
+        scroll: usize,
+    },
+    /// Esc 关闭补全弹层：会话数据保留，宿主重喂相同列表不复活弹层。
+    SetTextInputCompletionDismissed {
+        id: StableNodeId,
+    },
+    /// 宿主喂入或撤掉（`None`）hover 文档浮窗。
+    SetTextInputHover {
+        id: StableNodeId,
+        hover: Option<TextHover>,
+    },
+    /// 滚动 hover 浮窗正文（逻辑行数）。
+    SetTextInputHoverScroll {
+        id: StableNodeId,
+        scroll: usize,
     },
 }
 
@@ -353,6 +380,39 @@ impl MutationQueue {
     ) {
         self.mutations
             .push(UiMutation::SetTextInputSnippet { id, session });
+    }
+
+    pub fn set_text_input_completions(&mut self, id: StableNodeId, items: Arc<[TextCompletion]>) {
+        self.mutations
+            .push(UiMutation::SetTextInputCompletions { id, items });
+    }
+
+    pub fn set_text_input_completion_view(
+        &mut self,
+        id: StableNodeId,
+        selected: usize,
+        scroll: usize,
+    ) {
+        self.mutations.push(UiMutation::SetTextInputCompletionView {
+            id,
+            selected,
+            scroll,
+        });
+    }
+
+    pub fn set_text_input_completion_dismissed(&mut self, id: StableNodeId) {
+        self.mutations
+            .push(UiMutation::SetTextInputCompletionDismissed { id });
+    }
+
+    pub fn set_text_input_hover(&mut self, id: StableNodeId, hover: Option<TextHover>) {
+        self.mutations
+            .push(UiMutation::SetTextInputHover { id, hover });
+    }
+
+    pub fn set_text_input_hover_scroll(&mut self, id: StableNodeId, scroll: usize) {
+        self.mutations
+            .push(UiMutation::SetTextInputHoverScroll { id, scroll });
     }
 
     pub fn len(&self) -> usize {

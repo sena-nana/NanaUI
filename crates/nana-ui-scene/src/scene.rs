@@ -3318,6 +3318,8 @@ impl UiScene {
                         line_labels_color,
                         line_labels_font_size,
                         folds,
+                        completion_popup,
+                        hover_popup,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
@@ -3570,6 +3572,105 @@ impl UiScene {
                                     ),
                                 },
                             ));
+                        }
+                        // 补全弹层与 hover 浮窗：编辑器覆盖层的最上层
+                        // （面板 slot 90 / 120，其余文本在各自段内递增），
+                        // 高于行号（40+）与折叠 gutter（14/15）。面板绘制
+                        // 共用 `overlay_panel_primitive`；行文本不换行，
+                        // 超宽省略号截断。使用与焦点环同级的外层裁剪。
+                        let overlay_context = VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &parent_clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        };
+                        let overlay_text =
+                            |slot: u8,
+                             region: &ComponentTextRegion,
+                             alignment: TextHorizontalAlignment| {
+                                overlay_text_primitive(
+                                    id,
+                                    slot,
+                                    region,
+                                    alignment,
+                                    &node,
+                                    transform,
+                                    std::sync::Arc::clone(&parent_clips),
+                                    opacity,
+                                    node_order,
+                                )
+                            };
+                        if let Some(popup) = completion_popup {
+                            self.insert_primitive(overlay_panel_primitive(
+                                &overlay_context,
+                                90,
+                                scene_rect(popup.panel),
+                                popup.background,
+                                popup.border,
+                            ));
+                            let selected_in_view = popup
+                                .rows
+                                .iter()
+                                .enumerate()
+                                .find(|(index, _)| popup.first_row + index == popup.selected)
+                                .map(|(index, _)| index);
+                            if let Some(index) = selected_in_view {
+                                self.insert_primitive(visual_quad(
+                                    &overlay_context,
+                                    91,
+                                    scene_rect(popup.rows[index].bounds),
+                                    VisualQuadStyle {
+                                        background: Some(popup.selected_background),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: corner_radii(0.0),
+                                    },
+                                ));
+                            }
+                            for (index, row) in popup.rows.iter().enumerate() {
+                                self.insert_primitive(overlay_text(
+                                    92 + index as u8,
+                                    &row.label,
+                                    TextHorizontalAlignment::Start,
+                                ));
+                                if let Some(detail) = row.detail.as_ref() {
+                                    self.insert_primitive(overlay_text(
+                                        100 + index as u8,
+                                        detail,
+                                        TextHorizontalAlignment::Start,
+                                    ));
+                                }
+                                if let Some(kind) = row.kind.as_ref() {
+                                    self.insert_primitive(overlay_text(
+                                        108 + index as u8,
+                                        kind,
+                                        TextHorizontalAlignment::End,
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(popup) = hover_popup {
+                            self.insert_primitive(overlay_panel_primitive(
+                                &overlay_context,
+                                120,
+                                scene_rect(popup.panel),
+                                popup.background,
+                                popup.border,
+                            ));
+                            self.insert_primitive(overlay_text(
+                                121,
+                                &popup.title,
+                                TextHorizontalAlignment::Start,
+                            ));
+                            for (index, row) in popup.body_rows.iter().enumerate() {
+                                self.insert_primitive(overlay_text(
+                                    122 + index as u8,
+                                    row,
+                                    TextHorizontalAlignment::Start,
+                                ));
+                            }
                         }
                     }
                 }
@@ -4903,6 +5004,81 @@ fn visual_quad_batch(
     }
 }
 
+/// 锚定浮层面板的共享绘制原语（补全弹层 slot 90 与 hover 浮窗 slot 120
+/// 共用）：圆角面板底 + 1px 边框，浮在编辑器内容之上。
+fn overlay_panel_primitive(
+    context: &VisualPrimitiveContext<'_>,
+    slot: u8,
+    bounds: SceneRect,
+    background: [f32; 4],
+    border: [f32; 4],
+) -> ScenePrimitive {
+    visual_quad(
+        context,
+        slot,
+        bounds,
+        VisualQuadStyle {
+            background: Some(background),
+            border_color: Some(border),
+            border_width: 1.0,
+            corner_radius: corner_radii(6.0),
+        },
+    )
+}
+
+/// 锚定浮层文本的共享绘制原语：与编辑器文本同族，但不换行（浮层行高
+/// 固定），超宽用省略号截断。
+#[allow(clippy::too_many_arguments)]
+fn overlay_text_primitive(
+    id: StableNodeId,
+    slot: u8,
+    region: &ComponentTextRegion,
+    horizontal_alignment: TextHorizontalAlignment,
+    node: &ExtractedNode,
+    transform: AffineTransform,
+    clips: Arc<[ClipRegion]>,
+    opacity: f32,
+    document_order: usize,
+) -> ScenePrimitive {
+    ScenePrimitive {
+        id: PrimitiveId { node: id, slot },
+        node: id,
+        bounds: scene_rect(region.bounds),
+        transform,
+        clips,
+        opacity,
+        z_index: node.z_index,
+        document_order,
+        kind: ScenePrimitiveKind::Text {
+            content: region.content.to_string(),
+            color: region.color.or(node.style.color),
+            size: region.font_size,
+            weight: region.font_weight,
+            family: node.style.font_family.as_deref().map(str::to_owned),
+            line_height: node.style.line_height,
+            letter_spacing: node.style.letter_spacing,
+            wrap: false,
+            ellipsis: true,
+            max_lines: None,
+            shaping: if node.text_input.is_some() {
+                TextShaping::Advanced
+            } else {
+                TextShaping::Auto
+            },
+            horizontal_alignment,
+            vertical_alignment: TextVerticalAlignment::Center,
+            spans: Vec::new(),
+            text_shadow: None,
+            underline: false,
+            line_through: false,
+            font_features: Vec::new(),
+            italic: false,
+            wrap_break: nana_ui_core::TextWrapBreak::default(),
+            opentype: SceneTextOpenType::default(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -5192,6 +5368,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);
@@ -6122,6 +6300,8 @@ mod tests {
             line_labels_color: [0.6, 0.6, 0.6, 1.0],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
             background: None,
             border: None,
             border_width: 0.0,
@@ -6239,6 +6419,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
             background: None,
             border: None,
             border_width: 0.0,
@@ -6349,6 +6531,8 @@ mod tests {
                 gutters,
                 markers: Vec::new(),
             },
+            completion_popup: None,
+            hover_popup: None,
             background: None,
             border: None,
             border_width: 0.0,
@@ -6487,6 +6671,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
         });
 
         let mut scene = UiScene::new();
@@ -6610,6 +6796,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
             background: None,
             border: None,
             border_width: 0.0,
@@ -6754,6 +6942,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
         });
 
         let mut scene = UiScene::new();
@@ -6852,6 +7042,8 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
         })
     }
 
@@ -9780,6 +9972,139 @@ mod tests {
         assert!(
             scene.primitives().all(|primitive| primitive.node != id(2)),
             "path children of an Icon visual must not paint as boxes"
+        );
+    }
+
+    #[test]
+    fn completion_and_hover_overlays_paint_above_editor_layers() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+        });
+        let row_rect = |index: usize| LayoutBox {
+            x: 10.0,
+            y: 20.0 + index as f32 * 14.0,
+            width: 120.0,
+            height: 14.0,
+        };
+        let text_region = |content: &str, bounds: LayoutBox| ComponentTextRegion {
+            bounds,
+            content: Arc::from(content),
+            color: Some([0.9, 0.9, 0.9, 1.0]),
+            font_size: 12.0,
+            font_weight: None,
+        };
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: text_region("fn", LayoutBox::default()),
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
+                panel: LayoutBox {
+                    x: 8.0,
+                    y: 18.0,
+                    width: 120.0,
+                    height: 32.0,
+                },
+                selected: 1,
+                first_row: 0,
+                rows: (0..2)
+                    .map(|index| nana_ui_runtime::TextCompletionRow {
+                        bounds: row_rect(index),
+                        label: text_region("label", row_rect(index)),
+                        detail: None,
+                        kind: Some(text_region("fn", row_rect(index))),
+                    })
+                    .collect(),
+                background: [0.1, 0.1, 0.1, 1.0],
+                border: [0.3, 0.3, 0.3, 1.0],
+                selected_background: [0.2, 0.2, 0.2, 1.0],
+                label_color: [1.0; 4],
+                detail_color: [0.5; 4],
+                kind_color: [0.4; 4],
+            }),
+            hover_popup: Some(nana_ui_runtime::TextHoverPopup {
+                panel: LayoutBox {
+                    x: 8.0,
+                    y: 80.0,
+                    width: 120.0,
+                    height: 28.0,
+                },
+                title: text_region("hover", row_rect(0)),
+                body_rows: vec![text_region("body", row_rect(1))],
+                background: [0.1, 0.1, 0.1, 1.0],
+                border: [0.3, 0.3, 0.3, 1.0],
+                title_color: [1.0; 4],
+                body_color: [0.6; 4],
+            }),
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+
+        let kind = |slot: u8| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .map(|primitive| primitive.kind.clone())
+                .expect("overlay primitive")
+        };
+        // 面板底 + 选中行高亮 + 行文本（label/kind 各一层；detail 为空
+        // 的候选不产生文本层）。
+        assert!(matches!(kind(90), ScenePrimitiveKind::Quad { .. }));
+        assert!(matches!(kind(91), ScenePrimitiveKind::Quad { .. }));
+        assert!(matches!(kind(92), ScenePrimitiveKind::Text { content, .. } if content == "label"));
+        assert!(matches!(kind(93), ScenePrimitiveKind::Text { content, .. } if content == "label"));
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 100
+                })
+                .is_none()
+        );
+        assert!(matches!(kind(108), ScenePrimitiveKind::Text { content, .. } if content == "fn"));
+        // hover 浮窗：面板 + 标题 + 正文。
+        assert!(matches!(kind(120), ScenePrimitiveKind::Quad { .. }));
+        assert!(
+            matches!(kind(121), ScenePrimitiveKind::Text { content, .. } if content == "hover")
+        );
+        assert!(matches!(kind(122), ScenePrimitiveKind::Text { content, .. } if content == "body"));
+        // 两行之外没有多余文本层。
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 94
+                })
+                .is_none()
         );
     }
 }
