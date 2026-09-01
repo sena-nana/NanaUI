@@ -12,7 +12,7 @@ window-vibrancy = "0.8.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
-objc2-app-kit = { workspace = true, default-features = false, features = ["NSApplication", "NSEvent", "NSView", "NSWindow", "NSImage", "objc2-quartz-core"] }
+objc2-app-kit = { workspace = true, default-features = false, features = ["NSApplication", "NSEvent", "NSView", "NSWindow", "NSImage", "NSButton", "NSControl", "NSResponder", "objc2-quartz-core"] }
 objc2-foundation = { workspace = true, default-features = false, features = [
     "NSData",
     "objc2-core-foundation",

@@ -4,9 +4,14 @@ use raw_window_handle::HasWindowHandle;
 #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 const WS_CAPTION: isize = 0x00C0_0000;
 
-/// Prepares native titlebar dragging and client-chrome window shape.
-pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+/// Prepares native titlebar dragging and client-chrome window shape for a
+/// custom titlebar `titlebar_height` logical points tall.
+pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    titlebar_height: f64,
+) -> bool {
     let prepared = prepare_custom_title_bar(window);
+    let prepared = center_traffic_lights(window, titlebar_height) && prepared;
     #[cfg(target_os = "windows")]
     let prepared = apply_rounded_corners(window) && prepared;
     prepared
@@ -253,6 +258,74 @@ impl LiveFrameResize {
             windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
         }
     }
+}
+
+/// Centers macOS traffic lights inside a custom titlebar `titlebar_height`
+/// logical points tall: the system keeps them centered in the standard
+/// titlebar strip, which reads high inside NanaUI's taller bar. Other
+/// platforms have no native leading controls and always succeed.
+#[cfg(target_os = "macos")]
+fn center_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, titlebar_height: f64) -> bool {
+    use objc2_app_kit::NSWindowButton;
+    use objc2_foundation::NSPoint;
+
+    let Some(window) = appkit_window(window) else {
+        return false;
+    };
+    // All three buttons must exist and share one container view: the fix
+    // moves that container so the buttons keep their spacing.
+    let (Some(close), Some(miniaturize), Some(zoom)) = (
+        window.standardWindowButton(NSWindowButton::CloseButton),
+        window.standardWindowButton(NSWindowButton::MiniaturizeButton),
+        window.standardWindowButton(NSWindowButton::ZoomButton),
+    ) else {
+        return false;
+    };
+    // SAFETY: plain property reads on live views owned by this window.
+    let container = unsafe { close.superview() };
+    let container_parent = container
+        .as_ref()
+        .and_then(|view| unsafe { view.superview() });
+    let (Some(container), Some(container_parent)) = (container, container_parent) else {
+        return false;
+    };
+    // SAFETY: plain property reads on live views owned by this window.
+    if unsafe { miniaturize.superview() }.as_ref() != Some(&container)
+        || unsafe { zoom.superview() }.as_ref() != Some(&container)
+    {
+        return false;
+    }
+
+    // Vertical center of the buttons measured from the top of the window.
+    // Window base coordinates grow upward from the bottom-left corner.
+    let close_in_window = close.convertRect_toView(close.bounds(), None);
+    let current_from_top =
+        window.frame().size.height - (close_in_window.origin.y + close_in_window.size.height / 2.0);
+    let delta = titlebar_height / 2.0 - current_from_top;
+    if delta.abs() < 0.5 {
+        return true;
+    }
+
+    // Learn how the container's parent maps its y axis onto window space
+    // (titlebar views are flipped, the window is not) instead of assuming.
+    let y_up_per_unit = container_parent
+        .convertPoint_toView(NSPoint::new(0.0, 1.0), None)
+        .y
+        - container_parent
+            .convertPoint_toView(NSPoint::new(0.0, 0.0), None)
+            .y;
+    if y_up_per_unit == 0.0 {
+        return false;
+    }
+    let mut frame = container.frame();
+    frame.origin.y -= delta / y_up_per_unit;
+    container.setFrameOrigin(frame.origin);
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn center_traffic_lights<W: HasWindowHandle + ?Sized>(_window: &W, _titlebar_height: f64) -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]
