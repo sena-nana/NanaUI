@@ -775,6 +775,40 @@ impl AppContext {
         self.write_editor_selections(focused.node, focused.kind, state.selection, Vec::new())
     }
 
+    /// 把聚焦文本编辑器的选区设为唯一选区 `start..end`（`start == end`
+    /// 为光标；附加光标清除）。偏移先钳到最近的字符边界。区间任一端点
+    /// 严格落在折叠隐藏区间内部时该折叠自动展开（与光标导航同源的
+    /// reveal 语义，复用框架 display 判定：嵌套折叠只展开当前真正遮住
+    /// 端点的父级）。纯选区变更：不发 change 事件（同 move 命令）。
+    /// `Ok(false)` 表示没有聚焦编辑器，或选区本就一致。
+    pub fn select_focused_text_range(
+        &mut self,
+        document: DocumentId,
+        start: usize,
+        end: usize,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let start = clamp_focus(&state.value, start);
+        let end = clamp_focus(&state.value, end);
+        self.caret_goal_x = None;
+        // 区间两端都参与 reveal（光标导航只看 focus；宿主跳转的起点同样
+        // 必须可见）。write_editor_selections 内部还会按 focus 再对账一次，
+        // 幂等无害。
+        self.unfold_text_folds_containing(focused.node, &[start, end])?;
+        self.write_editor_selections(
+            focused.node,
+            focused.kind,
+            TextSelection {
+                anchor: start,
+                focus: end,
+            },
+            Vec::new(),
+        )
+    }
+
     /// Add one cursor on the visual line above (`above`) or below every
     /// active selection, keeping each cursor's column. Multiline editors
     /// only; hosts without a shaper fall back to logical-line columns.
@@ -1173,6 +1207,16 @@ impl AppContext {
             y,
             count,
         });
+        // 补全弹层交互优先于折叠：弹层绘制在全部编辑器覆盖层之上，
+        // 命中候选行即接受该行（单击且无修饰时），不落光标。
+        if count == 1
+            && !extend
+            && !add_cursor
+            && let Some(row) = self.world.text_completion_hit(node, x, y)
+        {
+            self.text_pointer_drag = None;
+            return self.accept_focused_text_completion(document, Some(row));
+        }
         // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
         // 光标（单击且无修饰时）。
         if count == 1
@@ -1639,6 +1683,224 @@ fn expand_snippet_body(body: &str, base: usize) -> (String, Vec<usize>, usize) {
         stops.into_iter().map(|(_, offset)| offset).collect(),
         caret,
     )
+}
+
+/// 补全接受时被替换的词前缀字符（`[A-Za-z0-9_]`，Zed 风格标识符词）。
+fn is_word_prefix_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// 从 `caret` 向前的词前缀起点（连续 `[A-Za-z0-9_]` 游程的开头）。
+fn word_prefix_start(value: &str, caret: usize) -> usize {
+    let bytes = value.as_bytes();
+    let caret = caret.min(bytes.len());
+    let mut start = caret;
+    while start > 0 && is_word_prefix_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    start
+}
+
+impl AppContext {
+    /// 聚焦多行编辑器当前活跃（非空且未关闭）的补全会话与节点。
+    fn focused_completion_session(
+        &self,
+        document: DocumentId,
+    ) -> Option<(StableNodeId, crate::store::TextCompletionViewState)> {
+        let focused = self.focused_text_editor(document)?;
+        if !focused.multiline || !focused.accepts_input {
+            return None;
+        }
+        let state = self.world.text_completion_view(focused.node)?;
+        (state.items.len() > 0 && !state.dismissed).then_some((focused.node, state))
+    }
+
+    /// 聚焦多行编辑器当前是否激活补全弹层（非空且未关闭的会话）。
+    /// 路由层用它决定编辑键是否被弹层消费（边界上导航无可做仍消费）。
+    pub fn focused_text_completion_active(&self, document: DocumentId) -> bool {
+        self.focused_completion_session(document).is_some()
+    }
+
+    /// 补全弹层的上下键导航：在候选间移动选中项（编辑器选区不动），
+    /// 滚动窗口跟随选中项。弹层未激活或已在边界时返回 `Ok(false)`——
+    /// 边界仍消费事件由路由层决定（弹层激活期间一律消费）。
+    pub fn move_focused_text_completion(
+        &mut self,
+        document: DocumentId,
+        down: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some((node, state)) = self.focused_completion_session(document) else {
+            return Ok(false);
+        };
+        let len = state.items.len();
+        let selected = if down {
+            (state.selected + 1).min(len - 1)
+        } else {
+            state.selected.saturating_sub(1)
+        };
+        let scroll = completion_scroll_follow(selected, state.scroll, len);
+        if selected == state.selected && scroll == state.scroll {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_completion_view(node, selected, scroll);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 接受补全候选：把主光标前的词前缀（`[A-Za-z0-9_]` 游程）替换为
+    /// 候选 `label`，发一次 TextChanged。`row` 为 `Some` 时接受指定候选
+    /// （弹层点击路径），`None` 接受当前选中项。多光标时只作用主光标，
+    /// 附加光标经偏移重映射保留。会话本身不动：弹层的后续过滤由宿主
+    /// 在 TextChanged 后重喂决定。
+    pub fn accept_focused_text_completion(
+        &mut self,
+        document: DocumentId,
+        row: Option<usize>,
+    ) -> Result<bool, FrameworkError> {
+        let Some((_, state)) = self.focused_completion_session(document) else {
+            return Ok(false);
+        };
+        let index = row.unwrap_or(state.selected);
+        let Some(item) = state.items.get(index) else {
+            return Ok(false);
+        };
+        let label = item.label.clone();
+        let focused = self
+            .focused_text_editor(document)
+            .expect("session implies editor");
+        self.caret_goal_x = None;
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            |value, selection, is_primary| {
+                if !is_primary {
+                    return None;
+                }
+                let caret = clamp_boundary(value, selection.focus);
+                let start = word_prefix_start(value, caret);
+                Some(CursorEdit::Span(TextReplacement {
+                    range: start..caret,
+                    insert: label.clone(),
+                    caret: start + label.len(),
+                }))
+            },
+        )
+    }
+
+    /// Esc 关闭补全弹层。会话数据保留：宿主重喂相同列表不复活弹层，
+    /// 换新列表（打字后过滤结果变化）重新打开。无活跃弹层时返回
+    /// `Ok(false)`，Esc 落到后续优先级（多光标塌缩等）。
+    pub fn dismiss_focused_text_completion(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let Some(state) = self.world.text_completion_view(focused.node) else {
+            return Ok(false);
+        };
+        if state.dismissed {
+            return Ok(false);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_completion_dismissed(focused.node);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 滚轮滚动补全弹层（`rows` 为正表示向列表末尾方向）。滚动位置钳在
+    /// 候选范围内；弹层未激活时返回 `Ok(false)`。
+    pub fn scroll_focused_text_completion(
+        &mut self,
+        document: DocumentId,
+        rows: isize,
+    ) -> Result<bool, FrameworkError> {
+        let Some((node, state)) = self.focused_completion_session(document) else {
+            return Ok(false);
+        };
+        let len = state.items.len();
+        let scroll = clamp_scroll(state.scroll as isize + rows, len);
+        if scroll == state.scroll {
+            return Ok(true);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_completion_view(node, state.selected, scroll);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    /// 指针位置命中的补全候选（弹层点击接受路径的查询入口）。未聚焦
+    /// 编辑器或未命中时为 `None`。
+    pub fn completion_hit_at(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<usize>, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(None);
+        };
+        if !focused.multiline {
+            return Ok(None);
+        }
+        Ok(self.world.text_completion_hit(focused.node, x, y))
+    }
+
+    /// 滚轮落在锚定浮层内时的路由：优先滚动补全弹层（绘制在最上，会话
+    /// 锚定聚焦编辑器），其次滚动 hover 浮窗正文。hover 命中测试驱动：
+    /// hover 显示不要求焦点，滚轮落点命中任意编辑器的浮窗面板即滚动该
+    /// 面板。都不在浮层上时返回 `Ok(false)`，滚轮落回编辑器/文档滚动。
+    pub fn scroll_text_overlay_at(
+        &mut self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        rows: isize,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(focused) = self.focused_text_editor(document)
+            && self.world.text_completion_panel_hit(focused.node, x, y)
+        {
+            return self.scroll_focused_text_completion(document, rows);
+        }
+        let Some(node) = self.world.text_hover_panel_at(document, x, y) else {
+            return Ok(false);
+        };
+        let Some(state) = self.world.text_hover_view(node) else {
+            return Ok(false);
+        };
+        let line_count = state.doc.body.lines().count();
+        let scroll = clamp_scroll(state.scroll as isize + rows, line_count);
+        if scroll == state.scroll {
+            return Ok(true);
+        }
+        let mut mutations = crate::MutationQueue::new();
+        mutations.set_text_input_hover_scroll(node, scroll);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+}
+
+/// 键盘导航的滚动窗口跟随：选中项离开可见窗口时把窗口滑到包含它的
+/// 最近位置。
+fn completion_scroll_follow(selected: usize, scroll: usize, len: usize) -> usize {
+    let visible = crate::TEXT_COMPLETION_VISIBLE_ROWS.min(len);
+    if selected < scroll {
+        selected
+    } else if selected >= scroll + visible {
+        selected + 1 - visible
+    } else {
+        scroll
+    }
+}
+
+/// 滚动位置钳制：非空列表钳在 `[0, len - 1]`，空列表恒为 0。
+fn clamp_scroll(scroll: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    scroll.clamp(0, (len - 1) as isize) as usize
 }
 
 impl AppContext {
@@ -2339,6 +2601,395 @@ mod fold_snippet_tests {
             !context
                 .advance_focused_text_snippet(document, false)
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn select_range_sets_sole_selection_clamped_and_clears_extra_cursors() {
+        // "a中文"：字节 1..4 是"中"，4..7 是"文"。
+        let (mut context, document, area, node) = focused_editor("a中文");
+        context
+            .update_component(area, |area_view, _| {
+                area_view.state.selection = TextSelection::caret(0);
+                area_view.state.additional_selections = vec![TextSelection::caret(1)];
+            })
+            .unwrap();
+
+        // 越界偏移钳到值长度；附加光标清除；start == end 为光标。
+        assert!(
+            context
+                .select_focused_text_range(document, 100, 200)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (7, 7));
+        assert!(
+            context
+                .world()
+                .text_input(node)
+                .unwrap()
+                .additional_selections
+                .is_empty()
+        );
+
+        // 字符边界钳制：落在"中"内部（2）回退到 1，落在"文"内部（5）回退到 4。
+        assert!(context.select_focused_text_range(document, 2, 5).unwrap());
+        assert_eq!(selection_of(&context, node), (1, 4));
+
+        // 无聚焦编辑器：不消费。
+        let mut other = AppContext::new();
+        let other_document = DocumentId::new(9).unwrap();
+        assert!(
+            !other
+                .select_focused_text_range(other_document, 0, 1)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn select_range_unfolds_fold_hiding_endpoint() {
+        let (mut context, document, _area, node) = offered_editor(fold_value(), &[FOLD_BLOCK]);
+        assert!(context.toggle_focused_text_fold(document, Some(3)).unwrap());
+        assert_eq!(
+            context.focused_text_collapsed_folds(document),
+            vec![FOLD_BLOCK]
+        );
+
+        // 选区端点落在隐藏区间内部：该折叠自动展开（reveal 语义）。
+        assert!(context.select_focused_text_range(document, 13, 17).unwrap());
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
+        assert_eq!(selection_of(&context, node), (13, 17));
+
+        // 起点在折叠外、终点落在隐藏区间内：区间覆盖同样展开。
+        assert!(context.toggle_focused_text_fold(document, Some(3)).unwrap());
+        assert!(context.select_focused_text_range(document, 0, 15).unwrap());
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
+        assert_eq!(selection_of(&context, node), (0, 15));
+    }
+
+    #[test]
+    fn select_range_into_nested_folds_unfolds_only_covering_parent() {
+        let child = TextCodeFold::new(12, 20);
+        let (mut context, document, _area, node) =
+            offered_editor(fold_value(), &[FOLD_BLOCK, child]);
+        // 先折叠父级，再折叠子级（偏移 15 的最内层折叠）。
+        assert!(context.toggle_focused_text_fold(document, Some(3)).unwrap());
+        assert!(
+            context
+                .toggle_focused_text_fold(document, Some(15))
+                .unwrap()
+        );
+        assert_eq!(
+            context.focused_text_collapsed_folds(document),
+            vec![FOLD_BLOCK, child]
+        );
+
+        // display 语义：被父级覆盖的子折叠不进入显示视图，偏移由父级
+        // 遮住——只展开父级，子级保持折叠。
+        assert!(context.select_focused_text_range(document, 15, 16).unwrap());
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![child]);
+        assert_eq!(selection_of(&context, node), (15, 16));
+    }
+
+    #[test]
+    fn select_range_is_selection_only_and_emits_no_change() {
+        let (mut context, document, area, node) = offered_editor(fold_value(), &[FOLD_BLOCK]);
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        context
+            .on(area, move |_view, event: &crate::TextChanged, _cx| {
+                sink.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+        assert!(context.toggle_focused_text_fold(document, Some(3)).unwrap());
+
+        // 选区写入 + 折叠展开都不发 change 事件（同 move 命令）。
+        assert!(context.select_focused_text_range(document, 15, 17).unwrap());
+        assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
+        assert_eq!(selection_of(&context, node), (15, 17));
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            fold_value()
+        );
+        assert!(changes.lock().unwrap().is_empty());
+
+        // 选区本就一致：返回 false，依旧零事件。
+        assert!(!context.select_focused_text_range(document, 15, 17).unwrap());
+        assert!(changes.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use crate::{AppContext, DocumentId, Entity, StableNodeId, TextArea, TextCompletion};
+    use std::sync::Arc;
+
+    fn items(labels: &[&str]) -> Arc<[TextCompletion]> {
+        labels
+            .iter()
+            .map(|label| TextCompletion::new(*label, "fn"))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn selection_of(context: &AppContext, node: StableNodeId) -> (usize, usize) {
+        let state = context.world().text_input(node).unwrap();
+        (state.selection.anchor, state.selection.focus)
+    }
+
+    fn completion_editor(
+        value: &str,
+        completions: Arc<[TextCompletion]>,
+    ) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).completions(completions))
+            .unwrap();
+        let node = area.stable_id();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn session_of(context: &AppContext, node: StableNodeId) -> Option<(usize, usize, bool, usize)> {
+        context.world().text_completion_view(node).map(|state| {
+            (
+                state.items.len(),
+                state.selected,
+                state.dismissed,
+                state.scroll,
+            )
+        })
+    }
+
+    fn caret_to(context: &mut AppContext, area: Entity<TextArea>, caret: usize) {
+        context
+            .update_component(area, |view, _| {
+                view.state.selection = crate::TextSelection::caret(caret);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn feed_activates_session_and_same_feed_keeps_selection() {
+        let (mut context, document, area, node) =
+            completion_editor("fn f", items(&["fn", "format"]));
+        // 喂入非空列表激活会话：选中第一条。
+        assert_eq!(session_of(&context, node), Some((2, 0, false, 0)));
+
+        // Down：钳在最后一条（导航无可做，返回 false，但弹层仍活跃）。
+        assert!(
+            context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        assert_eq!(session_of(&context, node), Some((2, 1, false, 0)));
+        assert!(
+            !context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        assert_eq!(session_of(&context, node), Some((2, 1, false, 0)));
+
+        // 重喂相同列表：键盘选中保持。
+        context
+            .update_component(area, |view, _| {
+                view.completions = items(&["fn", "format"]);
+            })
+            .unwrap();
+        assert_eq!(session_of(&context, node), Some((2, 1, false, 0)));
+
+        // 重喂不同列表：视为新会话（选中归零、重新打开）。
+        context
+            .update_component(area, |view, _| {
+                view.completions = items(&["format"]);
+            })
+            .unwrap();
+        assert_eq!(session_of(&context, node), Some((1, 0, false, 0)));
+
+        // 喂空列表：会话移除（弹层关闭）。
+        context
+            .update_component(area, |view, _| {
+                view.completions = Arc::from([]);
+            })
+            .unwrap();
+        assert_eq!(session_of(&context, node), None);
+    }
+
+    #[test]
+    fn navigation_scrolls_window_and_clamps() {
+        let (mut context, document, _area, node) = completion_editor(
+            "",
+            items(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]),
+        );
+        // Down 走到第 9 条：第 9 步时窗口滑出一页（scroll = 8 + 1 - 8 = 1）。
+        for _ in 0..8 {
+            assert!(
+                context
+                    .move_focused_text_completion(document, true)
+                    .unwrap()
+            );
+        }
+        assert_eq!(session_of(&context, node), Some((10, 8, false, 1)));
+        // 第 10 条：窗口再次滑动使选中项可见（scroll = 9 + 1 - 8 = 2）。
+        assert!(
+            context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        assert_eq!(session_of(&context, node), Some((10, 9, false, 2)));
+        // 边界：再 Down 不再移动（导航返回 false 表示无可做）。
+        assert!(
+            !context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        // Up 回到第一条：scroll 跟回 0。
+        for _ in 0..9 {
+            assert!(
+                context
+                    .move_focused_text_completion(document, false)
+                    .unwrap()
+            );
+        }
+        assert_eq!(session_of(&context, node), Some((10, 0, false, 0)));
+        assert!(
+            !context
+                .move_focused_text_completion(document, false)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn accept_replaces_word_prefix_and_emits_one_change() {
+        let (mut context, document, area, node) =
+            completion_editor("let x = fo", items(&["food", "foobar"]));
+        caret_to(&mut context, area, "let x = fo".len());
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&changes);
+        context
+            .on(area, move |_view, event: &crate::TextChanged, _cx| {
+                sink.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+
+        // 接受选中项（第一条）：光标前的词前缀 `fo` 替换为 label，一次
+        // TextChanged，光标停在插入末尾。
+        assert!(
+            context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "let x = food"
+        );
+        assert_eq!(
+            selection_of(&context, node),
+            ("let x = food".len(), "let x = food".len())
+        );
+        assert_eq!(*changes.lock().unwrap(), vec!["let x = food".to_string()]);
+
+        // 点击接受第二行候选：替换同一词前缀，再发一次 TextChanged。
+        caret_to(&mut context, area, "let x = food".len());
+        assert!(
+            context
+                .accept_focused_text_completion(document, Some(1))
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "let x = foobar"
+        );
+        assert_eq!(changes.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn dismiss_sticks_for_same_list_and_reopens_on_new_list() {
+        let (mut context, document, area, node) = completion_editor("f", items(&["fn", "format"]));
+        assert_eq!(session_of(&context, node), Some((2, 0, false, 0)));
+
+        // Esc 关闭：会话数据保留但 dismissed 置位；重复关闭返回 false
+        // （Esc 落到后续优先级）。
+        assert!(context.dismiss_focused_text_completion(document).unwrap());
+        assert_eq!(session_of(&context, node), Some((2, 0, true, 0)));
+        assert!(!context.dismiss_focused_text_completion(document).unwrap());
+
+        // 光标移动触发组件重投影、宿主重喂相同列表：弹层不复活。
+        caret_to(&mut context, area, 0);
+        assert_eq!(session_of(&context, node), Some((2, 0, true, 0)));
+
+        // 打字后宿主重喂不同列表：新会话（重新打开、选中归零）。
+        caret_to(&mut context, area, 1);
+        context
+            .update_component(area, |view, _| {
+                view.completions = items(&["format"]);
+            })
+            .unwrap();
+        assert_eq!(session_of(&context, node), Some((1, 0, false, 0)));
+
+        // 无会话时 dismiss 与导航都返回 false。
+        context
+            .update_component(area, |view, _| {
+                view.completions = Arc::from([]);
+            })
+            .unwrap();
+        assert!(!context.dismiss_focused_text_completion(document).unwrap());
+        assert!(
+            !context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        assert!(
+            !context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn completion_wheel_scroll_clamps_into_range() {
+        let (mut context, document, _area, node) =
+            completion_editor("", items(&["a", "b", "c", "d", "e"]));
+        // 向列表末尾方向滚过边界：钳在最后一条可见。
+        assert!(context.scroll_focused_text_completion(document, 7).unwrap());
+        assert_eq!(session_of(&context, node), Some((5, 0, false, 4)));
+        // 回滚到顶。
+        assert!(
+            context
+                .scroll_focused_text_completion(document, -9)
+                .unwrap()
+        );
+        assert_eq!(session_of(&context, node), Some((5, 0, false, 0)));
+        // 无会话时不消费。
+        context
+            .update_component(_area, |view, _| {
+                view.completions = Arc::from([]);
+            })
+            .unwrap();
+        assert!(!context.scroll_focused_text_completion(document, 1).unwrap());
+    }
+
+    #[test]
+    fn accept_only_edits_primary_cursor_and_maps_additional() {
+        let (mut context, document, area, node) = completion_editor("fo\nfo", items(&["food"]));
+        context
+            .update_component(area, |view, _| {
+                view.state.selection = crate::TextSelection::caret(2);
+                view.state.additional_selections = vec![crate::TextSelection::caret(5)];
+            })
+            .unwrap();
+        assert!(
+            context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+        let state = context.world().text_input(node).unwrap();
+        // 只作用主光标；附加光标随编辑平移保留（与 snippet 同款限制）。
+        assert_eq!(state.value, "food\nfo");
+        assert_eq!(state.selection, crate::TextSelection::caret(4));
+        assert_eq!(
+            state.additional_selections,
+            vec![crate::TextSelection::caret(7)]
         );
     }
 }

@@ -152,11 +152,12 @@ impl RuntimeInputAdapter {
                     prevent_default: true,
                 });
             }
-            // overlay 未消费的 Esc：先结束 snippet 会话，再塌缩多光标到主
-            // 光标。两者都只在聚焦多行编辑器且状态存在时消费事件，否则
-            // 穿透给宿主（首次按下才生效，repeat 不消费）。
+            // overlay 未消费的 Esc：先结束 snippet 会话，再关闭补全弹层，
+            // 最后塌缩多光标到主光标。两者都只在聚焦多行编辑器且状态存在
+            // 时消费事件，否则穿透给宿主（首次按下才生效，repeat 不消费）。
             if matches!(overlay_key, Some(OverlayKey::Escape)) && !repeat {
                 if context.cancel_focused_text_snippet(document)?
+                    || context.dismiss_focused_text_completion(document)?
                     || context.collapse_focused_text_selections(document)?
                 {
                     return Ok(InputDisposition {
@@ -603,6 +604,23 @@ impl RuntimeInputAdapter {
                     *x,
                     *y,
                 )?;
+                // 锚定浮层（补全弹层 / hover 浮窗）优先：指针落在浮层面板
+                // 上时滚轮滚动浮层自身（按行，方向跟随滚轮），不再落到
+                // 编辑器或文档滚动。
+                let overlay_rows = if *delta_y > 0.0 {
+                    1isize
+                } else if *delta_y < 0.0 {
+                    -1
+                } else {
+                    0
+                };
+                if overlay_rows != 0
+                    && context.scroll_text_overlay_at(document, *x, *y, overlay_rows)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
                 let graph_delta = if *line_delta {
                     GraphScrollDelta::Lines { y: -dy }
                 } else {
@@ -939,6 +957,13 @@ impl RuntimeInputAdapter {
     }
 }
 
+/// 补全弹层在激活期间消费的编辑键。
+enum CompletionKey {
+    Up,
+    Down,
+    Accept,
+}
+
 impl RuntimeInputAdapter {
     /// Keyboard editing for the focused plain text editor.
     ///
@@ -956,6 +981,36 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
+        // 补全弹层激活时，无修饰的 Up/Down/Enter/Tab 由弹层消费：Up/Down
+        // 移动候选选中项（编辑器选区不动），Enter/Tab 接受选中项。其余键
+        // 穿透正常编辑（打字触发宿主重喂过滤列表）；任何修饰键组合
+        // （Cmd+D、Alt+Up、Shift+Up 等）一律穿透。
+        if !modifiers.control && !modifiers.meta && !modifiers.alt {
+            let completion_key = match key {
+                "ArrowUp" if !modifiers.shift => Some(CompletionKey::Up),
+                "ArrowDown" if !modifiers.shift => Some(CompletionKey::Down),
+                "Enter" if !modifiers.shift => Some(CompletionKey::Accept),
+                "Tab" if !modifiers.shift => Some(CompletionKey::Accept),
+                _ => None,
+            };
+            if let Some(completion_key) = completion_key
+                && context.focused_text_completion_active(document)
+            {
+                match completion_key {
+                    CompletionKey::Up => {
+                        context.move_focused_text_completion(document, false)?;
+                    }
+                    CompletionKey::Down => {
+                        context.move_focused_text_completion(document, true)?;
+                    }
+                    CompletionKey::Accept => {
+                        context.accept_focused_text_completion(document, None)?;
+                    }
+                }
+                // 弹层激活期间整键消费（边界上导航无可做也不移动选区）。
+                return Ok(true);
+            }
+        }
         let control = modifiers.control;
         let meta = modifiers.meta;
         let word_modifier = control || modifiers.alt;
@@ -5384,5 +5439,449 @@ mod tests {
             textarea_selections(&context, node),
             ("bb\naa\ncc".into(), (4, 4), vec![(7, 7)])
         );
+    }
+
+    fn completion_items(labels: &[&str]) -> std::sync::Arc<[nana_ui_runtime::TextCompletion]> {
+        labels
+            .iter()
+            .map(|label| nana_ui_runtime::TextCompletion::new(*label, "fn"))
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    /// 布局 + shape + 命中测试的完整几何环境（指针/滚轮路由需要）。
+    fn shape_completion_editor(context: &mut AppContext, document: DocumentId, node: StableNodeId) {
+        context.world_mut().resolve_styles(&[node]).unwrap();
+        context
+            .world_mut()
+            .shape_text(&[node], &mut MeasureTextShaper)
+            .unwrap();
+        context.rebuild_hit_test(document);
+    }
+
+    fn completion_popup_geometry(
+        context: &AppContext,
+        node: StableNodeId,
+    ) -> nana_ui_runtime::TextCompletionPopup {
+        match context.world().component_geometry(node) {
+            Some(nana_ui_runtime::ComponentGeometry::TextInput {
+                completion_popup, ..
+            }) => completion_popup.expect("completion popup geometry"),
+            _ => panic!("text input geometry"),
+        }
+    }
+
+    #[test]
+    fn completion_popup_owns_navigation_and_accept_keys() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("let fo").completions(completion_items(&["food", "foobar"])),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        set_selections(&mut context, area, (6, 6), vec![]);
+        let mut adapter = RuntimeInputAdapter::default();
+        let selected = |context: &AppContext, node| {
+            context
+                .world()
+                .text_completion_snapshot(node)
+                .map(|snapshot| (snapshot.selected, snapshot.dismissed))
+        };
+
+        // Down：弹层消费（选区不动），候选选中移到第二条。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowDown"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("let fo".into(), 6, 6));
+        assert_eq!(selected(&context, node), Some((1, false)));
+
+        // Up：回到第一条。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(selected(&context, node), Some((0, false)));
+
+        // Enter：接受选中项，一次 TextChanged，光标落在插入末尾。
+        let changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&changes);
+        context
+            .on(area, move |_view, event: &TextChanged, _cx| {
+                sink.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("let food".into(), 8, 8)
+        );
+        assert_eq!(*changes.lock().unwrap(), vec!["let food".to_string()]);
+
+        // 宿主重喂（组件重投影）：会话重新激活，Tab 同样接受。
+        context
+            .update_component(area, |view, _| {
+                view.completions = completion_items(&["food"]);
+            })
+            .unwrap();
+        assert_eq!(selected(&context, node), Some((0, false)));
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Tab"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("let food".into(), 8, 8)
+        );
+
+        // 打字穿透正常编辑：committed value 直接更新（弹层保持，过滤
+        // 由宿主重喂驱动）。
+        context
+            .update_component(area, |view, _| {
+                view.completions = completion_items(&["food"]);
+            })
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &edit_key("s", Some("s"), InputModifiers::default())
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("let foods".into(), 9, 9)
+        );
+    }
+
+    #[test]
+    fn modified_keys_pass_through_while_completion_active() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("ab ab").completions(completion_items(&["ab"])),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        set_selections(&mut context, area, (1, 1), vec![]);
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // Cmd+D 穿透：选中下一出现（多光标 +1），弹层保持。
+        let meta_d = edit_key(
+            "d",
+            None,
+            InputModifiers {
+                meta: true,
+                ..InputModifiers::default()
+            },
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &meta_d)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            textarea_selections(&context, node),
+            ("ab ab".into(), (1, 1), vec![(3, 5)])
+        );
+        assert!(
+            context
+                .world()
+                .text_completion_snapshot(node)
+                .is_some_and(|snapshot| !snapshot.dismissed)
+        );
+    }
+
+    #[test]
+    fn escape_closes_completion_after_snippet_and_before_collapse() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("ab\ncd").completions(completion_items(&["ab"])),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        set_selections(&mut context, area, (0, 0), vec![(5, 5)]);
+        assert!(
+            context
+                .insert_focused_text_snippet(
+                    document,
+                    &nana_ui_runtime::TextSnippet::new("s", "[$1]$0"),
+                )
+                .unwrap()
+        );
+        // snippet 插入后宿主重喂（组件重投影路径）：弹层重新激活。
+        context
+            .update_component(area, |view, _| {
+                view.completions = completion_items(&["ab"]);
+            })
+            .unwrap();
+        let mut adapter = RuntimeInputAdapter::default();
+        let escape = InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".into(),
+            text: None,
+            code: "Escape".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+
+        // 第一个 Esc：结束 snippet 会话（弹层与多光标保留）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            context
+                .world()
+                .text_completion_snapshot(node)
+                .is_some_and(|snapshot| !snapshot.dismissed)
+        );
+        assert_eq!(textarea_selections(&context, node).2.len(), 1);
+
+        // 第二个 Esc：关闭补全弹层（多光标保留）。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert!(
+            context
+                .world()
+                .text_completion_snapshot(node)
+                .is_some_and(|snapshot| snapshot.dismissed)
+        );
+        assert_eq!(textarea_selections(&context, node).2.len(), 1);
+
+        // 第三个 Esc：塌缩多光标。
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selections(&context, node).2, vec![]);
+    }
+
+    #[test]
+    fn completion_click_accepts_row_and_wheel_scrolls_overlay() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("")
+                    .completions(completion_items(&["alpha", "beta", "gamma", "delta"])),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 140.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        shape_completion_editor(&mut context, document, node);
+
+        // 点击弹层第二行：接受该候选（beta），不落光标。
+        let popup = completion_popup_geometry(&context, node);
+        let row = &popup.rows[1];
+        let click = |x: f32, y: f32, phase: PointerPhase| InputEvent::Pointer {
+            phase,
+            pointer_id: 7,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: u16::from(phase == PointerPhase::Down),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        };
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &click(row.bounds.x + 2.0, row.bounds.y + 2.0, PointerPhase::Down),
+                    Duration::ZERO,
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("beta".into(), 4, 4));
+
+        // 重喂十条候选并重建几何：滚轮落在弹层面板内滚动弹层（消费），
+        // 不落到编辑器滚动。
+        context
+            .update_component(area, |view, _| {
+                view.completions = completion_items(&[
+                    "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10",
+                ]);
+                view.state.selection = nana_ui_runtime::TextSelection::caret(4);
+            })
+            .unwrap();
+        shape_completion_editor(&mut context, document, node);
+        let popup = completion_popup_geometry(&context, node);
+        let scroll = |context: &AppContext| {
+            context
+                .world()
+                .text_completion_snapshot(node)
+                .map(|snapshot| snapshot.scroll)
+        };
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &wheel(popup.panel.x + 3.0, popup.panel.y + 3.0, 3.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(scroll(&context), Some(1));
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &wheel(popup.panel.x + 3.0, popup.panel.y + 3.0, -3.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(scroll(&context), Some(0));
+
+        // hover 浮窗滚轮：正文按行滚动并被消费。
+        context
+            .update_component(area, |view, _| {
+                view.hover = Some(nana_ui_runtime::TextHover::new(
+                    0,
+                    "beta",
+                    "one\ntwo\nthree",
+                ));
+            })
+            .unwrap();
+        shape_completion_editor(&mut context, document, node);
+        let hover_panel = match context.world().component_geometry(node) {
+            Some(nana_ui_runtime::ComponentGeometry::TextInput { hover_popup, .. }) => {
+                hover_popup.expect("hover popup").panel
+            }
+            _ => panic!("text input geometry"),
+        };
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &wheel(hover_panel.x + 3.0, hover_panel.y + 3.0, 3.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text_hover_scroll(node), 1);
+    }
+
+    #[test]
+    fn hover_wheel_scrolls_without_editor_focus() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("alpha beta").hover(Some(nana_ui_runtime::TextHover::new(
+                    6,
+                    "beta",
+                    "one\ntwo\nthree",
+                ))),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 140.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        shape_completion_editor(&mut context, document, node);
+        let hover_panel = match context.world().component_geometry(node) {
+            Some(nana_ui_runtime::ComponentGeometry::TextInput { hover_popup, .. }) => {
+                hover_popup.expect("hover popup").panel
+            }
+            _ => panic!("text input geometry"),
+        };
+        let mut adapter = RuntimeInputAdapter::default();
+
+        // 编辑器未聚焦：滚轮落在 hover 面板内仍滚动该面板（命中测试驱动，
+        // hover 显示不要求焦点）。
+        assert!(
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &wheel(hover_panel.x + 3.0, hover_panel.y + 3.0, 3.0)
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text_hover_scroll(node), 1);
+
+        // 面板外：不消费，落回编辑器/文档滚动。
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &wheel(-50.0, -50.0, 3.0))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text_hover_scroll(node), 1);
     }
 }

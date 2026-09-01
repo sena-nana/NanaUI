@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
-    StandardVisual, TextCodeFold, TextContent, TextDiagnosticSpan, TextHorizontalAlignment,
-    TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
+    StandardVisual, TextCodeFold, TextCompletion, TextContent, TextDiagnosticSpan,
+    TextHorizontalAlignment, TextHover, TextInputState, TextMatchSpan, TextVerticalAlignment,
+    UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1652,6 +1653,18 @@ pub struct TextArea {
     /// 哪些区间处于折叠态由组件内部维护（宿主重喂时按区间匹配保留，
     /// 漂移的尽力平移匹配，失效的自动展开）。折叠是纯视图状态，不改值。
     pub code_folds: Arc<[TextCodeFold]>,
+    /// 补全候选（见 [`TextCompletion`]）。过滤完全由宿主负责：宿主按当前
+    /// 词前缀过滤后在文本/光标变化时重新喂入，非空列表激活候选会话（弹层
+    /// 锚定主光标行），空列表关闭。会话由组件内部管理：键盘选中与滚动
+    /// 存放在组件内部状态里，重喂相同列表（指针或内容相等）不下发变更，
+    /// 选中保持、已 Esc 关闭的弹层也不复活；重喂不同列表视为新会话
+    /// （选中归零、重新打开）。
+    pub completions: Arc<[TextCompletion]>,
+    /// hover 文档浮窗（见 [`TextHover`]）。`Some` 显示在偏移所在行附近，
+    /// `None` 隐藏；触发与生命周期完全由宿主决定，文本编辑时宿主负责撤掉
+    /// （组件不自动隐藏）。正文滚动存放在组件内部状态里：重喂相同文档
+    /// 不下发变更（滚动位置保留），换新文档重新显示并回到顶部。
+    pub hover: Option<TextHover>,
     pub(crate) style_override: bool,
 }
 
@@ -1671,6 +1684,8 @@ impl TextArea {
             line_numbers: false,
             code_editing: None,
             code_folds: Arc::from([]),
+            completions: Arc::from([]),
+            hover: None,
             style_override: false,
         }
     }
@@ -1704,6 +1719,19 @@ impl TextArea {
     /// 折叠态由组件内部维护。
     pub fn code_folds(mut self, folds: Arc<[TextCodeFold]>) -> Self {
         self.code_folds = folds;
+        self
+    }
+
+    /// 设置补全候选（见 [`TextCompletion`]）。过滤由宿主负责：按当前词
+    /// 前缀过滤后喂入，空列表表示关闭弹层。
+    pub fn completions(mut self, items: Arc<[TextCompletion]>) -> Self {
+        self.completions = items;
+        self
+    }
+
+    /// 设置 hover 文档浮窗（见 [`TextHover`]）。`None` 表示隐藏。
+    pub fn hover(mut self, hover: Option<TextHover>) -> Self {
+        self.hover = hover;
         self
     }
 
@@ -1792,6 +1820,27 @@ impl ComponentView for TextArea {
         }
         if world.scroll_offset(id) != Some(self.scroll_offset) {
             mutations.set_scroll_offset(id, self.scroll_offset);
+        }
+        // 补全候选喂入：列表未变（指针或内容相等）时不下发变更，会话的
+        // 键盘选中/滚动原样保留；空列表由世界侧移除会话（弹层关闭）。
+        {
+            let fed_unchanged = world
+                .text_completion_items(id)
+                .is_some_and(|fed| Arc::ptr_eq(fed, &self.completions) || *fed == self.completions);
+            if !fed_unchanged {
+                mutations.set_text_input_completions(id, Arc::clone(&self.completions));
+            }
+        }
+        // hover 浮窗喂入：内容未变时不下发变更。
+        {
+            let fed_unchanged = match (world.text_hover_doc(id), self.hover.as_ref()) {
+                (Some(fed), Some(hover)) => fed == hover,
+                (None, None) => true,
+                _ => false,
+            };
+            if !fed_unchanged {
+                mutations.set_text_input_hover(id, self.hover.clone());
+            }
         }
         let mut effective_style = self.style.clone();
         if self.invalid && !self.style_override {

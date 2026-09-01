@@ -302,6 +302,11 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetHighlightRequest { .. } => "SetHighlightRequest",
         UiMutation::SetTextInputFoldCollapsed { .. } => "SetTextInputFoldCollapsed",
         UiMutation::SetTextInputSnippet { .. } => "SetTextInputSnippet",
+        UiMutation::SetTextInputCompletions { .. } => "SetTextInputCompletions",
+        UiMutation::SetTextInputCompletionView { .. } => "SetTextInputCompletionView",
+        UiMutation::SetTextInputCompletionDismissed { .. } => "SetTextInputCompletionDismissed",
+        UiMutation::SetTextInputHover { .. } => "SetTextInputHover",
+        UiMutation::SetTextInputHoverScroll { .. } => "SetTextInputHoverScroll",
     }
 }
 
