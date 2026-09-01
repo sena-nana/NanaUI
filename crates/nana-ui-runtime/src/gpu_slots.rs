@@ -206,6 +206,10 @@ pub struct GpuTextureView {
     pub fit: nana_ui_core::ContentFit,
     pub style: NodeStyle,
     pub pointer_events: bool,
+    /// 在纹理下方绘制 alpha 棋盘底，凸显透明区域。
+    pub checkerboard: bool,
+    /// 纹理缩放系数（1.0 为适配大小，>1 放大居中）。
+    pub zoom: f32,
 }
 
 impl GpuTextureView {
@@ -219,7 +223,25 @@ impl GpuTextureView {
             fit: nana_ui_core::ContentFit::Fill,
             style: NodeStyle::default(),
             pointer_events: false,
+            checkerboard: false,
+            zoom: 1.0,
         }
+    }
+
+    /// 在纹理下方绘制 alpha 棋盘底。
+    pub const fn checkerboard(mut self, checkerboard: bool) -> Self {
+        self.checkerboard = checkerboard;
+        self
+    }
+
+    /// 设置纹理缩放系数（1.0 为适配大小，非有限值按 1.0 处理）。
+    pub fn zoom(mut self, zoom: f32) -> Self {
+        self.zoom = if zoom.is_finite() && zoom >= 1.0 {
+            zoom
+        } else {
+            1.0
+        };
+        self
     }
 
     pub fn with_opacity(mut self, opacity: f32) -> Self {
@@ -283,7 +305,9 @@ impl GpuTextureView {
                 Arc::clone(&self.resource),
                 self.revision(),
             )
-            .with_fit(self.fit),
+            .with_fit(self.fit)
+            .with_checkerboard(self.checkerboard)
+            .with_zoom(self.zoom),
         )
     }
 

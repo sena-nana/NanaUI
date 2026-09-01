@@ -43,6 +43,8 @@ impl HostTexturePipeline {
         scale_factor: f32,
         mask: Option<nana_ui_core::MaskImage>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+        checkerboard: bool,
+        zoom: f32,
     ) -> PreparedHostTexture {
         let primitive = GpuTexturePrimitive::from_scene(
             node,
@@ -62,7 +64,9 @@ impl HostTexturePipeline {
                     fragment_clip.inv_ef,
                     fragment_clip.corner_radius,
                 )
-                .with_mask(mask),
+                .with_mask(mask)
+                .with_checkerboard(checkerboard)
+                .with_zoom(zoom),
         );
         primitive.prepare(
             &mut self.pipeline,

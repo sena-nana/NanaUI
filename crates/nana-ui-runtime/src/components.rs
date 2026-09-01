@@ -1707,6 +1707,10 @@ pub struct CustomRenderNode {
     pub fit: nana_ui_core::ContentFit,
     pub params: Option<Arc<[f32]>>,
     pub dedicated_pass: bool,
+    /// 在纹理下方绘制 alpha 棋盘底（host texture 渲染器契约）。
+    pub checkerboard: bool,
+    /// 纹理缩放系数，1.0 为适配原始大小（host texture 渲染器契约）。
+    pub zoom: f32,
 }
 
 impl CustomRenderNode {
@@ -1722,11 +1726,25 @@ impl CustomRenderNode {
             fit: nana_ui_core::ContentFit::Fill,
             params: None,
             dedicated_pass: false,
+            checkerboard: false,
+            zoom: 1.0,
         }
     }
 
     pub const fn with_fit(mut self, fit: nana_ui_core::ContentFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// 在纹理下方绘制 alpha 棋盘底。
+    pub const fn with_checkerboard(mut self, checkerboard: bool) -> Self {
+        self.checkerboard = checkerboard;
+        self
+    }
+
+    /// 设置纹理缩放系数（非有限值忽略，保持原值语义为 1.0 由调用方保证）。
+    pub const fn with_zoom(mut self, zoom: f32) -> Self {
+        self.zoom = zoom;
         self
     }
 
