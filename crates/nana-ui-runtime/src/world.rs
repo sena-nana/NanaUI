@@ -4694,15 +4694,19 @@ impl UiWorld {
                 *highlighted,
                 &self.style_model.palette,
             )),
-            StandardVisual::MenuSurface { trigger, gap, .. } => {
-                Some(crate::popover::menu_surface_geometry(
-                    bounds,
-                    trigger.as_ref(),
-                    *gap,
-                    style,
-                    &self.style_model.palette,
-                ))
-            }
+            StandardVisual::MenuSurface {
+                trigger,
+                trigger_icon,
+                gap,
+                ..
+            } => Some(crate::popover::menu_surface_geometry(
+                bounds,
+                trigger.as_ref(),
+                *trigger_icon,
+                *gap,
+                style,
+                &self.style_model.palette,
+            )),
             StandardVisual::ActionMenuItem {
                 label,
                 hint,

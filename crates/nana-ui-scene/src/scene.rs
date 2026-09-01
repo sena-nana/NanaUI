@@ -2435,6 +2435,7 @@ impl UiScene {
                 }
                 Some(ComponentGeometry::MenuSurface {
                     trigger,
+                    trigger_icon,
                     trigger_surface,
                     surface,
                     search,
@@ -2466,7 +2467,25 @@ impl UiScene {
                             },
                         });
                     }
-                    if let Some(trigger) = trigger {
+                    if let Some((icon, icon_bounds)) = trigger_icon {
+                        self.insert_primitive(ScenePrimitive {
+                            id: PrimitiveId { node: id, slot: 2 },
+                            node: id,
+                            bounds: scene_rect(*icon_bounds),
+                            transform,
+                            clips: clips.clone(),
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                            kind: ScenePrimitiveKind::Icon {
+                                icon: *icon,
+                                color: node
+                                    .style
+                                    .color
+                                    .or(node.standard_visual_foreground),
+                            },
+                        });
+                    } else if let Some(trigger) = trigger {
                         self.insert_primitive(component_text_primitive(
                             id,
                             2,
@@ -5166,6 +5185,7 @@ mod tests {
             open: true,
             kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
             trigger: None,
+            trigger_icon: None,
             gap: 0.0,
             query: None,
             rows: Arc::from([
@@ -5189,6 +5209,7 @@ mod tests {
         menu.component_geometry = Some(ComponentGeometry::MenuSurface {
             trigger_surface: None,
             trigger: None,
+            trigger_icon: None,
             surface: LayoutBox {
                 x: 8.0,
                 y: 12.0,
@@ -7057,6 +7078,87 @@ mod tests {
                 height: 12.0,
             }
         );
+    }
+
+    #[test]
+    fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
+        let mut menu = node(1, None, &[]);
+        menu.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 28.0,
+            height: 28.0,
+        };
+        menu.standard_visual = Some(StandardVisual::MenuSurface {
+            open: false,
+            kind: nana_ui_runtime::MenuSurfaceKind::ActionMenu,
+            trigger: None,
+            trigger_icon: Some(nana_ui_core::Icon::Add),
+            gap: 0.0,
+            query: None,
+            rows: Arc::from([]),
+            highlighted: None,
+        });
+        menu.component_geometry = Some(ComponentGeometry::MenuSurface {
+            trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 28.0,
+                    height: 28.0,
+                },
+                background: Some([0.18, 0.18, 0.2, 1.0]),
+                border: Some([0.4, 0.4, 0.45, 1.0]),
+            }),
+            trigger: None,
+            trigger_icon: Some((
+                nana_ui_core::Icon::Add,
+                LayoutBox {
+                    x: 7.5,
+                    y: 7.5,
+                    width: 13.0,
+                    height: 13.0,
+                },
+            )),
+            surface: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            search: None,
+            search_field: None,
+            options: Vec::new(),
+            elevation: ComponentElevation {
+                color: [0.0, 0.0, 0.0, 0.0],
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur_radius: 0.0,
+                spread_radius: 0.0,
+                inset: false,
+            },
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.3, 0.3, 0.3, 1.0],
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([menu], []);
+        let glyph = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 2,
+            })
+            .expect("icon trigger glyph");
+        assert_eq!(
+            glyph.bounds,
+            SceneRect {
+                x: 7.5,
+                y: 7.5,
+                width: 13.0,
+                height: 13.0,
+            }
+        );
+        assert_eq!(primitive_icon(&glyph.kind), Some(nana_ui_core::Icon::Add));
     }
 
     #[test]

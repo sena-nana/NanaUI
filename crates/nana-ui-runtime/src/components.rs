@@ -240,6 +240,7 @@ pub enum StandardVisual {
         kind: MenuSurfaceKind,
         open: bool,
         trigger: Option<Arc<str>>,
+        trigger_icon: Option<Icon>,
         gap: f32,
         query: Option<Arc<str>>,
         rows: Arc<[SelectOptionData]>,
@@ -653,6 +654,7 @@ pub enum ComponentGeometry {
     },
     MenuSurface {
         trigger: Option<ComponentTextRegion>,
+        trigger_icon: Option<(Icon, LayoutBox)>,
         trigger_surface: Option<ComponentTriggerSurface>,
         surface: LayoutBox,
         search: Option<ComponentTextRegion>,

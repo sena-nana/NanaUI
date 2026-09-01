@@ -540,6 +540,7 @@ impl crate::ComponentView for ContextMenu {
                 kind: MenuSurfaceKind::ContextMenu,
                 open: true,
                 trigger: None,
+                trigger_icon: None,
                 gap: 0.0,
                 query: self.searchable.then(|| Arc::clone(&self.query)),
                 rows,
@@ -765,6 +766,7 @@ pub(crate) fn context_menu_geometry(
     ComponentGeometry::MenuSurface {
         trigger_surface: None,
         trigger: None,
+        trigger_icon: None,
         surface: bounds,
         search,
         search_field,
