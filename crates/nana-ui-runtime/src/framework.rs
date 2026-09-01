@@ -386,6 +386,10 @@ type SecondaryPressFn = Arc<
         + Sync,
 >;
 
+/// Reproject a component view whose concrete type the scheduler no longer
+/// knows, via the typed `update_component` pipeline captured at stamp time.
+type ChildReprojectFn = fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>;
+
 #[derive(Default)]
 pub struct ExtensionRegistrar {
     actions: HashMap<ActionId, RegisteredAction>,
@@ -674,6 +678,15 @@ impl From<UiWorldError> for FrameworkError {
 pub struct AppContext {
     world: UiWorld,
     views: HashMap<StableNodeId, Box<dyn Any + Send>>,
+    /// Opt-in reproject entry points keyed by node, registered from
+    /// [`ComponentView::wants_child_reproject`] when a component view is
+    /// stamped. The stored function reprojects through the typed
+    /// `update_component` pipeline.
+    child_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    /// Nodes queued for one child-structure reproject; deduplicated per drain.
+    pending_child_reprojects: Vec<StableNodeId>,
+    /// Guards reentrant drains while a reproject commits its own mutations.
+    draining_child_reprojects: bool,
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
@@ -837,6 +850,9 @@ impl AppContext {
         let mut context = Self {
             world,
             views: HashMap::new(),
+            child_reproject_views: HashMap::new(),
+            pending_child_reprojects: Vec::new(),
+            draining_child_reprojects: false,
             event_handlers: HashMap::new(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
@@ -987,7 +1003,57 @@ impl AppContext {
                 self.resume_component_lifecycle(id);
             }
         }
+        self.collect_child_reprojects();
+        self.drain_child_reprojects()?;
         Ok(report)
+    }
+
+    /// Queue opt-in parents whose child structure just changed for one
+    /// reproject through the `update_component` pipeline.
+    fn collect_child_reprojects(&mut self) {
+        for parent in self.world.take_structural_change_parents() {
+            if !self.child_reproject_views.contains_key(&parent)
+                || self.pending_child_reprojects.contains(&parent)
+            {
+                continue;
+            }
+            self.pending_child_reprojects.push(parent);
+        }
+    }
+
+    /// Run queued reprojects. Reentrant commits made by a reproject append to
+    /// the queue and are consumed by the same drain; nodes whose view is
+    /// temporarily absent (mid-update or not yet installed by a build) wait
+    /// for the next commit instead.
+    fn drain_child_reprojects(&mut self) -> Result<(), FrameworkError> {
+        if self.draining_child_reprojects {
+            return Ok(());
+        }
+        self.draining_child_reprojects = true;
+        let result = self.drain_child_reprojects_inner();
+        self.draining_child_reprojects = false;
+        result
+    }
+
+    fn drain_child_reprojects_inner(&mut self) -> Result<(), FrameworkError> {
+        loop {
+            let pending = std::mem::take(&mut self.pending_child_reprojects);
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let mut deferred = Vec::new();
+            for id in pending {
+                let Some(reproject) = self.child_reproject_views.get(&id).copied() else {
+                    continue;
+                };
+                if !self.views.contains_key(&id) {
+                    deferred.push(id);
+                    continue;
+                }
+                reproject(self, id)?;
+            }
+            self.pending_child_reprojects = deferred;
+        }
     }
 
     /// Drain deterministic work scheduled since the previous frame.
@@ -6609,6 +6675,10 @@ impl AppContext {
             self.component_lifecycle.loading.remove(id);
             self.views.remove(id);
         }
+        self.child_reproject_views
+            .retain(|id, _| !removed.contains(id));
+        self.pending_child_reprojects
+            .retain(|id| !removed.contains(id));
         self.component_lifecycle
             .tooltips
             .retain(|_, tooltip| !removed.contains(&tooltip.overlay));
@@ -6839,6 +6909,11 @@ impl AppContext {
     ) {
         if let Some(entry) = self.components.get_by_rust(TypeId::of::<C>()) {
             queue.set_component_type(id, Some(entry.id.clone()));
+        }
+        if C::wants_child_reproject() {
+            self.child_reproject_views.insert(id, |context, id| {
+                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+            });
         }
         self.secondary_presses
             .entry(TypeId::of::<C>())
@@ -11768,6 +11843,139 @@ mod tests {
             style.layout.border_width,
             Some(2.0),
             "用户显式设置的边框宽度不得被 kind 默认值覆盖"
+        );
+    }
+
+    /// Memoizes a probe of the retained subtree (own child count) into text
+    /// state: exactly the stale-snapshot shape that `wants_child_reproject`
+    /// exists for. Two types share this projection; only one opts in.
+    #[derive(Debug, Clone, Default)]
+    struct ReprojectProbe;
+
+    #[derive(Debug, Clone, Default)]
+    struct PlainProbe;
+
+    fn project_child_count(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let count = world.node(id).map(|node| node.children.len()).unwrap_or(0);
+        let value = count.to_string();
+        if world.text(id) != Some(value.as_str()) {
+            mutations.set_text(id, crate::TextContent { value });
+        }
+    }
+
+    impl ComponentView for ReprojectProbe {
+        fn node_kind(&self) -> NodeKind {
+            NodeKind::Element {
+                tag: "reproject-probe".into(),
+            }
+        }
+
+        fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+            project_child_count(id, world, mutations);
+        }
+
+        fn wants_child_reproject() -> bool {
+            true
+        }
+    }
+
+    impl ComponentView for PlainProbe {
+        fn node_kind(&self) -> NodeKind {
+            NodeKind::Element {
+                tag: "plain-probe".into(),
+            }
+        }
+
+        fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+            project_child_count(id, world, mutations);
+        }
+    }
+
+    #[test]
+    fn opt_in_component_reprojects_when_children_mount() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let probe: Entity<ReprojectProbe> =
+            context.create_component(document, ReprojectProbe).unwrap();
+        assert_eq!(context.world().text(probe.stable_id()), Some("0"));
+
+        context
+            .build_child(probe, |builder| {
+                builder.child("row", crate::Text::new("row"));
+            })
+            .unwrap();
+
+        assert_eq!(
+            context
+                .world()
+                .node(probe.stable_id())
+                .expect("probe node")
+                .children
+                .len(),
+            1
+        );
+        assert_eq!(
+            context.world().text(probe.stable_id()),
+            Some("1"),
+            "child mount must rerun project for opted-in components"
+        );
+    }
+
+    #[test]
+    fn opt_in_component_reprojects_when_child_detaches() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let probe: Entity<ReprojectProbe> =
+            context.create_component(document, ReprojectProbe).unwrap();
+        context
+            .build_child(probe, |builder| {
+                builder.child("row", crate::Text::new("row"));
+            })
+            .unwrap();
+        assert_eq!(context.world().text(probe.stable_id()), Some("1"));
+
+        let row = context
+            .world()
+            .node(probe.stable_id())
+            .expect("probe node")
+            .children[0];
+        let mut queue = MutationQueue::new();
+        queue.detach(row);
+        context.commit_mutations(queue).unwrap();
+
+        assert_eq!(
+            context.world().text(probe.stable_id()),
+            Some("0"),
+            "child detach must rerun project for opted-in components"
+        );
+    }
+
+    #[test]
+    fn component_without_opt_in_keeps_data_change_schedule() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let probe: Entity<PlainProbe> = context.create_component(document, PlainProbe).unwrap();
+        assert_eq!(context.world().text(probe.stable_id()), Some("0"));
+
+        context
+            .build_child(probe, |builder| {
+                builder.child("row", crate::Text::new("row"));
+            })
+            .unwrap();
+
+        assert_eq!(
+            context
+                .world()
+                .node(probe.stable_id())
+                .expect("probe node")
+                .children
+                .len(),
+            1
+        );
+        assert_eq!(
+            context.world().text(probe.stable_id()),
+            Some("0"),
+            "components that do not opt in must not reproject on child structure changes"
         );
     }
 }
