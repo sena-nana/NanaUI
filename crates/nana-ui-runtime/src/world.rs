@@ -3875,6 +3875,30 @@ impl UiWorld {
                     width: 1.0,
                     height: line_height,
                 });
+                // 附加多光标：与主光标同形，用主光标色的半透明变体区分；
+                // 只随焦点出现（多行编辑器才有附加光标）。
+                let caret_color = style
+                    .color
+                    .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array());
+                let additional_caret_color = {
+                    let mut color = caret_color;
+                    color[3] *= 0.55;
+                    color
+                };
+                let additional_carets = if focused {
+                    presentation
+                        .additional_carets
+                        .iter()
+                        .map(|(x, y)| LayoutBox {
+                            x: field_x(*x),
+                            y: line_y + *y,
+                            width: 1.0,
+                            height: line_height,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let marker_color = |severity| match severity {
                     crate::TextDiagnosticSeverity::Error => {
                         self.style_model.palette.danger.as_rgba_array()
@@ -4024,6 +4048,7 @@ impl UiWorld {
                     multiline,
                     selection,
                     caret,
+                    additional_carets,
                     preedit,
                     background: style.background,
                     border: style.border_color,
@@ -4047,9 +4072,8 @@ impl UiWorld {
                         }
                     }),
                     selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
-                    caret_color: style
-                        .color
-                        .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
+                    caret_color,
+                    additional_caret_color,
                     preedit_color: self.style_model.palette.accent.as_rgba_array(),
                     steppers,
                 })
@@ -6326,6 +6350,8 @@ struct TextInputPresentationSource {
     placeholder: bool,
     selection: Option<(usize, usize)>,
     caret: usize,
+    /// 附加多光标的显示空间 `(start, end)` 区间（收起时光标也在 `caret` 表）。
+    additional: Vec<(usize, usize)>,
     preedit: Option<(usize, usize)>,
     multiline: bool,
     /// 代码编辑器扩展：诊断标记 / 查找匹配高亮 / 行号栏（占位符态跳过行号）。
@@ -6376,6 +6402,7 @@ fn build_text_input_presentation_source(
             placeholder: true,
             selection: None,
             caret: 0,
+            additional: Vec::new(),
             preedit: None,
             multiline,
             diagnostics: extras.diagnostics,
@@ -6401,6 +6428,7 @@ fn build_text_input_presentation_source(
             .map(|(_, focus)| focus)
             .filter(|focus| *focus <= ime.text.len() && ime.text.is_char_boundary(*focus))
             .unwrap_or(ime.text.len());
+        // 多光标限制：组合输入只挂在主光标上，组合期隐藏附加光标。
         return TextInputPresentationSource {
             text: TextContent {
                 value: format!("{prefix}{}{suffix}", ime.text),
@@ -6408,6 +6436,7 @@ fn build_text_input_presentation_source(
             placeholder: false,
             selection: None,
             caret: preedit_start + ime_focus,
+            additional: Vec::new(),
             preedit: Some((preedit_start, preedit_end)),
             multiline,
             diagnostics: extras.diagnostics,
@@ -6419,6 +6448,17 @@ fn build_text_input_presentation_source(
 
     let anchor = display_offset(&state.value, selection.anchor);
     let focus = display_offset(&state.value, selection.focus);
+    // 附加光标：校验 + 显示空间映射；单光标快速路径下向量为空、零分配。
+    let additional = state
+        .additional_selections
+        .iter()
+        .filter(|selection| selection.is_valid_for(&state.value))
+        .map(|selection| {
+            let start = display_offset(&state.value, selection.anchor);
+            let end = display_offset(&state.value, selection.focus);
+            (start.min(end), start.max(end))
+        })
+        .collect();
     TextInputPresentationSource {
         text: TextContent {
             value: mask(&state.value),
@@ -6426,6 +6466,7 @@ fn build_text_input_presentation_source(
         placeholder: false,
         selection: (anchor != focus).then_some((anchor.min(focus), anchor.max(focus))),
         caret: focus,
+        additional,
         preedit: None,
         multiline,
         diagnostics: extras.diagnostics,
@@ -6466,9 +6507,20 @@ fn shape_text_input_presentation(
         style,
         presentation_constraints,
     );
-    let selection_lines = source.selection.map_or_else(Vec::new, |selection| {
+    // 选区条带：主选区在前，附加光标选区紧随（多光标选区集互不重叠，
+    // 条带天然不重叠，可安全合入同一批次）。
+    let mut selection_lines = source.selection.map_or_else(Vec::new, |selection| {
         shaper.text_highlights(id, &source.text, selection, style, presentation_constraints)
     });
+    for &(start, end) in &source.additional {
+        selection_lines.extend(shaper.text_highlights(
+            id,
+            &source.text,
+            (start, end),
+            style,
+            presentation_constraints,
+        ));
+    }
     let preedit_lines = source.preedit.map_or_else(Vec::new, |preedit| {
         shaper.text_highlights(id, &source.text, preedit, style, presentation_constraints)
     });
@@ -6670,6 +6722,26 @@ fn shape_text_input_presentation(
         }),
         preedit_lines: if source.multiline {
             preedit_lines
+        } else {
+            Vec::new()
+        },
+        // 附加光标：收起态才画 caret（range 选区由条带表达）。
+        additional_carets: if source.multiline {
+            source
+                .additional
+                .iter()
+                .filter(|(start, end)| start == end)
+                .map(|&(offset, _)| {
+                    let (x, y, _) = shaper.text_position(
+                        id,
+                        &source.text,
+                        offset,
+                        style,
+                        presentation_constraints,
+                    );
+                    (x, y)
+                })
+                .collect()
         } else {
             Vec::new()
         },
@@ -10423,6 +10495,7 @@ mod tests {
                 anchor: "A".len(),
                 focus: "A👩‍💻".len(),
             },
+            additional_selections: Vec::new(),
         };
         let masked = build_text_input_presentation_source(
             &state,
@@ -10505,6 +10578,7 @@ mod tests {
             Some(TextInputState {
                 value: value.into(),
                 selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
             }),
         );
         queue.set_accessibility(
@@ -10627,6 +10701,7 @@ mod tests {
             Some(TextInputState {
                 value: value.into(),
                 selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
             }),
         );
         queue.set_accessibility(
@@ -10726,6 +10801,7 @@ mod tests {
             Some(TextInputState {
                 value: value.into(),
                 selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
             }),
         );
         create.set_accessibility(
@@ -10849,6 +10925,7 @@ mod tests {
                 anchor: "甲".len(),
                 focus: "甲乙\nthird\n".len(),
             },
+            additional_selections: Vec::new(),
         };
         let style = ComputedStyle {
             font_size: 10.0,
@@ -10898,6 +10975,7 @@ mod tests {
         let composing = TextInputState {
             value: "甲\n末".into(),
             selection: crate::TextSelection::caret("甲\n".len()),
+            additional_selections: Vec::new(),
         };
         let source = build_text_input_presentation_source(
             &composing,
@@ -10920,6 +10998,82 @@ mod tests {
         assert_eq!(presentation.display_value, "甲\n输\n入末");
         assert_eq!(presentation.preedit_lines.len(), 2);
         assert_eq!(presentation.caret_y, 28.0);
+    }
+
+    #[test]
+    fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
+        let value = "甲乙\nthird\n末";
+        let style = ComputedStyle {
+            font_size: 10.0,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..ComputedStyle::default()
+        };
+        let present = |state: &TextInputState, ime: Option<&ImeComposition>| {
+            let source = build_text_input_presentation_source(
+                state,
+                ime,
+                "",
+                false,
+                true,
+                TextInputEditorExtras::default(),
+            );
+            shape_text_input_presentation(
+                node(1),
+                source,
+                &style,
+                crate::TextShapeConstraints::default(),
+                &mut FunctionalShaper::default(),
+            )
+        };
+
+        // 主选区（第二行）+ 两个收起的附加光标（第二、三行）。
+        let state = TextInputState {
+            value: value.into(),
+            selection: crate::TextSelection {
+                anchor: "甲".len(),
+                focus: "甲乙\nthird\n".len(),
+            },
+            additional_selections: vec![
+                crate::TextSelection::caret("甲乙\n".len()),
+                crate::TextSelection::caret(value.len()),
+            ],
+        };
+        let presentation = present(&state, None);
+        // 主选区条带照旧 2 条；附加收起光标不产生条带。
+        assert_eq!(presentation.selection_lines.len(), 2);
+        // 每个收起的附加光标各一个 caret 坐标，按行分布。
+        assert_eq!(
+            presentation
+                .additional_carets
+                .iter()
+                .map(|(_, y)| *y)
+                .collect::<Vec<_>>(),
+            vec![14.0, 28.0]
+        );
+
+        // 附加 range 选区：条带并入同一向量，不产生 caret。
+        let ranged = TextInputState {
+            value: value.into(),
+            selection: crate::TextSelection::caret(0),
+            additional_selections: vec![crate::TextSelection {
+                anchor: "甲乙\nth".len(),
+                focus: "甲乙\nthird".len(),
+            }],
+        };
+        let presentation = present(&ranged, None);
+        assert_eq!(presentation.selection_lines.len(), 1);
+        assert!(presentation.additional_carets.is_empty());
+
+        // IME 组合期只挂主光标：附加光标与选区条带都隐藏。
+        let presentation = present(
+            &state,
+            Some(&ImeComposition {
+                text: "输".into(),
+                selection: None,
+            }),
+        );
+        assert!(presentation.additional_carets.is_empty());
+        assert!(presentation.selection_lines.is_empty());
     }
 
     #[test]
@@ -11029,6 +11183,7 @@ mod tests {
         let state = TextInputState {
             value: "wrapped value".into(),
             selection: crate::TextSelection::caret("wrapped value".len()),
+            additional_selections: Vec::new(),
         };
         let resolved = crate::TextShapeConstraints {
             max_width: Some(48.0),
