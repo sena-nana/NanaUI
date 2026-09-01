@@ -211,6 +211,20 @@ fn project_text_field(
 pub trait ComponentView: Clone + Send + 'static {
     fn node_kind(&self) -> NodeKind;
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue);
+
+    /// Opt in to one reprojection when this node's child structure changes
+    /// (child insert, detach or despawn under this node) even though the
+    /// component's own data did not change. Components that probe the retained
+    /// subtree during [`Self::project`] and memoize the result into visual or
+    /// text state need this to avoid stale snapshots taken before children
+    /// were attached. Defaults to `false`; existing components keep their
+    /// data-change-only reprojection schedule.
+    fn wants_child_reproject() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

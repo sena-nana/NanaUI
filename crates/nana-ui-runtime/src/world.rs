@@ -441,6 +441,10 @@ pub struct UiWorld {
     validation_nodes_scanned: usize,
     /// Bumped on `SetTheme`; extract skips a second palette walk when it matches.
     palette_epoch: u64,
+    /// Parents whose child list changed since the last drain (insert, detach,
+    /// despawn). Consumers take the list once per commit to schedule opt-in
+    /// component reprojections; see `ComponentView::wants_child_reproject`.
+    structural_change_parents: Vec<StableNodeId>,
 }
 
 impl Default for UiWorld {
@@ -491,6 +495,7 @@ impl UiWorld {
             overlay_host_nodes: HashSet::new(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
+            structural_change_parents: Vec::new(),
         }
     }
 
@@ -1211,6 +1216,22 @@ impl UiWorld {
 
     pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
         self.nodes.component_type(id)
+    }
+
+    fn note_structural_change(&mut self, parent: StableNodeId) {
+        if self.structural_change_parents.last() != Some(&parent) {
+            self.structural_change_parents.push(parent);
+        }
+    }
+
+    /// Parents whose child list changed since the last drain, deduplicated in
+    /// ascending order. Consumers must drain per commit so scheduled
+    /// reprojections observe the post-mutation tree.
+    pub fn take_structural_change_parents(&mut self) -> Vec<StableNodeId> {
+        let mut parents = std::mem::take(&mut self.structural_change_parents);
+        parents.sort_unstable();
+        parents.dedup();
+        parents
     }
 
     pub fn event_targets(&self, document: DocumentId) -> HashSet<(u64, String)> {
@@ -2541,6 +2562,10 @@ impl UiWorld {
                 self.detached.remove(child);
                 self.sync_subtree_presence(*child);
                 self.refresh_root_membership(*child);
+                self.note_structural_change(*parent);
+                if let Some(old_parent) = old_parent {
+                    self.note_structural_change(old_parent);
+                }
             }
             UiMutation::Detach { id } => {
                 if self.unlink_from_parent(*id) {
@@ -2566,6 +2591,7 @@ impl UiWorld {
                         parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
+                    self.note_structural_change(parent);
                 }
                 let mut stack = vec![*root];
                 while let Some(id) = stack.pop() {
@@ -5715,6 +5741,7 @@ impl UiWorld {
             parent,
             DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
         );
+        self.note_structural_change(parent);
         true
     }
 
