@@ -1773,11 +1773,13 @@ impl UiWorld {
                 diagnostics,
                 matches,
                 line_numbers,
+                indent_guides,
                 ..
             }) => TextInputEditorExtras {
                 diagnostics: Arc::clone(diagnostics),
                 matches: Arc::clone(matches),
                 line_numbers: *line_numbers,
+                indent_guides: indent_guides.clone(),
             },
             _ => TextInputEditorExtras::default(),
         };
@@ -3920,6 +3922,57 @@ impl UiWorld {
                         current: mark.current,
                     })
                     .collect();
+                // 当前行条：聚焦多行且选区收起时，光标所在视觉行画低对比
+                // 背景条（与选区层互斥，同用 slot 1 绘制层级）。
+                let caret_line = if multiline && focused && presentation.selection.is_none() {
+                    Some((
+                        LayoutBox {
+                            x: content.x,
+                            y: line_y + presentation.caret_y - scroll_y,
+                            width: content.width,
+                            height: line_height,
+                        },
+                        self.style_model.palette.hover.as_rgba_array(),
+                    ))
+                } else {
+                    None
+                };
+                // 括号匹配描边框：跟随聚焦光标；两端共用 accent 色。
+                let bracket_markers = if focused {
+                    presentation
+                        .bracket_marks
+                        .iter()
+                        .map(|rect| {
+                            (
+                                LayoutBox {
+                                    x: field_x(rect.x),
+                                    y: content.y + rect.y - scroll_y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                },
+                                self.style_model.palette.accent.as_rgba_array(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                // 缩进参考线：静态结构标记，不随焦点变化。
+                let indent_guides = presentation
+                    .indent_guides
+                    .iter()
+                    .map(|rect| {
+                        (
+                            LayoutBox {
+                                x: field_x(rect.x),
+                                y: content.y + rect.y - scroll_y,
+                                width: rect.width,
+                                height: rect.height,
+                            },
+                            self.style_model.palette.border.as_rgba_array(),
+                        )
+                    })
+                    .collect();
                 let line_labels = if multiline {
                     presentation
                         .line_tops
@@ -3937,6 +3990,9 @@ impl UiWorld {
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
                     match_markers,
+                    caret_line,
+                    bracket_markers,
+                    indent_guides,
                     line_labels,
                     line_labels_color: self.style_model.palette.faint.as_rgba_array(),
                     line_labels_font_size: (size.text_size() - 1.0).max(10.0),
@@ -6276,6 +6332,7 @@ struct TextInputPresentationSource {
     diagnostics: Arc<[TextDiagnosticSpan]>,
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
+    indent_guides: Option<Arc<str>>,
 }
 
 /// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
@@ -6284,6 +6341,7 @@ struct TextInputEditorExtras {
     diagnostics: Arc<[TextDiagnosticSpan]>,
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
+    indent_guides: Option<Arc<str>>,
 }
 
 fn build_text_input_presentation_source(
@@ -6323,6 +6381,7 @@ fn build_text_input_presentation_source(
             diagnostics: extras.diagnostics,
             matches: extras.matches,
             line_numbers: false,
+            indent_guides: None,
         };
     }
 
@@ -6354,6 +6413,7 @@ fn build_text_input_presentation_source(
             diagnostics: extras.diagnostics,
             matches: extras.matches,
             line_numbers: false,
+            indent_guides: None,
         };
     }
 
@@ -6371,6 +6431,7 @@ fn build_text_input_presentation_source(
         diagnostics: extras.diagnostics,
         matches: extras.matches,
         line_numbers: extras.line_numbers,
+        indent_guides: extras.indent_guides,
     }
 }
 
@@ -6476,6 +6537,91 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
+    // 括号匹配：光标相邻括号与其配对端各一个字符框（描边绘制）。
+    let bracket_marks = if source.multiline {
+        let value = source.text.value.as_str();
+        crate::text_editing::matching_bracket_pair(value, source.caret)
+            .map(|(open, close)| {
+                [open, close]
+                    .into_iter()
+                    .map(|offset| {
+                        let (x, y, height) = shaper.text_position(
+                            id,
+                            &source.text,
+                            offset,
+                            style,
+                            presentation_constraints,
+                        );
+                        let (end_x, _, _) = shaper.text_position(
+                            id,
+                            &source.text,
+                            offset + 1,
+                            style,
+                            presentation_constraints,
+                        );
+                        LayoutBox {
+                            x,
+                            y,
+                            width: (end_x - x).max(1.0),
+                            height,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // 缩进参考线：每个逻辑行的前导空白内按缩进单位宽度画竖线。
+    let indent_guides = if source.multiline {
+        source
+            .indent_guides
+            .as_deref()
+            .map(|unit| {
+                let unit_content = TextContent {
+                    value: unit.to_owned(),
+                };
+                let unit_width = shaper
+                    .horizontal_offset(id, &unit_content, unit.len(), style)
+                    .max(1.0);
+                let value = source.text.value.as_str();
+                let mut guides = Vec::new();
+                let mut cursor = 0usize;
+                loop {
+                    let line_end = value[cursor..]
+                        .find('\n')
+                        .map_or(value.len(), |index| cursor + index);
+                    let content_start =
+                        crate::text_editing::line_content_start(value, cursor).min(line_end);
+                    if content_start > cursor {
+                        let (content_x, line_y, height) = shaper.text_position(
+                            id,
+                            &source.text,
+                            content_start,
+                            style,
+                            presentation_constraints,
+                        );
+                        let levels = ((content_x / unit_width) + f32::EPSILON).floor().max(0.0);
+                        for level in 0..levels as usize {
+                            guides.push(LayoutBox {
+                                x: level as f32 * unit_width,
+                                y: line_y,
+                                width: 1.0,
+                                height,
+                            });
+                        }
+                    }
+                    if line_end >= value.len() {
+                        break;
+                    }
+                    cursor = line_end + 1;
+                }
+                guides
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let line_tops = if source.line_numbers && source.multiline {
         let value = source.text.value.as_str();
         let mut starts: Vec<usize> = vec![0];
@@ -6529,6 +6675,8 @@ fn shape_text_input_presentation(
         },
         diagnostic_marks,
         match_marks,
+        bracket_marks,
+        indent_guides,
         line_tops,
     }
 }
@@ -10337,6 +10485,7 @@ mod tests {
                 ]),
                 matches: Arc::from([]),
                 line_numbers: true,
+                indent_guides: None,
             }),
         );
         queue.set_style(
@@ -10458,6 +10607,7 @@ mod tests {
                     crate::TextMatchSpan::new("甲乙\n".len(), "third".len()).current(),
                 ]),
                 line_numbers: false,
+                indent_guides: None,
             }),
         );
         queue.set_style(
@@ -10531,6 +10681,163 @@ mod tests {
         assert_ne!(match_markers[0].color, match_markers[1].color);
         assert_eq!(match_markers[0].color[3], 0.20);
         assert_eq!(match_markers[1].color[3], 0.45);
+    }
+
+    #[test]
+    fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
+        let value = "(\n\tx)";
+        let mut world = UiWorld::default();
+        let mut create = MutationQueue::new();
+        create.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        create.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: Some(Arc::from("\t")),
+            }),
+        );
+        create.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        create.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+            }),
+        );
+        create.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        create.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 60.0,
+            },
+        );
+        world.commit(create).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 光标紧邻 '('：两端字符框，各一个字符宽。
+        assert_eq!(
+            presentation.bracket_marks,
+            vec![
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 14.0,
+                },
+                // ')' 在第二行第 2 列。
+                LayoutBox {
+                    x: 20.0,
+                    y: 14.0,
+                    width: 10.0,
+                    height: 14.0,
+                },
+            ]
+        );
+        // 缩进参考线：第二行前导一个缩进单位，一条 1px 竖线。
+        assert_eq!(
+            presentation.indent_guides,
+            vec![LayoutBox {
+                x: 0.0,
+                y: 14.0,
+                width: 1.0,
+                height: 14.0,
+            }]
+        );
+
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            caret_line,
+            bracket_markers,
+            indent_guides,
+            ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        // 未聚焦：括号标记与当前行条都不出现；参考线是静态结构标记。
+        assert!(caret_line.is_none());
+        assert!(bracket_markers.is_empty());
+        assert_eq!(indent_guides.len(), 1);
+
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document(1), Some(node(1)));
+        world.commit(focus).unwrap();
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            caret_line,
+            bracket_markers,
+            indent_guides,
+            ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        // 聚焦且选区收起：光标所在行画整宽低对比背景条。
+        let (line_rect, line_color) = caret_line.expect("caret line");
+        assert_eq!(
+            line_rect,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 14.0,
+            }
+        );
+        assert_eq!(line_color, world.style_model.palette.hover.as_rgba_array());
+        // 括号两端出现描边框标记，共用同一颜色。
+        assert_eq!(bracket_markers.len(), 2);
+        assert_eq!(bracket_markers[0].0.y, 0.0);
+        assert_eq!(bracket_markers[1].0.y, 14.0);
+        assert_eq!(bracket_markers[0].1, bracket_markers[1].1);
+        // 参考线不随焦点变化。
+        assert_eq!(indent_guides.len(), 1);
     }
 
     #[test]

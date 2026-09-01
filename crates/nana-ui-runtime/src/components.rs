@@ -176,6 +176,9 @@ pub enum StandardVisual {
         matches: Arc<[TextMatchSpan]>,
         /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
         line_numbers: bool,
+        /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
+        /// 缩进单位宽度画竖线（仅多行态生效）。
+        indent_guides: Option<Arc<str>>,
     },
     Checkbox {
         checked: bool,
@@ -620,6 +623,13 @@ pub enum ComponentGeometry {
         /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
         /// 匹配，绘制层级在普通匹配之上）。
         match_markers: Vec<TextMatchMarker>,
+        /// 光标所在行的低对比背景条。仅聚焦且选区收起时存在，占用选区层
+        /// （选区与当前行条互斥）。
+        caret_line: Option<(LayoutBox, [f32; 4])>,
+        /// 光标相邻括号与其配对端的描边框（节点空间矩形 + 已解析的颜色）。
+        bracket_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 缩进参考线竖线（节点空间矩形 + 已解析的颜色）。
+        indent_guides: Vec<(LayoutBox, [f32; 4])>,
         /// 行号标签（节点空间 y，行号从 1 起）。
         line_labels: Vec<LineLabel>,
         /// 行号文本颜色与字号。
@@ -1323,6 +1333,10 @@ pub struct TextInputPresentation {
     pub diagnostic_marks: Vec<TextDiagnosticMark>,
     /// 查找匹配高亮条带（文本空间），仅多行态计算。
     pub match_marks: Vec<TextMatchMark>,
+    /// 光标相邻括号与其配对端的描边框（文本空间，仅聚焦多行态计算）。
+    pub bracket_marks: Vec<LayoutBox>,
+    /// 缩进参考线竖线（文本空间，仅多行代码编辑态计算）。
+    pub indent_guides: Vec<LayoutBox>,
     /// 各逻辑行的 y 起点（启用行号栏时计算）。
     pub line_tops: Vec<f32>,
 }

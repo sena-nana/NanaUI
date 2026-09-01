@@ -8,11 +8,13 @@
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
 use super::{TextArea, TextInput, TextInputState, TextSelection};
 use crate::text_editing::{
-    TextCaretIntent, TextReplacement, TextSearchOptions, apply_replacement, auto_indent_newline,
-    auto_pair_edit, caret_focus, caret_offset_at_point, delete_backward, delete_forward,
-    delete_to_line_end, delete_to_line_start, delete_word_backward, delete_word_forward,
-    find_matches, find_next_match, find_previous_match, indent_selection, logical_line_range,
-    moved_selection, outdent_selection, replace_all_matches, toggle_line_comment,
+    TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions, apply_replacement,
+    auto_indent_newline, auto_pair_edit, caret_focus, caret_offset_at_point, delete_backward,
+    delete_forward, delete_lines, delete_to_line_end, delete_to_line_start, delete_word_backward,
+    delete_word_forward, duplicate_lines, find_matches, find_next_match, find_previous_match,
+    indent_selection, join_lines, logical_line_range, matching_bracket_pair, move_lines,
+    moved_selection, outdent_selection, page_caret_focus, page_caret_focus_logical,
+    replace_all_matches, sort_lines, toggle_line_comment, transform_selection_case,
     vertical_caret_focus, vertical_caret_focus_logical, word_range_at,
 };
 use crate::{CodeEditing, TextContent, TextShapeConstraints};
@@ -142,7 +144,13 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
-        let vertical = matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down);
+        let vertical = matches!(
+            intent,
+            TextCaretIntent::Up
+                | TextCaretIntent::Down
+                | TextCaretIntent::PageUp
+                | TextCaretIntent::PageDown
+        );
         let selection = if vertical && focused.multiline {
             let goal = self
                 .caret_goal_x
@@ -162,14 +170,33 @@ impl AppContext {
                     style,
                     constraints,
                 };
-                match vertical_caret_focus(
-                    &state.value,
-                    state.selection,
-                    intent,
-                    extend,
-                    goal,
-                    geometry.probe(),
-                ) {
+                let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
+                    vertical_caret_focus(
+                        &state.value,
+                        state.selection,
+                        intent,
+                        extend,
+                        goal,
+                        geometry.probe(),
+                    )
+                } else {
+                    // One viewport height of visual lines: the content box
+                    // is the editor's viewport.
+                    let page_height = self
+                        .world
+                        .text_input_pointer_context(focused.node)
+                        .map_or(0.0, |(content, _)| content.height);
+                    page_caret_focus(
+                        &state.value,
+                        state.selection,
+                        intent,
+                        extend,
+                        goal,
+                        page_height,
+                        geometry.probe(),
+                    )
+                };
+                match moved {
                     Some((selection, goal)) => {
                         self.caret_goal_x = Some((focused.node, goal));
                         selection
@@ -177,15 +204,21 @@ impl AppContext {
                     None => return Ok(false),
                 }
             } else {
-                match vertical_caret_focus_logical(&state.value, state.selection, intent, extend) {
+                let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
+                    vertical_caret_focus_logical(&state.value, state.selection, intent, extend)
+                } else {
+                    page_caret_focus_logical(&state.value, state.selection, intent, extend)
+                };
+                match moved {
                     Some(selection) => selection,
                     None => return Ok(false),
                 }
             }
         } else if vertical {
-            // Single-line fields map Up/Down onto the line boundaries.
+            // Single-line fields map Up/Down and PageUp/PageDown onto the
+            // line boundaries.
             let mapped = match intent {
-                TextCaretIntent::Up => TextCaretIntent::LineStart,
+                TextCaretIntent::Up | TextCaretIntent::PageUp => TextCaretIntent::LineStart,
                 _ => TextCaretIntent::LineEnd,
             };
             match caret_focus(&state.value, state.selection, mapped) {
@@ -330,6 +363,158 @@ impl AppContext {
             let (value, selection) = toggle_line_comment(&state.value, state.selection, &prefix)?;
             Some((value, selection).into())
         })
+    }
+
+    /// Move the block of lines the selection touches of the focused editor
+    /// up or down one line, with the selection following the moved text.
+    /// `Ok(false)` means there is no focused multiline editor or the block is
+    /// already at the document edge.
+    pub fn move_focused_text_lines(
+        &mut self,
+        document: DocumentId,
+        direction: TextLineDirection,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) = move_lines(&state.value, state.selection, direction)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Duplicate the block of lines the selection touches of the focused
+    /// editor on the line below and select the copy.
+    pub fn duplicate_focused_text_lines(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) = duplicate_lines(&state.value, state.selection)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Delete the block of lines the selection touches of the focused editor,
+    /// including one adjacent newline.
+    pub fn delete_focused_text_lines(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) = delete_lines(&state.value, state.selection)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Join the lines the selection touches of the focused editor into one
+    /// line (single-space seams, following lines' indentation removed).
+    pub fn join_focused_text_lines(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) = join_lines(&state.value, state.selection)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Uppercase (`upper`) or lowercase the selection of the focused editor.
+    pub fn transform_focused_text_case(
+        &mut self,
+        document: DocumentId,
+        upper: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) =
+                transform_selection_case(&state.value, state.selection, upper)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Sort the lines the selection touches of the focused editor by byte
+    /// order, optionally descending and dropping repeated rows. Sorting is a
+    /// host command-panel action; no default key binding routes here.
+    pub fn sort_focused_text_lines(
+        &mut self,
+        document: DocumentId,
+        descending: bool,
+        unique: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.multiline || !focused.accepts_input {
+            return Ok(false);
+        }
+        self.caret_goal_x = None;
+        self.edit_editor(focused.node, focused.kind, |state| {
+            let (value, selection) = sort_lines(&state.value, state.selection, descending, unique)?;
+            Some((value, selection).into())
+        })
+    }
+
+    /// Move the caret of the focused editor onto the bracket matching the
+    /// one adjacent to the caret (`()[]{}`, nesting-aware).
+    /// Selection-only move: no change event is emitted. `Ok(false)` means
+    /// there is no focused editor or no adjacent bracket pair.
+    pub fn goto_focused_text_matching_bracket(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let Some((open, close)) = matching_bracket_pair(&state.value, state.selection.focus) else {
+            return Ok(false);
+        };
+        let target = if state.selection.focus <= open {
+            close
+        } else {
+            open
+        };
+        self.caret_goal_x = None;
+        self.write_editor_selection(
+            focused.node,
+            focused.kind,
+            moved_selection(state.selection, target, false),
+        )
     }
 
     /// Select the next literal match of `query` in the focused text editor,
