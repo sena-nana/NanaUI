@@ -159,6 +159,8 @@ struct SceneReady<Program: RuntimeProgram> {
     startup_failure: Arc<Mutex<Option<String>>>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
+    #[cfg(target_os = "macos")]
+    present_transaction_pinned: HashSet<WindowId>,
     size_move: LiveSizeMove,
 }
 
@@ -470,6 +472,8 @@ fn initialize<Program: RuntimeProgram>(
         startup_failure,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
+        #[cfg(target_os = "macos")]
+        present_transaction_pinned: HashSet::new(),
         size_move: LiveSizeMove::install(window.as_ref())?,
     };
     ready
@@ -571,7 +575,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.input_mut(id).cursor = (point.x, point.y);
         }
         if let Some(input) = self.normalized_input(id, &event) {
-            if self.consume_frame_resize(id, &input) {
+            if self.consume_frame_resize(event_loop, id, &input) {
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
@@ -611,9 +615,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
-                self.sync_geometry(id);
+                let geometry_changed = self.sync_geometry(id);
+                #[cfg(target_os = "macos")]
+                let native_live_resize = self.sync_native_live_resize_presents(id);
+                #[cfg(not(target_os = "macos"))]
+                let native_live_resize = false;
                 self.forward_window_event(event_loop, id, &event);
-                self.request_redraw(id);
+                // Native macOS drags repaint through winit's live-resize
+                // hook, and a custom chrome drag paints its steps in-stack;
+                // both would only duplicate the per-step frame here.
+                if geometry_changed && !native_live_resize {
+                    self.request_redraw(id);
+                }
             }
             WinitWindowEvent::Occluded(_) => {
                 self.forward_window_event(event_loop, id, &event);
@@ -778,6 +791,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let now = Instant::now();
+        #[cfg(target_os = "macos")]
+        self.unpin_idle_present_transactions();
         if self.graphics.take_device_lost()
             || self.next_gpu_retry.is_some_and(|deadline| now >= deadline)
         {
@@ -1488,12 +1503,16 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn sync_geometry(&mut self, id: WindowId) {
+    /// Refreshes the cached window geometry from the live window state and
+    /// reports whether it moved.
+    fn sync_geometry(&mut self, id: WindowId) -> bool {
+        let previous = self.geometry_of(id);
         if id == WindowId::PRIMARY {
             self.geometry = window_geometry(self.graphics.window().as_ref());
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
             host.geometry = window_geometry(host.surface.window().as_ref());
         }
+        let changed = self.geometry_of(id) != previous;
         let maximized = self.geometry_of(id).maximized;
         if let Some(session) = self.chrome.get_mut(&id) {
             session.state.update(WindowChromeEvent::MaximizedChanged {
@@ -1502,6 +1521,51 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             });
         }
         self.sync_title_bar_maximized(id, maximized);
+        changed
+    }
+
+    /// Pins transaction presents while the OS's own frame-resize gesture is
+    /// moving the window, and reports whether that gesture is active.
+    #[cfg(target_os = "macos")]
+    fn sync_native_live_resize_presents(&mut self, id: WindowId) -> bool {
+        let active = self
+            .window(id)
+            .is_some_and(|window| nana_window::native_live_resize_active(window.as_ref()));
+        if active {
+            self.pin_present_transaction(id);
+        }
+        active
+    }
+
+    #[cfg(target_os = "macos")]
+    fn pin_present_transaction(&mut self, id: WindowId) {
+        if self.present_transaction_pinned.contains(&id) {
+            return;
+        }
+        if let Some(window) = self.window(id)
+            && nana_window::set_present_transaction(window.as_ref(), true)
+        {
+            self.present_transaction_pinned.insert(id);
+        }
+    }
+
+    /// Releases transaction presents once their resize gesture is over; the
+    /// pinned mode serializes every present with a Core Animation commit and
+    /// costs latency in steady-state frames.
+    #[cfg(target_os = "macos")]
+    fn unpin_idle_present_transactions(&mut self) {
+        let pinned: Vec<WindowId> = self.present_transaction_pinned.iter().copied().collect();
+        for id in pinned {
+            let Some(window) = self.window(id) else {
+                self.present_transaction_pinned.remove(&id);
+                continue;
+            };
+            if nana_window::native_live_resize_active(window.as_ref()) || self.is_live_resize(id) {
+                continue;
+            }
+            nana_window::set_present_transaction(window.as_ref(), false);
+            self.present_transaction_pinned.remove(&id);
+        }
     }
 
     fn resize_window(&mut self, id: WindowId) {
@@ -1560,7 +1624,16 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn consume_frame_resize(&mut self, id: WindowId, input: &InputEvent) -> bool {
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "windows")),
+        allow(unused_variables)
+    )]
+    fn consume_frame_resize(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        input: &InputEvent,
+    ) -> bool {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some((session, live)) = self.live_frame_resize
             && session == id
@@ -1578,7 +1651,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     if let Some(window) = self.window(id) {
                         let _ = live.update(window.as_ref());
                     }
-                    self.request_redraw(id);
+                    // `setFrame` from inside this pointer dispatch leaves
+                    // winit's `SurfaceResized` queued for the next run-loop
+                    // pass, and a redraw that waits for it lets the compositor
+                    // composite the moved frame with the old drawable
+                    // stretched. Sync geometry and paint in this stack, like
+                    // the native live-resize path already does.
+                    self.sync_geometry(id);
+                    self.redraw(event_loop, id);
                     self.sync_window_cursor(id);
                     return true;
                 }
@@ -1656,6 +1736,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 // path does not need this: its ENTER hook forces a repaint
                 // before the first size change.
                 self.resize_window(id);
+                #[cfg(target_os = "macos")]
+                self.pin_present_transaction(id);
                 return;
             }
         }
