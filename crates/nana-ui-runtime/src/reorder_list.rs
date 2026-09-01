@@ -409,8 +409,15 @@ impl ComponentView for ReorderList {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        // Live row children paint themselves; retained items only feed
+        // hit testing and reorder events.
+        let live_rows = world.node(id).is_some_and(|node| !node.children.is_empty());
         let visual = StandardVisual::ReorderList {
-            rows: self.paint_rows(),
+            rows: if live_rows {
+                Arc::<[ReorderRowPaint]>::from([])
+            } else {
+                self.paint_rows()
+            },
             size: self.size,
             spacing: self.spacing,
             insert: None,
@@ -421,7 +428,6 @@ impl ComponentView for ReorderList {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
-        let live_rows = world.node(id).is_some_and(|node| !node.children.is_empty());
         if live_rows {
             layout.direction = Some(FlexDirection::Column);
             layout.gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
@@ -944,5 +950,35 @@ mod tests {
         let style = context.world().node_style(id).expect("projected style");
         assert_eq!(style.layout.width, Some(LengthSpec::Fill));
         assert_eq!(style.layout.height, Some(LengthSpec::Px(86.0)));
+    }
+
+    #[test]
+    fn live_row_children_suppress_self_painted_rows() {
+        use crate::Stack;
+
+        let mut context = AppContext::new();
+        let list = context.create_component(document(), sample()).unwrap();
+        let id = list.stable_id();
+        for _ in ["Alpha", "Beta"] {
+            let row = context
+                .create_component(document(), Stack::row(0.0))
+                .unwrap();
+            context.append_child(list, row).unwrap();
+        }
+        context.update_component(list, |_, _| {}).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(220.0, 120.0))
+            .unwrap();
+        assert_eq!(
+            context.world().standard_visual(id),
+            Some(StandardVisual::ReorderList {
+                rows: Arc::from([]),
+                size: ControlSize::Small,
+                spacing: DEFAULT_SPACING,
+                insert: None,
+            })
+        );
+        let style = context.world().node_style(id).expect("projected style");
+        assert_eq!(style.layout.height, Some(LengthSpec::Shrink));
     }
 }
