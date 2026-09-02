@@ -24,14 +24,14 @@ use crate::component_registry::{
 };
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, Button, Checkbox, CodeEditing, CommandPalette, ComponentView, ContextMenu,
-    ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileTab, FormField, FrameProfile,
-    FrameProfiler, FrameStage, IconButton, LabeledValue, List, ListItem, ListItemSlots, ModalSlots,
-    ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged,
-    OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress, ProgressCancelled,
-    RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged,
-    ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    AnimationFrame, BreadcrumbSegment, Button, Checkbox, CodeEditing, CommandPalette,
+    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileTab,
+    FormField, FrameProfile, FrameProfiler, FrameStage, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
+    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
+    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
+    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
+    SecondaryPress, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
     SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
     StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
     TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
@@ -6918,6 +6918,7 @@ impl AppContext {
         self.bind_activation::<ListItem>(Self::activate_list_item);
         self.bind_activation::<SidebarRow>(Self::activate_sidebar_row);
         self.bind_activation::<FileTab>(Self::activate_file_tab);
+        self.bind_activation::<BreadcrumbSegment>(Self::activate_breadcrumb_segment);
         self.bind_activation::<SidebarFooterButton>(Self::activate_sidebar_footer_button);
         self.bind_activation::<SidebarSection>(Self::activate_sidebar_section);
         self.bind_activation::<SettingsCollapsibleCard>(Self::activate_settings_collapsible_card);

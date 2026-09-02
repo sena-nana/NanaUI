@@ -10,6 +10,7 @@
 #![allow(clippy::type_complexity)]
 
 mod animation;
+mod breadcrumb;
 mod builtin_components;
 mod calendar;
 mod charts;
@@ -68,6 +69,10 @@ mod xy_pad;
 pub use animation::{
     AnimationDirection, AnimationFillMode, AnimationFrame, AnimationId, AnimationIteration,
     AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
+};
+pub use breadcrumb::{
+    BREADCRUMB_SEPARATOR, Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment,
+    BreadcrumbTone,
 };
 pub use builtin_components::NanaBuiltinComponents;
 pub use calendar::{
