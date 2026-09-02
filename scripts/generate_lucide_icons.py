@@ -38,6 +38,7 @@ SHELL = [
     ("MessageSquarePlus", "message-square-plus"),
     ("Minimize", "minus"),
     ("Moon", "moon"),
+    ("More", "ellipsis"),
     ("Nodes", "share-2"),
     ("Paperclip", "paperclip"),
     ("Restore", "copy"),

@@ -116,6 +116,7 @@ impl Icon {
             "message-square-plus" | "messagesquareplus" | "square-plus" => Self::MessageSquarePlus,
             "minimize" | "minus" => Self::Minimize,
             "moon" | "dark" => Self::Moon,
+            "more" | "ellipsis" | "dots" => Self::More,
             "nodes" | "graph" | "network" => Self::Nodes,
             "paperclip" | "attachment" | "paper-clip" => Self::Paperclip,
             "restore" => Self::Restore,
@@ -194,6 +195,8 @@ mod tests {
         );
         assert_eq!(Icon::parse_name("lucide-sparkles"), Some(Icon::Sparkles));
         assert_eq!(Icon::parse_name("sun"), Some(Icon::Appearance));
+        assert_eq!(Icon::parse_name("more"), Some(Icon::More));
+        assert_eq!(Icon::parse_name("ellipsis"), Some(Icon::More));
         assert_eq!(Icon::Sun, Icon::Appearance);
     }
 
@@ -238,6 +241,7 @@ mod tests {
             Icon::MessageSquarePlus,
             Icon::Minimize,
             Icon::Moon,
+            Icon::More,
             Icon::Nodes,
             Icon::Paperclip,
             Icon::Restore,
