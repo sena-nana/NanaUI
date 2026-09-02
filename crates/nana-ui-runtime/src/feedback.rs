@@ -1601,6 +1601,12 @@ mod tests {
             label.bounds
         );
         assert!(
+            (value.bounds.width - (180.0 - label_natural - 4.0)).abs() < 1.0,
+            "overflowing value must take the remaining width so only the excess becomes an \
+             ellipsis, got {:?}",
+            value.bounds
+        );
+        assert!(
             (value.bounds.x + value.bounds.width - 190.0).abs() < 1.0,
             "value must hug the trailing edge, got {:?}",
             value.bounds
