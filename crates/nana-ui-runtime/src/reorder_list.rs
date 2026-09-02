@@ -36,9 +36,16 @@ pub struct TreeDropIntent {
 
 /// Results published by [`ReorderList`]. Order and persistence stay with the
 /// application.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReorderListEvent {
     Select(Arc<str>),
+    /// Secondary (right) press resolved to a row body. Row surfaces project
+    /// with `pointer_events: none` (the list owns drag and selection), so the
+    /// hit node above the row can never reach a row handler while bubbling;
+    /// [`AppContext::secondary_press_at`] resolves the row under the point and
+    /// publishes this event on the list instead. `x`/`y` are the press point
+    /// in window coordinates, ready to anchor a context menu.
+    Secondary { source: Arc<str>, x: f32, y: f32 },
     Reorder {
         source: Arc<str>,
         before: Option<Arc<str>>,
@@ -614,6 +621,51 @@ impl crate::AppContext {
             .filter_map(|id| self.world().layout_box(id))
             .collect()
     }
+
+    /// Resolve a secondary press on `id` to the row body under the point and
+    /// publish [`ReorderListEvent::Secondary`] on the list. Returns `Ok(false)`
+    /// when `id` is not a reorder list, the point sits on a row's tool cluster
+    /// (tools keep their own pointer handling) or on empty space, so the
+    /// secondary-press walk keeps bubbling.
+    pub fn emit_reorder_row_secondary(
+        &mut self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, crate::FrameworkError> {
+        if !point_finite(x, y) || !self.is_reorder_list(id) {
+            return Ok(false);
+        }
+        let Some(entity) = self.reorder_list_entity(id) else {
+            return Ok(false);
+        };
+        let Some(bounds) = self.world().layout_box(id) else {
+            return Ok(false);
+        };
+        let rows = self.reorder_row_boxes(id, bounds);
+        let exclude = self.reorder_tool_boxes(entity);
+        if exclude.iter().any(|reserved| reserved.contains(x, y)) {
+            return Ok(false);
+        }
+        let (values, enabled) = self.read(entity, |list| {
+            (
+                list.items
+                    .iter()
+                    .map(|item| Arc::clone(&item.value))
+                    .collect::<Vec<_>>(),
+                list.items.iter().map(|item| !item.disabled).collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or((Vec::new(), Vec::new()));
+        let Some(index) = item_at(&rows, &enabled, x, y) else {
+            return Ok(false);
+        };
+        let source = Arc::clone(&values[index]);
+        self.update_component(entity, |_, cx| {
+            cx.emit(ReorderListEvent::Secondary { source, x, y });
+        })?;
+        Ok(true)
+    }
 }
 
 fn point_finite(x: f32, y: f32) -> bool {
@@ -986,5 +1038,68 @@ mod tests {
         );
         let style = context.world().node_style(id).expect("projected style");
         assert_eq!(style.layout.height, Some(LengthSpec::Shrink));
+    }
+
+    #[test]
+    fn secondary_press_on_a_row_body_publishes_the_row() {
+        use std::sync::Mutex;
+
+        let mut context = AppContext::new();
+        let document = document();
+        let mut style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(48.0));
+        }
+        let list = context
+            .create_component(
+                document,
+                ReorderList::new([
+                    ReorderItem::new("a", "Alpha"),
+                    ReorderItem::new("b", "Beta"),
+                ])
+                .size(ControlSize::Small)
+                .style(style),
+            )
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        context
+            .on(list, move |_list, event: &ReorderListEvent, _cx| {
+                observed.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(200.0, 48.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        // Row bodies are pointer-transparent; the secondary press still lands
+        // on the list and resolves to the row under the point.
+        assert_eq!(
+            context.secondary_press_at(document, 100.0, 8.0).unwrap(),
+            Some(list.stable_id())
+        );
+        assert_eq!(
+            events.lock().unwrap().last().cloned(),
+            Some(ReorderListEvent::Secondary {
+                source: Arc::from("a"),
+                x: 100.0,
+                y: 8.0,
+            })
+        );
+        assert_eq!(
+            context.secondary_press_at(document, 100.0, 30.0).unwrap(),
+            Some(list.stable_id())
+        );
+        assert_eq!(
+            events.lock().unwrap().last().cloned(),
+            Some(ReorderListEvent::Secondary {
+                source: Arc::from("b"),
+                x: 100.0,
+                y: 30.0,
+            })
+        );
     }
 }
