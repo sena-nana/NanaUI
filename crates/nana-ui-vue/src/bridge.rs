@@ -6221,6 +6221,7 @@ pub fn parse_button_kind(raw: &str) -> Option<ButtonKind> {
         "warning" => ButtonKind::Warning,
         "danger" => ButtonKind::Danger,
         "text" => ButtonKind::Text,
+        "menu" => ButtonKind::Menu,
         _ => return None,
     })
 }

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE, UI_METRICS,
+    ControlSize, FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment,
+    PopoverPlacement, PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE,
+    UI_METRICS,
 };
 
 use crate::view_components::project_common;
@@ -134,6 +135,12 @@ impl crate::ComponentView for Popover {
         }
     }
 
+    /// Items attach and detach under the open surface, so the anchored
+    /// projection must re-run with them to keep the origin math current.
+    fn wants_child_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         project_menu_surface(
             id,
@@ -146,6 +153,8 @@ impl crate::ComponentView for Popover {
             self.width,
             self.padding,
             self.gap,
+            self.placement,
+            self.alignment,
             "popover",
         );
     }
@@ -207,6 +216,12 @@ impl crate::ComponentView for ActionMenu {
         }
     }
 
+    /// Items attach and detach under the open surface, so the anchored
+    /// projection must re-run with them to keep the origin math current.
+    fn wants_child_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         project_menu_surface(
             id,
@@ -219,6 +234,8 @@ impl crate::ComponentView for ActionMenu {
             self.popover.width,
             self.popover.padding,
             self.popover.gap,
+            self.popover.placement,
+            self.popover.alignment,
             "action-menu",
         );
     }
@@ -235,6 +252,8 @@ pub(crate) fn project_menu_surface(
     width: f32,
     padding: f32,
     gap: f32,
+    placement: PopoverPlacement,
+    alignment: PopoverAlignment,
     label: &str,
 ) {
     let has_trigger = trigger.is_some() || trigger_icon.is_some();
@@ -273,18 +292,32 @@ pub(crate) fn project_menu_surface(
             },
         );
     }
+    let mut style = triggered_menu_style(
+        trigger_icon.is_some(),
+        trigger.as_deref(),
+        open,
+        width,
+        padding,
+        gap,
+    );
+    if open && has_trigger {
+        let surface_height = open_surface_height(world, id, TRIGGER_HEIGHT, padding, gap);
+        anchor_open_surface(
+            id,
+            world,
+            &mut style,
+            placement,
+            alignment,
+            width.max(MENU_MIN_WIDTH),
+            surface_height,
+            gap,
+        );
+    }
     project_common(
         id,
         world,
         mutations,
-        &triggered_menu_style(
-            trigger_icon.is_some(),
-            trigger.as_deref(),
-            open,
-            width,
-            padding,
-            gap,
-        ),
+        &style,
         InteractionState {
             pointer_events: open || has_trigger,
             focusable: has_trigger,
@@ -295,6 +328,68 @@ pub(crate) fn project_menu_surface(
             ..AccessibilityState::default()
         },
     );
+}
+
+/// An open surface must not participate in its host layout: it anchors to the
+/// box of the slot it is mounted in (the parent node, which keeps the trigger's
+/// neighbourhood stable) and switches to a viewport-basis `Fixed` box. Without
+/// a laid-out slot the surface falls back to the previous in-flow morph.
+fn anchor_open_surface(
+    id: StableNodeId,
+    world: &UiWorld,
+    style: &mut NodeStyle,
+    placement: PopoverPlacement,
+    alignment: PopoverAlignment,
+    surface_width: f32,
+    surface_height: f32,
+    gap: f32,
+) {
+    let slot = world
+        .node(id)
+        .and_then(|node| node.parent)
+        .and_then(|parent| world.layout_box(parent))
+        .or_else(|| world.layout_box(id));
+    let Some(slot_box) = slot else {
+        return;
+    };
+    // The viewport is not known at projection time, so edge clamping is left to
+    // a later pass; the placement math itself stays in resolve_popover_origin.
+    let unbounded = LayoutBox {
+        x: -1.0e9,
+        y: -1.0e9,
+        width: 2.0e9,
+        height: 2.0e9,
+    };
+    let (x, y) = resolve_popover_origin(
+        slot_box,
+        surface_width,
+        surface_height,
+        unbounded,
+        placement,
+        alignment,
+        gap,
+    );
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.position = PositionSpec::Fixed;
+    layout.offset_left = Some(LengthSpec::Px(x));
+    layout.offset_top = Some(LengthSpec::Px(y));
+}
+
+/// Estimated open-surface height (trigger strip plus item rows) for the origin
+/// math above; rows measure like compact menu items with 1px separation.
+fn open_surface_height(
+    world: &UiWorld,
+    id: StableNodeId,
+    trigger_height: f32,
+    padding: f32,
+    gap: f32,
+) -> f32 {
+    let items = world
+        .node(id)
+        .map(|node| node.children.len())
+        .unwrap_or(0) as f32;
+    let item = ControlSize::Small.height();
+    trigger_height + gap + padding * 2.0 + items * item + (items - 1.0).max(0.0)
 }
 
 fn triggered_menu_style(
@@ -346,8 +441,10 @@ fn triggered_menu_style(
     }
 }
 
-/// The trigger carries the same chrome contract as a subtle `Button`, so the
-/// hover and press colours resolve through the usual interaction overlay.
+/// The trigger carries the same chrome contract as [`ButtonKind::Menu`]
+/// (`Button`), so a standalone menu button and an in-place action-menu trigger
+/// read as one control; hover and press colours resolve through the usual
+/// interaction overlay.
 fn trigger_button_style() -> NodeStyle {
     let mut style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -572,6 +669,7 @@ pub fn resolve_popover_origin(
 mod tests {
     use super::*;
     use crate::DocumentId;
+    use crate::LayoutViewport;
     use crate::framework::AppContext;
 
     fn document() -> DocumentId {
@@ -870,6 +968,132 @@ mod tests {
                 6.0,
             ),
             (0.0, 0.0)
+        );
+    }
+
+    /// An open menu is a viewport-basis surface: its host row keeps the exact
+    /// boxes it had while the menu was closed, instead of growing by the
+    /// surface height.
+    #[test]
+    fn an_open_menu_stops_participating_in_its_host_layout() {
+        let mut context = AppContext::new();
+        let row = context
+            .create_component(document(), crate::Stack::row(8.0))
+            .unwrap();
+        let sibling = context
+            .create_component(document(), crate::Button::new("侧边"))
+            .unwrap();
+        let slot = context
+            .create_component(document(), crate::Stack::column(4.0))
+            .unwrap();
+        let menu = context
+            .create_component(document(), ActionMenu::new().trigger("询问"))
+            .unwrap();
+        context.append_child(row, sibling).unwrap();
+        context.append_child(row, slot).unwrap();
+        context.append_child(slot, menu).unwrap();
+        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
+        let closed_sibling = context.world().layout_box(sibling.stable_id()).unwrap();
+
+        context
+            .update_component(menu, |menu, _| {
+                menu.popover.open = true;
+            })
+            .unwrap();
+        let item = context
+            .create_component(document(), crate::ActionMenuItem::new("只读"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+
+        let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
+        let open_slot = context.world().layout_box(slot.stable_id()).unwrap();
+        let style = context.world().node_style(menu.stable_id()).unwrap();
+        assert_eq!(style.layout.position, PositionSpec::Fixed);
+        // The surface hangs below the slot it is mounted in (Bottom + Start).
+        assert!((open_menu.y - (closed_slot.y + closed_slot.height + ACTION_MENU_GAP)).abs() < 1.0);
+        assert!((open_menu.x - closed_slot.x).abs() < 1.0);
+        // The slot collapses once the surface leaves the flow, but neighbours
+        // keep their closed-layout boxes: nothing else is pushed around.
+        assert!(open_slot.height < closed_slot.height);
+        assert_eq!(
+            context.world().layout_box(sibling.stable_id()).unwrap(),
+            closed_sibling
+        );
+    }
+
+    /// `Top` placement anchors the surface above its slot: the bottom edge
+    /// sits one gap above the slot top, so bottom-of-window triggers open
+    /// upwards.
+    #[test]
+    fn top_placement_opens_the_surface_above_its_slot() {
+        let mut context = AppContext::new();
+        let row = context
+            .create_component(document(), crate::Stack::row(8.0))
+            .unwrap();
+        let slot = context
+            .create_component(document(), crate::Stack::column(4.0))
+            .unwrap();
+        let menu = context
+            .create_component(
+                document(),
+                ActionMenu::new()
+                    .trigger("工作树")
+                    .placement(PopoverPlacement::Top),
+            )
+            .unwrap();
+        context.append_child(row, slot).unwrap();
+        context.append_child(slot, menu).unwrap();
+        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
+
+        context
+            .update_component(menu, |menu, _| {
+                menu.popover.open = true;
+            })
+            .unwrap();
+        let item = context
+            .create_component(document(), crate::ActionMenuItem::new("当前仓库"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+
+        let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
+        assert!(open_menu.y < closed_slot.y, "surface opens above the slot");
+        assert!(
+            ((open_menu.y + open_menu.height) - (closed_slot.y - ACTION_MENU_GAP)).abs() < 1.0,
+            "surface bottom clears the slot top by one gap"
+        );
+    }
+
+    /// The `Menu` button kind paints the trigger chrome so an app-built menu
+    /// button and an in-place action-menu trigger read as one control.
+    #[test]
+    fn menu_button_kind_paints_menu_trigger_chrome() {
+        let mut context = AppContext::new();
+        let button = context
+            .create_component(
+                document(),
+                crate::Button::new("询问").kind(nana_ui_core::ButtonKind::Menu),
+            )
+            .unwrap();
+        let style = context.world().node_style(button.stable_id()).unwrap();
+        assert_eq!(
+            style.background,
+            Some(nana_ui_core::SemanticColorRole::Subtle)
+        );
+        assert_eq!(
+            style.border,
+            Some(nana_ui_core::SemanticColorRole::BorderSoft)
+        );
+        assert_eq!(
+            style.interaction.hovered.background,
+            Some(nana_ui_core::SemanticColorRole::Hover)
         );
     }
 }
