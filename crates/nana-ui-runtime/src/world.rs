@@ -4547,12 +4547,15 @@ impl UiWorld {
                     estimated_text_width(label, label_size)
                 };
                 let value_natural = estimated_text_width(value, value_size);
-                // 退化时给 value 保底约两个 ASCII 字符宽(≈15px,取 16),长路径等值仍可辨识。
                 let min_value_visible = 16.0_f32;
+                // 放不下时值侧占满剩余宽度,超出部分由文本图元的省略号收尾;
+                // 仅属性名自身就放不下(剩余为负)才回退最小可见宽度。
                 let value_width = if label_natural + gap + value_natural <= available {
                     value_natural
                 } else {
-                    min_value_visible.min(available)
+                    (available - label_natural - gap)
+                        .max(min_value_visible)
+                        .min(available)
                 };
                 let value_x = (right - value_width).max(bounds.x);
                 let label_width = ((value_x - gap - bounds.x).max(0.0)).min(label_natural);
