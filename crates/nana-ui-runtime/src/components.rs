@@ -406,6 +406,10 @@ pub enum StandardVisual {
         /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
         /// 哪些区间处于折叠态由组件内部维护，渲染按折叠后的视图展示。
         folds: Arc<[TextCodeFold]>,
+        /// 多行编辑器的内部派生渲染选项（出现高亮、相对行号、空白字符
+        /// 显示、wrap guide 列参考线）。全部默认关闭；开启的特征由世界侧
+        /// 从输入状态派生几何，不给宿主增加喂入负担。
+        editor_options: TextEditorRenderOptions,
     },
     Checkbox {
         checked: bool,
@@ -859,6 +863,15 @@ pub enum ComponentGeometry {
         caret_line: Option<(LayoutBox, [f32; 4])>,
         /// 光标相邻括号与其配对端的描边框（节点空间矩形 + 已解析的颜色）。
         bracket_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 出现高亮填充条带（节点空间矩形 + 已解析的颜色；聚焦时存在，
+        /// 弱于查找匹配的淡底色）。
+        occurrence_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 空白字符标记（节点空间字符单元矩形 + 种类；颜色统一由
+        /// `whitespace_color` 给出，几何层按视口裁剪）。
+        whitespace_marks: Vec<(LayoutBox, TextWhitespaceKind)>,
+        whitespace_color: [f32; 4],
+        /// wrap guide 全高竖线（节点空间矩形 + 已解析的颜色）。
+        wrap_guides: Vec<(LayoutBox, [f32; 4])>,
         /// 缩进参考线竖线（节点空间矩形 + 已解析的颜色）。
         indent_guides: Vec<(LayoutBox, [f32; 4])>,
         /// 行号标签（节点空间 y，行号从 1 起）。
@@ -1546,6 +1559,36 @@ pub struct TextDiagnosticMark {
     pub severity: TextDiagnosticSeverity,
 }
 
+/// 多行编辑器的内部派生渲染选项（[`StandardVisual::TextInput`] 携带，
+/// 世界侧派生几何）。全部默认关闭；关闭时派生路径零分配短路。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextEditorRenderOptions {
+    /// 光标处单词/选中文本的出现高亮（内部派生，聚焦时绘制）。
+    pub occurrence_highlight: bool,
+    /// 相对行号：光标行显示绝对行号，其余行显示与光标所在显示行的距离
+    /// （Zed 惯例，见 zed-industries/zed#62311）。仅在行号栏开启时生效。
+    pub relative_line_numbers: bool,
+    /// 空白字符显示：空格画中点、Tab 画箭头（行首缩进与行尾空白一并可见）。
+    pub show_whitespace: bool,
+    /// wrap guide 列参考线：在每个字符列位置画全高竖线。列宽按 `'0'`
+    /// 字形宽度估算（等宽字体假设）；文档最宽行不足该列时不画。
+    pub wrap_guides: Arc<[usize]>,
+}
+
+/// [`TextWhitespaceMark`] 的种类：空格与 Tab。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextWhitespaceKind {
+    Space,
+    Tab,
+}
+
+/// 空白字符显示标记（文本空间字符单元矩形，随滚动平移）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextWhitespaceMark {
+    pub rect: LayoutBox,
+    pub kind: TextWhitespaceKind,
+}
+
 /// 行号标签（文本空间 y 坐标，逻辑行序号从 1 起）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineLabel {
@@ -1578,6 +1621,14 @@ pub struct TextInputPresentation {
     pub match_marks: Vec<TextMatchMark>,
     /// 光标相邻括号与其配对端的描边框（文本空间，仅聚焦多行态计算）。
     pub bracket_marks: Vec<LayoutBox>,
+    /// 出现高亮条带（文本空间）。主光标的词/单行选中文本在文档内的其他
+    /// 出现；仅开启选项且聚焦的多行态计算（不聚焦零成本跳过）。
+    pub occurrence_marks: Vec<LayoutBox>,
+    /// 空白字符显示标记（文本空间字符单元，仅开启选项的多行态计算）。
+    pub whitespace_marks: Vec<TextWhitespaceMark>,
+    /// wrap guide 列的文本空间 x 位置（仅多行态计算；文档宽度不足的列
+    /// 不出现）。
+    pub wrap_guides: Vec<f32>,
     /// 缩进参考线竖线（文本空间，仅多行代码编辑态计算）。
     pub indent_guides: Vec<LayoutBox>,
     /// 各逻辑行的 y 起点（启用行号栏时计算）。

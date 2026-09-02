@@ -14,6 +14,7 @@ use nana_ui_runtime::{
 };
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -21,16 +22,150 @@ use unicode_segmentation::UnicodeSegmentation;
 pub(crate) const RTL_ISOLATE_PREFIX: &str = "\u{2067}";
 pub(crate) const RTL_ISOLATE_SUFFIX: &str = "\u{2069}";
 
+/// Monotonic font-database generation for shaped-layout memo keys.
+///
+/// Every mutation of the shared `FontSystem` database (host `@font-face`
+/// registration, local aliases, sans-serif override) bumps the generation, so
+/// memoized layouts cannot outlive the font data they were shaped against.
+static FONT_DB_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn font_db_generation() -> u64 {
+    FONT_DB_GENERATION.load(Ordering::Relaxed)
+}
+
+fn bump_font_db_generation() {
+    FONT_DB_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Entries kept in one [`NanaTextShaper`]'s shaped-layout memo.
+///
+/// A single presentation pass interleaves short probe texts (wrap-guide `'0'`,
+/// the indent unit) with the document text, so a one-entry memo would evict the
+/// document mid-pass and force repeat full layouts. Four entries keep the
+/// document resident across those interleaves while bounding memory to at most
+/// four shaped buffers.
+const SHAPED_LAYOUT_MEMO_CAPACITY: usize = 4;
+
+/// Identity of one shaped whole-paragraph layout (see [`NanaTextShaper`]).
+///
+/// Text content is covered by `(byte length, fingerprint)`: the length is the
+/// cheap reject, and the fingerprint is a chunked FNV-1a over the bytes. A
+/// false hit needs a same-length 64-bit fingerprint collision (~2^-64 per
+/// pair); at editor scale that is negligible, and every layout input is still
+/// verified exactly — style and constraints by full equality, the font
+/// database by generation.
+#[derive(Debug)]
+struct ShapedLayoutKey {
+    text_len: usize,
+    text_fingerprint: u64,
+    font_generation: u64,
+    style: ComputedStyle,
+    constraints: TextShapeConstraints,
+}
+
+impl ShapedLayoutKey {
+    fn new(text: &str, style: &ComputedStyle, constraints: TextShapeConstraints) -> Self {
+        Self {
+            text_len: text.len(),
+            text_fingerprint: text_fingerprint(text),
+            font_generation: font_db_generation(),
+            style: style.clone(),
+            constraints,
+        }
+    }
+
+    fn matches(
+        &self,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        font_generation: u64,
+    ) -> bool {
+        self.text_len == text.len()
+            && self.font_generation == font_generation
+            && self.constraints == constraints
+            && self.style == *style
+            && self.text_fingerprint == text_fingerprint(text)
+    }
+}
+
+/// One memoized shaped layout: its key plus the shaped cosmic-text buffer.
+#[derive(Debug)]
+struct ShapedLayoutEntry {
+    key: ShapedLayoutKey,
+    buffer: Buffer,
+}
+
+/// LRU memo of shaped whole-paragraph layouts, oldest first, newest last.
+///
+/// All [`TextShaper`] probes on the production host funnel through one
+/// `Buffer::new` + shape per call; editor features issue hundreds of probes
+/// against the same (text, style, constraints) per frame. The memo lets every
+/// probe after the first reuse the shaped buffer and pay only the geometric
+/// query (O(probe range)).
+#[derive(Debug)]
+struct ShapedLayoutMemo {
+    entries: Vec<ShapedLayoutEntry>,
+}
+
+impl ShapedLayoutMemo {
+    fn index_of(
+        &self,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        font_generation: u64,
+    ) -> Option<usize> {
+        self.entries
+            .iter()
+            .rposition(|entry| entry.key.matches(text, style, constraints, font_generation))
+    }
+
+    fn remember(&mut self, entry: ShapedLayoutEntry) {
+        while self.entries.len() >= SHAPED_LAYOUT_MEMO_CAPACITY {
+            self.entries.remove(0);
+        }
+        self.entries.push(entry);
+    }
+}
+
+/// Chunked FNV-1a over the text bytes (8 bytes per step, tail zero-padded).
+fn text_fingerprint(text: &str) -> u64 {
+    const PRIME: u64 = 0x1000_0000_01b3;
+    let bytes = text.as_bytes();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for chunk in bytes.chunks_exact(8) {
+        hash = (hash ^ u64::from_le_bytes(chunk.try_into().unwrap())).wrapping_mul(PRIME);
+    }
+    let tail = bytes.chunks_exact(8).remainder();
+    if !tail.is_empty() {
+        let mut padded = [0u8; 8];
+        padded[..tail.len()].copy_from_slice(tail);
+        hash = (hash ^ u64::from_le_bytes(padded)).wrapping_mul(PRIME);
+    }
+    hash ^ (bytes.len() as u64).wrapping_mul(PRIME)
+}
+
 /// Product text shaper for Runtime flush on the Nana WGPU host path.
 #[derive(Debug)]
 pub struct NanaTextShaper {
     font_system: SharedFontSystem,
+    layout_memo: ShapedLayoutMemo,
+    /// Whole-buffer layouts performed since construction (test-only probe for
+    /// memo behavior; zero cost in production builds).
+    #[cfg(test)]
+    layouts: usize,
 }
 
 impl Default for NanaTextShaper {
     fn default() -> Self {
         Self {
             font_system: nana_font_system(),
+            layout_memo: ShapedLayoutMemo {
+                entries: Vec::new(),
+            },
+            #[cfg(test)]
+            layouts: 0,
         }
     }
 }
@@ -102,6 +237,9 @@ pub fn register_host_font_face(
             aliases += 1;
         }
     }
+    if ids.len() + aliases > 0 {
+        bump_font_db_generation();
+    }
     ids.len() + aliases
 }
 
@@ -156,6 +294,7 @@ pub fn alias_host_font_face_local(
         for info in to_push {
             db.push_face_info(info);
         }
+        bump_font_db_generation();
     }
     aliases
 }
@@ -290,6 +429,7 @@ pub fn register_host_font_bytes(bytes: impl Into<Vec<u8>>) -> Result<usize, Host
     if ids.is_empty() {
         Err(HostFontError::Unrecognized)
     } else {
+        bump_font_db_generation();
         Ok(ids.len())
     }
 }
@@ -297,28 +437,29 @@ pub fn register_host_font_bytes(bytes: impl Into<Vec<u8>>) -> Result<usize, Host
 /// Family names (name table + CSS aliases) of faces used to shape `text`.
 pub fn shaped_face_families(family: &str, text: &str) -> Vec<String> {
     let mut shaper = NanaTextShaper::default();
-    let buffer = shaper.shape_buffer(
-        text,
-        &ComputedStyle {
-            font_family: Some(family.into()),
-            ..ComputedStyle::default()
-        },
-        TextShapeConstraints {
-            shaping: TextShaping::Advanced,
-            ..TextShapeConstraints::default()
-        },
-    );
-    let fonts = lock_font_system(&shaper.font_system);
-    let mut names = Vec::new();
-    for run in buffer.layout_runs() {
-        for glyph in run.glyphs {
-            if let Some(face) = fonts.db().face(glyph.font_id) {
-                for (name, _) in &face.families {
-                    names.push(name.clone());
+    let style = ComputedStyle {
+        font_family: Some(family.into()),
+        ..ComputedStyle::default()
+    };
+    let constraints = TextShapeConstraints {
+        shaping: TextShaping::Advanced,
+        ..TextShapeConstraints::default()
+    };
+    let font_system = Arc::clone(&shaper.font_system);
+    let mut names = shaper.with_shaped_layout(text, &style, constraints, |buffer| {
+        let fonts = lock_font_system(&font_system);
+        let mut names = Vec::new();
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs {
+                if let Some(face) = fonts.db().face(glyph.font_id) {
+                    for (name, _) in &face.families {
+                        names.push(name.clone());
+                    }
                 }
             }
         }
-    }
+        names
+    });
     names.sort();
     names.dedup();
     names
@@ -338,6 +479,7 @@ pub fn register_host_font_file(path: impl AsRef<Path>) -> Result<usize, HostFont
     if loaded == 0 {
         Err(HostFontError::Unrecognized)
     } else {
+        bump_font_db_generation();
         Ok(loaded)
     }
 }
@@ -347,6 +489,7 @@ pub fn set_sans_serif_family(name: impl AsRef<str>) {
     let fonts = nana_font_system();
     let mut fonts = lock_font_system(&fonts);
     fonts.db_mut().set_sans_serif_family(name.as_ref());
+    bump_font_db_generation();
 }
 
 fn build_font_system() -> FontSystem {
@@ -377,8 +520,7 @@ impl TextShaper for NanaTextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
-        let buffer = self.shape_buffer(&text.value, style, constraints);
-        metrics_of(&buffer)
+        self.with_shaped_layout(&text.value, style, constraints, metrics_of)
     }
 
     fn shape_cached(
@@ -397,9 +539,10 @@ impl TextShaper for NanaTextShaper {
             let _ = glyphs.lookup(ch, style);
             return metrics_from_advance(advance, style, text.value.chars().count());
         }
-        let buffer = self.shape_buffer(&text.value, style, constraints);
-        record_shaped_glyphs(&buffer, style, glyphs);
-        metrics_of(&buffer)
+        self.with_shaped_layout(&text.value, style, constraints, |buffer| {
+            record_shaped_glyphs(buffer, style, glyphs);
+            metrics_of(buffer)
+        })
     }
 
     fn horizontal_offset(
@@ -415,16 +558,16 @@ impl TextShaper for NanaTextShaper {
         {
             return 0.0;
         }
-        let buffer = self.shape_buffer(
+        let graphemes = text.value[..byte_offset].graphemes(true).count();
+        self.with_shaped_layout(
             &text.value,
             style,
             TextShapeConstraints {
                 shaping: TextShaping::Advanced,
                 ..TextShapeConstraints::default()
             },
-        );
-        let graphemes = text.value[..byte_offset].graphemes(true).count();
-        grapheme_x(&buffer, 0, graphemes).unwrap_or(0.0)
+            |buffer| grapheme_x(buffer, 0, graphemes).unwrap_or(0.0),
+        )
     }
 
     fn text_position(
@@ -441,25 +584,26 @@ impl TextShaper for NanaTextShaper {
         {
             return (0.0, 0.0, 0.0);
         }
-        let buffer = self.shape_buffer(&text.value, style, constraints);
-        let Some(cursor) = cosmic_cursor(&buffer, byte_offset, Affinity::After) else {
-            return (0.0, 0.0, 0.0);
-        };
-        let mut position = None;
-        for run in buffer.layout_runs() {
-            if let Some(x) = run.cursor_position(&cursor) {
-                position = Some((x, run.line_top, run.line_height));
+        self.with_shaped_layout(&text.value, style, constraints, |buffer| {
+            let Some(cursor) = cosmic_cursor(buffer, byte_offset, Affinity::After) else {
+                return (0.0, 0.0, 0.0);
+            };
+            let mut position = None;
+            for run in buffer.layout_runs() {
+                if let Some(x) = run.cursor_position(&cursor) {
+                    position = Some((x, run.line_top, run.line_height));
+                }
             }
-        }
-        if let Some(position) = position {
-            return position;
-        }
-        buffer
-            .layout_runs()
-            .find(|run| run.line_i == cursor.line && run.glyphs.is_empty())
-            .map_or((0.0, 0.0, resolved_line_height(style)), |run| {
-                (0.0, run.line_top, run.line_height)
-            })
+            if let Some(position) = position {
+                return position;
+            }
+            buffer
+                .layout_runs()
+                .find(|run| run.line_i == cursor.line && run.glyphs.is_empty())
+                .map_or((0.0, 0.0, resolved_line_height(style)), |run| {
+                    (0.0, run.line_top, run.line_height)
+                })
+        })
     }
 
     fn text_highlights(
@@ -480,32 +624,65 @@ impl TextShaper for NanaTextShaper {
         {
             return Vec::new();
         }
-        let buffer = self.shape_buffer(&text.value, style, constraints);
-        let Some(start) = cosmic_cursor(&buffer, start, Affinity::After) else {
-            return Vec::new();
-        };
-        let Some(end) = cosmic_cursor(&buffer, end, Affinity::Before) else {
-            return Vec::new();
-        };
-        let mut highlights = Vec::new();
-        for run in buffer.layout_runs() {
-            if run.line_i < start.line || run.line_i > end.line {
-                continue;
+        self.with_shaped_layout(&text.value, style, constraints, |buffer| {
+            let Some(start) = cosmic_cursor(buffer, start, Affinity::After) else {
+                return Vec::new();
+            };
+            let Some(end) = cosmic_cursor(buffer, end, Affinity::Before) else {
+                return Vec::new();
+            };
+            let mut highlights = Vec::new();
+            for run in buffer.layout_runs() {
+                if run.line_i < start.line || run.line_i > end.line {
+                    continue;
+                }
+                for (x, width) in run.highlight(start, end) {
+                    highlights.push(LayoutBox {
+                        x,
+                        y: run.line_top,
+                        width,
+                        height: run.line_height,
+                    });
+                }
             }
-            for (x, width) in run.highlight(start, end) {
-                highlights.push(LayoutBox {
-                    x,
-                    y: run.line_top,
-                    width,
-                    height: run.line_height,
-                });
-            }
-        }
-        highlights
+            highlights
+        })
     }
 }
 
 impl NanaTextShaper {
+    /// Run `consume` against the shaped layout for these inputs, reusing the
+    /// memoized buffer on a key hit and laying out exactly once on a miss.
+    fn with_shaped_layout<R>(
+        &mut self,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        consume: impl FnOnce(&Buffer) -> R,
+    ) -> R {
+        let font_generation = font_db_generation();
+        if let Some(index) = self
+            .layout_memo
+            .index_of(text, style, constraints, font_generation)
+        {
+            let entry = self.layout_memo.entries.remove(index);
+            let result = consume(&entry.buffer);
+            self.layout_memo.entries.push(entry);
+            return result;
+        }
+        let buffer = self.shape_buffer(text, style, constraints);
+        let result = consume(&buffer);
+        #[cfg(test)]
+        {
+            self.layouts += 1;
+        }
+        self.layout_memo.remember(ShapedLayoutEntry {
+            key: ShapedLayoutKey::new(text, style, constraints),
+            buffer,
+        });
+        result
+    }
+
     fn shape_buffer(
         &mut self,
         text: &str,
@@ -1173,6 +1350,109 @@ mod tests {
             tight.width,
             tracked.width
         );
+    }
+
+    #[test]
+    fn probes_reuse_one_shaped_layout_until_layout_inputs_change() {
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle {
+            font_size: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..ComputedStyle::default()
+        };
+        let constraints = TextShapeConstraints {
+            max_width: Some(120.0),
+            wrap: true,
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        };
+        let text = TextContent {
+            value: "count count count count count".into(),
+        };
+        let selection = (0, text.value.len());
+
+        // 首次探针布局一次;随后同一布局输入下的高亮、光标与 metrics
+        // 全部复用缓存布局,零整段重排。
+        let first = shaper.text_highlights(node(), &text, selection, &style, constraints);
+        assert!(!first.is_empty());
+        assert_eq!(shaper.layouts, 1);
+        let again = shaper.text_highlights(node(), &text, selection, &style, constraints);
+        assert_eq!(again, first);
+        let caret = shaper.text_position(node(), &text, "count ".len(), &style, constraints);
+        assert_eq!(caret.2, 20.0);
+        let metrics = shaper.shape(node(), &text, &style, constraints);
+        assert_positive_finite(metrics);
+        let mut glyphs = GlyphCache::default();
+        let cached = shaper.shape_cached(node(), &text, &style, constraints, &mut glyphs);
+        assert_eq!(cached, metrics);
+        assert_eq!(shaper.layouts, 1);
+
+        // 短探针文本(wrap guide 的 '0'、缩进单位)与文档探针交错后,
+        // 文档布局仍在缓存中:交替探针不触发文档重排。
+        let zero = TextContent { value: "0".into() };
+        assert!(
+            shaper
+                .horizontal_offset(node(), &zero, 1, &style)
+                .is_finite()
+        );
+        assert_eq!(shaper.layouts, 2);
+        let after_aux = shaper.text_highlights(node(), &text, selection, &style, constraints);
+        assert_eq!(after_aux, first);
+        assert_eq!(shaper.layouts, 2);
+
+        // 同字节数的文本修改必须失效缓存(最易漏检的过期风险)。
+        let edited = TextContent {
+            value: "caunt count count count count".into(),
+        };
+        let edited_highlights =
+            shaper.text_highlights(node(), &edited, selection, &style, constraints);
+        assert_eq!(shaper.layouts, 3);
+        let mut fresh = NanaTextShaper::default();
+        assert_eq!(
+            fresh.text_highlights(node(), &edited, selection, &style, constraints),
+            edited_highlights
+        );
+
+        // 字号变化失效缓存并反映在行盒高度上(相对行高随字号放大)。
+        let larger = ComputedStyle {
+            font_size: 24.0,
+            line_height: None,
+            ..style.clone()
+        };
+        let larger_highlights =
+            shaper.text_highlights(node(), &text, selection, &larger, constraints);
+        assert_eq!(shaper.layouts, 4);
+        assert!(larger_highlights[0].height > first[0].height);
+
+        // 宽度约束变化失效缓存并改变换行结果。
+        let narrow = TextShapeConstraints {
+            max_width: Some(60.0),
+            ..constraints
+        };
+        let narrow_highlights = shaper.text_highlights(node(), &text, selection, &style, narrow);
+        assert_eq!(shaper.layouts, 5);
+        assert!(narrow_highlights.len() > first.len());
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn font_database_change_invalidates_shaped_layout_memo() {
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle::default();
+        let constraints = TextShapeConstraints::default();
+        let text = TextContent {
+            value: "memo".into(),
+        };
+        let _ = shaper.shape(node(), &text, &style, constraints);
+        assert_eq!(shaper.layouts, 1);
+        let _ = shaper.shape(node(), &text, &style, constraints);
+        assert_eq!(shaper.layouts, 1);
+
+        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let added = register_host_font_face("NanaMemoGenFace", data.to_vec(), Some(400), None);
+        assert!(added > 0, "bundled Regular face must load");
+        let _ = shaper.shape(node(), &text, &style, constraints);
+        assert_eq!(shaper.layouts, 2, "font db mutation must miss the memo");
     }
 
     #[test]
