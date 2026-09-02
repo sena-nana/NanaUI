@@ -250,7 +250,14 @@ impl AppTitleBar {
             }
         }
         if !saw_columns {
-            if let Some(leading) = self.leading {
+            // No-slot bars keep the legacy direct-child slots. The patches
+            // must only touch nodes that are currently children of this bar:
+            // before `assemble` runs, a mounted center (e.g. a `Breadcrumb`
+            // component) is still detached, and stamping the column style on
+            // it would clobber the component's own layout for good.
+            let is_bar_child =
+                |node: StableNodeId| world.node(node).and_then(|n| n.parent) == Some(id);
+            if let Some(leading) = self.leading.filter(|&n| is_bar_child(n)) {
                 patch_layout(world, mutations, leading, |layout| {
                     apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
                     layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
@@ -259,12 +266,12 @@ impl AppTitleBar {
                     layout.padding_bottom = Some(LengthSpec::Px(0.0));
                 });
             }
-            if let Some(center) = self.center {
+            if let Some(center) = self.center.filter(|&n| is_bar_child(n)) {
                 patch_layout(world, mutations, center, |layout| {
                     apply_center_column(layout, self.resolved_center_width());
                 });
             }
-            if let Some(trailing) = self.trailing {
+            if let Some(trailing) = self.trailing.filter(|&n| is_bar_child(n)) {
                 patch_layout(world, mutations, trailing, |layout| {
                     apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
                     layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
@@ -2263,20 +2270,6 @@ mod tests {
             context.world().text(center.stable_id()),
             Some("Workspace / File")
         );
-        let center_layout = &context
-            .world()
-            .node_style(center.stable_id())
-            .unwrap()
-            .layout;
-        assert_eq!(
-            center_layout.width,
-            Some(LengthSpec::Px(DEFAULT_CENTER_WIDTH))
-        );
-        assert_eq!(center_layout.flex_grow, Some(0.0));
-        assert_eq!(center_layout.flex_shrink, Some(0.0));
-        assert_eq!(center_layout.justify_content, JustifySpec::Center);
-        assert_eq!(center_layout.overflow_x, OverflowSpec::Hidden);
-        assert!(center_layout.text_overflow_ellipsis);
 
         context
             .update_component(bar, |bar, _| {
@@ -3644,13 +3637,6 @@ mod tests {
             title_style.text_horizontal_alignment,
             TextHorizontalAlignment::Center
         );
-        let leading_layout = &context
-            .world()
-            .node_style(leading.stable_id())
-            .unwrap()
-            .layout;
-        assert_eq!(leading_layout.flex_grow, Some(0.0));
-        assert_eq!(leading_layout.width, Some(LengthSpec::Shrink));
 
         let bar_box = context.world().layout_box(title_bar).unwrap();
         let center_box = context.world().layout_box(columns[1]).unwrap();
