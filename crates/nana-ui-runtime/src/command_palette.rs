@@ -7,6 +7,7 @@ use nana_ui_core::{
     DialogSize,
 };
 
+use crate::menus::estimated_text_width;
 use crate::overlay_surfaces::{MODAL_PAD_X, modal_root_style, modal_surface_bounds};
 use crate::query::query_matches;
 use crate::view_components::project_common;
@@ -19,6 +20,9 @@ use crate::{
 const ROW_HEIGHT: f32 = 40.0;
 const MAX_VISIBLE_ROWS: usize = 12;
 const INPUT_GAP: f32 = 8.0;
+const ROW_PAD_X: f32 = 10.0;
+const SHORTCUT_TEXT_SIZE: f32 = 10.0;
+const SHORTCUT_LABEL_GAP: f32 = 8.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteRowData {
@@ -303,11 +307,32 @@ pub(crate) fn command_palette_geometry(
                 width: (surface.width - 16.0).max(0.0),
                 height: ROW_HEIGHT,
             };
+            let shortcut = row.shortcut.as_ref().map(|shortcut| {
+                let shortcut_width = estimated_text_width(shortcut, SHORTCUT_TEXT_SIZE);
+                ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: bounds.x + bounds.width - ROW_PAD_X - shortcut_width,
+                        y: bounds.y + 12.0,
+                        width: shortcut_width,
+                        height: 16.0,
+                    },
+                    content: Arc::clone(shortcut),
+                    color: Some(palette.muted.as_rgba_array()),
+                    font_size: SHORTCUT_TEXT_SIZE,
+                    font_weight: None,
+                }
+            });
+            // The label yields to the (End-aligned) shortcut instead of
+            // running underneath it.
+            let label_right = match &shortcut {
+                Some(shortcut) => shortcut.bounds.x - SHORTCUT_LABEL_GAP,
+                None => bounds.x + bounds.width - ROW_PAD_X,
+            };
             let label = ComponentTextRegion {
                 bounds: LayoutBox {
-                    x: bounds.x + 10.0,
+                    x: bounds.x + ROW_PAD_X,
                     y: bounds.y + 6.0,
-                    width: (bounds.width - 20.0).max(0.0),
+                    width: (label_right - bounds.x - ROW_PAD_X).max(0.0),
                     height: 16.0,
                 },
                 content: Arc::clone(&row.label),
@@ -317,24 +342,12 @@ pub(crate) fn command_palette_geometry(
             };
             let category = row.category.as_ref().map(|category| ComponentTextRegion {
                 bounds: LayoutBox {
-                    x: bounds.x + 10.0,
+                    x: bounds.x + ROW_PAD_X,
                     y: bounds.y + 22.0,
-                    width: (bounds.width - 20.0).max(0.0),
+                    width: (bounds.width - ROW_PAD_X * 2.0).max(0.0),
                     height: 12.0,
                 },
                 content: Arc::clone(category),
-                color: Some(palette.muted.as_rgba_array()),
-                font_size: 10.0,
-                font_weight: None,
-            });
-            let shortcut = row.shortcut.as_ref().map(|shortcut| ComponentTextRegion {
-                bounds: LayoutBox {
-                    x: bounds.x + bounds.width - 80.0,
-                    y: bounds.y + 12.0,
-                    width: 70.0,
-                    height: 16.0,
-                },
-                content: Arc::clone(shortcut),
                 color: Some(palette.muted.as_rgba_array()),
                 font_size: 10.0,
                 font_weight: None,
@@ -464,5 +477,46 @@ mod tests {
                 assert_eq!(palette.visible_items().len(), 1);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn long_shortcut_reserves_its_estimate_and_stays_clear_of_the_label() {
+        let rows = [PaletteRowData {
+            action: ActionId::new("workspace.settings"),
+            label: Arc::from("打开设置"),
+            category: None,
+            shortcut: Some(Arc::from("Ctrl+Alt+Delete")),
+            selected: false,
+        }];
+        let geometry = command_palette_geometry(
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 720.0,
+                height: 480.0,
+            },
+            &Arc::from("命令面板"),
+            &Arc::from(""),
+            &Arc::from("搜索命令"),
+            None,
+            &rows,
+            &nana_ui_core::SemanticPalette::dark(),
+        );
+        let crate::ComponentGeometry::CommandPalette { rows, .. } = geometry else {
+            panic!("command palette geometry");
+        };
+        let row = &rows[0];
+        let shortcut = row.shortcut.as_ref().expect("shortcut region");
+        // "Ctrl+Alt+Delete" at 10px ≈ 93px, far past the old fixed 70px box.
+        let estimated = estimated_text_width(shortcut.content.as_ref(), SHORTCUT_TEXT_SIZE);
+        assert!(estimated > 80.0, "estimate {estimated} should exceed the old box");
+        assert!(shortcut.bounds.width + 0.01 >= estimated);
+        assert!((shortcut.bounds.width - estimated).abs() < 0.5);
+        // End edge stays pinned to the row's trailing padding edge.
+        let shortcut_end = shortcut.bounds.x + shortcut.bounds.width;
+        assert!((shortcut_end - (row.bounds.x + row.bounds.width - ROW_PAD_X)).abs() < 0.01);
+        // The label region ends before the shortcut region begins.
+        assert!(row.label.bounds.width > 0.0);
+        assert!(row.label.bounds.x + row.label.bounds.width <= shortcut.bounds.x);
     }
 }
