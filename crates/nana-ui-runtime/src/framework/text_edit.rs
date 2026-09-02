@@ -19,7 +19,8 @@ use crate::text_editing::{
     vertical_caret_focus_logical, word_range_at,
 };
 use crate::{
-    CodeEditing, TextCodeFold, TextContent, TextShapeConstraints, TextSnippet, TextSnippetSession,
+    CodeEditing, MutationQueue, ScrollOffset, TextCodeFold, TextContent, TextShapeConstraints,
+    TextSnippet, TextSnippetSession,
 };
 use std::sync::Arc;
 
@@ -45,7 +46,7 @@ pub struct FocusedTextEditor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextEditorKind {
+pub(crate) enum TextEditorKind {
     Area,
     Field,
 }
@@ -1217,6 +1218,13 @@ impl AppContext {
             self.text_pointer_drag = None;
             return self.accept_focused_text_completion(document, Some(row));
         }
+        // minimap 竖条交互：条内按下即消费（任何修饰键与连击计数）——
+        // 视口滚动到点击行居中的位置并进入拖拽跟随，不移动光标、不产生
+        // 选区；滚轮不经过本路径，落在条上仍按编辑器常规滚动。
+        if let Some(target) = self.world.text_minimap_scroll_target(node, x, y) {
+            self.text_pointer_drag = None;
+            return self.text_editor_minimap_navigate(node, focused.kind, pointer_id, target);
+        }
         // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
         // 光标（单击且无修饰时）。
         if count == 1
@@ -1295,6 +1303,32 @@ impl AppContext {
         self.write_editor_selections(node, focused.kind, selection, additional)
     }
 
+    /// minimap 导航：把目标滚动写进世界与组件（组件字段是投影权威，
+    /// 不同步会在下一帧被投影改写回去），并钉住视口使光标 reveal 让位。
+    fn text_editor_minimap_navigate(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        pointer_id: u64,
+        target: ScrollOffset,
+    ) -> Result<bool, FrameworkError> {
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_offset(node, target);
+        self.world.commit(mutations)?;
+        // 钉住提交后的实际偏移（世界侧可能再钳制），保证与几何层读取的
+        // 请求滚动逐位相等。
+        let applied = self.world.scroll_offset(node).unwrap_or(target);
+        self.world.set_text_viewport_pin(node, Some(applied));
+        if kind == TextEditorKind::Area {
+            self.update_component(Entity::<TextArea>::from_stable_id(node), |area, _| {
+                area.scroll_offset = applied;
+                false
+            })?;
+        }
+        self.text_minimap_drag = Some((pointer_id, node, kind));
+        Ok(true)
+    }
+
     /// Toggle an Alt+click cursor at `offset`: clicking an existing additional
     /// cursor removes it, clicking anywhere else adds one (the primary
     /// selection is never removed this way).
@@ -1332,6 +1366,19 @@ impl AppContext {
         y: f32,
         shaper: &mut dyn crate::TextShaper,
     ) -> Result<bool, FrameworkError> {
+        // minimap 拖拽优先：按下进入的导航拖拽连续跟随指针换算视口，
+        // 不做选区延伸。指针拖出条外时保持最后视口（仍消费本次拖拽）。
+        if let Some((drag_id, drag_node, drag_kind)) = self.text_minimap_drag {
+            if drag_id != pointer_id {
+                return Ok(false);
+            }
+            return match self.world.text_minimap_scroll_target(drag_node, x, y) {
+                Some(target) => {
+                    self.text_editor_minimap_navigate(drag_node, drag_kind, pointer_id, target)
+                }
+                None => Ok(true),
+            };
+        }
         let Some((drag_id, node, anchor)) = self.text_pointer_drag else {
             return Ok(false);
         };
@@ -1388,6 +1435,12 @@ impl AppContext {
             .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
         {
             self.text_pointer_drag = None;
+        }
+        if self
+            .text_minimap_drag
+            .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
+        {
+            self.text_minimap_drag = None;
         }
     }
 
@@ -3013,5 +3066,244 @@ mod completion_tests {
             state.additional_selections,
             vec![crate::TextSelection::caret(7)]
         );
+    }
+}
+
+#[cfg(test)]
+mod minimap_tests {
+    use crate::{
+        AppContext, DocumentId, Entity, MeasureTextShaper, MutationQueue, StableNodeId, TextArea,
+        TextSelection,
+    };
+    use std::time::Duration;
+
+    /// 30 行 minimap 编辑器：行高 10、布局 200×100，已布局并 shape，
+    /// 且已聚焦。
+    fn minimap_editor() -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let value = (0..30)
+            .map(|index| format!("line{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut view = TextArea::new(value).minimap(true);
+        {
+            use nana_ui_core::{LengthSpec, LineHeightSpec};
+            let layout = std::sync::Arc::make_mut(&mut view.style.layout);
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(100.0));
+            layout.line_height = Some(LineHeightSpec::Absolute(10.0));
+            layout.padding_left = Some(LengthSpec::Px(0.0));
+            layout.padding_right = Some(LengthSpec::Px(0.0));
+            layout.padding_top = Some(LengthSpec::Px(0.0));
+            layout.padding_bottom = Some(LengthSpec::Px(0.0));
+        }
+        let area = context.create_component(document, view).unwrap();
+        let node = area.stable_id();
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            node,
+            crate::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+        context.world_mut().resolve_styles(&[node]).unwrap();
+        context
+            .world_mut()
+            .shape_text(&[node], &mut MeasureTextShaper)
+            .unwrap();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn minimap_panel(context: &AppContext, node: StableNodeId) -> crate::LayoutBox {
+        match context.world().component_geometry(node).unwrap() {
+            crate::ComponentGeometry::TextInput {
+                minimap: Some(minimap),
+                ..
+            } => minimap.panel,
+            other => panic!("expected minimap geometry, got {other:?}"),
+        }
+    }
+
+    fn press(
+        context: &mut AppContext,
+        document: DocumentId,
+        node: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        context
+            .text_editor_pointer_press(
+                document,
+                node,
+                1,
+                x,
+                y,
+                false,
+                false,
+                Duration::ZERO,
+                &mut MeasureTextShaper,
+            )
+            .unwrap()
+    }
+
+    fn scroll_y_of(context: &AppContext, node: StableNodeId) -> f32 {
+        context.world().scroll_offset(node).unwrap().y
+    }
+
+    /// 点击条内 `offset_y`（面板内偏移）后的期望滚动：命中行居中并钳到
+    /// 文档范围（行高 10，30 行；内容盒从世界侧读取，含边框）。
+    fn expected_scroll(context: &AppContext, node: StableNodeId, offset_y: f32) -> f32 {
+        let (content, _) = context.world().text_input_pointer_context(node).unwrap();
+        let line = (offset_y / 2.0).floor();
+        let max_scroll = (30.0 * 10.0 - content.height).max(0.0);
+        (line * 10.0 + 5.0 - content.height / 2.0).clamp(0.0, max_scroll)
+    }
+
+    #[test]
+    fn minimap_press_scrolls_viewport_without_moving_caret_or_selection() {
+        let (mut context, document, area, node) = minimap_editor();
+        let state = context.world().text_input(node).unwrap();
+        let selection_before = state.selection;
+        let additional_before = state.additional_selections.clone();
+
+        // 条内中部点击：点击行（面板内 50px → 第 25 行）居中。
+        let panel = minimap_panel(&context, node);
+        assert!(press(
+            &mut context,
+            document,
+            node,
+            panel.x + 32.0,
+            panel.y + 50.0
+        ));
+        let expected = expected_scroll(&context, node, 50.0);
+        assert_eq!(scroll_y_of(&context, node), expected);
+        // 组件字段同步（投影权威），下一帧不被改写回去。
+        assert_eq!(
+            context
+                .read(area, |view: &TextArea| view.scroll_offset.y)
+                .unwrap(),
+            expected
+        );
+        // 按下被消费：光标与选区纹丝不动。
+        let state = context.world().text_input(node).unwrap();
+        assert_eq!(state.selection, selection_before);
+        assert_eq!(state.additional_selections, additional_before);
+    }
+
+    #[test]
+    fn minimap_drag_follows_pointer_until_release() {
+        let (mut context, document, _area, node) = minimap_editor();
+        let panel = minimap_panel(&context, node);
+        assert!(press(
+            &mut context,
+            document,
+            node,
+            panel.x + 32.0,
+            panel.y + 10.0
+        ));
+        assert_eq!(
+            scroll_y_of(&context, node),
+            expected_scroll(&context, node, 10.0)
+        );
+
+        // 按住拖动：视口连续跟随换算（面板内 50px → 第 25 行居中）。
+        assert!(
+            context
+                .text_editor_pointer_drag(
+                    document,
+                    1,
+                    panel.x + 32.0,
+                    panel.y + 50.0,
+                    &mut MeasureTextShaper
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            scroll_y_of(&context, node),
+            expected_scroll(&context, node, 50.0)
+        );
+
+        // 释放后指针移动不再跟随。
+        context.text_editor_pointer_release(1);
+        assert!(
+            !context
+                .text_editor_pointer_drag(
+                    document,
+                    1,
+                    panel.x + 32.0,
+                    panel.y + 70.0,
+                    &mut MeasureTextShaper
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            scroll_y_of(&context, node),
+            expected_scroll(&context, node, 50.0)
+        );
+    }
+
+    #[test]
+    fn minimap_click_outside_strip_places_caret_normally() {
+        let (mut context, document, _area, node) = minimap_editor();
+        let panel = minimap_panel(&context, node);
+        // 条外（内容区左侧）点击：常规 caret 落点，非 minimap 消费语义。
+        assert!(press(&mut context, document, node, 30.0, panel.y + 10.0));
+        let state = context.world().text_input(node).unwrap();
+        assert_ne!(
+            state.selection.focus, 0,
+            "plain press inside text must move the caret"
+        );
+    }
+
+    #[test]
+    fn minimap_scroll_survives_caret_reveal_until_caret_moves() {
+        let (mut context, document, _area, node) = minimap_editor();
+        let panel = minimap_panel(&context, node);
+        // 光标在第 0 行；点击条内底部 → 视口滚到文档尾部（钳到 max）。
+        assert!(press(
+            &mut context,
+            document,
+            node,
+            panel.x + 32.0,
+            panel.y + 70.0
+        ));
+        let navigated = scroll_y_of(&context, node);
+        assert!(navigated > 150.0, "click near the bottom must scroll far");
+
+        // 重跑几何：视口不回弹到光标处（视口钉住生效）——文本区随滚动
+        // 停在导航位置。
+        let (content, _) = context.world().text_input_pointer_context(node).unwrap();
+        let extracted = &context.world().extract_nodes(&[node])[0];
+        let crate::ComponentGeometry::TextInput { text, .. } =
+            extracted.component_geometry.as_ref().unwrap()
+        else {
+            panic!("expected text input geometry");
+        };
+        assert!((text.bounds.y - (content.y - navigated)).abs() < 0.01);
+
+        // 光标移动（选区写入）：钉住失效，reveal 恢复权威——视口回到光标。
+        assert!(
+            context
+                .select_focused_text_range(document, 0, "line0".len())
+                .unwrap()
+        );
+        context
+            .world_mut()
+            .shape_text(&[node], &mut MeasureTextShaper)
+            .unwrap();
+        let extracted = &context.world().extract_nodes(&[node])[0];
+        let crate::ComponentGeometry::TextInput { text, .. } =
+            extracted.component_geometry.as_ref().unwrap()
+        else {
+            panic!("expected text input geometry");
+        };
+        // 光标在第 0 行（y=0），reveal 后视口回顶部：文本区 y 回到内容顶。
+        assert!((text.bounds.y - content.y).abs() < 0.01);
     }
 }

@@ -3333,6 +3333,7 @@ impl UiScene {
                         folds,
                         completion_popup,
                         hover_popup,
+                        minimap,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
@@ -3610,6 +3611,49 @@ impl UiScene {
                                     corner_radius: corner_radii(0.0),
                                 },
                             ));
+                        }
+                        // minimap：面板（slot 70）、行条 + 1px 分隔线（slot
+                        // 71，同一 faint 色）、视口指示器（slot 72，半透明
+                        // accent）各一个批次。占用 70-72：位于行号/Tab 批次
+                        // （40+/60）之上、补全弹层（90+）与 hover 浮窗（120+，
+                        // 正文行可用到 131）之下，minimap 不得盖住浮层。
+                        if let Some(minimap) = minimap {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                70,
+                                scene_rect(minimap.panel),
+                                VisualQuadStyle {
+                                    background: Some(minimap.panel_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                71,
+                                std::iter::once(scene_rect(minimap.separator))
+                                    .chain(minimap.bars.iter().map(|bar| scene_rect(*bar))),
+                                VisualQuadStyle {
+                                    background: Some(minimap.bar_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                            if let Some(indicator) = minimap.indicator {
+                                self.insert_primitive(visual_quad(
+                                    &visual_context,
+                                    72,
+                                    scene_rect(indicator),
+                                    VisualQuadStyle {
+                                        background: Some(minimap.indicator_color),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: corner_radii(0.0),
+                                    },
+                                ));
+                            }
                         }
                         // 括号匹配：两端各一个 1px accent 描边框，绘制在文本
                         // 之上（描边不遮挡字形）。
@@ -5492,6 +5536,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
             caret_line: None,
@@ -6448,6 +6493,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -6572,6 +6618,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -6611,6 +6658,165 @@ mod tests {
             panic!("expected quad");
         };
         assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
+    }
+
+    #[test]
+    fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 80.0,
+                },
+                content: Arc::from("a\nb"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            completion_popup: None,
+            hover_popup: None,
+            minimap: Some(nana_ui_runtime::TextMinimapGeometry {
+                panel: LayoutBox {
+                    x: 136.0,
+                    y: 0.0,
+                    width: 64.0,
+                    height: 80.0,
+                },
+                separator: LayoutBox {
+                    x: 135.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 80.0,
+                },
+                bars: vec![
+                    LayoutBox {
+                        x: 136.0,
+                        y: 0.0,
+                        width: 32.0,
+                        height: 2.0,
+                    },
+                    LayoutBox {
+                        x: 136.0,
+                        y: 2.0,
+                        width: 64.0,
+                        height: 2.0,
+                    },
+                ],
+                indicator: Some(LayoutBox {
+                    x: 136.0,
+                    y: 4.0,
+                    width: 64.0,
+                    height: 12.0,
+                }),
+                panel_color: [0.12, 0.12, 0.14, 1.0],
+                bar_color: [0.5, 0.5, 0.5, 1.0],
+                indicator_color: [1.0, 0.2, 0.2, 0.2],
+                stride: 1,
+                line_count: 5,
+            }),
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+
+        // 面板（70）与指示器（72）各一个 quad，行条 + 分隔线共享 slot 71
+        // 的一个批次（faint 同色）。
+        let panel = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 70,
+            })
+            .expect("minimap panel");
+        let ScenePrimitiveKind::Quad { background, .. } = &panel.kind else {
+            panic!("expected panel quad");
+        };
+        assert_eq!(*background, Some([0.12, 0.12, 0.14, 1.0]));
+        assert_eq!(
+            panel.bounds,
+            SceneRect {
+                x: 136.0,
+                y: 0.0,
+                width: 64.0,
+                height: 80.0
+            }
+        );
+
+        let bars = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 71,
+            })
+            .expect("minimap bars batch");
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &bars.kind
+        else {
+            panic!("expected bars batch");
+        };
+        assert_eq!(bounds.len(), 3, "separator + two bars share one batch");
+        assert_eq!(
+            bounds[0],
+            SceneRect {
+                x: 135.0,
+                y: 0.0,
+                width: 1.0,
+                height: 80.0
+            }
+        );
+        assert_eq!(*background, Some([0.5, 0.5, 0.5, 1.0]));
+
+        let indicator = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 72,
+            })
+            .expect("minimap indicator");
+        let ScenePrimitiveKind::Quad { background, .. } = &indicator.kind else {
+            panic!("expected indicator quad");
+        };
+        assert_eq!(*background, Some([1.0, 0.2, 0.2, 0.2]));
     }
 
     #[test]
@@ -6743,6 +6949,7 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -6849,6 +7056,7 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -6937,6 +7145,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -7069,6 +7278,7 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -7181,6 +7391,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
             caret_line: None,
@@ -7330,6 +7541,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
         });
 
         let mut scene = UiScene::new();
@@ -7462,6 +7674,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
             caret_line: None,
@@ -7567,6 +7780,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
             caret_line: None,
@@ -10605,6 +10819,7 @@ mod tests {
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
+            minimap: None,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);

@@ -1323,6 +1323,63 @@ impl UiWorld {
         })
     }
 
+    /// minimap 导航换算：条内点击点 → 目标滚动偏移（点击行在视口居中，
+    /// 钳到文档范围；横向偏移保持不变）。不在条内或编辑器无 minimap 时
+    /// `None`。只读查询：调用方（框架指针路径）负责写回。
+    pub fn text_minimap_scroll_target(
+        &self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<ScrollOffset> {
+        let Some(crate::ComponentGeometry::TextInput {
+            minimap: Some(minimap),
+            ..
+        }) = self.component_geometry(id)
+        else {
+            return None;
+        };
+        if !minimap.panel.contains(x, y) {
+            return None;
+        }
+        let line = minimap.line_at(y)?;
+        let presentation = self.nodes.text_input_presentation(id)?;
+        let line_height = presentation.line_height.max(1.0);
+        let node = self.nodes.get(id)?;
+        let padding = node
+            .style
+            .layout
+            .resolved_padding_against(Some(node.layout.width));
+        let border = node.style.layout.resolved_border_width();
+        let content_height =
+            (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
+        // 行数与滚动空间同源（逻辑行数 × 行高，软折行低估为已知限制）。
+        let total_height = minimap.line_count as f32 * line_height;
+        let max_scroll = (total_height - content_height).max(0.0);
+        let centered = line as f32 * line_height + line_height * 0.5 - content_height * 0.5;
+        Some(ScrollOffset {
+            x: self.record(id).scroll_offset.x,
+            y: centered.clamp(0.0, max_scroll),
+        })
+    }
+
+    /// minimap 视口钉住快照（框架导航路径读取-写入）。
+    pub(crate) fn text_viewport_pin(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::store::TextViewportPin> {
+        self.nodes.text_viewport_pin(id).copied()
+    }
+
+    /// 写入/清除 minimap 视口钉住。
+    pub(crate) fn set_text_viewport_pin(
+        &mut self,
+        id: StableNodeId,
+        pin: Option<crate::store::TextViewportPin>,
+    ) {
+        self.nodes.set_text_viewport_pin(id, pin);
+    }
+
     /// 当前折叠态的区间（值空间，按 `start` 排序）。没有折叠视图的节点
     /// 返回空表。宿主测试与状态面板的查询入口。
     pub fn text_fold_collapsed(&self, id: StableNodeId) -> Vec<crate::TextCodeFold> {
@@ -1775,6 +1832,20 @@ impl UiWorld {
             let previous = self.record(id).text_metrics;
             self.record_mut(id).text_metrics = metrics;
             if let Some(presentation) = presentation {
+                // minimap 视口钉住随光标移动失效：reveal 恢复权威。上一趟
+                // 与本趟 shape 的光标位置不同即视为移动。
+                if self.nodes.text_viewport_pin(id).is_some() {
+                    let moved = match self.nodes.text_input_presentation(id) {
+                        Some(previous_presentation) => {
+                            (previous_presentation.caret_x, previous_presentation.caret_y)
+                                != (presentation.caret_x, presentation.caret_y)
+                        }
+                        None => true,
+                    };
+                    if moved {
+                        self.nodes.set_text_viewport_pin(id, None);
+                    }
+                }
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
             }
@@ -3207,6 +3278,7 @@ impl UiWorld {
                 self.sync_node_presence(*id);
                 if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
                     self.nodes.set_text_input_presentation(*id, None);
+                    self.nodes.set_text_viewport_pin(*id, None);
                 }
                 if !matches!(visual, Some(StandardVisual::EmptyState { .. })) {
                     self.nodes.set_empty_state_text(*id, None);
@@ -4337,15 +4409,22 @@ impl UiWorld {
                     0.0
                 };
                 if multiline && focused {
-                    if presentation.caret_x < scroll_x {
-                        scroll_x = presentation.caret_x;
-                    } else if presentation.caret_x + 1.0 > scroll_x + content.width {
-                        scroll_x = presentation.caret_x + 1.0 - content.width;
-                    }
-                    if presentation.caret_y < scroll_y {
-                        scroll_y = presentation.caret_y;
-                    } else if presentation.caret_y + line_height > scroll_y + content.height {
-                        scroll_y = presentation.caret_y + line_height - content.height;
+                    // minimap 视口钉住：显式导航（minimap 点击/拖动）期间
+                    // 光标 reveal 让位，视口停在用户导航到的位置。宿主改写
+                    // 滚动偏移或光标移动（shape 趟清除钉住）都会使钉住失效，
+                    // reveal 恢复权威——未钉住时行为与既有语义完全一致。
+                    let viewport_pinned = self.text_viewport_pin(id) == Some(requested_scroll);
+                    if !viewport_pinned {
+                        if presentation.caret_x < scroll_x {
+                            scroll_x = presentation.caret_x;
+                        } else if presentation.caret_x + 1.0 > scroll_x + content.width {
+                            scroll_x = presentation.caret_x + 1.0 - content.width;
+                        }
+                        if presentation.caret_y < scroll_y {
+                            scroll_y = presentation.caret_y;
+                        } else if presentation.caret_y + line_height > scroll_y + content.height {
+                            scroll_y = presentation.caret_y + line_height - content.height;
+                        }
                     }
                 }
                 scroll_x = scroll_x.clamp(0.0, (metrics.width - content.width).max(0.0));
@@ -4642,6 +4721,25 @@ impl UiWorld {
                         }
                     }
                 }
+                // minimap 竖条：内容区右缘 64px 覆盖条 + 1px 分隔线 + 行条
+                // 与视口指示器。文本行宽计算不变（极长行会被条遮挡——声明
+                // 取舍）；折叠只影响主视图，行条按原始逻辑行全长计算。禁用
+                // 态与窄内容不产生条。
+                let minimap = if multiline
+                    && !disabled
+                    && content.width > crate::components::TEXT_MINIMAP_STRIP_WIDTH
+                    && !presentation.minimap_line_lengths.is_empty()
+                {
+                    Some(text_minimap_geometry(
+                        &presentation.minimap_line_lengths,
+                        content,
+                        scroll_y,
+                        line_height,
+                        &self.style_model.palette,
+                    ))
+                } else {
+                    None
+                };
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
                     match_markers,
@@ -4733,6 +4831,7 @@ impl UiWorld {
                                 )
                             })
                     },
+                    minimap,
                     background: style.background,
                     border: style.border_color,
                     border_width: {
@@ -7308,6 +7407,9 @@ struct TextInputPresentationSource {
     completions: Option<Arc<[crate::TextCompletion]>>,
     /// hover 文档（宿主喂入时 Some）。
     hover: Option<crate::TextHover>,
+    /// minimap 行条长度表（原始文档每逻辑行的非空白字符数，含折叠隐藏
+    /// 行）。仅开启选项的多行态收集，其余为空向量（零分配短路）。
+    minimap_line_lengths: Vec<u32>,
 }
 
 /// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
@@ -7340,6 +7442,14 @@ fn build_text_input_presentation_source(
         (None, None)
     } else {
         (completions, hover)
+    };
+
+    // minimap 行长收集：O(文档) 扫描原始值（折叠隐藏行一并计入）；
+    // 未开启选项零分配短路。
+    let minimap_line_lengths = if multiline && extras.editor.minimap {
+        collect_non_whitespace_line_lengths(&state.value)
+    } else {
+        Vec::new()
     };
 
     let mask = |value: &str| {
@@ -7376,6 +7486,7 @@ fn build_text_input_presentation_source(
             fold: None,
             completions: None,
             hover: None,
+            minimap_line_lengths: Vec::new(),
         };
     }
 
@@ -7437,6 +7548,7 @@ fn build_text_input_presentation_source(
             fold: fold_view,
             completions: None,
             hover: None,
+            minimap_line_lengths: Vec::new(),
         };
     }
 
@@ -7499,7 +7611,22 @@ fn build_text_input_presentation_source(
         fold: fold_view,
         completions,
         hover,
+        minimap_line_lengths,
     }
+}
+
+/// minimap 行长收集：每个逻辑行的非空白字符数（O(文档) 单趟扫描）。
+/// 行数与滚动换算的 `matches('\n') + 1` 语义一致（尾随换行是可滚动到
+/// 的空逻辑行）；空白行计 0（绘制层不产生行条）。
+fn collect_non_whitespace_line_lengths(value: &str) -> Vec<u32> {
+    value
+        .split('\n')
+        .map(|line| {
+            line.chars()
+                .filter(|character| !character.is_whitespace())
+                .count() as u32
+        })
+        .collect()
 }
 
 fn shape_text_input_presentation(
@@ -7996,6 +8123,7 @@ fn shape_text_input_presentation(
         line_numbers,
         fold_marks,
         overlay_metrics,
+        minimap_line_lengths: source.minimap_line_lengths,
     }
 }
 
@@ -8005,6 +8133,95 @@ struct OverlayAnchor {
     x: f32,
     line_top: f32,
     line_height: f32,
+}
+
+/// minimap 竖条几何：内容区右缘 64px 面板、1px 分隔线、按非空白行长
+/// 定宽的 2px 行条（文档超出条高容纳量时按整数步长抽稀）与跟随滚动的
+/// 半透明视口指示器。绘制与指针导航共用同一投影（行换算见
+/// [`TextMinimapGeometry::line_at`]）。
+pub(crate) fn text_minimap_geometry(
+    lengths: &[u32],
+    content: LayoutBox,
+    scroll_y: f32,
+    line_height: f32,
+    palette: &SemanticPalette,
+) -> crate::TextMinimapGeometry {
+    let line_count = lengths.len();
+    let panel = LayoutBox {
+        x: (content.x + content.width - crate::components::TEXT_MINIMAP_STRIP_WIDTH).max(content.x),
+        y: content.y,
+        width: content
+            .width
+            .min(crate::components::TEXT_MINIMAP_STRIP_WIDTH),
+        height: content.height,
+    };
+    let separator = LayoutBox {
+        x: panel.x - 1.0,
+        y: panel.y,
+        width: 1.0,
+        height: panel.height,
+    };
+    let capacity =
+        ((panel.height / crate::components::TEXT_MINIMAP_BAR_PITCH).floor() as usize).max(1);
+    let stride = if line_count > capacity {
+        line_count.div_ceil(capacity)
+    } else {
+        1
+    };
+    let max_length = lengths.iter().copied().max().unwrap_or(0).max(1) as f32;
+    let bars = lengths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &length)| {
+            // 空白行不产生条；抽稀步长取整，槽位按 index / stride 落点。
+            if length == 0 || (stride > 1 && index % stride != 0) {
+                return None;
+            }
+            Some(LayoutBox {
+                x: panel.x,
+                y: panel.y + (index / stride) as f32 * crate::components::TEXT_MINIMAP_BAR_PITCH,
+                width: (length as f32 / max_length * panel.width).max(1.0),
+                height: crate::components::TEXT_MINIMAP_BAR_PITCH,
+            })
+        })
+        .collect();
+    // 视口指示器：视口行范围按同一投影换算（连续映射，随滚动平滑移动）；
+    // 底缘钳到文档末行，文档在视口内放得下时不画。
+    let line_height = line_height.max(1.0);
+    let total_height = line_count as f32 * line_height;
+    let indicator = if total_height > content.height + f32::EPSILON {
+        let pitch = crate::components::TEXT_MINIMAP_BAR_PITCH / stride.max(1) as f32;
+        let first_line = (scroll_y / line_height).max(0.0);
+        let visible_lines = (content.height / line_height).ceil().max(1.0);
+        let y = panel.y + first_line * pitch;
+        let bottom = panel.y
+            + (first_line + visible_lines)
+                .min(line_count as f32)
+                .max(first_line + 1.0)
+                * pitch;
+        let height = (bottom - y).clamp(2.0, panel.height);
+        let y = y.clamp(panel.y, (panel.y + panel.height - height).max(panel.y));
+        Some(LayoutBox {
+            x: panel.x,
+            y,
+            width: panel.width,
+            height,
+        })
+    } else {
+        None
+    };
+    let accent = palette.accent.as_rgba_array();
+    crate::TextMinimapGeometry {
+        panel,
+        separator,
+        bars,
+        indicator,
+        panel_color: palette.subtle.as_rgba_array(),
+        bar_color: palette.faint.as_rgba_array(),
+        indicator_color: [accent[0], accent[1], accent[2], accent[3] * 0.2],
+        stride,
+        line_count,
+    }
 }
 
 /// 锚定浮层的共享定位（补全弹层与 hover 浮窗共用，避免两套定位代码）：
@@ -13046,6 +13263,267 @@ mod tests {
         assert_eq!(
             occurrence_markers[0].1,
             world.style_model.palette.accent_soft.as_rgba_array()
+        );
+    }
+
+    /// minimap 几何断言辅助：取节点 1 的 minimap 竖条几何。
+    fn minimap_of(world: &UiWorld) -> crate::TextMinimapGeometry {
+        match world.component_geometry(node(1)).unwrap() {
+            crate::ComponentGeometry::TextInput {
+                minimap: Some(minimap),
+                ..
+            } => minimap,
+            other => panic!("expected minimap geometry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn minimap_off_short_circuits_collection_and_geometry() {
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "a\nbc",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 关闭时：零收集（空表）且几何层不产出竖条。
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.minimap_line_lengths.is_empty());
+        let crate::ComponentGeometry::TextInput { minimap: None, .. } =
+            world.component_geometry(node(1)).unwrap()
+        else {
+            panic!("minimap must be absent when the option is off");
+        };
+    }
+
+    #[test]
+    fn minimap_collects_line_lengths_and_scales_bars_with_non_whitespace_length() {
+        let mut world = UiWorld::default();
+        // 行非空白长度 2/0/4/0/3：空行与纯空白行不产生行条。
+        options_editor_world(
+            &mut world,
+            "ab\n\nabcd\n  \nxyz",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                minimap: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.minimap_line_lengths, vec![2, 0, 4, 0, 3]);
+
+        let minimap = minimap_of(&world);
+        // 内容区 200×80（无内边距）：面板为内容右缘 64px 覆盖条，分隔线 1px。
+        assert_eq!(
+            minimap.panel,
+            LayoutBox {
+                x: 136.0,
+                y: 0.0,
+                width: 64.0,
+                height: 80.0,
+            }
+        );
+        assert_eq!(
+            minimap.separator,
+            LayoutBox {
+                x: 135.0,
+                y: 0.0,
+                width: 1.0,
+                height: 80.0,
+            }
+        );
+        assert_eq!(minimap.stride, 1);
+        assert_eq!(minimap.line_count, 5);
+        // 三条行条：宽度 ∝ 非空白长度（最长行 = 条宽 64），2px 高、2px 节距。
+        let rows = minimap
+            .bars
+            .iter()
+            .map(|bar| (bar.y, bar.width, bar.height))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![(0.0, 32.0, 2.0), (4.0, 64.0, 2.0), (8.0, 48.0, 2.0)]
+        );
+        // 颜色：面板 subtle、行条 faint；指示器 accent 半透明。
+        assert_eq!(
+            minimap.panel_color,
+            world.style_model.palette.subtle.as_rgba_array()
+        );
+        assert_eq!(
+            minimap.bar_color,
+            world.style_model.palette.faint.as_rgba_array()
+        );
+        let accent = world.style_model.palette.accent.as_rgba_array();
+        assert_eq!(
+            minimap.indicator_color,
+            [accent[0], accent[1], accent[2], accent[3] * 0.2]
+        );
+        // 5 行 × 14px = 70px 放得下：无指示器。
+        assert!(minimap.indicator.is_none());
+    }
+
+    #[test]
+    fn minimap_samples_by_integer_stride_when_document_exceeds_strip() {
+        let mut world = UiWorld::default();
+        let value = (0..100)
+            .map(|index| format!("line{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        options_editor_world(
+            &mut world,
+            &value,
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                minimap: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let minimap = minimap_of(&world);
+        assert_eq!(minimap.line_count, 100);
+        // 容纳量 = 80 / 2 = 40 → 步长取整 ceil(100/40) = 3。
+        assert_eq!(minimap.stride, 3);
+        // 采样后条数 = ceil(100/3) = 34，槽位按 index / stride 落点。
+        assert_eq!(minimap.bars.len(), 34);
+        assert_eq!(minimap.bars[0].y, 0.0);
+        assert_eq!(minimap.bars[1].y, 2.0);
+        assert_eq!(minimap.bars[33].y, 66.0);
+        assert!(minimap.bars.last().unwrap().y + 2.0 <= minimap.panel.height);
+    }
+
+    #[test]
+    fn minimap_indicator_follows_scroll_offset() {
+        let mut world = UiWorld::default();
+        let value = "\n".repeat(9) + "x";
+        options_editor_world(
+            &mut world,
+            &value,
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                minimap: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 10 行 × 14px = 140px > 80px 视口：顶部指示器覆盖前 6 行
+        // （ceil(80/14) = 6）→ 高 12px。
+        let indicator = minimap_of(&world).indicator.expect("indicator");
+        assert_eq!(indicator.y, 0.0);
+        assert_eq!(indicator.height, 12.0);
+
+        // 滚动一行（14px）：指示器按条距映射（2px/行 ÷ 步长）下移 2px。
+        let mut queue = MutationQueue::new();
+        queue.set_scroll_offset(node(1), ScrollOffset { x: 0.0, y: 14.0 });
+        world.commit(queue).unwrap();
+        let indicator = minimap_of(&world).indicator.expect("indicator");
+        assert_eq!(indicator.y, 2.0);
+
+        // 滚动到最底（60 = 140 − 80）：指示器底缘钳到文档末行
+        // （10 行 × 2px 条距 = 20px），而非条底。
+        let mut queue = MutationQueue::new();
+        queue.set_scroll_offset(node(1), ScrollOffset { x: 0.0, y: 60.0 });
+        world.commit(queue).unwrap();
+        let indicator = minimap_of(&world).indicator.expect("indicator");
+        assert!((indicator.y + indicator.height - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn minimap_shows_all_logical_lines_under_folds() {
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            FOLD_VALUE,
+            crate::TextSelection::caret(0),
+            Arc::from([FOLD_BLOCK]),
+            crate::TextEditorRenderOptions {
+                minimap: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        // 折叠隐藏 3 行（与主视图折叠态一致地喂入）。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 主视图是折叠后的显示值，minimap 仍按原始 5 个逻辑行收集。
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.display_value.len() < FOLD_VALUE.len());
+        assert_eq!(presentation.minimap_line_lengths, vec![6, 4, 4, 1, 7]);
+        assert_eq!(minimap_of(&world).line_count, 5);
+    }
+
+    #[test]
+    fn minimap_scroll_target_centers_clicked_line() {
+        let mut world = UiWorld::default();
+        let value = (0..100)
+            .map(|index| format!("line{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        options_editor_world(
+            &mut world,
+            &value,
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                minimap: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 条内 y=5（步长 3 → 条距 2/3 px/行）：命中第 7 行，居中换算
+        // scroll = 7 × 14 + 7 − 40 = 65。
+        let target = world
+            .text_minimap_scroll_target(node(1), 150.0, 5.0)
+            .expect("target");
+        assert_eq!(target.y, 65.0);
+        assert_eq!(target.x, 0.0);
+        // 顶部点击钳到 0；条外（x 或 y 越界）不命中。
+        assert_eq!(
+            world
+                .text_minimap_scroll_target(node(1), 150.0, 0.0)
+                .unwrap()
+                .y,
+            0.0
+        );
+        assert!(
+            world
+                .text_minimap_scroll_target(node(1), 100.0, 5.0)
+                .is_none()
+        );
+        assert!(
+            world
+                .text_minimap_scroll_target(node(1), 150.0, 90.0)
+                .is_none()
         );
     }
 

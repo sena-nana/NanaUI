@@ -101,9 +101,10 @@ pub use components::{
     TextContent, TextDiagnosticMark, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextFoldMark, TextFoldMarker,
     TextHorizontalAlignment, TextHover, TextHoverPopup, TextInputPresentation, TextInputState,
-    TextMatchMark, TextMatchMarker, TextMatchSpan, TextMetrics, TextOverlayMetrics, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextSnippet, TextSnippetSession,
-    TextVerticalAlignment, TextWhitespaceKind, TextWhitespaceMark, TooltipVisual,
+    TextMatchMark, TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry,
+    TextOverlayMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextSnippet, TextSnippetSession, TextVerticalAlignment, TextWhitespaceKind,
+    TextWhitespaceMark, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
