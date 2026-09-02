@@ -112,6 +112,9 @@ pub enum ButtonKind {
     Warning,
     Danger,
     Text,
+    /// Trigger that opens a menu or popover: the same quiet raised chip the
+    /// in-place action-menu trigger paints, so both paths read identical.
+    Menu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

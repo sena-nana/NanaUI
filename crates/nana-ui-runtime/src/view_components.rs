@@ -427,13 +427,16 @@ impl ComponentView for Button {
                 nana_ui_core::ButtonKind::Text => nana_ui_core::SemanticColorRole::Accent,
                 nana_ui_core::ButtonKind::Ghost
                 | nana_ui_core::ButtonKind::Subtle
-                | nana_ui_core::ButtonKind::Selected => nana_ui_core::SemanticColorRole::Text,
+                | nana_ui_core::ButtonKind::Selected
+                | nana_ui_core::ButtonKind::Menu => nana_ui_core::SemanticColorRole::Text,
             });
             effective_style.background = match self.kind {
                 nana_ui_core::ButtonKind::Ghost
                 | nana_ui_core::ButtonKind::Danger
                 | nana_ui_core::ButtonKind::Text => None,
-                nana_ui_core::ButtonKind::Subtle => Some(nana_ui_core::SemanticColorRole::Subtle),
+                nana_ui_core::ButtonKind::Subtle | nana_ui_core::ButtonKind::Menu => {
+                    Some(nana_ui_core::SemanticColorRole::Subtle)
+                }
                 nana_ui_core::ButtonKind::Selected => {
                     Some(nana_ui_core::SemanticColorRole::Selected)
                 }
@@ -444,7 +447,10 @@ impl ComponentView for Button {
                     Some(nana_ui_core::SemanticColorRole::WarningSoft)
                 }
             };
-            effective_style.border = if self.kind == nana_ui_core::ButtonKind::Subtle {
+            effective_style.border = if matches!(
+                self.kind,
+                nana_ui_core::ButtonKind::Subtle | nana_ui_core::ButtonKind::Menu
+            ) {
                 Some(nana_ui_core::SemanticColorRole::BorderSoft)
             } else {
                 None
@@ -678,7 +684,8 @@ impl ComponentView for IconButton {
             | nana_ui_core::ButtonKind::Ghost
             | nana_ui_core::ButtonKind::Warning
             | nana_ui_core::ButtonKind::Danger
-            | nana_ui_core::ButtonKind::Text => nana_ui_core::SemanticColorRole::Hover,
+            | nana_ui_core::ButtonKind::Text
+            | nana_ui_core::ButtonKind::Menu => nana_ui_core::SemanticColorRole::Hover,
         });
         effective_style.interaction.pressed.background = Some(match self.kind {
             nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
