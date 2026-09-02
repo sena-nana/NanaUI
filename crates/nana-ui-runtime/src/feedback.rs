@@ -1560,6 +1560,102 @@ mod tests {
         assert_eq!(accessibility.value.as_deref(), Some("42"));
     }
 
+    /// 与 world.rs `estimated_text_width` 相同的字符分类估算(ASCII≈0.62×字号,其余≈1.0×字号),
+    /// world 模块私有,测试侧镜像一份用于推导自然宽度契约。
+    fn estimated_width(text: &str, font_size: f32) -> f32 {
+        text.chars()
+            .map(|ch| {
+                if ch.is_ascii() {
+                    font_size * 0.62
+                } else {
+                    font_size
+                }
+            })
+            .sum::<f32>()
+            .max(font_size)
+    }
+
+    #[test]
+    fn labeled_value_geometry_keeps_label_natural_width_under_long_value() {
+        let mut context = AppContext::new();
+        let summary = context
+            .create_component(
+                document(),
+                LabeledValue::new(
+                    "路径",
+                    "/Users/someone/Library/Application Support/models/xxx/model.model3.json",
+                ),
+            )
+            .unwrap();
+        let id = summary.stable_id();
+        layout(&mut context, id, 180.0, 32.0);
+        let crate::ComponentGeometry::LabeledValue { label, value, .. } =
+            context.world().component_geometry(id).unwrap()
+        else {
+            panic!("labeled value geometry")
+        };
+        let label_natural = estimated_width("路径", label.font_size);
+        assert!(
+            label.bounds.width + 0.01 >= label_natural,
+            "label must keep its natural width, got {:?} (natural {label_natural})",
+            label.bounds
+        );
+        assert!(
+            (value.bounds.x + value.bounds.width - 190.0).abs() < 1.0,
+            "value must hug the trailing edge, got {:?}",
+            value.bounds
+        );
+        assert!(
+            label.bounds.x + label.bounds.width <= value.bounds.x + 0.01,
+            "label must not overlap value, got label={:?} value={:?}",
+            label.bounds,
+            value.bounds
+        );
+    }
+
+    #[test]
+    fn labeled_value_geometry_keeps_regions_disjoint_when_both_sides_overflow() {
+        let mut context = AppContext::new();
+        let summary = context
+            .create_component(
+                document(),
+                LabeledValue::new(
+                    "网络请求失败后的重试策略与指数退避间隔说明",
+                    "https://example.com/very/long/path/that/overflows/the/row/index.html",
+                ),
+            )
+            .unwrap();
+        let id = summary.stable_id();
+        layout(&mut context, id, 180.0, 32.0);
+        let crate::ComponentGeometry::LabeledValue { label, value, .. } =
+            context.world().component_geometry(id).unwrap()
+        else {
+            panic!("labeled value geometry")
+        };
+        assert!(
+            label.bounds.width >= 0.0 && value.bounds.width >= 0.0,
+            "region widths must be non-negative, got label={:?} value={:?}",
+            label.bounds,
+            value.bounds
+        );
+        assert!(
+            label.bounds.x + label.bounds.width <= value.bounds.x + 0.01,
+            "regions must not overlap, got label={:?} value={:?}",
+            label.bounds,
+            value.bounds
+        );
+        assert!(
+            value.bounds.width + 0.01 >= estimated_width("xx", value.font_size),
+            "value must keep a minimal visible width, got {:?}",
+            value.bounds
+        );
+        assert!(
+            (value.bounds.x + value.bounds.width - 190.0).abs() < 1.0,
+            "value must hug the trailing edge, got {:?}",
+            value.bounds
+        );
+    }
+
     #[test]
     fn feedback_helpers_never_park_unowned_field_only_actions() {
         let mut context = AppContext::new();
