@@ -35,6 +35,10 @@ const SECTION_TOOL_EDGE: f32 = 20.0;
 /// its box centers on this inset from the frame content edge, so the padded
 /// section header rows and the unpadded top bar align their glyphs.
 const TOOL_COLUMN_CENTER_INSET: f32 = ROW_PADDING_RIGHT + UI_METRICS.icon_button_size / 2.0;
+/// Trailing inset that lands an inline tool's glyph on the shared column
+/// behind a row padded by `ROW_PADDING_RIGHT`.
+const TOOL_COLUMN_TRAILING_MARGIN: f32 =
+    TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0;
 const SECTION_COUNT_SIZE: f32 = 11.0;
 const SECTION_BODY_GAP: f32 = 1.0;
 const SECTION_EMPTY_HEIGHT: f32 = 30.0;
@@ -80,26 +84,16 @@ pub fn sidebar_top_bar_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> Ic
     )
 }
 
-/// Inline small tool for section headers, sized to the header row while its
-/// glyph stays on the shared tool column.
+/// Inline small tool for section headers, sized to the header row; the header
+/// carries it on the shared tool column by itself.
 pub fn sidebar_section_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
-    sidebar_tool_button(
-        icon,
-        label,
-        SECTION_TOOL_EDGE,
-        TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0,
-    )
+    sidebar_tool_button(icon, label, SECTION_TOOL_EDGE, TOOL_COLUMN_TRAILING_MARGIN)
 }
 
-/// Inline small tool for data rows; drops into the row tools host and lands on
-/// the shared tool column behind the row's standard trailing padding.
+/// Inline small tools for data rows; drop into the row tools host, which lands
+/// the trailing tool on the shared tool column so a cluster keeps its own gap.
 pub fn sidebar_row_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
-    sidebar_tool_button(
-        icon,
-        label,
-        SECTION_TOOL_EDGE,
-        TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0,
-    )
+    sidebar_tool_button(icon, label, SECTION_TOOL_EDGE, 0.0)
 }
 
 fn sidebar_tool_button(
@@ -544,6 +538,14 @@ impl SidebarRow {
         }
         if layout.width != Some(LengthSpec::Shrink) {
             layout.width = Some(LengthSpec::Shrink);
+            changed = true;
+        }
+        // The tools slot lands its trailing tool on the shared glyph column
+        // behind the row's trailing padding; tools themselves stay margin-free
+        // so a cluster keeps the host gap between its buttons.
+        let column_margin = Some(LengthSpec::Px(TOOL_COLUMN_TRAILING_MARGIN));
+        if layout.margin_right != column_margin {
+            layout.margin_right = column_margin;
             changed = true;
         }
         if layout.hidden != hidden {
@@ -1915,6 +1917,10 @@ mod tests {
         assert_eq!(tools_layout.flex_grow, Some(0.0));
         assert_eq!(tools_layout.flex_shrink, Some(0.0));
         assert_eq!(tools_layout.width, Some(LengthSpec::Shrink));
+        assert_eq!(
+            tools_layout.margin_right,
+            Some(LengthSpec::Px(TOOL_COLUMN_TRAILING_MARGIN))
+        );
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 80.0))
             .unwrap();
@@ -1945,6 +1951,70 @@ mod tests {
                 .unwrap()
                 .layout
                 .hidden
+        );
+    }
+
+    #[test]
+    fn row_tool_clusters_keep_host_gap_on_one_glyph_column() {
+        use crate::Stack;
+
+        let mut context = AppContext::new();
+        let doc = document();
+        let cluster = context.create_component(doc, Stack::row(2.0)).unwrap();
+        let draft = context
+            .create_component(doc, sidebar_row_tool_button(Icon::Add, "新对话"))
+            .unwrap();
+        let menu = context
+            .create_component(doc, sidebar_row_tool_button(Icon::More, "更多"))
+            .unwrap();
+        let single = context
+            .create_component(doc, sidebar_row_tool_button(Icon::More, "更多"))
+            .unwrap();
+        let clustered = context
+            .create_component(doc, SidebarRow::new("项目").tools(cluster.stable_id()))
+            .unwrap();
+        let lone = context
+            .create_component(doc, SidebarRow::new("任务").tools(single.stable_id()))
+            .unwrap();
+        context.append_child(clustered, cluster).unwrap();
+        context.append_child(cluster, draft).unwrap();
+        context.append_child(cluster, menu).unwrap();
+        context.append_child(lone, single).unwrap();
+
+        context
+            .set_pointer_hover(document(), 1, Some(clustered.stable_id()))
+            .unwrap();
+        context
+            .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
+            .unwrap();
+        let row_box = context.world().layout_box(clustered.stable_id()).unwrap();
+        let draft_box = context.world().layout_box(draft.stable_id()).unwrap();
+        let menu_box = context.world().layout_box(menu.stable_id()).unwrap();
+        assert_eq!(
+            (menu_box.x - draft_box.x - draft_box.width).round(),
+            2.0,
+            "cluster buttons keep the tools host gap between their boxes"
+        );
+        let trailing_center = menu_box.x + menu_box.width / 2.0;
+        assert!(
+            (trailing_center - (row_box.x + row_box.width - TOOL_COLUMN_CENTER_INSET)).abs() <= 0.5,
+            "trailing cluster tool lands on the shared glyph column"
+        );
+
+        context
+            .set_pointer_hover(document(), 1, Some(lone.stable_id()))
+            .unwrap();
+        context
+            .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
+            .unwrap();
+        let lone_row_box = context.world().layout_box(lone.stable_id()).unwrap();
+        let single_box = context.world().layout_box(single.stable_id()).unwrap();
+        let single_center = single_box.x + single_box.width / 2.0;
+        assert!(
+            (single_center - (lone_row_box.x + lone_row_box.width - TOOL_COLUMN_CENTER_INSET))
+                .abs()
+                <= 0.5,
+            "a single row tool still lands on the shared glyph column"
         );
     }
 
