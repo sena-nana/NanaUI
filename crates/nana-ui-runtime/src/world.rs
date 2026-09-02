@@ -4540,11 +4540,22 @@ impl UiWorld {
                 let value_size = 12.0_f32;
                 let label_height = (label_size * 1.2).min(bounds.height.max(label_size));
                 let value_height = (value_size * 1.2).min(bounds.height.max(value_size));
-                let min_label = if label.is_empty() { 0.0 } else { label_size };
-                let value_width = estimated_text_width(value, value_size)
-                    .min((available - gap - min_label).max(0.0));
+                // 属性名按自身文本估宽保底,不再压缩到字号常数;两侧都放得下时各取自然宽度。
+                let label_natural = if label.is_empty() {
+                    0.0
+                } else {
+                    estimated_text_width(label, label_size)
+                };
+                let value_natural = estimated_text_width(value, value_size);
+                // 退化时给 value 保底约两个 ASCII 字符宽(≈15px,取 16),长路径等值仍可辨识。
+                let min_value_visible = 16.0_f32;
+                let value_width = if label_natural + gap + value_natural <= available {
+                    value_natural
+                } else {
+                    min_value_visible.min(available)
+                };
                 let value_x = (right - value_width).max(bounds.x);
-                let label_width = (value_x - gap - bounds.x).max(0.0);
+                let label_width = ((value_x - gap - bounds.x).max(0.0)).min(label_natural);
                 let center_y = |height: f32| bounds.y + (bounds.height - height).max(0.0) / 2.0;
                 Some(crate::ComponentGeometry::LabeledValue {
                     label: crate::ComponentTextRegion {
