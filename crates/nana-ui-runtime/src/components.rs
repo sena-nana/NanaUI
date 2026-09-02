@@ -886,6 +886,8 @@ pub enum ComponentGeometry {
         completion_popup: Option<TextCompletionPopup>,
         /// hover 文档浮窗（宿主喂入时存在，纯展示；slot 120+）。
         hover_popup: Option<TextHoverPopup>,
+        /// minimap 竖条（开启选项的多行编辑器存在；slot 70/71/72）。
+        minimap: Option<TextMinimapGeometry>,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
@@ -1573,6 +1575,53 @@ pub struct TextEditorRenderOptions {
     /// wrap guide 列参考线：在每个字符列位置画全高竖线。列宽按 `'0'`
     /// 字形宽度估算（等宽字体假设）；文档最宽行不足该列时不画。
     pub wrap_guides: Arc<[usize]>,
+    /// 代码编辑器 minimap：内容区右缘 64px 覆盖竖条，每逻辑行一条 2px
+    /// 行条（宽度 ∝ 行非空白长度），并画当前视口指示器；点击/拖动导航
+    /// 视口。仅多行编辑器生效。默认 `false`。
+    pub minimap: bool,
+}
+
+/// minimap 行条的每行纵向节距（2px 一行，条与条相接）。
+pub(crate) const TEXT_MINIMAP_BAR_PITCH: f32 = 2.0;
+/// minimap 竖条宽度（内容区右缘覆盖条）。
+pub(crate) const TEXT_MINIMAP_STRIP_WIDTH: f32 = 64.0;
+
+/// 代码编辑器 minimap 竖条几何（节点空间）。绘制与指针导航共用同一
+/// 投影：条内行换算按 `stride` 采样步长与逻辑行数推导。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextMinimapGeometry {
+    /// 竖条背景（内容区右缘 64px 覆盖条，全内容区高）。
+    pub panel: LayoutBox,
+    /// 竖条与内容区之间的 1px 分隔线（与行条同色）。
+    pub separator: LayoutBox,
+    /// 行条（按采样步长抽稀；空白行不产生条）。
+    pub bars: Vec<LayoutBox>,
+    /// 视口指示器（跟随滚动换算；文档在视口内放得下时 `None`）。
+    pub indicator: Option<LayoutBox>,
+    pub panel_color: [f32; 4],
+    pub bar_color: [f32; 4],
+    pub indicator_color: [f32; 4],
+    /// 采样步长（行数超出条高容纳量时 >1，步长取整）。
+    pub stride: usize,
+    /// 逻辑行数（含折叠隐藏行：折叠只影响主视图）。
+    pub line_count: usize,
+}
+
+impl TextMinimapGeometry {
+    /// 条内纵向节距（采样后每逻辑行占用的条高）。
+    pub(crate) fn bar_pitch(&self) -> f32 {
+        TEXT_MINIMAP_BAR_PITCH / self.stride.max(1) as f32
+    }
+
+    /// 条内 y 坐标 → 逻辑行（0 起，钳到文档范围）。不在条内时 `None`。
+    pub(crate) fn line_at(&self, y: f32) -> Option<usize> {
+        if self.line_count == 0 || y < self.panel.y || y > self.panel.y + self.panel.height {
+            return None;
+        }
+        let offset = (y - self.panel.y).max(0.0);
+        let line = (offset / self.bar_pitch()).floor() as usize;
+        Some(line.min(self.line_count - 1))
+    }
 }
 
 /// [`TextWhitespaceMark`] 的种类：空格与 Tab。
@@ -1641,6 +1690,10 @@ pub struct TextInputPresentation {
     /// 锚定浮层度量（补全弹层行宽缓存 + hover 锚点）。列表指针相等时
     /// 行宽度量整段复用；无浮层时全部为 `None`（零分配）。
     pub overlay_metrics: TextOverlayMetrics,
+    /// minimap 行条长度表：每个逻辑行的非空白字符数（原始文档逻辑行，
+    /// 含折叠隐藏行；折叠只影响主视图）。仅开启选项的多行态收集，
+    /// 关闭时为空向量（零分配短路）。
+    pub minimap_line_lengths: Vec<u32>,
 }
 
 /// [`TextInputPresentation`] 的浮层度量集合。

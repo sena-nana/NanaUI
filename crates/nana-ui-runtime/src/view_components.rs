@@ -1682,6 +1682,13 @@ pub struct TextArea {
     /// 按 `'0'` 字形宽度估算（等宽字体假设）；文档最宽行不足该列时不画。
     /// 默认为空。
     pub wrap_guides: Arc<[usize]>,
+    /// 代码编辑器 minimap：内容区右缘 64px 覆盖竖条（与内容区间 1px
+    /// 分隔线），每逻辑行一条 2px 行条（宽度 ∝ 行非空白长度），半透明
+    /// 指示器跟随视口；点击条内滚动到对应行（点击行居中），按住拖动
+    /// 连续跟随，滚轮落在条上仍按编辑器常规滚动。折叠只影响主视图，
+    /// minimap 显示全部逻辑行；文本行宽计算不变——极长行会被条遮挡。
+    /// 仅多行编辑器生效。默认 `false`。
+    pub minimap: bool,
     pub(crate) style_override: bool,
 }
 
@@ -1707,6 +1714,7 @@ impl TextArea {
             relative_line_numbers: false,
             show_whitespace: false,
             wrap_guides: Arc::from([]),
+            minimap: false,
             style_override: false,
         }
     }
@@ -1784,6 +1792,14 @@ impl TextArea {
     /// 不足该列时不画。默认为空。
     pub fn wrap_guides(mut self, columns: Arc<[usize]>) -> Self {
         self.wrap_guides = columns;
+        self
+    }
+
+    /// 开启代码编辑器 minimap：内容区右缘 64px 覆盖竖条 + 视口指示器，
+    /// 点击/拖动导航视口（点击行居中）。折叠只影响主视图（minimap 显示
+    /// 全部逻辑行）；极长行会被条遮挡。默认关闭。
+    pub fn minimap(mut self, enabled: bool) -> Self {
+        self.minimap = enabled;
         self
     }
 
@@ -1871,6 +1887,7 @@ impl ComponentView for TextArea {
                 relative_line_numbers: self.relative_line_numbers,
                 show_whitespace: self.show_whitespace,
                 wrap_guides: Arc::clone(&self.wrap_guides),
+                minimap: self.minimap,
             },
         };
         if world.standard_visual(id) != Some(visual.clone()) {

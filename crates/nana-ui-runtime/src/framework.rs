@@ -50,6 +50,7 @@ pub use overlay::{
     RuntimeOverlayKind,
 };
 pub use text_edit::TextDeleteKind;
+use text_edit::TextEditorKind;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -737,6 +738,8 @@ pub struct AppContext {
     program_messages: Vec<ProgramMessage>,
     /// Live text drag-selection: pointer id, node, and the anchor offset.
     text_pointer_drag: Option<(u64, StableNodeId, usize)>,
+    /// Live minimap navigation drag: pointer id, node, and editor kind.
+    text_minimap_drag: Option<(u64, StableNodeId, TextEditorKind)>,
     /// Last press inside a text editor for double/triple click counting.
     text_pointer_click: Option<TextPointerClick>,
     /// Horizontal goal column retained across chained vertical moves.
@@ -898,6 +901,7 @@ impl AppContext {
             layout_invocations: 0,
             program_messages: Vec::new(),
             text_pointer_drag: None,
+            text_minimap_drag: None,
             text_pointer_click: None,
             caret_goal_x: None,
         };

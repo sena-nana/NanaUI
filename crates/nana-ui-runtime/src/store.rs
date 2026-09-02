@@ -176,7 +176,14 @@ pub(crate) struct NodeStore {
     text_completions: HashMap<StableNodeId, TextCompletionViewState>,
     /// hover 文档浮窗（仅宿主喂入 hover 的编辑器持有条目）。
     text_hovers: HashMap<StableNodeId, TextHoverViewState>,
+    /// minimap 视口钉住（仅显式导航过的多行编辑器持有条目）。
+    text_viewport_pins: HashMap<StableNodeId, ScrollOffset>,
 }
+
+/// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
+/// 几何层在「钉住值 == 请求滚动」期间跳过光标 reveal（视口停在用户导航
+/// 到的位置）；光标移动后由 shape 趟清除，reveal 恢复权威。
+pub(crate) type TextViewportPin = ScrollOffset;
 
 impl NodeStore {
     pub fn new() -> Self {
@@ -236,6 +243,7 @@ impl NodeStore {
         self.text_snippets.remove(&id);
         self.text_completions.remove(&id);
         self.text_hovers.remove(&id);
+        self.text_viewport_pins.remove(&id);
         Some(record)
     }
 
@@ -320,6 +328,12 @@ impl NodeStore {
         TextHoverViewState,
         text_hover_view,
         set_text_hover_view
+    );
+    sparse!(
+        text_viewport_pins,
+        ScrollOffset,
+        text_viewport_pin,
+        set_text_viewport_pin
     );
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {
