@@ -20,6 +20,7 @@ mod components;
 mod dock;
 mod dropdown;
 mod feedback;
+mod file_tab;
 mod form_surfaces;
 mod framework;
 mod glyph_cache;
@@ -115,6 +116,7 @@ pub use feedback::{
     EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
     ValueEmphasis,
 };
+pub use file_tab::{FILE_TAB_MAX_WIDTH, FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
