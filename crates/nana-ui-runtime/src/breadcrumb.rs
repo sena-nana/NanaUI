@@ -3,6 +3,7 @@
 //!
 //! Visual language: earlier segments are muted, the last segment carries the
 //! text color with a heavier weight, and separators are faint `›`. Segments
+//! center within the fixed column, matching the default title text. Segments
 //! ellipsize individually when the fixed center column runs out of room.
 //! Interactive segments emit [`BreadcrumbEvent::Activate`] with their index
 //! (forwarded from the segment to the [`Breadcrumb`] entity, so hosts bind
@@ -163,7 +164,7 @@ impl Breadcrumb {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.justify_content = JustifySpec::Start;
+        layout.justify_content = JustifySpec::Center;
         layout.gap = Some(LengthSpec::Px(6.0));
         layout.width = Some(LengthSpec::Fill);
         layout.min_width = Some(LengthSpec::Px(0.0));
@@ -428,5 +429,62 @@ mod tests {
         let symbol = Entity::<BreadcrumbSegment>::from_stable_id(segments[1]);
         assert!(context.activate_breadcrumb_segment(symbol).unwrap());
         assert_eq!(*events.lock().unwrap(), vec![1]);
+    }
+
+    /// 面包屑段组在标题栏内水平居中,与默认标题文本同语义(中列自身固定
+    /// 宽且严格居中,左右列均分剩余空间)。同时回归覆盖:装配前的首次
+    /// project 不得把中列样式打到宿主挂载的面包屑根节点上。
+    #[test]
+    fn breadcrumb_centers_within_the_title_bar() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let breadcrumb = context
+            .create_component(document, Breadcrumb::new())
+            .unwrap();
+        context
+            .set_breadcrumb_items(
+                breadcrumb,
+                items(&[
+                    ("效果图", BreadcrumbTone::Parent, false),
+                    ("fs_main", BreadcrumbTone::Current, true),
+                ]),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document,
+                crate::AppTitleBar::new("Nana")
+                    .center(breadcrumb.stable_id())
+                    .center_width(440.0),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+
+        let text_nodes = context.read(breadcrumb, |b| {
+            b.segments
+                .iter()
+                .copied()
+                .chain(b.separators.iter().copied())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+        context
+            .shape_text(&text_nodes, &mut crate::MeasureTextShaper)
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let world = context.world();
+        let bar_box = world.layout_box(bar.stable_id()).unwrap();
+        let segments = context.read(breadcrumb, |b| b.segments.clone()).unwrap();
+        let first = world.layout_box(segments[0]).unwrap();
+        let last = world.layout_box(*segments.last().unwrap()).unwrap();
+        let left = first.x - bar_box.x;
+        let right = (bar_box.x + bar_box.width) - (last.x + last.width);
+        assert!(
+            (left - right).abs() < 1.0,
+            "段组必须在标题栏内水平居中:left={left}, right={right}"
+        );
     }
 }
