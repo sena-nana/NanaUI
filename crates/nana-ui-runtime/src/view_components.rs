@@ -5,8 +5,8 @@ use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextCodeFold, TextCompletion, TextContent, TextDiagnosticSpan,
-    TextHorizontalAlignment, TextHover, TextInputState, TextMatchSpan, TextVerticalAlignment,
-    UiWorld,
+    TextEditorRenderOptions, TextHorizontalAlignment, TextHover, TextInputState, TextMatchSpan,
+    TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1352,6 +1352,7 @@ impl ComponentView for TextInput {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: TextEditorRenderOptions::default(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1564,6 +1565,7 @@ impl ComponentView for NumberInput {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: TextEditorRenderOptions::default(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -1665,6 +1667,21 @@ pub struct TextArea {
     /// （组件不自动隐藏）。正文滚动存放在组件内部状态里：重喂相同文档
     /// 不下发变更（滚动位置保留），换新文档重新显示并回到顶部。
     pub hover: Option<TextHover>,
+    /// 光标处单词/选中文本的出现高亮（内部派生：聚焦时从主光标/选区
+    /// 派生查询并扫描全文档，不给宿主增加喂入负担）。默认 `false`：
+    /// 派生按出现次数做 shaper 探针（上限 200），成本高于同类的括号
+    /// 匹配（常数次探针），由宿主按文档形态自行开启。
+    pub occurrence_highlight: bool,
+    /// 相对行号：光标行显示绝对行号，其余行显示与光标所在显示行的距离
+    /// （Zed 惯例）。仅在 [`Self::line_numbers`] 开启时生效。默认 `false`。
+    pub relative_line_numbers: bool,
+    /// 空白字符显示：空格画中点、Tab 画箭头；行首缩进与行尾空白一并
+    /// 可见。默认 `false`。
+    pub show_whitespace: bool,
+    /// wrap guide 列参考线：在给定字符列的 x 位置画全高竖线（1px）。列宽
+    /// 按 `'0'` 字形宽度估算（等宽字体假设）；文档最宽行不足该列时不画。
+    /// 默认为空。
+    pub wrap_guides: Arc<[usize]>,
     pub(crate) style_override: bool,
 }
 
@@ -1686,6 +1703,10 @@ impl TextArea {
             code_folds: Arc::from([]),
             completions: Arc::from([]),
             hover: None,
+            occurrence_highlight: false,
+            relative_line_numbers: false,
+            show_whitespace: false,
+            wrap_guides: Arc::from([]),
             style_override: false,
         }
     }
@@ -1732,6 +1753,37 @@ impl TextArea {
     /// 设置 hover 文档浮窗（见 [`TextHover`]）。`None` 表示隐藏。
     pub fn hover(mut self, hover: Option<TextHover>) -> Self {
         self.hover = hover;
+        self
+    }
+
+    /// 开启光标处单词/选中文本的出现高亮（内部派生：聚焦时从主光标或
+    /// 非空单行选区派生查询，全文档大小写敏感扫描，全词边界按词模式
+    /// 生效；主光标所在出现不画）。默认关闭。
+    pub fn occurrence_highlight(mut self, enabled: bool) -> Self {
+        self.occurrence_highlight = enabled;
+        self
+    }
+
+    /// 开启相对行号：光标行显示绝对行号，其余行显示与光标所在显示行的
+    /// 距离（Zed 惯例，多光标按主光标）。仅在 [`Self::line_numbers`]
+    /// 开启时生效。默认关闭。
+    pub fn relative_line_numbers(mut self, enabled: bool) -> Self {
+        self.relative_line_numbers = enabled;
+        self
+    }
+
+    /// 开启空白字符显示：空格画中点、Tab 画箭头；行首缩进与行尾空白
+    /// 一并可见。默认关闭。
+    pub fn show_whitespace(mut self, enabled: bool) -> Self {
+        self.show_whitespace = enabled;
+        self
+    }
+
+    /// 设置 wrap guide 列参考线：在每个给定字符列（1 起）的 x 位置画
+    /// 全高竖线。列宽按 `'0'` 字形宽度估算（等宽字体假设）；文档最宽行
+    /// 不足该列时不画。默认为空。
+    pub fn wrap_guides(mut self, columns: Arc<[usize]>) -> Self {
+        self.wrap_guides = columns;
         self
     }
 
@@ -1814,6 +1866,12 @@ impl ComponentView for TextArea {
                 .as_ref()
                 .map(|code| Arc::clone(&code.indent_unit)),
             folds: Arc::clone(&self.code_folds),
+            editor_options: TextEditorRenderOptions {
+                occurrence_highlight: self.occurrence_highlight,
+                relative_line_numbers: self.relative_line_numbers,
+                show_whitespace: self.show_whitespace,
+                wrap_guides: Arc::clone(&self.wrap_guides),
+            },
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

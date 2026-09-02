@@ -1436,6 +1436,52 @@ pub fn find_previous_match(
         .or_else(|| matches.last().cloned())
 }
 
+/// Occurrence-highlight scan cap: a pathological document (a word repeated
+/// thousands of times) stops deriving marks past this many occurrences.
+pub const OCCURRENCE_HIGHLIGHT_LIMIT: usize = 200;
+
+/// Query text for cursor-occurrence highlighting.
+///
+/// - Collapsed caret: the `[A-Za-z0-9_]` word around `caret` (empty result is
+///   `None`), matched whole-word.
+/// - Non-empty single-line selection: the selected text itself, matched as a
+///   plain case-sensitive substring (Zed selection-highlight semantics).
+/// - A multi-line selection returns `None`: highlighting every occurrence of
+///   a paragraph is noise, not signal.
+///
+/// Returns the query plus whether matches must be whole-word bounded. The
+/// caller feeds the string to [`find_matches_capped`] with
+/// `case_sensitive: true`.
+pub fn occurrence_query_at(
+    value: &str,
+    selection: Option<(usize, usize)>,
+    caret: usize,
+) -> Option<(String, bool)> {
+    if let Some((start, end)) = selection {
+        let start = start.min(end).min(value.len());
+        let end = end.min(value.len());
+        if start < end
+            && value.is_char_boundary(start)
+            && value.is_char_boundary(end)
+            && !value[start..end].contains('\n')
+        {
+            return Some((value[start..end].to_owned(), false));
+        }
+        return None;
+    }
+    let caret = clamp_boundary(value, caret);
+    let bytes = value.as_bytes();
+    let mut start = caret;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = caret;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    (start < end).then(|| (value[start..end].to_owned(), true))
+}
+
 /// Replace every match ([`find_matches`] semantics: left to right,
 /// non-overlapping) with `replacement`, returning the new value and the
 /// replacement count. Matching runs on the original text, so a replacement
@@ -2091,6 +2137,44 @@ mod tests {
             indent_selection(value, crate::TextSelection::caret(1), "  ").unwrap();
         assert_eq!(inserted, "a  \nb\nc");
         assert_eq!(inserted_selection.focus, 3);
+    }
+
+    #[test]
+    fn occurrence_query_takes_caret_word_selection_text_or_nothing() {
+        let value = "fn count() { count }";
+        // 收起光标：光标处 [A-Za-z0-9_] 词，全词匹配。
+        let caret = "fn cou".len();
+        assert_eq!(
+            occurrence_query_at(value, None, caret),
+            Some(("count".to_owned(), true))
+        );
+        // 词尾光标取同一个词。
+        assert_eq!(
+            occurrence_query_at(value, None, "fn count".len()),
+            Some(("count".to_owned(), true))
+        );
+        // 下划线属于词字符。
+        assert_eq!(
+            occurrence_query_at("snake_case_x", None, "snake".len() + 1),
+            Some(("snake_case_x".to_owned(), true))
+        );
+        // 光标不在词内（括号之间）：返回 None。
+        assert_eq!(
+            occurrence_query_at("fn () { count }", None, "fn (".len()),
+            None
+        );
+        assert_eq!(occurrence_query_at("", None, 0), None);
+        // 非空单行选区：选中文本本身，子串匹配（不加全词约束）。
+        assert_eq!(
+            occurrence_query_at(value, Some(("fn ".len(), "fn count".len())), 0),
+            Some(("count".to_owned(), false))
+        );
+        // 多行选区：None。
+        let multiline = "ab\ncd";
+        assert_eq!(
+            occurrence_query_at(multiline, Some((0, multiline.len())), 0),
+            None
+        );
     }
 
     #[test]

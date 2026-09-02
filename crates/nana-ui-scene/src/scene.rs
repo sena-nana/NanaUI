@@ -10,7 +10,7 @@ use nana_ui_core::{
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
     LayoutBox, NodeKind, StableNodeId, StandardVisual, TextFoldGutter, TextHorizontalAlignment,
-    TextShaping, TextVerticalAlignment, TimeSeriesChart,
+    TextShaping, TextVerticalAlignment, TextWhitespaceKind, TimeSeriesChart,
 };
 
 use crate::{
@@ -200,6 +200,15 @@ pub enum ScenePrimitiveKind {
         opentype: SceneTextOpenType,
     },
     Icon {
+        icon: Icon,
+        color: Option<[f32; 4]>,
+    },
+    /// Many instances of one icon in a single primitive. Mirrors
+    /// [`ScenePrimitiveKind::QuadBatch`]: one scene slot regardless of count,
+    /// so a large set (editor whitespace tab arrows) never saturates `u8`
+    /// slot indices.
+    IconBatch {
+        bounds: Vec<SceneRect>,
         icon: Icon,
         color: Option<[f32; 4]>,
     },
@@ -3313,6 +3322,10 @@ impl UiScene {
                         match_markers,
                         caret_line,
                         bracket_markers,
+                        occurrence_markers,
+                        whitespace_marks,
+                        whitespace_color,
+                        wrap_guides,
                         indent_guides,
                         line_labels,
                         line_labels_color,
@@ -3477,6 +3490,121 @@ impl UiScene {
                                 indent_guides.iter().map(|(rect, _)| scene_rect(*rect)),
                                 VisualQuadStyle {
                                     background: Some(indent_guides[0].1),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 出现高亮：淡底色填充批次（slot 11，缩进参考线之
+                        // 上、括号描边之下），弱于查找匹配的两级强调。
+                        if !occurrence_markers.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                11,
+                                occurrence_markers.iter().map(|(rect, _)| scene_rect(*rect)),
+                                VisualQuadStyle {
+                                    background: Some(occurrence_markers[0].1),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 空白字符显示：空格画小圆点（slot 16 单一批次），
+                        // Tab 画箭头图标（slot 60 单一批次，镜像折叠箭头
+                        // 14/15 的合批先例——数量不受 slot 上限约束）。
+                        if !whitespace_marks.is_empty() {
+                            let dots: Vec<&LayoutBox> = whitespace_marks
+                                .iter()
+                                .filter_map(|(rect, kind)| {
+                                    (*kind == TextWhitespaceKind::Space).then_some(rect)
+                                })
+                                .collect();
+                            if !dots.is_empty() {
+                                // 圆点直径随行号字号缩放，钳在小尺寸带，
+                                // 保持"标点"观感而不遮挡字形。
+                                let extent = (*line_labels_font_size * 0.2).clamp(2.0, 3.0);
+                                self.insert_primitive(visual_quad_batch(
+                                    &visual_context,
+                                    16,
+                                    dots.iter().map(|rect| {
+                                        let mut bounds = scene_rect(**rect);
+                                        bounds.width = extent;
+                                        bounds.height = extent;
+                                        bounds.x += (scene_rect(**rect).width - extent) / 2.0;
+                                        bounds.y += (scene_rect(**rect).height - extent) / 2.0;
+                                        bounds
+                                    }),
+                                    VisualQuadStyle {
+                                        background: Some(*whitespace_color),
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: corner_radii(999.0),
+                                    },
+                                ));
+                            }
+                            let arrows: Vec<SceneRect> = whitespace_marks
+                                .iter()
+                                .filter(|(_, kind)| *kind == TextWhitespaceKind::Tab)
+                                .map(|(rect, _)| {
+                                    let cell = scene_rect(*rect);
+                                    // 箭头尺寸按字符单元高度缩放，居中放置。
+                                    let extent = (cell.height * 0.55).clamp(6.0, 14.0);
+                                    SceneRect {
+                                        x: cell.x + (cell.width - extent) / 2.0,
+                                        y: cell.y + (cell.height - extent) / 2.0,
+                                        width: extent,
+                                        height: extent,
+                                    }
+                                })
+                                .collect();
+                            if !arrows.is_empty() {
+                                let bounds = arrows
+                                    .iter()
+                                    .copied()
+                                    .reduce(|left, right| {
+                                        let x = left.x.min(right.x);
+                                        let y = left.y.min(right.y);
+                                        let right_edge =
+                                            (left.x + left.width).max(right.x + right.width);
+                                        let bottom_edge =
+                                            (left.y + left.height).max(right.y + right.height);
+                                        SceneRect {
+                                            x,
+                                            y,
+                                            width: right_edge - x,
+                                            height: bottom_edge - y,
+                                        }
+                                    })
+                                    .unwrap_or_default();
+                                self.insert_primitive(ScenePrimitive {
+                                    id: PrimitiveId { node: id, slot: 60 },
+                                    node: id,
+                                    bounds,
+                                    transform,
+                                    clips: clips.clone(),
+                                    opacity,
+                                    z_index: node.z_index,
+                                    document_order: node_order,
+                                    kind: ScenePrimitiveKind::IconBatch {
+                                        bounds: arrows,
+                                        icon: Icon::ArrowRight,
+                                        color: Some(*whitespace_color),
+                                    },
+                                });
+                            }
+                        }
+                        // wrap guide：按列的全高 1px 竖线批次（slot 17）。
+                        // 与缩进参考线（slot 10，行内缩进深度）同为低对比
+                        // 竖线，但贯穿整个内容区高度。
+                        if !wrap_guides.is_empty() {
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                17,
+                                wrap_guides.iter().map(|(rect, _)| scene_rect(*rect)),
+                                VisualQuadStyle {
+                                    background: Some(wrap_guides[0].1),
                                     border_color: None,
                                     border_width: 0.0,
                                     corner_radius: corner_radii(0.0),
@@ -5331,6 +5459,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -5358,6 +5487,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
@@ -6241,6 +6374,7 @@ mod tests {
             line_numbers: true,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6309,6 +6443,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
         });
 
@@ -6361,6 +6499,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6428,6 +6567,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
         });
 
@@ -6471,6 +6614,254 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
+        let occurrence_color = [0.48, 0.73, 0.94, 0.14];
+        let faint = [0.35, 0.35, 0.35, 1.0];
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 42.0,
+                },
+                content: Arc::from("a b\tc"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            // 出现高亮：两条淡底色填充（slot 11 批次）。
+            occurrence_markers: vec![
+                (
+                    LayoutBox {
+                        x: 20.0,
+                        y: 0.0,
+                        width: 20.0,
+                        height: 14.0,
+                    },
+                    occurrence_color,
+                ),
+                (
+                    LayoutBox {
+                        x: 60.0,
+                        y: 14.0,
+                        width: 20.0,
+                        height: 14.0,
+                    },
+                    occurrence_color,
+                ),
+            ],
+            // 空白显示：两个空格（slot 16 圆点批次）+ 一个 Tab（slot 60+
+            // 箭头图标）。
+            whitespace_marks: vec![
+                (
+                    LayoutBox {
+                        x: 10.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 14.0,
+                    },
+                    nana_ui_runtime::TextWhitespaceKind::Space,
+                ),
+                (
+                    LayoutBox {
+                        x: 40.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 14.0,
+                    },
+                    nana_ui_runtime::TextWhitespaceKind::Space,
+                ),
+                (
+                    LayoutBox {
+                        x: 30.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 14.0,
+                    },
+                    nana_ui_runtime::TextWhitespaceKind::Tab,
+                ),
+            ],
+            whitespace_color: faint,
+            // wrap guide：列 5、10 的全高竖线（slot 17 批次）。
+            wrap_guides: vec![
+                (
+                    LayoutBox {
+                        x: 50.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 42.0,
+                    },
+                    faint,
+                ),
+                (
+                    LayoutBox {
+                        x: 100.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 42.0,
+                    },
+                    faint,
+                ),
+            ],
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        let batch = |slot: u8| {
+            scene
+                .primitive(PrimitiveId { node: id(1), slot })
+                .unwrap_or_else(|| panic!("slot {slot} primitive"))
+        };
+        // 出现高亮批次：两条，共用淡底色。
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &batch(11).kind
+        else {
+            panic!("expected occurrence quad batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(*background, Some(occurrence_color));
+        // 空格圆点批次：两条小圆点。
+        let ScenePrimitiveKind::QuadBatch { bounds, .. } = &batch(16).kind else {
+            panic!("expected whitespace dot batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        // Tab 箭头：单一批次（slot 60），箭头图标图元。
+        let tab = batch(60);
+        let ScenePrimitiveKind::IconBatch {
+            bounds: arrow_bounds,
+            icon,
+            color,
+        } = &tab.kind
+        else {
+            panic!("expected tab arrow icon batch");
+        };
+        assert_eq!(arrow_bounds.len(), 1);
+        assert_eq!(*icon, Icon::ArrowRight);
+        assert_eq!(*color, Some(faint));
+        // wrap guide 批次：两条全高竖线。
+        let ScenePrimitiveKind::QuadBatch {
+            bounds, background, ..
+        } = &batch(17).kind
+        else {
+            panic!("expected wrap guide batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(bounds[0].height, 42.0);
+        assert_eq!(*background, Some(faint));
+    }
+
+    #[test]
+    fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slots() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 14.0,
+                },
+                content: Arc::from("plain"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        for slot in [11, 16, 17, 60] {
+            assert!(
+                scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
+                "slot {slot} must stay empty"
+            );
+        }
+    }
+
+    #[test]
     fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         const FOLDS: usize = 25;
         let mut gutters = Vec::with_capacity(FOLDS);
@@ -6499,6 +6890,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6540,6 +6932,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
         });
 
@@ -6603,6 +6999,124 @@ mod tests {
     }
 
     #[test]
+    fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
+        const TABS: usize = 300;
+        let mut marks = Vec::with_capacity(TABS);
+        for index in 0..TABS {
+            marks.push((
+                LayoutBox {
+                    x: 10.0 + (index % 40) as f32 * 10.0,
+                    y: (index / 40) as f32 * 14.0,
+                    width: 10.0,
+                    height: 14.0,
+                },
+                nana_ui_runtime::TextWhitespaceKind::Tab,
+            ));
+        }
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 18.0,
+                    y: 0.0,
+                    width: 180.0,
+                    height: 350.0,
+                },
+                content: Arc::from("\t".repeat(TABS)),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            occurrence_markers: Vec::new(),
+            whitespace_marks: marks,
+            whitespace_color: [0.5, 0.5, 0.5, 1.0],
+            wrap_guides: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            steppers: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input], []);
+        // 单一批次（slot 60）装下全部 300 个 Tab 箭头；旧实现按
+        // 60 + index 分配 slot，超过 195 个后在 u8 上回绕互相覆盖。
+        let batch = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 60,
+            })
+            .expect("tab arrow batch");
+        let ScenePrimitiveKind::IconBatch {
+            bounds: arrows,
+            icon,
+            color,
+        } = &batch.kind
+        else {
+            panic!("expected tab arrow icon batch");
+        };
+        assert_eq!(arrows.len(), TABS);
+        assert_eq!(*icon, Icon::ArrowRight);
+        assert_eq!(*color, Some([0.5, 0.5, 0.5, 1.0]));
+        for (index, arrow) in arrows.iter().enumerate() {
+            let expected_cell_x = 10.0 + (index % 40) as f32 * 10.0;
+            let expected_cell_y = (index / 40) as f32 * 14.0;
+            // 箭头按字符单元高度的 0.55 居中放置。
+            let extent = (14.0f32 * 0.55).clamp(6.0, 14.0);
+            assert!((arrow.width - extent).abs() < f32::EPSILON);
+            assert!(
+                (arrow.x - (expected_cell_x + (10.0 - extent) / 2.0)).abs() < f32::EPSILON,
+                "arrow {index} x mismatch"
+            );
+            assert!(
+                (arrow.y - (expected_cell_y + (14.0 - extent) / 2.0)).abs() < f32::EPSILON,
+                "arrow {index} y mismatch"
+            );
+        }
+        // 批次外的任何 slot 都不承载 Tab 箭头。
+        for slot in [61u8, 100, 200, 255] {
+            assert!(
+                scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
+                "slot {slot} must stay empty"
+            );
+        }
+    }
+
+    #[test]
     fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         let mut input = node(1, None, &[]);
         input.standard_visual = Some(StandardVisual::TextInput {
@@ -6616,6 +7130,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6661,6 +7176,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
@@ -6718,6 +7237,7 @@ mod tests {
             line_numbers: false,
             indent_guides: Some(Arc::from("\t")),
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6805,6 +7325,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
         });
 
@@ -6880,6 +7404,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
             multiline: true,
@@ -6932,6 +7457,10 @@ mod tests {
             selection_color: [0.2, 0.4, 0.7, 0.4],
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
@@ -6986,6 +7515,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         single_line.component_geometry = input_component_geometry(false);
         scene.apply_delta([single_line], []);
@@ -7032,6 +7562,10 @@ mod tests {
             selection_color: [0.2, 0.4, 0.7, 0.4],
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
@@ -9989,6 +10523,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         let row_rect = |index: usize| LayoutBox {
             x: 10.0,
@@ -10065,6 +10600,10 @@ mod tests {
             selection_color: [0.0; 4],
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
             steppers: None,
         });
         let mut scene = UiScene::new();

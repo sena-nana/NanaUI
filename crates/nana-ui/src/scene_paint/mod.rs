@@ -564,6 +564,29 @@ impl SceneWgpuPainter {
                         commands.push(DrawCommand::Icon { prepared, scissor });
                     }
                 }
+                ScenePrimitiveKind::IconBatch {
+                    bounds: batch,
+                    icon,
+                    color,
+                } => {
+                    for item in batch {
+                        let item_bounds = local_rect(*item);
+                        if let Some(prepared) = self.icons.prepare(
+                            &self.device,
+                            &self.queue,
+                            item_bounds,
+                            affine,
+                            persp,
+                            scale,
+                            *icon,
+                            color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                            primitive.opacity,
+                            frag_clip,
+                        ) {
+                            commands.push(DrawCommand::Icon { prepared, scissor });
+                        }
+                    }
+                }
                 ScenePrimitiveKind::Spinner { phase, color } => {
                     if let Some(range) = self.meshes.push_spinner(
                         bounds,

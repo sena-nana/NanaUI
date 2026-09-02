@@ -14,7 +14,8 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{
     EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
-    TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
+    TextEditorRenderOptions, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
+    TextWhitespaceKind, TextWhitespaceMark,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
@@ -2051,15 +2052,20 @@ impl UiWorld {
                 matches,
                 line_numbers,
                 indent_guides,
+                editor_options,
                 ..
             }) => TextInputEditorExtras {
                 diagnostics: Arc::clone(diagnostics),
                 matches: Arc::clone(matches),
                 line_numbers: *line_numbers,
                 indent_guides: indent_guides.clone(),
+                editor: editor_options.clone(),
             },
             _ => TextInputEditorExtras::default(),
         };
+        // 焦点随 source 下发：出现高亮只在聚焦编辑器上派生，未聚焦的
+        // 多行编辑器零分配跳过整条扫描路径。
+        let focused = self.focused.get(&self.record(id).document) == Some(&id);
         // 折叠显示视图：仅多行态且有折叠态区间时构建（空集合零成本短路）。
         let fold = if multiline {
             self.text_display_view(id)
@@ -2088,6 +2094,7 @@ impl UiWorld {
             *secure,
             multiline,
             extras,
+            focused,
             fold,
             completions,
             hover,
@@ -4470,6 +4477,65 @@ impl UiWorld {
                 } else {
                     Vec::new()
                 };
+                // 出现高亮：淡底色填充（accent_soft，弱于查找匹配的
+                // accent_soft_hover / accent@0.45），跟随聚焦光标。
+                let occurrence_markers = if focused {
+                    presentation
+                        .occurrence_marks
+                        .iter()
+                        .map(|rect| {
+                            (
+                                LayoutBox {
+                                    x: field_x(rect.x),
+                                    y: content.y + rect.y - scroll_y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                },
+                                self.style_model.palette.accent_soft.as_rgba_array(),
+                            )
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                // 空白字符标记：静态结构标记（不随焦点变化），按视口裁剪
+                // ——标记只服务可见行，视口外的空白不产生图元。
+                let whitespace_color = self.style_model.palette.faint.as_rgba_array();
+                let whitespace_marks = presentation
+                    .whitespace_marks
+                    .iter()
+                    .filter_map(|mark| {
+                        let y = content.y + mark.rect.y - scroll_y;
+                        (y + mark.rect.height >= content.y && y <= content.y + content.height)
+                            .then_some((
+                                LayoutBox {
+                                    x: field_x(mark.rect.x),
+                                    y,
+                                    width: mark.rect.width,
+                                    height: mark.rect.height,
+                                },
+                                mark.kind,
+                            ))
+                    })
+                    .collect();
+                // wrap guide：全高竖线（贯穿内容区，随横向滚动平移）。
+                // 与缩进参考线（slot 10，仅行内缩进深度）区分：列位置由
+                // 选项给定且贯穿全高。
+                let wrap_guides = presentation
+                    .wrap_guides
+                    .iter()
+                    .map(|&x| {
+                        (
+                            LayoutBox {
+                                x: field_x(x),
+                                y: content.y,
+                                width: 1.0,
+                                height: content.height,
+                            },
+                            self.style_model.palette.faint.as_rgba_array(),
+                        )
+                    })
+                    .collect();
                 // 缩进参考线：静态结构标记，不随焦点变化。
                 let indent_guides = presentation
                     .indent_guides
@@ -4581,6 +4647,10 @@ impl UiWorld {
                     match_markers,
                     caret_line,
                     bracket_markers,
+                    occurrence_markers,
+                    whitespace_marks,
+                    whitespace_color,
+                    wrap_guides,
                     indent_guides,
                     line_labels,
                     folds: fold_geometry,
@@ -7226,6 +7296,12 @@ struct TextInputPresentationSource {
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
+    /// 内部派生渲染选项（出现高亮、相对行号、空白显示、wrap guide）。
+    /// 占位符/IME 组合态置默认（全部关闭）。
+    editor: TextEditorRenderOptions,
+    /// 节点是否持有文档焦点。出现高亮按聚焦派生（不聚焦零分配跳过，
+    /// 绘制层再按焦点门控一次）。
+    focused: bool,
     /// 折叠显示视图（存在折叠态区间时 Some；`text` 等偏移已在显示空间）。
     fold: Option<TextDisplayView>,
     /// 补全候选（宿主过滤后的非空列表；占位符/组合态不弹出）。
@@ -7241,6 +7317,7 @@ struct TextInputEditorExtras {
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
+    editor: TextEditorRenderOptions,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7251,6 +7328,7 @@ fn build_text_input_presentation_source(
     secure: bool,
     multiline: bool,
     extras: TextInputEditorExtras,
+    focused: bool,
     fold: Option<TextDisplayView>,
     completions: Option<Arc<[crate::TextCompletion]>>,
     hover: Option<crate::TextHover>,
@@ -7293,6 +7371,8 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            editor: TextEditorRenderOptions::default(),
+            focused: false,
             fold: None,
             completions: None,
             hover: None,
@@ -7352,6 +7432,8 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            editor: TextEditorRenderOptions::default(),
+            focused,
             fold: fold_view,
             completions: None,
             hover: None,
@@ -7412,6 +7494,8 @@ fn build_text_input_presentation_source(
         matches: Arc::from(matches),
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
+        editor: extras.editor,
+        focused,
         fold: fold_view,
         completions,
         hover,
@@ -7567,6 +7651,120 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
+    // 出现高亮：聚焦且主光标处有词（[A-Za-z0-9_]，全词匹配）或主选区为
+    // 非空单行选区时，扫描全文档找出其余出现（大小写敏感；选中文本按
+    // 子串匹配）。主光标所在出现不画（选区/当前行条已覆盖）；附加光标
+    // 存在时仍按主光标派生。上限 [`crate::text_editing::
+    // OCCURRENCE_HIGHLIGHT_LIMIT`] 处防病态文档；未聚焦、无词、多行选区
+    // 或 IME 组合期零分配跳过。
+    let occurrence_marks = if source.multiline
+        && source.focused
+        && source.editor.occurrence_highlight
+        && source.preedit.is_none()
+    {
+        let value = source.text.value.as_str();
+        match crate::text_editing::occurrence_query_at(value, source.selection, source.caret) {
+            Some((query, whole_word)) => {
+                let (ranges, _) = crate::text_editing::find_matches_capped(
+                    value,
+                    &query,
+                    crate::text_editing::TextSearchOptions {
+                        case_sensitive: true,
+                        whole_word,
+                    },
+                    crate::text_editing::OCCURRENCE_HIGHLIGHT_LIMIT,
+                );
+                let selection_range = source.selection.map(|(start, end)| start..end);
+                ranges
+                    .into_iter()
+                    .filter(|found| {
+                        Some(found) != selection_range.as_ref()
+                            && !(found.start <= source.caret && source.caret <= found.end)
+                    })
+                    .flat_map(|found| {
+                        shaper.text_highlights(
+                            id,
+                            &source.text,
+                            (found.start, found.end),
+                            style,
+                            presentation_constraints,
+                        )
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    // 空白字符显示：空格与 Tab 各给一个文本空间字符单元标记（绘制层画
+    // 中点/箭头）。每个连续空白 run 做两次端点探测，run 内按线性插值定
+    // 位：等宽字体（代码编辑场景）下精确，比例字体下为近似。端点探测
+    // 走 shaper 整段布局缓存，同一布局输入只在首次探针时布局一次。
+    // 行首缩进与行尾空白一并可见；未开启选项零分配跳过。
+    let whitespace_marks = if source.multiline && source.editor.show_whitespace {
+        let value = source.text.value.as_str();
+        let mut marks = Vec::new();
+        let mut offset = 0usize;
+        while offset < value.len() {
+            if !matches!(value.as_bytes()[offset], b' ' | b'\t') {
+                offset += 1;
+                continue;
+            }
+            let run_start = offset;
+            while offset < value.len() && matches!(value.as_bytes()[offset], b' ' | b'\t') {
+                offset += 1;
+            }
+            let (start_x, y, height) =
+                shaper.text_position(id, &source.text, run_start, style, presentation_constraints);
+            let (end_x, _, _) =
+                shaper.text_position(id, &source.text, offset, style, presentation_constraints);
+            let run = &value[run_start..offset];
+            let cell = ((end_x - start_x) / run.len() as f32).max(1.0);
+            for (index, &byte) in run.as_bytes().iter().enumerate() {
+                marks.push(TextWhitespaceMark {
+                    rect: LayoutBox {
+                        x: start_x + cell * index as f32,
+                        y,
+                        width: cell,
+                        height,
+                    },
+                    kind: if byte == b'\t' {
+                        TextWhitespaceKind::Tab
+                    } else {
+                        TextWhitespaceKind::Space
+                    },
+                });
+            }
+        }
+        marks
+    } else {
+        Vec::new()
+    };
+    // wrap guide 列参考线：列宽按 '0' 字形宽度估算（等宽字体假设）；文
+    // 档最宽行不足该列时不画。'0' 与整段宽度度量都落在 shaper 的整段布
+    // 展缓存上：同一布局输入每趟至多一次真实布局，其后探针为缓存命中
+    // （'0' 是单字符键，文档键与光标/高亮探针共享）。
+    let wrap_guides = if source.multiline && !source.editor.wrap_guides.is_empty() {
+        let unit = TextContent {
+            value: "0".to_owned(),
+        };
+        let char_width = shaper.horizontal_offset(id, &unit, 1, style).max(1.0);
+        let text_width = shaper
+            .shape(id, &source.text, style, presentation_constraints)
+            .width;
+        source
+            .editor
+            .wrap_guides
+            .iter()
+            .filter_map(|&column| {
+                let x = column as f32 * char_width;
+                (column > 0 && x < text_width).then_some(x)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // 缩进参考线：每个逻辑行的前导空白内按缩进单位宽度画竖线。
     let indent_guides = if source.multiline {
         source
@@ -7638,7 +7836,7 @@ fn shape_text_input_presentation(
             .collect();
         // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
         // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
-        let numbers = match &source.fold {
+        let mut numbers = match &source.fold {
             Some(view) => {
                 let span_lines: Vec<(usize, u32)> = view
                     .spans
@@ -7666,6 +7864,24 @@ fn shape_text_input_presentation(
             }
             None => Vec::new(),
         };
+        // 相对行号（Zed 惯例，见 zed-industries/zed#62311：光标行显示绝
+        // 对行号，其余行显示与光标所在行的距离；"光标行显示 1" 是被报告
+        // 的 bug 而非预期）。多光标按主光标；距离按显示行计（所见即所得，
+        // 折叠摘要行也参与计数）。
+        if source.editor.relative_line_numbers {
+            let caret_line = value[..clamp_boundary(value, source.caret)]
+                .matches('\n')
+                .count();
+            numbers = (0..tops.len())
+                .map(|index| {
+                    if index == caret_line {
+                        numbers.get(index).copied().unwrap_or(index as u32 + 1)
+                    } else {
+                        (index.abs_diff(caret_line)).min(u32::MAX as usize) as u32
+                    }
+                })
+                .collect();
+        }
         (tops, numbers)
     } else {
         (Vec::new(), Vec::new())
@@ -7772,6 +7988,9 @@ fn shape_text_input_presentation(
         diagnostic_marks,
         match_marks,
         bracket_marks,
+        occurrence_marks,
+        whitespace_marks,
+        wrap_guides,
         indent_guides,
         line_tops,
         line_numbers,
@@ -11817,6 +12036,7 @@ mod tests {
             true,
             false,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -11834,6 +12054,7 @@ mod tests {
             true,
             false,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -11879,6 +12100,7 @@ mod tests {
                 line_numbers: true,
                 indent_guides: None,
                 folds: Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         queue.set_style(
@@ -12027,6 +12249,7 @@ mod tests {
                 line_numbers,
                 indent_guides: None,
                 folds,
+                editor_options: Default::default(),
             }),
         );
         queue.set_style(
@@ -12070,6 +12293,95 @@ mod tests {
         );
         world.commit(queue).unwrap();
         world.resolve_styles(&[node(1)]).unwrap();
+    }
+
+    /// 内部派生渲染选项测试的编辑器 world：多行 TextInput 视觉 + 指定
+    /// 选项/值/选区/折叠，已布局（font 10、行高 14、200x80）。未 shape。
+    fn options_editor_world(
+        world: &mut UiWorld,
+        value: &str,
+        selection: crate::TextSelection,
+        folds: Arc<[crate::TextCodeFold]>,
+        editor_options: crate::TextEditorRenderOptions,
+        line_numbers: bool,
+    ) {
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers,
+                indent_guides: None,
+                folds,
+                editor_options,
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection,
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+    }
+
+    fn focus_editor(world: &mut UiWorld) {
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document(1), Some(node(1)));
+        world.commit(focus).unwrap();
     }
 
     #[test]
@@ -12158,6 +12470,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([crate::TextCodeFold::new(107, 128)]),
+                editor_options: Default::default(),
             }),
         );
         world.commit(queue).unwrap();
@@ -12181,6 +12494,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         world.commit(queue).unwrap();
@@ -12419,6 +12733,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         queue.set_style(
@@ -12527,6 +12842,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: Some(Arc::from("\t")),
                 folds: Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         create.set_style(
@@ -12662,6 +12978,437 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_highlight_marks_other_word_occurrences_when_focused() {
+        // FunctionalShaper：字符宽 = font_size（10），行高 14。
+        let value = "count = 1\ncount + counts\nx count";
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            value,
+            crate::TextSelection::caret(2),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                occurrence_highlight: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 未聚焦：派生短路，零标记。
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.occurrence_marks.is_empty());
+        let geometry = world.component_geometry(node(1)).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            occurrence_markers, ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        assert!(occurrence_markers.is_empty());
+
+        focus_editor(&mut world);
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 光标所在出现（第一行）不画；全词匹配排除 "counts"；其余两处
+        // 各一条单行矩形。
+        assert_eq!(
+            presentation.occurrence_marks,
+            vec![
+                LayoutBox {
+                    x: 0.0,
+                    y: 14.0,
+                    width: 50.0,
+                    height: 14.0,
+                },
+                LayoutBox {
+                    x: 20.0,
+                    y: 28.0,
+                    width: 50.0,
+                    height: 14.0,
+                },
+            ]
+        );
+        // 几何层在聚焦时输出淡底色（accent_soft）填充条带。
+        let geometry = world.component_geometry(node(1)).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            occurrence_markers, ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(occurrence_markers.len(), 2);
+        assert_eq!(
+            occurrence_markers[0].1,
+            world.style_model.palette.accent_soft.as_rgba_array()
+        );
+    }
+
+    #[test]
+    fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
+        let options = crate::TextEditorRenderOptions {
+            occurrence_highlight: true,
+            ..crate::TextEditorRenderOptions::default()
+        };
+        let style = ComputedStyle {
+            font_size: 10.0,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..ComputedStyle::default()
+        };
+        let present = |value: &str, selection: crate::TextSelection, enabled: bool| {
+            let state = TextInputState {
+                value: value.into(),
+                selection,
+                additional_selections: Vec::new(),
+            };
+            let source = build_text_input_presentation_source(
+                &state,
+                None,
+                "",
+                false,
+                true,
+                TextInputEditorExtras {
+                    editor: if enabled {
+                        options.clone()
+                    } else {
+                        crate::TextEditorRenderOptions::default()
+                    },
+                    ..TextInputEditorExtras::default()
+                },
+                true,
+                None,
+                None,
+                None,
+            );
+            let mut shaper = FunctionalShaper::default();
+            shape_text_input_presentation(
+                node(1),
+                source,
+                &style,
+                crate::TextShapeConstraints::default(),
+                &crate::TextOverlayMetrics::default(),
+                &mut shaper,
+            )
+        };
+
+        // 选项关闭：聚焦也不派生。
+        let presentation = present("same same same", crate::TextSelection::caret(1), false);
+        assert!(presentation.occurrence_marks.is_empty());
+
+        // 光标不在词内（括号之间）：无标记。
+        let presentation = present("fn () {}", crate::TextSelection::caret(5), true);
+        assert!(presentation.occurrence_marks.is_empty());
+
+        // 多行选区：无标记。
+        let value = "one\ntwo";
+        let presentation = present(
+            value,
+            crate::TextSelection {
+                anchor: 0,
+                focus: value.len(),
+            },
+            true,
+        );
+        assert!(presentation.occurrence_marks.is_empty());
+
+        // 非空单行选区：选中文本按子串匹配（"cou" 命中 "counts" 内部），
+        // 选区本身不重复画。
+        let presentation = present(
+            "cou cou counts",
+            crate::TextSelection {
+                anchor: 0,
+                focus: 3,
+            },
+            true,
+        );
+        assert_eq!(presentation.occurrence_marks.len(), 2);
+
+        // 上限截断：250 处出现时最多画 199 条（200 上限内再扣掉光标处）。
+        let value = vec!["w"; 250].join(" ");
+        let presentation = present(&value, crate::TextSelection::caret(0), true);
+        assert_eq!(presentation.occurrence_marks.len(), 199);
+    }
+
+    #[test]
+    fn occurrence_derivation_probes_again_only_when_inputs_change() {
+        // 派生量级锁定：同一布局输入下第二次派生不再产生任何 shape（每处
+        // 出现的高亮探针全部命中缓存）；选区移到另一行的另一个词时，派生
+        // 才重新探测。计数走 CountingShaper（= world 文本布局缓存未命中）。
+        let style = ComputedStyle {
+            font_size: 10.0,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..ComputedStyle::default()
+        };
+        let options = crate::TextEditorRenderOptions {
+            occurrence_highlight: true,
+            ..crate::TextEditorRenderOptions::default()
+        };
+        let value = "alpha beta gamma\nalpha beta gamma";
+        let present =
+            |selection: crate::TextSelection,
+             cache: &mut crate::text_layout_cache::TextLayoutCache| {
+                let state = TextInputState {
+                    value: value.into(),
+                    selection,
+                    additional_selections: Vec::new(),
+                };
+                let source = build_text_input_presentation_source(
+                    &state,
+                    None,
+                    "",
+                    false,
+                    true,
+                    TextInputEditorExtras {
+                        editor: options.clone(),
+                        ..TextInputEditorExtras::default()
+                    },
+                    true,
+                    None,
+                    None,
+                    None,
+                );
+                let mut glyphs = crate::GlyphCache::default();
+                let mut inner = FunctionalShaper::default();
+                let mut shaper = CountingShaper::new(&mut inner, cache, &mut glyphs);
+                shape_text_input_presentation(
+                    node(1),
+                    source,
+                    &style,
+                    crate::TextShapeConstraints::default(),
+                    &crate::TextOverlayMetrics::default(),
+                    &mut shaper,
+                )
+            };
+
+        let mut cache = crate::text_layout_cache::TextLayoutCache::default();
+        let first = present(crate::TextSelection::caret(1), &mut cache);
+        assert_eq!(first.occurrence_marks.len(), 1);
+        let (_, first_misses, _) = cache.take_counters();
+        assert!(first_misses > 0, "first derivation must shape");
+
+        let second = present(crate::TextSelection::caret(1), &mut cache);
+        let (_, rerun_misses, _) = cache.take_counters();
+        assert_eq!(rerun_misses, 0, "same layout inputs must not shape again");
+        assert_eq!(second.occurrence_marks, first.occurrence_marks);
+
+        let moved = present(
+            crate::TextSelection::caret(value.len().saturating_sub(2)),
+            &mut cache,
+        );
+        let (_, moved_misses, _) = cache.take_counters();
+        assert!(moved_misses > 0, "changed selection must re-probe");
+        assert_ne!(moved.occurrence_marks, first.occurrence_marks);
+    }
+
+    #[test]
+    fn relative_line_numbers_show_absolute_cursor_line_and_display_distances() {
+        let options = crate::TextEditorRenderOptions {
+            relative_line_numbers: true,
+            ..crate::TextEditorRenderOptions::default()
+        };
+        // 光标在显示行 1（偏移 2）：光标行显示绝对行号 2，两侧距离 1。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "a\nb\nc",
+            crate::TextSelection::caret(2),
+            Arc::from([]),
+            options.clone(),
+            true,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.line_numbers, vec![1, 2, 1]);
+
+        // 默认（相对关闭）：无折叠时行号表为空（几何层按索引 + 1 回退）。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "a\nb\nc",
+            crate::TextSelection::caret(2),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            true,
+        );
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.line_numbers.is_empty());
+
+        // 折叠态：距离按显示行计，光标行保留折叠校正后的绝对行号。
+        // 折叠后显示 2 行（"fn a() { …3" / "fn b() {}"），光标在显示行 1
+        // （原始第 5 行，值偏移 30）：显示 [1, 5]。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            FOLD_VALUE,
+            crate::TextSelection::caret(30),
+            Arc::from([FOLD_BLOCK]),
+            options,
+            true,
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.line_tops.len(), 2);
+        assert_eq!(presentation.line_numbers, vec![1, 5]);
+    }
+
+    #[test]
+    fn whitespace_marks_locate_spaces_tabs_and_trailing_runs() {
+        // "a b\n\tc  "：行内空格、行首 Tab、行尾两个空格。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "a b\n\tc  ",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                show_whitespace: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        let rects: Vec<(f32, f32, crate::TextWhitespaceKind)> = presentation
+            .whitespace_marks
+            .iter()
+            .map(|mark| (mark.rect.x, mark.rect.y, mark.kind))
+            .collect();
+        assert_eq!(
+            rects,
+            vec![
+                (10.0, 0.0, crate::TextWhitespaceKind::Space),
+                (0.0, 14.0, crate::TextWhitespaceKind::Tab),
+                (20.0, 14.0, crate::TextWhitespaceKind::Space),
+                (30.0, 14.0, crate::TextWhitespaceKind::Space),
+            ]
+        );
+
+        // 折叠隐藏行后：隐藏行的空白不再产生标记（显示视图直接不含该
+        // 行）。折叠视图两行显示值共 5 个空格、无 Tab。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            FOLD_VALUE,
+            crate::TextSelection::caret(0),
+            Arc::from([FOLD_BLOCK]),
+            crate::TextEditorRenderOptions {
+                show_whitespace: true,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.whitespace_marks.len(), 5);
+        assert!(
+            presentation
+                .whitespace_marks
+                .iter()
+                .all(|mark| mark.kind == crate::TextWhitespaceKind::Space)
+        );
+
+        // 选项关闭：零标记。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "a b\n\tc  ",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.whitespace_marks.is_empty());
+    }
+
+    #[test]
+    fn wrap_guides_map_columns_to_x_and_skip_missing_columns() {
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "ab\ncd",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                wrap_guides: Arc::from([1, 2, 6, 0]),
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 列宽 = '0' 字形宽（FunctionalShaper 下 = font_size = 10）；整段
+        // shape 宽度 50（5 字符 × 10）：列 1、2 保留，列 6（x=60）超宽丢
+        // 弃，列 0 无意义丢弃。
+        assert_eq!(presentation.wrap_guides, vec![10.0, 20.0]);
+        // 几何层：贯穿内容区全高的 1px 竖线（静态，不随焦点变化）。
+        let geometry = world.component_geometry(node(1)).unwrap();
+        let crate::ComponentGeometry::TextInput {
+            wrap_guides,
+            whitespace_marks,
+            ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(
+            wrap_guides,
+            vec![
+                (
+                    LayoutBox {
+                        x: 10.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 80.0,
+                    },
+                    world.style_model.palette.faint.as_rgba_array(),
+                ),
+                (
+                    LayoutBox {
+                        x: 20.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 80.0,
+                    },
+                    world.style_model.palette.faint.as_rgba_array(),
+                ),
+            ]
+        );
+        // 选项全关的编辑器不产生空白/wrap guide 几何。
+        assert!(whitespace_marks.is_empty());
+    }
+
+    #[test]
     fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
         let value = "甲乙\nthird\n末";
         let state = TextInputState {
@@ -12684,6 +13431,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -12736,6 +13484,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -12769,6 +13518,7 @@ mod tests {
                 false,
                 true,
                 TextInputEditorExtras::default(),
+                false,
                 None,
                 None,
                 None,
@@ -12962,6 +13712,7 @@ mod tests {
             false,
             true,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -12995,6 +13746,7 @@ mod tests {
             false,
             false,
             TextInputEditorExtras::default(),
+            false,
             None,
             None,
             None,
@@ -16129,6 +16881,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         queue.set_style(

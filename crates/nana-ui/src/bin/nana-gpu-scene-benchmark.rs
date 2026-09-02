@@ -482,7 +482,7 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
     match kind {
         ScenePrimitiveKind::Quad { .. } | ScenePrimitiveKind::QuadBatch { .. } => "quad",
         ScenePrimitiveKind::Text { .. } => "text",
-        ScenePrimitiveKind::Icon { .. } => "icon",
+        ScenePrimitiveKind::Icon { .. } | ScenePrimitiveKind::IconBatch { .. } => "icon",
         ScenePrimitiveKind::Spinner { .. } => "spinner",
         ScenePrimitiveKind::Stroke { .. } => "stroke",
         ScenePrimitiveKind::Custom { node: custom, .. }

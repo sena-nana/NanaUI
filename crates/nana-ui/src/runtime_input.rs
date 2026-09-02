@@ -3719,6 +3719,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -3833,6 +3834,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         context.commit_mutations(layout).unwrap();
@@ -4547,6 +4549,63 @@ mod tests {
     }
 
     #[test]
+    fn editor_render_options_default_off_and_opt_in_drives_derived_presentation() {
+        // 四个渲染选项默认关闭：未开启时不产生任何派生标记。
+        let defaults = TextArea::new("alpha beta\nalpha");
+        assert!(!defaults.occurrence_highlight);
+        assert!(!defaults.relative_line_numbers);
+        assert!(!defaults.show_whitespace);
+        assert!(defaults.wrap_guides.is_empty());
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("alpha beta\nalpha")
+                    .line_numbers(true)
+                    .relative_line_numbers(true)
+                    .occurrence_highlight(true)
+                    .show_whitespace(true)
+                    .wrap_guides(std::sync::Arc::from([4])),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 40.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
+
+        let presentation = context
+            .world()
+            .text_input_presentation(node)
+            .expect("presentation");
+        // 出现高亮：光标（值末尾）停在第二行 "alpha" 上，该出现不画；
+        // 全词匹配排除前缀，只剩第一行的 "alpha" 一条。
+        assert_eq!(presentation.occurrence_marks.len(), 1);
+        // 空白显示：行内一个空格（"alpha beta"），换行不标记。
+        assert_eq!(presentation.whitespace_marks.len(), 1);
+        // wrap guide：列 4 一个 x 位置。
+        assert_eq!(presentation.wrap_guides.len(), 1);
+        // 相对行号：光标（值末尾）在第 2 行，显示绝对 2；第 1 行距离 1。
+        assert_eq!(presentation.line_numbers, vec![1, 2]);
+    }
+
+    #[test]
     fn pointer_press_on_fold_gutter_toggles_the_fold() {
         let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
         let fold = nana_ui_runtime::TextCodeFold::new(7, 28);
@@ -5258,6 +5317,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                editor_options: Default::default(),
             }),
         );
         context.commit_mutations(layout).unwrap();
