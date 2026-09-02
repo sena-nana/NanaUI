@@ -105,12 +105,6 @@ impl FileTab {
         self
     }
 
-    /// Stable node of the assembled close button, for hosts that bind extra
-    /// handlers on it.
-    pub fn close_node(&self) -> Option<StableNodeId> {
-        self.close
-    }
-
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
