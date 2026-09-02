@@ -548,6 +548,42 @@ impl SceneWgpuPainter {
                         commands.push(DrawCommand::Text { prepared, scissor });
                     }
                 }
+                ScenePrimitiveKind::QuadColorBatch {
+                    bounds: batch,
+                    colors,
+                    border_color,
+                    border_width,
+                    corner_radius,
+                } => {
+                    // Per-item solid colors (editor color swatches); no
+                    // shadow and no surface paint by construction, so the
+                    // batch collapses to one quads.push per item.
+                    let no_shadow: Option<nana_ui_runtime::ComponentElevation> = None;
+                    let default_surface = nana_ui_scene::QuadSurfacePaint::default();
+                    for (item, color) in batch.iter().zip(colors.iter()) {
+                        let item_bounds = local_rect(*item);
+                        if let Some(index) = self.quads.push(
+                            &self.device,
+                            &self.queue,
+                            item_bounds,
+                            clip,
+                            frag_clip,
+                            affine,
+                            persp,
+                            Some(*color),
+                            *border_color,
+                            *border_width,
+                            *corner_radius,
+                            no_shadow,
+                            primitive.opacity,
+                            &default_surface,
+                        ) {
+                            for quad_index in index..self.quads.pending_len() {
+                                push_quad(&mut commands, quad_index, scissor);
+                            }
+                        }
+                    }
+                }
                 ScenePrimitiveKind::Icon { icon, color } => {
                     if let Some(prepared) = self.icons.prepare(
                         &self.device,
