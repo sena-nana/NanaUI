@@ -91,6 +91,17 @@ pub fn sidebar_section_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> Ic
     )
 }
 
+/// Inline small tool for data rows; drops into the row tools host and lands on
+/// the shared tool column behind the row's standard trailing padding.
+pub fn sidebar_row_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
+    sidebar_tool_button(
+        icon,
+        label,
+        SECTION_TOOL_EDGE,
+        TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0,
+    )
+}
+
 fn sidebar_tool_button(
     icon: Icon,
     label: impl Into<Arc<str>>,

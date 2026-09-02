@@ -787,6 +787,38 @@ static MOON: IconData = IconData {
     svg: MOON_SVG,
 };
 
+static MORE_SHAPES: &[IconShape] = &[
+    IconShape::Circle {
+        center: [12.0, 12.0],
+        radius: 1.0,
+    },
+    IconShape::Circle {
+        center: [19.0, 12.0],
+        radius: 1.0,
+    },
+    IconShape::Circle {
+        center: [5.0, 12.0],
+        radius: 1.0,
+    },
+];
+static MORE_SVG: &str = r#"<!-- @license lucide-static v0.544.0 - ISC --><svg
+  class="lucide lucide-ellipsis"
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg>"#;
+static MORE: IconData = IconData {
+    name: "ellipsis",
+    shapes: MORE_SHAPES,
+    svg: MORE_SVG,
+};
+
 static NODES_PATH_0: &[IconPathCommand] = &[
     IconPathCommand::MoveTo([8.59, 13.51]),
     IconPathCommand::LineTo([15.42, 17.49]),
@@ -844,18 +876,13 @@ static PAPERCLIP_PATH_0: &[IconPathCommand] = &[
     },
     IconPathCommand::LineTo([18.829, 8.829]),
     IconPathCommand::CubicTo {
-        control_a: [19.8395, 7.8185],
-        control_b: [20.2342, 6.3456],
-        to: [19.8643, 4.9652],
+        control_a: [20.3911, 7.2669],
+        control_b: [20.3911, 4.7341],
+        to: [18.829, 3.172],
     },
     IconPathCommand::CubicTo {
-        control_a: [19.4944, 3.5848],
-        control_b: [18.4162, 2.5066],
-        to: [17.0358, 2.1367],
-    },
-    IconPathCommand::CubicTo {
-        control_a: [15.6554, 1.7668],
-        control_b: [14.1825, 2.1615],
+        control_a: [17.2669, 1.6099],
+        control_b: [14.7341, 1.6099],
         to: [13.172, 3.172],
     },
     IconPathCommand::LineTo([4.793, 11.723]),
@@ -2495,6 +2522,7 @@ impl Icon {
     pub const MessageSquarePlus: Self = Self(&MESSAGE_SQUARE_PLUS);
     pub const Minimize: Self = Self(&MINIMIZE);
     pub const Moon: Self = Self(&MOON);
+    pub const More: Self = Self(&MORE);
     pub const Nodes: Self = Self(&NODES);
     pub const Paperclip: Self = Self(&PAPERCLIP);
     pub const Restore: Self = Self(&RESTORE);
