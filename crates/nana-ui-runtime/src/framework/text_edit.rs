@@ -7,6 +7,7 @@
 
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
 use super::{TextArea, TextInput, TextInputState, TextSelection};
+use crate::components::TextSnippetSession;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
     apply_cursor_edits, apply_replacement, auto_indent_newline, auto_pair_edit, caret_focus,
@@ -20,7 +21,7 @@ use crate::text_editing::{
 };
 use crate::{
     CodeEditing, MutationQueue, ScrollOffset, TextCodeFold, TextContent, TextShapeConstraints,
-    TextSnippet, TextSnippetSession,
+    TextSnippet,
 };
 use std::sync::Arc;
 
@@ -1960,7 +1961,7 @@ impl AppContext {
 /// 键盘导航的滚动窗口跟随：选中项离开可见窗口时把窗口滑到包含它的
 /// 最近位置。
 fn completion_scroll_follow(selected: usize, scroll: usize, len: usize) -> usize {
-    let visible = crate::TEXT_COMPLETION_VISIBLE_ROWS.min(len);
+    let visible = crate::components::TEXT_COMPLETION_VISIBLE_ROWS.min(len);
     if selected < scroll {
         selected
     } else if selected >= scroll + visible {
