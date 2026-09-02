@@ -964,6 +964,8 @@ pub struct ListItem {
     pub gap: f32,
     pub size: nana_ui_core::ControlSize,
     pub auto_height: bool,
+    /// 行 pill 相对文本线水平外扩，语义见 [`ListItem::pill_bleed`]。
+    pub pill_bleed: bool,
     pub style: NodeStyle,
 }
 
@@ -999,6 +1001,7 @@ impl ListItem {
             gap: 8.0,
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
+            pill_bleed: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
                 background: None,
@@ -1085,6 +1088,14 @@ impl ListItem {
         self
     }
 
+    /// 行 pill 相对文本线水平外扩一个内边距：margin 取自身水平 padding
+    /// 的负值，文本内缩不变。用于宿主面板把行文本对齐到内容线、同时
+    /// pill 保留文本呼吸区的场景。
+    pub fn pill_bleed(mut self, pill_bleed: bool) -> Self {
+        self.pill_bleed = pill_bleed;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
@@ -1105,6 +1116,15 @@ impl ListItem {
         } else {
             nana_ui_core::JustifySpec::Start
         };
+        if self.pill_bleed {
+            // 对称外扩与书写方向无关；非 `Px` padding 视为 0，不外扩。
+            let bleed = |edge: &Option<nana_ui_core::LengthSpec>| match edge {
+                Some(nana_ui_core::LengthSpec::Px(px)) => nana_ui_core::LengthSpec::Px(-px),
+                _ => nana_ui_core::LengthSpec::Px(0.0),
+            };
+            layout.margin_left = Some(bleed(&layout.padding_left));
+            layout.margin_right = Some(bleed(&layout.padding_right));
+        }
         style
     }
 }
@@ -3524,5 +3544,37 @@ mod tests {
             nana_ui_core::JustifySpec::End
         );
         assert_eq!(justify(ListItem::new("行")), nana_ui_core::JustifySpec::Start);
+    }
+
+    #[test]
+    fn pill_bleed_extends_the_pill_and_keeps_text_inset() {
+        // 样式合同：margin 取水平 padding 负值，文本内缩不变；默认不外扩。
+        let px = nana_ui_core::LengthSpec::Px;
+        let inset = nana_ui_core::UI_METRICS.list_item_padding_x;
+        let bled = ListItem::new("行").pill_bleed(true).effective_style().layout;
+        assert_eq!(bled.padding_left, Some(px(inset)));
+        assert_eq!(bled.margin_left, Some(px(-inset)));
+        assert_eq!(bled.margin_right, bled.margin_left);
+        assert_eq!(ListItem::new("行").effective_style().layout.margin_left, None);
+
+        // 布局行为：行盒越出列表容器一个内边距，pill 占满可用宽度。
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut list_style = Stack::column(2.0).node_style();
+        std::sync::Arc::make_mut(&mut list_style.layout).width = Some(px(240.0));
+        let list = context
+            .create_component(document, List::new().style(list_style))
+            .unwrap();
+        let row = context
+            .create_component(document, ListItem::new("行").pill_bleed(true))
+            .unwrap();
+        context.append_child(list, row).unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
+            .unwrap();
+        let list_box = context.world().layout_box(list.stable_id()).unwrap();
+        let row_box = context.world().layout_box(row.stable_id()).unwrap();
+        assert!((row_box.x - (list_box.x - inset)).abs() < 0.5);
+        assert!((row_box.width - (list_box.width + inset * 2.0)).abs() < 0.5);
     }
 }
