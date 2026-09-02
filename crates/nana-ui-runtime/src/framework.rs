@@ -5319,6 +5319,12 @@ impl AppContext {
                 emit(self, id, press)?;
                 return Ok(Some(id));
             }
+            // Reorder-list row bodies are hit-tested at the list shell (row
+            // surfaces are pointer-transparent), so a secondary press there
+            // never reaches a row handler; resolve the row on the list itself.
+            if self.emit_reorder_row_secondary(id, x, y)? {
+                return Ok(Some(id));
+            }
             current = self.world.node(id).and_then(|node| node.parent);
         }
         Ok(None)
