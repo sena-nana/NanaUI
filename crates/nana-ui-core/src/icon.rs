@@ -80,6 +80,13 @@ impl Icon {
         self.0
     }
 
+    /// Extension point for host-owned product icons: wrap host static geometry
+    /// without extending the framework catalog. Prefer catalog constants for
+    /// generic chrome shared across surfaces.
+    pub const fn from_data(data: &'static IconData) -> Self {
+        Self(data)
+    }
+
     /// Parse a stable shell icon name (`search`, `settings`, …).
     ///
     /// Catalog icons (`puzzle`, `palette`, `atom`, …) are typed constants and
@@ -154,7 +161,7 @@ impl fmt::Debug for Icon {
 
 #[cfg(test)]
 mod tests {
-    use super::Icon;
+    use super::{Icon, IconData, IconShape};
 
     #[test]
     fn parse_name_accepts_shell_aliases() {
@@ -262,5 +269,24 @@ mod tests {
                 "{icon:?} svg missing currentColor stroke"
             );
         }
+    }
+
+    #[test]
+    fn from_data_wraps_host_geometry() {
+        static HOST_SHAPES: &[IconShape] = &[IconShape::Circle {
+            center: [12.0, 12.0],
+            radius: 6.0,
+        }];
+        static HOST: IconData = IconData {
+            name: "host-dot",
+            shapes: HOST_SHAPES,
+            svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="6" /></svg>"#,
+        };
+        let icon = Icon::from_data(&HOST);
+        assert_eq!(icon.name(), "host-dot");
+        assert_eq!(icon.shapes().len(), 1);
+        assert!(icon.svg().contains("viewBox=\"0 0 24 24\""));
+        assert_eq!(icon, Icon::from_data(&HOST));
+        assert_ne!(icon, Icon::Add);
     }
 }
