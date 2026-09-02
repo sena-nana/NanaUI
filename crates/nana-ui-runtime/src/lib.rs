@@ -71,8 +71,7 @@ pub use animation::{
     AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
 };
 pub use breadcrumb::{
-    BREADCRUMB_SEPARATOR, Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment,
-    BreadcrumbTone,
+    Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };
 pub use builtin_components::NanaBuiltinComponents;
 pub use calendar::{
@@ -121,7 +120,7 @@ pub use feedback::{
     EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
     ValueEmphasis,
 };
-pub use file_tab::{FILE_TAB_MAX_WIDTH, FileTab, FileTabEvent};
+pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,

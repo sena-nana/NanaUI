@@ -22,7 +22,7 @@ use crate::{
 use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole};
 
 /// 面包屑分隔符:父子段之间的弱化箭头。
-pub const BREADCRUMB_SEPARATOR: &str = "›";
+const BREADCRUMB_SEPARATOR: &str = "›";
 
 /// 段的视觉层级:路径前缀弱化,末段承接标题强调。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +152,6 @@ impl ComponentView for BreadcrumbSegment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Breadcrumb {
     pub items: Vec<BreadcrumbItem>,
-    pub gap: f32,
     pub style: NodeStyle,
     pub(crate) segments: Vec<StableNodeId>,
     pub(crate) separators: Vec<StableNodeId>,
@@ -170,22 +169,10 @@ impl Breadcrumb {
         layout.min_width = Some(LengthSpec::Px(0.0));
         Self {
             items: Vec::new(),
-            gap: 6.0,
             style,
             segments: Vec::new(),
             separators: Vec::new(),
         }
-    }
-
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.gap = gap;
-        Arc::make_mut(&mut self.style.layout).gap = Some(LengthSpec::Px(gap.max(0.0)));
-        self
-    }
-
-    pub fn style(mut self, style: NodeStyle) -> Self {
-        self.style = style;
-        self
     }
 
     /// 已装配的段节点(与 items 同序;分隔符不在其中)。
@@ -308,14 +295,12 @@ impl AppContext {
         &mut self,
         entity: Entity<BreadcrumbSegment>,
     ) -> Result<bool, FrameworkError> {
-        let interactive = self.read(entity, |segment| (segment.interactive, segment.index))?;
-        if !interactive.0 {
+        let (interactive, index) =
+            self.read(entity, |segment| (segment.interactive, segment.index))?;
+        if !interactive {
             return Ok(false);
         }
-        let index = interactive.1;
-        self.update_component(entity, |_, cx| {
-            cx.emit(BreadcrumbEvent { index });
-        })?;
+        self.update_component(entity, |_, cx| cx.emit(BreadcrumbEvent { index }))?;
         Ok(true)
     }
 }
