@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::mem::size_of;
@@ -14,21 +14,22 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{
     EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind, TextMatchMark,
-    TextMatchMarker, TextMatchSpan, TextOverlayMetrics, TextWhitespaceKind, TextWhitespaceMark,
+    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
+    TextInputPresentation, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
+    TextWhitespaceKind, TextWhitespaceMark,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
+use crate::text_editing::clamp_boundary;
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComponentTypeId, ComputedStyle, CustomRenderNode, EventListeners,
     EventRoute, ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition,
     InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
     OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
-    TextContent, TextInputPresentation, TextInputState, TextMetrics, TextPresentation,
-    TextPresenter, TextShaper, TextVerticalAlignment, UiMutation, WorkCounters,
+    TextContent, TextInputState, TextMetrics, TextPresentation, TextPresenter, TextShaper,
+    TextVerticalAlignment, UiMutation, WorkCounters,
 };
-
 /// Stable external node identity. Zero is reserved so missing/default IDs
 /// cannot accidentally address a live node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -447,6 +448,9 @@ pub struct UiWorld {
     /// despawn). Consumers take the list once per commit to schedule opt-in
     /// component reprojections; see `ComponentView::wants_child_reproject`.
     structural_change_parents: Vec<StableNodeId>,
+    /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
+    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
+    minimap_line_lengths_cache: RefCell<Option<(String, Vec<u32>)>>,
 }
 
 impl Default for UiWorld {
@@ -498,6 +502,7 @@ impl UiWorld {
             validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
+            minimap_line_lengths_cache: RefCell::new(None),
         }
     }
 
@@ -1408,7 +1413,7 @@ impl UiWorld {
     pub(crate) fn text_snippet_session(
         &self,
         id: StableNodeId,
-    ) -> Option<crate::TextSnippetSession> {
+    ) -> Option<crate::components::TextSnippetSession> {
         self.nodes.text_snippet_session(id).cloned()
     }
 
@@ -2160,7 +2165,7 @@ impl UiWorld {
         } else {
             (None, None)
         };
-        Some(build_text_input_presentation_source(
+        let mut source = build_text_input_presentation_source(
             state,
             ime,
             placeholder,
@@ -2171,7 +2176,27 @@ impl UiWorld {
             fold,
             completions,
             hover,
-        ))
+        );
+        // minimap 行长：编辑器选项归默认（占位符/IME 组合态）或多行关闭
+        // 时零扫描短路；开启时按原始值收集并走值等值缓存。
+        if source.multiline && source.editor.minimap {
+            source.minimap_line_lengths = self.minimap_line_lengths_cached(&state.value);
+        }
+        Some(source)
+    }
+
+    /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
+    /// O(文档) 单趟扫描结果，避免每趟 shape 全文档重扫。
+    fn minimap_line_lengths_cached(&self, value: &str) -> Vec<u32> {
+        let mut cache = self.minimap_line_lengths_cache.borrow_mut();
+        if let Some((cached_value, cached_lengths)) = cache.as_ref()
+            && cached_value == value
+        {
+            return cached_lengths.clone();
+        }
+        let lengths = collect_non_whitespace_line_lengths(value);
+        *cache = Some((value.to_owned(), lengths.clone()));
+        lengths
     }
 
     fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
@@ -4750,15 +4775,17 @@ impl UiWorld {
                             }
                         }
                         for mark in &presentation.fold_marks {
-                            fold_geometry.markers.push(crate::TextFoldMarker {
-                                bounds: LayoutBox {
-                                    x: field_x(mark.rect.x),
-                                    y: content.y + mark.rect.y - scroll_y,
-                                    width: mark.rect.width + 2.0,
-                                    height: mark.rect.height,
-                                },
-                                fold: mark.fold,
-                            });
+                            fold_geometry
+                                .markers
+                                .push(crate::components::TextFoldMarker {
+                                    bounds: LayoutBox {
+                                        x: field_x(mark.rect.x),
+                                        y: content.y + mark.rect.y - scroll_y,
+                                        width: mark.rect.width + 2.0,
+                                        height: mark.rect.height,
+                                    },
+                                    fold: mark.fold,
+                                });
                         }
                     }
                 }
@@ -7356,12 +7383,12 @@ fn remap_collapsed_after_edit(
 /// 值被编辑后的 snippet 跳位重映射：跳位落在被编辑区间内 → 会话失效
 /// （`None`）；否则按长度差平移并钳制到新值的字符边界。
 fn remap_snippet_session(
-    session: &crate::TextSnippetSession,
+    session: &crate::components::TextSnippetSession,
     new_value: &str,
     changed_start: usize,
     changed_end: usize,
     delta: isize,
-) -> Option<crate::TextSnippetSession> {
+) -> Option<crate::components::TextSnippetSession> {
     let mut stops = Vec::with_capacity(session.stops.len());
     for &stop in &session.stops {
         if stop > changed_start && stop < changed_end {
@@ -7378,7 +7405,7 @@ fn remap_snippet_session(
         }
         stops.push(mapped);
     }
-    Some(crate::TextSnippetSession {
+    Some(crate::components::TextSnippetSession {
         stops,
         index: session.index,
     })
@@ -7504,13 +7531,9 @@ fn build_text_input_presentation_source(
         (completions, hover)
     };
 
-    // minimap 行长收集：O(文档) 扫描原始值（折叠隐藏行一并计入）；
-    // 未开启选项零分配短路。
-    let minimap_line_lengths = if multiline && extras.editor.minimap {
-        collect_non_whitespace_line_lengths(&state.value)
-    } else {
-        Vec::new()
-    };
+    // minimap 行长收集不在源构造内进行：占位符与 IME 组合态的编辑器选项
+    // 归默认（不显示 minimap），收集结果只会被丢弃；仅多行且开启选项时
+    // 由 [`UiWorld::text_input_presentation_source`] 在早退判定之后收集。
 
     let mask = |value: &str| {
         if secure {
@@ -7690,7 +7713,7 @@ fn build_text_input_presentation_source(
         fold: fold_view,
         completions,
         hover,
-        minimap_line_lengths,
+        minimap_line_lengths: Vec::new(),
     }
 }
 
@@ -7708,11 +7731,15 @@ fn map_git_marks(
     if marks.is_empty() {
         return Arc::from([]);
     }
-    let newlines = value.matches('\n').count();
+    // 单趟构建行起点表：每标记按表定位行起点、按表计数显示行索引，不再
+    // 逐标记从字节 0 回放（O(文档·标记数) → O(文档 + 标记·log 行)）。
+    let value_line_starts = line_starts(value);
+    let display_line_starts = line_starts(display);
+    // 行数语义与行号栏一致：尾随换行不产生幻影行。
     let line_count = if value.ends_with('\n') {
-        newlines
+        value_line_starts.len() - 1
     } else {
-        newlines + 1
+        value_line_starts.len()
     };
     marks
         .iter()
@@ -7721,10 +7748,7 @@ fn map_git_marks(
             if line_index >= line_count {
                 return None;
             }
-            let mut line_start = 0usize;
-            for _ in 0..line_index {
-                line_start += value[line_start..].find('\n')? + 1;
-            }
+            let line_start = value_line_starts[line_index];
             if view.is_some_and(|view| {
                 view.spans
                     .iter()
@@ -7735,14 +7759,20 @@ fn map_git_marks(
             let display_start = match view {
                 Some(view) => view.display_of(line_start),
                 None => line_start,
-            };
-            Some((
-                display[..display_start.min(display.len())]
-                    .matches('\n')
-                    .count() as u32,
-                mark.kind,
-            ))
+            }
+            .min(display.len());
+            // 显示行索引 = 显示起点前的换行数 = 非零行起点中 ≤ 起点的个数。
+            let display_line =
+                display_line_starts[1..].partition_point(|&start| start <= display_start);
+            Some((display_line as u32, mark.kind))
         })
+        .collect()
+}
+
+/// 文档行起点表：首项 0，其后每项为对应换行符后的第一个字节偏移。
+fn line_starts(value: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(value.match_indices('\n').map(|(index, _)| index + 1))
         .collect()
 }
 
@@ -7765,7 +7795,7 @@ fn shape_text_input_presentation(
     source: TextInputPresentationSource,
     style: &ComputedStyle,
     constraints: crate::TextShapeConstraints,
-    previous_overlays: &crate::TextOverlayMetrics,
+    previous_overlays: &crate::components::TextOverlayMetrics,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
     // Editing geometry must remain available outside a clipped viewport so the
@@ -7811,13 +7841,7 @@ fn shape_text_input_presentation(
     });
 
     // 编辑器扩展：诊断下划线 / 滚动意图几何 / 行号 y 表（仅多行态）。
-    let clamp_boundary = |value: &str, mut index: usize| {
-        index = index.min(value.len());
-        while index > 0 && !value.is_char_boundary(index) {
-            index -= 1;
-        }
-        index
-    };
+    // 边界钳制复用 [`crate::text_editing::clamp_boundary`]。
     let diagnostic_marks = if source.multiline {
         let mut marks = Vec::new();
         for span in source.diagnostics.iter() {
@@ -8169,7 +8193,7 @@ fn shape_text_input_presentation(
                     style,
                     presentation_constraints,
                 );
-                crate::TextFoldMark {
+                crate::components::TextFoldMark {
                     rect: LayoutBox {
                         x,
                         y,
@@ -8415,11 +8439,11 @@ fn anchored_overlay_panel(
 
 /// 补全弹层几何：面板 + 可见行（label 主文本、detail 次要说明、kind 右
 /// 对齐标注）。宽度自适应最长行（label > detail > kind 依次让位，上限
-/// [`crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH`]），高度最多
-/// [`crate::TEXT_COMPLETION_VISIBLE_ROWS`] 行。
+/// [`crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH`]），高度最多
+/// [`crate::components::TEXT_COMPLETION_VISIBLE_ROWS`] 行。
 fn completion_popup_geometry(
     state: &crate::store::TextCompletionViewState,
-    metrics: &crate::TextCompletionPopupMetrics,
+    metrics: &crate::components::TextCompletionPopupMetrics,
     anchor: OverlayAnchor,
     viewport: LayoutBox,
     font_size: f32,
@@ -8434,25 +8458,27 @@ fn completion_popup_geometry(
     }
     let len = items.len();
     let first_row = state.scroll.min(len.saturating_sub(1));
-    let visible_rows = (len - first_row).min(crate::TEXT_COMPLETION_VISIBLE_ROWS);
+    let visible_rows = (len - first_row).min(crate::components::TEXT_COMPLETION_VISIBLE_ROWS);
     let row_height = anchor.line_height.max(1.0);
     let label_w = metrics.label_width;
     let mut content = label_w;
     let show_detail = metrics.detail_width > 0.0
-        && content + GAP + metrics.detail_width <= crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
+        && content + GAP + metrics.detail_width
+            <= crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
     if show_detail {
         content += GAP + metrics.detail_width;
     }
     let show_kind = metrics.kind_width > 0.0
-        && content + GAP + metrics.kind_width <= crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
+        && content + GAP + metrics.kind_width
+            <= crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
     if show_kind {
         content += GAP + metrics.kind_width;
     }
-    let content = content.min(crate::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
+    let content = content.min(crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
     let label_w = label_w.min(content);
     let panel = anchored_overlay_panel(
         anchor,
-        (content + crate::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
+        (content + crate::components::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
         visible_rows as f32 * row_height + V_PAD * 2.0,
         viewport,
         ROW_GAP_ABOVE_BELOW,
@@ -8463,7 +8489,8 @@ fn completion_popup_geometry(
         .map(|(index, item)| {
             let y = panel.y + V_PAD + index as f32 * row_height;
             let label_rect_w = label_w.min(content);
-            let detail_x = panel.x + crate::TEXT_COMPLETION_PANEL_PAD + label_rect_w + GAP;
+            let detail_x =
+                panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD + label_rect_w + GAP;
             let detail_rect = show_detail
                 .then_some(())
                 .filter(|_| !item.detail.is_empty())
@@ -8485,7 +8512,7 @@ fn completion_popup_geometry(
                 .map(|_| crate::ComponentTextRegion {
                     bounds: LayoutBox {
                         x: panel.x + panel.width
-                            - crate::TEXT_COMPLETION_PANEL_PAD
+                            - crate::components::TEXT_COMPLETION_PANEL_PAD
                             - metrics.kind_width,
                         y,
                         width: metrics.kind_width,
@@ -8505,7 +8532,7 @@ fn completion_popup_geometry(
                 },
                 label: crate::ComponentTextRegion {
                     bounds: LayoutBox {
-                        x: panel.x + crate::TEXT_COMPLETION_PANEL_PAD,
+                        x: panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD,
                         y,
                         width: label_rect_w,
                         height: row_height,
@@ -8535,7 +8562,7 @@ fn completion_popup_geometry(
 }
 
 /// hover 浮窗几何：面板 + 标题行（强调）+ 正文逻辑行切片。宽度取
-/// 视口与上限的较小值；正文超出 [`crate::TEXT_HOVER_MAX_BODY_ROWS`] 行
+/// 视口与上限的较小值；正文超出 [`crate::components::TEXT_HOVER_MAX_BODY_ROWS`] 行
 /// 时滚轮滚动（切片由框架命令写回的滚动位置决定）。
 fn hover_popup_geometry(
     state: &crate::store::TextHoverViewState,
@@ -8552,8 +8579,8 @@ fn hover_popup_geometry(
     let line_height = anchor.line_height.max(1.0);
     let body_lines: Vec<&str> = state.doc.body.lines().collect();
     let scroll = state.scroll.min(body_lines.len().saturating_sub(1));
-    let visible =
-        &body_lines[scroll..(scroll + crate::TEXT_HOVER_MAX_BODY_ROWS).min(body_lines.len())];
+    let visible = &body_lines
+        [scroll..(scroll + crate::components::TEXT_HOVER_MAX_BODY_ROWS).min(body_lines.len())];
     let width = MAX_WIDTH.min(viewport.width.max(1.0));
     let title_height = line_height;
     let panel = anchored_overlay_panel(
@@ -8608,10 +8635,10 @@ fn hover_popup_geometry(
 fn completion_popup_metrics(
     id: StableNodeId,
     source: &TextInputPresentationSource,
-    previous: &crate::TextOverlayMetrics,
+    previous: &crate::components::TextOverlayMetrics,
     style: &ComputedStyle,
     shaper: &mut impl TextShaper,
-) -> Option<crate::TextCompletionPopupMetrics> {
+) -> Option<crate::components::TextCompletionPopupMetrics> {
     let items = source.completions.as_ref()?;
     if let Some(previous) = previous
         .completion
@@ -8630,7 +8657,7 @@ fn completion_popup_metrics(
             style,
         )
     };
-    let metrics = crate::TextCompletionPopupMetrics {
+    let metrics = crate::components::TextCompletionPopupMetrics {
         items: Arc::clone(items),
         label_width: items
             .iter()
@@ -13045,7 +13072,7 @@ mod tests {
         assert_eq!(presentation.git_marks.len(), 2);
         assert_eq!(
             presentation.git_marks[0],
-            crate::TextGitGutterMark {
+            crate::components::TextGitGutterMark {
                 y: 0.0,
                 height: 14.0,
                 kind: crate::TextGitMarkKind::Added,
@@ -13053,7 +13080,7 @@ mod tests {
         );
         assert_eq!(
             presentation.git_marks[1],
-            crate::TextGitGutterMark {
+            crate::components::TextGitGutterMark {
                 y: 14.0,
                 height: 14.0,
                 kind: crate::TextGitMarkKind::Deleted,
@@ -13406,7 +13433,7 @@ mod tests {
         let mut queue = MutationQueue::new();
         queue.set_text_input_snippet(
             node(1),
-            Some(crate::TextSnippetSession {
+            Some(crate::components::TextSnippetSession {
                 stops: vec![10, 20],
                 index: 0,
             }),
@@ -13426,7 +13453,7 @@ mod tests {
         world.commit(queue).unwrap();
         assert_eq!(
             world.text_snippet_session(node(1)),
-            Some(crate::TextSnippetSession {
+            Some(crate::components::TextSnippetSession {
                 stops: vec![16, 26],
                 index: 0,
             })
@@ -14170,7 +14197,7 @@ mod tests {
                 source,
                 &style,
                 crate::TextShapeConstraints::default(),
-                &crate::TextOverlayMetrics::default(),
+                &crate::components::TextOverlayMetrics::default(),
                 &mut shaper,
             )
         };
@@ -14259,7 +14286,7 @@ mod tests {
                     source,
                     &style,
                     crate::TextShapeConstraints::default(),
-                    &crate::TextOverlayMetrics::default(),
+                    &crate::components::TextOverlayMetrics::default(),
                     &mut shaper,
                 )
             };

@@ -472,13 +472,13 @@ pub fn vertical_caret_focus(
 }
 
 /// Logical lines paged by [`page_caret_focus_logical`].
-pub const TEXT_EDITOR_PAGE_LOGICAL_LINES: usize = 15;
+pub(crate) const TEXT_EDITOR_PAGE_LOGICAL_LINES: usize = 15;
 
 /// Resolve a PageUp/PageDown intent against the editor's viewport: the caret
 /// moves by `page_height` pixels of visual lines (the content-box height),
 /// keeping the horizontal goal column exactly like [`vertical_caret_focus`].
 /// Clamps at the document edges.
-pub fn page_caret_focus(
+pub(crate) fn page_caret_focus(
     value: &str,
     selection: crate::TextSelection,
     intent: TextCaretIntent,
@@ -611,7 +611,7 @@ pub fn vertical_caret_focus_logical(
 /// Geometry-free PageUp/PageDown fallback for hosts without a shaper:
 /// [`vertical_caret_focus_logical`] applied
 /// [`TEXT_EDITOR_PAGE_LOGICAL_LINES`] times.
-pub fn page_caret_focus_logical(
+pub(crate) fn page_caret_focus_logical(
     value: &str,
     selection: crate::TextSelection,
     intent: TextCaretIntent,

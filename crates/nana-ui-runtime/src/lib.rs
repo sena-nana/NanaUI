@@ -95,17 +95,13 @@ pub use components::{
     MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
     OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
     ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
-    StandardVisual, TEXT_COMPLETION_MAX_CONTENT_WIDTH, TEXT_COMPLETION_PANEL_PAD,
-    TEXT_COMPLETION_VISIBLE_ROWS, TEXT_HOVER_MAX_BODY_ROWS, TextCodeFold, TextCompletion,
-    TextCompletionPopup, TextCompletionPopupMetrics, TextCompletionRow, TextCompletionSnapshot,
-    TextContent, TextDiagnosticMark, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextFoldMark, TextFoldMarker,
-    TextGitGutterGeometry, TextGitGutterMark, TextGitMark, TextGitMarkKind,
-    TextHorizontalAlignment, TextHover, TextHoverPopup, TextInputPresentation, TextInputState,
-    TextMatchMark, TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry,
-    TextOverlayMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextSnippet, TextSnippetSession, TextVerticalAlignment, TextWhitespaceKind,
-    TextWhitespaceMark, TooltipVisual,
+    StandardVisual, TextCodeFold, TextCompletion, TextCompletionPopup, TextCompletionRow,
+    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
+    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
+    TextGitMarkKind, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInputState,
+    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
+    TextShapeConstraints, TextShaper, TextShaping, TextSnippet, TextVerticalAlignment,
+    TextWhitespaceKind, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -221,9 +217,8 @@ pub use sidebar::{
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use text_editing::{
-    OCCURRENCE_HIGHLIGHT_LIMIT, TextCaretIntent, TextLineDirection, TextSearchOptions,
-    find_matches, find_matches_capped, find_next_match, find_previous_match,
-    matching_bracket_pair, occurrence_query_at, replace_all_matches, sort_lines,
+    TextCaretIntent, TextLineDirection, TextSearchOptions, find_matches, find_matches_capped,
+    find_next_match, find_previous_match, matching_bracket_pair, sort_lines,
 };
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
