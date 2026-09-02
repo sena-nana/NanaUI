@@ -4,9 +4,9 @@ use std::sync::Arc;
 use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
-    StandardVisual, TextCodeFold, TextCompletion, TextContent, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover, TextInputState,
-    TextMatchSpan, TextVerticalAlignment, UiWorld,
+    StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover,
+    TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1356,6 +1356,7 @@ impl ComponentView for TextInput {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -1570,6 +1571,7 @@ impl ComponentView for NumberInput {
             steppers: true,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -1656,6 +1658,9 @@ pub struct TextArea {
     /// 查找匹配高亮 span（普通匹配与当前匹配）。宿主在文本变化后负责更新
     /// 或清除；渲染层只钳制越界偏移。
     pub match_spans: Arc<[TextMatchSpan]>,
+    /// 颜色装饰 span（见 [`TextColorSwatchSpan`]）。宿主在文本变化后负责
+    /// 更新或清除；渲染层只钳制越界偏移，纯装饰不参与命中。
+    pub color_swatches: Arc<[TextColorSwatchSpan]>,
     /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
     pub line_numbers: bool,
     /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
@@ -1703,6 +1708,11 @@ pub struct TextArea {
     /// minimap 显示全部逻辑行；文本行宽计算不变——极长行会被条遮挡。
     /// 仅多行编辑器生效。默认 `false`。
     pub minimap: bool,
+    /// sticky scroll：滚动视口顶部落在 [`Self::code_folds`] 喂入的区间
+    /// 内部时，在内容区顶部钉住显示该区间头行（取首视觉行）；嵌套区间
+    /// 钉最内层。区间头自然滚回视口时钉住行消失。折叠语义不改变钉住
+    /// 逻辑；钉住行是纯装饰只读渲染。仅多行编辑器生效。默认 `false`。
+    pub sticky_scroll: bool,
     pub(crate) style_override: bool,
 }
 
@@ -1719,6 +1729,7 @@ impl TextArea {
             highlight: None,
             diagnostics: Arc::from([]),
             match_spans: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             code_editing: None,
             code_folds: Arc::from([]),
@@ -1730,6 +1741,7 @@ impl TextArea {
             show_whitespace: false,
             wrap_guides: Arc::from([]),
             minimap: false,
+            sticky_scroll: false,
             style_override: false,
         }
     }
@@ -1750,6 +1762,12 @@ impl TextArea {
     /// 设置查找匹配高亮 span（见 [`TextMatchSpan`]）。
     pub fn match_spans(mut self, match_spans: Arc<[TextMatchSpan]>) -> Self {
         self.match_spans = match_spans;
+        self
+    }
+
+    /// 设置颜色装饰 span（见 [`TextColorSwatchSpan`]）。
+    pub fn color_swatches(mut self, swatches: Arc<[TextColorSwatchSpan]>) -> Self {
+        self.color_swatches = swatches;
         self
     }
 
@@ -1822,6 +1840,14 @@ impl TextArea {
     /// 全部逻辑行）；极长行会被条遮挡。默认关闭。
     pub fn minimap(mut self, enabled: bool) -> Self {
         self.minimap = enabled;
+        self
+    }
+
+    /// 开启 sticky scroll：滚动视口顶部落在 `code_folds` 喂入的区间内部
+    /// 时，在内容区顶部钉住显示该区间头行（嵌套区间钉最内层）。需要同时
+    /// 喂入 `code_folds`。默认关闭。
+    pub fn sticky_scroll(mut self, enabled: bool) -> Self {
+        self.sticky_scroll = enabled;
         self
     }
 
@@ -1898,6 +1924,7 @@ impl ComponentView for TextArea {
             steppers: false,
             diagnostics: Arc::clone(&self.diagnostics),
             matches: Arc::clone(&self.match_spans),
+            color_swatches: Arc::clone(&self.color_swatches),
             line_numbers: self.line_numbers,
             indent_guides: self
                 .code_editing
@@ -1911,6 +1938,8 @@ impl ComponentView for TextArea {
                 show_whitespace: self.show_whitespace,
                 wrap_guides: Arc::clone(&self.wrap_guides),
                 minimap: self.minimap,
+                sticky_scroll: self.sticky_scroll,
+                bracket_pair_colors: true,
             },
         };
         if world.standard_visual(id) != Some(visual.clone()) {

@@ -13,10 +13,10 @@ use nana_ui_core::{
 
 use crate::animation::ActiveAnimation;
 use crate::components::{
-    EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
+    EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan, TextDiagnosticMark,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
     TextInputPresentation, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
-    TextWhitespaceKind, TextWhitespaceMark,
+    TextSwatchMark, TextWhitespaceKind, TextWhitespaceMark,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
@@ -451,6 +451,10 @@ pub struct UiWorld {
     /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
     minimap_line_lengths_cache: RefCell<Option<(String, Vec<u32>)>>,
+    /// 括号配对着色单条缓存（原始值 → 配对/未配对 span 表）。值未变
+    /// （纯光标/选区同步）时复用上一次 O(n) 单趟栈扫描结果。存于
+    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
+    bracket_color_spans_cache: RefCell<Option<(String, Arc<[(usize, usize, usize)]>)>>,
 }
 
 impl Default for UiWorld {
@@ -503,6 +507,7 @@ impl UiWorld {
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
             minimap_line_lengths_cache: RefCell::new(None),
+            bracket_color_spans_cache: RefCell::new(None),
         }
     }
 
@@ -1385,6 +1390,17 @@ impl UiWorld {
         self.nodes.set_text_viewport_pin(id, pin);
     }
 
+    /// 拖拽移动选中文本的落点指示线（框架侧拖拽状态机写入；文本空间
+    /// 矩形）。`None` 清除指示线。
+    pub(crate) fn set_text_drop_indicator(&mut self, id: StableNodeId, rect: Option<LayoutBox>) {
+        self.nodes.set_text_drop_indicator(id, rect);
+    }
+
+    /// 当前落点指示线（只读，提取层翻译为节点空间图元）。
+    pub(crate) fn text_drop_indicator(&self, id: StableNodeId) -> Option<LayoutBox> {
+        self.nodes.text_drop_indicator(id).copied()
+    }
+
     /// 当前折叠态的区间（值空间，按 `start` 排序）。没有折叠视图的节点
     /// 返回空表。宿主测试与状态面板的查询入口。
     pub fn text_fold_collapsed(&self, id: StableNodeId) -> Vec<crate::TextCodeFold> {
@@ -2126,6 +2142,7 @@ impl UiWorld {
             Some(StandardVisual::TextInput {
                 diagnostics,
                 matches,
+                color_swatches,
                 line_numbers,
                 indent_guides,
                 git_marks,
@@ -2134,6 +2151,7 @@ impl UiWorld {
             }) => TextInputEditorExtras {
                 diagnostics: Arc::clone(diagnostics),
                 matches: Arc::clone(matches),
+                color_swatches: Arc::clone(color_swatches),
                 line_numbers: *line_numbers,
                 indent_guides: indent_guides.clone(),
                 git_marks: Arc::clone(git_marks),
@@ -2182,7 +2200,41 @@ impl UiWorld {
         if source.multiline && source.editor.minimap {
             source.minimap_line_lengths = self.minimap_line_lengths_cached(&state.value);
         }
+        // 括号配对着色：占位符与 IME 组合态没有真实可着色文档（组合期
+        // 偏移漂移），保持空表；其余多行态按显示值收集并走值等值缓存。
+        if source.multiline
+            && source.editor.bracket_pair_colors
+            && !source.placeholder
+            && source.preedit.is_none()
+        {
+            source.bracket_color_spans = self.bracket_color_spans_cached(&source.text.value);
+        }
         Some(source)
+    }
+
+    /// 括号配对着色的单条缓存：值未变（纯光标/选区同步）时复用上一次
+    /// O(n) 单趟栈扫描结果，避免每趟 shape 全文档重扫。
+    fn bracket_color_spans_cached(&self, value: &str) -> Arc<[(usize, usize, usize)]> {
+        let mut cache = self.bracket_color_spans_cache.borrow_mut();
+        if let Some((cached_value, cached_spans)) = cache.as_ref()
+            && cached_value == value
+        {
+            return Arc::clone(cached_spans);
+        }
+        let (pairs, unmatched) = crate::text_editing::bracket_pair_colorization(value);
+        let mut spans = Vec::with_capacity(pairs.len() + unmatched.len());
+        spans.extend(pairs);
+        spans.extend(unmatched.into_iter().map(|offset| {
+            (
+                offset,
+                offset + 1,
+                crate::components::TEXT_BRACKET_UNMATCHED_DEPTH,
+            )
+        }));
+        spans.sort_unstable_by_key(|&(start, _, _)| start);
+        let spans: Arc<[(usize, usize, usize)]> = spans.into();
+        *cache = Some((value.to_owned(), Arc::clone(&spans)));
+        spans
     }
 
     /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
@@ -3753,18 +3805,54 @@ impl UiWorld {
         ) {
             return Vec::new();
         }
-        let Some(presentation) = self.nodes.text_presentation(id) else {
-            return Vec::new();
-        };
-        presentation
-            .spans
-            .iter()
-            .map(|span| ExtractedTextSpan {
-                start: span.start,
-                end: span.end,
-                color: self.style_model.color(span.color).as_rgba_array(),
+        // 括号配对着色：与语法高亮同一字形管线（ExtractedTextSpan →
+        // 场景文本 span）。括号字符的覆盖色优先于语法 span（合并时切分
+        // 重叠的语法 span），语义上括号配对色取代该字符的 punctuation 色。
+        let bracket_spans = self
+            .nodes
+            .text_input_presentation(id)
+            .map(|presentation| {
+                presentation
+                    .bracket_color_spans
+                    .iter()
+                    .filter(|&&(_, end, _)| end <= presentation.display_value.len())
+                    .map(|&(start, end, depth)| (start, end, depth))
+                    .collect::<Vec<_>>()
             })
-            .collect()
+            .unwrap_or_default();
+        let palette = &self.style_model.palette;
+        if bracket_spans.is_empty() {
+            let Some(presentation) = self.nodes.text_presentation(id) else {
+                return Vec::new();
+            };
+            return presentation
+                .spans
+                .iter()
+                .map(|span| ExtractedTextSpan {
+                    start: span.start,
+                    end: span.end,
+                    color: self.style_model.color(span.color).as_rgba_array(),
+                })
+                .collect();
+        }
+        let syntax_spans = self
+            .nodes
+            .text_presentation(id)
+            .map(|presentation| {
+                presentation
+                    .spans
+                    .iter()
+                    .map(|span| ExtractedTextSpan {
+                        start: span.start,
+                        end: span.end,
+                        color: self.style_model.color(span.color).as_rgba_array(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        merge_bracket_glyph_spans(syntax_spans, &bracket_spans, |depth| {
+            bracket_depth_color(palette, depth)
+        })
     }
 
     fn record(&self, id: StableNodeId) -> &NodeRecord {
@@ -4548,6 +4636,26 @@ impl UiWorld {
                         current: mark.current,
                     })
                     .collect();
+                // 颜色装饰 swatch：随滚动平移并按内容区纵向裁剪——只服务
+                // 可见行，视口外的 swatch 不产生图元。颜色按宿主给定值直传
+                // （半透明由绘制层常规 alpha 合成）。
+                let swatch_markers = presentation
+                    .swatch_marks
+                    .iter()
+                    .filter_map(|mark| {
+                        let y = content.y + mark.rect.y - scroll_y;
+                        (y + mark.rect.height >= content.y && y <= content.y + content.height)
+                            .then_some((
+                                LayoutBox {
+                                    x: field_x(mark.rect.x),
+                                    y,
+                                    width: mark.rect.width,
+                                    height: mark.rect.height,
+                                },
+                                mark.color,
+                            ))
+                    })
+                    .collect();
                 // 当前行条：聚焦多行且选区收起时，光标所在视觉行画低对比
                 // 背景条（与选区层互斥，同用 slot 1 绘制层级）。
                 let caret_line = if multiline && focused && presentation.selection.is_none() {
@@ -4789,6 +4897,120 @@ impl UiWorld {
                         }
                     }
                 }
+                // sticky scroll：滚动视口顶部落在宿主喂入的折叠区间内部时，
+                // 在内容区顶部钉住显示该区间头行（首视觉行，软换行只钉第一
+                // 行）。嵌套区间钉最内层（头行顶最大、最靠近视口顶的候选）；
+                // 头行仍自然可见（head_top >= scroll_y）或区间末行已完全滚
+                // 过视口顶（end_top + line_height <= scroll_y）时不钉——头行
+                // 滚回自然位置钉住行瞬时消失。折叠语义不改变派生：折叠态区
+                // 间头照常可钉，头行落在折叠隐藏区间内部的跳过（没有可见头
+                // 行可钉）。派生每帧
+                // 线性扫区间表（区间数小，不加缓存）；钉住行不做内容偏移，
+                // 视口下缘被覆盖的内容照常滚动（非 VSCode 推开式布局）。
+                let sticky_line = if multiline
+                    && matches!(
+                        visual,
+                        StandardVisual::TextInput {
+                            editor_options: crate::TextEditorRenderOptions {
+                                sticky_scroll: true,
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                    && let Some(input) = self.nodes.text_input(id)
+                {
+                    let offered: Arc<[crate::TextCodeFold]> = match visual {
+                        StandardVisual::TextInput { folds, .. } => Arc::clone(folds),
+                        _ => Arc::from([]),
+                    };
+                    let view = self.text_display_view(id);
+                    let display_of = |offset: usize| match &view {
+                        Some(view) => view
+                            .display_of(offset)
+                            .min(presentation.display_value.len()),
+                        None => offset.min(presentation.display_value.len()),
+                    };
+                    let display_line_of = |display_offset: usize| {
+                        presentation.display_value.as_str()[..display_offset]
+                            .matches('\n')
+                            .count()
+                    };
+                    let value = presentation.display_value.as_str();
+                    let mut candidate: Option<(f32, usize)> = None;
+                    for fold in offered.iter() {
+                        let head = fold.start.min(input.value.len());
+                        // 头行落在某个折叠态区间的隐藏范围内（值空间被钳制
+                        // 映射到替代文本）：无可见头行可钉。不能用显示偏移
+                        // 不等判定——头行在其前折叠区间之后时显示偏移同样
+                        // 平移，但头行本身可见。
+                        let head_hidden = view.as_ref().is_some_and(|view| {
+                            view.spans
+                                .iter()
+                                .any(|span| head > span.value_start && head < span.value_end)
+                        });
+                        if head_hidden {
+                            continue;
+                        }
+                        let head_display = display_of(head);
+                        let end_display = display_of(fold.end.min(input.value.len()));
+                        let (Some(&head_top), Some(&end_top)) = (
+                            presentation.line_tops.get(display_line_of(head_display)),
+                            presentation.line_tops.get(display_line_of(end_display)),
+                        ) else {
+                            continue;
+                        };
+                        // 头行未滚出视口顶，或区间末行已完全滚过视口顶（按
+                        // 末行底缘计：末行仍跨视口顶时视口顶行仍在区间内）：
+                        // 不钉。
+                        if head_top >= scroll_y || end_top + line_height <= scroll_y {
+                            continue;
+                        }
+                        if candidate.is_none_or(|(top, _)| head_top > top) {
+                            candidate = Some((head_top, head_display));
+                        }
+                    }
+                    candidate.map(|(_, head_display)| {
+                        let head_line_start = value[..head_display]
+                            .rfind('\n')
+                            .map_or(0, |index| index + 1);
+                        let head_line_end = value[head_line_start..]
+                            .find('\n')
+                            .map_or(value.len(), |index| head_line_start + index);
+                        crate::TextStickyLineGeometry {
+                            panel: LayoutBox {
+                                x: content.x,
+                                y: content.y,
+                                width: content.width,
+                                height: line_height,
+                            },
+                            divider: LayoutBox {
+                                x: content.x,
+                                y: content.y + line_height - 1.0,
+                                width: content.width,
+                                height: 1.0,
+                            },
+                            text: crate::ComponentTextRegion {
+                                bounds: LayoutBox {
+                                    x: content.x,
+                                    y: content.y,
+                                    width: content.width,
+                                    height: line_height,
+                                },
+                                content: Arc::from(&value[head_line_start..head_line_end]),
+                                color: Some(caret_color),
+                                font_size: size.text_size(),
+                                font_weight: style.font_weight,
+                            },
+                            background: style.background.unwrap_or_else(|| {
+                                self.style_model.palette.surface.as_rgba_array()
+                            }),
+                            divider_color: self.style_model.palette.border.as_rgba_array(),
+                        }
+                    })
+                } else {
+                    None
+                };
                 // minimap 竖条：内容区右缘 64px 覆盖条 + 1px 分隔线 + 行条
                 // 与视口指示器。文本行宽计算不变（极长行会被条遮挡——声明
                 // 取舍）；折叠只影响主视图，行条按原始逻辑行全长计算。禁用
@@ -4808,12 +5030,28 @@ impl UiWorld {
                 } else {
                     None
                 };
+                // 拖拽移动选中文本的落点指示线：框架侧拖拽态写入的文本
+                // 空间细竖线（2px），随滚动平移；纯视觉指示，无命中框。
+                let drop_indicator = self.text_drop_indicator(id).map(|rect| {
+                    (
+                        LayoutBox {
+                            x: field_x(rect.x),
+                            y: content.y + rect.y - scroll_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        self.style_model.palette.accent.as_rgba_array(),
+                    )
+                });
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
                     match_markers,
+                    swatch_markers,
+                    swatch_border_color: self.style_model.palette.border.as_rgba_array(),
                     caret_line,
                     bracket_markers,
                     occurrence_markers,
+                    drop_indicator,
                     whitespace_marks,
                     whitespace_color,
                     wrap_guides,
@@ -4901,6 +5139,7 @@ impl UiWorld {
                             })
                     },
                     minimap,
+                    sticky_line,
                     background: style.background,
                     border: style.border_color,
                     border_width: {
@@ -7476,6 +7715,8 @@ struct TextInputPresentationSource {
     /// 代码编辑器扩展：诊断标记 / 查找匹配高亮 / 行号栏（占位符态跳过行号）。
     diagnostics: Arc<[TextDiagnosticSpan]>,
     matches: Arc<[TextMatchSpan]>,
+    /// 颜色装饰 span（宿主喂入；仅多行态派生几何）。
+    color_swatches: Arc<[TextColorSwatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
     /// git gutter 标记：宿主行号已校验并映射为显示行索引（0 基）；行号
@@ -7496,6 +7737,10 @@ struct TextInputPresentationSource {
     /// minimap 行条长度表（原始文档每逻辑行的非空白字符数，含折叠隐藏
     /// 行）。仅开启选项的多行态收集，其余为空向量（零分配短路）。
     minimap_line_lengths: Vec<u32>,
+    /// 括号配对着色 span 表 `(start, end, depth)`（显示空间；未配对括号
+    /// depth 为 [`TEXT_BRACKET_UNMATCHED_DEPTH`]）。仅多行且开启选项的
+    /// 非占位/非组合态收集，随文本版本 memo。
+    bracket_color_spans: Arc<[(usize, usize, usize)]>,
 }
 
 /// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
@@ -7503,6 +7748,7 @@ struct TextInputPresentationSource {
 struct TextInputEditorExtras {
     diagnostics: Arc<[TextDiagnosticSpan]>,
     matches: Arc<[TextMatchSpan]>,
+    color_swatches: Arc<[TextColorSwatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
     git_marks: Arc<[TextGitMark]>,
@@ -7562,6 +7808,8 @@ fn build_text_input_presentation_source(
             multiline,
             diagnostics: extras.diagnostics,
             matches: extras.matches,
+            // 占位文本不是文档内容，颜色装饰 span 不派生几何。
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             // 占位符态没有真实文档内容，git 标记随行号栏一并跳过（避免在
@@ -7573,6 +7821,7 @@ fn build_text_input_presentation_source(
             completions: None,
             hover: None,
             minimap_line_lengths: Vec::new(),
+            bracket_color_spans: Arc::from([]),
         };
     }
 
@@ -7628,6 +7877,8 @@ fn build_text_input_presentation_source(
             multiline,
             diagnostics: extras.diagnostics,
             matches: extras.matches,
+            // 组合文本改变了字节布局，宿主偏移失效；组合期不派生 swatch。
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             // 组合期标记按原值行号继续锚定（与诊断一致，宿主拥有生命周期）。
@@ -7643,6 +7894,7 @@ fn build_text_input_presentation_source(
             completions: None,
             hover: None,
             minimap_line_lengths: Vec::new(),
+            bracket_color_spans: Arc::from([]),
         };
     }
 
@@ -7688,6 +7940,11 @@ fn build_text_input_presentation_source(
         .iter()
         .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
         .collect::<Vec<_>>();
+    let color_swatches = extras
+        .color_swatches
+        .iter()
+        .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
+        .collect::<Vec<_>>();
     // git gutter 标记：宿主行号校验 + 折叠隐藏行剔除后映射为显示行索引。
     let git_marks = map_git_marks(
         &state.value,
@@ -7705,6 +7962,7 @@ fn build_text_input_presentation_source(
         multiline,
         diagnostics: Arc::from(diagnostics),
         matches: Arc::from(matches),
+        color_swatches: Arc::from(color_swatches),
         git_marks,
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
@@ -7714,6 +7972,7 @@ fn build_text_input_presentation_source(
         completions,
         hover,
         minimap_line_lengths: Vec::new(),
+        bracket_color_spans: Arc::from([]),
     }
 }
 
@@ -7774,6 +8033,90 @@ fn line_starts(value: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(value.match_indices('\n').map(|(index, _)| index + 1))
         .collect()
+}
+
+/// 括号配对着色的深度色阶：按嵌套深度循环取 5 个主题语义色
+/// （accent 蓝 / success 绿 / warning 黄 / danger 红 / muted 中性灰），
+/// 与调色板同源保证明暗主题都和谐；未配对括号用 faint 淡化前景（与
+/// 语法高亮对 punctuation 的弱化一致）。
+fn bracket_depth_color(palette: &nana_ui_core::SemanticPalette, depth: usize) -> [f32; 4] {
+    if depth == crate::components::TEXT_BRACKET_UNMATCHED_DEPTH {
+        return palette.faint.as_rgba_array();
+    }
+    match depth % 5 {
+        0 => palette.accent,
+        1 => palette.success,
+        2 => palette.warning,
+        3 => palette.danger,
+        _ => palette.muted,
+    }
+    .as_rgba_array()
+}
+
+/// 把括号配对着色 span 合并进语法高亮 span：括号字符的覆盖色优先，
+/// 与括号重叠的语法 span 在括号边界处切分。两侧输入各自不重叠且有序；
+/// 输出按起点有序、互不重叠（场景文本渲染按游标推进消费 span）。
+fn merge_bracket_glyph_spans(
+    mut spans: Vec<ExtractedTextSpan>,
+    brackets: &[(usize, usize, usize)],
+    bracket_color: impl Fn(usize) -> [f32; 4],
+) -> Vec<ExtractedTextSpan> {
+    if brackets.is_empty() {
+        return spans;
+    }
+    spans.sort_unstable_by_key(|span| (span.start, span.end));
+    let mut merged: Vec<ExtractedTextSpan> = Vec::with_capacity(spans.len() + brackets.len());
+    let mut bracket_index = 0usize;
+    for span in spans.drain(..) {
+        while bracket_index < brackets.len() && brackets[bracket_index].1 <= span.start {
+            let &(start, end, depth) = &brackets[bracket_index];
+            if start < end {
+                merged.push(ExtractedTextSpan {
+                    start,
+                    end,
+                    color: bracket_color(depth),
+                });
+            }
+            bracket_index += 1;
+        }
+        let mut cursor = span.start;
+        while bracket_index < brackets.len() && brackets[bracket_index].0 < span.end {
+            let &(start, end, depth) = &brackets[bracket_index];
+            if start > cursor {
+                merged.push(ExtractedTextSpan {
+                    start: cursor,
+                    end: start,
+                    color: span.color,
+                });
+            }
+            merged.push(ExtractedTextSpan {
+                start: start.max(cursor),
+                end,
+                color: bracket_color(depth),
+            });
+            cursor = end.max(cursor);
+            bracket_index += 1;
+        }
+        if cursor < span.end {
+            merged.push(ExtractedTextSpan {
+                start: cursor,
+                end: span.end,
+                color: span.color,
+            });
+        }
+    }
+    while bracket_index < brackets.len() {
+        let &(start, end, depth) = &brackets[bracket_index];
+        if start < end {
+            merged.push(ExtractedTextSpan {
+                start,
+                end,
+                color: bracket_color(depth),
+            });
+        }
+        bracket_index += 1;
+    }
+    merged
 }
 
 /// minimap 行长收集：每个逻辑行的非空白字符数（O(文档) 单趟扫描）。
@@ -7891,6 +8234,46 @@ fn shape_text_input_presentation(
                 marks.push(TextMatchMark {
                     rect,
                     current: span.current,
+                });
+            }
+        }
+        marks
+    } else {
+        Vec::new()
+    };
+    // 颜色装饰 swatch：每个 span 取末显示行，在行内 span 末端画一个行高
+    // 65% 的覆盖方块（垂直居中）。纯装饰：不改变布局测量，也无命中框；
+    // 覆盖式绘制（半透明合成到字形之上）避免引入任何水平布局位移。
+    let swatch_marks = if source.multiline {
+        let mut marks = Vec::new();
+        for span in source.color_swatches.iter() {
+            let start = clamp_boundary(&source.text.value, span.offset);
+            let end = clamp_boundary(&source.text.value, span.offset + span.length.max(1));
+            if end <= start {
+                continue;
+            }
+            if let Some(rect) = shaper
+                .text_highlights(
+                    id,
+                    &source.text,
+                    (start, end),
+                    style,
+                    presentation_constraints,
+                )
+                .last()
+            {
+                // span 末行可能因软换行只剩很小的尾段：方块尺寸仍按整行高
+                // 缩放，右缘钳在 span 末行条带右缘（不越过行尾）；尾段比
+                // 方块窄时向左扩展，不压到 span 之后的文本。
+                let extent = (line_height * 0.65).clamp(6.0, 18.0);
+                marks.push(TextSwatchMark {
+                    rect: LayoutBox {
+                        x: rect.x + rect.width - extent,
+                        y: rect.y + (rect.height - extent).max(0.0) * 0.5,
+                        width: extent,
+                        height: extent,
+                    },
+                    color: span.color,
                 });
             }
         }
@@ -8097,81 +8480,82 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
-    // 行顶表：行号栏或 git gutter 标记需要时计算（一次/行的 text_position
-    // 探针；两者都没有时零成本短路）。git 标记复用同一张表按显示行索引
-    // 定位，软换行自然取逻辑行行首。
-    let (line_tops, line_numbers) =
-        if source.multiline && (source.line_numbers || !source.git_marks.is_empty()) {
-            let value = source.text.value.as_str();
-            let mut starts: Vec<usize> = vec![0];
-            for (index, byte) in value.bytes().enumerate() {
-                if byte == b'\n' {
-                    starts.push(index + 1);
-                }
+    // 行顶表：行号栏、git gutter 标记或 sticky scroll 需要时计算（一次/
+    // 行的 text_position 探针；三者都没有时零成本短路）。git 标记与
+    // sticky 钉住派生复用同一张表按显示行索引定位，软换行自然取逻辑行行首。
+    let (line_tops, line_numbers) = if source.multiline
+        && (source.line_numbers || !source.git_marks.is_empty() || source.editor.sticky_scroll)
+    {
+        let value = source.text.value.as_str();
+        let mut starts: Vec<usize> = vec![0];
+        for (index, byte) in value.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
             }
-            if value.ends_with('\n') {
-                starts.pop();
-            }
-            let tops: Vec<f32> = starts
-                .iter()
-                .map(|&start| {
-                    shaper
-                        .text_position(id, &source.text, start, style, presentation_constraints)
-                        .1
-                })
-                .collect();
-            // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
-            // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
-            let mut numbers = match &source.fold {
-                Some(view) => {
-                    let span_lines: Vec<(usize, u32)> = view
-                        .spans
-                        .iter()
-                        .map(|span| {
-                            (
-                                view.value[..span.display_start].matches('\n').count(),
-                                span.hidden_lines,
-                            )
-                        })
-                        .collect();
-                    starts
-                        .iter()
-                        .enumerate()
-                        .map(|(index, _)| {
-                            let mut number = index as u32;
-                            for &(span_line, hidden) in &span_lines {
-                                if span_line < index {
-                                    number += hidden;
-                                }
-                            }
-                            number + 1
-                        })
-                        .collect()
-                }
-                None => Vec::new(),
-            };
-            // 相对行号（Zed 惯例，见 zed-industries/zed#62311：光标行显示绝
-            // 对行号，其余行显示与光标所在行的距离；"光标行显示 1" 是被报告
-            // 的 bug 而非预期）。多光标按主光标；距离按显示行计（所见即所得，
-            // 折叠摘要行也参与计数）。
-            if source.editor.relative_line_numbers {
-                let caret_line = value[..clamp_boundary(value, source.caret)]
-                    .matches('\n')
-                    .count();
-                numbers = (0..tops.len())
-                    .map(|index| {
-                        if index == caret_line {
-                            numbers.get(index).copied().unwrap_or(index as u32 + 1)
-                        } else {
-                            (index.abs_diff(caret_line)).min(u32::MAX as usize) as u32
-                        }
+        }
+        if value.ends_with('\n') {
+            starts.pop();
+        }
+        let tops: Vec<f32> = starts
+            .iter()
+            .map(|&start| {
+                shaper
+                    .text_position(id, &source.text, start, style, presentation_constraints)
+                    .1
+            })
+            .collect();
+        // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
+        // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
+        let mut numbers = match &source.fold {
+            Some(view) => {
+                let span_lines: Vec<(usize, u32)> = view
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        (
+                            view.value[..span.display_start].matches('\n').count(),
+                            span.hidden_lines,
+                        )
                     })
                     .collect();
+                starts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        let mut number = index as u32;
+                        for &(span_line, hidden) in &span_lines {
+                            if span_line < index {
+                                number += hidden;
+                            }
+                        }
+                        number + 1
+                    })
+                    .collect()
             }
-            (tops, numbers)
-        } else {
-            (Vec::new(), Vec::new())
+            None => Vec::new(),
         };
+        // 相对行号（Zed 惯例，见 zed-industries/zed#62311：光标行显示绝
+        // 对行号，其余行显示与光标所在行的距离；"光标行显示 1" 是被报告
+        // 的 bug 而非预期）。多光标按主光标；距离按显示行计（所见即所得，
+        // 折叠摘要行也参与计数）。
+        if source.editor.relative_line_numbers {
+            let caret_line = value[..clamp_boundary(value, source.caret)]
+                .matches('\n')
+                .count();
+            numbers = (0..tops.len())
+                .map(|index| {
+                    if index == caret_line {
+                        numbers.get(index).copied().unwrap_or(index as u32 + 1)
+                    } else {
+                        (index.abs_diff(caret_line)).min(u32::MAX as usize) as u32
+                    }
+                })
+                .collect();
+        }
+        (tops, numbers)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     // 折叠摘要标记：折叠起始行行尾 ` …N` 的文本框（文本空间），供几何层
     // 生成点击命中区域。
     let fold_marks = match &source.fold {
@@ -8293,7 +8677,9 @@ fn shape_text_input_presentation(
         },
         diagnostic_marks,
         match_marks,
+        swatch_marks,
         bracket_marks,
+        bracket_color_spans: source.bracket_color_spans,
         occurrence_marks,
         whitespace_marks,
         wrap_guides,
@@ -12497,6 +12883,7 @@ mod tests {
                     ),
                 ]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: true,
                 indent_guides: None,
                 folds: Arc::from([]),
@@ -12647,6 +13034,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers,
                 indent_guides: None,
                 folds,
@@ -12725,6 +13113,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers,
                 indent_guides: None,
                 folds,
@@ -12781,6 +13170,216 @@ mod tests {
         world.resolve_styles(&[node(1)]).unwrap();
     }
 
+    /// sticky scroll 测试的编辑器 world：多行 TextInput + sticky 选项、
+    /// 指定值/折叠区间/滚动偏移，已布局（font 10、行高 14、200x80）。
+    /// 未 shape。
+    fn sticky_editor_world(
+        world: &mut UiWorld,
+        value: &str,
+        folds: Arc<[crate::TextCodeFold]>,
+        scroll_y: f32,
+    ) {
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                color_swatches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+                folds,
+                git_marks: Arc::from([]),
+                editor_options: crate::TextEditorRenderOptions {
+                    sticky_scroll: true,
+                    ..Default::default()
+                },
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_scroll_offset(
+            node(1),
+            ScrollOffset {
+                x: 0.0,
+                y: scroll_y,
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+    }
+
+    const STICKY_VALUE: &str = "fn outer() {\n    x();\n    fn inner() {\n        y();\n    }\n    z();\n}\n// tail\n// tail\n// tail\n";
+
+    /// 嵌套区间：外层从首行到 "// tail" 之前，内层完全落在外层体内。
+    fn sticky_folds() -> Arc<[crate::TextCodeFold]> {
+        Arc::from([
+            crate::TextCodeFold::new(0, STICKY_VALUE.find("\n// tail").unwrap()),
+            crate::TextCodeFold::new(
+                STICKY_VALUE.find("    fn inner").unwrap(),
+                STICKY_VALUE.find("    z();").unwrap(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn sticky_scroll_pins_innermost_region_head_at_content_top() {
+        // 视口顶停在内层区间头行（显示行 2，top 28）之下、内层体结束行
+        // 之上：钉最内层区间头（嵌套时最深者胜，外层头行被覆盖）。
+        let mut world = UiWorld::default();
+        sticky_editor_world(&mut world, STICKY_VALUE, sticky_folds(), 35.0);
+        world
+            .shape_text(&[node(1)], &mut FunctionalShaper::default())
+            .unwrap();
+        let crate::ComponentGeometry::TextInput { sticky_line, .. } =
+            world.component_geometry(node(1)).expect("geometry")
+        else {
+            panic!("expected text input geometry");
+        };
+        let sticky = sticky_line.expect("sticky line");
+        assert_eq!(sticky.text.content.as_ref(), "    fn inner() {");
+        // 钉住行贴内容区顶：一整行高的不透明背景条 + 底缘 1px 分割线，
+        // 覆盖滚动内容之上。
+        assert_eq!(
+            sticky.panel,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 14.0,
+            }
+        );
+        assert_eq!(
+            sticky.divider,
+            LayoutBox {
+                x: 0.0,
+                y: 13.0,
+                width: 200.0,
+                height: 1.0,
+            }
+        );
+        assert_eq!(sticky.background[3], 1.0);
+    }
+
+    #[test]
+    fn sticky_scroll_disappears_when_head_scrolls_back_or_feed_missing() {
+        // 滚回顶部：区间头行自然可见，不钉。
+        let mut world = UiWorld::default();
+        sticky_editor_world(&mut world, STICKY_VALUE, sticky_folds(), 0.0);
+        world
+            .shape_text(&[node(1)], &mut FunctionalShaper::default())
+            .unwrap();
+        let crate::ComponentGeometry::TextInput { sticky_line, .. } =
+            world.component_geometry(node(1)).expect("geometry")
+        else {
+            panic!("expected text input geometry");
+        };
+        assert!(sticky_line.is_none());
+
+        // 选项开启但未喂折叠区间：永不出现。
+        let mut world = UiWorld::default();
+        sticky_editor_world(&mut world, STICKY_VALUE, Arc::from([]), 35.0);
+        world
+            .shape_text(&[node(1)], &mut FunctionalShaper::default())
+            .unwrap();
+        let crate::ComponentGeometry::TextInput { sticky_line, .. } =
+            world.component_geometry(node(1)).expect("geometry")
+        else {
+            panic!("expected text input geometry");
+        };
+        assert!(sticky_line.is_none());
+    }
+
+    #[test]
+    fn sticky_scroll_pins_visible_head_after_a_collapsed_earlier_region() {
+        // 前置区间处于折叠态时，其后方仍可见的函数头照常被钉住：显示偏移
+        // 因前序折叠整体平移，但头行本身可见（只有落在隐藏区间内部的头行
+        // 才跳过）。
+        let value = format!(
+            "{}{}",
+            "fn a() {\n    p();\n    q();\n}\nfn b() {\n    r();\n    s();\n}\n",
+            "// tail\n".repeat(8)
+        );
+        let fold_a = crate::TextCodeFold::new(0, value.find("fn b() {").unwrap());
+        let fold_b = crate::TextCodeFold::new(
+            value.find("fn b() {").unwrap(),
+            value.find("\n// tail").unwrap(),
+        );
+        let mut world = UiWorld::default();
+        sticky_editor_world(&mut world, &value, Arc::from([fold_a, fold_b]), 45.0);
+        // 折叠前置区间 A：B 的头行显示偏移平移但仍然可见。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([fold_a]));
+        world.commit(queue).unwrap();
+        world
+            .shape_text(&[node(1)], &mut FunctionalShaper::default())
+            .unwrap();
+        let crate::ComponentGeometry::TextInput { sticky_line, .. } =
+            world.component_geometry(node(1)).expect("geometry")
+        else {
+            panic!("expected text input geometry");
+        };
+        let sticky = sticky_line.expect("sticky line");
+        // 折叠摘要 " …4" 与 B 的头行同属一个显示行（折叠吞掉中间换行），
+        // 钉住行镜像该可见行全文——正是屏上 B 头行所在的那一行。
+        assert_eq!(sticky.text.content.as_ref(), "fn a() { …4fn b() {");
+    }
+
     /// git gutter 测试的编辑器 world：多行 TextInput 视觉 + 指定标记/行号/
     /// 折叠/滚动/左内边距，已布局（font 10、行高 14、200x80）。未 shape。
     fn git_gutter_editor_world(
@@ -12810,6 +13409,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers,
                 indent_guides: None,
                 folds,
@@ -13204,6 +13804,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
@@ -13308,6 +13909,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([crate::TextCodeFold::new(107, 128)]),
@@ -13333,6 +13935,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
@@ -13573,6 +14176,7 @@ mod tests {
                     crate::TextMatchSpan::new(0, "甲乙".len()),
                     crate::TextMatchSpan::new("甲乙\n".len(), "third".len()).current(),
                 ]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
@@ -13661,6 +14265,191 @@ mod tests {
         assert_eq!(match_markers[1].color[3], 0.45);
     }
 
+    /// 颜色装饰 swatch 测试的编辑器 world：多行 TextInput 视觉 + 指定
+    /// swatch span 与滚动偏移，已布局（font 10、行高 14、200x60）。
+    fn swatch_editor_world(
+        world: &mut UiWorld,
+        create: bool,
+        swatches: Arc<[crate::TextColorSwatchSpan]>,
+        scroll_y: f32,
+    ) {
+        let mut queue = MutationQueue::new();
+        if create {
+            queue.create(
+                node(1),
+                document(1),
+                NodeKind::Element {
+                    tag: "textarea".into(),
+                },
+            );
+        }
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                color_swatches: swatches,
+                line_numbers: false,
+                indent_guides: None,
+                folds: Arc::from([]),
+                git_marks: Arc::from([]),
+                editor_options: Default::default(),
+            }),
+        );
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+                    font_size: Some(10.0),
+                    line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: "甲乙\nthird\n末\nfour\nfifth\nsix".into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        if scroll_y > 0.0 {
+            queue.set_scroll_offset(
+                node(1),
+                ScrollOffset {
+                    x: 0.0,
+                    y: scroll_y,
+                },
+            );
+        }
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 60.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+    }
+
+    #[test]
+    fn color_swatches_derive_into_inline_marks_and_clear_with_feed() {
+        let mut world = UiWorld::default();
+        swatch_editor_world(
+            &mut world,
+            true,
+            Arc::from([
+                crate::TextColorSwatchSpan::new(0, "甲乙".len(), [0.9, 0.2, 0.2, 0.5]),
+                crate::TextColorSwatchSpan::new(
+                    "甲乙\n".len(),
+                    "third".len(),
+                    [0.2, 0.9, 0.3, 1.0],
+                ),
+            ]),
+            0.0,
+        );
+
+        // 每个 span 在其末显示行内派生一个行高 65% 的覆盖方块，颜色按
+        // 宿主给定值直传。
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.swatch_marks.len(), 2);
+        assert_eq!(presentation.swatch_marks[0].color, [0.9, 0.2, 0.2, 0.5]);
+        assert_eq!(presentation.swatch_marks[1].color, [0.2, 0.9, 0.3, 1.0]);
+        for (mark, (line_top, span_end_x)) in presentation
+            .swatch_marks
+            .iter()
+            .zip([(0.0, 20.0), (14.0, 50.0)])
+        {
+            assert_eq!(mark.rect.width, mark.rect.height);
+            assert!((mark.rect.height - 9.1).abs() < 0.01);
+            assert!(
+                mark.rect.y >= line_top && mark.rect.y + mark.rect.height <= line_top + 14.0,
+                "swatch vertically centered in its line"
+            );
+            // 右缘钳在 span 末端：不越出到 span 之后的文本上。
+            assert!(mark.rect.x + mark.rect.width <= span_end_x + 0.01);
+        }
+
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(swatch_markers.len(), 2);
+        assert_eq!(swatch_markers[0].1, [0.9, 0.2, 0.2, 0.5]);
+
+        // 清空宿主 feed 后 swatch 从文本呈现与绘制几何中消失。
+        swatch_editor_world(&mut world, false, Arc::from([]), 0.0);
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.swatch_marks.is_empty());
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
+            panic!("expected text input geometry");
+        };
+        assert!(swatch_markers.is_empty());
+    }
+
+    #[test]
+    fn color_swatches_clip_to_the_viewport_when_scrolled() {
+        let mut world = UiWorld::default();
+        swatch_editor_world(
+            &mut world,
+            true,
+            Arc::from([
+                crate::TextColorSwatchSpan::new(0, "甲乙".len(), [0.9, 0.2, 0.2, 1.0]),
+                crate::TextColorSwatchSpan::new(
+                    "甲乙\n".len(),
+                    "third".len(),
+                    [0.2, 0.9, 0.3, 1.0],
+                ),
+            ]),
+            28.0,
+        );
+
+        // 滚动两行后第一行的 swatch 完全在视口上方，不再产生图元；
+        // 仍可见的 swatch 照常派生并随滚动平移（触边部分不丢弃，由节点
+        // 裁剪收口）。
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput { swatch_markers, .. } = geometry else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(swatch_markers.len(), 1);
+        assert_eq!(swatch_markers[0].1, [0.2, 0.9, 0.3, 1.0]);
+        assert!(swatch_markers[0].0.y + swatch_markers[0].0.height > 0.0);
+    }
+
     #[test]
     fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
         let value = "(\n\tx)";
@@ -13683,6 +14472,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: Some(Arc::from("\t")),
                 folds: Arc::from([]),
@@ -13820,6 +14610,164 @@ mod tests {
         assert_eq!(bracket_markers[0].1, bracket_markers[1].1);
         // 参考线不随焦点变化。
         assert_eq!(indent_guides.len(), 1);
+    }
+
+    #[test]
+    fn bracket_pair_colors_cycle_by_nesting_depth_and_dim_unmatched() {
+        // FunctionalShaper：字符宽 = font_size（10），行高 14。
+        let value = "({[]})]x(";
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            value,
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 配对括号按嵌套深度循环：`(` 0、`{` 1、`[` 2 / `]` 2、`}` 1、`)` 0；
+        // 未配对的 `]`（偏移 6）与 `(`（偏移 8）标记为淡化深度哨兵。
+        assert_eq!(
+            presentation.bracket_color_spans.as_ref(),
+            &[
+                (0, 1, 0),
+                (1, 2, 1),
+                (2, 3, 2),
+                (3, 4, 2),
+                (4, 5, 1),
+                (5, 6, 0),
+                (6, 7, crate::components::TEXT_BRACKET_UNMATCHED_DEPTH),
+                (8, 9, crate::components::TEXT_BRACKET_UNMATCHED_DEPTH),
+            ][..]
+        );
+        // 提取层的字形色：深度色阶循环，未配对用 faint。
+        let extracted = world.extract_nodes(&[node(1)]);
+        let spans = &extracted[0].text_spans;
+        let depth_color = |depth: usize| match depth {
+            0 => world.style_model.palette.accent.as_rgba_array(),
+            1 => world.style_model.palette.success.as_rgba_array(),
+            2 => world.style_model.palette.warning.as_rgba_array(),
+            crate::components::TEXT_BRACKET_UNMATCHED_DEPTH => {
+                world.style_model.palette.faint.as_rgba_array()
+            }
+            _ => panic!("unexpected depth {depth}"),
+        };
+        for &(start, end, depth) in presentation.bracket_color_spans.iter() {
+            let span = spans
+                .iter()
+                .find(|span| span.start == start && span.end == end)
+                .unwrap_or_else(|| panic!("missing bracket span {start}..{end}"));
+            assert_eq!(span.color, depth_color(depth));
+        }
+    }
+
+    #[test]
+    fn bracket_pair_colors_follow_text_edits_and_option_off_disables() {
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "()",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(
+            presentation.bracket_color_spans.as_ref(),
+            &[(0, 1, 0), (1, 2, 0)][..]
+        );
+
+        // 文本变更后重算（嵌套深度随新文本更新）。
+        let mut edit = MutationQueue::new();
+        edit.set_text_input(
+            node(1),
+            Some(crate::TextInputState {
+                value: "(())".into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(edit).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(
+            presentation.bracket_color_spans.as_ref(),
+            &[(0, 1, 0), (1, 2, 1), (2, 3, 1), (3, 4, 0)][..]
+        );
+
+        // 选项关闭：不着色。
+        let mut quiet = UiWorld::default();
+        options_editor_world(
+            &mut quiet,
+            "(())",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions {
+                bracket_pair_colors: false,
+                ..crate::TextEditorRenderOptions::default()
+            },
+            false,
+        );
+        quiet.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = quiet
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.bracket_color_spans.is_empty());
+        assert!(quiet.extract_nodes(&[node(1)])[0].text_spans.is_empty());
+    }
+
+    #[test]
+    fn bracket_colors_override_syntax_spans_on_bracket_characters() {
+        // 语法 span 覆盖整个文档时，括号字符被切分出来按配对色着色，
+        // 其余字符保持语法色。
+        let mut world = UiWorld::default();
+        options_editor_world(
+            &mut world,
+            "fn ()",
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
+        world.commit(queue).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.set_interaction(
+            node(1),
+            crate::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_presentations(&[node(1)]).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let spans = &world.extract_nodes(&[node(1)])[0].text_spans;
+        // "fn " 保持语法/默认色，"(" 与 ")" 各自独立成 span（配对色），
+        // 语法 span 在括号处被切分。
+        assert!(
+            spans.iter().any(|span| span.start == 3 && span.end == 4)
+                && spans.iter().any(|span| span.start == 4 && span.end == 5)
+        );
+        let bracket = spans.iter().find(|span| span.start == 3).unwrap();
+        assert_eq!(
+            bracket.color,
+            world.style_model.palette.accent.as_rgba_array()
+        );
     }
 
     #[test]
@@ -17984,6 +18932,7 @@ mod tests {
                 steppers: false,
                 diagnostics: Arc::from([]),
                 matches: Arc::from([]),
+                color_swatches: Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),

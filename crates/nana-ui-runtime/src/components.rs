@@ -170,6 +170,28 @@ impl TextMatchSpan {
     }
 }
 
+/// 编辑器颜色装饰 span（VSCode color decorator 的渲染侧）：宿主给出
+/// 字节区间与 RGBA 颜色，编辑器在该 span 末行行内画一个小色块方块。
+/// 纯装饰：不参与布局测量与指针命中；`offset`/`length` 同诊断 span，
+/// 由宿主在文本变化后更新或清除，越界部分在几何计算时被钳制。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextColorSwatchSpan {
+    pub offset: usize,
+    pub length: usize,
+    /// 线性空间 RGBA（0-1）；半透明颜色由绘制层按常规 alpha 合成到背景。
+    pub color: [f32; 4],
+}
+
+impl TextColorSwatchSpan {
+    pub fn new(offset: usize, length: usize, color: [f32; 4]) -> Self {
+        Self {
+            offset,
+            length,
+            color,
+        }
+    }
+}
+
 /// 代码折叠区间。字节偏移覆盖整个块（含首尾花括号），`start < end`。
 ///
 /// 宿主在每次文本变化后重新喂 [`crate::TextArea::code_folds`]；哪些区间
@@ -443,6 +465,9 @@ pub enum StandardVisual {
         /// 查找匹配高亮 span（普通匹配与当前匹配，见 [`TextMatchSpan`]）。
         /// 偏移同样由宿主维护。
         matches: Arc<[TextMatchSpan]>,
+        /// 颜色装饰 span（行内色块，见 [`TextColorSwatchSpan`]）。偏移同样
+        /// 由宿主维护；纯装饰不参与布局与命中，仅多行态派生几何。
+        color_swatches: Arc<[TextColorSwatchSpan]>,
         /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
         line_numbers: bool,
         /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
@@ -906,6 +931,11 @@ pub enum ComponentGeometry {
         /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
         /// 匹配，绘制层级在普通匹配之上）。
         match_markers: Vec<TextMatchMarker>,
+        /// 颜色装饰 swatch（节点空间矩形 + 宿主给定的颜色；单一批次绘制）。
+        swatch_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// swatch 细描边的统一颜色（与空白字符 `whitespace_color` 同为
+        /// 世界按令牌解析的共享色）。
+        swatch_border_color: [f32; 4],
         /// 光标所在行的低对比背景条。仅聚焦且选区收起时存在，占用选区层
         /// （选区与当前行条互斥）。
         caret_line: Option<(LayoutBox, [f32; 4])>,
@@ -914,6 +944,9 @@ pub enum ComponentGeometry {
         /// 出现高亮填充条带（节点空间矩形 + 已解析的颜色；聚焦时存在，
         /// 弱于查找匹配的淡底色）。
         occurrence_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 拖拽移动选中文本的落点指示线（节点空间细竖线 + 已解析的
+        /// 颜色）。仅在选区拖拽态存在；纯视觉指示，无命中框。
+        drop_indicator: Option<(LayoutBox, [f32; 4])>,
         /// 空白字符标记（节点空间字符单元矩形 + 种类；颜色统一由
         /// `whitespace_color` 给出，几何层按视口裁剪）。
         whitespace_marks: Vec<(LayoutBox, TextWhitespaceKind)>,
@@ -938,6 +971,9 @@ pub enum ComponentGeometry {
         hover_popup: Option<TextHoverPopup>,
         /// minimap 竖条（开启选项的多行编辑器存在；slot 70/71/72）。
         minimap: Option<TextMinimapGeometry>,
+        /// sticky scroll 钉住行（开启选项且滚动视口落在宿主喂入的折叠区间
+        /// 内部时存在；slot 80-82）。
+        sticky_line: Option<TextStickyLineGeometry>,
         background: Option<[f32; 4]>,
         border: Option<[f32; 4]>,
         border_width: f32,
@@ -1611,9 +1647,18 @@ pub struct TextDiagnosticMark {
     pub severity: TextDiagnosticSeverity,
 }
 
+/// 颜色装饰 swatch（文本空间）：锚定在 span 末显示行的行内覆盖方块，
+/// 尺寸随行高缩放、垂直居中；颜色按宿主给定的 RGBA 直传。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSwatchMark {
+    pub rect: LayoutBox,
+    pub color: [f32; 4],
+}
+
 /// 多行编辑器的内部派生渲染选项（[`StandardVisual::TextInput`] 携带，
-/// 世界侧派生几何）。全部默认关闭；关闭时派生路径零分配短路。
-#[derive(Debug, Clone, Default, PartialEq)]
+/// 世界侧派生几何）。除括号配对着色默认开启外全部默认关闭；关闭项派生
+/// 路径零分配短路。
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextEditorRenderOptions {
     /// 光标处单词/选中文本的出现高亮（内部派生，聚焦时绘制）。
     pub occurrence_highlight: bool,
@@ -1629,6 +1674,48 @@ pub struct TextEditorRenderOptions {
     /// 行条（宽度 ∝ 行非空白长度），并画当前视口指示器；点击/拖动导航
     /// 视口。仅多行编辑器生效。默认 `false`。
     pub minimap: bool,
+    /// sticky scroll：滚动视口顶部落在宿主喂入的折叠区间内部时，在内容
+    /// 区顶部钉住显示该区间头行（取首视觉行，软换行只钉第一行）；嵌套
+    /// 区间钉最内层。区间头自然滚回视口时钉住行消失。折叠只影响折叠
+    /// 语义，不改变钉住派生。仅多行编辑器生效。默认 `false`。
+    pub sticky_scroll: bool,
+    /// 括号配对着色：配对成功的 `()[]{}` 按嵌套深度循环取主题色阶
+    /// （蓝/绿/黄/红/中性灰），未配对括号用淡化前景。渲染为字形变色，
+    /// 不改布局。仅多行编辑器生效。默认 `true`。
+    pub bracket_pair_colors: bool,
+}
+
+impl Default for TextEditorRenderOptions {
+    fn default() -> Self {
+        Self {
+            occurrence_highlight: false,
+            relative_line_numbers: false,
+            show_whitespace: false,
+            wrap_guides: Arc::from([]),
+            minimap: false,
+            sticky_scroll: false,
+            bracket_pair_colors: true,
+        }
+    }
+}
+
+/// [`TextInputPresentation::bracket_color_spans`] 中未配对括号的深度哨兵：
+/// 渲染层据此使用淡化前景色而非深度色阶。
+pub const TEXT_BRACKET_UNMATCHED_DEPTH: usize = usize::MAX;
+
+/// 代码编辑器 sticky scroll 的钉住行几何（节点空间）。纯装饰只读渲染：
+/// 不产生命中框，不参与文本编辑。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextStickyLineGeometry {
+    /// 钉住行背景条（内容区顶部一整行高，接近不透明的编辑器底色，
+    /// 覆盖滚动内容之上）。
+    pub panel: LayoutBox,
+    /// 背景条底缘的 1px 分割线。
+    pub divider: LayoutBox,
+    /// 钉住行的头行文本（区间头行首个视觉行的全文，超宽由内容区裁剪）。
+    pub text: ComponentTextRegion,
+    pub background: [f32; 4],
+    pub divider_color: [f32; 4],
 }
 
 /// minimap 行条的每行纵向节距（2px 一行，条与条相接）。
@@ -1718,8 +1805,16 @@ pub struct TextInputPresentation {
     pub diagnostic_marks: Vec<TextDiagnosticMark>,
     /// 查找匹配高亮条带（文本空间），仅多行态计算。
     pub match_marks: Vec<TextMatchMark>,
+    /// 颜色装饰 swatch（文本空间，仅多行态计算；每个 span 取末显示行一个
+    /// 覆盖方块）。宿主未喂 span 时为空向量，零分配短路。
+    pub swatch_marks: Vec<TextSwatchMark>,
     /// 光标相邻括号与其配对端的描边框（文本空间，仅聚焦多行态计算）。
     pub bracket_marks: Vec<LayoutBox>,
+    /// 括号配对着色 span：`(start, end, depth)`（字节区间 + 嵌套深度，
+    /// 渲染层按深度循环取色）。未配对括号的 depth 为
+    /// [`TEXT_BRACKET_UNMATCHED_DEPTH`]（淡化前景）。仅多行且开启
+    /// `bracket_pair_colors` 的非占位/非组合态计算，随文本版本 memo。
+    pub bracket_color_spans: Arc<[(usize, usize, usize)]>,
     /// 出现高亮条带（文本空间）。主光标的词/单行选中文本在文档内的其他
     /// 出现；仅开启选项且聚焦的多行态计算（不聚焦零成本跳过）。
     pub occurrence_marks: Vec<LayoutBox>,

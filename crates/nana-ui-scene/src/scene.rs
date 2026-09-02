@@ -174,6 +174,18 @@ pub enum ScenePrimitiveKind {
         shadow: Option<ComponentElevation>,
         surface: QuadSurfacePaint,
     },
+    /// One batch of solid-color quads with per-item colors (editor color
+    /// swatch decorators). Mirrors [`ScenePrimitiveKind::QuadBatch`]: one
+    /// scene slot regardless of count and color variety, so a large set
+    /// never saturates `u8` slot indices. No shadow and no surface paint —
+    /// decorative overlays only.
+    QuadColorBatch {
+        bounds: Vec<SceneRect>,
+        colors: Vec<[f32; 4]>,
+        border_color: Option<[f32; 4]>,
+        border_width: f32,
+        corner_radius: [f32; 4],
+    },
     Text {
         content: String,
         color: Option<[f32; 4]>,
@@ -3320,9 +3332,12 @@ impl UiScene {
                         preedit_color,
                         diagnostic_markers,
                         match_markers,
+                        swatch_markers,
+                        swatch_border_color,
                         caret_line,
                         bracket_markers,
                         occurrence_markers,
+                        drop_indicator,
                         whitespace_marks,
                         whitespace_color,
                         wrap_guides,
@@ -3335,6 +3350,7 @@ impl UiScene {
                         completion_popup,
                         hover_popup,
                         minimap,
+                        sticky_line,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
@@ -3503,6 +3519,25 @@ impl UiScene {
                                     border_color: None,
                                     border_width: 0.0,
                                     corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 颜色装饰 swatch：单个 QuadColorBatch（slot 23，诊断
+                        // 下划线之上、行号之下）承载全部方块，数量与颜色种数
+                        // 都不占用额外 slot（同 IconBatch 的合批先例）；1px
+                        // 细描边，位置与颜色由世界按 span 末行几何解析。
+                        if !swatch_markers.is_empty() {
+                            self.insert_primitive(visual_quad_color_batch(
+                                &visual_context,
+                                23,
+                                swatch_markers
+                                    .iter()
+                                    .map(|(rect, color)| (scene_rect(*rect), *color)),
+                                VisualQuadStyle {
+                                    background: None,
+                                    border_color: Some(*swatch_border_color),
+                                    border_width: 1.0,
+                                    corner_radius: corner_radii(2.0),
                                 },
                             ));
                         }
@@ -3693,6 +3728,47 @@ impl UiScene {
                                 ));
                             }
                         }
+                        // sticky scroll 钉住行：内容区顶部背景条（slot 80）+
+                        // 底缘 1px 分割线（slot 81）+ 头行文本（slot 82），
+                        // 位于 minimap（70-72）之上、补全弹层（90+）之下，
+                        // 覆盖滚动内容之上。纯装饰只读：无命中框、不可交互，
+                        // 复用正文同一 component_text_primitive 字形管线。
+                        if let Some(sticky) = sticky_line {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                80,
+                                scene_rect(sticky.panel),
+                                VisualQuadStyle {
+                                    background: Some(sticky.background),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                81,
+                                scene_rect(sticky.divider),
+                                VisualQuadStyle {
+                                    background: Some(sticky.divider_color),
+                                    border_color: None,
+                                    border_width: 0.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                            self.insert_primitive(component_text_primitive(
+                                id,
+                                82,
+                                &sticky.text,
+                                TextHorizontalAlignment::Start,
+                                false,
+                                &node,
+                                transform,
+                                text_input_clips.clone(),
+                                opacity,
+                                node_order,
+                            ));
+                        }
                         // 括号匹配：两端各一个 1px accent 描边框，绘制在文本
                         // 之上（描边不遮挡字形）。
                         if !bracket_markers.is_empty() {
@@ -3704,6 +3780,21 @@ impl UiScene {
                                     background: None,
                                     border_color: Some(bracket_markers[0].1),
                                     border_width: 1.0,
+                                    corner_radius: corner_radii(0.0),
+                                },
+                            ));
+                        }
+                        // 拖拽移动选中文本的落点指示线：目标位置的细竖线
+                        // （slot 6，与选区/当前行条同层、正文之上）。
+                        if let Some((rect, color)) = drop_indicator {
+                            self.insert_primitive(visual_quad(
+                                &visual_context,
+                                6,
+                                scene_rect(*rect),
+                                VisualQuadStyle {
+                                    background: Some(*color),
+                                    border_color: None,
+                                    border_width: 0.0,
                                     corner_radius: corner_radii(0.0),
                                 },
                             ));
@@ -4134,15 +4225,16 @@ impl UiScene {
                             corner_radius: corner_radii(2.0),
                         },
                     ));
+                    let thumb_rect = SceneRect {
+                        x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
+                        y: track_band.y + (track_band.height - thumb_extent) / 2.0,
+                        width: thumb_extent,
+                        height: thumb_extent,
+                    };
                     self.insert_primitive(visual_quad(
                         &visual_context,
                         5,
-                        SceneRect {
-                            x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
-                            y: track_band.y + (track_band.height - thumb_extent) / 2.0,
-                            width: thumb_extent,
-                            height: thumb_extent,
-                        },
+                        thumb_rect,
                         VisualQuadStyle {
                             background: node.style.background,
                             border_color: node.style.border_color,
@@ -4150,6 +4242,27 @@ impl UiScene {
                             corner_radius: corner_radii(thumb_extent / 2.0),
                         },
                     ));
+                    if node.focused {
+                        // Focus marks the thumb (LiliaUI focus-visible outline),
+                        // never the rail: the rail colour stays interaction-free.
+                        let ring = SceneRect {
+                            x: thumb_rect.x - 3.0,
+                            y: thumb_rect.y - 3.0,
+                            width: thumb_rect.width + 6.0,
+                            height: thumb_rect.height + 6.0,
+                        };
+                        self.insert_primitive(visual_quad(
+                            &visual_context,
+                            6,
+                            ring,
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: node.standard_visual_foreground,
+                                border_width: 2.0,
+                                corner_radius: corner_radii(ring.width.max(ring.height) / 2.0),
+                            },
+                        ));
+                    }
                 }
                 Some(StandardVisual::Scrollbar { .. }) => {
                     if let Some(ComponentGeometry::Scrollbar {
@@ -5214,6 +5327,53 @@ fn visual_quad_batch(
     }
 }
 
+fn visual_quad_color_batch(
+    context: &VisualPrimitiveContext<'_>,
+    slot: u8,
+    items: impl IntoIterator<Item = (SceneRect, [f32; 4])>,
+    style: VisualQuadStyle,
+) -> ScenePrimitive {
+    let (quad_bounds, colors): (Vec<SceneRect>, Vec<[f32; 4]>) = items.into_iter().unzip();
+    debug_assert!(!quad_bounds.is_empty());
+    debug_assert_eq!(quad_bounds.len(), colors.len());
+    let bounds = quad_bounds
+        .iter()
+        .copied()
+        .reduce(|left, right| {
+            let x = left.x.min(right.x);
+            let y = left.y.min(right.y);
+            let right_edge = (left.x + left.width).max(right.x + right.width);
+            let bottom_edge = (left.y + left.height).max(right.y + right.height);
+            SceneRect {
+                x,
+                y,
+                width: right_edge - x,
+                height: bottom_edge - y,
+            }
+        })
+        .unwrap_or_default();
+    ScenePrimitive {
+        id: PrimitiveId {
+            node: context.node,
+            slot,
+        },
+        node: context.node,
+        bounds,
+        transform: context.transform,
+        clips: Arc::clone(context.clips),
+        opacity: context.opacity,
+        z_index: context.z_index,
+        document_order: context.document_order,
+        kind: ScenePrimitiveKind::QuadColorBatch {
+            bounds: quad_bounds,
+            colors,
+            border_color: style.border_color,
+            border_width: style.border_width,
+            corner_radius: style.corner_radius,
+        },
+    }
+}
+
 /// 锚定浮层面板的共享绘制原语（补全弹层 slot 90 与 hover 浮窗 slot 120
 /// 共用）：圆角面板底 + 1px 边框，浮在编辑器内容之上。
 fn overlay_panel_primitive(
@@ -5538,6 +5698,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -5571,13 +5732,17 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             occurrence_markers: Vec::new(),
+            drop_indicator: None,
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
             indent_guides: Vec::new(),
@@ -6456,6 +6621,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: true,
             indent_guides: None,
             folds: Arc::from([]),
@@ -6503,8 +6669,11 @@ mod tests {
             ],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             indent_guides: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             line_labels: vec![
                 nana_ui_runtime::LineLabel {
                     y: 0.0,
@@ -6536,6 +6705,7 @@ mod tests {
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -6584,6 +6754,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -6640,8 +6811,11 @@ mod tests {
                     current: true,
                 },
             ],
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
@@ -6663,6 +6837,7 @@ mod tests {
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -6705,6 +6880,128 @@ mod tests {
     }
 
     #[test]
+    fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_feed() {
+        let mut input = node(1, None, &[]);
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            color_swatches: Arc::from([]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            git_marks: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 0.0,
+                    width: 84.0,
+                    height: 32.0,
+                },
+                content: Arc::from("red green"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            swatch_markers: vec![
+                (
+                    LayoutBox {
+                        x: 20.0,
+                        y: 3.0,
+                        width: 9.0,
+                        height: 9.0,
+                    },
+                    [0.9, 0.2, 0.2, 0.5],
+                ),
+                (
+                    LayoutBox {
+                        x: 60.0,
+                        y: 19.0,
+                        width: 9.0,
+                        height: 9.0,
+                    },
+                    [0.2, 0.9, 0.3, 1.0],
+                ),
+            ],
+            swatch_border_color: [0.5, 0.5, 0.5, 1.0],
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            drop_indicator: None,
+            indent_guides: Vec::new(),
+            line_labels: Vec::new(),
+            line_labels_color: [0.0; 4],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
+            completion_popup: None,
+            hover_popup: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
+            steppers: None,
+            minimap: None,
+            sticky_line: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([input.clone()], []);
+        // 全部 swatch 合并为一个 slot 23 的逐项颜色批次（数量与颜色种数都
+        // 不占额外 slot），半透明颜色按宿主给定值直传，带 1px 细描边。
+        let batch = scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 23,
+            })
+            .expect("swatch batch");
+        let ScenePrimitiveKind::QuadColorBatch {
+            bounds,
+            colors,
+            border_color,
+            border_width,
+            ..
+        } = &batch.kind
+        else {
+            panic!("expected quad color batch");
+        };
+        assert_eq!(bounds.len(), 2);
+        assert_eq!(colors, &vec![[0.9, 0.2, 0.2, 0.5], [0.2, 0.9, 0.3, 1.0]]);
+        assert_eq!(*border_color, Some([0.5, 0.5, 0.5, 1.0]));
+        assert_eq!(*border_width, 1.0);
+
+        // 清空宿主 feed 后 swatch 图元消失。
+        if let Some(ComponentGeometry::TextInput { swatch_markers, .. }) =
+            input.component_geometry.as_mut()
+        {
+            swatch_markers.clear();
+        }
+        scene.apply_delta([input], []);
+        assert!(!scene.primitives().any(|primitive| primitive.id.slot == 23));
+    }
+
+    #[test]
     fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         let mut input = node(1, None, &[]);
         input.standard_visual = Some(StandardVisual::TextInput {
@@ -6715,6 +7012,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -6742,8 +7040,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             occurrence_markers: Vec::new(),
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
@@ -6795,6 +7096,7 @@ mod tests {
                 stride: 1,
                 line_count: 5,
             }),
+            sticky_line: None,
             background: None,
             border: None,
             border_width: 0.0,
@@ -6878,6 +7180,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -6905,8 +7208,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             // 出现高亮：两条淡底色填充（slot 11 批次）。
             occurrence_markers: vec![
                 (
@@ -6998,6 +7304,7 @@ mod tests {
             preedit_color: [0.0; 4],
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -7057,6 +7364,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7084,8 +7392,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             occurrence_markers: Vec::new(),
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
@@ -7107,6 +7418,7 @@ mod tests {
             preedit_color: [0.0; 4],
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -7141,6 +7453,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: true,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7168,8 +7481,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             indent_guides: Vec::new(),
             line_labels: vec![
                 nana_ui_runtime::LineLabel {
@@ -7215,6 +7531,7 @@ mod tests {
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
         input
     }
@@ -7354,6 +7671,85 @@ mod tests {
     }
 
     #[test]
+    fn text_input_sticky_line_paints_panel_divider_and_head_text() {
+        let mut scene = UiScene::new();
+        let mut input = git_gutter_input(1, nana_ui_runtime::TextGitGutterGeometry::default());
+        if let Some(ComponentGeometry::TextInput { sticky_line, .. }) =
+            &mut input.component_geometry
+        {
+            *sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
+                panel: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 14.0,
+                },
+                divider: LayoutBox {
+                    x: 0.0,
+                    y: 13.0,
+                    width: 200.0,
+                    height: 1.0,
+                },
+                text: nana_ui_runtime::ComponentTextRegion {
+                    bounds: LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 200.0,
+                        height: 14.0,
+                    },
+                    content: Arc::from("fn outer() {"),
+                    color: Some([1.0; 4]),
+                    font_size: 13.0,
+                    font_weight: None,
+                },
+                background: [1.0, 1.0, 1.0, 1.0],
+                divider_color: [0.2, 0.2, 0.2, 1.0],
+            });
+        }
+        scene.apply_delta([input], []);
+
+        // 背景条与底缘分割线各一个 quad，头行文本复用正文字形管线；
+        // 无钉住几何时三个 slot 全部为空。
+        let primitive = |slot: u8| scene.primitive(PrimitiveId { node: id(1), slot });
+        let panel = primitive(80).expect("sticky panel");
+        match &panel.kind {
+            ScenePrimitiveKind::Quad { background, .. } => {
+                assert_eq!(*background, Some([1.0, 1.0, 1.0, 1.0]))
+            }
+            other => panic!("expected panel quad, got {other:?}"),
+        }
+        let divider = primitive(81).expect("sticky divider");
+        match &divider.kind {
+            ScenePrimitiveKind::Quad { background, .. } => {
+                assert_eq!(*background, Some([0.2, 0.2, 0.2, 1.0]))
+            }
+            other => panic!("expected divider quad, got {other:?}"),
+        }
+        let text = primitive(82).expect("sticky text");
+        match &text.kind {
+            ScenePrimitiveKind::Text { content, .. } => {
+                assert_eq!(content, "fn outer() {")
+            }
+            other => panic!("expected sticky text primitive, got {other:?}"),
+        }
+
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [git_gutter_input(
+                1,
+                nana_ui_runtime::TextGitGutterGeometry::default(),
+            )],
+            [],
+        );
+        for slot in [80, 81, 82] {
+            assert!(
+                scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
+                "sticky slot {slot} must stay empty without geometry"
+            );
+        }
+    }
+
+    #[test]
     fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         const FOLDS: usize = 25;
         let mut gutters = Vec::with_capacity(FOLDS);
@@ -7379,6 +7775,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7406,8 +7803,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
@@ -7432,6 +7832,7 @@ mod tests {
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -7517,6 +7918,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7544,8 +7946,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             occurrence_markers: Vec::new(),
             whitespace_marks: marks,
             whitespace_color: [0.5, 0.5, 0.5, 1.0],
@@ -7567,6 +7972,7 @@ mod tests {
             preedit_color: [0.0; 4],
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -7625,6 +8031,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7676,13 +8083,17 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             occurrence_markers: Vec::new(),
+            drop_indicator: None,
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
             indent_guides: Vec::new(),
@@ -7735,6 +8146,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: Some(Arc::from("\t")),
             folds: Arc::from([]),
@@ -7762,6 +8174,8 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             // 当前行条与选区同层（slot 1）。
             caret_line: Some((
                 LayoutBox {
@@ -7829,11 +8243,13 @@ mod tests {
             caret_color: [0.0; 4],
             preedit_color: [0.0; 4],
             occurrence_markers: Vec::new(),
+            drop_indicator: None,
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
 
         let mut scene = UiScene::new();
@@ -7905,6 +8321,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -7963,13 +8380,17 @@ mod tests {
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             occurrence_markers: Vec::new(),
+            drop_indicator: None,
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
             indent_guides: Vec::new(),
@@ -8019,6 +8440,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -8071,13 +8493,17 @@ mod tests {
             caret_color: [0.2, 0.6, 1.0, 1.0],
             preedit_color: [0.2, 0.6, 1.0, 1.0],
             occurrence_markers: Vec::new(),
+            drop_indicator: None,
             whitespace_marks: Vec::new(),
             whitespace_color: [0.0; 4],
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
             indent_guides: Vec::new(),
@@ -9447,6 +9873,79 @@ mod tests {
             }
         );
         assert_eq!(primitive_icon(&glyph.kind), Some(nana_ui_core::Icon::Add));
+    }
+
+    #[test]
+    fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
+        let mut range = |focused: bool| {
+            let mut range = node(1, None, &[]);
+            range.focused = focused;
+            range.standard_visual = Some(StandardVisual::Range {
+                label: None,
+                value: Arc::from("50"),
+                unit: None,
+                size: nana_ui_core::ControlSize::Medium,
+                ratio: 0.5,
+                invalid: false,
+            });
+            style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
+            range.standard_visual_foreground = Some([0.2, 0.5, 1.0, 1.0]);
+            range
+        };
+
+        let mut idle = UiScene::new();
+        idle.apply_delta([range(false)], []);
+        assert!(
+            idle.primitive(PrimitiveId {
+                node: id(1),
+                slot: 6
+            })
+            .is_none(),
+            "an unfocused range paints no focus ring"
+        );
+
+        let mut focused = UiScene::new();
+        focused.apply_delta([range(true)], []);
+        let ring = focused
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 6,
+            })
+            .expect("focused range paints a thumb focus ring");
+        // Thumb centre for ratio 0.5 on the fallback track band (7..93).
+        assert_eq!(
+            ring.bounds,
+            SceneRect {
+                x: 40.0,
+                y: 30.0,
+                width: 20.0,
+                height: 20.0,
+            }
+        );
+        match &ring.kind {
+            ScenePrimitiveKind::Quad {
+                background: None,
+                border_color: Some([0.2, 0.5, 1.0, 1.0]),
+                border_width: 2.0,
+                ..
+            } => {}
+            other => panic!("focus ring must outline the thumb in accent, got {other:?}"),
+        }
+        // The rail (slot 3) keeps the interaction-free border colour.
+        match &focused
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 3,
+            })
+            .expect("range rail")
+            .kind
+        {
+            ScenePrimitiveKind::Quad {
+                background: Some([0.4, 0.4, 0.45, 1.0]),
+                ..
+            } => {}
+            other => panic!("rail must stay on the base border colour, got {other:?}"),
+        }
     }
 
     #[test]
@@ -11210,6 +11709,7 @@ mod tests {
             steppers: false,
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
+            color_swatches: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -11239,8 +11739,11 @@ mod tests {
             preedit: Vec::new(),
             diagnostic_markers: Vec::new(),
             match_markers: Vec::new(),
+            swatch_markers: Vec::new(),
+            swatch_border_color: [0.0; 4],
             caret_line: None,
             bracket_markers: Vec::new(),
+            drop_indicator: None,
             indent_guides: Vec::new(),
             line_labels: Vec::new(),
             line_labels_color: [0.0; 4],
@@ -11298,6 +11801,7 @@ mod tests {
             wrap_guides: Vec::new(),
             steppers: None,
             minimap: None,
+            sticky_line: None,
         });
         let mut scene = UiScene::new();
         scene.apply_delta([input], []);

@@ -41,7 +41,7 @@ use crate::{
 mod assemble;
 mod build;
 mod overlay;
-mod text_edit;
+pub(crate) mod text_edit;
 pub use assemble::AssemblyScope;
 pub use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
@@ -49,8 +49,8 @@ pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
-pub use text_edit::TextDeleteKind;
 use text_edit::TextEditorKind;
+pub use text_edit::{TextDeleteKind, TextFindScope};
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -740,10 +740,20 @@ pub struct AppContext {
     text_pointer_drag: Option<(u64, StableNodeId, usize)>,
     /// Live minimap navigation drag: pointer id, node, and editor kind.
     text_minimap_drag: Option<(u64, StableNodeId, TextEditorKind)>,
+    /// 拖拽移动选中文本的状态机（多行编辑器、单选区、非 IME；按下落在
+    /// 主选区内部时进入，超过阈值激活，释放执行移动/复制或回落为点击）。
+    text_selection_drag: Option<crate::framework::text_edit::TextSelectionDrag>,
     /// Last press inside a text editor for double/triple click counting.
     text_pointer_click: Option<TextPointerClick>,
     /// Horizontal goal column retained across chained vertical moves.
     caret_goal_x: Option<(StableNodeId, f32)>,
+    /// Expand/shrink selection record: prior selection sets per node, valid
+    /// only while the editor's value is unchanged (any edit clears it).
+    selection_expansions: Option<(
+        StableNodeId,
+        Vec<(crate::TextSelection, Vec<crate::TextSelection>)>,
+        String,
+    )>,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -902,8 +912,10 @@ impl AppContext {
             program_messages: Vec::new(),
             text_pointer_drag: None,
             text_minimap_drag: None,
+            text_selection_drag: None,
             text_pointer_click: None,
             caret_goal_x: None,
+            selection_expansions: None,
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)

@@ -178,6 +178,9 @@ pub(crate) struct NodeStore {
     text_hovers: HashMap<StableNodeId, TextHoverViewState>,
     /// minimap 视口钉住（仅显式导航过的多行编辑器持有条目）。
     text_viewport_pins: HashMap<StableNodeId, ScrollOffset>,
+    /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
+    /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
+    text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
@@ -244,6 +247,7 @@ impl NodeStore {
         self.text_completions.remove(&id);
         self.text_hovers.remove(&id);
         self.text_viewport_pins.remove(&id);
+        self.text_drop_indicators.remove(&id);
         Some(record)
     }
 
@@ -334,6 +338,12 @@ impl NodeStore {
         ScrollOffset,
         text_viewport_pin,
         set_text_viewport_pin
+    );
+    sparse!(
+        text_drop_indicators,
+        LayoutBox,
+        text_drop_indicator,
+        set_text_drop_indicator
     );
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {

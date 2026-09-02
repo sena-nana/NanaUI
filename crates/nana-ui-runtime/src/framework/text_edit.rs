@@ -13,11 +13,11 @@ use crate::text_editing::{
     apply_cursor_edits, apply_replacement, auto_indent_newline, auto_pair_edit, caret_focus,
     caret_offset_at_point, clamp_boundary, delete_backward, delete_forward, delete_lines,
     delete_to_line_end, delete_to_line_start, delete_word_backward, delete_word_forward,
-    duplicate_lines, find_matches, find_next_match, find_previous_match, indent_selection,
-    join_lines, logical_line_range, matching_bracket_pair, move_lines, moved_selection,
-    outdent_selection, page_caret_focus, page_caret_focus_logical, replace_all_matches, sort_lines,
-    toggle_line_comment, transform_selection_case, vertical_caret_focus,
-    vertical_caret_focus_logical, word_range_at,
+    duplicate_lines, expanded_selection, find_matches, find_matches_in_range, find_next_match,
+    find_previous_match, indent_selection, join_lines, logical_line_range, matching_bracket_pair,
+    move_lines, moved_selection, outdent_selection, page_caret_focus, page_caret_focus_logical,
+    preserve_case_replacement, replace_all_matches_in_range, sort_lines, toggle_line_comment,
+    transform_selection_case, vertical_caret_focus, vertical_caret_focus_logical, word_range_at,
 };
 use crate::{
     CodeEditing, MutationQueue, ScrollOffset, TextCodeFold, TextContent, TextShapeConstraints,
@@ -36,6 +36,23 @@ pub enum TextDeleteKind {
     LineEnd,
 }
 
+/// Where a find/replace command searches in the focused editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextFindScope {
+    /// The whole editor value (default; historical behavior).
+    #[default]
+    Document,
+    /// Find in selection: only matches fully inside the primary selection.
+    /// An empty primary selection falls back to the whole document.
+    Selection,
+}
+
+/// The search span for a [`TextFindScope`], when one exists.
+fn find_scope_range(selection: &TextSelection) -> Option<(usize, usize)> {
+    let range = selection.ordered();
+    (range.start < range.end).then_some((range.start, range.end))
+}
+
 /// The focused plain text editor, if any.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusedTextEditor {
@@ -51,6 +68,32 @@ pub(crate) enum TextEditorKind {
     Area,
     Field,
 }
+
+/// 拖拽移动选中文本的状态机（见
+/// [`AppContext::text_editor_pointer_press`]）。`pending → active → 落点
+/// 执行`：按下落在主选区内部时进入 `pending`（不塌缩选区），指针移动
+/// 超过 [`TEXT_SELECTION_DRAG_THRESHOLD`] 进入 `active` 并在世界侧发布
+/// 落点指示线；释放时 `active` 执行移动/复制（单次拼接修订，一步撤销），
+/// `pending` 回落为普通点击落 caret。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TextSelectionDrag {
+    pub pointer_id: u64,
+    pub node: StableNodeId,
+    pub kind: TextEditorKind,
+    /// 按下点（世界坐标），用于阈值判定。
+    pub press: (f32, f32),
+    /// 源选区（按下时主选区，值空间，已有序）。
+    pub source: (usize, usize),
+    /// 已超过阈值进入拖拽态。
+    pub active: bool,
+    /// Alt 按住 = 复制（macOS 惯例；普通拖拽为移动）。
+    pub copy: bool,
+    /// 当前落点（值空间；落在源选区内部时为 `None`，指示无效落点）。
+    pub target: Option<usize>,
+}
+
+/// 进入拖拽态的指针位移阈值（像素）。
+pub(crate) const TEXT_SELECTION_DRAG_THRESHOLD: f32 = 4.0;
 
 /// A [`crate::TextShaper`] probe bound to one editor node's shaped layout.
 struct EditorGeometry<'a> {
@@ -994,8 +1037,103 @@ impl AppContext {
         )
     }
 
+    /// Expand every selection of the focused editor one level — collapsed
+    /// caret to its word, then to the interior of the innermost enclosing
+    /// bracket pair, outward layer by layer, finally the whole document (see
+    /// [`expanded_selection`]). Applied per cursor; overlapping results fuse
+    /// through the normal selection write. Selection-only move. The prior
+    /// selection set is remembered for
+    /// [`AppContext::shrink_focused_text_selection`] and invalidated by any
+    /// value edit. `Ok(false)` means no focused editor or nothing grew.
+    pub fn expand_focused_text_selection(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if !focused.accepts_input {
+            return Ok(false);
+        }
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let selections = state.selections().into_owned();
+        let primary_index = selections
+            .iter()
+            .position(|selection| *selection == state.selection)
+            .unwrap_or(0);
+        let mut next_selections = Vec::with_capacity(selections.len());
+        let mut grew = false;
+        for &selection in &selections {
+            match expanded_selection(&state.value, selection) {
+                Some(next) => {
+                    grew |= next != selection;
+                    next_selections.push(next);
+                }
+                None => next_selections.push(selection),
+            }
+        }
+        if !grew {
+            return Ok(false);
+        }
+        let entry = (state.selection, state.additional_selections.clone());
+        match &mut self.selection_expansions {
+            Some((node, history, value)) if *node == focused.node && *value == state.value => {
+                history.push(entry);
+            }
+            _ => {
+                self.selection_expansions = Some((focused.node, vec![entry], state.value.clone()));
+            }
+        }
+        self.caret_goal_x = None;
+        let primary = next_selections[primary_index];
+        let additional = next_selections
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| *index != primary_index)
+            .map(|(_, selection)| selection)
+            .collect();
+        self.write_editor_selections(focused.node, focused.kind, primary, additional)
+    }
+
+    /// Undo one [`AppContext::expand_focused_text_selection`] step: restore
+    /// the selection set from before the last expansion. The expansion record
+    /// dies when the editor's value changes (any edit), when a different
+    /// editor is focused, or once every recorded step is consumed.
+    /// Selection-only move. `Ok(false)` means there is nothing to shrink to.
+    pub fn shrink_focused_text_selection(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        let state = self.editor_state(focused.node, focused.kind)?;
+        let valid = self
+            .selection_expansions
+            .as_ref()
+            .is_some_and(|(node, history, value)| {
+                *node == focused.node && *value == state.value && !history.is_empty()
+            });
+        if !valid {
+            self.selection_expansions = None;
+            return Ok(false);
+        }
+        let Some((_, history, _)) = &mut self.selection_expansions else {
+            return Ok(false);
+        };
+        let Some((primary, additional)) = history.pop() else {
+            return Ok(false);
+        };
+        self.caret_goal_x = None;
+        self.write_editor_selections(focused.node, focused.kind, primary, additional)
+    }
+
     /// Select the next literal match of `query` in the focused text editor,
-    /// searching from the selection's end and wrapping to the document start.
+    /// searching from the selection's end and wrapping to the first in-scope
+    /// match. With [`TextFindScope::Selection`] the navigation loop stays
+    /// inside the primary selection (an empty selection searches the whole
+    /// document). Wrapping never leaves the scope: the match list only
+    /// contains in-scope matches.
     ///
     /// Selection-only move: like [`AppContext::move_focused_text_caret`], no
     /// change event is emitted. `Ok(false)` means there is no focused editor
@@ -1005,6 +1143,7 @@ impl AppContext {
         document: DocumentId,
         query: &str,
         options: TextSearchOptions,
+        scope: TextFindScope,
     ) -> Result<bool, FrameworkError> {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
@@ -1013,7 +1152,13 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
-        let matches = find_matches(&state.value, query, options);
+        let matches = match scope {
+            TextFindScope::Document => find_matches(&state.value, query, options),
+            TextFindScope::Selection => match find_scope_range(&state.selection) {
+                Some(range) => find_matches_in_range(&state.value, query, options, range),
+                None => find_matches(&state.value, query, options),
+            },
+        };
         let Some(found) = find_next_match(&matches, state.selection.ordered().end) else {
             return Ok(false);
         };
@@ -1029,14 +1174,15 @@ impl AppContext {
     }
 
     /// Select the previous literal match of `query` in the focused text
-    /// editor, searching from the selection's start and wrapping to the
-    /// document end. Selection-only move; see
-    /// [`AppContext::find_next_focused_text_match`].
+    /// editor, searching from the selection's start and wrapping to the last
+    /// in-scope match; see [`AppContext::find_next_focused_text_match`] for
+    /// scoping. Selection-only move.
     pub fn find_previous_focused_text_match(
         &mut self,
         document: DocumentId,
         query: &str,
         options: TextSearchOptions,
+        scope: TextFindScope,
     ) -> Result<bool, FrameworkError> {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
@@ -1045,7 +1191,13 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
-        let matches = find_matches(&state.value, query, options);
+        let matches = match scope {
+            TextFindScope::Document => find_matches(&state.value, query, options),
+            TextFindScope::Selection => match find_scope_range(&state.selection) {
+                Some(range) => find_matches_in_range(&state.value, query, options, range),
+                None => find_matches(&state.value, query, options),
+            },
+        };
         let Some(found) = find_previous_match(&matches, state.selection.ordered().start) else {
             return Ok(false);
         };
@@ -1065,8 +1217,10 @@ impl AppContext {
     /// the inserted text (so a following replace targets the same span
     /// semantics) and emit the change event. Advancing to the next match is
     /// the host's call — compose with
-    /// [`AppContext::find_next_focused_text_match`]. `Ok(false)` means there
-    /// is no focused editor or the selection is not a match.
+    /// [`AppContext::find_next_focused_text_match`]. With `preserve_case`
+    /// the replacement text follows the matched text's case shape (see
+    /// [`preserve_case_replacement`]); `Ok(false)` means there is no focused
+    /// editor or the selection is not a match.
     ///
     /// Primary-cursor semantics: only the primary selection replaces; other
     /// cursors survive through offset remapping.
@@ -1076,6 +1230,7 @@ impl AppContext {
         query: &str,
         options: TextSearchOptions,
         replacement: &str,
+        preserve_case: bool,
     ) -> Result<bool, FrameworkError> {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
@@ -1096,17 +1251,21 @@ impl AppContext {
                 if !is_match {
                     return None;
                 }
-                let mut next = String::with_capacity(
-                    value.len() - range.len().min(value.len()) + replacement.len(),
-                );
+                let text = if preserve_case {
+                    preserve_case_replacement(replacement, &value[range.clone()])
+                } else {
+                    replacement.to_owned()
+                };
+                let mut next =
+                    String::with_capacity(value.len() - range.len().min(value.len()) + text.len());
                 next.push_str(&value[..range.start]);
-                next.push_str(replacement);
+                next.push_str(&text);
                 next.push_str(&value[range.end..]);
                 Some(CursorEdit::Transform {
                     next,
                     selection: TextSelection {
                         anchor: range.start,
-                        focus: range.start + replacement.len(),
+                        focus: range.start + text.len(),
                     },
                 })
             },
@@ -1116,13 +1275,18 @@ impl AppContext {
     /// Replace every literal match of `query` in the focused editor with
     /// `replacement` (left-to-right, non-overlapping on the original text),
     /// select the first replacement, emit one change event, and return the
-    /// replacement count. `Ok(0)` leaves the editor untouched.
+    /// replacement count. [`TextFindScope::Selection`] restricts matching to
+    /// the primary selection (an empty selection replaces document-wide);
+    /// `preserve_case` follows [`AppContext::replace_focused_text_match`].
+    /// `Ok(0)` leaves the editor untouched.
     pub fn replace_all_focused_text_matches(
         &mut self,
         document: DocumentId,
         query: &str,
         options: TextSearchOptions,
         replacement: &str,
+        scope: TextFindScope,
+        preserve_case: bool,
     ) -> Result<usize, FrameworkError> {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(0);
@@ -1133,18 +1297,38 @@ impl AppContext {
         self.caret_goal_x = None;
         let mut replaced = 0usize;
         self.edit_editor(focused.node, focused.kind, |state| {
-            let matches = find_matches(&state.value, query, options);
+            let range = match scope {
+                TextFindScope::Document => None,
+                TextFindScope::Selection => find_scope_range(&state.selection),
+            };
+            let in_scope = |value: &str| match range {
+                Some(range) => find_matches_in_range(value, query, options, range),
+                None => find_matches(value, query, options),
+            };
+            let matches = in_scope(&state.value);
             if matches.is_empty() {
                 return None;
             }
-            let first_start = matches[0].start;
-            let (value, count) = replace_all_matches(&state.value, query, replacement, options);
+            let first = matches[0].clone();
+            let first_replacement = if preserve_case {
+                preserve_case_replacement(replacement, &state.value[first.clone()])
+            } else {
+                replacement.to_owned()
+            };
+            let (value, count) = replace_all_matches_in_range(
+                &state.value,
+                query,
+                replacement,
+                options,
+                range,
+                preserve_case,
+            );
             replaced = count;
             Some(EditorEdit {
                 value,
                 selection: TextSelection {
-                    anchor: first_start,
-                    focus: first_start + replacement.len(),
+                    anchor: first.start,
+                    focus: first.start + first_replacement.len(),
                 },
             })
         })?;
@@ -1262,6 +1446,34 @@ impl AppContext {
             Some(view) => view.value_of(hit),
             None => hit,
         };
+        // 拖拽移动选中文本：普通按下落在主选区内部（多行、单选区、非
+        // IME 组合期）时不落光标，进入拖拽状态机；Alt 按住为复制（macOS
+        // 惯例；取舍：选区内的 Alt+click 由多光标添加让位给拖拽复制）。
+        if self
+            .text_selection_drag
+            .is_some_and(|existing| existing.pointer_id != pointer_id || existing.node != node)
+        {
+            self.clear_text_selection_drag();
+        }
+        if count == 1
+            && !extend
+            && focused.multiline
+            && state.additional_selections.is_empty()
+            && self.world.ime(node).is_none()
+            && self.begin_text_selection_drag(
+                node,
+                focused.kind,
+                pointer_id,
+                x,
+                y,
+                offset,
+                add_cursor,
+                &state,
+            )
+        {
+            self.text_pointer_drag = None;
+            return Ok(true);
+        }
         // Alt+click toggles an extra cursor on multiline editors; single-line
         // fields keep their plain click semantics.
         if add_cursor && focused.multiline && count == 1 {
@@ -1380,6 +1592,14 @@ impl AppContext {
                 None => Ok(true),
             };
         }
+        // 拖拽移动选中文本优先：pending/active 状态机消费本次移动，不做
+        // 选区延伸（拖拽期间既有点击选词等竞争语义全部让位）。
+        if let Some(drag) = self.text_selection_drag {
+            if drag.pointer_id != pointer_id {
+                return Ok(false);
+            }
+            return self.update_text_selection_drag(document, drag, x, y, shaper);
+        }
         let Some((drag_id, node, anchor)) = self.text_pointer_drag else {
             return Ok(false);
         };
@@ -1442,6 +1662,273 @@ impl AppContext {
             .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
         {
             self.text_minimap_drag = None;
+        }
+        // 落点未经理由 `text_editor_selection_drop` 消费（指针路径未带
+        // 文档/坐标等场景）时按取消处理，一并清除落点指示线。
+        if self
+            .text_selection_drag
+            .is_some_and(|drag| drag.pointer_id == pointer_id)
+        {
+            self.clear_text_selection_drag();
+        }
+    }
+
+    /// 进入拖拽移动选中的待定态。要求：多行、单选区、非 IME 组合期，
+    /// 按下点严格落在非空主选区内部。返回是否已接管本次按下。
+    #[allow(clippy::too_many_arguments)]
+    fn begin_text_selection_drag(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        offset: usize,
+        copy: bool,
+        state: &TextInputState,
+    ) -> bool {
+        let range = state.selection.ordered();
+        if range.start == range.end || offset < range.start || offset >= range.end {
+            return false;
+        }
+        if self.text_selection_drag.is_some() {
+            return false;
+        }
+        self.text_selection_drag = Some(TextSelectionDrag {
+            pointer_id,
+            node,
+            kind,
+            press: (x, y),
+            source: (range.start, range.end),
+            active: false,
+            copy,
+            target: None,
+        });
+        true
+    }
+
+    /// 拖拽态移动：pending 态先做阈值判定；active 态换算落点偏移（按
+    /// 折叠/软换行的既有 offset 命中换算），把落点指示线发布到世界侧。
+    /// 落点在源选区内部视为无效落点（指示线消失，释放时取消）。
+    fn update_text_selection_drag(
+        &mut self,
+        document: DocumentId,
+        mut drag: TextSelectionDrag,
+        x: f32,
+        y: f32,
+        shaper: &mut dyn crate::TextShaper,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            self.clear_text_selection_drag();
+            return Ok(false);
+        };
+        if focused.node != drag.node {
+            self.clear_text_selection_drag();
+            return Ok(false);
+        }
+        if !drag.active {
+            let (dx, dy) = (x - drag.press.0, y - drag.press.1);
+            if dx * dx + dy * dy <= TEXT_SELECTION_DRAG_THRESHOLD * TEXT_SELECTION_DRAG_THRESHOLD {
+                self.text_selection_drag = Some(drag);
+                return Ok(true);
+            }
+            drag.active = true;
+        }
+        let Some(target) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
+            self.text_selection_drag = Some(drag);
+            return Ok(true);
+        };
+        // 源选区区间内（含边界，落点为退化 no-op）不显示指示线。
+        let inside = target >= drag.source.0 && target <= drag.source.1;
+        drag.target = (!inside).then_some(target);
+        if let (Some(target), Some((style, constraints))) =
+            (drag.target, self.world.text_input_shape_context(drag.node))
+        {
+            let value = self.fold_probe_value(drag.node, drag.kind)?;
+            let mut geometry = EditorGeometry {
+                shaper,
+                node: drag.node,
+                text: TextContent { value },
+                style,
+                constraints,
+            };
+            let (indicator_x, indicator_y, indicator_height) = (geometry.probe())(target);
+            self.world.set_text_drop_indicator(
+                drag.node,
+                Some(crate::LayoutBox {
+                    x: indicator_x,
+                    y: indicator_y,
+                    width: 2.0,
+                    height: indicator_height,
+                }),
+            );
+        } else {
+            self.world.set_text_drop_indicator(drag.node, None);
+        }
+        self.text_selection_drag = Some(drag);
+        Ok(true)
+    }
+
+    /// 指针释放的落点执行：pending 态回落为普通点击（caret 塌缩到落
+    /// 点）；active 态执行移动/复制——删除+插入拼成一次值修订（单个
+    /// change 事件，一步撤销），落点在源选区内部则取消（选区保持原
+    /// 状）。返回是否消费本次释放。
+    pub fn text_editor_selection_drop(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+        shaper: &mut dyn crate::TextShaper,
+    ) -> Result<bool, FrameworkError> {
+        let Some(drag) = self.text_selection_drag else {
+            return Ok(false);
+        };
+        if drag.pointer_id != pointer_id {
+            return Ok(false);
+        }
+        self.clear_text_selection_drag();
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if focused.node != drag.node {
+            return Ok(false);
+        }
+        if !drag.active {
+            // 低于阈值：按原点击语义处理（落 caret）。
+            let Some(offset) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)?
+            else {
+                return Ok(false);
+            };
+            return self.write_editor_selections(
+                drag.node,
+                focused.kind,
+                TextSelection::caret(offset),
+                Vec::new(),
+            );
+        }
+        let Some(target) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
+            return Ok(true);
+        };
+        let state = self.editor_state(drag.node, focused.kind)?;
+        if state.selection.ordered() != (drag.source.0..drag.source.1) {
+            // 拖拽期间选区被外部改动：取消，不落文本。
+            return Ok(true);
+        }
+        let (start, end) = drag.source;
+        let length = end - start;
+        // 源选区边界（含两端）都是退化落点：移动/复制均为 no-op，取消。
+        let inside = target >= start && target <= end;
+        let value = &state.value;
+        let (next, insert_at) = if inside {
+            return Ok(true);
+        } else if drag.copy {
+            // 复制：目标点插入选中文本，原文本保留。
+            (
+                format!(
+                    "{}{}{}",
+                    &value[..target],
+                    &value[start..end],
+                    &value[target..]
+                ),
+                target,
+            )
+        } else if target > end {
+            // 向后移动：删除源区间，剩余中段让位，文本插到目标前。
+            (
+                format!(
+                    "{}{}{}{}",
+                    &value[..start],
+                    &value[end..target],
+                    &value[start..end],
+                    &value[target..]
+                ),
+                target - length,
+            )
+        } else {
+            // 向前移动（target < start）。
+            (
+                format!(
+                    "{}{}{}{}",
+                    &value[..target],
+                    &value[start..end],
+                    &value[target..start],
+                    &value[end..]
+                ),
+                target,
+            )
+        };
+        let selection = TextSelection {
+            anchor: insert_at,
+            focus: insert_at + length,
+        };
+        self.commit_editor_value(drag.node, focused.kind, next, selection, Vec::new())
+    }
+
+    /// 取消拖拽移动选中（Esc）。仅当拖拽属于该文档的聚焦编辑器时消费。
+    pub fn cancel_focused_text_selection_drag(&mut self, document: DocumentId) -> bool {
+        let Some(drag) = &self.text_selection_drag else {
+            return false;
+        };
+        let node = drag.node;
+        let owns = self
+            .focused_text_editor(document)
+            .is_some_and(|focused| focused.node == node);
+        self.clear_text_selection_drag();
+        owns
+    }
+
+    fn clear_text_selection_drag(&mut self) {
+        if let Some(drag) = self.text_selection_drag.take() {
+            self.world.set_text_drop_indicator(drag.node, None);
+        }
+    }
+
+    /// 指针位置 → 值空间偏移（折叠视图按显示空间命中后映射回值空间；
+    /// 与点击/拖选共用同一换算）。无法解析时返回 `None`。
+    fn text_editor_hit_offset(
+        &self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        x: f32,
+        y: f32,
+        shaper: &mut dyn crate::TextShaper,
+    ) -> Result<Option<usize>, FrameworkError> {
+        let Some((content, scroll)) = self.world.text_input_pointer_context(node) else {
+            return Ok(None);
+        };
+        let Some((style, constraints)) = self.world.text_input_shape_context(node) else {
+            return Ok(None);
+        };
+        let state = self.editor_state(node, kind)?;
+        let fold_view = self.world.text_display_view(node);
+        let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
+        let mut geometry = EditorGeometry {
+            shaper,
+            node,
+            text: TextContent {
+                value: probe_value.to_owned(),
+            },
+            style,
+            constraints,
+        };
+        let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
+        let hit = caret_offset_at_point(probe_value, local_x, local_y, geometry.probe());
+        Ok(Some(match &fold_view {
+            Some(view) => view.value_of(hit),
+            None => hit,
+        }))
+    }
+
+    /// 折叠探测用显示值（无折叠时为编辑器原值）。
+    fn fold_probe_value(
+        &self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+    ) -> Result<String, FrameworkError> {
+        match self.world.text_display_view(node) {
+            Some(view) => Ok(view.value),
+            None => Ok(self.editor_state(node, kind)?.value),
         }
     }
 
@@ -2416,7 +2903,12 @@ mod fold_snippet_tests {
         // "x();" 只出现在折叠区间内：导航命中后该折叠自动展开（reveal
         // 语义），选区落在匹配上。
         let found = context
-            .find_next_focused_text_match(document, "x();", crate::TextSearchOptions::default())
+            .find_next_focused_text_match(
+                document,
+                "x();",
+                crate::TextSearchOptions::default(),
+                TextFindScope::Document,
+            )
             .unwrap();
         assert!(found);
         assert_eq!(context.focused_text_collapsed_folds(document), vec![]);
@@ -3306,5 +3798,232 @@ mod minimap_tests {
         };
         // 光标在第 0 行（y=0），reveal 后视口回顶部：文本区 y 回到内容顶。
         assert!((text.bounds.y - content.y).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod find_scope_smart_select_tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, Entity, MeasureTextShaper, StableNodeId, TextArea};
+
+    fn editor(value: &str) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).code_editor(true))
+            .unwrap();
+        let node = area.stable_id();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn set_selection(
+        context: &mut AppContext,
+        area: Entity<TextArea>,
+        selection: TextSelection,
+        additional: Vec<TextSelection>,
+    ) {
+        context
+            .update_component(area, |area, _| {
+                area.state.selection = selection;
+                area.state.additional_selections = additional;
+                true
+            })
+            .unwrap();
+    }
+
+    fn selection_span(context: &AppContext, node: StableNodeId) -> (usize, usize) {
+        let state = context.world().text_input(node).unwrap();
+        let span = state.selection.ordered();
+        (span.start, span.end)
+    }
+
+    #[test]
+    fn find_in_selection_scopes_navigation_and_replace_all() {
+        //            0123456789...
+        let value = "ab cd ab cd ab";
+        let (mut context, document, area, node) = editor(value);
+        let options = TextSearchOptions::default();
+
+        // 无选区时 Selection 退化为全局（与 Document 一致）。
+        set_selection(&mut context, area, TextSelection::caret(0), Vec::new());
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Selection)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (0, 2));
+
+        // 选区 3..12（"cd ab cd"）：范围内只有一个 "ab"，导航反复循环在
+        // 6..8，不越界到边界外或范围外的命中。
+        set_selection(
+            &mut context,
+            area,
+            TextSelection {
+                anchor: 3,
+                focus: 12,
+            },
+            Vec::new(),
+        );
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Selection)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (6, 8));
+        // 命中已是当前选区：无移动，返回 false 但选区保持。
+        assert!(
+            !context
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Selection)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (6, 8));
+        // 范围内唯一的命中已被选中：再次导航原地不动（返回 false），循环
+        // 不越界；上一个同样停在同一命中。
+        assert!(
+            !context
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Selection)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (6, 8));
+        assert!(
+            !context
+                .find_previous_focused_text_match(document, "ab", options, TextFindScope::Selection)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (6, 8));
+
+        // Document 范围不受限：从 6..8 起下一个命中是 12..14。
+        assert!(
+            context
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Document)
+                .unwrap()
+        );
+        assert_eq!(selection_span(&context, node), (12, 14));
+
+        // 替换全部限定在选区内：只有范围内的两个 "cd" 被替换。
+        set_selection(
+            &mut context,
+            area,
+            TextSelection {
+                anchor: 3,
+                focus: 12,
+            },
+            Vec::new(),
+        );
+        let replaced = context
+            .replace_all_focused_text_matches(
+                document,
+                "cd",
+                options,
+                "X",
+                TextFindScope::Selection,
+                false,
+            )
+            .unwrap();
+        assert_eq!(replaced, 2);
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "ab X ab X ab"
+        );
+    }
+
+    #[test]
+    fn replace_all_preserves_case_shapes() {
+        let (mut context, document, _area, node) = editor("foo FOO Foo foo");
+        let replaced = context
+            .replace_all_focused_text_matches(
+                document,
+                "foo",
+                TextSearchOptions::default(),
+                "bar",
+                TextFindScope::Document,
+                true,
+            )
+            .unwrap();
+        assert_eq!(replaced, 4);
+        let state = context.world().text_input(node).unwrap();
+        assert_eq!(state.value, "bar BAR Bar bar");
+        // 第一个替换文本被选中。
+        assert_eq!(selection_span(&context, node), (0, 3));
+    }
+
+    #[test]
+    fn expand_and_shrink_selection_layers() {
+        let value = "fn a() { greeting }";
+        let (mut context, document, area, node) = editor(value);
+        set_selection(&mut context, area, TextSelection::caret(13), Vec::new());
+
+        // 词 → 括号内部 → 全文档。
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (9, 17));
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (8, 18));
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (0, value.len()));
+        // 已在全文档：不能再扩展。
+        assert!(!context.expand_focused_text_selection(document).unwrap());
+
+        // 收缩按扩展历史逐层回退，最后无可收缩。
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (8, 18));
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (9, 17));
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        assert_eq!(selection_span(&context, node), (13, 13));
+        assert!(!context.shrink_focused_text_selection(document).unwrap());
+
+        // 编辑后历史失效：扩展一次再改值，收缩拒绝。
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        context
+            .update_component(area, |area, _| {
+                area.state.value = "fn a() { greeting!! }".into();
+                true
+            })
+            .unwrap();
+        assert!(!context.shrink_focused_text_selection(document).unwrap());
+    }
+
+    #[test]
+    fn expand_selection_is_independent_per_cursor() {
+        // "(aa bb) x (cc dd)"：两个光标分别落在两个括号组的词里。
+        let value = "(aa bb) x (cc dd)";
+        let (mut context, document, area, node) = editor(value);
+        set_selection(
+            &mut context,
+            area,
+            TextSelection::caret(1),
+            vec![TextSelection::caret(14)],
+        );
+
+        let spans = |context: &AppContext, node: StableNodeId| -> Vec<(usize, usize)> {
+            let state = context.world().text_input(node).unwrap();
+            state
+                .selections()
+                .iter()
+                .map(|s| (s.ordered().start, s.ordered().end))
+                .collect()
+        };
+
+        // 第一次扩展：各自选中自己的词。
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(spans(&context, node), vec![(1, 3), (14, 16)]);
+        // 第二次扩展：各自落到自己所在括号对的内部。
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(spans(&context, node), vec![(1, 6), (11, 16)]);
+        // 第三次扩展：都到全文档，融合为一个选区。
+        assert!(context.expand_focused_text_selection(document).unwrap());
+        assert_eq!(spans(&context, node), vec![(0, value.len())]);
+        // 收缩逐层回退：先回到括号内部双光标，再回词，再回光标。
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        assert_eq!(spans(&context, node), vec![(1, 6), (11, 16)]);
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        assert_eq!(spans(&context, node), vec![(1, 3), (14, 16)]);
+        assert!(context.shrink_focused_text_selection(document).unwrap());
+        // 历史恢复的是扩展前的双光标集合。
+        let state = context.world().text_input(node).unwrap();
+        assert_eq!(state.additional_selections, vec![TextSelection::caret(14)]);
+        assert_eq!(selection_span(&context, node), (1, 1));
+        assert!(!context.shrink_focused_text_selection(document).unwrap());
     }
 }
