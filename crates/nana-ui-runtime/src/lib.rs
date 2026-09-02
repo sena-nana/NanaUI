@@ -100,13 +100,13 @@ pub use components::{
     MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
     OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
     ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
-    StandardVisual, TextCodeFold, TextCompletion, TextCompletionPopup, TextCompletionRow,
-    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
-    TextGitMarkKind, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInputState,
-    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextSnippet, TextVerticalAlignment,
-    TextWhitespaceKind, TooltipVisual,
+    StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextCompletionPopup,
+    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
+    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment, TextHover,
+    TextHoverPopup, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSnippet,
+    TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -125,8 +125,8 @@ pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
     OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription,
-    Task, TextDeleteKind, UiBuilder, UiExtension, View, ViewContext, VirtualListItems,
-    VirtualTableItems, VirtualTreeItems,
+    Task, TextDeleteKind, TextFindScope, UiBuilder, UiExtension, View, ViewContext,
+    VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
@@ -223,8 +223,10 @@ pub use sidebar::{
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use text_editing::{
-    TextCaretIntent, TextLineDirection, TextSearchOptions, find_matches, find_matches_capped,
-    find_next_match, find_previous_match, matching_bracket_pair, sort_lines,
+    TextCaretIntent, TextLineDirection, TextSearchOptions, expanded_selection, find_matches,
+    find_matches_capped, find_matches_in_range, find_next_match, find_previous_match,
+    matching_bracket_pair, preserve_case_replacement, replace_all_matches,
+    replace_all_matches_in_range, sort_lines,
 };
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};

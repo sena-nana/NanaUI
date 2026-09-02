@@ -1279,6 +1279,46 @@ pub fn matching_bracket_pair(value: &str, caret: usize) -> Option<(usize, usize)
     None
 }
 
+/// 括号配对着色的单趟栈扫描结果：配对成功的括号字符字节区间
+/// `(start, end, depth)`（只含括号字符本身，内部文本不受影响；depth 为
+/// 嵌套深度，0 起）与未配对括号的字节区间列表。
+///
+/// 深度供渲染层按固定色阶循环取色；未配对括号（含栈内残留的悬空开启
+/// 括号与近端种类不匹配的闭合括号）由渲染层用淡化前景色。只认
+/// `()`/`[]`/`{}`，引号留给宿主语言模型。
+pub fn bracket_pair_colorization(value: &str) -> (Vec<(usize, usize, usize)>, Vec<usize>) {
+    struct Open {
+        offset: usize,
+        close: char,
+    }
+    let mut stack: Vec<Open> = Vec::new();
+    let mut pairs: Vec<(usize, usize, usize)> = Vec::new();
+    let mut unmatched: Vec<usize> = Vec::new();
+    for (offset, character) in value.char_indices() {
+        if let Some(close) = bracket_closer(character) {
+            stack.push(Open { offset, close });
+        } else if bracket_opener(character).is_some() {
+            let pairs_with_top = stack.last().is_some_and(|top| top.close == character);
+            if pairs_with_top {
+                let Open {
+                    offset: open_offset,
+                    ..
+                } = stack.pop().unwrap();
+                let depth = stack.len();
+                // 只给括号字符本身着色（对内部文本的语法色零影响）。
+                pairs.push((open_offset, open_offset + 1, depth));
+                pairs.push((offset, offset + character.len_utf8(), depth));
+            } else {
+                unmatched.push(offset);
+            }
+        }
+    }
+    unmatched.extend(stack.into_iter().map(|open| open.offset));
+    pairs.sort_unstable_by_key(|&(start, _, _)| start);
+    unmatched.sort_unstable();
+    (pairs, unmatched)
+}
+
 fn match_bracket_forward(value: &str, open_offset: usize, open: char) -> Option<(usize, usize)> {
     let close = bracket_closer(open)?;
     let mut depth = 1usize;
@@ -1310,6 +1350,76 @@ fn match_bracket_backward(value: &str, close_offset: usize, close: char) -> Opti
         }
     }
     None
+}
+
+/// Byte offsets of the interior of the innermost `()`/`[]`/`{}` pair whose
+/// inside (brackets excluded) fully contains `[start, end)`. Unmatched or
+/// cross-kind brackets never pair. Returns `(open + 1, close)` so both ends
+/// point inside the pair; an empty pair yields an empty interior range.
+pub fn bracket_interior_containing(
+    value: &str,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize)> {
+    let mut stack: Vec<(char, usize)> = Vec::new();
+    let mut best: Option<(usize, usize)> = None;
+    for (offset, character) in value.char_indices() {
+        if let Some(closer) = bracket_closer(character) {
+            stack.push((closer, offset));
+        } else if bracket_opener(character).is_some()
+            && let Some(&(expected, open_offset)) = stack.last()
+        {
+            // expected 是入栈时记录的关闭字符，与当前关闭字符直接比较。
+            if expected != character {
+                continue;
+            }
+            stack.pop();
+            let inside = open_offset < start && end <= offset;
+            // 已填满的层不算命中：选区已是该对内部时向更外层找。
+            let same = open_offset + 1 == start && offset == end;
+            let innermost = best.is_none_or(|(best_open, _)| open_offset > best_open);
+            if inside && !same && innermost {
+                best = Some((open_offset, offset));
+            }
+        }
+    }
+    best.map(|(open, close)| (open + 1, close))
+}
+
+/// One VSCode-style selection-expansion step (no syntax tree): a collapsed
+/// caret grows to the word around it ([`word_range_at`]); any other
+/// selection grows to the interior of the innermost bracket pair containing
+/// it, skipping a pair it already fills, then outward layer by layer; past
+/// the outermost pair the step is the whole document. `None` when already at
+/// the document level and nothing can grow.
+pub fn expanded_selection(
+    value: &str,
+    selection: crate::TextSelection,
+) -> Option<crate::TextSelection> {
+    let range = selection.ordered();
+    let start = clamp_boundary(value, range.start);
+    let end = clamp_boundary(value, range.end).max(start);
+    if start == end
+        && let (word_start, word_end) = word_range_at(value, start)
+        && word_start < word_end
+    {
+        return Some(crate::TextSelection {
+            anchor: word_start,
+            focus: word_end,
+        });
+    }
+    if let Some((open, close)) = bracket_interior_containing(value, start, end)
+        && (open != start || close != end)
+    {
+        return Some(crate::TextSelection {
+            anchor: open,
+            focus: close,
+        });
+    }
+    (start != 0 || end != value.len()).then_some(crate::TextSelection {
+        anchor: 0,
+        focus: value.len(),
+    })
 }
 
 /// Literal search options for [`find_matches`] and friends. Regex search is
@@ -1436,6 +1546,29 @@ pub fn find_previous_match(
         .or_else(|| matches.last().cloned())
 }
 
+/// [`find_matches`] scoped to a byte range: only matches fully inside the
+/// clamped span are returned, and a query straddling either boundary does
+/// not match. Word-boundary flanks are judged against the span alone, so a
+/// span edge counts as a word edge. Hosts use this for find-in-selection;
+/// an empty or unset scope is expressed by calling [`find_matches`] instead.
+pub fn find_matches_in_range(
+    value: &str,
+    query: &str,
+    options: TextSearchOptions,
+    range: (usize, usize),
+) -> Vec<std::ops::Range<usize>> {
+    let start = clamp_boundary(value, range.0.min(range.1));
+    let end = clamp_boundary(value, range.1.max(range.0)).max(start);
+    let scope = &value[start..end];
+    if query.is_empty() || scope.is_empty() {
+        return Vec::new();
+    }
+    find_matches(scope, query, options)
+        .into_iter()
+        .map(|found| found.start + start..found.end + start)
+        .collect()
+}
+
 /// Occurrence-highlight scan cap: a pathological document (a word repeated
 /// thousands of times) stops deriving marks past this many occurrences.
 pub const OCCURRENCE_HIGHLIGHT_LIMIT: usize = 200;
@@ -1482,6 +1615,50 @@ pub fn occurrence_query_at(
     (start < end).then(|| (value[start..end].to_owned(), true))
 }
 
+/// Reshape `replacement` to follow the case shape of `matched`: an
+/// all-uppercase match uppercases the whole replacement, a match whose first
+/// cased letter is uppercase (the rest lowercase) capitalizes the
+/// replacement's first character and lowercases the rest, and anything else
+/// keeps the replacement as written. Matches without cased letters never
+/// transform.
+///
+/// 本层只有字面替换，没有正则。取舍（宿主未来若接入正则替换须遵守）：
+/// preserve_case 仅作用于不含捕获组引用的替换文本——替换文本含 `$N`
+/// 引用时保持原样、不做任何大小写变换，因为捕获组展开结果的大小写形态
+/// 逐位置不同，整段变形没有稳定语义。
+pub fn preserve_case_replacement(replacement: &str, matched: &str) -> String {
+    // 含捕获组引用（$N / ${N}）的替换文本保持原样：捕获组展开结果的大小写
+    // 形态逐位置不同，整段变形没有稳定语义。
+    if replacement.bytes().enumerate().any(|(index, byte)| {
+        byte == b'$'
+            && replacement[index + 1..]
+                .bytes()
+                .next()
+                .is_some_and(|next| next.is_ascii_digit() || next == b'{')
+    }) {
+        return replacement.to_owned();
+    }
+    let cased = |character: char| character.is_uppercase() || character.is_lowercase();
+    if !matched.chars().any(cased) {
+        return replacement.to_owned();
+    }
+    if !matched.chars().any(|character| character.is_lowercase()) {
+        return replacement.to_uppercase();
+    }
+    let mut cased_chars = matched.chars().skip_while(|character| !cased(*character));
+    let first = cased_chars.next();
+    let title = matches!(first, Some(character) if character.is_uppercase())
+        && cased_chars.all(|character| !character.is_uppercase());
+    if !title {
+        return replacement.to_owned();
+    }
+    let mut characters = replacement.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    first.to_uppercase().collect::<String>() + &characters.as_str().to_lowercase()
+}
+
 /// Replace every match ([`find_matches`] semantics: left to right,
 /// non-overlapping) with `replacement`, returning the new value and the
 /// replacement count. Matching runs on the original text, so a replacement
@@ -1492,7 +1669,25 @@ pub fn replace_all_matches(
     replacement: &str,
     options: TextSearchOptions,
 ) -> (String, usize) {
-    let matches = find_matches(value, query, options);
+    replace_all_matches_in_range(value, query, replacement, options, None, false)
+}
+
+/// [`replace_all_matches`] with find-in-selection and preserve-case control.
+/// `Some(range)` limits matching to the clamped span (see
+/// [`find_matches_in_range`]); `preserve_case` reshapes each replacement to
+/// its match's case (see [`preserve_case_replacement`]).
+pub fn replace_all_matches_in_range(
+    value: &str,
+    query: &str,
+    replacement: &str,
+    options: TextSearchOptions,
+    range: Option<(usize, usize)>,
+    preserve_case: bool,
+) -> (String, usize) {
+    let matches = match range {
+        Some(range) => find_matches_in_range(value, query, options, range),
+        None => find_matches(value, query, options),
+    };
     if matches.is_empty() {
         return (value.to_owned(), 0);
     }
@@ -1500,7 +1695,14 @@ pub fn replace_all_matches(
     let mut cursor = 0;
     for found in &matches {
         next.push_str(&value[cursor..found.start]);
-        next.push_str(replacement);
+        if preserve_case {
+            next.push_str(&preserve_case_replacement(
+                replacement,
+                &value[found.start..found.end],
+            ));
+        } else {
+            next.push_str(replacement);
+        }
         cursor = found.end;
     }
     next.push_str(&value[cursor..]);
@@ -2333,6 +2535,115 @@ mod tests {
     }
 
     #[test]
+    fn find_in_range_counts_only_fully_contained_matches() {
+        let value = "ab cd ab cd ab";
+        // 全文档与无范围 find_matches 一致：范围覆盖全文档时计数相同。
+        assert_eq!(
+            find_matches_in_range(value, "ab", TextSearchOptions::default(), (0, value.len())),
+            find_matches(value, "ab", TextSearchOptions::default())
+        );
+        // 范围内的两个命中，边界外的两个不进来。
+        assert_eq!(
+            find_matches_in_range(value, "ab", TextSearchOptions::default(), (3, 10)),
+            vec![6..8]
+        );
+        // 跨越范围边界的查询不命中。
+        assert!(
+            find_matches_in_range(value, "cd", TextSearchOptions::default(), (4, 5)).is_empty()
+        );
+        // 空范围与空查询均无命中。
+        assert!(
+            find_matches_in_range(value, "ab", TextSearchOptions::default(), (2, 2)).is_empty()
+        );
+        assert!(
+            find_matches_in_range(value, "", TextSearchOptions::default(), (0, value.len()))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn preserve_case_replacement_follows_match_shape() {
+        // 全大写匹配 → 替换文本全大写。
+        assert_eq!(preserve_case_replacement("bar", "FOO"), "BAR");
+        assert_eq!(preserve_case_replacement("bar baz", "FOO_BAR"), "BAR BAZ");
+        // 首字母大写匹配 → 替换文本仅首字符大写。
+        assert_eq!(preserve_case_replacement("bar", "Foo"), "Bar");
+        // 其他形态（小写、混合）→ 原样。
+        assert_eq!(preserve_case_replacement("Bar", "foo"), "Bar");
+        assert_eq!(preserve_case_replacement("bar", "fOo"), "bar");
+        // 无大小写形态的匹配 → 原样。
+        assert_eq!(preserve_case_replacement("bar", "123"), "bar");
+        // 含 $N 引用的替换文本不做大小写变换（正则捕获组取舍）。
+        assert_eq!(preserve_case_replacement("$1", "FOO"), "$1");
+        assert_eq!(preserve_case_replacement("$1_x", "FOO"), "$1_x");
+    }
+
+    #[test]
+    fn replace_all_in_range_scopes_and_preserves_case() {
+        let value = "foo FOO Foo foo";
+        // 范围外不动，范围内替换且保留大小写形态。
+        let (next, count) = replace_all_matches_in_range(
+            value,
+            "foo",
+            "bar",
+            TextSearchOptions::default(),
+            Some((4, 14)),
+            true,
+        );
+        assert_eq!(next, "foo BAR Bar foo");
+        assert_eq!(count, 2);
+        // preserve_case 关闭时与普通替换一致。
+        let (plain, plain_count) = replace_all_matches_in_range(
+            value,
+            "foo",
+            "bar",
+            TextSearchOptions::default(),
+            Some((4, 14)),
+            false,
+        );
+        assert_eq!(plain, "foo bar bar foo");
+        assert_eq!(plain_count, 2);
+        // None 范围等价 replace_all_matches。
+        let (all, all_count) = replace_all_matches_in_range(
+            value,
+            "foo",
+            "bar",
+            TextSearchOptions::default(),
+            None,
+            true,
+        );
+        assert_eq!(all, "bar BAR Bar bar");
+        assert_eq!(all_count, 4);
+    }
+
+    #[test]
+    fn expanded_selection_walks_word_bracket_document_layers() {
+        let value = "fn a() { greeting }";
+        // "greeting" 在 9..17，光标 → 词。
+        let word = expanded_selection(value, crate::TextSelection::caret(13)).unwrap();
+        assert_eq!(word.ordered(), 9..17);
+        // 词 → 内层括号内部（不含括号，8..18）。
+        let interior = expanded_selection(value, word).unwrap();
+        assert_eq!(interior.ordered(), 8..18);
+        // 无更外层括号 → 全文档。
+        let whole = expanded_selection(value, interior).unwrap();
+        assert_eq!(whole.ordered(), 0..value.len());
+        // 已在全文档：不能再扩展。
+        assert!(expanded_selection(value, whole).is_none());
+        // 嵌套时跳过已填满的层直接向外："f(g(here))"。
+        let nested = "f(g(here))";
+        let inner_word = expanded_selection(nested, crate::TextSelection::caret(7)).unwrap();
+        assert_eq!(inner_word.ordered(), 4..8);
+        // 内层内部 4..8 与词重合（已填满该层）→ 直接取外层内部 2..9。
+        let inner = expanded_selection(nested, inner_word).unwrap();
+        assert_eq!(inner.ordered(), 2..9);
+        assert_eq!(
+            expanded_selection(nested, inner).unwrap().ordered(),
+            0..nested.len()
+        );
+    }
+
+    #[test]
     fn lines_move_up_and_down_with_their_selection() {
         let value = "ab\ncd\nef";
         let selection = crate::TextSelection {
@@ -2633,6 +2944,31 @@ mod tests {
         // 邻近没有括号时返回 None。
         assert_eq!(matching_bracket_pair("abc", 1), None);
         assert_eq!(matching_bracket_pair("", 0), None);
+    }
+
+    #[test]
+    fn bracket_colorization_pairs_nested_and_flags_cross_kind_mismatch() {
+        let (pairs, unmatched) = bracket_pair_colorization("{[()]}x)");
+        // 只给括号字符本身着色；深度按嵌套循环：{ 0、[ 1、( 2、) 2、] 1、} 0。
+        // 输出按起点排序。
+        assert_eq!(
+            pairs,
+            vec![
+                (0, 1, 0),
+                (1, 2, 1),
+                (2, 3, 2),
+                (3, 4, 2),
+                (4, 5, 1),
+                (5, 6, 0),
+            ]
+        );
+        // 落单的 `)` 悬空。
+        assert_eq!(unmatched, vec![7]);
+        // 种类不匹配：`([)]` 的 `)` 近端种类不符记为悬空，`]` 与 `[`
+        // 跨越它配对，`(` 最终残留在栈内悬空。
+        let (pairs, unmatched) = bracket_pair_colorization("([)]");
+        assert_eq!(pairs, vec![(1, 2, 1), (3, 4, 1)]);
+        assert_eq!(unmatched, vec![0, 2]);
     }
 
     #[test]

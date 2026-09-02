@@ -152,11 +152,13 @@ impl RuntimeInputAdapter {
                     prevent_default: true,
                 });
             }
-            // overlay 未消费的 Esc：先结束 snippet 会话，再关闭补全弹层，
-            // 最后塌缩多光标到主光标。两者都只在聚焦多行编辑器且状态存在
-            // 时消费事件，否则穿透给宿主（首次按下才生效，repeat 不消费）。
+            // overlay 未消费的 Esc：先取消拖拽移动选中，再结束 snippet 会
+            // 话，再关闭补全弹层，最后塌缩多光标到主光标。都只在聚焦多行
+            // 编辑器且状态存在时消费事件，否则穿透给宿主（首次按下才生
+            // 效，repeat 不消费）。
             if matches!(overlay_key, Some(OverlayKey::Escape)) && !repeat {
-                if context.cancel_focused_text_snippet(document)?
+                if context.cancel_focused_text_selection_drag(document)
+                    || context.cancel_focused_text_snippet(document)?
                     || context.dismiss_focused_text_completion(document)?
                     || context.collapse_focused_text_selections(document)?
                 {
@@ -487,7 +489,25 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                        // 拖拽移动选中的落点执行先于通用释放清理：active 态
+                        // 落文本、pending 态回落为点击。
+                        let mut drop_handled = false;
+                        if let Some(shaper) = reborrow_text_shaper(&mut text_shaper) {
+                            drop_handled = context.text_editor_selection_drop(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                shaper,
+                            )?;
+                        }
                         context.text_editor_pointer_release(*pointer_id);
+                        if drop_handled {
+                            context.release_pointer(document, *pointer_id);
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         if context.end_scrollbar_drag(document, *pointer_id, false)?
                             || context.end_range_drag(document, *pointer_id, false)?
                             || context.end_xy_pad_drag(document, *pointer_id, false)?
@@ -1199,7 +1219,7 @@ mod tests {
         MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
         OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
         SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
-        TextChanged, TextInput, TextSearchOptions, TextSelection,
+        TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection,
     };
     use std::sync::{Arc, Mutex};
 
@@ -3716,6 +3736,7 @@ mod tests {
                 steppers: false,
                 diagnostics: std::sync::Arc::from([]),
                 matches: std::sync::Arc::from([]),
+                color_swatches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
@@ -3832,6 +3853,7 @@ mod tests {
                 steppers: false,
                 diagnostics: std::sync::Arc::from([]),
                 matches: std::sync::Arc::from([]),
+                color_swatches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
@@ -3916,6 +3938,450 @@ mod tests {
         events
     }
 
+    /// 多行编辑器拖拽移动测试的公共装配：两行 `abc\ndef`，字符宽 10、
+    /// 行高 12、零内边距（offset = 列×10 + 行×12 命中）。返回
+    /// `(context, document, node, 事件收集器)`。
+    fn drag_drop_editor() -> (
+        AppContext,
+        DocumentId,
+        StableNodeId,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("abc\ndef").style(nana_ui_runtime::NodeStyle {
+                    layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                        padding: Some(nana_ui_core::LengthSpec::Px(0.0)),
+                        font_size: Some(10.0),
+                        line_height: Some(nana_ui_core::LineHeightSpec::Absolute(12.0)),
+                        min_height: None,
+                        ..nana_ui_core::LayoutStyle::default()
+                    }),
+                    ..nana_ui_runtime::NodeStyle::default()
+                }),
+            )
+            .unwrap();
+        let node = area.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 64.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.take_system_work();
+        context.rebuild_hit_test(document);
+        assert!(context.focus_node(document, node).unwrap());
+        let events = track_text_changed(&mut context, area);
+        (context, document, node, events)
+    }
+
+    /// 带 x/y 与修饰键的指针事件构造器。
+    fn drag_pointer_event(
+        phase: PointerPhase,
+        x: f32,
+        y: f32,
+        modifiers: InputModifiers,
+    ) -> InputEvent {
+        InputEvent::Pointer {
+            phase,
+            pointer_id: 3,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: u16::from(phase != PointerPhase::Up),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers,
+        }
+    }
+
+    /// 拖拽移动主流程：选中 `def`（第二行 0..3 列 → 偏移 4..7），在选区
+    /// 内按下并拖到第一行行首释放 = 移动文本，选区落在插入文本上，整
+    /// 个移动只发一次变更（单步撤销的修订语义）。
+    #[test]
+    fn drag_selection_moves_text_in_one_revision() {
+        let (mut context, document, node, events) = drag_drop_editor();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        // 选中 "def"：End 到文档尾，Shift+Left 三次。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 7, 4)
+        );
+
+        let down = |x, y| drag_pointer_event(PointerPhase::Down, x, y, InputModifiers::default());
+        let move_to =
+            |x, y| drag_pointer_event(PointerPhase::Move, x, y, InputModifiers::default());
+        // 选区内按下（"e"，offset 5）→ 不塌缩选区。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &down(15.0, 18.0),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 7, 4)
+        );
+        // 超过阈值拖到第一行行首（offset 0）。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &move_to(0.0, 6.0),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Up, 0.0, 6.0, InputModifiers::default()),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        // "def" 移到文档头，选区落在插入文本上；单次变更（一步撤销）。
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("defabc\n".into(), 0, 3)
+        );
+        assert_eq!(*events.lock().unwrap(), vec!["defabc\n".to_owned()]);
+    }
+
+    /// 落点在源选区边界（target == start / target == end）是退化 no-op：
+    /// 文本与选区都保持原状，不产生变更事件。
+    #[test]
+    fn drag_to_selection_boundary_is_a_no_op() {
+        let (mut context, document, node, events) = drag_drop_editor();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap();
+        }
+        let down = |x, y| drag_pointer_event(PointerPhase::Down, x, y, InputModifiers::default());
+        let move_to =
+            |x, y| drag_pointer_event(PointerPhase::Move, x, y, InputModifiers::default());
+        let up = |x, y| drag_pointer_event(PointerPhase::Up, x, y, InputModifiers::default());
+        // target == start（offset 4）：选区头。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &down(15.0, 18.0),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &move_to(2.0, 18.0),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &up(2.0, 18.0),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 7, 4)
+        );
+        // target == end（offset 7）：选区尾。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &down(15.0, 18.0),
+                Duration::from_millis(3_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &move_to(35.0, 18.0),
+                Duration::from_millis(3_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &up(35.0, 18.0),
+                Duration::from_millis(3_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 7, 4)
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    /// Alt 拖拽 = 复制：原文本保留，选区落在插入的副本上。
+    #[test]
+    fn alt_drag_selection_copies_text() {
+        let (mut context, document, node, events) = drag_drop_editor();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap();
+        }
+        let mut alt = InputModifiers::default();
+        alt.alt = true;
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Down, 15.0, 18.0, alt),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Move, 0.0, 6.0, alt),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Up, 0.0, 6.0, alt),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("defabc\ndef".into(), 0, 3)
+        );
+        assert_eq!(*events.lock().unwrap(), vec!["defabc\ndef".to_owned()]);
+    }
+
+    /// 低于阈值：按下选区后小位移释放不移动文本，按原点击语义落 caret。
+    #[test]
+    fn selection_press_below_threshold_falls_back_to_click() {
+        let (mut context, document, node, events) = drag_drop_editor();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap();
+        }
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Down, 15.0, 18.0, InputModifiers::default()),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        // 2px 位移，未过阈值。
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Move, 13.0, 18.0, InputModifiers::default()),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Up, 13.0, 18.0, InputModifiers::default()),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 5, 5)
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    /// Esc 取消拖拽：文本与选区保持原状，后续释放不落文本。
+    #[test]
+    fn escape_cancels_selection_drag() {
+        let (mut context, document, node, events) = drag_drop_editor();
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(&mut shaper),
+                )
+                .unwrap();
+        }
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Down, 15.0, 18.0, InputModifiers::default()),
+                Duration::from_millis(2_000),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Move, 0.0, 6.0, InputModifiers::default()),
+                Duration::from_millis(2_010),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch_with_shaper(
+                    &mut context,
+                    document,
+                    &plain_key("Escape"),
+                    Duration::from_millis(2_015),
+                    Some(&mut shaper),
+                )
+                .unwrap()
+                .prevent_default
+        );
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &drag_pointer_event(PointerPhase::Up, 0.0, 6.0, InputModifiers::default()),
+                Duration::from_millis(2_020),
+                Some(&mut shaper),
+            )
+            .unwrap();
+        assert_eq!(
+            textarea_selection(&context, node),
+            ("abc\ndef".into(), 7, 4)
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn find_next_and_previous_select_matches_without_text_changed() {
         let mut context = AppContext::new();
@@ -3934,7 +4400,7 @@ mod tests {
         // 大小写敏感："ab" 只命中 0..2 与 6..8。
         assert!(
             context
-                .find_next_focused_text_match(document, "ab", sensitive)
+                .find_next_focused_text_match(document, "ab", sensitive, TextFindScope::Document)
                 .unwrap()
         );
         assert_eq!(
@@ -3943,7 +4409,7 @@ mod tests {
         );
         assert!(
             context
-                .find_next_focused_text_match(document, "ab", sensitive)
+                .find_next_focused_text_match(document, "ab", sensitive, TextFindScope::Document)
                 .unwrap()
         );
         assert_eq!(
@@ -3953,7 +4419,7 @@ mod tests {
         // 越过末尾后环绕。
         assert!(
             context
-                .find_next_focused_text_match(document, "ab", sensitive)
+                .find_next_focused_text_match(document, "ab", sensitive, TextFindScope::Document)
                 .unwrap()
         );
         assert_eq!(
@@ -3963,7 +4429,12 @@ mod tests {
         // 大小写不敏感：从当前选区末端起下一个命中是 "AB"。
         assert!(
             context
-                .find_next_focused_text_match(document, "ab", TextSearchOptions::default())
+                .find_next_focused_text_match(
+                    document,
+                    "ab",
+                    TextSearchOptions::default(),
+                    TextFindScope::Document
+                )
                 .unwrap()
         );
         assert_eq!(
@@ -3973,7 +4444,12 @@ mod tests {
         // 上一个回到第一个 "ab"。
         assert!(
             context
-                .find_previous_focused_text_match(document, "ab", sensitive)
+                .find_previous_focused_text_match(
+                    document,
+                    "ab",
+                    sensitive,
+                    TextFindScope::Document
+                )
                 .unwrap()
         );
         assert_eq!(
@@ -3985,12 +4461,17 @@ mod tests {
         // 空 query 不命中。
         assert!(
             !context
-                .find_next_focused_text_match(document, "", sensitive)
+                .find_next_focused_text_match(document, "", sensitive, TextFindScope::Document)
                 .unwrap()
         );
         assert!(
             !context
-                .find_previous_focused_text_match(document, "zz", sensitive)
+                .find_previous_focused_text_match(
+                    document,
+                    "zz",
+                    sensitive,
+                    TextFindScope::Document
+                )
                 .unwrap()
         );
     }
@@ -4018,7 +4499,7 @@ mod tests {
             .unwrap();
         assert!(
             context
-                .replace_focused_text_match(document, "ab", options, "XY")
+                .replace_focused_text_match(document, "ab", options, "XY", false)
                 .unwrap()
         );
         assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 0, 2));
@@ -4027,7 +4508,7 @@ mod tests {
         // 选区不再是匹配（现在是 "XY"），替换拒绝且不发射事件。
         assert!(
             !context
-                .replace_focused_text_match(document, "ab", options, "XY")
+                .replace_focused_text_match(document, "ab", options, "XY", false)
                 .unwrap()
         );
         assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 0, 2));
@@ -4035,13 +4516,13 @@ mod tests {
         // 宿主先查找下一个再替换。
         assert!(
             context
-                .find_next_focused_text_match(document, "ab", options)
+                .find_next_focused_text_match(document, "ab", options, TextFindScope::Document)
                 .unwrap()
         );
         assert_eq!(textarea_selection(&context, node), ("XY ab".into(), 3, 5));
         assert!(
             context
-                .replace_focused_text_match(document, "ab", options, "XY")
+                .replace_focused_text_match(document, "ab", options, "XY", false)
                 .unwrap()
         );
         assert_eq!(textarea_selection(&context, node), ("XY XY".into(), 3, 5));
@@ -4069,6 +4550,8 @@ mod tests {
                         ..TextSearchOptions::default()
                     },
                     "X",
+                    TextFindScope::Document,
+                    false,
                 )
                 .unwrap(),
             2
@@ -4084,13 +4567,22 @@ mod tests {
                     "ab",
                     TextSearchOptions::default(),
                     "X",
+                    TextFindScope::Document,
+                    false,
                 )
                 .unwrap(),
             0
         );
         assert_eq!(
             context
-                .replace_all_focused_text_matches(document, "", TextSearchOptions::default(), "X")
+                .replace_all_focused_text_matches(
+                    document,
+                    "",
+                    TextSearchOptions::default(),
+                    "X",
+                    TextFindScope::Document,
+                    false
+                )
                 .unwrap(),
             0
         );
@@ -5316,6 +5808,7 @@ mod tests {
                 steppers: false,
                 diagnostics: std::sync::Arc::from([]),
                 matches: std::sync::Arc::from([]),
+                color_swatches: std::sync::Arc::from([]),
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
