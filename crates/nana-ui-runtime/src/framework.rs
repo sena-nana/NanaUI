@@ -10608,6 +10608,7 @@ mod tests {
             leading: Some(leading),
             content: Some(content),
             trailing: Some(trailing),
+            detail: None
         } = context
             .world()
             .component_geometry(item.stable_id())
