@@ -1274,7 +1274,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Center,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1443,7 +1443,7 @@ impl UiScene {
                         2,
                         title,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1462,7 +1462,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1498,7 +1498,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1579,7 +1579,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1591,7 +1591,7 @@ impl UiScene {
                         3,
                         value,
                         TextHorizontalAlignment::End,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1614,7 +1614,7 @@ impl UiScene {
                         } else {
                             TextHorizontalAlignment::Center
                         },
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1795,7 +1795,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -1808,7 +1808,7 @@ impl UiScene {
                             3,
                             support,
                             TextHorizontalAlignment::Start,
-                            false,
+                            true,
                             &node,
                             transform,
                             clips.clone(),
@@ -2024,7 +2024,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -2118,7 +2118,7 @@ impl UiScene {
                                 40u8.saturating_add(index),
                                 &option.label,
                                 TextHorizontalAlignment::Start,
-                                false,
+                                true,
                                 &node,
                                 transform,
                                 Arc::clone(&parent_clips),
@@ -2154,7 +2154,7 @@ impl UiScene {
                         2,
                         label,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         clips.clone(),
@@ -2167,7 +2167,7 @@ impl UiScene {
                             4,
                             hint,
                             TextHorizontalAlignment::End,
-                            false,
+                            true,
                             &node,
                             transform,
                             clips.clone(),
@@ -2306,7 +2306,7 @@ impl UiScene {
                         20,
                         title,
                         TextHorizontalAlignment::Start,
-                        false,
+                        true,
                         &node,
                         transform,
                         Arc::clone(&parent_clips),
@@ -2353,7 +2353,7 @@ impl UiScene {
                             22,
                             empty,
                             TextHorizontalAlignment::Start,
-                            false,
+                            true,
                             &node,
                             transform,
                             Arc::clone(&parent_clips),
@@ -6424,6 +6424,185 @@ mod tests {
     }
 
     #[test]
+    fn labeled_value_and_card_text_primitives_enable_ellipsis() {
+        // 长文本区域(label/value/标题)必须开启省略截断,否则 Start/End 对齐
+        // 的溢出会盖过属性行对侧内容(如完整文件路径)。
+        let long_path: Arc<str> =
+            Arc::from("/Users/dev/workspace/very-long-project/assets/textures");
+        let region = |content: Arc<str>, y| ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 12.0,
+                y,
+                width: 96.0,
+                height: 16.0,
+            },
+            content,
+            color: None,
+            font_size: 12.0,
+            font_weight: None,
+        };
+
+        let mut labeled = node(1, None, &[]);
+        labeled.standard_visual = Some(StandardVisual::LabeledValue {
+            label: Arc::from("Source"),
+            value: long_path.clone(),
+            value_role: nana_ui_core::SemanticColorRole::Text,
+            value_weight: 600,
+            compact: false,
+            action: None,
+        });
+        labeled.component_geometry = Some(ComponentGeometry::LabeledValue {
+            label: region(Arc::from("Source"), 0.0),
+            value: region(long_path.clone(), 14.0),
+            action: None,
+        });
+
+        let mut card = node(2, None, &[]);
+        card.standard_visual = Some(StandardVisual::Card {
+            title: Some(Arc::from("渲染管线")),
+            kind: nana_ui_core::CardKind::Surface,
+            loading: false,
+            loading_phase: 0.0,
+        });
+        card.component_geometry = Some(ComponentGeometry::Card {
+            title: Some(ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 60.0,
+                    height: 18.0,
+                },
+                content: Arc::from("渲染管线 / Render Pipeline Settings"),
+                color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+            }),
+            content: LayoutBox {
+                x: 10.0,
+                y: 36.0,
+                width: 80.0,
+                height: 34.0,
+            },
+            elevation: None,
+            spinner: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([labeled, card], []);
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 2
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text {
+                ellipsis: true,
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 3
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text {
+                ellipsis: true,
+                horizontal_alignment: TextHorizontalAlignment::End,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(2),
+                    slot: 2
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text { ellipsis: true, .. }
+        ));
+    }
+
+    #[test]
+    fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
+        let region = |content: &'static str, x, width| ComponentTextRegion {
+            bounds: LayoutBox {
+                x,
+                y: 4.0,
+                width,
+                height: 18.0,
+            },
+            content: Arc::from(content),
+            color: None,
+            font_size: 13.0,
+            font_weight: None,
+        };
+
+        let mut item = node(1, None, &[]);
+        item.standard_visual = Some(StandardVisual::ActionMenuItem {
+            label: Arc::from("Reveal in Finder"),
+            hint: Some(Arc::from("/Users/dev/very-long-project-folder-name")),
+            icon: Some(nana_ui_core::Icon::Folder),
+            danger: false,
+            active: false,
+            disabled: false,
+            size: nana_ui_core::ControlSize::Medium,
+        });
+        item.component_geometry = Some(ComponentGeometry::ActionMenuItem {
+            icon: Some((
+                nana_ui_core::Icon::Folder,
+                LayoutBox {
+                    x: 8.0,
+                    y: 6.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                [0.8, 0.8, 0.8, 1.0],
+            )),
+            label: region("/Users/dev/very-long-project-folder-name", 32.0, 100.0),
+            hint: Some(region("/Users/dev/very-long-project-folder-name", 132.0, 60.0)),
+            background: None,
+        });
+
+        let mut scene = UiScene::new();
+        scene.apply_delta([item], []);
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 2
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text {
+                ellipsis: true,
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 4
+                })
+                .unwrap()
+                .kind,
+            ScenePrimitiveKind::Text {
+                ellipsis: true,
+                horizontal_alignment: TextHorizontalAlignment::End,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         let mut modal = node(50, None, &[]);
         modal.standard_visual = Some(StandardVisual::ModalFrame {
@@ -7720,7 +7899,7 @@ mod tests {
                 .unwrap()
                 .kind,
             ScenePrimitiveKind::Text {
-                ellipsis: false,
+                ellipsis: true,
                 ..
             }
         ));
