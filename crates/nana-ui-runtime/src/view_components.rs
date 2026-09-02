@@ -955,6 +955,9 @@ impl ComponentView for Card {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub label: String,
+    /// 单行补充信息：非空且未挂 content 槽时渲染为行尾右对齐的小字号
+    /// muted 文本区，不改变行高。
+    pub detail: String,
     pub selected: bool,
     pub disabled: bool,
     pub(crate) slots: ListItemSlots,
@@ -984,8 +987,12 @@ impl ListItem {
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
             nana_ui_core::ControlSize::Small.text_size(),
         ));
+        // 列表行是单行原语：过长文本截断省略，不折行撑破固定行高。
+        layout.white_space_nowrap = true;
+        layout.text_overflow_ellipsis = true;
         Self {
             label: label.into(),
+            detail: String::new(),
             selected: false,
             disabled: false,
             slots: ListItemSlots::default(),
@@ -1039,6 +1046,12 @@ impl ListItem {
         self
     }
 
+    /// 设置单行补充信息；空串清除。仅在未挂 content 槽时生效。
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -1076,6 +1089,24 @@ impl ListItem {
         self.style = style;
         self
     }
+
+    /// 行内子节点的对齐语义：有 trailing 槽时按钮簇贴行尾（与 SidebarRow
+    /// 的行工具同款规则），否则按 start 排。隐藏的槽位子节点不参与 flex 流，
+    /// 不影响其余子节点的分布。
+    fn effective_style(&self) -> NodeStyle {
+        let mut style = self.style.clone();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.justify_content = if self.slots.trailing.is_some() {
+            if self.slots.leading.is_some() {
+                nana_ui_core::JustifySpec::SpaceBetween
+            } else {
+                nana_ui_core::JustifySpec::End
+            }
+        } else {
+            nana_ui_core::JustifySpec::Start
+        };
+        style
+    }
 }
 
 impl ComponentView for ListItem {
@@ -1086,6 +1117,10 @@ impl ComponentView for ListItem {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        // 行文本只承载 label；detail 由几何端生成右对齐的小字号 muted
+        // 文本区，与 label 同行但不挤占同一文本。挂了 content 槽的行由槽
+        // 内容自绘，label 与 detail 都不渲染。
+        let has_detail = self.slots.content.is_none() && !self.detail.is_empty();
         let visible_label = if self.slots.content.is_none() {
             self.label.as_str()
         } else {
@@ -1103,22 +1138,28 @@ impl ComponentView for ListItem {
             leading: self.slots.leading,
             content: self.slots.content,
             trailing: self.slots.trailing,
+            detail: has_detail.then(|| Arc::from(self.detail.as_str())),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
+        }
+        let mut accessible = self.label.clone();
+        if has_detail {
+            accessible.push_str("  ");
+            accessible.push_str(&self.detail);
         }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &self.effective_style(),
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
             },
             AccessibilityState {
                 role: AccessibilityRole::ListItem,
-                label: Some(Arc::from(self.label.as_str())),
+                label: Some(Arc::from(accessible.as_str())),
                 disabled: self.disabled,
                 selected: Some(self.selected),
                 ..AccessibilityState::default()
@@ -3386,5 +3427,102 @@ pub(crate) fn project_common(
     }
     if world.accessibility(id) != Some(&accessibility) {
         mutations.set_accessibility(id, accessibility);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DocumentId;
+
+    fn mount(component: &ListItem) -> (UiWorld, StableNodeId) {
+        let mut world = UiWorld::new();
+        let id = StableNodeId::new(1).unwrap();
+        let document = DocumentId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, component.node_kind());
+        component.project(id, &world, &mut queue);
+        world.commit(queue).unwrap();
+        (world, id)
+    }
+
+    #[test]
+    fn detail_travels_on_the_visual_not_the_node_text() {
+        let item = ListItem::new("模型").detail("3 动作");
+        let (world, id) = mount(&item);
+        // 行文本只承载 label，detail 由几何端独立成区。
+        assert_eq!(world.text(id), Some("模型"));
+        assert_eq!(
+            world.standard_visual(id),
+            Some(StandardVisual::ListItem {
+                leading: None,
+                content: None,
+                trailing: None,
+                detail: Some(Arc::from("3 动作")),
+            })
+        );
+        // 节点文本不再拼接 detail，也就不再依赖 muted span。
+        assert!(world.extract_nodes(&[id])[0].text_spans.is_empty());
+    }
+
+    #[test]
+    fn plain_rows_stay_solid() {
+        let (world, id) = mount(&ListItem::new("纯标签"));
+        assert_eq!(world.text(id), Some("纯标签"));
+        assert_eq!(
+            world.standard_visual(id),
+            Some(StandardVisual::ListItem {
+                leading: None,
+                content: None,
+                trailing: None,
+                detail: None,
+            })
+        );
+        assert!(world.extract_nodes(&[id])[0].text_spans.is_empty());
+    }
+
+    #[test]
+    fn content_slot_row_keeps_label_out_of_node_text() {
+        let item = ListItem::new("模型")
+            .detail("3 动作")
+            .slots(ListItemSlots {
+                content: Some(StableNodeId::new(2).unwrap()),
+                ..ListItemSlots::default()
+            });
+        let (world, id) = mount(&item);
+        assert_eq!(world.text(id), Some(""));
+        assert_eq!(
+            world.standard_visual(id),
+            Some(StandardVisual::ListItem {
+                leading: None,
+                content: Some(StableNodeId::new(2).unwrap()),
+                trailing: None,
+                detail: None,
+            })
+        );
+    }
+
+    #[test]
+    fn trailing_slot_aligns_row_children_to_the_end() {
+        let trailing = Some(StableNodeId::new(2).unwrap());
+        let leading = Some(StableNodeId::new(3).unwrap());
+        let justify = |item: ListItem| item.effective_style().layout.justify_content;
+        assert_eq!(
+            justify(ListItem::new("行").slots(ListItemSlots {
+                leading,
+                content: None,
+                trailing,
+            })),
+            nana_ui_core::JustifySpec::SpaceBetween
+        );
+        assert_eq!(
+            justify(ListItem::new("行").slots(ListItemSlots {
+                leading: None,
+                content: None,
+                trailing,
+            })),
+            nana_ui_core::JustifySpec::End
+        );
+        assert_eq!(justify(ListItem::new("行")), nana_ui_core::JustifySpec::Start);
     }
 }
