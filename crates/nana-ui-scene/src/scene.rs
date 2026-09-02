@@ -3331,12 +3331,50 @@ impl UiScene {
                         line_labels_color,
                         line_labels_font_size,
                         folds,
+                        git_marks,
                         completion_popup,
                         hover_popup,
                         minimap,
                         ..
                     }) = node.component_geometry.as_ref()
                     {
+                        // git gutter 标记：gutter 最左侧 2px 竖条按种类各一个
+                        // quad 批次（slot 18 新增 / 19 修改 / 8 删除），与折叠
+                        // 箭头同用外层裁剪；空种类不产生批次。位置与颜色由
+                        // 世界按行几何与语义令牌解析。
+                        if !git_marks.added.is_empty()
+                            || !git_marks.modified.is_empty()
+                            || !git_marks.deleted.is_empty()
+                        {
+                            let git_context = VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            };
+                            for (slot, rects, color) in [
+                                (18, &git_marks.added, Some(git_marks.added_color)),
+                                (19, &git_marks.modified, Some(git_marks.modified_color)),
+                                (8, &git_marks.deleted, Some(git_marks.deleted_color)),
+                            ] {
+                                if rects.is_empty() {
+                                    continue;
+                                }
+                                self.insert_primitive(visual_quad_batch(
+                                    &git_context,
+                                    slot,
+                                    rects.iter().map(|rect| scene_rect(*rect)),
+                                    VisualQuadStyle {
+                                        background: color,
+                                        border_color: None,
+                                        border_width: 0.0,
+                                        corner_radius: corner_radii(0.0),
+                                    },
+                                ));
+                            }
+                        }
                         // 折叠 gutter 标记：折叠态（实心，slot 14）与展开态
                         // （描边，slot 15）各一个 quad 批次，与行号同级的外层
                         // 裁剪；合批后数量不受 slot 上限约束，点击切换由
@@ -5503,6 +5541,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -5546,6 +5585,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
         });
@@ -6419,6 +6459,7 @@ mod tests {
             line_numbers: true,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -6479,6 +6520,7 @@ mod tests {
             line_labels_color: [0.6, 0.6, 0.6, 1.0],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -6545,6 +6587,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -6604,6 +6647,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -6674,6 +6718,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -6706,6 +6751,7 @@ mod tests {
             indent_guides: Vec::new(),
             line_labels: Vec::new(),
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             completion_popup: None,
@@ -6835,6 +6881,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -6939,6 +6986,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -7012,6 +7060,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7046,6 +7095,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -7067,6 +7117,240 @@ mod tests {
                 "slot {slot} must stay empty"
             );
         }
+    }
+
+    /// git gutter 批次测试的输入节点：多行 TextInput + 指定 git 几何。
+    fn git_gutter_input(
+        node_id: u64,
+        git: nana_ui_runtime::TextGitGutterGeometry,
+    ) -> ExtractedNode {
+        let mut input = node(node_id, None, &[]);
+        // 宿主预留的 gutter 宽度（行号标签按它门控）。
+        input.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                padding_left: Some(nana_ui_core::LengthSpec::Px(46.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        };
+        input.standard_visual = Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            line_numbers: true,
+            indent_guides: None,
+            folds: Arc::from([]),
+            git_marks: Arc::from([]),
+            editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+        });
+        input.component_geometry = Some(ComponentGeometry::TextInput {
+            multiline: true,
+            text: nana_ui_runtime::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 46.0,
+                    y: 0.0,
+                    width: 154.0,
+                    height: 56.0,
+                },
+                content: Arc::from("a\nb\nc\nd"),
+                color: Some([1.0; 4]),
+                font_size: 13.0,
+                font_weight: None,
+            },
+            selection: Vec::new(),
+            caret: None,
+            additional_carets: Vec::new(),
+            additional_caret_color: [0.0; 4],
+            preedit: Vec::new(),
+            diagnostic_markers: Vec::new(),
+            match_markers: Vec::new(),
+            caret_line: None,
+            bracket_markers: Vec::new(),
+            indent_guides: Vec::new(),
+            line_labels: vec![
+                nana_ui_runtime::LineLabel {
+                    y: 0.0,
+                    height: 14.0,
+                    number: 1,
+                },
+                nana_ui_runtime::LineLabel {
+                    y: 14.0,
+                    height: 14.0,
+                    number: 2,
+                },
+            ],
+            line_labels_color: [0.5, 0.5, 0.5, 1.0],
+            line_labels_font_size: 11.0,
+            folds: nana_ui_runtime::TextFoldGeometry {
+                gutters: vec![nana_ui_runtime::TextFoldGutter {
+                    bounds: LayoutBox {
+                        x: 2.0,
+                        y: 0.0,
+                        width: 14.0,
+                        height: 14.0,
+                    },
+                    fold: nana_ui_runtime::TextCodeFold::new(0, 8),
+                    collapsed: true,
+                    color: [0.5, 0.5, 0.5, 0.4],
+                }],
+                markers: Vec::new(),
+            },
+            git_marks: git,
+            completion_popup: None,
+            hover_popup: None,
+            background: None,
+            border: None,
+            border_width: 0.0,
+            focus_ring: None,
+            selection_color: [0.0; 4],
+            caret_color: [0.0; 4],
+            preedit_color: [0.0; 4],
+            occurrence_markers: Vec::new(),
+            whitespace_marks: Vec::new(),
+            whitespace_color: [0.0; 4],
+            wrap_guides: Vec::new(),
+            steppers: None,
+            minimap: None,
+        });
+        input
+    }
+
+    #[test]
+    fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
+        let git = nana_ui_runtime::TextGitGutterGeometry {
+            added: vec![
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 2.0,
+                    height: 14.0,
+                },
+                LayoutBox {
+                    x: 0.0,
+                    y: 28.0,
+                    width: 2.0,
+                    height: 14.0,
+                },
+            ],
+            modified: vec![LayoutBox {
+                x: 0.0,
+                y: 14.0,
+                width: 2.0,
+                height: 14.0,
+            }],
+            deleted: vec![LayoutBox {
+                x: 0.0,
+                y: 42.0,
+                width: 2.0,
+                height: 14.0,
+            }],
+            added_color: [0.2, 0.8, 0.3, 1.0],
+            modified_color: [0.9, 0.7, 0.2, 1.0],
+            deleted_color: [0.9, 0.3, 0.3, 1.0],
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([git_gutter_input(1, git)], []);
+
+        // 三类各一个 quad 批次（slot 18 新增 / 19 修改 / 8 删除），批次内
+        // 同色合批、bounds 逐一对应。
+        let batch = |slot: u8| scene.primitive(PrimitiveId { node: id(1), slot });
+        let added = batch(18).expect("added batch");
+        match &added.kind {
+            ScenePrimitiveKind::QuadBatch {
+                bounds,
+                background,
+                border_color,
+                ..
+            } => {
+                assert_eq!(bounds.len(), 2);
+                assert_eq!(*background, Some([0.2, 0.8, 0.3, 1.0]));
+                assert_eq!(*border_color, None);
+                assert_eq!(
+                    bounds[0],
+                    SceneRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 2.0,
+                        height: 14.0
+                    }
+                );
+                assert_eq!(
+                    bounds[1],
+                    SceneRect {
+                        x: 0.0,
+                        y: 28.0,
+                        width: 2.0,
+                        height: 14.0
+                    }
+                );
+            }
+            _ => panic!("expected added git gutter quad batch"),
+        }
+        let modified = batch(19).expect("modified batch");
+        match &modified.kind {
+            ScenePrimitiveKind::QuadBatch {
+                bounds, background, ..
+            } => {
+                assert_eq!(bounds.len(), 1);
+                assert_eq!(*background, Some([0.9, 0.7, 0.2, 1.0]));
+            }
+            _ => panic!("expected modified git gutter quad batch"),
+        }
+        let deleted = batch(8).expect("deleted batch");
+        match &deleted.kind {
+            ScenePrimitiveKind::QuadBatch {
+                bounds, background, ..
+            } => {
+                assert_eq!(bounds.len(), 1);
+                assert_eq!(*background, Some([0.9, 0.3, 0.3, 1.0]));
+            }
+            _ => panic!("expected deleted git gutter quad batch"),
+        }
+
+        // 与行号（slot 40+）、折叠箭头（slot 14/15）共存，slot 互不冲突。
+        assert!(batch(40).is_some(), "line number label");
+        assert!(batch(14).is_some(), "collapsed fold gutter");
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 15
+                })
+                .is_none(),
+            "no expanded fold gutter"
+        );
+
+        // 空种类不产生批次：只喂修改标记时 slot 8/18 无图元。
+        let only_modified = nana_ui_runtime::TextGitGutterGeometry {
+            modified: vec![LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 2.0,
+                height: 14.0,
+            }],
+            modified_color: [0.9, 0.7, 0.2, 1.0],
+            ..nana_ui_runtime::TextGitGutterGeometry::default()
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([git_gutter_input(1, only_modified)], []);
+        for slot in [8, 18] {
+            assert!(
+                scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
+                "empty kind slot {slot} must stay empty"
+            );
+        }
+        assert!(
+            scene
+                .primitive(PrimitiveId {
+                    node: id(1),
+                    slot: 19
+                })
+                .is_some()
+        );
     }
 
     #[test]
@@ -7098,6 +7382,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7131,6 +7416,7 @@ mod tests {
                 gutters,
                 markers: Vec::new(),
             },
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -7234,6 +7520,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7268,6 +7555,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -7340,6 +7628,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7401,6 +7690,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
         });
@@ -7448,6 +7738,7 @@ mod tests {
             line_numbers: false,
             indent_guides: Some(Arc::from("\t")),
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7527,6 +7818,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
             background: None,
@@ -7616,6 +7908,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         input.component_geometry = Some(ComponentGeometry::TextInput {
@@ -7684,6 +7977,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
         });
@@ -7728,6 +8022,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         single_line.component_geometry = input_component_geometry(false);
@@ -7790,6 +8085,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: None,
             hover_popup: None,
         })
@@ -8184,7 +8480,11 @@ mod tests {
                 [0.8, 0.8, 0.8, 1.0],
             )),
             label: region("/Users/dev/very-long-project-folder-name", 32.0, 100.0),
-            hint: Some(region("/Users/dev/very-long-project-folder-name", 132.0, 60.0)),
+            hint: Some(region(
+                "/Users/dev/very-long-project-folder-name",
+                132.0,
+                60.0,
+            )),
             background: None,
         });
 
@@ -9516,10 +9816,7 @@ mod tests {
                 })
                 .unwrap()
                 .kind,
-            ScenePrimitiveKind::Text {
-                ellipsis: true,
-                ..
-            }
+            ScenePrimitiveKind::Text { ellipsis: true, .. }
         ));
         assert_eq!(
             scene
@@ -10916,6 +11213,7 @@ mod tests {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
         });
         let row_rect = |index: usize| LayoutBox {
@@ -10948,6 +11246,7 @@ mod tests {
             line_labels_color: [0.0; 4],
             line_labels_font_size: 11.0,
             folds: nana_ui_runtime::TextFoldGeometry::default(),
+            git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
             completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
                 panel: LayoutBox {
                     x: 8.0,

@@ -7858,6 +7858,34 @@ mod tests {
     }
 
     #[test]
+    fn text_area_projects_git_gutter_marks_into_the_visual() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("a\nb").git_gutter(Arc::from([
+                    crate::TextGitMark::new(1, crate::TextGitMarkKind::Added),
+                    crate::TextGitMark::new(2, crate::TextGitMarkKind::Deleted),
+                ])),
+            )
+            .unwrap();
+
+        let Some(StandardVisual::TextInput { git_marks, .. }) =
+            context.world().standard_visual(area.stable_id())
+        else {
+            panic!("expected text input visual");
+        };
+        assert_eq!(
+            git_marks.as_ref(),
+            &[
+                crate::TextGitMark::new(1, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(2, crate::TextGitMarkKind::Deleted),
+            ]
+        );
+    }
+
+    #[test]
     fn text_area_projects_visual_state_and_deletes_a_whole_grapheme() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();

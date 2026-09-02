@@ -100,6 +100,7 @@ pub use components::{
     TextCompletionPopup, TextCompletionPopupMetrics, TextCompletionRow, TextCompletionSnapshot,
     TextContent, TextDiagnosticMark, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextFoldMark, TextFoldMarker,
+    TextGitGutterGeometry, TextGitGutterMark, TextGitMark, TextGitMarkKind,
     TextHorizontalAlignment, TextHover, TextHoverPopup, TextInputPresentation, TextInputState,
     TextMatchMark, TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry,
     TextOverlayMetrics, TextSelection, TextShapeConstraints, TextShaper, TextShaping,

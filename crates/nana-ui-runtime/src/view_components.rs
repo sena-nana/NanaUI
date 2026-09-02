@@ -5,8 +5,8 @@ use crate::{
     AccessibilityRole, AccessibilityState, HighlightRequest, InteractionState, MutationQueue,
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextCodeFold, TextCompletion, TextContent, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextHorizontalAlignment, TextHover, TextInputState, TextMatchSpan,
-    TextVerticalAlignment, UiWorld,
+    TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover, TextInputState,
+    TextMatchSpan, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1352,6 +1352,7 @@ impl ComponentView for TextInput {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: TextEditorRenderOptions::default(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -1565,6 +1566,7 @@ impl ComponentView for NumberInput {
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
+            git_marks: Arc::from([]),
             editor_options: TextEditorRenderOptions::default(),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
@@ -1655,6 +1657,11 @@ pub struct TextArea {
     /// 哪些区间处于折叠态由组件内部维护（宿主重喂时按区间匹配保留，
     /// 漂移的尽力平移匹配，失效的自动展开）。折叠是纯视图状态，不改值。
     pub code_folds: Arc<[TextCodeFold]>,
+    /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本变化后
+    /// 重新喂：`line` 为 1 基逻辑行号，渲染为 gutter 最左侧 2px 竖条。
+    /// 行号 0、超过文档逻辑行数或被折叠隐藏的标记静默跳过；空列表零成本。
+    /// 宿主需预留足够的 padding-left（gutter 与行号共用左侧区域）。
+    pub git_gutter: Arc<[TextGitMark]>,
     /// 补全候选（见 [`TextCompletion`]）。过滤完全由宿主负责：宿主按当前
     /// 词前缀过滤后在文本/光标变化时重新喂入，非空列表激活候选会话（弹层
     /// 锚定主光标行），空列表关闭。会话由组件内部管理：键盘选中与滚动
@@ -1708,6 +1715,7 @@ impl TextArea {
             line_numbers: false,
             code_editing: None,
             code_folds: Arc::from([]),
+            git_gutter: Arc::from([]),
             completions: Arc::from([]),
             hover: None,
             occurrence_highlight: false,
@@ -1748,6 +1756,13 @@ impl TextArea {
     /// 折叠态由组件内部维护。
     pub fn code_folds(mut self, folds: Arc<[TextCodeFold]>) -> Self {
         self.code_folds = folds;
+        self
+    }
+
+    /// 设置 git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本
+    /// 变化后重新喂；行号无效或被折叠隐藏的标记静默跳过。
+    pub fn git_gutter(mut self, marks: Arc<[TextGitMark]>) -> Self {
+        self.git_gutter = marks;
         self
     }
 
@@ -1882,6 +1897,7 @@ impl ComponentView for TextArea {
                 .as_ref()
                 .map(|code| Arc::clone(&code.indent_unit)),
             folds: Arc::clone(&self.code_folds),
+            git_marks: Arc::clone(&self.git_gutter),
             editor_options: TextEditorRenderOptions {
                 occurrence_highlight: self.occurrence_highlight,
                 relative_line_numbers: self.relative_line_numbers,

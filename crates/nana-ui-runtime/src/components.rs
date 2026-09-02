@@ -99,6 +99,51 @@ impl TextDiagnosticSpan {
     }
 }
 
+/// git gutter 标记种类：新增行（绿）、修改行（黄）、删除行（红）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextGitMarkKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// git gutter 标记。`line` 为 1 基逻辑行号，由宿主在 git 状态变化后喂入
+/// （文本变化后同样由宿主负责更新或清除）；行号 0、超过文档逻辑行数或
+/// 所在行被折叠隐藏时静默跳过。渲染为 gutter 最左侧 2px 竖条，v1 对
+/// Deleted 也按给定行渲染（不画在前行下缘/行间）——锚定行号由宿主负责。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextGitMark {
+    pub line: u32,
+    pub kind: TextGitMarkKind,
+}
+
+impl TextGitMark {
+    pub fn new(line: u32, kind: TextGitMarkKind) -> Self {
+        Self { line, kind }
+    }
+}
+
+/// git gutter 标记条带（文本空间）：所在显示行的 2px 竖条素材，`y` 为
+/// 该显示行的行顶（软换行取逻辑行行首），颜色由世界按种类解析。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextGitGutterMark {
+    pub y: f32,
+    pub height: f32,
+    pub kind: TextGitMarkKind,
+}
+
+/// [`crate::ComponentGeometry::TextInput`] 的 git gutter 几何：按种类
+/// 分组的 2px 竖条（节点空间）与已解析颜色。空种类不产生绘制批次。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextGitGutterGeometry {
+    pub added: Vec<LayoutBox>,
+    pub modified: Vec<LayoutBox>,
+    pub deleted: Vec<LayoutBox>,
+    pub added_color: [f32; 4],
+    pub modified_color: [f32; 4],
+    pub deleted_color: [f32; 4],
+}
+
 /// 编辑器查找匹配 span。`offset`/`length` 为字节偏移，`current` 标记"当前
 /// 匹配"（渲染强调样式）。与诊断 span 相同，宿主负责在文本变化后更新或
 /// 清除；越界部分在几何计算时被钳制。
@@ -406,6 +451,9 @@ pub enum StandardVisual {
         /// 代码折叠区间（见 [`TextCodeFold`]）。宿主在文本变化后重新喂；
         /// 哪些区间处于折叠态由组件内部维护，渲染按折叠后的视图展示。
         folds: Arc<[TextCodeFold]>,
+        /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本
+        /// 变化后重新喂；行号无效或被折叠隐藏的标记在几何派生时静默跳过。
+        git_marks: Arc<[TextGitMark]>,
         /// 多行编辑器的内部派生渲染选项（出现高亮、相对行号、空白字符
         /// 显示、wrap guide 列参考线）。全部默认关闭；开启的特征由世界侧
         /// 从输入状态派生几何，不给宿主增加喂入负担。
@@ -878,6 +926,8 @@ pub enum ComponentGeometry {
         line_labels: Vec<LineLabel>,
         /// 折叠几何：gutter 箭头（可点击切换）与折叠摘要标记命中框。
         folds: TextFoldGeometry,
+        /// git gutter 竖条（按种类分组，节点空间矩形 + 已解析的颜色）。
+        git_marks: TextGitGutterGeometry,
         /// 行号文本颜色与字号。
         line_labels_color: [f32; 4],
         line_labels_font_size: f32,
@@ -1687,6 +1737,9 @@ pub struct TextInputPresentation {
     pub line_numbers: Vec<u32>,
     /// 折叠摘要标记（文本空间，存在折叠态区间时计算）。
     pub fold_marks: Vec<TextFoldMark>,
+    /// git gutter 标记条带（文本空间，仅多行态计算；宿主未喂标记时为空
+    /// 向量，零分配短路）。
+    pub git_marks: Vec<TextGitGutterMark>,
     /// 锚定浮层度量（补全弹层行宽缓存 + hover 锚点）。列表指针相等时
     /// 行宽度量整段复用；无浮层时全部为 `None`（零分配）。
     pub overlay_metrics: TextOverlayMetrics,

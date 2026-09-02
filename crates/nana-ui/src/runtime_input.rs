@@ -3719,6 +3719,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                git_marks: std::sync::Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -3834,6 +3835,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                git_marks: std::sync::Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -5317,6 +5319,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: std::sync::Arc::from([]),
+                git_marks: std::sync::Arc::from([]),
                 editor_options: Default::default(),
             }),
         );

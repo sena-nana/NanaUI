@@ -14,8 +14,8 @@ use nana_ui_core::{
 use crate::animation::ActiveAnimation;
 use crate::components::{
     EmptyStateTextPresentation, ModalTextPresentation, TextDiagnosticMark, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
-    TextWhitespaceKind, TextWhitespaceMark,
+    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind, TextMatchMark,
+    TextMatchMarker, TextMatchSpan, TextOverlayMetrics, TextWhitespaceKind, TextWhitespaceMark,
 };
 use crate::schedule::{DirtyMask, SystemWork, push_work};
 use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
@@ -2123,6 +2123,7 @@ impl UiWorld {
                 matches,
                 line_numbers,
                 indent_guides,
+                git_marks,
                 editor_options,
                 ..
             }) => TextInputEditorExtras {
@@ -2130,6 +2131,7 @@ impl UiWorld {
                 matches: Arc::clone(matches),
                 line_numbers: *line_numbers,
                 indent_guides: indent_guides.clone(),
+                git_marks: Arc::clone(git_marks),
                 editor: editor_options.clone(),
             },
             _ => TextInputEditorExtras::default(),
@@ -4651,6 +4653,45 @@ impl UiWorld {
                 } else {
                     Vec::new()
                 };
+                // git gutter 竖条：gutter 最左侧 2px（宿主预留 padding-left
+                // 的区域），随滚动平移并按内容区纵向裁剪。颜色取语义令牌：
+                // 新增 = success、修改 = warning、删除 = danger（调色板的
+                // 绿/黄/红三档，与诊断条带同源的语义配色，对应 git 惯例）。
+                let git_color = |kind| match kind {
+                    crate::TextGitMarkKind::Added => {
+                        self.style_model.palette.success.as_rgba_array()
+                    }
+                    crate::TextGitMarkKind::Modified => {
+                        self.style_model.palette.warning.as_rgba_array()
+                    }
+                    crate::TextGitMarkKind::Deleted => {
+                        self.style_model.palette.danger.as_rgba_array()
+                    }
+                };
+                let mut git_geometry = crate::TextGitGutterGeometry {
+                    added_color: git_color(crate::TextGitMarkKind::Added),
+                    modified_color: git_color(crate::TextGitMarkKind::Modified),
+                    deleted_color: git_color(crate::TextGitMarkKind::Deleted),
+                    ..crate::TextGitGutterGeometry::default()
+                };
+                for mark in &presentation.git_marks {
+                    let y = content.y + mark.y - scroll_y;
+                    // 视口外（上/下越界）的标记不产生图元。
+                    if y + mark.height < content.y || y > content.y + content.height {
+                        continue;
+                    }
+                    let rect = LayoutBox {
+                        x: bounds.x + border,
+                        y,
+                        width: 2.0,
+                        height: mark.height,
+                    };
+                    match mark.kind {
+                        crate::TextGitMarkKind::Added => git_geometry.added.push(rect),
+                        crate::TextGitMarkKind::Modified => git_geometry.modified.push(rect),
+                        crate::TextGitMarkKind::Deleted => git_geometry.deleted.push(rect),
+                    }
+                }
                 // 折叠几何：宿主喂入的每个折叠区间在起始行 gutter 画一个
                 // 可点击箭头（折叠态右箭头/展开态下箭头）；折叠态区间在
                 // 起始行行尾还有摘要标记命中框。gutter 空间不足（padding
@@ -4752,6 +4793,7 @@ impl UiWorld {
                     indent_guides,
                     line_labels,
                     folds: fold_geometry,
+                    git_marks: git_geometry,
                     line_labels_color: self.style_model.palette.faint.as_rgba_array(),
                     line_labels_font_size: (size.text_size() - 1.0).max(10.0),
                     text: crate::ComponentTextRegion {
@@ -7409,6 +7451,9 @@ struct TextInputPresentationSource {
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
+    /// git gutter 标记：宿主行号已校验并映射为显示行索引（0 基）；行号
+    /// 无效或所在行被折叠隐藏的标记在构建时剔除。
+    git_marks: Arc<[(u32, TextGitMarkKind)]>,
     /// 内部派生渲染选项（出现高亮、相对行号、空白显示、wrap guide）。
     /// 占位符/IME 组合态置默认（全部关闭）。
     editor: TextEditorRenderOptions,
@@ -7433,6 +7478,7 @@ struct TextInputEditorExtras {
     matches: Arc<[TextMatchSpan]>,
     line_numbers: bool,
     indent_guides: Option<Arc<str>>,
+    git_marks: Arc<[TextGitMark]>,
     editor: TextEditorRenderOptions,
 }
 
@@ -7495,6 +7541,9 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            // 占位符态没有真实文档内容，git 标记随行号栏一并跳过（避免在
+            // 占位文本旁渲染指向不存在行的标记）。
+            git_marks: Arc::from([]),
             editor: TextEditorRenderOptions::default(),
             focused: false,
             fold: None,
@@ -7543,9 +7592,10 @@ fn build_text_input_presentation_source(
             .filter(|focus| *focus <= ime.text.len() && ime.text.is_char_boundary(*focus))
             .unwrap_or(ime.text.len());
         // 多光标限制：组合输入只挂在主光标上，组合期隐藏附加光标。
+        let composed = format!("{prefix}{}{suffix}", ime.text);
         return TextInputPresentationSource {
             text: TextContent {
-                value: format!("{prefix}{}{suffix}", ime.text),
+                value: composed.clone(),
             },
             placeholder: false,
             selection: None,
@@ -7557,6 +7607,13 @@ fn build_text_input_presentation_source(
             matches: extras.matches,
             line_numbers: false,
             indent_guides: None,
+            // 组合期标记按原值行号继续锚定（与诊断一致，宿主拥有生命周期）。
+            git_marks: map_git_marks(
+                &state.value,
+                &composed,
+                extras.git_marks,
+                fold_view.as_ref(),
+            ),
             editor: TextEditorRenderOptions::default(),
             focused,
             fold: fold_view,
@@ -7608,6 +7665,13 @@ fn build_text_input_presentation_source(
         .iter()
         .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
         .collect::<Vec<_>>();
+    // git gutter 标记：宿主行号校验 + 折叠隐藏行剔除后映射为显示行索引。
+    let git_marks = map_git_marks(
+        &state.value,
+        &base_value,
+        extras.git_marks,
+        fold_view.as_ref(),
+    );
     TextInputPresentationSource {
         text: TextContent { value: base_value },
         placeholder: false,
@@ -7618,6 +7682,7 @@ fn build_text_input_presentation_source(
         multiline,
         diagnostics: Arc::from(diagnostics),
         matches: Arc::from(matches),
+        git_marks,
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
         editor: extras.editor,
@@ -7627,6 +7692,58 @@ fn build_text_input_presentation_source(
         hover,
         minimap_line_lengths,
     }
+}
+
+/// git gutter 标记的行号映射：宿主行号（1 基）→ 显示行索引（0 基）。
+/// `value` 是行号语义所属的原始值（行起点按它定位），`display` 是实际
+/// 排版的显示值（行索引按它计数）。行号 0、超过文档逻辑行数（尾随换行
+/// 不产生幻影行，与行号栏语义一致）或所在行被折叠隐藏的标记静默跳过。
+/// 空列表原样返回（零分配零遍历）。
+fn map_git_marks(
+    value: &str,
+    display: &str,
+    marks: Arc<[TextGitMark]>,
+    view: Option<&TextDisplayView>,
+) -> Arc<[(u32, TextGitMarkKind)]> {
+    if marks.is_empty() {
+        return Arc::from([]);
+    }
+    let newlines = value.matches('\n').count();
+    let line_count = if value.ends_with('\n') {
+        newlines
+    } else {
+        newlines + 1
+    };
+    marks
+        .iter()
+        .filter_map(|mark| {
+            let line_index = usize::try_from(mark.line).ok()?.checked_sub(1)?;
+            if line_index >= line_count {
+                return None;
+            }
+            let mut line_start = 0usize;
+            for _ in 0..line_index {
+                line_start += value[line_start..].find('\n')? + 1;
+            }
+            if view.is_some_and(|view| {
+                view.spans
+                    .iter()
+                    .any(|span| view.span_hides(span, line_start))
+            }) {
+                return None;
+            }
+            let display_start = match view {
+                Some(view) => view.display_of(line_start),
+                None => line_start,
+            };
+            Some((
+                display[..display_start.min(display.len())]
+                    .matches('\n')
+                    .count() as u32,
+                mark.kind,
+            ))
+        })
+        .collect()
 }
 
 /// minimap 行长收集：每个逻辑行的非空白字符数（O(文档) 单趟扫描）。
@@ -7956,77 +8073,81 @@ fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
-    let (line_tops, line_numbers) = if source.line_numbers && source.multiline {
-        let value = source.text.value.as_str();
-        let mut starts: Vec<usize> = vec![0];
-        for (index, byte) in value.bytes().enumerate() {
-            if byte == b'\n' {
-                starts.push(index + 1);
+    // 行顶表：行号栏或 git gutter 标记需要时计算（一次/行的 text_position
+    // 探针；两者都没有时零成本短路）。git 标记复用同一张表按显示行索引
+    // 定位，软换行自然取逻辑行行首。
+    let (line_tops, line_numbers) =
+        if source.multiline && (source.line_numbers || !source.git_marks.is_empty()) {
+            let value = source.text.value.as_str();
+            let mut starts: Vec<usize> = vec![0];
+            for (index, byte) in value.bytes().enumerate() {
+                if byte == b'\n' {
+                    starts.push(index + 1);
+                }
             }
-        }
-        if value.ends_with('\n') {
-            starts.pop();
-        }
-        let tops: Vec<f32> = starts
-            .iter()
-            .map(|&start| {
-                shaper
-                    .text_position(id, &source.text, start, style, presentation_constraints)
-                    .1
-            })
-            .collect();
-        // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
-        // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
-        let mut numbers = match &source.fold {
-            Some(view) => {
-                let span_lines: Vec<(usize, u32)> = view
-                    .spans
-                    .iter()
-                    .map(|span| {
-                        (
-                            view.value[..span.display_start].matches('\n').count(),
-                            span.hidden_lines,
-                        )
-                    })
-                    .collect();
-                starts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        let mut number = index as u32;
-                        for &(span_line, hidden) in &span_lines {
-                            if span_line < index {
-                                number += hidden;
-                            }
-                        }
-                        number + 1
-                    })
-                    .collect()
+            if value.ends_with('\n') {
+                starts.pop();
             }
-            None => Vec::new(),
-        };
-        // 相对行号（Zed 惯例，见 zed-industries/zed#62311：光标行显示绝
-        // 对行号，其余行显示与光标所在行的距离；"光标行显示 1" 是被报告
-        // 的 bug 而非预期）。多光标按主光标；距离按显示行计（所见即所得，
-        // 折叠摘要行也参与计数）。
-        if source.editor.relative_line_numbers {
-            let caret_line = value[..clamp_boundary(value, source.caret)]
-                .matches('\n')
-                .count();
-            numbers = (0..tops.len())
-                .map(|index| {
-                    if index == caret_line {
-                        numbers.get(index).copied().unwrap_or(index as u32 + 1)
-                    } else {
-                        (index.abs_diff(caret_line)).min(u32::MAX as usize) as u32
-                    }
+            let tops: Vec<f32> = starts
+                .iter()
+                .map(|&start| {
+                    shaper
+                        .text_position(id, &source.text, start, style, presentation_constraints)
+                        .1
                 })
                 .collect();
-        }
-        (tops, numbers)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+            // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
+            // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
+            let mut numbers = match &source.fold {
+                Some(view) => {
+                    let span_lines: Vec<(usize, u32)> = view
+                        .spans
+                        .iter()
+                        .map(|span| {
+                            (
+                                view.value[..span.display_start].matches('\n').count(),
+                                span.hidden_lines,
+                            )
+                        })
+                        .collect();
+                    starts
+                        .iter()
+                        .enumerate()
+                        .map(|(index, _)| {
+                            let mut number = index as u32;
+                            for &(span_line, hidden) in &span_lines {
+                                if span_line < index {
+                                    number += hidden;
+                                }
+                            }
+                            number + 1
+                        })
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            // 相对行号（Zed 惯例，见 zed-industries/zed#62311：光标行显示绝
+            // 对行号，其余行显示与光标所在行的距离；"光标行显示 1" 是被报告
+            // 的 bug 而非预期）。多光标按主光标；距离按显示行计（所见即所得，
+            // 折叠摘要行也参与计数）。
+            if source.editor.relative_line_numbers {
+                let caret_line = value[..clamp_boundary(value, source.caret)]
+                    .matches('\n')
+                    .count();
+                numbers = (0..tops.len())
+                    .map(|index| {
+                        if index == caret_line {
+                            numbers.get(index).copied().unwrap_or(index as u32 + 1)
+                        } else {
+                            (index.abs_diff(caret_line)).min(u32::MAX as usize) as u32
+                        }
+                    })
+                    .collect();
+            }
+            (tops, numbers)
+        } else {
+            (Vec::new(), Vec::new())
+        };
     // 折叠摘要标记：折叠起始行行尾 ` …N` 的文本框（文本空间），供几何层
     // 生成点击命中区域。
     let fold_marks = match &source.fold {
@@ -8060,6 +8181,26 @@ fn shape_text_input_presentation(
             })
             .collect(),
         _ => Vec::new(),
+    };
+
+    // git gutter 标记条带：显示行行顶的 2px 竖条素材（文本空间；x 与
+    // 颜色由几何层按 gutter 与语义令牌解析）。越界行索引（源阶段已过滤，
+    // 双重保险）静默跳过；单行态或空列表零分配短路。
+    let git_marks = if source.multiline && !source.git_marks.is_empty() {
+        source
+            .git_marks
+            .iter()
+            .filter_map(|&(line, kind)| {
+                let top = *line_tops.get(line as usize)?;
+                Some(TextGitGutterMark {
+                    y: top,
+                    height: line_height,
+                    kind,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
     };
 
     // 锚定浮层度量：补全行宽按 items 指针相等短路（列表未变零测量、
@@ -8136,6 +8277,7 @@ fn shape_text_input_presentation(
         line_tops,
         line_numbers,
         fold_marks,
+        git_marks,
         overlay_metrics,
         minimap_line_lengths: source.minimap_line_lengths,
     }
@@ -12331,6 +12473,7 @@ mod tests {
                 line_numbers: true,
                 indent_guides: None,
                 folds: Arc::from([]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -12480,6 +12623,7 @@ mod tests {
                 line_numbers,
                 indent_guides: None,
                 folds,
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -12557,6 +12701,7 @@ mod tests {
                 line_numbers,
                 indent_guides: None,
                 folds,
+                git_marks: Arc::from([]),
                 editor_options,
             }),
         );
@@ -12609,10 +12754,448 @@ mod tests {
         world.resolve_styles(&[node(1)]).unwrap();
     }
 
+    /// git gutter 测试的编辑器 world：多行 TextInput 视觉 + 指定标记/行号/
+    /// 折叠/滚动/左内边距，已布局（font 10、行高 14、200x80）。未 shape。
+    fn git_gutter_editor_world(
+        world: &mut UiWorld,
+        value: &str,
+        marks: Arc<[crate::TextGitMark]>,
+        line_numbers: bool,
+        scroll_y: f32,
+        folds: Arc<[crate::TextCodeFold]>,
+        padding_left: Option<f32>,
+    ) {
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "textarea".into(),
+            },
+        );
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers,
+                indent_guides: None,
+                folds,
+                git_marks: marks,
+                editor_options: Default::default(),
+            }),
+        );
+        let mut layout = nana_ui_core::LayoutStyle {
+            width: Some(nana_ui_core::LengthSpec::Px(200.0)),
+            height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+            font_size: Some(10.0),
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+            ..nana_ui_core::LayoutStyle::default()
+        };
+        if let Some(padding_left) = padding_left {
+            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding_left));
+        }
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(layout),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_text_input(
+            node(1),
+            Some(TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        queue.set_accessibility(
+            node(1),
+            AccessibilityState {
+                multiline: true,
+                editable: true,
+                ..AccessibilityState::default()
+            },
+        );
+        queue.set_interaction(
+            node(1),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        if scroll_y > 0.0 {
+            queue.set_scroll_offset(
+                node(1),
+                ScrollOffset {
+                    x: 0.0,
+                    y: scroll_y,
+                },
+            );
+        }
+        queue.write_layout(
+            node(1),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[node(1)]).unwrap();
+    }
+
+    /// 取 TextInput 几何中的 git gutter 部分（其余调用方自行断言）。
+    fn git_geometry_of(world: &UiWorld) -> crate::TextGitGutterGeometry {
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput { git_marks, .. } = geometry else {
+            panic!("expected text input geometry");
+        };
+        git_marks
+    }
+
     fn focus_editor(world: &mut UiWorld) {
         let mut focus = MutationQueue::new();
         focus.request_focus(document(1), Some(node(1)));
         world.commit(focus).unwrap();
+    }
+
+    #[test]
+    fn git_gutter_marks_render_three_kinds_at_their_line_tops() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            "甲乙\nthird\n末",
+            Arc::from([
+                crate::TextGitMark::new(1, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(2, crate::TextGitMarkKind::Modified),
+                crate::TextGitMark::new(3, crate::TextGitMarkKind::Deleted),
+            ]),
+            true,
+            0.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        // 文本空间：三类各自落在所在显示行的行顶，条高一行。
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.git_marks.len(), 3);
+        let kinds = presentation
+            .git_marks
+            .iter()
+            .map(|mark| mark.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::TextGitMarkKind::Added,
+                crate::TextGitMarkKind::Modified,
+                crate::TextGitMarkKind::Deleted,
+            ]
+        );
+        assert_eq!(presentation.git_marks[0].y, 0.0);
+        assert_eq!(presentation.git_marks[1].y, 14.0);
+        assert_eq!(presentation.git_marks[2].y, 28.0);
+        assert!(
+            presentation
+                .git_marks
+                .iter()
+                .all(|mark| mark.height == 14.0)
+        );
+
+        // 节点空间：按种类分组，颜色取语义令牌（success/warning/danger，
+        // 对应 git 惯例的绿/黄/红），竖条 2px 贴 gutter 最左缘。
+        let git = git_geometry_of(&world);
+        assert_eq!(git.added.len(), 1);
+        assert_eq!(git.modified.len(), 1);
+        assert_eq!(git.deleted.len(), 1);
+        let palette = &world.style_model.palette;
+        assert_eq!(git.added_color, palette.success.as_rgba_array());
+        assert_eq!(git.modified_color, palette.warning.as_rgba_array());
+        assert_eq!(git.deleted_color, palette.danger.as_rgba_array());
+        assert_eq!(git.added[0].x, 0.0);
+        assert_eq!(git.added[0].width, 2.0);
+        assert_eq!(git.added[0].height, 14.0);
+        assert_eq!(git.added[0].y, 0.0);
+        assert_eq!(git.modified[0].y, 14.0);
+        assert_eq!(git.deleted[0].y, 28.0);
+    }
+
+    #[test]
+    fn git_gutter_empty_marks_short_circuit_geometry_and_line_tops() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            "a\nb\nc",
+            Arc::from([]),
+            false,
+            0.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert!(presentation.git_marks.is_empty());
+        // 未开行号栏且无标记：行顶表不派生（零遍历短路）。
+        assert!(presentation.line_tops.is_empty());
+        let git = git_geometry_of(&world);
+        assert!(git.added.is_empty());
+        assert!(git.modified.is_empty());
+        assert!(git.deleted.is_empty());
+    }
+
+    #[test]
+    fn git_gutter_skips_invalid_line_numbers() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            "a\nb\nc",
+            Arc::from([
+                crate::TextGitMark::new(0, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(2, crate::TextGitMarkKind::Modified),
+                crate::TextGitMark::new(4, crate::TextGitMarkKind::Deleted),
+                crate::TextGitMark::new(99, crate::TextGitMarkKind::Added),
+            ]),
+            false,
+            0.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 行号 0 与超总行的标记静默跳过，仅有效行保留。
+        assert_eq!(presentation.git_marks.len(), 1);
+        assert_eq!(presentation.git_marks[0].y, 14.0);
+        assert_eq!(
+            presentation.git_marks[0].kind,
+            crate::TextGitMarkKind::Modified
+        );
+
+        // 尾随换行不产生幻影行（与行号栏语义一致）：末空行上的标记无效。
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            "a\nb\n",
+            Arc::from([
+                crate::TextGitMark::new(3, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(2, crate::TextGitMarkKind::Deleted),
+            ]),
+            false,
+            0.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        assert_eq!(presentation.git_marks.len(), 1);
+        assert_eq!(
+            presentation.git_marks[0].kind,
+            crate::TextGitMarkKind::Deleted
+        );
+    }
+
+    #[test]
+    fn git_gutter_hides_marks_on_folded_lines_and_maps_visible_ones() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            FOLD_VALUE,
+            Arc::from([
+                crate::TextGitMark::new(1, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(3, crate::TextGitMarkKind::Modified),
+                crate::TextGitMark::new(5, crate::TextGitMarkKind::Deleted),
+            ]),
+            false,
+            0.0,
+            Arc::from([FOLD_BLOCK]),
+            None,
+        );
+        // 折叠隐藏 2-4 行（与既有折叠测试同一区间）。
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 行 3 被折叠隐藏：剔除；行 1、行 5 保留并映射到折叠后的显示行
+        // （行 1 → 显示行 0，行 5 → 显示行 1）。
+        assert_eq!(presentation.git_marks.len(), 2);
+        assert_eq!(
+            presentation.git_marks[0],
+            crate::TextGitGutterMark {
+                y: 0.0,
+                height: 14.0,
+                kind: crate::TextGitMarkKind::Added,
+            }
+        );
+        assert_eq!(
+            presentation.git_marks[1],
+            crate::TextGitGutterMark {
+                y: 14.0,
+                height: 14.0,
+                kind: crate::TextGitMarkKind::Deleted,
+            }
+        );
+    }
+
+    #[test]
+    fn git_gutter_clips_marks_to_the_viewport_when_scrolled() {
+        let value = (0..10)
+            .map(|index| format!("line{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let marks = (1..=10)
+            .map(|line| crate::TextGitMark::new(line, crate::TextGitMarkKind::Added))
+            .collect::<Arc<[crate::TextGitMark]>>();
+
+        // 滚到底（60 = 10 行 × 14 − 80）：前 4 行滚出视口顶部不产生图元，
+        // 行 5 只剩触边的部分，行 6-10 完整可见。
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            &value,
+            Arc::clone(&marks),
+            false,
+            60.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let git = git_geometry_of(&world);
+        assert_eq!(git.added.len(), 6);
+        assert_eq!(git.added[0].y, -4.0);
+        assert_eq!(git.added[5].y, 66.0);
+
+        // 不滚动：视口底（80px）以下的行不产生图元。
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(&mut world, &value, marks, false, 0.0, Arc::from([]), None);
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        let git = git_geometry_of(&world);
+        assert_eq!(git.added.len(), 6);
+        assert_eq!(git.added[0].y, 0.0);
+        assert_eq!(git.added[5].y, 70.0);
+    }
+
+    #[test]
+    fn git_gutter_coexists_with_line_numbers_and_fold_gutters() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            FOLD_VALUE,
+            Arc::from([
+                crate::TextGitMark::new(1, crate::TextGitMarkKind::Added),
+                crate::TextGitMark::new(5, crate::TextGitMarkKind::Deleted),
+            ]),
+            true,
+            0.0,
+            Arc::from([FOLD_BLOCK]),
+            Some(46.0),
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+        world.commit(queue).unwrap();
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let presentation = world
+            .text_input_presentation(node(1))
+            .expect("presentation");
+        // 行号按折叠后的显示行派生（2 行），git 标记与其共享行顶表。
+        assert_eq!(presentation.line_tops.len(), 2);
+        assert_eq!(presentation.line_numbers, vec![1, 5]);
+        assert_eq!(presentation.git_marks.len(), 2);
+
+        let geometry = world.component_geometry(node(1)).expect("geometry");
+        let crate::ComponentGeometry::TextInput {
+            line_labels,
+            folds,
+            git_marks,
+            ..
+        } = geometry
+        else {
+            panic!("expected text input geometry");
+        };
+        assert_eq!(line_labels.len(), 2);
+        assert_eq!(folds.gutters.len(), 1);
+        // slot 与几何互不冲突：git 竖条占 gutter 最左 2px，折叠箭头从
+        // border + 2px 起，行号标签右对齐于 padding 区。
+        assert_eq!(git_marks.added[0].x + git_marks.added[0].width, 2.0);
+        assert_eq!(folds.gutters[0].bounds.x, 2.0);
+        assert_eq!(git_marks.added[0].y, folds.gutters[0].bounds.y);
+    }
+
+    #[test]
+    fn git_gutter_refeed_replaces_marks() {
+        let mut world = UiWorld::default();
+        git_gutter_editor_world(
+            &mut world,
+            "a\nb\nc",
+            Arc::from([crate::TextGitMark::new(1, crate::TextGitMarkKind::Added)]),
+            false,
+            0.0,
+            Arc::from([]),
+            None,
+        );
+        let mut shaper = FunctionalShaper::default();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+        assert_eq!(git_geometry_of(&world).added.len(), 1);
+
+        // 宿主重喂（git 状态推进）：新集合整组替换旧集合。
+        let mut queue = MutationQueue::new();
+        queue.set_standard_visual(
+            node(1),
+            Some(StandardVisual::TextInput {
+                placeholder: Arc::from(""),
+                size: nana_ui_core::ControlSize::Medium,
+                secure: false,
+                invalid: false,
+                steppers: false,
+                diagnostics: Arc::from([]),
+                matches: Arc::from([]),
+                line_numbers: false,
+                indent_guides: None,
+                folds: Arc::from([]),
+                git_marks: Arc::from([
+                    crate::TextGitMark::new(2, crate::TextGitMarkKind::Modified),
+                    crate::TextGitMark::new(3, crate::TextGitMarkKind::Deleted),
+                ]),
+                editor_options: Default::default(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+        let git = git_geometry_of(&world);
+        assert!(git.added.is_empty());
+        assert_eq!(git.modified.len(), 1);
+        assert_eq!(git.modified[0].y, 14.0);
+        assert_eq!(git.deleted.len(), 1);
+        assert_eq!(git.deleted[0].y, 28.0);
     }
 
     #[test]
@@ -12701,6 +13284,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([crate::TextCodeFold::new(107, 128)]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -12725,6 +13309,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -12964,6 +13549,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -13073,6 +13659,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: Some(Arc::from("\t")),
                 folds: Arc::from([]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
@@ -17373,6 +17960,7 @@ mod tests {
                 line_numbers: false,
                 indent_guides: None,
                 folds: Arc::from([]),
+                git_marks: Arc::from([]),
                 editor_options: Default::default(),
             }),
         );
