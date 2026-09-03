@@ -29,6 +29,8 @@ import "@nanaui/nanavue-components/controls.css";
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
+`dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
+
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
 部分族需要 Cargo feature（`calendar`、`charts`、`graph-canvas`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 只控制 `nana-ui` 的再导出路径和 `ComponentSupport` 的 `compiled` 标记；控件实现都在 `nana-ui-runtime` 里，不启用也照样编译，仍可从 `nana_ui::runtime` 取到。要真正裁二进制得在 `nana-ui-runtime` 一侧做，目前没有。

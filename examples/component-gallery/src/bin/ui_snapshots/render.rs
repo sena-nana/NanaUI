@@ -28,6 +28,8 @@ use crate::write::{self, Size};
 mod gpu;
 #[path = "render/migration_next.rs"]
 mod migration_next;
+#[path = "render/motion.rs"]
+mod motion;
 #[path = "render/offscreen.rs"]
 mod offscreen;
 
@@ -49,6 +51,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?.join("target/ui-snapshots"));
 
+    let motion_paths = motion::generate(&mut snapshots, &output)?;
     let mut paths = vec![
         runtime_scene_snapshot(
             &mut snapshots,
@@ -507,6 +510,7 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         &mut settings,
     )?);
 
+    paths.extend(motion_paths);
     Ok(paths)
 }
 
