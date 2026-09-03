@@ -17,7 +17,7 @@ use nana_ui_platform::{
     register_application_icon, window_resize_edge,
 };
 use nana_ui_runtime::{
-    AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, Task,
+    AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
 };
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
@@ -55,7 +55,7 @@ use winit::window::{
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    HostFailure, ImeSurroundingSnapshot, InputRouting, RuntimeProgram, RuntimeProgramContext,
+    HostFailure, ImeSurroundingSnapshot, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, gated_runtime_window_update,
     runtime_ime_surrounding, runtime_text_input_request,
 };
@@ -1870,10 +1870,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
         // Program messages stay queued until the next frame so navigation
         // coalesces and does not run inside the pointer handler.
-        let routing = input_routing(disposition, self.program.document(id), &input);
-        let program_input =
-            self.program
-                .input_event_routed(id, &input, &routing, &self.context_for(id));
+        let pointer_hit = input_pointer_hit(self.program.document(id), &input);
+        let program_input = self.program.input_event_routed(
+            id,
+            &input,
+            pointer_hit,
+            &self.context_for(id),
+        );
         if let Err(error) = &program_input {
             self.program.host_failure(HostFailure::InputHandler {
                 window: id,
@@ -2764,28 +2767,21 @@ fn should_deliver_program_ime(modal_blocks: bool) -> bool {
     !modal_blocks
 }
 
-/// Routing context for the program input hook: widget-consumption disposition
-/// plus the topmost interactive node under the pointer for pointer and wheel
-/// events. Keyboard and IME events carry no pointer hit.
-fn input_routing(
-    disposition: nana_ui_platform::InputDisposition,
+/// Topmost interactive node under the pointer for pointer and wheel events;
+/// `None` for every other event.
+fn input_pointer_hit(
     document: Option<&nana_ui_scene::RuntimeDocument>,
     event: &InputEvent,
-) -> InputRouting {
-    let pointer_hit = match event {
-        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => {
-            document.and_then(|document| {
+) -> Option<StableNodeId> {
+    match event {
+        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => document
+            .and_then(|document| {
                 document
                     .context()
                     .world()
                     .hit_test(document.document(), *x, *y)
-            })
-        }
+            }),
         _ => None,
-    };
-    InputRouting {
-        disposition,
-        pointer_hit,
     }
 }
 
@@ -3388,11 +3384,11 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply, input_routing,
-        invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
-        platform_input_key, platform_input_modifiers, platform_window_event,
-        resolved_scene_ime_request, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position,
+        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply,
+        input_pointer_hit, invalidate_program_host_textures, mouse_button_code,
+        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
+        platform_window_event, resolved_scene_ime_request, route_window_command,
+        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, tablet_pointer_id, window_level, window_surface_effect,
         window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
@@ -3424,7 +3420,7 @@ mod tests {
     }
 
     #[test]
-    fn input_routing_reports_the_topmost_pointer_hit() {
+    fn input_pointer_hit_reports_the_topmost_node() {
         use nana_ui_platform::InputModifiers;
         use nana_ui_runtime::{Button, DocumentId, LayoutViewport, MeasureTextShaper};
         use nana_ui_scene::RuntimeDocument;
@@ -3452,15 +3448,10 @@ mod tests {
             line_delta: true,
             modifiers: InputModifiers::default(),
         };
-        let routing = input_routing(
-            InputDisposition {
-                prevent_default: true,
-            },
-            Some(&runtime),
-            &wheel,
+        assert_eq!(
+            input_pointer_hit(Some(&runtime), &wheel),
+            Some(button.stable_id())
         );
-        assert!(routing.disposition.prevent_default);
-        assert_eq!(routing.pointer_hit, Some(button.stable_id()));
 
         let outside = InputEvent::Wheel {
             x: layout.x + layout.width + 40.0,
@@ -3470,9 +3461,7 @@ mod tests {
             line_delta: true,
             modifiers: InputModifiers::default(),
         };
-        let routing = input_routing(InputDisposition::default(), Some(&runtime), &outside);
-        assert!(!routing.disposition.prevent_default);
-        assert_eq!(routing.pointer_hit, None);
+        assert_eq!(input_pointer_hit(Some(&runtime), &outside), None);
 
         let keyboard = InputEvent::Keyboard {
             pressed: true,
@@ -3482,12 +3471,8 @@ mod tests {
             repeat: false,
             modifiers: InputModifiers::default(),
         };
-        let routing = input_routing(InputDisposition::default(), Some(&runtime), &keyboard);
-        assert_eq!(routing.pointer_hit, None);
-        assert_eq!(
-            input_routing(InputDisposition::default(), None, &wheel).pointer_hit,
-            None
-        );
+        assert_eq!(input_pointer_hit(Some(&runtime), &keyboard), None);
+        assert_eq!(input_pointer_hit(None, &wheel), None);
     }
 
     #[cfg(not(target_os = "android"))]
