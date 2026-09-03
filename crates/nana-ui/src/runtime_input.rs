@@ -334,9 +334,11 @@ impl RuntimeInputAdapter {
                                     .transpose()?
                                     .unwrap_or(false)
                                 || context.clear_calendar_heatmap_hover(document)?
-                                || context.sync_split_handle_hover(
+                                || context.sync_split_handle_hover_near(
                                     document,
-                                    context.split_handle_near(document, *x, *y),
+                                    *x,
+                                    *y,
+                                    now,
                                 )?
                                 || target.is_some()
                         }

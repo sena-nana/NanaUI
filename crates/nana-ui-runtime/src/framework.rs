@@ -401,6 +401,20 @@ struct ComponentLifecycle {
     overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64)>,
     overlay_activation_tokens: HashMap<StableNodeId, u64>,
     next_overlay_activation_token: u64,
+    split_hover_probe_last: HashMap<DocumentId, Duration>,
+}
+
+impl ComponentLifecycle {
+    fn begin_split_hover_probe(&mut self, document: DocumentId, now: Duration) -> bool {
+        const HOVER_PROBE_INTERVAL: Duration = Duration::from_millis(8);
+        if let Some(last) = self.split_hover_probe_last.get(&document)
+            && now.saturating_sub(*last) < HOVER_PROBE_INTERVAL
+        {
+            return false;
+        }
+        self.split_hover_probe_last.insert(document, now);
+        true
+    }
 }
 
 type ActivationFn =
@@ -1460,6 +1474,15 @@ impl AppContext {
                     .filter_map(|(_, tooltip)| tooltip.show_at),
             )
             .min()
+    }
+
+    /// Whether a split handle hover probe may run now for this document;
+    /// records the probe when true. Split-pane pointermove handling gates the
+    /// probe to one per frame interval because a probe outside every handle
+    /// slop walks the whole document.
+    pub(crate) fn begin_split_hover_probe(&mut self, document: DocumentId, now: Duration) -> bool {
+        self.component_lifecycle
+            .begin_split_hover_probe(document, now)
     }
 
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
