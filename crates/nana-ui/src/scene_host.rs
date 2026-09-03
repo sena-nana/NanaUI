@@ -41,7 +41,7 @@ use winit::icon::{Icon, RgbaIcon};
 use winit::keyboard::ModifiersState;
 use winit::monitor::Fullscreen;
 #[cfg(target_os = "macos")]
-use winit::platform::macos::WindowAttributesMacOS;
+use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 #[cfg(target_os = "windows")]
 use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
@@ -1119,6 +1119,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     return;
                 };
                 if let Some(window) = self.window(id) {
+                    window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+                }
+            }
+            RoutedWindowCommand::SetSimpleFullscreen(id) => {
+                let WindowCommand::SetSimpleFullscreen { fullscreen, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    #[cfg(target_os = "macos")]
+                    window.set_simple_fullscreen(fullscreen);
+                    #[cfg(not(target_os = "macos"))]
                     window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
                 }
             }
@@ -2699,6 +2710,7 @@ enum RoutedWindowCommand {
     Move(WindowId),
     SetBounds(WindowId),
     SetFullscreen(WindowId),
+    SetSimpleFullscreen(WindowId),
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
@@ -2723,6 +2735,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::SetBounds { id, .. } if known(*id) => RoutedWindowCommand::SetBounds(*id),
         WindowCommand::SetFullscreen { id, .. } if known(*id) => {
             RoutedWindowCommand::SetFullscreen(*id)
+        }
+        WindowCommand::SetSimpleFullscreen { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetSimpleFullscreen(*id)
         }
         WindowCommand::SetMinimized { id, .. } if known(*id) => {
             RoutedWindowCommand::SetMinimized(*id)
