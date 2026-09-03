@@ -19,6 +19,7 @@ mod icon_data;
 pub mod layout;
 mod layout_style_api;
 pub mod menu;
+pub mod motion;
 pub mod number_field;
 pub mod overlay;
 pub mod scrollbar;
@@ -79,6 +80,7 @@ pub use layout::{
     WorkspaceLayout, WorkspaceLayoutError,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use motion::Easing;
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
 pub use scrollbar::{

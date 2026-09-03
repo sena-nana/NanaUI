@@ -23,10 +23,6 @@ pub(super) struct GroupSlot {
 }
 
 impl GroupSlot {
-    pub fn opacity(opacity: f32) -> Self {
-        Self::dest(opacity, [1.0, 1.0, 1.0], 0.0, 0.0, 0, FragmentClip::PASS)
-    }
-
     pub fn dest(
         opacity: f32,
         filter: [f32; 3],
@@ -56,11 +52,11 @@ impl GroupSlot {
 
 fn pack_polygon(polygon: &[[f32; 2]; 8], count: u8) -> [[f32; 4]; 4] {
     let mut packed = [[0.0; 4]; 4];
-    for index in 0..count.min(8) as usize {
+    for (index, point) in polygon.iter().enumerate().take(count.min(8) as usize) {
         let slot = index / 2;
         let component = (index % 2) * 2;
-        packed[slot][component] = polygon[index][0];
-        packed[slot][component + 1] = polygon[index][1];
+        packed[slot][component] = point[0];
+        packed[slot][component + 1] = point[1];
     }
     packed
 }

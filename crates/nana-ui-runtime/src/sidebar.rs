@@ -25,7 +25,7 @@ const ROW_PADDING_RIGHT: f32 = 8.0;
 const ROW_ICON_SIZE: f32 = ControlSize::Small.icon_size();
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
 const ROW_TREE_DEPTH_STEP: f32 = 12.0;
-const SECTION_ANIMATION_DURATION: Duration = Duration::from_millis(160);
+const SECTION_ANIMATION_DURATION: Duration = nana_ui_core::motion::SIDEBAR_COLLAPSE;
 const SECTION_HEADER_GAP: f32 = 5.0;
 const SECTION_HEADER_TITLE_SIZE: f32 = 11.0;
 const SECTION_HEADER_TITLE_WEIGHT: u16 = 700;
@@ -1159,6 +1159,10 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
         layout.font_size = Some(SECTION_EMPTY_FONT_SIZE);
     }
     let clip_height = content_height * expansion.clamp(0.0, 1.0);
+    // 收缩中的剪裁口同步淡出内容；稳态不写 opacity，绘制与既有样式逐位一致。
+    if expansion < 1.0 {
+        layout.opacity = Some(expansion.clamp(0.0, 1.0));
+    }
     if expansion <= 0.0 {
         layout.height = Some(LengthSpec::Px(0.0));
         layout.min_height = Some(LengthSpec::Px(0.0));
@@ -1485,12 +1489,54 @@ mod tests {
         let mut state = SidebarSectionState::new(true);
         assert!(state.set_expanded(false, started));
         assert!(!state.expanded());
-        let middle = state.expansion(started + Duration::from_millis(80));
-        assert!(middle > 0.0 && middle < 1.0);
-        assert_eq!(state.expansion(started + Duration::from_millis(200)), 0.0);
-        assert!(state.set_expanded(true, started + Duration::from_millis(80)));
+        // 折叠 1/4 处取 0.9375（EaseInOutCubic 前半段 4t³ 的补值），
+        // 区别于线性的 0.75 与 ease-out-cubic 的 0.578125。
+        let quarter = state.expansion(started + SECTION_ANIMATION_DURATION / 4);
+        assert_eq!(quarter, 0.9375);
+        // 中点恰为 0.5；端点干净落地。
+        let reversed_at = started + SECTION_ANIMATION_DURATION / 2;
+        let middle = state.expansion(reversed_at);
+        assert_eq!(middle, 0.5);
+        assert_eq!(state.expansion(started + SECTION_ANIMATION_DURATION), 0.0);
+        assert!(state.set_expanded(true, reversed_at));
         assert!(state.expanded());
-        assert_eq!(state.expansion(started + Duration::from_millis(280)), 1.0);
+        assert_eq!(state.expansion(reversed_at), middle);
+        assert_eq!(
+            state.expansion(reversed_at + SECTION_ANIMATION_DURATION),
+            1.0
+        );
+    }
+
+    #[test]
+    fn section_body_fades_content_while_expansion_is_mid_flight() {
+        let mut context = AppContext::new();
+        let (section, _, body, _, _) = mount_section(
+            &mut context,
+            SidebarSection::new("资源").collapsible(true).expanded(true),
+            &["条目"],
+            None,
+        );
+        let body_id = body.stable_id();
+        assert_eq!(
+            context.world().node_style(body_id).unwrap().layout.opacity,
+            None,
+            "fully expanded body must stay opacity-free"
+        );
+        assert!(context.activate_sidebar_section(section).unwrap());
+        let _ = context.advance_animations(Duration::from_millis(80));
+        let progress = context
+            .read(section, |section| section.animation_progress)
+            .unwrap();
+        assert!(progress > 0.0 && progress < 1.0);
+        assert_eq!(
+            context.world().node_style(body_id).unwrap().layout.opacity,
+            Some(progress),
+            "mid-collapse body opacity must follow the sampled expansion"
+        );
+        let _ = context.advance_animations(SECTION_ANIMATION_DURATION);
+        let closed = context.world().node_style(body_id).unwrap();
+        assert_eq!(closed.layout.opacity, Some(0.0));
+        assert_eq!(closed.layout.height, Some(LengthSpec::Px(0.0)));
     }
 
     #[test]

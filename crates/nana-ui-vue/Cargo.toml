@@ -11,14 +11,21 @@ name = "nana_ui_vue"
 path = "src/lib.rs"
 
 [features]
+calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar", "nana-ui?/calendar"]
+charts = ["nana-ui-runtime/charts", "nana-ui-scene/charts", "nana-ui?/charts"]
+controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls", "nana-ui?/controls"]
+graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas", "nana-ui?/graph-canvas"]
+image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer", "nana-ui?/image-viewer"]
+rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui?/rich-text"]
+components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
+full = ["components", "hosted", "syntax-highlighting"]
+syntax-highlighting = ["nana-ui-runtime/syntax-highlighting", "nana-ui?/syntax-highlighting"]
 benchmark = ["dep:serde", "dep:serde_json"]
 # Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
 scene-view = [
     "dep:nana-ui",
     "nana-ui/gpu",
-    "nana-ui/syntax-highlighting",
-    "nana-ui-runtime/syntax-highlighting",
 ]
 # Direct adapter into nana-ui's Scene-hosted runtime.
 hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]

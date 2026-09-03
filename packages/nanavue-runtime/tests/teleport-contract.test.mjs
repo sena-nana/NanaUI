@@ -1,9 +1,9 @@
+import { createTestRuntime } from "./load-runtime.mjs";
 /**
  * X7 / D-03 Teleport contract: stable mount-root target + Overlay coexistence notes.
  * Transition stays immediate (0s) — do not invent CSS transition durations.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, test, beforeEach, afterEach } from "node:test";
@@ -15,11 +15,6 @@ import {
 } from "../src/transitionContract.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const shim = readFileSync(
-  join(root, "../../crates/nana-ui-web-api/src/shim.js"),
-  "utf8",
-);
-const renderer = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
 const stubUrl = pathToFileURL(join(root, "tests/vue-runtime-core-stub.mjs")).href;
 const hooksUrl = pathToFileURL(join(root, "tests/vue-stub-hooks.mjs")).href;
 register(hooksUrl, import.meta.url, { data: { stub: stubUrl } });
@@ -33,16 +28,12 @@ test("transition defaults stay immediate (no fake CSS duration)", () => {
   assert.equal(isNanaTeleportMountSelector("#app"), false);
 });
 
-test("shim caches wrapHostNode before __nanaWrapNode (Teleport early resolve)", () => {
-  assert.match(shim, /hostNodeCache/);
-  assert.match(shim, /teleportTargetTag/);
-  assert.match(shim, /Stable `document\.body` for Vue Teleport/);
-});
-
-test("hostOps + document.querySelector tag body/html for Teleport", () => {
-  assert.match(renderer, /Teleport `to="body"`/);
-  assert.match(renderer, /lower === "body" \|\| lower === "html"/);
-  assert.match(shim, /teleportTargetTag\(raw\)/);
+test("early document target resolves to the same object after renderer install", async () => {
+  const { sandbox, api } = await createTestRuntime();
+  const body = sandbox.document.body;
+  assert.equal(sandbox.document.querySelector("body"), body);
+  assert.equal(api.hostOps.querySelector("body"), body);
+  assert.equal(api.wrapNode(body.__nid, "element", "body"), body);
 });
 
 describe("Teleport target identity", () => {

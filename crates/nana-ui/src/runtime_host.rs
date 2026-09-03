@@ -16,7 +16,7 @@ use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, StableNodeId,
     Task,
 };
-use nana_ui_scene::RuntimeDocument;
+use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
 use crate::{
     HostTextureRegistry, HostedGpuResources, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
@@ -196,6 +196,7 @@ impl RuntimeProgramUpdate {
 /// failure instead of the host panicking inside the platform event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostFailure {
+    DocumentAccess { window: WindowId, error: String },
     AccessibilityAction { window: WindowId, error: String },
     ImeDispatch { window: WindowId, error: String },
     AnimationFrame { window: WindowId, error: String },
@@ -211,7 +212,8 @@ pub enum HostFailure {
 impl HostFailure {
     pub fn window(&self) -> WindowId {
         match self {
-            Self::AccessibilityAction { window, .. }
+            Self::DocumentAccess { window, .. }
+            | Self::AccessibilityAction { window, .. }
             | Self::ImeDispatch { window, .. }
             | Self::AnimationFrame { window, .. }
             | Self::InputDispatch { window, .. }
@@ -226,7 +228,8 @@ impl HostFailure {
 
     pub fn error(&self) -> Option<&str> {
         match self {
-            Self::AccessibilityAction { error, .. }
+            Self::DocumentAccess { error, .. }
+            | Self::AccessibilityAction { error, .. }
             | Self::ImeDispatch { error, .. }
             | Self::AnimationFrame { error, .. }
             | Self::InputDispatch { error, .. }
@@ -243,6 +246,7 @@ impl fmt::Display for HostFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "host failure on window {}", self.window().0)?;
         match self {
+            Self::DocumentAccess { .. } => formatter.write_str(": document access failed"),
             Self::AccessibilityAction { .. } => {
                 formatter.write_str(": accessibility action failed")
             }
@@ -273,8 +277,18 @@ pub trait RuntimeProgram: Sized + 'static {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error>;
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument>;
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument>;
+    /// Borrow one document for a synchronous operation. References cannot escape
+    /// the callback; release the scope before invoking application or JS code.
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, DocumentAccessError>;
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, DocumentAccessError>;
 
     /// Apply a host-level message. `dispatch_program` coalesces to the latest
     /// and runs on the next frame. Keep this cheap; fill content in
@@ -379,7 +393,7 @@ pub trait RuntimeProgram: Sized + 'static {
         &mut self,
         id: WindowId,
         event: &InputEvent,
-        pointer_hit: Option<StableNodeId>,
+        _pointer_hit: Option<StableNodeId>,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         self.input_event(id, event, context)
@@ -433,13 +447,19 @@ pub trait RuntimeProgram: Sized + 'static {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         let changed = self
-            .document_mut(id)
-            .map(|document| {
+            .with_document_mut(id, |document| {
                 let document_id = document.document();
                 document
                     .context_mut()
                     .apply_accessibility_action(document_id, request)
             })
+            .map_err(|error| {
+                self.host_failure(HostFailure::DocumentAccess {
+                    window: id,
+                    error: error.to_string(),
+                });
+                FrameworkError::InvalidInput
+            })?
             .transpose()?
             .unwrap_or(false);
         Ok(if changed {
@@ -449,6 +469,43 @@ pub trait RuntimeProgram: Sized + 'static {
         })
     }
 }
+
+/// Host boundary: report failed access after the document scope has ended.
+pub(crate) trait HostDocumentAccess: RuntimeProgram {
+    fn read_document<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Option<R> {
+        match self.with_document(id, f) {
+            Ok(value) => value,
+            Err(error) => {
+                self.host_failure(HostFailure::DocumentAccess {
+                    window: id,
+                    error: error.to_string(),
+                });
+                None
+            }
+        }
+    }
+    fn write_document<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Option<R> {
+        match self.with_document_mut(id, f) {
+            Ok(value) => value,
+            Err(error) => {
+                self.host_failure(HostFailure::DocumentAccess {
+                    window: id,
+                    error: error.to_string(),
+                });
+                None
+            }
+        }
+    }
+}
+impl<T: RuntimeProgram> HostDocumentAccess for T {}
 
 pub(crate) fn runtime_text_input_request(
     document: &RuntimeDocument,

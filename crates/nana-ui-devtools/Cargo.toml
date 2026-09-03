@@ -29,6 +29,8 @@ agent = [
     "offscreen",
     "dep:nana-ui-vue",
     "nana-ui-vue/scene-view",
+    "nana-ui-vue/components",
+    "nana-ui/components",
     "nana-ui/syntax-highlighting",
     "dep:nana-ui-platform",
     "dep:serde",

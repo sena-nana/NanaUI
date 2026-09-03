@@ -326,12 +326,22 @@ impl RuntimeProgram for Fixture {
         Ok((fixture, Vec::new()))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        self.documents.get(&id)
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = { self.documents.get(&id) };
+        Ok(document.map(f))
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
-        self.documents.get_mut(&id)
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = { self.documents.get_mut(&id) };
+        Ok(document.map(f))
     }
 
     fn update(

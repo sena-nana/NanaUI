@@ -234,7 +234,7 @@ pub fn resolve_kind_from_hints(
         "figure" | "hgroup" | "picture" | "datalist" | "slot" | "map" | "option" | "optgroup" => {
             WidgetKind::Column
         }
-        "tspan" | "pattern" | "image" | "foreignobject" | "desc" => WidgetKind::Box,
+        "pattern" | "image" | "foreignobject" | "desc" => WidgetKind::Box,
         _ if tag.is_empty() => WidgetKind::Column,
         _ => return None,
     })
@@ -353,7 +353,6 @@ fn is_html_tag_name(tag: &str) -> bool {
             | "noscript"
             | "base"
             | "math"
-            | "tspan"
             | "pattern"
             | "image"
             | "foreignobject"
@@ -901,6 +900,7 @@ pub(crate) fn mermaid_renderer(props: &WidgetProps) -> Option<&str> {
     .filter(|value| !value.is_empty())
 }
 
+#[cfg(feature = "rich-text")]
 pub(crate) fn math_renderer(props: &WidgetProps) -> Option<&str> {
     attr_value(
         props,
@@ -1174,6 +1174,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "graph-canvas")]
     fn lucide_svg_maps_to_icon() {
         assert_eq!(
             resolve_kind_from_hints("svg", Some("lucide lucide-search"), None, None),
@@ -1251,15 +1252,15 @@ mod tests {
     }
 
     #[test]
-    fn video_and_audio_map_to_box_like_img() {
+    fn video_uses_media_surface_and_audio_uses_control_box() {
         assert_eq!(
             resolve_kind_from_hints("img", None, None, None),
             Some(WidgetKind::Box)
         );
         assert_eq!(
             resolve_kind_from_hints("video", None, None, None),
-            Some(WidgetKind::Box),
-            "video stays a HostTexture surface, not a new WidgetKind"
+            Some(WidgetKind::Video),
+            "video projects to its existing HostTexture media surface"
         );
         assert_eq!(
             resolve_kind_from_hints("audio", None, None, None),
@@ -1315,6 +1316,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "calendar")]
+    #[cfg(feature = "charts")]
+    #[cfg(feature = "rich-text")]
+    #[cfg(feature = "graph-canvas")]
+    #[cfg(feature = "image-viewer")]
     fn documented_feedback_classes_map_without_promoting_html_text() {
         assert_eq!(
             resolve_kind_from_hints("div", Some("nana-status"), None, None),

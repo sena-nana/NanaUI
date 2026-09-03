@@ -187,10 +187,9 @@ fn parse_src_item(item: &str) -> Option<FontFaceSrc> {
     let lower = item.to_ascii_lowercase();
     let (kind, after_fn) = if let Some(rest) = strip_func(&lower, item, "url") {
         (FontFaceSrcKind::Url, rest)
-    } else if let Some(rest) = strip_func(&lower, item, "local") {
-        (FontFaceSrcKind::Local, rest)
     } else {
-        return None;
+        let rest = strip_func(&lower, item, "local")?;
+        (FontFaceSrcKind::Local, rest)
     };
     let (value_raw, tail) = split_func_arg(after_fn)?;
     let value = strip_quotes(value_raw.trim());
@@ -242,7 +241,7 @@ fn parse_format_hint(tail: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-fn split_decls(input: &str) -> Vec<&str> {
+pub(crate) fn split_decls(input: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
     let mut depth = 0i32;
@@ -421,33 +420,14 @@ mod tests {
             0,
         );
         assert!(sheet.font_faces.is_empty());
-        assert_eq!(report.skipped_at_rules, 1);
+        assert_eq!(report.skipped_declarations, 1);
     }
 }
 
 #[cfg(all(test, feature = "scene-view"))]
 mod host_ingest_tests {
-    use super::*;
+
     use crate::bridge::MessageBridge;
-    use std::sync::OnceLock;
-
-    fn noto_data_url() -> &'static str {
-        static URL: OnceLock<String> = OnceLock::new();
-        URL.get_or_init(|| {
-            use base64::Engine as _;
-            let bytes = std::fs::read(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../nana-ui/assets/fonts/NotoSansSC-Regular.ttf"),
-            )
-            .expect("bundled Noto Sans SC");
-            format!(
-                "data:font/ttf;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(bytes)
-            )
-        })
-        .as_str()
-    }
-
     #[test]
     fn inject_font_face_aliases_css_family_onto_loaded_face() {
         let css = format!(
@@ -460,9 +440,12 @@ mod host_ingest_tests {
             }}
             .title {{ font-family: "Host Sans", sans-serif; }}
             "#,
-            src = noto_data_url()
+            src = "NotoSansSC-Regular.ttf"
         );
         let mut bridge = MessageBridge::new();
+        bridge.set_stylesheet_base(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../nana-ui/assets/fonts"),
+        );
         bridge.inject_stylesheet(&css);
         let used = nana_ui::shaped_face_families("Host Sans", "H");
         assert!(

@@ -181,7 +181,7 @@ impl VideoGpuBridge {
         video: &SharedVideoRuntime,
     ) -> Result<Option<nana_ui::HostTextureBinding>, String> {
         self.store
-            .retain(|key, _| video.lock().map_or(false, |video| video.contains(*key)));
+            .retain(|key, _| video.lock().is_ok_and(|video| video.contains(*key)));
         let uploaded_version = self.store.uploaded_version(&id);
         let upload = video
             .lock()

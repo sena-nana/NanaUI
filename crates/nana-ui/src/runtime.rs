@@ -11,10 +11,11 @@
 
 /// Scene host: retained document, render scene, opaque GPU slot keys.
 pub mod host {
+    #[cfg(feature = "graph-canvas")]
+    pub use nana_ui_runtime::GRAPH_CANVAS_RENDERER;
     pub use nana_ui_runtime::{
         CustomRenderNode, ExtractedNode, ExtractedTextSpan, GPU_TEXTURE_VIEW_RENDERER,
-        GPU_VIEW_RENDERER, GRAPH_CANVAS_RENDERER, HOST_TEXTURE_RENDERER, pack_gpu_revision,
-        unpack_gpu_revision,
+        GPU_VIEW_RENDERER, HOST_TEXTURE_RENDERER, pack_gpu_revision, unpack_gpu_revision,
     };
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
 }

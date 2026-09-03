@@ -1,35 +1,20 @@
+import { loadShimSource, loadRenderer } from "./load-runtime.mjs";
 /**
  * Track C: multi-listener + capture/options subset + document/window fan-out
  * (Lilia useDismissableLayer / ContextMenu pointerdown + Escape).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { describe, test, beforeEach } from "node:test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const shimSrc = readFileSync(
-  join(root, "../../crates/nana-ui-web-api/src/shim.js"),
-  "utf8",
-);
-const rendererSrc = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
-const layoutMetricsSrc = readFileSync(join(root, "src/layoutMetrics.js"), "utf8");
-const transitionContractSrc = readFileSync(
-  join(root, "src/transitionContract.js"),
-  "utf8",
-);
+const shimSrc = loadShimSource();
 
-function stripEsm(src) {
-  return src
-    .replace(/^import\s+[^;]+;?\s*$/gm, "")
-    .replace(/^export\s+\{[^}]+\}\s+from\s+[^;]+;?\s*$/gm, "")
-    .replace(/^export\s+\{[^}]+\};?\s*$/gm, "")
-    .replace(/^export\s+(default\s+)?/gm, "");
-}
 
-function loadRuntime() {
+
+async function loadRuntime() {
   const hostListeners = new Map();
   const sandbox = {
     console,
@@ -76,35 +61,13 @@ function loadRuntime() {
   });
 
   vm.runInNewContext(shimSrc, sandbox, { filename: "shim.js" });
-  vm.runInNewContext(
-    `
-    ${stripEsm(layoutMetricsSrc)}
-    globalThis.hostCall = hostCall;
-    globalThis.layoutRect = layoutRect;
-    globalThis.defineLayoutMetrics = defineLayoutMetrics;
-    `,
-    sandbox,
-    { filename: "layoutMetrics.js" },
-  );
-  const renderer = `
-    (function () {
-      const createRenderer = globalThis.createRenderer;
-      const defineLayoutMetrics = globalThis.defineLayoutMetrics;
-      const hostCall = globalThis.hostCall;
-      const layoutRect = globalThis.layoutRect;
-      ${stripEsm(transitionContractSrc)}
-      ${stripEsm(rendererSrc)}
-      globalThis.wrapNode = wrapNode;
-      globalThis.hostOps = hostOps;
-    })();
-  `;
-  vm.runInNewContext(renderer, sandbox, { filename: "createNanaRenderer.js" });
+  Object.assign(sandbox, await loadRenderer(sandbox));
   return sandbox;
 }
 
 describe("EventTargetShim multi-listener + capture", () => {
-  test("same event invokes all listeners; capture before bubble", () => {
-    const sandbox = loadRuntime();
+  test("same event invokes all listeners; capture before bubble", async () => {
+    const sandbox = await loadRuntime();
     const order = [];
     const a = () => order.push("a-bubble");
     const b = () => order.push("b-bubble");
@@ -116,8 +79,8 @@ describe("EventTargetShim multi-listener + capture", () => {
     assert.deepEqual(order, ["c-capture", "a-bubble", "b-bubble"]);
   });
 
-  test("removeEventListener matches capture flag", () => {
-    const sandbox = loadRuntime();
+  test("removeEventListener matches capture flag", async () => {
+    const sandbox = await loadRuntime();
     let n = 0;
     const fn = () => {
       n += 1;
@@ -131,8 +94,8 @@ describe("EventTargetShim multi-listener + capture", () => {
     assert.equal(n, 1);
   });
 
-  test("once option removes after first invoke", () => {
-    const sandbox = loadRuntime();
+  test("once option removes after first invoke", async () => {
+    const sandbox = await loadRuntime();
     let n = 0;
     sandbox.document.addEventListener(
       "keydown",
@@ -150,11 +113,11 @@ describe("EventTargetShim multi-listener + capture", () => {
 describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
   let sandbox;
 
-  beforeEach(() => {
-    sandbox = loadRuntime();
+  beforeEach(async () => {
+    sandbox = await loadRuntime();
   });
 
-  test("document capture pointerdown closes like useDismissableLayer", () => {
+  test("document capture pointerdown closes like useDismissableLayer", async () => {
     let open = true;
     const onDocPointer = (event) => {
       if (!open) return;
@@ -166,7 +129,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(open, false);
   });
 
-  test("window capture pointerdown closes like ContextMenu", () => {
+  test("window capture pointerdown closes like ContextMenu", async () => {
     let open = true;
     sandbox.window.addEventListener(
       "pointerdown",
@@ -179,7 +142,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(open, false);
   });
 
-  test("Escape on keydown fans out to document and window", () => {
+  test("Escape on keydown fans out to document and window", async () => {
     const hits = [];
     sandbox.document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") hits.push("doc");
@@ -191,7 +154,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.deepEqual(hits, ["doc", "win"]);
   });
 
-  test("multi listener on wrapNode + Vue onClickCapture coexist", () => {
+  test("multi listener on wrapNode + Vue onClickCapture coexist", async () => {
     const order = [];
     const el = sandbox.wrapNode(9, "element", "div");
     el.addEventListener("click", () => order.push("add"), true);
@@ -208,7 +171,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.ok(addIdx < vueIdx);
   });
 
-  test("native component render failures reach local and global Vue listeners", () => {
+  test("native component render failures reach local and global Vue listeners", async () => {
     const local = [];
     const global = [];
     const el = sandbox.wrapNode(19, "element", "nana-live2d-view");
@@ -235,7 +198,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(global[0].details.frame, 7);
   });
 
-  test("stopPropagation on capture prevents later document bubble peers", () => {
+  test("stopPropagation on capture prevents later document bubble peers", async () => {
     const hits = [];
     sandbox.window.addEventListener(
       "pointerdown",
@@ -256,7 +219,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.deepEqual(hits, ["win-cap"]);
   });
 
-  test("stopImmediatePropagation skips remaining same-phase peers", () => {
+  test("stopImmediatePropagation skips remaining same-phase peers", async () => {
     const hits = [];
     sandbox.document.addEventListener(
       "keydown",
@@ -277,7 +240,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.deepEqual(hits, ["first"]);
   });
 
-  test("press and click aliases both reach Vue onClick", () => {
+  test("press and click aliases both reach Vue onClick", async () => {
     let hits = 0;
     const el = sandbox.wrapNode(11, "element", "button");
     sandbox.hostOps.patchProp(el, "onClick", null, () => {
@@ -288,7 +251,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(hits, 2);
   });
 
-  test("fan-out order is window-cap → doc-cap → target → doc-bubble → win-bubble", () => {
+  test("fan-out order is window-cap → doc-cap → target → doc-bubble → win-bubble", async () => {
     const order = [];
     const el = sandbox.wrapNode(7, "element", "div");
     sandbox.window.addEventListener("click", () => order.push("win-cap"), true);
@@ -308,7 +271,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     ]);
   });
 
-  test("bubbles through intermediate parent nodes", () => {
+  test("bubbles through intermediate parent nodes", async () => {
     const hits = [];
     const parent = sandbox.wrapNode(20, "element", "div");
     const child = sandbox.wrapNode(21, "element", "button");
@@ -322,7 +285,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.deepEqual(hits, ["child", "parent"]);
   });
 
-  test("ancestor capture and bubble order matches DOM propagation", () => {
+  test("ancestor capture and bubble order matches DOM propagation", async () => {
     const order = [];
     const parent = sandbox.wrapNode(50, "element", "div");
     const child = sandbox.wrapNode(51, "element", "button");
@@ -349,7 +312,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     ]);
   });
 
-  test("pointer, keyboard, composition and wheel fields reach listeners", () => {
+  test("pointer, keyboard, composition and wheel fields reach listeners", async () => {
     const el = sandbox.wrapNode(30, "element", "input");
     const received = [];
     for (const type of ["pointermove", "keydown", "compositionupdate", "wheel"]) {
@@ -422,7 +385,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(received[3].metaKey, true);
   });
 
-  test("native file drops expose FileList-like dataTransfer descriptors", () => {
+  test("native file drops expose FileList-like dataTransfer descriptors", async () => {
     const el = sandbox.wrapNode(31, "element", "div");
     let received;
     el.addEventListener("drop", (event) => {
@@ -461,7 +424,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(received.dataTransfer.items.item(1).getAsFile().name, "background.jpg");
   });
 
-  test("host nodes expose pointer capture through Nana host operations", () => {
+  test("host nodes expose pointer capture through Nana host operations", async () => {
     const calls = [];
     sandbox.__nanaHost.call = (name, args) => {
       calls.push([name, Array.from(args)]);
@@ -531,7 +494,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
   });
 
   test("window.open without url maps onto Nana.windows.create", async () => {
-    const sandbox = loadRuntime();
+    const sandbox = await loadRuntime();
     const rootId = 4294967296 + 2;
     sandbox.__nanaHost.call = (name, args) => {
       if (name === "windowCall") {
@@ -557,7 +520,7 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     );
   });
 
-  test("closing a window clears scoped observers and window listeners", () => {
+  test("closing a window clears scoped observers and window listeners", async () => {
     const context = sandbox.__nanaCreateWindowContext(2, 320, 240, 1);
     let eventCount = 0;
     context.window.addEventListener("resize", () => eventCount++);

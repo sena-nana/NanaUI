@@ -111,12 +111,22 @@ impl RuntimeProgram for Smoke {
         Ok((smoke, vec![Message::OpenWindow]))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        self.windows.get(&id).map(|window| &window.document)
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = { self.windows.get(&id).map(|window| &window.document) };
+        Ok(document.map(f))
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
-        self.windows.get_mut(&id).map(|window| &mut window.document)
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = { self.windows.get_mut(&id).map(|window| &mut window.document) };
+        Ok(document.map(f))
     }
 
     fn update(

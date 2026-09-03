@@ -134,10 +134,10 @@ fn text_fingerprint(text: &str) -> u64 {
     const PRIME: u64 = 0x1000_0000_01b3;
     let bytes = text.as_bytes();
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for chunk in bytes.chunks_exact(8) {
-        hash = (hash ^ u64::from_le_bytes(chunk.try_into().unwrap())).wrapping_mul(PRIME);
+    for chunk in bytes.as_chunks::<8>().0 {
+        hash = (hash ^ u64::from_le_bytes(*chunk)).wrapping_mul(PRIME);
     }
-    let tail = bytes.chunks_exact(8).remainder();
+    let tail = bytes.as_chunks::<8>().1;
     if !tail.is_empty() {
         let mut padded = [0u8; 8];
         padded[..tail.len()].copy_from_slice(tail);
@@ -754,6 +754,10 @@ fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit shaping attributes shared by layout and painting"
+)]
 pub(crate) fn shape_attrs<'a>(
     family: Option<&'a str>,
     weight: Option<u16>,
@@ -844,19 +848,6 @@ pub(crate) fn wrap_for_css_direction(text: &str, direction: DirSpec) -> Cow<'_, 
         DirSpec::Ltr => Cow::Borrowed(text),
         DirSpec::Rtl => Cow::Owned(format!("{RTL_ISOLATE_PREFIX}{text}{RTL_ISOLATE_SUFFIX}")),
     }
-}
-
-pub(crate) fn first_content_glyph_x(buffer: &Buffer) -> Option<f32> {
-    for run in buffer.layout_runs() {
-        for glyph in run.glyphs {
-            let cluster = &run.text[glyph.start..glyph.end];
-            if cluster == RTL_ISOLATE_PREFIX || cluster == RTL_ISOLATE_SUFFIX {
-                continue;
-            }
-            return Some(glyph.x + glyph.x_offset * glyph.font_size);
-        }
-    }
-    None
 }
 
 fn first_line_ascent(buffer: &Buffer) -> Option<f32> {
@@ -1026,7 +1017,25 @@ fn cosmic_cursor(buffer: &Buffer, byte_offset: usize, affinity: Affinity) -> Opt
 }
 
 #[cfg(test)]
+pub(crate) fn first_content_glyph_x(buffer: &Buffer) -> Option<f32> {
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            let cluster = &run.text[glyph.start..glyph.end];
+            if cluster == RTL_ISOLATE_PREFIX || cluster == RTL_ISOLATE_SUFFIX {
+                continue;
+            }
+            return Some(glyph.x + glyph.x_offset * glyph.font_size);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
 mod tests {
+    // Font registration changes the process-wide generation. Serialize this
+    // module's tests so memo work-count assertions observe only their own changes.
+    static FONT_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use super::*;
 
     fn node() -> StableNodeId {
@@ -1041,6 +1050,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn register_host_font_face_aliases_css_family() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
         let added = register_host_font_face("NanaCssFace", data.to_vec(), Some(400), None);
         assert!(added > 0, "bundled Regular face must load");
@@ -1056,6 +1066,7 @@ mod tests {
 
     #[test]
     fn register_host_font_face_rejects_garbage() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             register_host_font_face("Nope", b"not-a-font".to_vec(), Some(400), None),
             0
@@ -1064,6 +1075,7 @@ mod tests {
 
     #[test]
     fn css_font_weight_alias_stops_cover_range_not_only_start() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             css_font_weight_alias_stops(200, 700),
             vec![200, 300, 400, 500, 600, 700]
@@ -1078,6 +1090,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn register_host_font_face_weight_range_aliases_stops() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
         let added = register_host_font_face("NanaVfRangeFace", data.to_vec(), Some(200), Some(700));
         assert!(added > 0, "bundled Regular face must load");
@@ -1105,6 +1118,7 @@ mod tests {
 
     #[test]
     fn alias_host_font_face_local_unknown_family_is_zero() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             alias_host_font_face_local("NopeLocal", "DefinitelyNotANanaFont_xyz", None, None),
             0
@@ -1114,6 +1128,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn alias_host_font_face_local_binds_bundled_noto() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let added = alias_host_font_face_local("NanaBundledLocal", "Noto Sans SC", Some(400), None);
         assert!(added > 0, "bundled Noto Sans SC must satisfy local()");
         let fonts = nana_font_system();
@@ -1128,6 +1143,7 @@ mod tests {
 
     #[test]
     fn alias_host_font_face_local_same_family_succeeds_without_reload() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let fonts = nana_font_system();
         let existing = {
             let db = lock_font_system(&fonts);
@@ -1147,6 +1163,7 @@ mod tests {
 
     #[test]
     fn every_shaper_shares_one_font_database() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let first = NanaTextShaper::default();
         let second = NanaTextShaper::default();
         let painter_side = nana_font_system();
@@ -1171,6 +1188,7 @@ mod tests {
 
     #[test]
     fn shapes_ascii_within_a_finite_max_width() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let metrics = NanaTextShaper::default().shape(
             node(),
             &TextContent {
@@ -1189,6 +1207,7 @@ mod tests {
 
     #[test]
     fn shapes_cjk_weekday_with_nonzero_width() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let metrics = NanaTextShaper::default().shape(
             node(),
             &TextContent {
@@ -1203,6 +1222,7 @@ mod tests {
 
     #[test]
     fn invalid_byte_offsets_return_zero_and_empty_highlights() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let text = TextContent {
             value: "周一👩‍💻".into(),
@@ -1258,6 +1278,7 @@ mod tests {
 
     #[test]
     fn highlight_rects_are_ordered_and_finite() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let style = ComputedStyle {
             font_size: 16.0,
@@ -1319,6 +1340,7 @@ mod tests {
 
     #[test]
     fn letter_spacing_widens_shaped_metrics() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let text = TextContent {
             value: "标题文字".into(),
         };
@@ -1354,6 +1376,7 @@ mod tests {
 
     #[test]
     fn probes_reuse_one_shaped_layout_until_layout_inputs_change() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let style = ComputedStyle {
             font_size: 16.0,
@@ -1437,6 +1460,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn font_database_change_invalidates_shaped_layout_memo() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let style = ComputedStyle::default();
         let constraints = TextShapeConstraints::default();
@@ -1457,6 +1481,7 @@ mod tests {
 
     #[test]
     fn glyph_cache_stores_advances_and_world_counts_miss_then_hit() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
         let mut glyphs = GlyphCache::default();
         let style = ComputedStyle {
@@ -1519,6 +1544,7 @@ mod tests {
     }
     #[test]
     fn host_font_empty_bytes_are_rejected() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             register_host_font_bytes(Vec::new()),
             Err(HostFontError::Empty)
@@ -1533,6 +1559,7 @@ mod tests {
 
     #[test]
     fn css_family_alias_shapes_loaded_face() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let bytes = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("assets/fonts/NotoSansSC-Regular.ttf"),

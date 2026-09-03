@@ -615,15 +615,14 @@ fn interactive_pseudo_active(
     let (_, compound) = &sel.ancestors[sel.interactive_at];
     let stripped = compound_without_interactive(compound);
     for (idx, node) in ctx.ancestors.iter().enumerate() {
-        if compound_matches(&stripped, node) {
-            if state
+        if compound_matches(&stripped, node)
+            && state
                 .ancestors
                 .get(idx)
                 .map(|flags| flags.has(required))
                 .unwrap_or(false)
-            {
-                return true;
-            }
+        {
+            return true;
         }
     }
     false
@@ -674,7 +673,7 @@ pub fn parse_keyframes_at_rule(css: &str, source_order: u32) -> Option<(Keyframe
         return None;
     }
     let name = cursor[..name_end].trim().to_string();
-    cursor = &cursor[name_end..].trim_start();
+    cursor = cursor[name_end..].trim_start();
     if !cursor.starts_with('{') {
         return None;
     }
@@ -764,11 +763,7 @@ fn parse_keyframe_selector_list(raw: &str) -> Option<Vec<KeyframeSelector>> {
             out.push(KeyframeSelector::To);
             continue;
         }
-        let pct = if part.ends_with('%') {
-            part[..part.len() - 1].trim().parse::<f32>().ok()?
-        } else {
-            return None;
-        };
+        let pct = part.strip_suffix('%')?.trim().parse::<f32>().ok()?;
         if !(0.0..=100.0).contains(&pct) {
             return None;
         }

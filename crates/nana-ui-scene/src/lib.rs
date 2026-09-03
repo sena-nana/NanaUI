@@ -4,6 +4,8 @@
 //! window, GPU device, or renderer objects. Product paint is `SceneWgpuPainter`
 //! in `nana-ui`, which consumes this crate's `UiScene`.
 
+mod document_access;
+pub use document_access::DocumentAccessError;
 mod graph;
 mod icon;
 mod runtime_document;

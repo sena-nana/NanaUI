@@ -187,6 +187,16 @@ fn ctx<'a>(
         focus_within,
         is_empty,
         checked,
+        media: Default::default(),
+        children: &[],
+        following_siblings: &[],
+        all_siblings: &[],
+        ancestor_subtrees: &[],
+        owned_children: &[],
+        owned_following: &[],
+        owned_ancestor_trees: &[],
+        relative: None,
+        relative_id: 0,
     }
 }
 

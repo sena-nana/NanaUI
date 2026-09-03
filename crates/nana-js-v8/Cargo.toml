@@ -29,8 +29,8 @@ serde_json.workspace = true
 v8 = { workspace = true, optional = true }
 
 [dev-dependencies]
-nana-ui-vue = { path = "../nana-ui-vue", default-features = false, features = ["hosted"] }
+nana-ui-vue = { path = "../nana-ui-vue", default-features = false, features = ["hosted", "components", "syntax-highlighting"] }
 nana-ui-web-api.workspace = true
-nana-ui = { workspace = true, features = ["hosted"] }
+nana-ui = { workspace = true, features = ["hosted", "components", "syntax-highlighting"] }
 pollster.workspace = true
 wgpu.workspace = true

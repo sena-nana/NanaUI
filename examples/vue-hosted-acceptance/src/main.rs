@@ -184,12 +184,20 @@ impl RuntimeProgram for AcceptanceProgram {
         ))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        self.inner.document(id)
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        self.inner.with_document(id, f)
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
-        self.inner.document_mut(id)
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        self.inner.with_document_mut(id, f)
     }
 
     fn update(

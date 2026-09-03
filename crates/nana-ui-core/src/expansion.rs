@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::motion::Easing;
+
 #[derive(Debug, Clone, Copy)]
 struct ExpansionTransition {
     started_at: Duration,
@@ -67,7 +69,7 @@ impl ExpansionState {
         let linear = (now.saturating_sub(transition.started_at).as_secs_f32()
             / self.duration.as_secs_f32())
         .clamp(0.0, 1.0);
-        let progress = 1.0 - (1.0 - linear).powi(3);
+        let progress = Easing::EaseInOutCubic.sample(linear);
         transition.from + (transition.to - transition.from) * progress
     }
 }
@@ -82,7 +84,9 @@ mod tests {
         assert!(state.set_expanded(false, Duration::from_millis(100)));
         let reversed_at = Duration::from_millis(180);
         let middle = state.value_at(reversed_at);
-        assert!(middle > 0.0 && middle < 1.0);
+        // elapsed 恰为时长一半：EaseInOutCubic 中点必须落在 0.5，
+        // 而 ease-out-cubic 会给出 0.875。
+        assert_eq!(middle, 0.5);
 
         assert!(state.set_expanded(true, reversed_at));
         assert_eq!(state.value_at(reversed_at), middle);

@@ -11,6 +11,7 @@ name = "nana_ui"
 path = "src/lib.rs"
 
 [features]
+
 default = []
 full = ["bundled-fonts", "components", "hosted", "syntax-highlighting"]
 bundled-fonts = []
@@ -25,19 +26,18 @@ components = [
     "image-viewer",
     "rich-text",
 ]
-calendar = []
-charts = []
-controls = []
+calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar"]
+charts = ["nana-ui-runtime/charts", "nana-ui-scene/charts"]
+controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls"]
 syntax-highlighting = [
-    "controls",
     "nana-ui-runtime/syntax-highlighting",
 ]
 # AccessKit TreeUpdate projection for hosts that own their platform adapter
 # wiring (e.g. Android via `accesskit_android`). Desktop `hosted` implies it.
 accesskit-tree = ["dep:accesskit"]
-graph-canvas = []
-image-viewer = []
-rich-text = []
+graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas"]
+image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer"]
+rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text"]
 gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "nana-ui-platform/fetch", "dep:wgpu"]
 hosted = [
     "gpu",

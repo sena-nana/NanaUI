@@ -63,10 +63,6 @@ mod android_not_product {
             assert!(cfg!(target_os = "android"));
             assert!(!crate::AndroidShellStub::desktop_shell_available());
         }
-        #[cfg(not(target_os = "android"))]
-        {
-            assert!(!cfg!(target_os = "android"));
-        }
     }
 
     /// Same `LayoutStyle` as desktop Runtime/Scene — no Android field fork.

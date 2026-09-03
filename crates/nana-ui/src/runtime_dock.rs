@@ -1,7 +1,6 @@
 //! Maps Runtime [`DockWorkspaceEvent`] to host window commands.
 //!
-//! Product floating dock uses this path. [`crate::dock::hosted_dock_update`]
-//! is the `DockController` host-adapter equivalent, not a second dock.
+//! Floating dock commands and pointer interactions use this one host boundary.
 //! This helper does not build a widget tree or a second GPU context.
 
 use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
@@ -34,9 +33,16 @@ pub fn runtime_dock_window_update(
             DockWorkspaceEvent::CloseFloating(id) => {
                 WindowCommand::Close(dock_workspace_window_id(&id))
             }
-            DockWorkspaceEvent::MoveFloating { id, x, y, .. } => WindowCommand::Move {
+            DockWorkspaceEvent::MoveFloating {
+                id,
+                x,
+                y,
+                width,
+                height,
+            } => WindowCommand::SetBounds {
                 id: dock_workspace_window_id(&id),
                 position: (x, y),
+                size: (width, height),
             },
             DockWorkspaceEvent::FocusFloating(id) => {
                 WindowCommand::Focus(dock_workspace_window_id(&id))
@@ -144,9 +150,10 @@ mod tests {
         assert_eq!(
             update.window_commands,
             [
-                WindowCommand::Move {
+                WindowCommand::SetBounds {
                     id: WindowId(2),
                     position: (80.0, 90.0),
+                    size: (360.0, 280.0),
                 },
                 WindowCommand::Focus(WindowId(2)),
                 WindowCommand::Close(WindowId(2)),

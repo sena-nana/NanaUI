@@ -1368,9 +1368,35 @@ fn paint_gallery(
     size: Size<u32>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let clear = clear_color(state.theme_mode());
+    let colors = state.theme_mode().colors();
+    let gpu = gpu::create_snapshot_gpu(
+        &snapshots.device,
+        &snapshots.queue,
+        colors.background,
+        colors.accent_strong,
+    );
+    // The Gallery's ready thumbnail is a demo HostTexture slot. Snapshot hosts
+    // must populate it just like the standalone GPU fixtures.
+    let binding = gpu
+        .textures
+        .get(gpu::SNAPSHOT_GPU_SLOT)
+        .expect("snapshot texture");
+    gpu.textures.register(
+        "gallery.thumb",
+        binding.texture,
+        binding.width,
+        binding.height,
+        binding.alpha_mode,
+    );
     match state.active_scene() {
-        Some(scene) => snapshots.paint(scene, size, clear, None, None),
-        None => snapshots.paint_layers(&[], size, clear, None, None),
+        Some(scene) => snapshots.paint(
+            scene,
+            size,
+            clear,
+            Some(&gpu.textures),
+            Some(&gpu.renderers),
+        ),
+        None => snapshots.paint_layers(&[], size, clear, Some(&gpu.textures), Some(&gpu.renderers)),
     }
 }
 

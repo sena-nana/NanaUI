@@ -835,8 +835,9 @@ fn dock_float_backs_a_runtime_document_for_the_window() {
     let surface = app.state().dock.floating.first().expect("floated surface");
     let id = nana_ui_platform::WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id));
     assert!(
-        nana_ui::RuntimeProgram::document(&app, id)
-            .is_some_and(|document| !document.scene().is_empty()),
+        nana_ui::RuntimeProgram::with_document(&app, id, |document| !document.scene().is_empty())
+            .unwrap()
+            .unwrap_or(false),
         "Open must be backed by a flushed dock document"
     );
 
@@ -847,7 +848,11 @@ fn dock_float_backs_a_runtime_document_for_the_window() {
             .iter()
             .any(|command| matches!(command, WindowCommand::Close(_)))
     );
-    assert!(nana_ui::RuntimeProgram::document(&app, id).is_none());
+    assert!(
+        nana_ui::RuntimeProgram::with_document(&app, id, |_| ())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

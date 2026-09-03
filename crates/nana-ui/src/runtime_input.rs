@@ -6,13 +6,27 @@ use nana_ui_platform::{
     default_shared_clipboard,
 };
 use nana_ui_runtime::{
-    AppContext, DocumentId, FrameworkError, GraphCanvasAdjustment, GraphPointerButton,
-    GraphScrollDelta, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
-    TextCaretIntent, TextDeleteKind, TextLineDirection, TextShaper, XYPadAdjustment,
+    AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
+    StableNodeId, TextCaretIntent, TextDeleteKind, TextLineDirection, TextShaper, XYPadAdjustment,
 };
+#[cfg(feature = "graph-canvas")]
+use nana_ui_runtime::{GraphCanvasAdjustment, GraphPointerButton, GraphScrollDelta};
 use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+macro_rules! optional_input {
+    ($feature:literal, $call:expr, $absent:expr) => {{
+        #[cfg(feature = $feature)]
+        {
+            $call
+        }
+        #[cfg(not(feature = $feature))]
+        {
+            $absent
+        }
+    }};
+}
 
 const DEFAULT_LINE_SCROLL_EXTENT: f32 = 60.0;
 
@@ -156,16 +170,16 @@ impl RuntimeInputAdapter {
             // 话，再关闭补全弹层，最后塌缩多光标到主光标。都只在聚焦多行
             // 编辑器且状态存在时消费事件，否则穿透给宿主（首次按下才生
             // 效，repeat 不消费）。
-            if matches!(overlay_key, Some(OverlayKey::Escape)) && !repeat {
-                if context.cancel_focused_text_selection_drag(document)
+            if matches!(overlay_key, Some(OverlayKey::Escape))
+                && !repeat
+                && (context.cancel_focused_text_selection_drag(document)
                     || context.cancel_focused_text_snippet(document)?
                     || context.dismiss_focused_text_completion(document)?
-                    || context.collapse_focused_text_selections(document)?
-                {
-                    return Ok(InputDisposition {
-                        prevent_default: true,
-                    });
-                }
+                    || context.collapse_focused_text_selections(document)?)
+            {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
             }
         }
         // Focused plain text editors own their editing keys (caret moves,
@@ -178,19 +192,18 @@ impl RuntimeInputAdapter {
             modifiers,
             ..
         } = event
-        {
-            if Self::text_editor_key(
+            && Self::text_editor_key(
                 context,
                 document,
                 key,
                 text.as_deref(),
                 *modifiers,
                 reborrow_text_shaper(&mut text_shaper),
-            )? {
-                return Ok(InputDisposition {
-                    prevent_default: true,
-                });
-            }
+            )?
+        {
+            return Ok(InputDisposition {
+                prevent_default: true,
+            });
         }
         if let InputEvent::Keyboard {
             pressed: true,
@@ -266,6 +279,7 @@ impl RuntimeInputAdapter {
                 let target = overlay.target;
                 context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
+                #[cfg(feature = "graph-canvas")]
                 let graph_button = match *button {
                     1 => GraphPointerButton::Middle,
                     _ => GraphPointerButton::Primary,
@@ -292,23 +306,35 @@ impl RuntimeInputAdapter {
                                     *y,
                                     modifiers.shift,
                                 )?
-                                || context.update_graph_canvas_pointer(
-                                    document,
-                                    *pointer_id,
-                                    *x,
-                                    *y,
+                                || optional_input!(
+                                    "graph-canvas",
+                                    context.update_graph_canvas_pointer(
+                                        document,
+                                        *pointer_id,
+                                        *x,
+                                        *y,
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
                                 )?
-                                || context.update_graph_minimap_pointer(
-                                    document,
-                                    *pointer_id,
-                                    *x,
-                                    *y,
+                                || optional_input!(
+                                    "graph-canvas",
+                                    context.update_graph_minimap_pointer(
+                                        document,
+                                        *pointer_id,
+                                        *x,
+                                        *y,
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
                                 )?
-                                || context.update_reorder_list_pointer(
-                                    document,
-                                    *pointer_id,
-                                    *x,
-                                    *y,
+                                || optional_input!(
+                                    "controls",
+                                    context.update_reorder_list_pointer(
+                                        document,
+                                        *pointer_id,
+                                        *x,
+                                        *y,
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
                                 )?
                                 || context.update_split_resize(document, *pointer_id, *x, *y)?
                                 || context.update_dock_split_resize(
@@ -326,14 +352,30 @@ impl RuntimeInputAdapter {
                                 )?
                                 || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
                                 || target
-                                    .map(|target| context.hover_graph_canvas(target, *x, *y))
+                                    .map(|target| {
+                                        optional_input!(
+                                            "graph-canvas",
+                                            context.hover_graph_canvas(target, *x, *y),
+                                            Ok::<bool, FrameworkError>(false)
+                                        )
+                                    })
                                     .transpose()?
                                     .unwrap_or(false)
                                 || target
-                                    .map(|target| context.hover_calendar_heatmap(target, *x, *y))
+                                    .map(|target| {
+                                        optional_input!(
+                                            "calendar",
+                                            context.hover_calendar_heatmap(target, *x, *y),
+                                            Ok::<bool, FrameworkError>(false)
+                                        )
+                                    })
                                     .transpose()?
                                     .unwrap_or(false)
-                                || context.clear_calendar_heatmap_hover(document)?
+                                || optional_input!(
+                                    "calendar",
+                                    context.clear_calendar_heatmap_hover(document),
+                                    Ok::<bool, FrameworkError>(false)
+                                )?
                                 || context.sync_split_handle_hover_near(document, *x, *y, now)?
                                 || target.is_some()
                         }
@@ -402,24 +444,49 @@ impl RuntimeInputAdapter {
                             )?;
                         }
                         if let Some(target) = hit {
-                            if context.is_graph_canvas(target) {
-                                context.begin_graph_canvas_pointer(
-                                    document,
-                                    *pointer_id,
-                                    target,
-                                    *x,
-                                    *y,
-                                    graph_button,
+                            if optional_input!(
+                                "graph-canvas",
+                                context.is_graph_canvas(target),
+                                false
+                            ) {
+                                optional_input!(
+                                    "graph-canvas",
+                                    context.begin_graph_canvas_pointer(
+                                        document,
+                                        *pointer_id,
+                                        target,
+                                        *x,
+                                        *y,
+                                        graph_button,
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
                                 )?;
-                            } else if context.is_graph_minimap(target) {
-                                context.begin_graph_minimap_pointer(*pointer_id, target, *x, *y)?;
+                            } else if optional_input!(
+                                "graph-canvas",
+                                context.is_graph_minimap(target),
+                                false
+                            ) {
+                                optional_input!(
+                                    "graph-canvas",
+                                    context.begin_graph_minimap_pointer(
+                                        *pointer_id,
+                                        target,
+                                        *x,
+                                        *y
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
+                                )?;
                             } else if *button == 0
-                                && context.begin_reorder_list_pointer(
-                                    document,
-                                    *pointer_id,
-                                    target,
-                                    *x,
-                                    *y,
+                                && optional_input!(
+                                    "controls",
+                                    context.begin_reorder_list_pointer(
+                                        document,
+                                        *pointer_id,
+                                        target,
+                                        *x,
+                                        *y,
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
                                 )?
                             {
                             } else if context.is_dock_handle(target) && *button == 0 {
@@ -508,20 +575,32 @@ impl RuntimeInputAdapter {
                         if context.end_scrollbar_drag(document, *pointer_id, false)?
                             || context.end_range_drag(document, *pointer_id, false)?
                             || context.end_xy_pad_drag(document, *pointer_id, false)?
-                            || context.end_graph_canvas_pointer(
-                                document,
-                                *pointer_id,
-                                *x,
-                                *y,
-                                false,
+                            || optional_input!(
+                                "graph-canvas",
+                                context.end_graph_canvas_pointer(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    false,
+                                ),
+                                Ok::<bool, FrameworkError>(false)
                             )?
-                            || context.end_graph_minimap_pointer(document, *pointer_id, false)?
-                            || context.end_reorder_list_pointer(
-                                document,
-                                *pointer_id,
-                                *x,
-                                *y,
-                                false,
+                            || optional_input!(
+                                "graph-canvas",
+                                context.end_graph_minimap_pointer(document, *pointer_id, false),
+                                Ok::<bool, FrameworkError>(false)
+                            )?
+                            || optional_input!(
+                                "controls",
+                                context.end_reorder_list_pointer(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    false,
+                                ),
+                                Ok::<bool, FrameworkError>(false)
                             )?
                             || context.end_split_resize(document, *pointer_id, false)?
                             || context.end_dock_split_resize(document, *pointer_id, false)?
@@ -548,21 +627,20 @@ impl RuntimeInputAdapter {
                         let scrollbar = context.end_scrollbar_drag(document, *pointer_id, true)?;
                         let range = context.end_range_drag(document, *pointer_id, true)?;
                         let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
-                        let graph = context.end_graph_canvas_pointer(
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            true,
+                        let graph = optional_input!(
+                            "graph-canvas",
+                            context.end_graph_canvas_pointer(document, *pointer_id, *x, *y, true,),
+                            Ok::<bool, FrameworkError>(false)
                         )?;
-                        let minimap =
-                            context.end_graph_minimap_pointer(document, *pointer_id, true)?;
-                        let reorder = context.end_reorder_list_pointer(
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            true,
+                        let minimap = optional_input!(
+                            "graph-canvas",
+                            context.end_graph_minimap_pointer(document, *pointer_id, true),
+                            Ok::<bool, FrameworkError>(false)
+                        )?;
+                        let reorder = optional_input!(
+                            "controls",
+                            context.end_reorder_list_pointer(document, *pointer_id, *x, *y, true,),
+                            Ok::<bool, FrameworkError>(false)
                         )?;
                         let split = context.end_split_resize(document, *pointer_id, true)?;
                         let dock_split =
@@ -572,7 +650,11 @@ impl RuntimeInputAdapter {
                             context.end_dock_item_drag(document, *pointer_id, *x, *y, true)?;
                         let pressed = context.release_pointer(document, *pointer_id).is_some();
                         context.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                        let calendar = context.clear_calendar_heatmap_hover(document)?;
+                        let calendar = optional_input!(
+                            "calendar",
+                            context.clear_calendar_heatmap_hover(document),
+                            Ok::<bool, FrameworkError>(false)
+                        )?;
                         let split_hover = context.sync_split_handle_hover(document, None)?;
                         scrollbar
                             || range
@@ -638,6 +720,7 @@ impl RuntimeInputAdapter {
                         prevent_default: true,
                     });
                 }
+                #[cfg(feature = "graph-canvas")]
                 let graph_delta = if *line_delta {
                     GraphScrollDelta::Lines { y: -dy }
                 } else {
@@ -651,13 +734,19 @@ impl RuntimeInputAdapter {
                         .transpose()?
                         .flatten()
                         .is_some()
-                } else if graph_target.is_some_and(|target| context.is_graph_canvas(target)) {
-                    context.scroll_graph_canvas(
-                        document,
-                        graph_target.expect("graph target"),
-                        *x,
-                        *y,
-                        graph_delta,
+                } else if graph_target.is_some_and(|target| {
+                    optional_input!("graph-canvas", context.is_graph_canvas(target), false)
+                }) {
+                    optional_input!(
+                        "graph-canvas",
+                        context.scroll_graph_canvas(
+                            document,
+                            graph_target.expect("graph target"),
+                            *x,
+                            *y,
+                            graph_delta,
+                        ),
+                        Ok::<bool, FrameworkError>(false)
                     )?
                 } else {
                     context.scroll_at(document, *x, *y, delta)?.is_some()
@@ -712,6 +801,7 @@ impl RuntimeInputAdapter {
                         prevent_default: true,
                     });
                 }
+                #[cfg(feature = "graph-canvas")]
                 let graph_adjustment = (!primary)
                     .then_some(match key.as_str() {
                         "ArrowLeft" => Some(GraphCanvasAdjustment::PanLeft),
@@ -725,8 +815,13 @@ impl RuntimeInputAdapter {
                         _ => None,
                     })
                     .flatten();
+                #[cfg(feature = "graph-canvas")]
                 if let Some(adjustment) = graph_adjustment
-                    && context.adjust_focused_graph_canvas(document, adjustment)?
+                    && optional_input!(
+                        "graph-canvas",
+                        context.adjust_focused_graph_canvas(document, adjustment),
+                        Ok::<bool, FrameworkError>(false)
+                    )?
                 {
                     return Ok(InputDisposition {
                         prevent_default: true,
@@ -1223,14 +1318,17 @@ mod tests {
         ImeEvent, InputModifiers, MemoryClipboard, PointerType, shared_clipboard,
     };
     use nana_ui_runtime::{
-        ActionMenu, ActionMenuItem, Activate, Button, CalendarHeatmap, CalendarHeatmapDatum, Card,
-        ComponentGeometry, Dialog, Dock, DockAxis, DockNode, Entity, GraphMinimap,
-        GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphSize, GraphViewport, LayoutBox,
-        MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
+        ActionMenu, ActionMenuItem, Activate, Button, Card, ComponentGeometry, Dialog, Dock,
+        DockAxis, DockNode, Entity, GraphModel, GraphNode, GraphPoint, GraphSize, GraphViewport,
+        LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
         OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
         SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
         TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection,
     };
+    #[cfg(feature = "calendar")]
+    use nana_ui_runtime::{CalendarHeatmap, CalendarHeatmapDatum};
+    #[cfg(feature = "graph-canvas")]
+    use nana_ui_runtime::{GraphMinimap, GraphMinimapEvent};
     use std::sync::{Arc, Mutex};
 
     fn wheel(x: f32, y: f32, delta_y: f32) -> InputEvent {
@@ -1465,6 +1563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "graph-canvas")]
     fn pointer_drag_on_a_graph_minimap_requests_viewport_navigation() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -2094,7 +2193,7 @@ mod tests {
             .unwrap();
         assert!(context.focus_node(document, area.stable_id()).unwrap());
 
-        let mut adapter = RuntimeInputAdapter::default();
+        let adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -2155,7 +2254,7 @@ mod tests {
     fn dispatch_ime_commits_a_focused_text_input_without_a_typed_view() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "Nana");
-        let mut adapter = RuntimeInputAdapter::default();
+        let adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -2201,7 +2300,7 @@ mod tests {
     fn dispatch_ime_disabled_commits_leftover_preedit_without_a_typed_view() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "Nana");
-        let mut adapter = RuntimeInputAdapter::default();
+        let adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -2235,7 +2334,7 @@ mod tests {
     fn dispatch_ime_deletes_surrounding_committed_text_and_skips_invalid_spans() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "你好");
-        let mut adapter = RuntimeInputAdapter::default();
+        let adapter = RuntimeInputAdapter::default();
         assert!(
             adapter
                 .dispatch_ime(
@@ -3296,6 +3395,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "calendar")]
     fn pointer_on_calendar_heatmap_sets_active_cell() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -4229,8 +4329,10 @@ mod tests {
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
         select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
-        let mut alt = InputModifiers::default();
-        alt.alt = true;
+        let alt = InputModifiers {
+            alt: true,
+            ..Default::default()
+        };
         adapter
             .dispatch_with_shaper(
                 &mut context,
@@ -5161,13 +5263,12 @@ mod tests {
         let gutter = context
             .world()
             .component_geometry(node)
-            .map(|geometry| match geometry {
+            .and_then(|geometry| match geometry {
                 nana_ui_runtime::ComponentGeometry::TextInput { folds, .. } => {
                     folds.gutters.first().copied()
                 }
                 _ => None,
             })
-            .flatten()
             .expect("fold gutter geometry");
         let center = (
             gutter.bounds.x + gutter.bounds.width / 2.0,
@@ -5222,13 +5323,12 @@ mod tests {
         let gutter = context
             .world()
             .component_geometry(node)
-            .map(|geometry| match geometry {
+            .and_then(|geometry| match geometry {
                 nana_ui_runtime::ComponentGeometry::TextInput { folds, .. } => {
                     folds.gutters.first().copied()
                 }
                 _ => None,
             })
-            .flatten()
             .expect("fold gutter geometry");
         let center = (
             gutter.bounds.x + gutter.bounds.width / 2.0,
@@ -5680,7 +5780,7 @@ mod tests {
             .unwrap();
         let node = area.stable_id();
         assert!(context.focus_node(document, node).unwrap());
-        let mut adapter = RuntimeInputAdapter::default();
+        let adapter = RuntimeInputAdapter::default();
         set_selections(&mut context, area, (2, 2), vec![(4, 4)]);
 
         assert!(

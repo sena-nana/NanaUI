@@ -7,6 +7,13 @@ description = "Backend-neutral retained runtime for NanaUI"
 license = "MIT OR Apache-2.0"
 
 [features]
+calendar = []
+charts = []
+controls = []
+graph-canvas = []
+image-viewer = []
+rich-text = ["dep:pulldown-cmark"]
+components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
 benchmark = []
 syntax-highlighting = ["dep:two-face"]
@@ -14,7 +21,7 @@ syntax-highlighting = ["dep:two-face"]
 [dependencies]
 futures-core.workspace = true
 nana-ui-core.workspace = true
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false, optional = true }
 qrcode = { version = "0.14.1", default-features = false }
 unicode-segmentation.workspace = true
 serde = { workspace = true, features = ["derive"] }

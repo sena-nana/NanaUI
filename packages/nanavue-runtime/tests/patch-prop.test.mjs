@@ -1,48 +1,34 @@
-/**
- * Contract: createNanaRenderer patchProp mirrors Vue runtime-dom
- * (.prop / ^attr, boolean attrs, classList↔class, SVG attrs).
- * Behavioral coverage lives in `nana-ui-vue` bridge/renderer tests.
- */
+/** Behavior at the public renderer boundary; independent of implementation files. */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { describe, test } from "node:test";
+import { test } from "node:test";
+import { createTestRuntime } from "./load-runtime.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const src = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
-
-describe("patchProp Vue runtime-dom contracts", () => {
-  test("strips .prop and ^attr modifiers", () => {
-    assert.match(src, /propKey\[0\] === ["']\.["']/);
-    assert.match(src, /propKey\[0\] === ["']\^["']/);
-    assert.match(src, /propKey = propKey\.slice\(1\)/);
-  });
-
-  test("class patch syncs classList via __replace", () => {
-    assert.match(src, /syncClassList\(el,\s*value\)/);
-    assert.match(src, /__replace\(classValue/);
-    assert.match(src, /node\.classList = createClassList\(nid,\s*node\)/);
-  });
-
-  test("classList mutations write attributes.class", () => {
-    assert.match(src, /el\.attributes\.class = joined/);
-  });
-
-  test("SVG attrs prefer attribute path", () => {
-    assert.match(src, /COMMON_SVG_ATTRS/);
-    assert.match(src, /isSvgElement/);
-    assert.match(src, /xlink:/);
-    assert.match(src, /viewBox/);
-    assert.match(src, /__isSVG/);
-  });
-
-  test("boolean false clears attribute locally", () => {
-    assert.match(src, /value == null \|\| value === false/);
-    assert.match(src, /delete el\.attributes\[propKey\]/);
-  });
-
-  test("createElement seeds __isSVG from namespace", () => {
-    assert.match(src, /node\.__isSVG = ns === ["']svg["']/);
-  });
+test("prop and attr modifiers preserve values and clear false attributes", async () => {
+  const { api: { hostOps }, calls } = await createTestRuntime();
+  const node = hostOps.createElement("input");
+  hostOps.patchProp(node, ".value", null, "typed");
+  hostOps.patchProp(node, "^disabled", null, true);
+  hostOps.patchProp(node, "^disabled", true, false);
+  assert.equal(node.value, "typed");
+  assert.equal(node.attributes.disabled, undefined);
+  assert.ok(calls.some(([name, args]) => name === "patchProp" && args[1] === "value" && args[2] === "typed"));
+});
+test("class patches and classList changes share one visible value", async () => {
+  const { api: { hostOps } } = await createTestRuntime();
+  const node = hostOps.createElement("div");
+  hostOps.patchProp(node, "class", null, "base");
+  assert.ok(node.classList.contains("base"));
+  node.classList.add("selected");
+  assert.equal(node.attributes.class, "base selected");
+  node.classList.remove("base");
+  assert.equal(node.className, "selected");
+});
+test("SVG presentation and namespace attributes reach the host unchanged", async () => {
+  const { api: { hostOps }, calls } = await createTestRuntime();
+  const node = hostOps.createElement("svg", "svg");
+  hostOps.patchProp(node, "viewBox", null, "0 0 40 20", "svg");
+  hostOps.patchProp(node, "xlink:href", null, "#shape", "svg");
+  assert.equal(node.__isSVG, true);
+  assert.equal(node.attributes.viewBox, "0 0 40 20");
+  assert.ok(calls.some(([name, args]) => name === "patchProp" && args[1] === "xlink:href" && args[2] === "#shape"));
 });

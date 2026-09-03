@@ -650,6 +650,7 @@ pub enum StandardVisual {
         empty: Option<Arc<str>>,
         rows: Arc<[crate::command_palette::PaletteRowData]>,
     },
+    #[cfg(feature = "calendar")]
     CalendarHeatmap {
         cells: Arc<[crate::calendar::CalendarHeatmapCellPaint]>,
         month_labels: Arc<[crate::calendar::CalendarHeatmapLabelPaint]>,
@@ -660,23 +661,28 @@ pub enum StandardVisual {
         active: Option<usize>,
         active_title: Option<Arc<str>>,
     },
+    #[cfg(feature = "charts")]
     TimeSeriesChart {
         values: Arc<[f64]>,
     },
+    #[cfg(feature = "controls")]
     ReorderList {
         rows: Arc<[crate::reorder_list::ReorderRowPaint]>,
         size: ControlSize,
         spacing: f32,
         insert: Option<LayoutBox>,
     },
+    #[cfg(feature = "rich-text")]
     NativeMarkdown {
         text: Arc<str>,
         selection: Option<(usize, usize)>,
     },
+    #[cfg(feature = "rich-text")]
     SelectableRichText {
         text: Arc<str>,
         selection: Option<(usize, usize)>,
     },
+    #[cfg(feature = "graph-canvas")]
     GraphCanvas {
         nodes: Arc<[crate::graph_canvas::GraphNodePaint]>,
         ports: Arc<[crate::graph_canvas::GraphPortPaint]>,
@@ -690,12 +696,14 @@ pub enum StandardVisual {
     /// Overview minimap policy. Node rectangles and the indicator stay in
     /// world space; the uniform map projection resolves at extraction time
     /// against the final widget box.
+    #[cfg(feature = "graph-canvas")]
     GraphMinimap {
         bounds: nana_ui_core::GraphRect,
         nodes: Arc<[nana_ui_core::GraphRect]>,
         indicator: Option<nana_ui_core::GraphRect>,
         node_fill: Option<nana_ui_core::SemanticColorRole>,
     },
+    #[cfg(feature = "image-viewer")]
     ImageViewer {
         name: Option<Arc<str>>,
         metadata: Option<Arc<str>>,
@@ -898,6 +906,9 @@ pub struct CalendarHoverGeometry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+// Keep the extracted geometry contract inline: boxing the hot text variant adds
+// an allocation per projection and changes the shared Runtime/Scene DTO.
+#[allow(clippy::large_enum_variant)]
 pub enum ComponentGeometry {
     ModalFrame {
         scrim: LayoutBox,
@@ -2177,7 +2188,7 @@ fn selection_order(selection: TextSelection) -> (usize, usize) {
 /// `primary` flag through fusions so callers can keep the primary cursor's
 /// identity. Returns the primary span plus the remaining sorted spans.
 fn merge_selection_set(
-    selections: &mut Vec<(TextSelection, bool)>,
+    selections: &mut [(TextSelection, bool)],
 ) -> (TextSelection, Vec<TextSelection>) {
     selections.sort_by_key(|(selection, _)| selection_order(*selection));
     let mut merged: Vec<(TextSelection, bool)> = Vec::with_capacity(selections.len());
@@ -2638,6 +2649,31 @@ pub struct ExtractedTextSpan {
     pub start: usize,
     pub end: usize,
     pub color: [f32; 4],
+}
+
+impl StandardVisual {
+    /// Optional component family owning this visual; base geometry has no feature.
+    pub fn required_feature(&self) -> Option<&'static str> {
+        match self {
+            #[cfg(feature = "calendar")]
+            Self::CalendarHeatmap { .. } => Some("calendar"),
+            #[cfg(feature = "charts")]
+            Self::TimeSeriesChart { .. } => Some("charts"),
+            #[cfg(feature = "controls")]
+            Self::ReorderList { .. } => Some("controls"),
+            #[cfg(feature = "rich-text")]
+            Self::NativeMarkdown { .. } => Some("rich-text"),
+            #[cfg(feature = "rich-text")]
+            Self::SelectableRichText { .. } => Some("rich-text"),
+            #[cfg(feature = "graph-canvas")]
+            Self::GraphCanvas { .. } => Some("graph-canvas"),
+            #[cfg(feature = "graph-canvas")]
+            Self::GraphMinimap { .. } => Some("graph-canvas"),
+            #[cfg(feature = "image-viewer")]
+            Self::ImageViewer { .. } => Some("image-viewer"),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

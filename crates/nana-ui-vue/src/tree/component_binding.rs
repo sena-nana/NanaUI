@@ -167,7 +167,7 @@ pub(crate) fn resolve_widget_component_type(
             return None;
         }
         let normalized = nana_ui_runtime::normalize_tag(tag);
-        if candidates.iter().any(|seen| *seen == normalized) {
+        if candidates.contains(&normalized) {
             return None;
         }
         candidates.push(normalized.clone());
@@ -1214,6 +1214,12 @@ pub(crate) fn try_bind_registered_component(
                     );
                 }
             }
+            #[cfg(feature = "graph-canvas")]
+            if widget.kind == crate::WidgetKind::GraphCanvas {
+                pending
+                    .graph_canvases
+                    .push((id, RuntimeGraphCanvas::from_semantic(&spec)));
+            }
             enqueue_bound_assembly(widget, snapshot, id, context, mutations, pending);
             Some(true)
         }
@@ -1311,6 +1317,7 @@ pub(crate) fn enqueue_bound_assembly(
 ) {
     let world = context.world();
     match effective_kind(widget) {
+        #[cfg(feature = "rich-text")]
         crate::WidgetKind::NativeMarkdown => {
             let markdown =
                 RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
@@ -1469,18 +1476,13 @@ pub(crate) fn project_migrating_component(
                         | nana_ui_runtime::StandardVisual::TreeView { .. }
                         | nana_ui_runtime::StandardVisual::CommandPalette { .. }
                         | nana_ui_runtime::StandardVisual::ModalFrame { .. }
-                        | nana_ui_runtime::StandardVisual::CalendarHeatmap { .. }
-                        | nana_ui_runtime::StandardVisual::TimeSeriesChart { .. }
-                        | nana_ui_runtime::StandardVisual::ReorderList { .. }
-                        | nana_ui_runtime::StandardVisual::NativeMarkdown { .. }
-                        | nana_ui_runtime::StandardVisual::SelectableRichText { .. }
-                        | nana_ui_runtime::StandardVisual::GraphCanvas { .. }
-                        | nana_ui_runtime::StandardVisual::GraphMinimap { .. }
-                        | nana_ui_runtime::StandardVisual::ImageViewer { .. }
                         | nana_ui_runtime::StandardVisual::KeyCaptureLayer { .. }
                         | nana_ui_runtime::StandardVisual::KeymapLayer
                 )
-            ) {
+            ) || world
+                .standard_visual(id)
+                .is_some_and(|visual| visual.required_feature().is_some())
+            {
                 mutations.set_standard_visual(id, None);
             }
             false

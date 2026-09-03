@@ -41,6 +41,9 @@ jobs:
           git diff --exit-code -- dist
       - name: Check minimal feature set
         run: cargo check -p nana-ui --lib --no-default-features --locked
+      - name: Check isolated component families
+        if: runner.os == 'Linux'
+        run: python3 scripts/check-component-features.py
       - name: Check Gallery package boundary
         run: cargo check -p component-gallery --bin component-gallery --locked
       - name: Run default-feature tests

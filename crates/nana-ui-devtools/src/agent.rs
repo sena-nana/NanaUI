@@ -1085,7 +1085,7 @@ mod tests {
             layout.gap = Some(LengthSpec::Px(12.0));
             layout.padding = Some(LengthSpec::Px(16.0));
         }
-        let (radios, first, second) = document
+        let (radios, first, second, divider) = document
             .context_mut()
             .build(document_id, |ui| {
                 ui.with("root", Card::new().style(column), |ui| {
@@ -1095,8 +1095,8 @@ mod tests {
                         let second = ui.child("manual", SegmentedOption::new("Manual"));
                         (first, second)
                     });
-                    ui.child("divider", Divider::horizontal());
-                    (radios, first, second)
+                    let divider = ui.child("divider", Divider::horizontal());
+                    (radios, first, second, divider)
                 })
             })
             .expect("root");

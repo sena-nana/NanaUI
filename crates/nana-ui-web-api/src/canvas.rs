@@ -2133,7 +2133,12 @@ mod tests {
             )
             .unwrap();
         let pixels = runtime.get_image_data(canvas, 0, 0, 64, 24).unwrap();
-        let painted = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
+        let painted = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 0)
+            .count();
         assert!(painted > 0, "fillText must paint glyph coverage");
     }
 

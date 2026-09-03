@@ -1,6 +1,9 @@
+use std::hash::Hasher;
 use std::time::Duration;
 
 use crate::StableNodeId;
+
+pub use nana_ui_core::motion::Easing;
 
 /// Stable identity for one logical animation. Starting the same ID again
 /// atomically replaces its active timeline.
@@ -17,23 +20,25 @@ impl AnimationId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Easing {
-    #[default]
-    Linear,
-    EaseOutCubic,
-    EaseInOutCubic,
+/// Component-kind tags for [`component_animation_id`]. Every component family
+/// that starts its own timelines reserves one stable non-zero constant here,
+/// so hashed IDs stay in per-component namespaces instead of colliding across
+/// component types whose node IDs share one numeric space.
+pub mod component_animation_kinds {
+    /// Skeleton pulse timeline.
+    pub const SKELETON: u64 = 1;
 }
 
-impl Easing {
-    fn sample(self, progress: f32) -> f32 {
-        match self {
-            Self::Linear => progress,
-            Self::EaseOutCubic => 1.0 - (1.0 - progress).powi(3),
-            Self::EaseInOutCubic if progress < 0.5 => 4.0 * progress.powi(3),
-            Self::EaseInOutCubic => 1.0 - (-2.0 * progress + 2.0).powi(3) / 2.0,
-        }
-    }
+/// Derives the animation ID for one component-owned timeline from the
+/// component's kind tag and its node. Re-deriving the same pair yields the
+/// same ID (restarting replaces that timeline); different component kinds on
+/// identically numbered nodes never replace each other. Returns `None` in the
+/// negligible case of a zero hash, which [`AnimationId`] rejects.
+pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<AnimationId> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_u64(kind_tag);
+    hasher.write_u64(target.get());
+    AnimationId::new(hasher.finish())
 }
 
 /// CSS `animation-iteration-count`. Default is a single run.
@@ -131,7 +136,7 @@ pub struct AnimationPlayback {
 /// Playback longhands have no field defaults (rustc 1.92/1.97 still treats
 /// default field values as experimental). Use [`AnimationSpec::new`] for the
 /// six-field one-shot API, or write all four playback fields on every literal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnimationSpec {
     pub id: AnimationId,
     pub target: StableNodeId,
@@ -502,11 +507,38 @@ mod tests {
     fn runtime_sidebar_and_workspace_motion_stay_on_owned_clocks() {
         assert_eq!(
             crate::SidebarSectionState::animation_duration(),
-            Duration::from_millis(160)
+            nana_ui_core::motion::SIDEBAR_COLLAPSE
         );
         assert_eq!(
             nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION,
-            Duration::from_millis(240)
+            nana_ui_core::motion::SIDEBAR_COLLAPSE
+        );
+    }
+
+    #[test]
+    fn component_animation_ids_are_stable_and_split_by_kind() {
+        let node_a = StableNodeId::new(7).unwrap();
+        let node_b = StableNodeId::new(8).unwrap();
+        let skeleton = component_animation_id(component_animation_kinds::SKELETON, node_a);
+        assert_eq!(
+            skeleton,
+            component_animation_id(component_animation_kinds::SKELETON, node_a),
+            "re-deriving the same pair must address the same timeline"
+        );
+        assert_ne!(
+            skeleton,
+            component_animation_id(component_animation_kinds::SKELETON, node_b)
+        );
+        let other_kind = component_animation_id(component_animation_kinds::SKELETON + 1, node_a);
+        assert_ne!(
+            skeleton, other_kind,
+            "another component kind on the same node needs its own namespace"
+        );
+        let skeleton = skeleton.unwrap();
+        assert_ne!(
+            Some(skeleton),
+            AnimationId::new(node_a.get()),
+            "hashed IDs must not land in the raw node-ID namespace"
         );
     }
 }

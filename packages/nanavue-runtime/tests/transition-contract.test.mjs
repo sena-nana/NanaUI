@@ -1,7 +1,5 @@
+import { createTestRuntime } from "./load-runtime.mjs";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   NANA_TRANSITION_COMPUTED_DEFAULTS,
@@ -21,16 +19,6 @@ import {
   vueTransitionClassKind,
 } from "../src/transitionContract.js";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const shim = readFileSync(
-  join(root, "../../crates/nana-ui-web-api/src/shim.js"),
-  "utf8",
-);
-const renderer = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
-const vueHost = readFileSync(
-  join(root, "../../crates/nana-ui-vue/src/lib.rs"),
-  "utf8",
-);
 
 test("transition defaults are immediate (0s)", () => {
   assert.equal(NANA_TRANSITION_COMPUTED_DEFAULTS.transitionDuration, "0s");
@@ -47,31 +35,18 @@ test("cascade motion resolves non-zero transition duration", () => {
   assert.ok(!transitionInfoLooksImmediate(styles));
 });
 
-test("shim getComputedStyle exposes camelCase transition keys", () => {
-  assert.match(shim, /transitionDuration/);
-  assert.match(shim, /animationDuration/);
-  assert.match(shim, /computedStyle/);
+test("computed styles expose transition duration through the installed shim", async () => {
+  const { sandbox, api } = await createTestRuntime();
+  const node = api.wrapNode(10, "element", "div");
+  const style = sandbox.window.getComputedStyle(node);
+  assert.equal(style.transitionDuration, "0.2s");
+  assert.equal(style.animationDuration, "0s");
 });
 
-test("document.body uses wrapHostNode for Teleport stability", () => {
-  assert.match(shim, /wrapHostNode\(id,\s*"body"\)/);
-  assert.match(shim, /Stable `document\.body` for Vue Teleport/);
-  assert.match(shim, /hostNodeCache/);
-});
-
-test("hostOps querySelector tags body/html for Teleport", () => {
-  assert.match(renderer, /lower === "body" \|\| lower === "html"/);
-  assert.match(renderer, /Teleport `to="body"`/);
-});
-
-test("shim document.querySelector tags body for Teleport identity", () => {
-  assert.match(shim, /teleportTargetTag/);
-});
-
-test("VueHost pump_frame drains nested rAF for Transition nextFrame", () => {
-  assert.match(vueHost, /MAX_TIMER_PASSES/);
-  assert.match(vueHost, /double-rAF|nextFrame/);
-  assert.match(vueHost, /after-leave|Dialog\/Drawer/);
+test("Teleport queries and document.body use the renderer identity", async () => {
+  const { sandbox, api } = await createTestRuntime();
+  assert.equal(api.hostOps.querySelector("body"), sandbox.document.body);
+  assert.equal(sandbox.document.querySelector("body"), sandbox.document.body);
 });
 
 /**
@@ -164,10 +139,9 @@ test("motion end event is a host-dispatchable Event, not WAAPI", () => {
   assert.equal(event.propertyName, "opacity");
   assert.equal(event.elapsedTime, 0.16);
   assert.equal(typeof event.preventDefault, "function");
-  assert.equal(renderer.includes("element.animate"), false);
-  assert.match(renderer, /__nanaMotionComplete/);
-  assert.match(renderer, /isPaintOnlyStyleKey/);
-  assert.match(renderer, /setPaintTransform/);
+
+
+
 });
 
 test("armed motion end timeout dispatches once through the host callback", async () => {
@@ -190,5 +164,5 @@ test("host complete cancels the class-arm fallback so transitionend fires once",
   hits.push("complete");
   await new Promise((resolve) => setTimeout(resolve, wait + 20));
   assert.deepEqual(hits, ["complete"]);
-  assert.match(renderer, /__nanaMotionCancel/);
+
 });

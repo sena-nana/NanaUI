@@ -1220,7 +1220,10 @@ fn subject_keys<'a>(
 /// Split a declaration block into structured entries (once per rule at parse).
 pub(crate) fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
     let mut out = Vec::new();
-    for (i, decl) in block.split(';').enumerate() {
+    for (i, decl) in crate::css_font_face::split_decls(block)
+        .into_iter()
+        .enumerate()
+    {
         let decl = decl.trim();
         if decl.is_empty() {
             continue;
@@ -1994,14 +1997,26 @@ fn selector_has_deferred_pseudo(s: &str) -> bool {
         if GeneratedPseudo::from_ident(name).is_some() {
             return true;
         }
-        match name {
-            "where" | "is" | "not" | "nth-child" | "nth-of-type" | "nth-last-child" | "has" => {
-                false
-            }
-            "root" | "first-child" | "last-child" | "only-child" | "first-of-type"
-            | "last-of-type" | "empty" | "checked" | "disabled" | "focus-within" => false,
-            _ => true,
-        }
+        !matches!(
+            name,
+            "where"
+                | "is"
+                | "not"
+                | "nth-child"
+                | "nth-of-type"
+                | "nth-last-child"
+                | "has"
+                | "root"
+                | "first-child"
+                | "last-child"
+                | "only-child"
+                | "first-of-type"
+                | "last-of-type"
+                | "empty"
+                | "checked"
+                | "disabled"
+                | "focus-within"
+        )
     }) || s.to_ascii_lowercase().contains("::")
         || has_legacy_pseudo_element(s)
 }
@@ -2020,8 +2035,8 @@ fn scan_selector_pseudos(s: &str, mut classify: impl FnMut(&str) -> bool) -> boo
     let mut rest = lower.as_str();
     while let Some(idx) = rest.find(':') {
         let after = &rest[idx + 1..];
-        if after.starts_with(':') {
-            rest = &after[1..];
+        if let Some(stripped) = after.strip_prefix(':') {
+            rest = stripped;
             continue;
         }
         if let Some(end) = skip_ident(after) {

@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LengthSpec,
-    MutationQueue, NodeKind, NodeStyle, SemanticColorRole, StableNodeId, StandardVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, AnimationDirection, AnimationFillMode,
+    AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentView,
+    Easing, InteractionState, LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole,
+    StableNodeId, StandardVisual, UiWorld, component_animation_id, component_animation_kinds,
 };
 
 fn sanitize_surface_height(height: f32) -> f32 {
@@ -36,21 +39,61 @@ fn inert() -> InteractionState {
     }
 }
 
+/// LiliaUI `ui-skeleton-pulse` swing: opacity oscillates between 1 and 0.55.
+const PULSE_OPACITY_SWING: f32 = 0.45;
+
 /// Non-interactive placeholder surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Skeleton {
     pub width: LengthSpec,
     pub height: f32,
     pub style: NodeStyle,
+    /// Runtime-sampled pulse phase in `0.0..=1.0`. Phase 0 is the steady
+    /// full-opacity frame; the animation dispatch owns this field.
+    pub(crate) pulse: f32,
 }
 
 impl Skeleton {
+    /// Playback longhands of the infinite pulse timeline.
+    pub(crate) const PULSE_PLAYBACK: AnimationPlayback = AnimationPlayback {
+        iteration_count: AnimationIteration::INFINITE,
+        direction: AnimationDirection::Alternate,
+        fill_mode: AnimationFillMode::None,
+        play_state: AnimationPlayState::Running,
+    };
+
     pub fn new(width: impl Into<LengthSpec>, height: f32) -> Self {
         Self {
             width: sanitize_surface_width(width.into()),
             height: sanitize_surface_height(height),
             style: NodeStyle::default(),
+            pulse: 0.0,
         }
+    }
+
+    /// The skeleton's pulse timeline anchored at `start`, or `None` when its
+    /// hashed animation ID would be zero.
+    pub(crate) fn pulse_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+        let animation = component_animation_id(component_animation_kinds::SKELETON, id)?;
+        Some(AnimationSpec::new(
+            animation,
+            id,
+            start,
+            nana_ui_core::motion::SKELETON_PULSE,
+            crate::framework::COMPONENT_FRAME_INTERVAL,
+            Easing::EaseInOutCubic,
+        ))
+    }
+
+    /// Layout opacity for one pulse phase. Phase 0 maps to `None` so the
+    /// steady frame's projected style stays identical to a static skeleton.
+    fn pulse_opacity(pulse: f32) -> Option<f32> {
+        let pulse = if pulse.is_finite() {
+            pulse.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (pulse > 0.0).then_some(1.0 - PULSE_OPACITY_SWING * pulse)
     }
 
     pub fn fill_width(height: f32) -> Self {
@@ -93,11 +136,26 @@ impl ComponentView for Skeleton {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        // Freshly created nodes (not yet committed) and mounted projections
+        // start the pulse once; a running timeline is never restarted, so
+        // repeated projections and per-frame phase writes cannot reset it.
+        // Parked nodes skip the start: their timeline is (re)started on mount.
+        let startable = !world.contains(id) || world.is_mounted(id);
+        if startable
+            && let Some(spec) = Self::pulse_animation(id, Duration::ZERO)
+            && !world.animation_is_active(spec.id)
+        {
+            mutations.start_animation_with_playback(spec, Self::PULSE_PLAYBACK);
+        }
+        let mut style = self.effective_style(world);
+        if let Some(opacity) = Self::pulse_opacity(self.pulse) {
+            Arc::make_mut(&mut style.layout).opacity = Some(opacity);
+        }
         project_common(
             id,
             world,
             mutations,
-            &self.effective_style(world),
+            &style,
             inert(),
             AccessibilityState {
                 role: AccessibilityRole::Generic,
@@ -228,6 +286,7 @@ mod tests {
         assert_eq!(style.background, Some(SemanticColorRole::Subtle));
         assert_eq!(style.border, None);
         assert_eq!(style.layout.border_width, Some(0.0));
+        assert_eq!(style.layout.opacity, None);
         assert_eq!(
             style.layout.border_radius,
             Some(context.world().theme_metrics().radius_sm)
@@ -238,6 +297,109 @@ mod tests {
         let accessibility = context.world().accessibility(id).unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::Generic);
         assert_eq!(accessibility.label, None);
+    }
+
+    #[test]
+    fn skeleton_pulse_samples_drive_layout_opacity_and_reproject() {
+        fn projected_opacity(context: &AppContext, id: StableNodeId) -> Option<f32> {
+            context.world().node_style(id).unwrap().layout.opacity
+        }
+
+        let mut context = AppContext::new();
+        let skeleton = context
+            .create_component(document(), Skeleton::new(LengthSpec::Px(120.0), 16.0))
+            .unwrap();
+        let id = skeleton.stable_id();
+        let _ = context.take_system_work();
+
+        // The first sample is the steady frame: phase 0 leaves layout opacity
+        // unset, dirties nothing, and schedules follow-up frames instead of
+        // spinning on a zero deadline.
+        let steady = context.advance_animations(Duration::ZERO);
+        assert!(steady.has_updates());
+        assert_eq!(projected_opacity(&context, id), None);
+        assert!(context.take_system_work().is_empty());
+        assert!(
+            steady
+                .next_deadline
+                .is_some_and(|deadline| deadline > Duration::ZERO)
+        );
+
+        let easing = nana_ui_core::motion::Easing::EaseInOutCubic;
+        let dimming = context.advance_animations(Duration::from_millis(350));
+        assert!(dimming.samples.iter().any(|sample| sample.target == id));
+        assert!(dimming.component_updates.contains(&id));
+        let quarter = projected_opacity(&context, id);
+        assert!(quarter.is_some_and(|value| {
+            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.25))).abs() < 1e-4
+        }));
+        assert!(!context.take_system_work().is_empty());
+
+        let _ = context.advance_animations(Duration::from_millis(700));
+        let half = projected_opacity(&context, id);
+        assert!(half.is_some_and(|value| {
+            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.5))).abs() < 1e-4
+        }));
+
+        // End of the first half-cycle reaches the LiliaUI dimmest opacity.
+        let _ = context.advance_animations(Duration::from_millis(1400));
+        let dimmest = projected_opacity(&context, id);
+        assert!(dimmest.is_some_and(|value| (value - 0.55).abs() < 1e-4));
+
+        // The alternate second half-cycle swings back up instead of holding.
+        let _ = context.advance_animations(Duration::from_millis(1750));
+        let recovering = projected_opacity(&context, id);
+        assert!(recovering.is_some_and(|value| {
+            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.75))).abs() < 1e-4
+        }));
+
+        assert!(quarter > half && half > dimmest && recovering > dimmest);
+    }
+
+    #[test]
+    fn unmounted_skeleton_reclaims_its_pulse_animation() {
+        let mut context = AppContext::new();
+        let skeleton = context
+            .create_component(document(), Skeleton::fill_width(12.0))
+            .unwrap();
+        context.advance_animations(Duration::from_millis(48));
+        assert!(context.next_animation_deadline().is_some());
+
+        context.remove_view(skeleton).unwrap();
+        assert_eq!(context.next_animation_deadline(), None);
+        let frame = context.advance_animations(Duration::from_millis(100_000));
+        assert!(frame.samples.is_empty());
+        assert_eq!(frame.next_deadline, None);
+    }
+
+    #[test]
+    fn detached_skeleton_stays_quiet_until_remounted() {
+        let mut context = AppContext::new();
+        let host = context
+            .create_component(document(), crate::Stack::row(0.0))
+            .unwrap();
+        let skeleton = context
+            .create_detached_component(document(), Skeleton::fill_width(12.0))
+            .unwrap();
+        let id = skeleton.stable_id();
+        // Parking the detached component cancels its staged pulse timeline.
+        assert_eq!(context.next_animation_deadline(), None);
+
+        context
+            .attach_child(host.stable_id(), skeleton.stable_id())
+            .unwrap();
+        assert!(context.next_animation_deadline().is_some());
+        let frame = context.advance_animations(Duration::from_millis(700));
+        assert!(frame.component_updates.contains(&id));
+        assert!(
+            context
+                .world()
+                .node_style(id)
+                .unwrap()
+                .layout
+                .opacity
+                .is_some_and(|value| (value - 0.775).abs() < 1e-4)
+        );
     }
 
     #[test]

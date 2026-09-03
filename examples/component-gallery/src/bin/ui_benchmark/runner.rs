@@ -631,7 +631,7 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
 
 fn dispatch_pointer_sequence(document: &mut RuntimeDocument, iteration: usize) {
     let document_id = document.document();
-    let adapter = RuntimeInputAdapter::default();
+    let mut adapter = RuntimeInputAdapter::default();
     let x = 450.0;
     let y = 320.0;
     let direction = if iteration % 20 < 10 { -2.0 } else { 2.0 };

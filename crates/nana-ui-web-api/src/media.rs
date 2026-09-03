@@ -825,7 +825,7 @@ fn mock_frame_rgba(width: u32, height: u32, seed: u64) -> Vec<u8> {
     let r = (seed.wrapping_mul(37) % 200 + 40) as u8;
     let g = (seed.wrapping_mul(17) % 180 + 30) as u8;
     let b = (seed.wrapping_mul(11) % 160 + 50) as u8;
-    for pixel in bytes.chunks_exact_mut(4) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
         pixel[0] = r;
         pixel[1] = g;
         pixel[2] = b;

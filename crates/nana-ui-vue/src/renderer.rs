@@ -80,6 +80,19 @@ pub(crate) fn register_dom_host_ops_with_bridge_and_layout(
     register_all(api, host);
 }
 
+fn require_component_feature(tag: &str) -> Result<(), JsException> {
+    if let Some(descriptor) = nana_ui_runtime::component_descriptors::builtin_component(tag)
+        && !descriptor.compiled
+    {
+        return Err(JsException::new(format!(
+            "component {} requires Cargo feature `{}`",
+            descriptor.type_id,
+            descriptor.required_feature.unwrap_or("components")
+        )));
+    }
+    Ok(())
+}
+
 fn host_tag_kind(
     doc: &NanaTreeDocument,
     tag: &str,
@@ -87,6 +100,7 @@ fn host_tag_kind(
     role: Option<&str>,
     input_type: Option<&str>,
 ) -> Result<WidgetKind, JsException> {
+    require_component_feature(tag)?;
     resolve_host_tag_kind(tag, class, role, input_type, |candidate| {
         doc.context().resolve_component_tag(candidate).is_some()
     })
@@ -191,16 +205,16 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("createWidget", move |args| {
             let kind_raw = arg_str(args, 0).unwrap_or_else(|| "button".into());
+            require_component_feature(&kind_raw)?;
             let native_name = normalize_native_component(&host, &kind_raw);
+            let mut guard = lock_doc(&host.document)?;
             let kind = WidgetKind::parse(&kind_raw)
                 .or_else(|| native_name.as_ref().map(|_| WidgetKind::Box))
                 .or_else(|| {
-                    lock_doc(&host.document).ok().and_then(|guard| {
-                        guard
-                            .context()
-                            .resolve_component_tag(&kind_raw)
-                            .map(|_| WidgetKind::Column)
-                    })
+                    guard
+                        .context()
+                        .resolve_component_tag(&kind_raw)
+                        .map(|_| WidgetKind::Column)
                 })
                 .or_else(|| {
                     kind_raw
@@ -225,7 +239,6 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                     registry.validate_props(&name, &props.native_props)?;
                 }
             }
-            let mut guard = lock_doc(&host.document)?;
             let element_tag = props
                 .native_component
                 .as_ref()
@@ -289,7 +302,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             let mut guard = lock_doc(&host.document)?;
             guard.insert(child, parent, anchor);
             let parent_tag = guard.element_tag(parent).unwrap_or_else(|| "div".into());
-            let parent_kind = host_tag_kind(&guard, &parent_tag, None, None, None)?;
+            let parent_kind = if normalize_native_component(&host, &parent_tag).is_some() {
+                WidgetKind::Box
+            } else {
+                host_tag_kind(&guard, &parent_tag, None, None, None)?
+            };
             drop(guard);
             let mut bridge = lock_bridge(&host.bridge)?;
             let parent_id = widget_id(parent);
@@ -1542,16 +1559,16 @@ fn seed_element_attrs(guard: &mut NanaTreeDocument, handle: NodeHandle, props: &
 fn lock_doc(
     doc: &Arc<Mutex<NanaTreeDocument>>,
 ) -> Result<std::sync::MutexGuard<'_, NanaTreeDocument>, JsException> {
-    doc.lock()
-        .map_err(|_| JsException::new("nana tree document poisoned"))
+    doc.try_lock()
+        .map_err(|error| JsException::new(format!("nana tree document access failed: {error}")))
 }
 
 fn lock_bridge(
     bridge: &Arc<Mutex<MessageBridge>>,
 ) -> Result<std::sync::MutexGuard<'_, MessageBridge>, JsException> {
     bridge
-        .lock()
-        .map_err(|_| JsException::new("nana message bridge poisoned"))
+        .try_lock()
+        .map_err(|error| JsException::new(format!("nana message bridge access failed: {error}")))
 }
 
 fn apply_inject_stylesheet_href(bridge: &mut MessageBridge, href: Option<&str>) {
@@ -4282,5 +4299,35 @@ mod tests {
             transform.starts_with("matrix("),
             "used transform must be CSS matrix, got {transform}"
         );
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    #[test]
+    fn optional_tags_report_missing_features_before_allocating_nodes() {
+        for descriptor in nana_ui_runtime::component_descriptors::BUILTIN_COMPONENTS
+            .iter()
+            .filter(|entry| entry.required_feature.is_some())
+        {
+            let host = crate::VueHost::new();
+            let api = host.host_api_registry();
+            let tag = descriptor.tags[0];
+            for operation in ["createElement", "createWidget"] {
+                let result = api.call(operation, &[HostValue::string(tag)]);
+                if descriptor.compiled {
+                    assert!(result.is_ok(), "{operation} {tag}: {result:?}");
+                } else {
+                    let error = result.expect_err("disabled family must fail explicitly");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains(descriptor.required_feature.unwrap()),
+                        "{error}"
+                    );
+                }
+            }
+        }
     }
 }
