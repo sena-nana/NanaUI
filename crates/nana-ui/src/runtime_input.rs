@@ -334,12 +334,7 @@ impl RuntimeInputAdapter {
                                     .transpose()?
                                     .unwrap_or(false)
                                 || context.clear_calendar_heatmap_hover(document)?
-                                || context.sync_split_handle_hover_near(
-                                    document,
-                                    *x,
-                                    *y,
-                                    now,
-                                )?
+                                || context.sync_split_handle_hover_near(document, *x, *y, now)?
                                 || target.is_some()
                         }
                     }
@@ -4054,6 +4049,48 @@ mod tests {
         }
     }
 
+    /// 选中 `def`：End 到文档尾，Shift+Left 三次（偏移 7..4）。
+    fn select_trailing_def(
+        adapter: &mut RuntimeInputAdapter,
+        context: &mut AppContext,
+        document: DocumentId,
+        shaper: &mut MeasureTextShaper,
+    ) {
+        adapter
+            .dispatch_with_shaper(
+                context,
+                document,
+                &plain_key("End"),
+                Duration::from_millis(1_000),
+                Some(shaper),
+            )
+            .unwrap();
+        for _ in 0..3 {
+            adapter
+                .dispatch_with_shaper(
+                    context,
+                    document,
+                    &shift_key("ArrowLeft"),
+                    Duration::from_millis(1_000),
+                    Some(shaper),
+                )
+                .unwrap();
+        }
+    }
+
+    /// 无修饰键的拖拽指针事件（按下/移动/释放）。
+    fn pointer_down(x: f32, y: f32) -> InputEvent {
+        drag_pointer_event(PointerPhase::Down, x, y, InputModifiers::default())
+    }
+
+    fn pointer_move(x: f32, y: f32) -> InputEvent {
+        drag_pointer_event(PointerPhase::Move, x, y, InputModifiers::default())
+    }
+
+    fn pointer_up(x: f32, y: f32) -> InputEvent {
+        drag_pointer_event(PointerPhase::Up, x, y, InputModifiers::default())
+    }
+
     /// 拖拽移动主流程：选中 `def`（第二行 0..3 列 → 偏移 4..7），在选区
     /// 内按下并拖到第一行行首释放 = 移动文本，选区落在插入文本上，整
     /// 个移动只发一次变更（单步撤销的修订语义）。
@@ -4063,40 +4100,18 @@ mod tests {
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
         // 选中 "def"：End 到文档尾，Shift+Left 三次。
-        adapter
-            .dispatch_with_shaper(
-                &mut context,
-                document,
-                &plain_key("End"),
-                Duration::from_millis(1_000),
-                Some(&mut shaper),
-            )
-            .unwrap();
-        for _ in 0..3 {
-            adapter
-                .dispatch_with_shaper(
-                    &mut context,
-                    document,
-                    &shift_key("ArrowLeft"),
-                    Duration::from_millis(1_000),
-                    Some(&mut shaper),
-                )
-                .unwrap();
-        }
+        select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
         assert_eq!(
             textarea_selection(&context, node),
             ("abc\ndef".into(), 7, 4)
         );
 
-        let down = |x, y| drag_pointer_event(PointerPhase::Down, x, y, InputModifiers::default());
-        let move_to =
-            |x, y| drag_pointer_event(PointerPhase::Move, x, y, InputModifiers::default());
         // 选区内按下（"e"，offset 5）→ 不塌缩选区。
         adapter
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &down(15.0, 18.0),
+                &pointer_down(15.0, 18.0),
                 Duration::from_millis(2_000),
                 Some(&mut shaper),
             )
@@ -4110,7 +4125,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &move_to(0.0, 6.0),
+                &pointer_move(0.0, 6.0),
                 Duration::from_millis(2_010),
                 Some(&mut shaper),
             )
@@ -4119,7 +4134,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &drag_pointer_event(PointerPhase::Up, 0.0, 6.0, InputModifiers::default()),
+                &pointer_up(0.0, 6.0),
                 Duration::from_millis(2_020),
                 Some(&mut shaper),
             )
@@ -4139,36 +4154,13 @@ mod tests {
         let (mut context, document, node, events) = drag_drop_editor();
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
-        adapter
-            .dispatch_with_shaper(
-                &mut context,
-                document,
-                &plain_key("End"),
-                Duration::from_millis(1_000),
-                Some(&mut shaper),
-            )
-            .unwrap();
-        for _ in 0..3 {
-            adapter
-                .dispatch_with_shaper(
-                    &mut context,
-                    document,
-                    &shift_key("ArrowLeft"),
-                    Duration::from_millis(1_000),
-                    Some(&mut shaper),
-                )
-                .unwrap();
-        }
-        let down = |x, y| drag_pointer_event(PointerPhase::Down, x, y, InputModifiers::default());
-        let move_to =
-            |x, y| drag_pointer_event(PointerPhase::Move, x, y, InputModifiers::default());
-        let up = |x, y| drag_pointer_event(PointerPhase::Up, x, y, InputModifiers::default());
+        select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
         // target == start（offset 4）：选区头。
         adapter
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &down(15.0, 18.0),
+                &pointer_down(15.0, 18.0),
                 Duration::from_millis(2_000),
                 Some(&mut shaper),
             )
@@ -4177,7 +4169,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &move_to(2.0, 18.0),
+                &pointer_move(2.0, 18.0),
                 Duration::from_millis(2_010),
                 Some(&mut shaper),
             )
@@ -4186,7 +4178,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &up(2.0, 18.0),
+                &pointer_up(2.0, 18.0),
                 Duration::from_millis(2_020),
                 Some(&mut shaper),
             )
@@ -4200,7 +4192,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &down(15.0, 18.0),
+                &pointer_down(15.0, 18.0),
                 Duration::from_millis(3_000),
                 Some(&mut shaper),
             )
@@ -4209,7 +4201,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &move_to(35.0, 18.0),
+                &pointer_move(35.0, 18.0),
                 Duration::from_millis(3_010),
                 Some(&mut shaper),
             )
@@ -4218,7 +4210,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &up(35.0, 18.0),
+                &pointer_up(35.0, 18.0),
                 Duration::from_millis(3_020),
                 Some(&mut shaper),
             )
@@ -4236,26 +4228,7 @@ mod tests {
         let (mut context, document, node, events) = drag_drop_editor();
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
-        adapter
-            .dispatch_with_shaper(
-                &mut context,
-                document,
-                &plain_key("End"),
-                Duration::from_millis(1_000),
-                Some(&mut shaper),
-            )
-            .unwrap();
-        for _ in 0..3 {
-            adapter
-                .dispatch_with_shaper(
-                    &mut context,
-                    document,
-                    &shift_key("ArrowLeft"),
-                    Duration::from_millis(1_000),
-                    Some(&mut shaper),
-                )
-                .unwrap();
-        }
+        select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
         let mut alt = InputModifiers::default();
         alt.alt = true;
         adapter
@@ -4298,26 +4271,7 @@ mod tests {
         let (mut context, document, node, events) = drag_drop_editor();
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
-        adapter
-            .dispatch_with_shaper(
-                &mut context,
-                document,
-                &plain_key("End"),
-                Duration::from_millis(1_000),
-                Some(&mut shaper),
-            )
-            .unwrap();
-        for _ in 0..3 {
-            adapter
-                .dispatch_with_shaper(
-                    &mut context,
-                    document,
-                    &shift_key("ArrowLeft"),
-                    Duration::from_millis(1_000),
-                    Some(&mut shaper),
-                )
-                .unwrap();
-        }
+        select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
         adapter
             .dispatch_with_shaper(
                 &mut context,
@@ -4359,26 +4313,7 @@ mod tests {
         let (mut context, document, node, events) = drag_drop_editor();
         let mut shaper = MeasureTextShaper;
         let mut adapter = RuntimeInputAdapter::default();
-        adapter
-            .dispatch_with_shaper(
-                &mut context,
-                document,
-                &plain_key("End"),
-                Duration::from_millis(1_000),
-                Some(&mut shaper),
-            )
-            .unwrap();
-        for _ in 0..3 {
-            adapter
-                .dispatch_with_shaper(
-                    &mut context,
-                    document,
-                    &shift_key("ArrowLeft"),
-                    Duration::from_millis(1_000),
-                    Some(&mut shaper),
-                )
-                .unwrap();
-        }
+        select_trailing_def(&mut adapter, &mut context, document, &mut shaper);
         adapter
             .dispatch_with_shaper(
                 &mut context,
@@ -4413,7 +4348,7 @@ mod tests {
             .dispatch_with_shaper(
                 &mut context,
                 document,
-                &drag_pointer_event(PointerPhase::Up, 0.0, 6.0, InputModifiers::default()),
+                &pointer_up(0.0, 6.0),
                 Duration::from_millis(2_020),
                 Some(&mut shaper),
             )
