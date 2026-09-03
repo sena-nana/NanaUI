@@ -878,6 +878,19 @@ impl RuntimeInputAdapter {
                     false
                 }
             }
+            InputEvent::Keyboard {
+                pressed,
+                text,
+                modifiers,
+                ..
+            } if *pressed
+                && !modifiers.alt
+                && !modifiers.control
+                && !modifiers.meta
+                && text.as_ref().is_some_and(|value| !value.is_empty()) =>
+            {
+                context.replace_focused_text(document, text.as_deref().unwrap_or_default())?
+            }
             _ => false,
         };
         Ok(InputDisposition {
@@ -2047,6 +2060,34 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text(input.stable_id()), Some("Nana"));
+    }
+
+    #[test]
+    fn focused_runtime_text_inserts_shifted_printable_characters() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("inspect "))
+            .unwrap();
+        assert!(context.focus_node(document, area.stable_id()).unwrap());
+        let event = InputEvent::Keyboard {
+            pressed: true,
+            key: "2".into(),
+            text: Some("@".into()),
+            code: "Digit2".into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                shift: true,
+                ..InputModifiers::default()
+            },
+        };
+        assert!(
+            RuntimeInputAdapter::default()
+                .dispatch(&mut context, document, &event)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(area.stable_id()), Some("inspect @"));
     }
 
     #[test]
