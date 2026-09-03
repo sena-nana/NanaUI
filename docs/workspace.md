@@ -25,7 +25,7 @@
 
 `Workspace` 控件把应用内容绑到 Region：`WorkspaceRegionSlot { id, content }`。内容是树上的子节点。
 
-分隔条命中区覆盖在区域边缘（8px），不占 grid track。折叠或隐藏的区域不绘制、不响应 resize，并在几何里让出空间；overlay 区域显示但不占 primary。折叠带 240ms 过渡，只有动画在跑时才要帧。
+分隔条命中区覆盖在区域边缘（8px），不占 grid track。折叠或隐藏的区域不绘制、不响应 resize，并在几何里让出空间；overlay 区域显示但不占 primary。折叠带 260ms 过渡，只有动画在跑时才要帧。
 
 `WorkspaceGeometry` 把同一布局映射为逻辑/物理矩形，供 GPU 视口使用。它不创建窗口或 GPU 资源。
 
