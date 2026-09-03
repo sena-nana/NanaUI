@@ -1368,11 +1368,8 @@ pub fn bracket_interior_containing(
             stack.push((closer, offset));
         } else if bracket_opener(character).is_some()
             && let Some(&(expected, open_offset)) = stack.last()
+            && expected == character
         {
-            // expected 是入栈时记录的关闭字符，与当前关闭字符直接比较。
-            if expected != character {
-                continue;
-            }
             stack.pop();
             let inside = open_offset < start && end <= offset;
             // 已填满的层不算命中：选区已是该对内部时向更外层找。
@@ -1695,14 +1692,12 @@ pub fn replace_all_matches_in_range(
     let mut cursor = 0;
     for found in &matches {
         next.push_str(&value[cursor..found.start]);
-        if preserve_case {
-            next.push_str(&preserve_case_replacement(
-                replacement,
-                &value[found.start..found.end],
-            ));
+        let text = if preserve_case {
+            preserve_case_replacement(replacement, &value[found.start..found.end])
         } else {
-            next.push_str(replacement);
-        }
+            replacement.to_owned()
+        };
+        next.push_str(&text);
         cursor = found.end;
     }
     next.push_str(&value[cursor..]);
