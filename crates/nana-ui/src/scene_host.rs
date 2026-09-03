@@ -1609,7 +1609,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
 
-    fn sync_window_cursor(&self, id: WindowId) {
+    fn sync_window_cursor(&mut self, id: WindowId) {
+        if !self.input_mut(id).begin_cursor_sync(std::time::Instant::now()) {
+            return;
+        }
         let cursor = self.input_of(id).cursor;
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
         let (handle, text_field) = self.program.document(id).map_or((None, false), |document| {
@@ -3008,6 +3011,7 @@ fn map_button_source(
 #[derive(Debug, Default)]
 struct InputTracker {
     cursor: (f32, f32),
+    cursor_sync_last: Option<std::time::Instant>,
     buttons: u16,
     modifiers: ModifiersState,
     active_touches: HashSet<u64>,
@@ -3029,6 +3033,24 @@ impl InputTracker {
     fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
         let point = position.to_logical::<f32>(f64::from(scale));
         self.cursor = (point.x, point.y);
+    }
+
+    /// Whether a cursor-icon sync may run now; records the sync when true.
+    ///
+    /// The sync probes split/dock/workspace handles, and each probe walks the
+    /// whole document when the pointer is outside every handle slop. Pointer
+    /// moves arrive faster than frames, so gate the probe to one per frame
+    /// interval; the icon lagging a frame is imperceptible.
+    fn begin_cursor_sync(&mut self, now: std::time::Instant) -> bool {
+        const CURSOR_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
+        if self
+            .cursor_sync_last
+            .is_some_and(|last| now.duration_since(last) < CURSOR_SYNC_INTERVAL)
+        {
+            return false;
+        }
+        self.cursor_sync_last = Some(now);
+        true
     }
 
     fn pointer_event(
@@ -3668,6 +3690,16 @@ mod tests {
         assert!(modifiers.alt);
         assert!(modifiers.shift);
         assert!(modifiers.meta);
+    }
+
+    #[test]
+    fn cursor_sync_is_throttled_to_one_per_frame_interval() {
+        let mut tracker = InputTracker::default();
+        assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
+        // A second sync inside the frame interval is skipped.
+        assert!(!tracker.begin_cursor_sync(std::time::Instant::now()));
+        std::thread::sleep(std::time::Duration::from_millis(9));
+        assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
     }
 
     #[test]

@@ -504,6 +504,28 @@ impl AppContext {
         })
     }
 
+    /// Throttled pointermove entry: probe the handle near the pointer and sync
+    /// hover highlights at most once per frame interval.
+    ///
+    /// A move outside every handle slop makes [`Self::split_handle_near`] walk
+    /// the whole document, and moves arrive faster than frames, so the probe is
+    /// gated here. The highlight lags at most one frame. Cancel/leave paths
+    /// call [`Self::sync_split_handle_hover`] directly — releasing a highlight
+    /// must not be throttled.
+    pub fn sync_split_handle_hover_near(
+        &mut self,
+        document: crate::DocumentId,
+        x: f32,
+        y: f32,
+        now: std::time::Duration,
+    ) -> Result<bool, crate::FrameworkError> {
+        if !self.begin_split_hover_probe(document, now) {
+            return Ok(false);
+        }
+        let near = self.split_handle_near(document, x, y);
+        self.sync_split_handle_hover(document, near)
+    }
+
     /// Reflect the slop-zone hover onto the split handle highlight.
     ///
     /// `None` — or a target that is not a split handle — releases every hovered
@@ -1363,6 +1385,71 @@ mod tests {
         assert!(context.read(split, |pane| pane.model.hovered()).unwrap());
 
         assert!(context.sync_split_handle_hover(document(), None).unwrap());
+        assert!(!context.read(split, |pane| pane.model.hovered()).unwrap());
+    }
+
+    #[test]
+    fn split_hover_probe_is_throttled_to_one_per_interval() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount_without_handle(&mut context, &model, first, second);
+        context.assemble_split_pane(split).unwrap();
+        let handle = context
+            .read(split, |pane| pane.handle)
+            .unwrap()
+            .expect("handle");
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.write_layout(
+                    handle,
+                    crate::LayoutBox {
+                        x: 200.0,
+                        y: 0.0,
+                        width: HANDLE_SIZE,
+                        height: 200.0,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+        context.rebuild_hit_test(document());
+
+        let t0 = std::time::Duration::from_millis(1_000);
+        assert!(
+            context
+                .sync_split_handle_hover_near(document(), 204.0, 20.0, t0)
+                .unwrap()
+        );
+        assert!(context.read(split, |pane| pane.model.hovered()).unwrap());
+
+        // Moves within the frame interval skip the probe and keep the
+        // highlight even though the pointer has left the slop.
+        assert!(
+            !context
+                .sync_split_handle_hover_near(
+                    document(),
+                    600.0,
+                    20.0,
+                    t0 + std::time::Duration::from_millis(4)
+                )
+                .unwrap()
+        );
+        assert!(context.read(split, |pane| pane.model.hovered()).unwrap());
+
+        // After the interval the probe runs and releases the highlight.
+        assert!(
+            context
+                .sync_split_handle_hover_near(
+                    document(),
+                    600.0,
+                    20.0,
+                    t0 + std::time::Duration::from_millis(16)
+                )
+                .unwrap()
+        );
         assert!(!context.read(split, |pane| pane.model.hovered()).unwrap());
     }
 
