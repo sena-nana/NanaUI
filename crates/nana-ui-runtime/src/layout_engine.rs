@@ -4014,7 +4014,11 @@ fn resolve_axis(
             Some(fill_base)
         } else {
             value
-                .resolve_with_fonts(Some(percent_base), Some((viewport.width, viewport.height)), fonts)
+                .resolve_with_fonts(
+                    Some(percent_base),
+                    Some((viewport.width, viewport.height)),
+                    fonts,
+                )
                 .map(|value| value.max(0.0))
         }
     })

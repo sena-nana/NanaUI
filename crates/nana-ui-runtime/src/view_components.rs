@@ -3723,12 +3723,10 @@ mod tests {
 
     #[test]
     fn content_slot_row_keeps_label_out_of_node_text() {
-        let item = ListItem::new("模型")
-            .detail("3 动作")
-            .slots(ListItemSlots {
-                content: Some(StableNodeId::new(2).unwrap()),
-                ..ListItemSlots::default()
-            });
+        let item = ListItem::new("模型").detail("3 动作").slots(ListItemSlots {
+            content: Some(StableNodeId::new(2).unwrap()),
+            ..ListItemSlots::default()
+        });
         let (world, id) = mount(&item);
         assert_eq!(world.text(id), Some(""));
         assert_eq!(
@@ -3763,7 +3761,10 @@ mod tests {
             })),
             nana_ui_core::JustifySpec::End
         );
-        assert_eq!(justify(ListItem::new("行")), nana_ui_core::JustifySpec::Start);
+        assert_eq!(
+            justify(ListItem::new("行")),
+            nana_ui_core::JustifySpec::Start
+        );
     }
 
     #[test]
@@ -3771,11 +3772,17 @@ mod tests {
         // 样式合同：margin 取水平 padding 负值，文本内缩不变；默认不外扩。
         let px = nana_ui_core::LengthSpec::Px;
         let inset = nana_ui_core::UI_METRICS.list_item_padding_x;
-        let bled = ListItem::new("行").pill_bleed(true).effective_style().layout;
+        let bled = ListItem::new("行")
+            .pill_bleed(true)
+            .effective_style()
+            .layout;
         assert_eq!(bled.padding_left, Some(px(inset)));
         assert_eq!(bled.margin_left, Some(px(-inset)));
         assert_eq!(bled.margin_right, bled.margin_left);
-        assert_eq!(ListItem::new("行").effective_style().layout.margin_left, None);
+        assert_eq!(
+            ListItem::new("行").effective_style().layout.margin_left,
+            None
+        );
 
         // 布局行为：行盒越出列表容器一个内边距，pill 占满可用宽度。
         let mut context = crate::AppContext::new();

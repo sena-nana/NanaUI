@@ -918,10 +918,7 @@ mod tests {
             .semantic_snapshot()
     }
 
-    fn has_label(
-        runtime: &mut VueHostedRuntime<nana_js_v8::V8Engine>,
-        needle: &str,
-    ) -> bool {
+    fn has_label(runtime: &mut VueHostedRuntime<nana_js_v8::V8Engine>, needle: &str) -> bool {
         snapshot_after_pump(runtime)
             .widgets
             .iter()

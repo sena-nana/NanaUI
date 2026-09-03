@@ -460,14 +460,15 @@ mod tests {
             .unwrap();
         context.assemble_app_title_bar(bar).unwrap();
 
-        let text_nodes = context.read(breadcrumb, |b| {
-            b.segments
-                .iter()
-                .copied()
-                .chain(b.separators.iter().copied())
-                .collect::<Vec<_>>()
-        })
-        .unwrap();
+        let text_nodes = context
+            .read(breadcrumb, |b| {
+                b.segments
+                    .iter()
+                    .copied()
+                    .chain(b.separators.iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
         context
             .shape_text(&text_nodes, &mut crate::MeasureTextShaper)
             .unwrap();

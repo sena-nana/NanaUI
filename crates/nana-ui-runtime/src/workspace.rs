@@ -1435,12 +1435,7 @@ mod tests {
         );
         // 展开态：min_size 照常钳制交互尺寸。
         assert_eq!(
-            context
-                .world()
-                .node_style(start)
-                .unwrap()
-                .layout
-                .min_width,
+            context.world().node_style(start).unwrap().layout.min_width,
             Some(LengthSpec::Px(180.0))
         );
         // 收起过渡采样期：min_size 必须让位，否则动画被钳死在最小宽度。
@@ -1464,10 +1459,7 @@ mod tests {
                 ));
             })
             .unwrap();
-        assert_eq!(
-            context.world().mount_state(start),
-            Some(MountState::Parked)
-        );
+        assert_eq!(context.world().mount_state(start), Some(MountState::Parked));
     }
 
     #[test]

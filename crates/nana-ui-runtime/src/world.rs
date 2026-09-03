@@ -5568,46 +5568,46 @@ impl UiWorld {
                 // 单行 detail：小字号 muted 文本右对齐；label 估宽避让，
                 // 放不下时 detail 占剩余宽度、超出交给省略号（与 LabeledValue
                 // 的值侧同款规则）。
-                let detail_region = detail
-                    .clone()
-                    .filter(|detail| !detail.is_empty())
-                    .map(|detail| {
-                        let label_size = style.font_size;
-                        let detail_size = (label_size - 1.0).max(10.0);
-                        let gap = 8.0_f32;
-                        let label_natural =
-                            estimated_text_width(self.text(id).unwrap_or_default(), label_size);
-                        let detail_natural = estimated_text_width(&detail, detail_size);
-                        let min_detail_visible = 16.0_f32;
-                        let detail_width = if label_natural + gap + detail_natural
-                            <= label_rect.width
-                        {
-                            detail_natural
-                        } else {
-                            (label_rect.width - label_natural - gap)
-                                .max(min_detail_visible)
-                                .min(label_rect.width)
-                        };
-                        let detail_x = (label_rect.x + label_rect.width - detail_width)
-                            .max(label_rect.x);
-                        let detail_height =
-                            (detail_size * 1.2).min(label_rect.height.max(detail_size));
-                        let detail_y = label_rect.y
-                            + (label_rect.height - detail_height).max(0.0) / 2.0;
-                        label_rect.width = ((detail_x - gap) - label_rect.x).max(0.0);
-                        crate::ComponentTextRegion {
-                            bounds: LayoutBox {
-                                x: detail_x,
-                                y: detail_y,
-                                width: detail_width,
-                                height: detail_height,
-                            },
-                            content: detail,
-                            color: Some(self.style_model.palette.muted.as_rgba_array()),
-                            font_size: detail_size,
-                            font_weight: None,
-                        }
-                    });
+                let detail_region =
+                    detail
+                        .clone()
+                        .filter(|detail| !detail.is_empty())
+                        .map(|detail| {
+                            let label_size = style.font_size;
+                            let detail_size = (label_size - 1.0).max(10.0);
+                            let gap = 8.0_f32;
+                            let label_natural =
+                                estimated_text_width(self.text(id).unwrap_or_default(), label_size);
+                            let detail_natural = estimated_text_width(&detail, detail_size);
+                            let min_detail_visible = 16.0_f32;
+                            let detail_width =
+                                if label_natural + gap + detail_natural <= label_rect.width {
+                                    detail_natural
+                                } else {
+                                    (label_rect.width - label_natural - gap)
+                                        .max(min_detail_visible)
+                                        .min(label_rect.width)
+                                };
+                            let detail_x =
+                                (label_rect.x + label_rect.width - detail_width).max(label_rect.x);
+                            let detail_height =
+                                (detail_size * 1.2).min(label_rect.height.max(detail_size));
+                            let detail_y =
+                                label_rect.y + (label_rect.height - detail_height).max(0.0) / 2.0;
+                            label_rect.width = ((detail_x - gap) - label_rect.x).max(0.0);
+                            crate::ComponentTextRegion {
+                                bounds: LayoutBox {
+                                    x: detail_x,
+                                    y: detail_y,
+                                    width: detail_width,
+                                    height: detail_height,
+                                },
+                                content: detail,
+                                color: Some(self.style_model.palette.muted.as_rgba_array()),
+                                font_size: detail_size,
+                                font_weight: None,
+                            }
+                        });
                 Some(crate::ComponentGeometry::ListItem {
                     leading,
                     content: Some(label_rect),

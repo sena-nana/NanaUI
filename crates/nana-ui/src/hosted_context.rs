@@ -115,14 +115,12 @@ impl HostedGpuSurface {
     }
 
     fn apply_live_resize_policy(&mut self, live: bool) -> bool {
-        let Some((present_mode, desired_maximum_frame_latency)) =
-            live_resize_policy_change(
-                self.configuration.present_mode,
-                self.configuration.desired_maximum_frame_latency,
-                self.live_present_mode,
-                live,
-            )
-        else {
+        let Some((present_mode, desired_maximum_frame_latency)) = live_resize_policy_change(
+            self.configuration.present_mode,
+            self.configuration.desired_maximum_frame_latency,
+            self.live_present_mode,
+            live,
+        ) else {
             return false;
         };
         self.configuration.present_mode = present_mode;
@@ -579,7 +577,10 @@ fn live_resize_policy_change(
     let (present_mode, frame_latency) = if live {
         (live_present_mode, live_resize_frame_latency(true))
     } else {
-        (wgpu::PresentMode::AutoVsync, live_resize_frame_latency(false))
+        (
+            wgpu::PresentMode::AutoVsync,
+            live_resize_frame_latency(false),
+        )
     };
     if present_mode == current_present_mode && frame_latency == current_frame_latency {
         None

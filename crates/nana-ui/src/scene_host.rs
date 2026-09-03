@@ -1871,12 +1871,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         // Program messages stay queued until the next frame so navigation
         // coalesces and does not run inside the pointer handler.
         let pointer_hit = input_pointer_hit(self.program.document(id), &input);
-        let program_input = self.program.input_event_routed(
-            id,
-            &input,
-            pointer_hit,
-            &self.context_for(id),
-        );
+        let program_input =
+            self.program
+                .input_event_routed(id, &input, pointer_hit, &self.context_for(id));
         if let Err(error) = &program_input {
             self.program.host_failure(HostFailure::InputHandler {
                 window: id,
@@ -2774,13 +2771,14 @@ fn input_pointer_hit(
     event: &InputEvent,
 ) -> Option<StableNodeId> {
     match event {
-        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => document
-            .and_then(|document| {
+        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => {
+            document.and_then(|document| {
                 document
                     .context()
                     .world()
                     .hit_test(document.document(), *x, *y)
-            }),
+            })
+        }
         _ => None,
     }
 }
@@ -3384,11 +3382,11 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply,
-        input_pointer_hit, invalidate_program_host_textures, mouse_button_code,
-        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
-        platform_window_event, resolved_scene_ime_request, route_window_command,
-        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
+        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply, input_pointer_hit,
+        invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
+        platform_input_key, platform_input_modifiers, platform_window_event,
+        resolved_scene_ime_request, route_window_command, scene_clear_color,
+        scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, tablet_pointer_id, window_level, window_surface_effect,
         window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };

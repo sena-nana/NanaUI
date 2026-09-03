@@ -7330,9 +7330,15 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn pointer_events_none_and_auto_parse() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("pointer-events:none", None, None);
-        assert_eq!(layout.pointer_events, Some(nana_ui_core::PointerEventsSpec::None));
+        assert_eq!(
+            layout.pointer_events,
+            Some(nana_ui_core::PointerEventsSpec::None)
+        );
         layout.apply_css_text("pointer-events:auto", None, None);
-        assert_eq!(layout.pointer_events, Some(nana_ui_core::PointerEventsSpec::Auto));
+        assert_eq!(
+            layout.pointer_events,
+            Some(nana_ui_core::PointerEventsSpec::Auto)
+        );
         layout.apply_css_text("pointer-events:stroke", None, None);
         assert_eq!(
             layout.pointer_events,

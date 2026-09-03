@@ -300,9 +300,10 @@ mod tests {
         assert!((main.colors.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((main.titlebar.a - 1.0).abs() < f32::EPSILON);
 
-        let solid = ThemeMode::Light
-            .tokens()
-            .with_backdrop(false, BackdropTarget::Sidebar, 0.5, true);
+        let solid =
+            ThemeMode::Light
+                .tokens()
+                .with_backdrop(false, BackdropTarget::Sidebar, 0.5, true);
         assert!((solid.colors.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.titlebar.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.colors.background.a - 1.0).abs() < f32::EPSILON);

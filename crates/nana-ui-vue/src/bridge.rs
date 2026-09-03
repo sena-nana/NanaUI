@@ -33,24 +33,22 @@ use crate::css_at_rule::{
     parse_media_query_list,
 };
 use crate::css_cascade::{
-    MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound,
-    StyleRule, StylesheetParseReport, collect_document_custom_properties_from_rules,
+    MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound, StyleRule,
+    StylesheetParseReport, collect_document_custom_properties_from_rules,
     parse_stylesheet_full_with_options, rebuild_layout_style_indexed, simple_matches,
     stylesheet_matches, stylesheet_may_match_subject, stylesheet_needs_relative,
 };
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
-    KeyframesRule, MotionStyleRule, ParsedStylesheet, ScrollbarPseudoRule,
-    merge_parsed_stylesheet,
+    KeyframesRule, MotionStyleRule, ParsedStylesheet, ScrollbarPseudoRule, merge_parsed_stylesheet,
 };
 use crate::css_interactive_apply::{
     ActiveCssTransition, CssComputedMotion, CssMotionComplete, CssPaintSnapshot,
     InteractiveRuntimeSnapshot, animation_elapsed_secs, apply_generated_pseudo_entries,
     apply_interactive_layers, apply_placeholder_paint, apply_scrollbar_pseudo_skin,
     build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
-    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties,
-    parse_content_text, parse_transition_properties, resolve_computed_motion,
-    transition_elapsed_secs,
+    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
+    parse_transition_properties, resolve_computed_motion, transition_elapsed_secs,
 };
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,

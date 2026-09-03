@@ -3535,14 +3535,20 @@ impl AppContext {
 
         // 工作区折叠/展开过渡由运行时帧循环接管：模型带未回收过渡的
         // Workspace 登记进帧调度，结算后撤销，宿主无需自行驱动。
-        if self.views.get(&id).is_some_and(|view| view.is::<Workspace>()) {
+        if self
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<Workspace>())
+        {
             let transitioning = self
                 .views
                 .get(&id)
                 .and_then(|view| view.downcast_ref::<Workspace>())
                 .is_some_and(|workspace| workspace.model.has_active_transitions());
             if transitioning {
-                self.component_lifecycle.workspace_transitions.insert(id, ());
+                self.component_lifecycle
+                    .workspace_transitions
+                    .insert(id, ());
                 if self.world.is_mounted(id)
                     && self.component_lifecycle.next_workspace_frame.is_none()
                 {
@@ -10590,10 +10596,7 @@ mod tests {
         context
             .update_component(workspace, |workspace, _| {
                 assert!(workspace.model.update(
-                    WorkspaceMutation::SetRegionCollapsed(
-                        nana_ui_core::RegionId::Resources,
-                        true,
-                    ),
+                    WorkspaceMutation::SetRegionCollapsed(nana_ui_core::RegionId::Resources, true,),
                     Duration::ZERO,
                 ));
             })
@@ -10616,9 +10619,10 @@ mod tests {
                 .has_updates()
         );
         assert_eq!(
-            context.read(workspace, |workspace| workspace
-                .model
-                .region_extent(&nana_ui_core::RegionId::Resources))
+            context
+                .read(workspace, |workspace| workspace
+                    .model
+                    .region_extent(&nana_ui_core::RegionId::Resources))
                 .unwrap(),
             0.0
         );
@@ -10973,7 +10977,7 @@ mod tests {
             leading: Some(leading),
             content: Some(content),
             trailing: Some(trailing),
-            detail: None
+            detail: None,
         } = context
             .world()
             .component_geometry(item.stable_id())

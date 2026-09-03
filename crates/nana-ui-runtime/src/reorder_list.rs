@@ -45,7 +45,11 @@ pub enum ReorderListEvent {
     /// [`AppContext::secondary_press_at`] resolves the row under the point and
     /// publishes this event on the list instead. `x`/`y` are the press point
     /// in window coordinates, ready to anchor a context menu.
-    Secondary { source: Arc<str>, x: f32, y: f32 },
+    Secondary {
+        source: Arc<str>,
+        x: f32,
+        y: f32,
+    },
     Reorder {
         source: Arc<str>,
         before: Option<Arc<str>>,
@@ -647,16 +651,20 @@ impl crate::AppContext {
         if exclude.iter().any(|reserved| reserved.contains(x, y)) {
             return Ok(false);
         }
-        let (values, enabled) = self.read(entity, |list| {
-            (
-                list.items
-                    .iter()
-                    .map(|item| Arc::clone(&item.value))
-                    .collect::<Vec<_>>(),
-                list.items.iter().map(|item| !item.disabled).collect::<Vec<_>>(),
-            )
-        })
-        .unwrap_or((Vec::new(), Vec::new()));
+        let (values, enabled) = self
+            .read(entity, |list| {
+                (
+                    list.items
+                        .iter()
+                        .map(|item| Arc::clone(&item.value))
+                        .collect::<Vec<_>>(),
+                    list.items
+                        .iter()
+                        .map(|item| !item.disabled)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or((Vec::new(), Vec::new()));
         let Some(index) = item_at(&rows, &enabled, x, y) else {
             return Ok(false);
         };
