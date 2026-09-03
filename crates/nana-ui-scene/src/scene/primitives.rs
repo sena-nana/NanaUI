@@ -1177,7 +1177,7 @@ impl UiScene {
                     });
                 }
                 Some(StandardVisual::Switch {
-                    checked,
+                    thumb_progress,
                     loading,
                     loading_phase,
                     ..
@@ -1223,7 +1223,7 @@ impl UiScene {
                         &visual_context,
                         5,
                         SceneRect {
-                            x: track.x + if checked { 17.0 } else { 3.0 },
+                            x: track.x + 3.0 + 14.0 * thumb_progress.clamp(0.0, 1.0),
                             y: track.y + 3.0,
                             width: 10.0,
                             height: 10.0,

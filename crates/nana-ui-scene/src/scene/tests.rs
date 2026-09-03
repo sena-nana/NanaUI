@@ -4512,6 +4512,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
 
     let mut switch = node(2, None, &[]);
     switch.standard_visual = Some(StandardVisual::Switch {
+        thumb_progress: 1.0,
         label: Arc::from("Enabled"),
         hint: Some(Arc::from("Starts with the workspace")),
         checked: true,
@@ -4522,6 +4523,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         invalid: false,
     });
     switch.component_geometry = Some(ComponentGeometry::Switch {
+        thumb_progress: 1.0,
         label: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,

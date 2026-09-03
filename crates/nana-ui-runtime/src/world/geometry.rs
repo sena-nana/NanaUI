@@ -1073,6 +1073,7 @@ impl UiWorld {
                 })
             }
             StandardVisual::Switch {
+                thumb_progress,
                 label,
                 hint,
                 checked,
@@ -1191,6 +1192,7 @@ impl UiWorld {
                     )
                 };
                 Some(crate::ComponentGeometry::Switch {
+                    thumb_progress: *thumb_progress,
                     label: text_region(
                         label_bounds,
                         Arc::clone(label),

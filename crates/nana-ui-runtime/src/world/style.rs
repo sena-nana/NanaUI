@@ -113,6 +113,24 @@ impl UiWorld {
                 .border
                 .map(|role| self.style_model.color(role).as_rgba_array())
         });
+        if let Some(transition) = self.hover_transitions.get(&id) {
+            let progress = crate::Easing::EaseOutCubic.sample(
+                (self
+                    .animation_now
+                    .saturating_sub(transition.start)
+                    .as_secs_f32()
+                    / nana_ui_core::motion::HOVER_COLOR.as_secs_f32())
+                .clamp(0.0, 1.0),
+            );
+            let [color, background, border_color] = std::array::from_fn(|i| {
+                interpolate_color(
+                    transition.from[i],
+                    [color, background, border_color][i],
+                    progress,
+                )
+            });
+            return (foreground, color, background, border_color);
+        }
         (foreground, color, background, border_color)
     }
 }
@@ -220,6 +238,10 @@ impl UiWorld {
         if self.style_model == next {
             return;
         }
+        let hover_ids = self.hover_transitions.keys().copied().collect::<Vec<_>>();
+        for id in hover_ids {
+            self.cancel_hover_transition(id);
+        }
         let previous_metrics = self.style_model.metrics;
         self.style_model = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
@@ -235,6 +257,102 @@ impl UiWorld {
         }
         for id in ids {
             self.mark(id, bits);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HoverTransition {
+    pub from: [Option<[f32; 4]>; 3],
+    pub start: Duration,
+    pub inherits_color: bool,
+}
+
+fn interpolate_color(
+    from: Option<[f32; 4]>,
+    to: Option<[f32; 4]>,
+    progress: f32,
+) -> Option<[f32; 4]> {
+    if progress >= 1.0 {
+        return to;
+    }
+    if progress <= 0.0 {
+        return from;
+    }
+    let (mut a, mut b) = match (from, to) {
+        (None, None) => return None,
+        (Some(a), Some(b)) => (a, b),
+        (Some(a), None) => (a, a),
+        (None, Some(b)) => (b, b),
+    };
+    if from.is_none() {
+        a[3] = 0.0;
+    }
+    if to.is_none() {
+        b[3] = 0.0;
+    }
+    Some(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * progress))
+}
+
+impl UiWorld {
+    pub(super) fn hover_paint(&self, id: StableNodeId) -> [Option<[f32; 4]>; 3] {
+        let inherited = self
+            .record(id)
+            .hierarchy
+            .parent
+            .and_then(|parent| self.record(parent).resolved.0.color);
+        let (_, color, background, border) = self.palette_paint_colors(id, inherited);
+        [color, background, border]
+    }
+
+    pub(super) fn transition_hover(&mut self, id: StableNodeId, from: [Option<[f32; 4]>; 3]) {
+        if self.hover_transitions.contains_key(&id) {
+            self.mark_hover_paint(id);
+        }
+        self.cancel_hover_transition(id);
+        let to = self.hover_paint(id);
+        if from != to {
+            self.hover_transitions.insert(
+                id,
+                HoverTransition {
+                    from,
+                    start: self.animation_now,
+                    inherits_color: from[0] != to[0],
+                },
+            );
+            self.start_component_animation(
+                id,
+                crate::component_animation_kinds::HOVER,
+                nana_ui_core::motion::HOVER_COLOR,
+                crate::Easing::EaseOutCubic,
+            );
+            self.mark_hover_paint(id);
+        }
+    }
+}
+
+impl UiWorld {
+    pub(super) fn mark_hover_paint(&mut self, target: StableNodeId) {
+        let bits = DirtyMask::STYLE | DirtyMask::RENDER;
+        if self
+            .hover_transitions
+            .get(&target)
+            .is_some_and(|transition| transition.inherits_color)
+        {
+            self.mark_subtree(target, bits);
+        } else {
+            self.mark(target, bits);
+        }
+    }
+
+    pub(super) fn cancel_hover_transition(&mut self, target: StableNodeId) {
+        self.hover_transitions.remove(&target);
+        if let Some(id) =
+            crate::component_animation_id(crate::component_animation_kinds::HOVER, target)
+            && let Some(animation) = self.animations.remove(&id)
+        {
+            self.animation_deadlines
+                .remove(&(animation.next_deadline, id));
         }
     }
 }

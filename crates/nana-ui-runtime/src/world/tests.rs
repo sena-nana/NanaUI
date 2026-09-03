@@ -6986,6 +6986,8 @@ fn pointer_hover_and_press_are_runtime_owned_and_targeted() {
     assert!(work.layout.is_empty());
     assert!(work.transform.is_empty());
     assert!(work.input_hit_test.is_empty());
+    world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
+    world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world.extract_nodes(&[node(2)])[0].style.background,

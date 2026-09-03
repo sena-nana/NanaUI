@@ -496,6 +496,7 @@ pub enum StandardVisual {
         tooltip: Option<TooltipVisual>,
     },
     Switch {
+        thumb_progress: f32,
         label: Arc<str>,
         hint: Option<Arc<str>>,
         checked: bool,
@@ -997,6 +998,7 @@ pub enum ComponentGeometry {
         steppers: Option<NumberSteppers>,
     },
     Switch {
+        thumb_progress: f32,
         label: ComponentTextRegion,
         hint: Option<ComponentTextRegion>,
         control: LayoutBox,

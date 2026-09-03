@@ -1533,6 +1533,7 @@ impl AppContext {
         now: Duration,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         self.component_lifecycle.now = now;
+        self.world.animation_now = now;
         let previous = self.world.set_pointer_hover(document, pointer_id, target)?;
         if previous != target {
             if let Some(previous) = previous {

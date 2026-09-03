@@ -27,6 +27,8 @@ impl AnimationId {
 pub mod component_animation_kinds {
     /// Skeleton pulse timeline.
     pub const SKELETON: u64 = 1;
+    pub const SWITCH: u64 = 2;
+    pub const HOVER: u64 = 3;
 }
 
 /// Derives the animation ID for one component-owned timeline from the

@@ -1041,6 +1041,8 @@ impl UiWorld {
                         self.animations.remove(&animation_id);
                         self.animation_deadlines.remove(&(deadline, animation_id));
                     }
+                    self.switch_transitions.remove(&id);
+                    self.hover_transitions.remove(&id);
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
                     self.detached.remove(&id);
@@ -1249,6 +1251,25 @@ impl UiWorld {
                 }
             }
             UiMutation::SetStandardVisual { id, visual } => {
+                if let (
+                    Some(StandardVisual::Switch {
+                        checked: old,
+                        thumb_progress,
+                        ..
+                    }),
+                    Some(StandardVisual::Switch { checked: next, .. }),
+                ) = (self.nodes.visual(*id), visual.as_ref())
+                    && old != next
+                {
+                    self.switch_transitions.insert(*id, *thumb_progress);
+                    self.start_component_animation(
+                        *id,
+                        crate::component_animation_kinds::SWITCH,
+                        nana_ui_core::motion::OVERLAY_FADE,
+                        crate::Easing::EaseOutCubic,
+                    );
+                }
+
                 let (
                     text_input_presentation_changed,
                     empty_state_presentation_changed,

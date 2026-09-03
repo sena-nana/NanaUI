@@ -66,7 +66,7 @@ fn sample_cubic_bezier([x1, y1, x2, y2]: [f32; 4], progress: f32) -> f32 {
     }
     let mut low: f32 = 0.0;
     let mut high: f32 = 1.0;
-    for _ in 0..64 {
+    for _ in 0..24 {
         let mid = 0.5 * (low + high);
         if bezier_axis(mid, x1, x2) < progress {
             low = mid;

@@ -2803,7 +2803,21 @@ impl ComponentView for Switch {
                 },
             );
         }
+        let thumb_progress = match world.standard_visual(id) {
+            Some(StandardVisual::Switch {
+                checked,
+                thumb_progress,
+                ..
+            }) if checked != self.checked
+                || crate::component_animation_id(crate::component_animation_kinds::SWITCH, id)
+                    .is_some_and(|animation| world.animation_is_active(animation)) =>
+            {
+                thumb_progress
+            }
+            _ => f32::from(self.checked),
+        };
         let visual = StandardVisual::Switch {
+            thumb_progress,
             label: Arc::from(self.label.as_str()),
             hint: self.hint.clone(),
             checked: self.checked,

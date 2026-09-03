@@ -446,6 +446,7 @@ impl AppContext {
         let section_targets = frame
             .samples
             .iter()
+            .filter(|sample| sample.id.get() == sample.target.get())
             .map(|sample| sample.target)
             .filter(|target| {
                 self.views

@@ -39,8 +39,8 @@ fn inert() -> InteractionState {
     }
 }
 
-/// LiliaUI `ui-skeleton-pulse` swing: opacity oscillates between 1 and 0.55.
-const PULSE_OPACITY_SWING: f32 = 0.45;
+/// LiliaUI `ui-skeleton-pulse` swing: opacity oscillates between 1 and 0.48.
+const PULSE_OPACITY_SWING: f32 = 0.52;
 
 /// Non-interactive placeholder surface.
 #[derive(Debug, Clone, PartialEq)]
@@ -79,7 +79,7 @@ impl Skeleton {
             animation,
             id,
             start,
-            nana_ui_core::motion::SKELETON_PULSE,
+            nana_ui_core::motion::SKELETON_PULSE / 2,
             crate::framework::COMPONENT_FRAME_INTERVAL,
             Easing::EaseInOutCubic,
         ))
@@ -325,35 +325,16 @@ mod tests {
                 .is_some_and(|deadline| deadline > Duration::ZERO)
         );
 
-        let easing = nana_ui_core::motion::Easing::EaseInOutCubic;
-        let dimming = context.advance_animations(Duration::from_millis(350));
-        assert!(dimming.samples.iter().any(|sample| sample.target == id));
-        assert!(dimming.component_updates.contains(&id));
-        let quarter = projected_opacity(&context, id);
-        assert!(quarter.is_some_and(|value| {
-            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.25))).abs() < 1e-4
-        }));
+        context.advance_animations(Duration::from_millis(350));
+        assert!((projected_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
         assert!(!context.take_system_work().is_empty());
-
-        let _ = context.advance_animations(Duration::from_millis(700));
-        let half = projected_opacity(&context, id);
-        assert!(half.is_some_and(|value| {
-            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.5))).abs() < 1e-4
-        }));
-
-        // End of the first half-cycle reaches the LiliaUI dimmest opacity.
-        let _ = context.advance_animations(Duration::from_millis(1400));
-        let dimmest = projected_opacity(&context, id);
-        assert!(dimmest.is_some_and(|value| (value - 0.55).abs() < 1e-4));
-
-        // The alternate second half-cycle swings back up instead of holding.
-        let _ = context.advance_animations(Duration::from_millis(1750));
-        let recovering = projected_opacity(&context, id);
-        assert!(recovering.is_some_and(|value| {
-            (value - (1.0 - PULSE_OPACITY_SWING * easing.sample(0.75))).abs() < 1e-4
-        }));
-
-        assert!(quarter > half && half > dimmest && recovering > dimmest);
+        context.advance_animations(Duration::from_millis(700));
+        assert!((projected_opacity(&context, id).unwrap() - 0.48).abs() < 1e-4);
+        context.advance_animations(Duration::from_millis(1050));
+        assert!((projected_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
+        context.advance_animations(Duration::from_millis(1400));
+        assert_eq!(projected_opacity(&context, id), None);
+        assert!(context.next_animation_deadline().is_some());
     }
 
     #[test]
@@ -398,7 +379,7 @@ mod tests {
                 .unwrap()
                 .layout
                 .opacity
-                .is_some_and(|value| (value - 0.775).abs() < 1e-4)
+                .is_some_and(|value| (value - 0.48).abs() < 1e-4)
         );
     }
 
