@@ -509,7 +509,10 @@ mod tests {
         let shortcut = row.shortcut.as_ref().expect("shortcut region");
         // "Ctrl+Alt+Delete" at 10px ≈ 93px, far past the old fixed 70px box.
         let estimated = estimated_text_width(shortcut.content.as_ref(), SHORTCUT_TEXT_SIZE);
-        assert!(estimated > 80.0, "estimate {estimated} should exceed the old box");
+        assert!(
+            estimated > 80.0,
+            "estimate {estimated} should exceed the old box"
+        );
         assert!(shortcut.bounds.width + 0.01 >= estimated);
         assert!((shortcut.bounds.width - estimated).abs() < 0.5);
         // End edge stays pinned to the row's trailing padding edge.

@@ -1245,23 +1245,21 @@ mod tests {
         };
         let style = ComputedStyle::default();
         let palette = SemanticPalette::dark();
-        let geometry = |hint: &Arc<str>| {
-            match action_menu_item_geometry(
-                bounds,
-                &Arc::from("复制到剪贴板"),
-                Some(hint),
-                None,
-                false,
-                false,
-                ControlSize::Medium,
-                &style,
-                &palette,
-            ) {
-                ComponentGeometry::ActionMenuItem {
-                    label, hint, ..
-                } => (label, hint.expect("hint region")),
-                _ => panic!("action menu item geometry"),
+        let geometry = |hint: &Arc<str>| match action_menu_item_geometry(
+            bounds,
+            &Arc::from("复制到剪贴板"),
+            Some(hint),
+            None,
+            false,
+            false,
+            ControlSize::Medium,
+            &style,
+            &palette,
+        ) {
+            ComponentGeometry::ActionMenuItem { label, hint, .. } => {
+                (label, hint.expect("hint region"))
             }
+            _ => panic!("action menu item geometry"),
         };
         let (short_label, short_hint) = geometry(&Arc::from("⌘C"));
         let (long_label, long_hint) = geometry(&Arc::from("Ctrl+Shift+P"));
@@ -1271,7 +1269,10 @@ mod tests {
             assert!((hint.bounds.width - hint_width).abs() < 0.5);
             // End edge stays pinned to the trailing padding edge.
             let hint_end = hint.bounds.x + hint.bounds.width;
-            assert!((hint_end - (bounds.x + bounds.width - ControlSize::Medium.padding_x())).abs() < 0.5);
+            assert!(
+                (hint_end - (bounds.x + bounds.width - ControlSize::Medium.padding_x())).abs()
+                    < 0.5
+            );
             // The label region ends before the hint region begins.
             assert!(label.bounds.x + label.bounds.width <= hint.bounds.x);
         }

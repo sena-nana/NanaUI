@@ -212,9 +212,7 @@ pub fn resolve_kind_from_hints(
         }
         "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "defs"
         | "use" | "symbol" | "clippath" | "mask" | "lineargradient" | "radialgradient" | "stop"
-        | "textpath" | "tspan" => {
-            WidgetKind::Box
-        }
+        | "textpath" | "tspan" => WidgetKind::Box,
         "text" => WidgetKind::Text,
         "span" | "p" | "label" | "strong" | "em" | "code" | "small" | "b" | "h1" | "h2" | "h3"
         | "h4" | "h5" | "h6" | "output" | "pre" | "blockquote" | "dt" | "dd" | "#text" | "abbr"

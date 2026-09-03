@@ -104,9 +104,9 @@ mod renderer;
 mod scroll;
 mod shell_contract;
 mod style;
-mod svg_inline;
 #[cfg(feature = "hosted")]
 mod svg_gpu;
+mod svg_inline;
 mod svg_raster;
 mod tree;
 mod video;
@@ -184,9 +184,12 @@ pub use css_cascade::{
     collect_document_custom_properties_from_rules, matched_declaration_entries,
     matched_declarations, parse_stylesheet, parse_stylesheet_full,
     parse_stylesheet_full_with_layers, parse_stylesheet_full_with_options,
-    parse_stylesheet_with_report, rebuild_layout_style, selector_matches, stylesheet_needs_relative,
+    parse_stylesheet_with_report, rebuild_layout_style, selector_matches,
+    stylesheet_needs_relative,
 };
-pub use css_font_face::{FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules};
+pub use css_font_face::{
+    FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules,
+};
 
 pub use css_interactive::{
     GeneratedPseudo, GeneratedPseudoMatch, GeneratedPseudoRule, InteractiveMatchState,

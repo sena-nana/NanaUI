@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ControlSize, FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment,
-    PopoverPlacement, PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE,
-    UI_METRICS,
+    ControlSize, FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
+    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE, UI_METRICS,
 };
 
 use crate::view_components::project_common;
@@ -384,10 +383,7 @@ fn open_surface_height(
     padding: f32,
     gap: f32,
 ) -> f32 {
-    let items = world
-        .node(id)
-        .map(|node| node.children.len())
-        .unwrap_or(0) as f32;
+    let items = world.node(id).map(|node| node.children.len()).unwrap_or(0) as f32;
     let item = ControlSize::Small.height();
     trigger_height + gap + padding * 2.0 + items * item + (items - 1.0).max(0.0)
 }
@@ -992,7 +988,8 @@ mod tests {
         context.append_child(row, sibling).unwrap();
         context.append_child(row, slot).unwrap();
         context.append_child(slot, menu).unwrap();
-        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
         let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
         let closed_sibling = context.world().layout_box(sibling.stable_id()).unwrap();
@@ -1006,7 +1003,8 @@ mod tests {
             .create_component(document(), crate::ActionMenuItem::new("只读"))
             .unwrap();
         context.append_child(menu, item).unwrap();
-        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
         let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
@@ -1047,7 +1045,8 @@ mod tests {
             .unwrap();
         context.append_child(row, slot).unwrap();
         context.append_child(slot, menu).unwrap();
-        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
         let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
 
@@ -1060,7 +1059,8 @@ mod tests {
             .create_component(document(), crate::ActionMenuItem::new("当前仓库"))
             .unwrap();
         context.append_child(menu, item).unwrap();
-        context.layout_document(document(), LayoutViewport::new(800.0, 600.0))
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
         let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
