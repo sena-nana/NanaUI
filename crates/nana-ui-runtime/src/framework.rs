@@ -1085,6 +1085,7 @@ impl AppContext {
                 return Ok(());
             }
             let mut deferred = Vec::new();
+            let mut progressed = false;
             for id in pending {
                 let Some(reproject) = self.child_reproject_views.get(&id).copied() else {
                     continue;
@@ -1093,9 +1094,15 @@ impl AppContext {
                     deferred.push(id);
                     continue;
                 }
+                progressed = true;
                 reproject(self, id)?;
             }
             self.pending_child_reprojects = deferred;
+            if !progressed {
+                // Every entry is waiting on a view no reproject created; leave
+                // them pending for a later drain instead of spinning forever.
+                return Ok(());
+            }
         }
     }
 
@@ -10603,6 +10610,42 @@ mod tests {
             .update_range_drag(document, 7, track.x + track.width)
             .unwrap();
         assert_eq!(context.read(range, |range| range.value).unwrap(), 100.0);
+    }
+
+    #[test]
+    fn a_focused_range_keeps_its_rail_interaction_free() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let range = context
+            .create_component(
+                document,
+                RangeField::new(25.0, 0.0, 100.0, 1.0)
+                    .unwrap()
+                    .label("Volume")
+                    .unit("%"),
+            )
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+            .unwrap();
+        context.focus_node(document, range.stable_id()).unwrap();
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        let focused = context
+            .world()
+            .extract_nodes(&[range.stable_id()])
+            .pop()
+            .unwrap();
+        // The rail paints with the resolved border colour, so focus must not
+        // touch it: the thumb carries the focus ring instead (LiliaUI).
+        assert_eq!(
+            focused.style.border_color,
+            Some(
+                nana_ui_core::SemanticPalette::dark()
+                    .border_strong
+                    .as_rgba_array()
+            ),
+        );
     }
 
     #[test]
