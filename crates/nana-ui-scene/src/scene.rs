@@ -1472,6 +1472,23 @@ impl UiScene {
                         node_order,
                     ));
                 }
+                Some(ComponentGeometry::ListItem {
+                    detail: Some(region),
+                    ..
+                }) => {
+                    self.insert_primitive(component_text_primitive(
+                        id,
+                        3,
+                        region,
+                        TextHorizontalAlignment::End,
+                        true,
+                        &node,
+                        transform,
+                        clips.clone(),
+                        opacity,
+                        node_order,
+                    ));
+                }
                 Some(ComponentGeometry::StatusBadge {
                     indicator,
                     label,
@@ -8906,11 +8923,7 @@ mod tests {
                 [0.8, 0.8, 0.8, 1.0],
             )),
             label: region("/Users/dev/very-long-project-folder-name", 32.0, 100.0),
-            hint: Some(region(
-                "/Users/dev/very-long-project-folder-name",
-                132.0,
-                60.0,
-            )),
+            hint: Some(region("/Users/dev/very-long-project-folder-name", 132.0, 60.0)),
             background: None,
         });
 
@@ -9757,6 +9770,7 @@ mod tests {
             leading: Some(id(2)),
             content: None,
             trailing: None,
+            detail: None,
         });
         row.source_style.text_vertical_alignment = TextVerticalAlignment::Center;
         style_mut(&mut row).font_size = 12.0;
@@ -10127,6 +10141,7 @@ mod tests {
             leading: None,
             content: None,
             trailing: None,
+            detail: None,
         });
         list_item.component_geometry = Some(ComponentGeometry::ListItem {
             leading: None,
@@ -10137,6 +10152,7 @@ mod tests {
                 height: 22.0,
             }),
             trailing: None,
+            detail: None,
         });
         style_mut(&mut list_item).background = Some([0.15, 0.15, 0.15, 1.0]);
 
@@ -10761,6 +10777,7 @@ mod tests {
             leading: None,
             content: None,
             trailing: None,
+            detail: None,
         });
         item.component_geometry = Some(ComponentGeometry::ListItem {
             leading: None,
@@ -10771,6 +10788,7 @@ mod tests {
                 height: 36.0,
             }),
             trailing: None,
+            detail: None,
         });
 
         let mut scene = UiScene::new();

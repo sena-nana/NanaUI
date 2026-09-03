@@ -5546,9 +5546,21 @@ impl UiWorld {
                 leading,
                 content: content_slot,
                 trailing,
+                detail,
             } => {
-                let leading = leading.and_then(|id| self.layout_box(id));
-                let trailing = trailing.and_then(|id| self.layout_box(id));
+                // 隐藏的槽位子节点已退出 flex 流，其盒几何是陈旧的，不得
+                // 参与行文本区间的兜底计算。
+                let slot_box = |id: StableNodeId| -> Option<LayoutBox> {
+                    if self
+                        .node_style(id)
+                        .is_some_and(|style| style.layout.omits_box())
+                    {
+                        return None;
+                    }
+                    self.layout_box(id)
+                };
+                let leading = leading.and_then(slot_box);
+                let trailing = trailing.and_then(slot_box);
                 let fallback_x = leading.map_or(content.x, |leading| {
                     leading.x
                         + leading.width
@@ -5564,17 +5576,60 @@ impl UiWorld {
                             nana_ui_core::ParentBox::from_viewport(content.width, content.height),
                         )
                 });
+                let mut label_rect = content_slot.and_then(slot_box).unwrap_or(LayoutBox {
+                    x: fallback_x,
+                    y: content.y,
+                    width: (fallback_right - fallback_x).max(0.0),
+                    height: content.height,
+                });
+                // 单行 detail：小字号 muted 文本右对齐；label 估宽避让，
+                // 放不下时 detail 占剩余宽度、超出交给省略号（与 LabeledValue
+                // 的值侧同款规则）。
+                let detail_region = detail
+                    .clone()
+                    .filter(|detail| !detail.is_empty())
+                    .map(|detail| {
+                        let label_size = style.font_size;
+                        let detail_size = (label_size - 1.0).max(10.0);
+                        let gap = 8.0_f32;
+                        let label_natural =
+                            estimated_text_width(self.text(id).unwrap_or_default(), label_size);
+                        let detail_natural = estimated_text_width(&detail, detail_size);
+                        let min_detail_visible = 16.0_f32;
+                        let detail_width = if label_natural + gap + detail_natural
+                            <= label_rect.width
+                        {
+                            detail_natural
+                        } else {
+                            (label_rect.width - label_natural - gap)
+                                .max(min_detail_visible)
+                                .min(label_rect.width)
+                        };
+                        let detail_x = (label_rect.x + label_rect.width - detail_width)
+                            .max(label_rect.x);
+                        let detail_height =
+                            (detail_size * 1.2).min(label_rect.height.max(detail_size));
+                        let detail_y = label_rect.y
+                            + (label_rect.height - detail_height).max(0.0) / 2.0;
+                        label_rect.width = ((detail_x - gap) - label_rect.x).max(0.0);
+                        crate::ComponentTextRegion {
+                            bounds: LayoutBox {
+                                x: detail_x,
+                                y: detail_y,
+                                width: detail_width,
+                                height: detail_height,
+                            },
+                            content: detail,
+                            color: Some(self.style_model.palette.muted.as_rgba_array()),
+                            font_size: detail_size,
+                            font_weight: None,
+                        }
+                    });
                 Some(crate::ComponentGeometry::ListItem {
                     leading,
-                    content: content_slot.and_then(|id| self.layout_box(id)).or_else(|| {
-                        Some(LayoutBox {
-                            x: fallback_x,
-                            y: content.y,
-                            width: (fallback_right - fallback_x).max(0.0),
-                            height: content.height,
-                        })
-                    }),
+                    content: Some(label_rect),
                     trailing,
+                    detail: detail_region,
                 })
             }
             StandardVisual::StatusBadge {

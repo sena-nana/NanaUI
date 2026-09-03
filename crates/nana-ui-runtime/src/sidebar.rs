@@ -1796,6 +1796,7 @@ mod tests {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: None,
+                detail: None,
             })
         );
         assert_eq!(context.world().text(id), Some("工作区"));
@@ -1886,6 +1887,7 @@ mod tests {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: None,
+                detail: None,
             }),
             "row tools stay out of the trailing slot until the row is hovered"
         );
@@ -1907,6 +1909,7 @@ mod tests {
                 leading: Some(leading.stable_id()),
                 content: None,
                 trailing: Some(close.stable_id()),
+                detail: None,
             })
         );
         let tools_layout = &context
@@ -2490,6 +2493,7 @@ mod tests {
                 leading: context.read(section, |section| section.disclosure).unwrap(),
                 content: context.read(section, |section| section.title_slot).unwrap(),
                 trailing: Some(count_id),
+                detail: None,
             })
         );
 
@@ -2504,6 +2508,7 @@ mod tests {
                 leading: context.read(section, |section| section.disclosure).unwrap(),
                 content: context.read(section, |section| section.title_slot).unwrap(),
                 trailing: Some(tools_id),
+                detail: None,
             })
         );
         assert_eq!(context.world().standard_visual(tools_id), tools_visual);
