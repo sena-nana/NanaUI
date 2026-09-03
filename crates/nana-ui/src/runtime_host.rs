@@ -10,10 +10,12 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
 use nana_ui_platform::{
-    InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
+    InputDisposition, InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId,
+    WindowSettings,
 };
 use nana_ui_runtime::{
-    AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, Task,
+    AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, StableNodeId,
+    Task,
 };
 use nana_ui_scene::RuntimeDocument;
 
@@ -260,6 +262,19 @@ impl fmt::Display for HostFailure {
     }
 }
 
+/// Routing the Scene host computed for an input event before the program
+/// hook runs. `disposition` reports whether widget dispatch already consumed
+/// the event (`prevent_default`); `pointer_hit` is the topmost interactive
+/// node under the pointer for [`InputEvent::Pointer`] and [`InputEvent::Wheel`]
+/// and `None` for every other event. Programs that route raw input to hosted
+/// surfaces (GPU views, stage canvases) consume this instead of re-deriving
+/// routing from raw layout geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputRouting {
+    pub disposition: InputDisposition,
+    pub pointer_hit: Option<StableNodeId>,
+}
+
 /// Canonical retained application contract for the Nana Scene host.
 ///
 /// `Message` is for host-level work (windows, GPU, persistence). Control
@@ -366,6 +381,20 @@ pub trait RuntimeProgram: Sized + 'static {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
+    }
+
+    /// Receive an input event together with the [`InputRouting`] the host
+    /// computed for it. Override this instead of [`Self::input_event`] when
+    /// the program routes raw input to hosted surfaces; the default forwards
+    /// unchanged so existing programs keep working.
+    fn input_event_routed(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+        routing: &InputRouting,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.input_event(id, event, context)
     }
 
     fn window_event(

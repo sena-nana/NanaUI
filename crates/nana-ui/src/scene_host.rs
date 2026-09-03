@@ -55,7 +55,7 @@ use winit::window::{
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    HostFailure, ImeSurroundingSnapshot, RuntimeProgram, RuntimeProgramContext,
+    HostFailure, ImeSurroundingSnapshot, InputRouting, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, gated_runtime_window_update,
     runtime_ime_surrounding, runtime_text_input_request,
 };
@@ -1610,7 +1610,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn sync_window_cursor(&mut self, id: WindowId) {
-        if !self.input_mut(id).begin_cursor_sync(std::time::Instant::now()) {
+        if !self
+            .input_mut(id)
+            .begin_cursor_sync(std::time::Instant::now())
+        {
             return;
         }
         let cursor = self.input_of(id).cursor;
@@ -1867,7 +1870,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         // Vue can emit JS. Leftover winit handling stays gated by the caller.
         // Program messages stay queued until the next frame so navigation
         // coalesces and does not run inside the pointer handler.
-        let program_input = self.program.input_event(id, &input, &self.context_for(id));
+        let routing = input_routing(disposition, self.program.document(id), &input);
+        let program_input =
+            self.program
+                .input_event_routed(id, &input, &routing, &self.context_for(id));
         if let Err(error) = &program_input {
             self.program.host_failure(HostFailure::InputHandler {
                 window: id,
@@ -2758,6 +2764,31 @@ fn should_deliver_program_ime(modal_blocks: bool) -> bool {
     !modal_blocks
 }
 
+/// Routing context for the program input hook: widget-consumption disposition
+/// plus the topmost interactive node under the pointer for pointer and wheel
+/// events. Keyboard and IME events carry no pointer hit.
+fn input_routing(
+    disposition: nana_ui_platform::InputDisposition,
+    document: Option<&nana_ui_scene::RuntimeDocument>,
+    event: &InputEvent,
+) -> InputRouting {
+    let pointer_hit = match event {
+        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => {
+            document.and_then(|document| {
+                document
+                    .context()
+                    .world()
+                    .hit_test(document.document(), *x, *y)
+            })
+        }
+        _ => None,
+    };
+    InputRouting {
+        disposition,
+        pointer_hit,
+    }
+}
+
 /// Always invoke the program input hook. Runtime `prevent_default` still
 /// requests a window redraw; it does not drop Gallery/Vue delivery. A failed
 /// handler degrades to an empty update (the caller reports it via
@@ -3357,7 +3388,7 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply,
+        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply, input_routing,
         invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
         platform_input_key, platform_input_modifiers, platform_window_event,
         resolved_scene_ime_request, route_window_command, scene_clear_color,
@@ -3390,6 +3421,73 @@ mod tests {
             scale_factor: 2.0,
             ..WindowGeometry::default()
         }
+    }
+
+    #[test]
+    fn input_routing_reports_the_topmost_pointer_hit() {
+        use nana_ui_platform::InputModifiers;
+        use nana_ui_runtime::{Button, DocumentId, LayoutViewport, MeasureTextShaper};
+        use nana_ui_scene::RuntimeDocument;
+
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let button = runtime
+            .context_mut()
+            .build(document_id, |ui| ui.child("build", Button::new("Build")))
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 180.0), &mut MeasureTextShaper)
+            .unwrap();
+        let layout = runtime
+            .context()
+            .world()
+            .layout_box(button.stable_id())
+            .unwrap();
+
+        let wheel = InputEvent::Wheel {
+            x: layout.x + layout.width / 2.0,
+            y: layout.y + layout.height / 2.0,
+            delta_x: 0.0,
+            delta_y: 1.0,
+            line_delta: true,
+            modifiers: InputModifiers::default(),
+        };
+        let routing = input_routing(
+            InputDisposition {
+                prevent_default: true,
+            },
+            Some(&runtime),
+            &wheel,
+        );
+        assert!(routing.disposition.prevent_default);
+        assert_eq!(routing.pointer_hit, Some(button.stable_id()));
+
+        let outside = InputEvent::Wheel {
+            x: layout.x + layout.width + 40.0,
+            y: layout.y + layout.height + 40.0,
+            delta_x: 0.0,
+            delta_y: -1.0,
+            line_delta: true,
+            modifiers: InputModifiers::default(),
+        };
+        let routing = input_routing(InputDisposition::default(), Some(&runtime), &outside);
+        assert!(!routing.disposition.prevent_default);
+        assert_eq!(routing.pointer_hit, None);
+
+        let keyboard = InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".to_string(),
+            text: None,
+            code: "Escape".to_string(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+        let routing = input_routing(InputDisposition::default(), Some(&runtime), &keyboard);
+        assert_eq!(routing.pointer_hit, None);
+        assert_eq!(
+            input_routing(InputDisposition::default(), None, &wheel).pointer_hit,
+            None
+        );
     }
 
     #[cfg(not(target_os = "android"))]
