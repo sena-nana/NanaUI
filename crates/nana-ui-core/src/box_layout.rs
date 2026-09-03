@@ -5009,9 +5009,11 @@ mod tests {
 
     #[test]
     fn overflow_clip_box_opens_visible_axis() {
-        let mut layout = LayoutStyle::default();
-        layout.overflow_x = OverflowSpec::Hidden;
-        layout.overflow_y = OverflowSpec::Visible;
+        let mut layout = LayoutStyle {
+            overflow_x: OverflowSpec::Hidden,
+            overflow_y: OverflowSpec::Visible,
+            ..Default::default()
+        };
         let (x, y, w, h) = layout.overflow_clip_box(10.0, 20.0, 30.0, 40.0).unwrap();
         assert!((x - 10.0).abs() < f32::EPSILON);
         assert!((w - 30.0).abs() < f32::EPSILON);
@@ -5439,8 +5441,10 @@ mod tests {
 
     #[test]
     fn omits_box_skips_display_none_not_visibility_hidden() {
-        let mut none = LayoutStyle::default();
-        none.display = Some(DisplaySpec::None);
+        let none = LayoutStyle {
+            display: Some(DisplaySpec::None),
+            ..Default::default()
+        };
         assert!(none.omits_box());
 
         let mut hidden = LayoutStyle::default();
@@ -5763,8 +5767,10 @@ mod tests {
 
     #[test]
     fn bake_logical_edges_vertical_rl_maps_block_start_to_right() {
-        let mut layout = LayoutStyle::default();
-        layout.writing_mode = Some(WritingModeSpec::VerticalRl);
+        let mut layout = LayoutStyle {
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            ..Default::default()
+        };
         layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
         layout.padding_logical.inline_start = Some(LengthSpec::Px(3.0));
         layout.bake_logical_edges();
@@ -5776,8 +5782,10 @@ mod tests {
 
     #[test]
     fn bake_logical_edges_vertical_lr_maps_block_start_to_left() {
-        let mut layout = LayoutStyle::default();
-        layout.writing_mode = Some(WritingModeSpec::VerticalLr);
+        let mut layout = LayoutStyle {
+            writing_mode: Some(WritingModeSpec::VerticalLr),
+            ..Default::default()
+        };
         layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
         layout.padding_logical.block_end = Some(LengthSpec::Px(2.0));
         layout.bake_logical_edges();

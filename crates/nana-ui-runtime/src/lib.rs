@@ -12,10 +12,13 @@
 mod animation;
 mod breadcrumb;
 mod builtin_components;
+#[cfg(feature = "calendar")]
 mod calendar;
+#[cfg(feature = "charts")]
 mod charts;
 mod color_field;
 mod command_palette;
+pub mod component_descriptors;
 mod component_registry;
 mod components;
 mod dock;
@@ -26,8 +29,11 @@ mod form_surfaces;
 mod framework;
 mod glyph_cache;
 mod gpu_slots;
+#[cfg(feature = "graph-canvas")]
 mod graph_canvas;
+#[cfg(feature = "graph-canvas")]
 mod graph_minimap;
+#[cfg(feature = "image-viewer")]
 mod image_viewer;
 mod key_layers;
 mod layout_engine;
@@ -43,7 +49,9 @@ mod presentation;
 mod profiler;
 mod qr_code;
 mod query;
+#[cfg(feature = "controls")]
 mod reorder_list;
+#[cfg(feature = "rich-text")]
 mod rich_text;
 mod schedule;
 mod search_dropdown;
@@ -69,11 +77,13 @@ mod xy_pad;
 pub use animation::{
     AnimationDirection, AnimationFillMode, AnimationFrame, AnimationId, AnimationIteration,
     AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
+    component_animation_id, component_animation_kinds,
 };
 pub use breadcrumb::{
     Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };
 pub use builtin_components::NanaBuiltinComponents;
+#[cfg(feature = "calendar")]
 pub use calendar::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
     CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
@@ -81,6 +91,7 @@ pub use calendar::{
     CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
     build_calendar_heatmap_model, calendar_cell_fill,
 };
+#[cfg(feature = "charts")]
 pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
 pub use color_field::{
     ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
@@ -110,10 +121,11 @@ pub use components::{
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
-    DockDropZone, DockFloatingPersist, DockFloatingSurface, DockNode, DockNodePersist, DockPanel,
-    DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent, DockWorkspacePersist, MAIN_SURFACE_ID,
-    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, clamp_ratio, dock_nudge_split_ratio,
-    dock_split_child_lengths, dock_split_ratio_from_pointer, dock_surface_window_key,
+    DockCommand, DockCommandOutcome, DockDropZone, DockFloatingPersist, DockFloatingSurface,
+    DockItemLimits, DockNode, DockNodePersist, DockPanel, DockSurfaceSpec, DockWorkspace,
+    DockWorkspaceEvent, DockWorkspacePersist, MAIN_SURFACE_ID, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO,
+    clamp_ratio, dock_nudge_split_ratio, dock_split_child_lengths, dock_split_ratio_from_pointer,
+    dock_surface_window_key,
 };
 pub use dropdown::{Dropdown, DropdownOption};
 pub use feedback::{
@@ -133,12 +145,15 @@ pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, HOST_TEXTURE_RENDERER, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
 };
+#[cfg(feature = "graph-canvas")]
 pub use graph_canvas::{
     GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
     GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton, GraphPortPaint,
     GraphScrollDelta, wheel_zoom_factor,
 };
+#[cfg(feature = "graph-canvas")]
 pub use graph_minimap::{GraphMinimap, GraphMinimapDrag, GraphMinimapEvent};
+#[cfg(feature = "image-viewer")]
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
     ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
@@ -191,10 +206,12 @@ pub use presentation::{
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
 pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
 pub use qr_code::{QrCode, QrCodeError};
+#[cfg(feature = "controls")]
 pub use reorder_list::{
     ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
     TreeDropIntent, TreeDropPosition,
 };
+#[cfg(feature = "rich-text")]
 pub use rich_text::{
     MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
     MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent, SelectableRichText,

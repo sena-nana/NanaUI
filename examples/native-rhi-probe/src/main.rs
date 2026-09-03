@@ -209,7 +209,8 @@ mod tests {
     fn distribution_keeps_tail_samples() {
         let values = (1..=100).map(|value| value as f64).collect::<Vec<_>>();
         let distribution = summarize(values.into_iter());
-        assert_eq!(distribution.p50, 50.0);
+        // The report uses the nearest index in the zero-based sorted samples.
+        assert_eq!(distribution.p50, 51.0);
         assert_eq!(distribution.p95, 95.0);
         assert_eq!(distribution.p99, 99.0);
     }

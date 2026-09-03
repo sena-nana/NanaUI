@@ -1,22 +1,13 @@
+import { loadShimSource, loadRenderer } from "./load-runtime.mjs";
 /**
  * Track B DOM contract: wrapNode identity cache + live tree navigation.
  * Mirrors LiliaUI useAnchoredOverlay.containsTarget (instanceof Node + contains).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { describe, test, beforeEach, afterEach } from "node:test";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const shimSrc = readFileSync(
-  join(root, "../../crates/nana-ui-web-api/src/shim.js"),
-  "utf8",
-);
-const rendererSrc = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
-const layoutSrc = readFileSync(join(root, "src/layoutMetrics.js"), "utf8");
-const transitionSrc = readFileSync(join(root, "src/transitionContract.js"), "utf8");
+const shimSrc = loadShimSource();
 
 /** In-memory host tree for wrapNode getters. */
 function makeTreeHost() {
@@ -114,7 +105,7 @@ function makeTreeHost() {
   };
 }
 
-function loadRuntime(host) {
+async function loadRuntime(host) {
   const sandbox = {
     console,
     queueMicrotask: (fn) => Promise.resolve().then(fn),
@@ -140,26 +131,7 @@ function loadRuntime(host) {
   // Install Node/HTMLElement constructors first.
   vm.runInNewContext(shimSrc, sandbox, { filename: "shim.js" });
 
-  const layoutBody = layoutSrc.replace(/^export\s+/gm, "");
-  const transitionBody = transitionSrc.replace(/^export\s+/gm, "");
-  const rendererBody = rendererSrc
-    .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']@vue\/runtime-core["'];?/, "")
-    .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']\.\/layoutMetrics\.js["'];?/, "")
-    .replace(/import\s+\{[\s\S]*?\}\s+from\s+["']\.\/transitionContract\.js["'];?/, "")
-    .replace(/export\s+\{\s*hostCall\s*\}\s+from\s+["']\.\/layoutMetrics\.js["'];?/, "")
-    .replace(/export\s+\{[^}]+\}\s+from\s+["']\.\/transitionContract\.js["'];?/, "")
-    .replace(/^export\s+function\s+/gm, "function ")
-    .replace(/^export\s+const\s+/gm, "const ")
-    .replace(/^export\s+\{[^}]+\};?/gm, "");
-
-  const bundled = `
-${layoutBody}
-${transitionBody}
-const createRenderer = () => ({ createApp() {}, render() {} });
-${rendererBody}
-globalThis.__exports = { wrapNode, nodeId, hostOps };
-`;
-  vm.runInNewContext(bundled, sandbox, { filename: "createNanaRenderer.js" });
+  sandbox.__exports = await loadRenderer(sandbox);
   assert.equal(typeof sandbox.__exports.wrapNode, "function");
   return {
     wrapNode: sandbox.__exports.wrapNode,
@@ -198,21 +170,13 @@ describe("shim Node instanceof for click-outside", () => {
   });
 });
 
-describe("wrapNode source contract", () => {
-  test("caches by nid and exposes live tree getters", () => {
-    assert.match(rendererSrc, /const nodeCache = new Map/);
-    assert.match(rendererSrc, /nodeCache\.get\(nid\)/);
-    assert.match(rendererSrc, /nodeCache\.set\(nid,\s*node\)/);
-    assert.match(rendererSrc, /defineProperty\(node,\s*"parentElement"/);
-    assert.match(rendererSrc, /defineProperty\(node,\s*"firstChild"/);
-    assert.match(rendererSrc, /defineProperty\(node,\s*"childNodes"/);
-    assert.match(rendererSrc, /parentIdOf/);
-    assert.match(rendererSrc, /isConnectedNode/);
-    assert.doesNotMatch(
-      rendererSrc,
-      /defineProperty\(node,\s*"isConnected"[\s\S]{0,400}querySelector\(\s*["']html["']/,
-    );
-  });
+test("cache preserves identity before and after host lookup", async () => {
+  const host = makeTreeHost();
+  const { wrapNode } = await loadRuntime(host);
+  const body = wrapNode(host.body, "element", "body");
+  assert.equal(body.parentElement.firstChild, body);
+  assert.equal(wrapNode(host.body, "element", null), body);
+  assert.equal(body.isConnected, true);
 });
 
 describe("wrapNode DOM contract", () => {
@@ -220,9 +184,9 @@ describe("wrapNode DOM contract", () => {
   let wrapNode;
   let Node;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     host = makeTreeHost();
-    ({ wrapNode, Node } = loadRuntime(host));
+    ({ wrapNode, Node } = await loadRuntime(host));
   });
 
   test("same nid returns the same object", () => {

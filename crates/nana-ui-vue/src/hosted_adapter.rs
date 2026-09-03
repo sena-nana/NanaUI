@@ -783,13 +783,27 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             .map(|program| (program, Vec::new()))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        self.documents.get(&id).map(|document| document.get())
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui_scene::DocumentAccessError> {
+        self.documents
+            .get(&id)
+            .map(|document| document.with_document(f))
+            .transpose()
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui_scene::DocumentAccessError> {
         self.sync_documents();
-        self.documents.get(&id).map(|document| document.get_mut())
+        self.documents
+            .get(&id)
+            .map(|document| document.with_document_mut(f))
+            .transpose()
     }
 
     fn update(
@@ -857,7 +871,15 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         let theme = self.theme;
         if let (Some(appearance), Some(document)) = (appearance, self.documents.get(&id)) {
             let tokens = theme_tokens_from_appearance(theme, &appearance, transparent_surface);
-            let _ = install_theme_tokens(document.get_mut().context_mut(), theme, tokens);
+            if let Err(error) = document.with_document_mut(|document| {
+                install_theme_tokens(document.context_mut(), theme, tokens)
+            }) {
+                self.host_failure(nana_ui::HostFailure::DocumentAccess {
+                    window: id,
+                    error: error.to_string(),
+                });
+                return;
+            }
         }
         self.runtime.prepare_runtime_window(id);
     }
@@ -958,10 +980,17 @@ mod tests {
     fn vue_window_documents_are_the_same_runtime_tree() {
         let host = VueHost::new();
         let shared = host.shared_runtime_document();
-        let from_tree = host.document().lock().unwrap().shared_runtime_document();
-        assert!(Arc::ptr_eq(&shared, &from_tree));
+        let facade = host.document();
+        let guard = facade.lock().unwrap();
         assert_eq!(
-            shared.get().document(),
+            shared.with_document(|_| ()),
+            Err(nana_ui_scene::DocumentAccessError::Busy)
+        );
+        drop(guard);
+        assert_eq!(
+            shared
+                .with_document(|document| document.document())
+                .unwrap(),
             nana_ui_runtime::DocumentId::new(1).unwrap()
         );
     }

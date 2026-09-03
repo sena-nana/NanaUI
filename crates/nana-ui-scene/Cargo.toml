@@ -7,6 +7,13 @@ description = "Backend-neutral retained scene and render graph for NanaUI"
 license = "MIT OR Apache-2.0"
 
 [features]
+calendar = ["nana-ui-runtime/calendar"]
+charts = ["nana-ui-runtime/charts"]
+controls = ["nana-ui-runtime/controls"]
+graph-canvas = ["nana-ui-runtime/graph-canvas"]
+image-viewer = ["nana-ui-runtime/image-viewer"]
+rich-text = ["nana-ui-runtime/rich-text"]
+components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
 benchmark = ["dep:serde", "dep:serde_json"]
 

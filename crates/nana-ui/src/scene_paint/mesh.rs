@@ -247,18 +247,10 @@ impl MeshPipeline {
         self.clip_intern.clear();
     }
 
-    pub(super) fn push_stroke(
-        &mut self,
-        points: &[[f32; 2]],
-        style: StrokeStyle<'_>,
-        affine: [f32; 6],
-        color: [f32; 4],
-        opacity: f32,
-        fragment_clip: FragmentClip,
-    ) -> Option<MeshRange> {
-        self.push_stroke_with_path_length(points, style, affine, color, opacity, fragment_clip, 0.0)
-    }
-
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit fields of the host or GPU projection contract"
+    )]
     pub(super) fn push_stroke_with_path_length(
         &mut self,
         points: &[[f32; 2]],
@@ -729,6 +721,10 @@ fn drawable_polyline_length(
 /// Same drawable walk as `append_solid_polyline`. Closed paths wrap phase
 /// (`s = 0 ≡ s = L`); `wrap_join` butts both ends when dash is ON on each side.
 /// `path_length` scales geometric `s` into pathLength units before phase.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn append_dashed_stroke_instances(
     instances: &mut Vec<MeshInstance>,
     points: &[[f32; 2]],
@@ -895,6 +891,10 @@ fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     ]
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn push_polyline_segment(
     instances: &mut Vec<MeshInstance>,
     p0: [f32; 2],
@@ -913,6 +913,10 @@ fn push_polyline_segment(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn push_capped_segment(
     instances: &mut Vec<MeshInstance>,
     p0: [f32; 2],
@@ -957,6 +961,10 @@ fn square_end(
 
 /// One articulated-line segment. Interior joins keep a single endpoint disc:
 /// the previous segment draws it, this segment uses a butt start.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn push_segment(
     instances: &mut Vec<MeshInstance>,
     p0: [f32; 2],
@@ -1052,6 +1060,10 @@ fn hull_half_width(along: f32, pad0: f32, pad1: f32, seg_len: f32) -> f32 {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Independent stroke geometry fixture inputs"
+)]
 fn covering_with_fringe(
     p0: [f32; 2],
     p1: [f32; 2],

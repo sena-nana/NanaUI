@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::{RegionId, RegionPlacement, RegionState, WorkspaceGeometry, WorkspaceLayout};
+use crate::{Easing, RegionId, RegionPlacement, RegionState, WorkspaceGeometry, WorkspaceLayout};
 
-pub const WORKSPACE_REGION_TRANSITION_DURATION: Duration = Duration::from_millis(240);
+pub const WORKSPACE_REGION_TRANSITION_DURATION: Duration = crate::motion::SIDEBAR_COLLAPSE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkspaceMutation {
@@ -52,7 +52,7 @@ impl RegionTransition {
         let elapsed = now.saturating_sub(self.started_at);
         let linear = (elapsed.as_secs_f32() / WORKSPACE_REGION_TRANSITION_DURATION.as_secs_f32())
             .clamp(0.0, 1.0);
-        let progress = 1.0 - (1.0 - linear).powi(3);
+        let progress = Easing::EaseInOutCubic.sample(linear);
         self.from_extent + (self.to_extent - self.from_extent) * progress
     }
 
@@ -401,6 +401,15 @@ mod tests {
         ));
         let middle = model.region_extent(&RegionId::Resources);
         assert!(middle > 0.0 && middle < 260.0);
+        // 过渡 100ms 启动、220ms 采样：elapsed 120ms 落在 EaseInOutCubic
+        // 前半段（4t³），extent 必须按该曲线而非线性取值。
+        let linear = Duration::from_millis(120).as_secs_f32()
+            / WORKSPACE_REGION_TRANSITION_DURATION.as_secs_f32();
+        let expected = 260.0 * (1.0 - 4.0 * linear.powi(3));
+        assert!(
+            (middle - expected).abs() < 1e-3,
+            "collapse midpoint {middle} drifted from ease-in-out expectation {expected}"
+        );
         assert!(model.update(
             WorkspaceMutation::SetRegionCollapsed(RegionId::Resources, false),
             Duration::from_millis(220),

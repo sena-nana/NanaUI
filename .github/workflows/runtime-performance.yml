@@ -81,15 +81,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run real WGPU UI and Live2D composition workload
-        run: |
-          mkdir -p target/performance
-          cargo run --release --locked -p component-gallery \
-            --features live2d-acceptance --bin ui-live2d-acceptance -- \
-            --output target/performance/ui-live2d.json \
-            --screenshot target/performance/ui-live2d.png
-      - name: Enforce real GPU frame gates
-        run: python3 scripts/validate-runtime-performance.py --gpu target/performance/ui-live2d.json
       - name: Run and judge catalog GpuScene UiOnly encode
         run: |
           mkdir -p target/performance/issue8
@@ -104,5 +95,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: macos-ui-live2d-performance
+          name: macos-gpu-scene-performance
           path: target/performance

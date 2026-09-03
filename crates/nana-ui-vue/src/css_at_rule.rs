@@ -144,23 +144,13 @@ impl StylesheetLoader for FsStylesheetLoader<'_> {
 }
 
 /// Options for [`crate::css_cascade::parse_stylesheet_full_with_options`].
+#[derive(Default)]
 pub struct ParseStylesheetOptions<'a> {
     pub media: MediaEnvironment,
     pub loader: Option<&'a dyn StylesheetLoader>,
     /// Canonical href of the sheet being parsed (cycle identity for the root).
     pub base_href: Option<&'a str>,
     pub import_cache: Option<&'a mut HashMap<String, crate::css_interactive::ParsedStylesheet>>,
-}
-
-impl Default for ParseStylesheetOptions<'static> {
-    fn default() -> Self {
-        Self {
-            media: MediaEnvironment::default(),
-            loader: None,
-            base_href: None,
-            import_cache: None,
-        }
-    }
 }
 
 /// Parsed `@font-face` descriptors (not a CSSOM FontFace).
@@ -337,11 +327,11 @@ where
             }
         } else if property.eq_ignore_ascii_case("src") {
             src = parse_font_face_src(value);
-        } else if property.eq_ignore_ascii_case("font-weight") {
-            if let Some((start, end)) = parse_font_weight_range(value) {
-                weight = Some(start);
-                weight_end = (end != start).then_some(end);
-            }
+        } else if property.eq_ignore_ascii_case("font-weight")
+            && let Some((start, end)) = parse_font_weight_range(value)
+        {
+            weight = Some(start);
+            weight_end = (end != start).then_some(end);
         }
     }
     let family = family?;
@@ -578,15 +568,15 @@ fn prelude_has_unsupported_import_function(prelude: &str) -> bool {
             }
             continue;
         }
-        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'\\' {
-            if let Some((ident, next)) = consume_css_ident(prelude, i) {
-                i = next;
-                let ident = ident.to_ascii_lowercase();
-                if ident == "layer" || ident == "supports" {
-                    return true;
-                }
-                continue;
+        if (bytes[i].is_ascii_alphabetic() || bytes[i] == b'\\')
+            && let Some((ident, next)) = consume_css_ident(prelude, i)
+        {
+            i = next;
+            let ident = ident.to_ascii_lowercase();
+            if ident == "layer" || ident == "supports" {
+                return true;
             }
+            continue;
         }
         i += 1;
     }
@@ -1093,17 +1083,19 @@ fn parse_font_face_src(value: &str) -> Vec<FontFaceSrc> {
 fn skip_format_hint(s: &str) -> &str {
     let mut t = s.trim_start();
     loop {
-        if t.len() >= 7 && t[..7].eq_ignore_ascii_case("format(") {
-            if let Some(end) = t.find(')') {
-                t = t[end + 1..].trim_start();
-                continue;
-            }
+        if t.len() >= 7
+            && t[..7].eq_ignore_ascii_case("format(")
+            && let Some(end) = t.find(')')
+        {
+            t = t[end + 1..].trim_start();
+            continue;
         }
-        if t.len() >= 5 && t[..5].eq_ignore_ascii_case("tech(") {
-            if let Some(end) = t.find(')') {
-                t = t[end + 1..].trim_start();
-                continue;
-            }
+        if t.len() >= 5
+            && t[..5].eq_ignore_ascii_case("tech(")
+            && let Some(end) = t.find(')')
+        {
+            t = t[end + 1..].trim_start();
+            continue;
         }
         return t;
     }

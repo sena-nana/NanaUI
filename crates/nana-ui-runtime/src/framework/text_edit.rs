@@ -290,7 +290,7 @@ impl AppContext {
         intent: TextCaretIntent,
         extend: bool,
         multiline: bool,
-        mut geometry: Option<&mut EditorGeometry<'_>>,
+        geometry: Option<&mut EditorGeometry<'_>>,
         page_height: f32,
     ) -> Option<(TextSelection, Option<f32>)> {
         let vertical = matches!(
@@ -301,7 +301,7 @@ impl AppContext {
                 | TextCaretIntent::PageDown
         );
         if vertical && multiline {
-            if let Some(geometry) = geometry.as_deref_mut() {
+            if let Some(geometry) = geometry {
                 let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
                     vertical_caret_focus(value, selection, intent, extend, None, geometry.probe())
                 } else {
@@ -392,7 +392,7 @@ impl AppContext {
                 | TextCaretIntent::PageDown
         );
         if state.has_additional_selections() {
-            self.caret_goal_x = None;
+            self.text_edit.caret_goal_x = None;
             let page_height = self
                 .world
                 .text_input_pointer_context(focused.node)
@@ -446,7 +446,7 @@ impl AppContext {
                 return Ok(false);
             }
             if let Some(goal) = next_goal {
-                self.caret_goal_x = Some((focused.node, goal));
+                self.text_edit.caret_goal_x = Some((focused.node, goal));
             }
             let primary = next_selections[primary_index];
             let additional = next_selections
@@ -460,14 +460,14 @@ impl AppContext {
         let selection = to_display(state.selection);
         let selection = if vertical && focused.multiline {
             let goal = self
+                .text_edit
                 .caret_goal_x
                 .take()
                 .filter(|(id, _)| *id == focused.node)
                 .map(|(_, x)| x);
-            if let (Some(shaper), Some((style, constraints))) = (
-                shaper.as_deref_mut(),
-                self.world.text_input_shape_context(focused.node),
-            ) {
+            if let (Some(shaper), Some((style, constraints))) =
+                (shaper, self.world.text_input_shape_context(focused.node))
+            {
                 let mut geometry = EditorGeometry {
                     shaper,
                     node: focused.node,
@@ -505,7 +505,7 @@ impl AppContext {
                 };
                 match moved {
                     Some((selection, goal)) => {
-                        self.caret_goal_x = Some((focused.node, goal));
+                        self.text_edit.caret_goal_x = Some((focused.node, goal));
                         selection
                     }
                     None => return Ok(false),
@@ -533,7 +533,7 @@ impl AppContext {
                 None => return Ok(false),
             }
         } else {
-            self.caret_goal_x = None;
+            self.text_edit.caret_goal_x = None;
             match caret_focus(probe_value, selection, intent) {
                 Some(focus) => moved_selection(selection, focus, extend),
                 None => return Ok(false),
@@ -555,7 +555,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let replacement = match kind {
                 TextDeleteKind::Backward => delete_backward(value, selection)?,
@@ -581,7 +581,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let indent_unit = focused
             .code_editing
             .as_ref()
@@ -616,7 +616,7 @@ impl AppContext {
         if focused.code_editing.is_none() || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             auto_pair_edit(value, selection, typed).map(CursorEdit::Span)
         })
@@ -637,7 +637,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let unit = code.indent_unit.to_string();
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = if outdent {
@@ -663,7 +663,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let prefix = code.comment_prefix.to_string();
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = toggle_line_comment(value, selection, &prefix)?;
@@ -685,7 +685,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = move_lines(value, selection, direction)?;
             Some(CursorEdit::Transform { next, selection })
@@ -704,7 +704,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = duplicate_lines(value, selection)?;
             Some(CursorEdit::Transform { next, selection })
@@ -723,7 +723,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = delete_lines(value, selection)?;
             Some(CursorEdit::Transform { next, selection })
@@ -742,7 +742,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = join_lines(value, selection)?;
             Some(CursorEdit::Transform { next, selection })
@@ -761,7 +761,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = transform_selection_case(value, selection, upper)?;
             Some(CursorEdit::Transform { next, selection })
@@ -783,7 +783,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
             let (next, selection) = sort_lines(value, selection, descending, unique)?;
             Some(CursorEdit::Transform { next, selection })
@@ -813,7 +813,7 @@ impl AppContext {
         } else {
             open
         };
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.write_editor_selection(
             focused.node,
             focused.kind,
@@ -857,7 +857,7 @@ impl AppContext {
         let state = self.editor_state(focused.node, focused.kind)?;
         let start = clamp_focus(&state.value, start);
         let end = clamp_focus(&state.value, end);
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         // 区间两端都参与 reveal（光标导航只看 focus；宿主跳转的起点同样
         // 必须可见）。write_editor_selections 内部还会按 focus 再对账一次，
         // 幂等无害。
@@ -882,7 +882,7 @@ impl AppContext {
         &mut self,
         document: DocumentId,
         above: bool,
-        mut shaper: Option<&mut dyn crate::TextShaper>,
+        shaper: Option<&mut dyn crate::TextShaper>,
     ) -> Result<bool, FrameworkError> {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
@@ -899,10 +899,7 @@ impl AppContext {
         let value = state.value.clone();
         let selections = state.selections().into_owned();
         let mut candidates: Vec<TextSelection> = Vec::with_capacity(selections.len());
-        match (
-            shaper.as_deref_mut(),
-            self.world.text_input_shape_context(focused.node),
-        ) {
+        match (shaper, self.world.text_input_shape_context(focused.node)) {
             (Some(shaper), Some((style, constraints))) => {
                 let mut geometry = EditorGeometry {
                     shaper,
@@ -1091,15 +1088,16 @@ impl AppContext {
             return Ok(false);
         }
         let entry = (state.selection, state.additional_selections.clone());
-        match &mut self.selection_expansions {
+        match &mut self.text_edit.selection_expansions {
             Some((node, history, value)) if *node == focused.node && *value == state.value => {
                 history.push(entry);
             }
             _ => {
-                self.selection_expansions = Some((focused.node, vec![entry], state.value.clone()));
+                self.text_edit.selection_expansions =
+                    Some((focused.node, vec![entry], state.value.clone()));
             }
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let primary = next_selections[primary_index];
         let additional = next_selections
             .into_iter()
@@ -1123,16 +1121,16 @@ impl AppContext {
             return Ok(false);
         };
         let state = self.editor_state(focused.node, focused.kind)?;
-        match &mut self.selection_expansions {
+        match &mut self.text_edit.selection_expansions {
             Some((node, history, value))
                 if *node == focused.node && **value == state.value && !history.is_empty() =>
             {
                 let (primary, additional) = history.pop().expect("non-empty checked above");
-                self.caret_goal_x = None;
+                self.text_edit.caret_goal_x = None;
                 self.write_editor_selections(focused.node, focused.kind, primary, additional)
             }
             _ => {
-                self.selection_expansions = None;
+                self.text_edit.selection_expansions = None;
                 Ok(false)
             }
         }
@@ -1166,7 +1164,7 @@ impl AppContext {
         let Some(found) = find_next_match(&matches, state.selection.ordered().end) else {
             return Ok(false);
         };
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.write_editor_selection(
             focused.node,
             focused.kind,
@@ -1199,7 +1197,7 @@ impl AppContext {
         let Some(found) = find_previous_match(&matches, state.selection.ordered().start) else {
             return Ok(false);
         };
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.write_editor_selection(
             focused.node,
             focused.kind,
@@ -1236,7 +1234,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(false);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
             focused.kind,
@@ -1292,7 +1290,7 @@ impl AppContext {
         if !focused.accepts_input {
             return Ok(0);
         }
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let mut replaced = 0usize;
         self.edit_editor(focused.node, focused.kind, |state| {
             let matches =
@@ -1352,13 +1350,13 @@ impl AppContext {
             return Ok(false);
         };
         if focused.node != node || !focused.accepts_input {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }
         let state = self.editor_state(node, focused.kind)?;
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
-        let count = match &self.text_pointer_click {
+        let count = match &self.text_edit.text_pointer_click {
             Some(click)
                 if click.pointer_id == pointer_id
                     && click.node == node
@@ -1370,7 +1368,7 @@ impl AppContext {
             }
             _ => 1,
         };
-        self.text_pointer_click = Some(super::TextPointerClick {
+        self.text_edit.text_pointer_click = Some(super::TextPointerClick {
             pointer_id,
             node,
             at: now,
@@ -1385,14 +1383,14 @@ impl AppContext {
             && !add_cursor
             && let Some(row) = self.world.text_completion_hit(node, x, y)
         {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
             return self.accept_focused_text_completion(document, Some(row));
         }
         // minimap 竖条交互：条内按下即消费（任何修饰键与连击计数）——
         // 视口滚动到点击行居中的位置并进入拖拽跟随，不移动光标、不产生
         // 选区；滚轮不经过本路径，落在条上仍按编辑器常规滚动。
         if let Some(target) = self.world.text_minimap_scroll_target(node, x, y) {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
             return self.text_editor_minimap_navigate(node, focused.kind, pointer_id, target);
         }
         // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
@@ -1402,7 +1400,7 @@ impl AppContext {
             && !add_cursor
             && let Some(fold) = self.world.text_fold_hit(node, x, y)
         {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
             let collapsed = self
                 .world
                 .text_fold_view_state(node)
@@ -1419,6 +1417,7 @@ impl AppContext {
         // IME 组合期）时不落光标，进入拖拽状态机；Alt 按住为复制（macOS
         // 惯例；取舍：选区内的 Alt+click 由多光标添加让位给拖拽复制）。
         if self
+            .text_edit
             .text_selection_drag
             .is_some_and(|existing| existing.pointer_id != pointer_id || existing.node != node)
         {
@@ -1440,7 +1439,7 @@ impl AppContext {
                 &state,
             )
         {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
             return Ok(true);
         }
         // Alt+click toggles an extra cursor on multiline editors; single-line
@@ -1477,10 +1476,10 @@ impl AppContext {
             _ => (moved_selection(state.selection, offset, false), Vec::new()),
         };
         if count != 1 {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
         } else {
             let anchor = if extend { selection.anchor } else { offset };
-            self.text_pointer_drag = Some((pointer_id, node, anchor));
+            self.text_edit.text_pointer_drag = Some((pointer_id, node, anchor));
         }
         self.write_editor_selections(node, focused.kind, selection, additional)
     }
@@ -1507,7 +1506,7 @@ impl AppContext {
                 false
             })?;
         }
-        self.text_minimap_drag = Some((pointer_id, node, kind));
+        self.text_edit.text_minimap_drag = Some((pointer_id, node, kind));
         Ok(true)
     }
 
@@ -1550,7 +1549,7 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         // minimap 拖拽优先：按下进入的导航拖拽连续跟随指针换算视口，
         // 不做选区延伸。指针拖出条外时保持最后视口（仍消费本次拖拽）。
-        if let Some((drag_id, drag_node, drag_kind)) = self.text_minimap_drag {
+        if let Some((drag_id, drag_node, drag_kind)) = self.text_edit.text_minimap_drag {
             if drag_id != pointer_id {
                 return Ok(false);
             }
@@ -1563,13 +1562,13 @@ impl AppContext {
         }
         // 拖拽移动选中文本优先：pending/active 状态机消费本次移动，不做
         // 选区延伸（拖拽期间既有点击选词等竞争语义全部让位）。
-        if let Some(drag) = self.text_selection_drag {
+        if let Some(drag) = self.text_edit.text_selection_drag {
             if drag.pointer_id != pointer_id {
                 return Ok(false);
             }
             return self.update_text_selection_drag(document, drag, x, y, shaper);
         }
-        let Some((drag_id, node, anchor)) = self.text_pointer_drag else {
+        let Some((drag_id, node, anchor)) = self.text_edit.text_pointer_drag else {
             return Ok(false);
         };
         if drag_id != pointer_id {
@@ -1602,20 +1601,23 @@ impl AppContext {
     /// End any drag selection started by this pointer.
     pub fn text_editor_pointer_release(&mut self, pointer_id: u64) {
         if self
+            .text_edit
             .text_pointer_drag
             .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
         {
-            self.text_pointer_drag = None;
+            self.text_edit.text_pointer_drag = None;
         }
         if self
+            .text_edit
             .text_minimap_drag
             .is_some_and(|(drag_id, _, _)| drag_id == pointer_id)
         {
-            self.text_minimap_drag = None;
+            self.text_edit.text_minimap_drag = None;
         }
         // 落点未经理由 `text_editor_selection_drop` 消费（指针路径未带
         // 文档/坐标等场景）时按取消处理，一并清除落点指示线。
         if self
+            .text_edit
             .text_selection_drag
             .is_some_and(|drag| drag.pointer_id == pointer_id)
         {
@@ -1641,10 +1643,10 @@ impl AppContext {
         if range.start == range.end || offset < range.start || offset >= range.end {
             return false;
         }
-        if self.text_selection_drag.is_some() {
+        if self.text_edit.text_selection_drag.is_some() {
             return false;
         }
-        self.text_selection_drag = Some(TextSelectionDrag {
+        self.text_edit.text_selection_drag = Some(TextSelectionDrag {
             pointer_id,
             node,
             kind,
@@ -1679,13 +1681,13 @@ impl AppContext {
         if !drag.active {
             let (dx, dy) = (x - drag.press.0, y - drag.press.1);
             if dx * dx + dy * dy <= TEXT_SELECTION_DRAG_THRESHOLD * TEXT_SELECTION_DRAG_THRESHOLD {
-                self.text_selection_drag = Some(drag);
+                self.text_edit.text_selection_drag = Some(drag);
                 return Ok(true);
             }
             drag.active = true;
         }
         let Some(target) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
-            self.text_selection_drag = Some(drag);
+            self.text_edit.text_selection_drag = Some(drag);
             return Ok(true);
         };
         // 源选区区间内（含边界，落点为退化 no-op）不显示指示线。
@@ -1718,7 +1720,7 @@ impl AppContext {
         } else {
             self.world.set_text_drop_indicator(drag.node, None);
         }
-        self.text_selection_drag = Some(drag);
+        self.text_edit.text_selection_drag = Some(drag);
         Ok(true)
     }
 
@@ -1734,7 +1736,7 @@ impl AppContext {
         y: f32,
         shaper: &mut dyn crate::TextShaper,
     ) -> Result<bool, FrameworkError> {
-        let Some(drag) = self.text_selection_drag else {
+        let Some(drag) = self.text_edit.text_selection_drag else {
             return Ok(false);
         };
         if drag.pointer_id != pointer_id {
@@ -1820,7 +1822,7 @@ impl AppContext {
 
     /// 取消拖拽移动选中（Esc）。仅当拖拽属于该文档的聚焦编辑器时消费。
     pub fn cancel_focused_text_selection_drag(&mut self, document: DocumentId) -> bool {
-        let Some(drag) = &self.text_selection_drag else {
+        let Some(drag) = &self.text_edit.text_selection_drag else {
             return false;
         };
         let node = drag.node;
@@ -1832,7 +1834,7 @@ impl AppContext {
     }
 
     fn clear_text_selection_drag(&mut self) {
-        if let Some(drag) = self.text_selection_drag.take() {
+        if let Some(drag) = self.text_edit.text_selection_drag.take() {
             self.world.set_text_drop_indicator(drag.node, None);
         }
     }
@@ -2194,7 +2196,7 @@ impl AppContext {
             return None;
         }
         let state = self.world.text_completion_view(focused.node)?;
-        (state.items.len() > 0 && !state.dismissed).then_some((focused.node, state))
+        (!state.items.is_empty() && !state.dismissed).then_some((focused.node, state))
     }
 
     /// 聚焦多行编辑器当前是否激活补全弹层（非空且未关闭的会话）。
@@ -2251,7 +2253,7 @@ impl AppContext {
         let focused = self
             .focused_text_editor(document)
             .expect("session implies editor");
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
             focused.kind,
@@ -2482,7 +2484,7 @@ impl AppContext {
         let state = self.editor_state(focused.node, focused.kind)?;
         let view = self.world.text_fold_view_state(focused.node);
         let offered = view.as_ref().map_or(&[][..], |state| &state.offered);
-        let at = offset.unwrap_or_else(|| state.selection.focus);
+        let at = offset.unwrap_or(state.selection.focus);
         let at = clamp_boundary(&state.value, at);
         // 包含该偏移的最内层折叠：区间覆盖，或偏移落在折叠起始行上
         // （Zed 语义：光标在 `{` 所在行即可切换该折叠）。
@@ -2548,7 +2550,7 @@ impl AppContext {
             return Ok(false);
         }
         let node = focused.node;
-        self.caret_goal_x = None;
+        self.text_edit.caret_goal_x = None;
         let state = self.editor_state(node, focused.kind)?;
         let (insert, stops, final_caret) =
             expand_snippet_body(&snippet.body, state.selection.ordered().start);
@@ -2557,7 +2559,7 @@ impl AppContext {
         if !next.replace_primary_selection(&insert) {
             return Ok(false);
         }
-        let session = (!stops.is_empty()).then(|| TextSnippetSession { stops, index: 0 });
+        let session = (!stops.is_empty()).then_some(TextSnippetSession { stops, index: 0 });
         // 选区落在 $0（缺省为插入文本末尾）。
         next.selection = TextSelection::caret(final_caret);
         match focused.kind {
@@ -3507,7 +3509,6 @@ mod completion_tests {
 mod minimap_tests {
     use crate::{
         AppContext, DocumentId, Entity, MeasureTextShaper, MutationQueue, StableNodeId, TextArea,
-        TextSelection,
     };
     use std::time::Duration;
 
@@ -3745,7 +3746,7 @@ mod minimap_tests {
 #[cfg(test)]
 mod find_scope_smart_select_tests {
     use super::*;
-    use crate::{AppContext, DocumentId, Entity, MeasureTextShaper, StableNodeId, TextArea};
+    use crate::{AppContext, DocumentId, Entity, StableNodeId, TextArea};
 
     fn editor(value: &str) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
         let mut context = AppContext::new();
@@ -3967,4 +3968,26 @@ mod find_scope_smart_select_tests {
         assert_eq!(selection_span(&context, node), (1, 1));
         assert!(!context.shrink_focused_text_selection(document).unwrap());
     }
+}
+
+#[derive(Default)]
+pub(super) struct TextEditSession {
+    /// Live text drag-selection: pointer id, node, and the anchor offset.
+    pub(super) text_pointer_drag: Option<(u64, StableNodeId, usize)>,
+    /// Live minimap navigation drag: pointer id, node, and editor kind.
+    pub(super) text_minimap_drag: Option<(u64, StableNodeId, TextEditorKind)>,
+    /// 拖拽移动选中文本的状态机（多行编辑器、单选区、非 IME；按下落在
+    /// 主选区内部时进入，超过阈值激活，释放执行移动/复制或回落为点击）。
+    pub(super) text_selection_drag: Option<crate::framework::text_edit::TextSelectionDrag>,
+    /// Last press inside a text editor for double/triple click counting.
+    pub(super) text_pointer_click: Option<super::TextPointerClick>,
+    /// Horizontal goal column retained across chained vertical moves.
+    pub(super) caret_goal_x: Option<(StableNodeId, f32)>,
+    /// Expand/shrink selection record: prior selection sets per node, valid
+    /// only while the editor's value is unchanged (any edit clears it).
+    pub(super) selection_expansions: Option<(
+        StableNodeId,
+        Vec<(crate::TextSelection, Vec<crate::TextSelection>)>,
+        String,
+    )>,
 }

@@ -500,7 +500,7 @@ mod tests {
             ("data".into(), HostValue::String("ping".into())),
         ]));
         let error = api
-            .call("wsSend", &[payload.clone()])
+            .call("wsSend", std::slice::from_ref(&payload))
             .expect_err("send while connecting must fail");
         assert!(error.message.contains("not open"));
 

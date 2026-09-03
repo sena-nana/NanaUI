@@ -1,10 +1,8 @@
+import { loadShimSource, loadRenderer } from "./load-runtime.mjs";
 /**
  * Behavior: layout metrics project host layoutBox (wrapNode helper + Element shim).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { describe, test, beforeEach, afterEach } from "node:test";
 import {
@@ -14,12 +12,7 @@ import {
   scrollNodeIntoView,
 } from "../src/layoutMetrics.js";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const shimSrc = readFileSync(
-  join(root, "../../crates/nana-ui-web-api/src/shim.js"),
-  "utf8",
-);
-const rendererSrc = readFileSync(join(root, "src/createNanaRenderer.js"), "utf8");
+const shimSrc = loadShimSource();
 
 const boxes = new Map();
 const scrolls = new Map();
@@ -185,10 +178,14 @@ describe("layoutMetrics from layoutBox", () => {
     });
   });
 
-  test("wrapNode wires defineLayoutMetrics + scrollIntoView", () => {
-    assert.match(rendererSrc, /defineLayoutMetrics\(node,\s*nid\)/);
-    assert.match(rendererSrc, /from\s+["']\.\/layoutMetrics\.js["']/);
-    assert.match(rendererSrc, /scrollNodeIntoView\(nid,\s*arg\)/);
+  test("wrapped nodes expose host layout and route scroll requests", async () => {
+    boxes.set(12, { x: 5, y: 6, width: 110, height: 55 });
+    const sandbox = { console, __nanaHost: globalThis.__nanaHost };
+    const { wrapNode } = await loadRenderer(sandbox);
+    const node = wrapNode(12, "element", "div");
+    assert.equal(node.offsetWidth, 110);
+    node.scrollIntoView({ block: "center" });
+    assert.equal(scrollIntoViewCalls.at(-1).nid, 12);
   });
 });
 

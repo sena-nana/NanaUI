@@ -75,8 +75,8 @@ pub use command::{
     action_picker_from_key_name,
 };
 pub use component_support::{
-    ComponentCapability, ComponentFamily, ComponentId, ComponentMigrationState, ComponentSupport,
-    component_catalog, component_ids, component_support, component_uses_runtime,
+    ComponentCapability, ComponentFamily, ComponentId, ComponentSupport, component_catalog,
+    component_ids, component_support, component_uses_runtime,
 };
 pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;
@@ -129,8 +129,6 @@ pub use default_gpu_view::{
     resolve_scene_gpu_renderers,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-#[cfg(feature = "hosted")]
-pub use dock::hosted_dock_update;
 #[cfg(feature = "gpu")]
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
@@ -266,3 +264,5 @@ pub use window_chrome::{
     WindowControlMode, apply_title_bar_pointer, window_commands_for_chrome_action,
 };
 pub use workspace::{WorkspaceAction, WorkspaceController};
+
+pub use nana_ui_scene::DocumentAccessError;

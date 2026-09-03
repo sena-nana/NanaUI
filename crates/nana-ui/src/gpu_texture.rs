@@ -587,22 +587,6 @@ impl HostTextureLayer {
     const PASS_CLIP_INV_ABCD: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
     const PASS_CLIP_INV_EF: [f32; 2] = [0.0, 0.0];
 
-    pub const fn new(texture: HostTexture) -> Self {
-        Self {
-            texture,
-            opacity: 1.0,
-            corner_radius: 0.0,
-            clip: None,
-            fragment_clip_rect: Self::PASS_CLIP_RECT,
-            fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
-            fragment_clip_inv_ef: Self::PASS_CLIP_INV_EF,
-            fragment_clip_corner_radius: 0.0,
-            alpha_mode: None,
-            mask: None,
-            checkerboard: false,
-            zoom: 1.0,
-        }
-    }
     pub fn from_binding(binding: HostTextureBinding) -> Self {
         Self {
             texture: binding.texture,
@@ -662,11 +646,6 @@ impl HostTextureLayer {
         self
     }
 
-    pub const fn with_alpha_mode(mut self, alpha_mode: HostTextureAlphaMode) -> Self {
-        self.alpha_mode = Some(alpha_mode);
-        self
-    }
-
     pub fn with_mask(mut self, mask: Option<nana_ui_core::MaskImage>) -> Self {
         self.mask = mask;
         self
@@ -680,22 +659,6 @@ impl HostTextureLayer {
     pub const fn with_zoom(mut self, zoom: f32) -> Self {
         self.zoom = zoom;
         self
-    }
-
-    pub const fn texture(&self) -> &HostTexture {
-        &self.texture
-    }
-
-    pub const fn opacity(&self) -> f32 {
-        self.opacity
-    }
-
-    pub const fn clip(&self) -> Option<LogicalRect> {
-        self.clip
-    }
-
-    pub const fn corner_radius(&self) -> f32 {
-        self.corner_radius
     }
 
     pub fn alpha_mode(&self) -> HostTextureAlphaMode {

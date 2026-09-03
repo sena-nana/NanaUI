@@ -1199,34 +1199,48 @@ impl RuntimeProgram for GalleryApp {
         Ok((app, Vec::new()))
     }
 
-    fn document(&self, id: WindowId) -> Option<&nana_ui::runtime::RuntimeDocument> {
-        if id == WindowId::PRIMARY {
-            self.state.runtime_document()
-        } else {
-            self.dock_windows
-                .get(&id)
-                .map(runtime_gallery::DockWindowRuntime::runtime_document)
-        }
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&nana_ui::runtime::RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = {
+            if id == WindowId::PRIMARY {
+                self.state.runtime_document()
+            } else {
+                self.dock_windows
+                    .get(&id)
+                    .map(runtime_gallery::DockWindowRuntime::runtime_document)
+            }
+        };
+        Ok(document.map(f))
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut nana_ui::runtime::RuntimeDocument> {
-        if id == WindowId::PRIMARY {
-            if self.state.settings_open {
-                self.state
-                    .settings_runtime
-                    .as_mut()
-                    .map(runtime_settings::GallerySettingsRuntime::runtime_document_mut)
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut nana_ui::runtime::RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        let document = {
+            if id == WindowId::PRIMARY {
+                if self.state.settings_open {
+                    self.state
+                        .settings_runtime
+                        .as_mut()
+                        .map(runtime_settings::GallerySettingsRuntime::runtime_document_mut)
+                } else {
+                    self.state
+                        .gallery_runtime
+                        .as_mut()
+                        .map(runtime_gallery::GalleryRuntime::runtime_document_mut)
+                }
             } else {
-                self.state
-                    .gallery_runtime
-                    .as_mut()
-                    .map(runtime_gallery::GalleryRuntime::runtime_document_mut)
+                self.dock_windows
+                    .get_mut(&id)
+                    .map(runtime_gallery::DockWindowRuntime::runtime_document_mut)
             }
-        } else {
-            self.dock_windows
-                .get_mut(&id)
-                .map(runtime_gallery::DockWindowRuntime::runtime_document_mut)
-        }
+        };
+        Ok(document.map(f))
     }
 
     fn update(
@@ -1260,9 +1274,9 @@ impl RuntimeProgram for GalleryApp {
         }
         let theme = self.theme_mode();
         let tokens = self.state.theme_tokens();
-        if let Some(document) = self.document_mut(id) {
-            let _ = nana_ui::install_theme_tokens(document.context_mut(), theme, tokens);
-        }
+        let _ = self.with_document_mut(id, |document| {
+            nana_ui::install_theme_tokens(document.context_mut(), theme, tokens)
+        });
         if id == WindowId::PRIMARY && !self.state.settings_open {
             self.persist_primary_dock();
         }

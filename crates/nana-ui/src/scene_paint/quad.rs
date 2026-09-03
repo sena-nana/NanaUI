@@ -723,6 +723,10 @@ fn shadow_only_paint(inset: bool) -> QuadPaintData {
     paint
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn push_solid_instance(
     pending: &mut Vec<SolidInstance>,
     pending_paint: &mut Vec<QuadPaintData>,
@@ -847,6 +851,7 @@ fn surface_paint_layers(surface: &QuadSurfacePaint) -> Vec<&BackgroundImage> {
     layers
 }
 
+#[cfg(test)]
 fn pack_paint(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -943,35 +948,35 @@ fn pack_shared(
             MaskImage::Url(_) => {}
         }
     }
-    if let Some(filter) = surface.filter {
-        if !filter.is_identity() {
-            paint.flags |= PAINT_FILTER;
-            paint.filter_b = filter.brightness;
-            paint.filter_s = filter.saturate;
-            paint.filter_c = filter.contrast;
-            paint.filter_hue = filter.hue_rotate_deg;
-            paint.filter_invert = filter.invert;
-            paint.filter_opacity = filter.opacity;
-        }
+    if let Some(filter) = surface.filter
+        && !filter.is_identity()
+    {
+        paint.flags |= PAINT_FILTER;
+        paint.filter_b = filter.brightness;
+        paint.filter_s = filter.saturate;
+        paint.filter_c = filter.contrast;
+        paint.filter_hue = filter.hue_rotate_deg;
+        paint.filter_invert = filter.invert;
+        paint.filter_opacity = filter.opacity;
     }
     if surface.outline_width > 0.0 {
         paint.outline_width = surface.outline_width;
         paint.outline_color = surface.outline_color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
     }
     paint.border_styles = pack_border_styles(surface.border_styles);
-    if let Some(points) = surface.polygon_clip.as_ref() {
-        if points.len() >= 3 {
-            paint.flags |= PAINT_POLYGON;
-            paint.polygon_count = points.len().min(8) as u32;
-            let mut flat = [[0.0f32; 2]; 8];
-            for (index, point) in points.iter().take(8).enumerate() {
-                flat[index] = [point[0] / width.max(1.0), point[1] / height.max(1.0)];
-            }
-            paint.poly0 = [flat[0][0], flat[0][1], flat[1][0], flat[1][1]];
-            paint.poly1 = [flat[2][0], flat[2][1], flat[3][0], flat[3][1]];
-            paint.poly2 = [flat[4][0], flat[4][1], flat[5][0], flat[5][1]];
-            paint.poly3 = [flat[6][0], flat[6][1], flat[7][0], flat[7][1]];
+    if let Some(points) = surface.polygon_clip.as_ref()
+        && points.len() >= 3
+    {
+        paint.flags |= PAINT_POLYGON;
+        paint.polygon_count = points.len().min(8) as u32;
+        let mut flat = [[0.0f32; 2]; 8];
+        for (index, point) in points.iter().take(8).enumerate() {
+            flat[index] = [point[0] / width.max(1.0), point[1] / height.max(1.0)];
         }
+        paint.poly0 = [flat[0][0], flat[0][1], flat[1][0], flat[1][1]];
+        paint.poly1 = [flat[2][0], flat[2][1], flat[3][0], flat[3][1]];
+        paint.poly2 = [flat[4][0], flat[4][1], flat[5][0], flat[5][1]];
+        paint.poly3 = [flat[6][0], flat[6][1], flat[7][0], flat[7][1]];
     }
     if let Some(BackgroundImage::Url {
         url,
@@ -981,39 +986,36 @@ fn pack_shared(
         position,
         repeat,
     }) = layer
+        && let Some((tex_w, tex_h)) = load_url_texture(device, queue, cache, url)
+        && let Some(bits) = repeat_bits(*repeat)
     {
-        if let Some((tex_w, tex_h)) = load_url_texture(device, queue, cache, url) {
-            if let Some(bits) = repeat_bits(*repeat) {
-                paint.flags |= PAINT_URL;
-                paint.url_tex_index = bits;
-                paint.url_fit = match fit {
-                    BackgroundImageFit::Cover => 0,
-                    BackgroundImageFit::Contain => 1,
-                    BackgroundImageFit::Stretch => 2,
-                    BackgroundImageFit::Auto => 3,
-                    BackgroundImageFit::Length => 4,
-                    BackgroundImageFit::ScaleDown => 5,
-                };
-                paint.url_dest = url_dest_rect(
-                    *fit,
-                    *size_width,
-                    *size_height,
-                    *position,
-                    *repeat,
-                    width,
-                    height,
-                    tex_w as f32,
-                    tex_h as f32,
-                );
-            }
-        }
+        paint.flags |= PAINT_URL;
+        paint.url_tex_index = bits;
+        paint.url_fit = match fit {
+            BackgroundImageFit::Cover => 0,
+            BackgroundImageFit::Contain => 1,
+            BackgroundImageFit::Stretch => 2,
+            BackgroundImageFit::Auto => 3,
+            BackgroundImageFit::Length => 4,
+            BackgroundImageFit::ScaleDown => 5,
+        };
+        paint.url_dest = url_dest_rect(
+            *fit,
+            *size_width,
+            *size_height,
+            *position,
+            *repeat,
+            width,
+            height,
+            tex_w as f32,
+            tex_h as f32,
+        );
     }
-    if paint.flags & PAINT_URL == 0 {
-        if let Some(MaskImage::Url(url)) = surface.mask.as_ref() {
-            if load_url_texture(device, queue, cache, url).is_some() {
-                paint.flags |= PAINT_MASK | PAINT_MASK_URL;
-            }
-        }
+    if paint.flags & PAINT_URL == 0
+        && let Some(MaskImage::Url(url)) = surface.mask.as_ref()
+        && load_url_texture(device, queue, cache, url).is_some()
+    {
+        paint.flags |= PAINT_MASK | PAINT_MASK_URL;
     }
     paint
 }
@@ -1304,6 +1306,10 @@ fn repeat_bits(repeat: BackgroundRepeat) -> Option<u32> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit fields of the host or GPU projection contract"
+)]
 fn url_dest_rect(
     fit: BackgroundImageFit,
     size_width: Option<LengthSpec>,

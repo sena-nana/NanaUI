@@ -117,10 +117,6 @@ mod tests {
             let _ = SurfacePhase::Pending;
             assert!(!PlatformCapabilities::android_mvp().desktop_shell);
         }
-        #[cfg(not(target_os = "android"))]
-        {
-            assert!(!cfg!(target_os = "android"));
-        }
     }
 }
 

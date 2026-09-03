@@ -40,7 +40,7 @@ fn fallback_cwd() -> PathBuf {
 fn url_base() -> PathBuf {
     #[cfg(test)]
     {
-        return TEST_URL_BASE.with(|slot| slot.borrow().clone().unwrap_or_else(fallback_cwd));
+        TEST_URL_BASE.with(|slot| slot.borrow().clone().unwrap_or_else(fallback_cwd))
     }
     #[cfg(not(test))]
     {
@@ -147,6 +147,7 @@ fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
     decode_image_bytes_with_hint(&bytes, looks_like_svg_url(url))
 }
 
+#[cfg(test)]
 fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     decode_image_bytes_with_hint(bytes, false)
 }

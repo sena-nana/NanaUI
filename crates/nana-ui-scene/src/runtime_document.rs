@@ -277,10 +277,7 @@ mod tests {
 
     #[test]
     fn focused_textarea_typing_settles_the_frame() {
-        use nana_ui_runtime::{
-            ComponentView, MeasureTextShaper, MutationQueue, ScrollAxes, StandardVisual, TextArea,
-            TextSelection,
-        };
+        use nana_ui_runtime::{MeasureTextShaper, TextArea, TextSelection};
 
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);

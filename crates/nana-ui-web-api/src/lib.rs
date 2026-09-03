@@ -44,7 +44,7 @@ pub use nana_ui_platform::{
 };
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
-pub const WEB_API_SHIM_JS: &str = include_str!("shim.js");
+pub const WEB_API_SHIM_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/shim.js"));
 
 pub fn shim_source() -> &'static str {
     WEB_API_SHIM_JS

@@ -76,79 +76,6 @@ impl CssComputedMotion {
     }
 }
 
-/// Serialized used/computed longhands for `getComputedStyle` (not a CSSOM object).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CssComputedStyle {
-    pub width: String,
-    pub height: String,
-    pub color: String,
-    pub background_color: String,
-    pub font_size: String,
-    pub font_family: String,
-    pub font_weight: String,
-}
-
-pub fn serialize_computed_style(
-    layout: &LayoutStyle,
-    used_width: Option<f32>,
-    used_height: Option<f32>,
-) -> CssComputedStyle {
-    CssComputedStyle {
-        width: used_width
-            .map(format_px)
-            .or_else(|| layout.width.map(serialize_length_spec))
-            .unwrap_or_else(|| "auto".into()),
-        height: used_height
-            .map(format_px)
-            .or_else(|| layout.height.map(serialize_length_spec))
-            .unwrap_or_else(|| "auto".into()),
-        color: layout.color.map(serialize_rgba).unwrap_or_default(),
-        background_color: layout
-            .background
-            .map(serialize_rgba)
-            .unwrap_or_else(|| "rgba(0, 0, 0, 0)".into()),
-        font_size: layout.font_size.map(format_px).unwrap_or_default(),
-        font_family: layout.font_family.clone().unwrap_or_default(),
-        font_weight: layout
-            .font_weight
-            .map(|w| w.to_string())
-            .unwrap_or_default(),
-    }
-}
-
-fn format_px(v: f32) -> String {
-    if v == v.trunc() {
-        format!("{v:.0}px")
-    } else {
-        format!("{v}px")
-    }
-}
-
-fn serialize_rgba(color: [f32; 4]) -> String {
-    let r = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let g = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let b = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-    let a = color[3].clamp(0.0, 1.0);
-    if (a - 1.0).abs() < 0.001 {
-        format!("rgb({r}, {g}, {b})")
-    } else {
-        format!("rgba({r}, {g}, {b}, {a})")
-    }
-}
-
-fn serialize_length_spec(spec: crate::css_map::LengthSpec) -> String {
-    use crate::css_map::LengthSpec;
-    match spec {
-        LengthSpec::Px(v) => format_px(v),
-        LengthSpec::Percent(p) => format!("{p}%"),
-        LengthSpec::Fill => "100%".into(),
-        LengthSpec::Auto => "auto".into(),
-        LengthSpec::Em(v) => format!("{v}em"),
-        LengthSpec::Rem(v) => format!("{v}rem"),
-        _ => "auto".into(),
-    }
-}
-
 /// Snapshot of Runtime pointer / focus activation for cascade matching.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveRuntimeSnapshot {
@@ -490,13 +417,13 @@ fn merge_motion(target: &mut MotionDeclarations, source: &MotionDeclarations) {
 
 fn motion_to_computed(motion: &MotionDeclarations) -> CssComputedMotion {
     let mut out = CssComputedMotion::default();
-    if let Some(shorthand) = motion.transition.as_deref() {
-        if let Some(parsed) = parse_transition_shorthand(shorthand) {
-            out.transition_property = parsed.property;
-            out.transition_duration = parsed.duration;
-            out.transition_timing_function = parsed.timing_function;
-            out.transition_delay = parsed.delay;
-        }
+    if let Some(shorthand) = motion.transition.as_deref()
+        && let Some(parsed) = parse_transition_shorthand(shorthand)
+    {
+        out.transition_property = parsed.property;
+        out.transition_duration = parsed.duration;
+        out.transition_timing_function = parsed.timing_function;
+        out.transition_delay = parsed.delay;
     }
     if let Some(v) = &motion.transition_property {
         out.transition_property = v.clone();
@@ -523,17 +450,17 @@ fn motion_to_computed(motion: &MotionDeclarations) -> CssComputedMotion {
         out.transition_timing_function = "ease".into();
     }
 
-    if let Some(shorthand) = motion.animation.as_deref() {
-        if let Some(parsed) = parse_animation_shorthand(shorthand) {
-            out.animation_name = parsed.name;
-            out.animation_duration = parsed.duration;
-            out.animation_delay = parsed.delay;
-            out.animation_timing_function = parsed.timing_function;
-            out.animation_iteration_count = parsed.iteration_count;
-            out.animation_direction = parsed.direction;
-            out.animation_fill_mode = parsed.fill_mode;
-            out.animation_play_state = parsed.play_state;
-        }
+    if let Some(shorthand) = motion.animation.as_deref()
+        && let Some(parsed) = parse_animation_shorthand(shorthand)
+    {
+        out.animation_name = parsed.name;
+        out.animation_duration = parsed.duration;
+        out.animation_delay = parsed.delay;
+        out.animation_timing_function = parsed.timing_function;
+        out.animation_iteration_count = parsed.iteration_count;
+        out.animation_direction = parsed.direction;
+        out.animation_fill_mode = parsed.fill_mode;
+        out.animation_play_state = parsed.play_state;
     }
     if let Some(v) = &motion.animation_name {
         out.animation_name = v.clone();
@@ -736,15 +663,11 @@ pub fn parse_css_time_ms(raw: &str) -> Option<f32> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.ends_with("ms") {
-        return trimmed[..trimmed.len() - 2]
-            .trim()
-            .parse::<f32>()
-            .ok()
-            .map(|v| v.max(0.0));
+    if let Some(value) = trimmed.strip_suffix("ms") {
+        return value.trim().parse::<f32>().ok().map(|v| v.max(0.0));
     }
-    if trimmed.ends_with('s') {
-        return trimmed[..trimmed.len() - 1]
+    if let Some(value) = trimmed.strip_suffix('s') {
+        return value
             .trim()
             .parse::<f32>()
             .ok()
@@ -789,7 +712,7 @@ pub fn lerp_paint_for_properties(
             .iter()
             .any(|property| property.eq_ignore_ascii_case(name))
     };
-    let applies_edge = |prefix: &str, side: &str| applies(prefix) || applies(side);
+    let _applies_edge = |prefix: &str, side: &str| applies(prefix) || applies(side);
     CssPaintSnapshot {
         opacity: if applies("opacity") {
             Some(lerp_opt(from.opacity, to.opacity, 1.0, t))
@@ -845,13 +768,6 @@ fn lerp_opt(from: Option<f32>, to: Option<f32>, default: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-fn lerp_resolved(from: Option<f32>, to: Option<f32>, t: f32) -> Option<f32> {
-    match (from, to) {
-        (Some(a), Some(b)) => Some(a + (b - a) * t),
-        _ => None,
-    }
-}
-
 fn lerp_color(from: Option<[f32; 4]>, to: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
     match (from, to) {
         (Some(a), Some(b)) => Some(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)),
@@ -873,8 +789,8 @@ fn lerp_transform_3d(
             let a = a.unwrap_or(PaintMat4::IDENTITY);
             let b = b.unwrap_or(PaintMat4::IDENTITY);
             let mut m = [0.0f32; 16];
-            for i in 0..16 {
-                m[i] = a.m[i] + (b.m[i] - a.m[i]) * t;
+            for (i, value) in m.iter_mut().enumerate() {
+                *value = a.m[i] + (b.m[i] - a.m[i]) * t;
             }
             PaintMat4::from_matrix3d(m)
         }

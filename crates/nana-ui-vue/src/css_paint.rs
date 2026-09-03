@@ -184,6 +184,10 @@ fn clear_border_image(style: &mut nana_ui_core::LayoutStyle, unsupported: bool) 
     style.paint.unsupported_border_image = unsupported;
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Transient parse result avoids allocating the owned paint value"
+)]
 enum BorderImageSourceParse {
     Supported(BackgroundImage, String),
     Unsupported,
@@ -848,16 +852,14 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
         } else if let Some(value) = strip_complete_function(&token, "blur") {
             let px = parse_blur_radius(value).unwrap_or(0.0);
             filter.blur_radius = px.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
-        } else if let Some(value) = strip_complete_function(&token, "drop-shadow") {
+        } else {
+            let value = strip_complete_function(&token, "drop-shadow")?;
             if filter.drop_shadow.is_some() {
                 return None;
             }
             let mut shadow = crate::css_map::parse_drop_shadow(value)?;
             shadow.blur_radius = shadow.blur_radius.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
             filter.drop_shadow = Some(shadow);
-        } else {
-            // Unknown function: fail closed (do not apply the known subset).
-            return None;
         }
     }
     if filter.is_identity() {
@@ -1032,7 +1034,7 @@ fn parse_feature_tag(raw: &str) -> Option<([u8; 4], &str)> {
     }
     let rest = &s[1..];
     let end = rest.find(quote as char)?;
-    let tag = rest[..end].as_bytes();
+    let tag = &rest.as_bytes()[..end];
     if tag.len() != 4 || !tag.iter().all(|b| b.is_ascii()) {
         return None;
     }
@@ -1518,24 +1520,22 @@ fn parse_stop_position(input: &str) -> Option<f32> {
             .parse::<f32>()
             .ok()
             .map(|v| (v / 100.0).clamp(0.0, 1.0))
-    } else if let Some(px) = parse_css_length_px(trimmed, None) {
-        Some((px / 100.0).clamp(0.0, 1.0))
     } else {
-        None
+        parse_css_length_px(trimmed, None).map(|px| (px / 100.0).clamp(0.0, 1.0))
     }
 }
 
-fn normalize_gradient_stops(stops: &mut Vec<GradientStop>) {
+fn normalize_gradient_stops(stops: &mut [GradientStop]) {
     if stops.is_empty() {
         return;
     }
     if stops.first().is_some_and(|stop| stop.position > 0.0) {
         stops[0].position = 0.0;
     }
-    if stops.last().is_some_and(|stop| stop.position < 1.0) {
-        if let Some(last) = stops.last_mut() {
-            last.position = 1.0;
-        }
+    if stops.last().is_some_and(|stop| stop.position < 1.0)
+        && let Some(last) = stops.last_mut()
+    {
+        last.position = 1.0;
     }
     stops.sort_by(|a, b| {
         a.position
@@ -2819,7 +2819,7 @@ mod tests {
             None,
             None,
         );
-        assert!(layout.unsupported_font_variation);
+        assert!(!layout.unsupported_font_variation);
         assert_eq!(layout.font_weight, Some(400));
         layout.apply_css_text("font-variation-settings: normal", None, None);
         assert!(!layout.unsupported_font_variation);

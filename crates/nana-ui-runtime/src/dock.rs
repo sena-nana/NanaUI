@@ -1,6 +1,9 @@
 //! Backend-neutral dock chrome. Application pane bodies stay host-mounted slots.
 
-use std::collections::HashSet;
+mod commands;
+pub use commands::{DockCommand, DockCommandOutcome, DockItemLimits};
+
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -270,6 +273,9 @@ pub struct DockWorkspace {
     pub hidden: Vec<Arc<str>>,
     /// Center item that cannot hide, matching Gallery `gallery.primary`.
     pub primary: Option<Arc<str>>,
+    pub locked: bool,
+    pub monitors: HashMap<Arc<str>, String>,
+    pub item_limits: HashMap<Arc<str>, DockItemLimits>,
     next_surface: u64,
 }
 
@@ -281,6 +287,9 @@ impl DockWorkspace {
             floating: Vec::new(),
             hidden: Vec::new(),
             primary: None,
+            locked: false,
+            monitors: HashMap::new(),
+            item_limits: HashMap::new(),
             next_surface: 1,
         }
     }
@@ -308,6 +317,16 @@ impl DockWorkspace {
     }
 
     pub fn hide(&mut self, id: impl AsRef<str>) -> bool {
+        if self.locked
+            || !self
+                .item_limits
+                .get(id.as_ref())
+                .copied()
+                .unwrap_or_default()
+                .closeable
+        {
+            return false;
+        }
         hide_id(
             &self.workspace_ids(),
             &mut self.hidden,
@@ -355,6 +374,16 @@ impl DockWorkspace {
         width: f32,
         height: f32,
     ) -> Option<DockWorkspaceEvent> {
+        if self.locked
+            || !self
+                .item_limits
+                .get(id.as_ref())
+                .copied()
+                .unwrap_or_default()
+                .floatable
+        {
+            return None;
+        }
         if !can_hide_id(
             &self.main.flatten(),
             &self.hidden,
@@ -429,6 +458,9 @@ impl DockWorkspace {
 
     /// Product split-ratio mutation. Host adapters must not apply a second formula.
     pub fn set_split_ratio(&mut self, surface: &str, path: &[usize], ratio: f32) -> bool {
+        if self.locked {
+            return false;
+        }
         self.surface_root_mut(surface)
             .is_some_and(|root| root.set_split_ratio_at(path, ratio))
     }
@@ -436,8 +468,7 @@ impl DockWorkspace {
     /// Persist the product tree using historical `DockLayout` JSON field names.
     ///
     /// Host slot contents and [`Self::primary`] are not stored. `locked` and
-    /// per-surface `monitor` are persist extras for the host adapter; this
-    /// product tree emits `locked: false` and `monitor: null`.
+    /// per-surface `monitor` are retained host metadata and round-trip unchanged.
     pub fn layout_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&DockWorkspacePersist::from(self))
     }
@@ -452,9 +483,10 @@ impl DockWorkspace {
 
     /// Replace the tree from JSON while keeping [`Self::primary`].
     pub fn restore_layout_json(&mut self, value: &str) -> Result<(), serde_json::Error> {
-        let primary = self.primary.clone();
-        *self = Self::from_layout_json(value)?;
-        self.primary = primary;
+        let mut restored = Self::from_layout_json(value)?;
+        restored.primary = self.primary.clone();
+        restored.item_limits = self.item_limits.clone();
+        *self = restored;
         Ok(())
     }
 }
@@ -467,7 +499,7 @@ const DOCK_WORKSPACE_LAYOUT_VERSION: u8 = 1;
 /// tagged `kind` nodes, numeric `surface`, `bounds`, `monitor`, `hidden`,
 /// `locked`). Live slot contents and [`DockWorkspace::primary`] are not
 /// persisted. `locked` and `monitor` are persist extras for the host adapter;
-/// [`DockWorkspace::from_layout_json`] does not apply them to live state.
+/// [`DockWorkspace::from_layout_json`] retains them in workspace host metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DockWorkspacePersist {
     pub version: u8,
@@ -536,10 +568,14 @@ impl From<&DockWorkspace> for DockWorkspacePersist {
             floating: workspace
                 .floating
                 .iter()
-                .map(DockFloatingPersist::from)
+                .map(|surface| {
+                    let mut persist = DockFloatingPersist::from(surface);
+                    persist.monitor = workspace.monitors.get(&surface.id).cloned();
+                    persist
+                })
                 .collect(),
             hidden: workspace.hidden.iter().map(|id| id.to_string()).collect(),
-            locked: false,
+            locked: workspace.locked,
         }
     }
 }
@@ -547,6 +583,15 @@ impl From<&DockWorkspace> for DockWorkspacePersist {
 impl From<DockWorkspacePersist> for DockWorkspace {
     fn from(persist: DockWorkspacePersist) -> Self {
         let mut next_surface = 1_u64;
+        let monitors = persist
+            .floating
+            .iter()
+            .filter_map(|item| {
+                item.monitor
+                    .clone()
+                    .map(|monitor| (Arc::from(item.surface.to_string()), monitor))
+            })
+            .collect();
         let floating = persist
             .floating
             .into_iter()
@@ -565,6 +610,8 @@ impl From<DockWorkspacePersist> for DockWorkspace {
             })
             .collect();
         let mut workspace = DockWorkspace::new(DockNode::from(persist.main));
+        workspace.locked = persist.locked;
+        workspace.monitors = monitors;
         workspace.floating = floating;
         workspace.hidden = persist.hidden.into_iter().map(Arc::from).collect();
         workspace.next_surface = next_surface;
@@ -3604,8 +3651,12 @@ mod tests {
         assert_eq!(workspace.floating[0].y, 2.0);
         assert_eq!(workspace.hidden[0].as_ref(), "d");
         let encoded = workspace.layout_json().expect("product re-encode");
-        assert!(encoded.contains("\"locked\":false"));
-        assert!(!encoded.contains("\"monitor\":\"m\""));
+        assert!(encoded.contains("\"locked\":true"));
+        assert!(encoded.contains("\"monitor\":\"m\""));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        );
     }
 
     #[test]

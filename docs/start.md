@@ -75,12 +75,16 @@ impl RuntimeProgram for App {
         Ok((Self::mount(), Vec::new()))
     }
 
-    fn document(&self, id: WindowId) -> Option<&RuntimeDocument> {
-        (id == WindowId::PRIMARY).then_some(&self.document)
+    fn with_document<R>(&self, id: WindowId, f: impl FnOnce(&RuntimeDocument) -> R)
+        -> Result<Option<R>, nana_ui::DocumentAccessError>
+    {
+        Ok((id == WindowId::PRIMARY).then(|| f(&self.document)))
     }
 
-    fn document_mut(&mut self, id: WindowId) -> Option<&mut RuntimeDocument> {
-        (id == WindowId::PRIMARY).then_some(&mut self.document)
+    fn with_document_mut<R>(&mut self, id: WindowId, f: impl FnOnce(&mut RuntimeDocument) -> R)
+        -> Result<Option<R>, nana_ui::DocumentAccessError>
+    {
+        Ok((id == WindowId::PRIMARY).then(|| f(&mut self.document)))
     }
 
     fn update(

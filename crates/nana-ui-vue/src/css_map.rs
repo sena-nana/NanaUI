@@ -236,10 +236,10 @@ fn parse_calc_expr_to_spec_at(raw: &str, depth: u8) -> Option<LengthSpec> {
     let s = raw.trim();
     // `calc(min/max/clamp(...))` may be mixed-unit Min2/Max2/Clamp3; CalcSum
     // cannot hold that, so keep the already-folded LengthSpec.
-    if let Some(inner) = strip_calc_wrapper(s) {
-        if let Some(spec) = parse_css_min_max_clamp_at(inner, depth.saturating_add(1)) {
-            return Some(spec);
-        }
+    if let Some(inner) = strip_calc_wrapper(s)
+        && let Some(spec) = parse_css_min_max_clamp_at(inner, depth.saturating_add(1))
+    {
+        return Some(spec);
     }
     parse_calc_expr_to_value_at(s, depth)?.to_length_spec()
 }
@@ -987,15 +987,13 @@ impl<'a> CalcExprParser<'a> {
 }
 
 fn consume_calc_unit(lower_rest: &str, unit: &str) -> Option<usize> {
-    if lower_rest.starts_with(unit) {
-        let after = &lower_rest[unit.len()..];
-        if after
+    if let Some(after) = lower_rest.strip_prefix(unit)
+        && after
             .chars()
             .next()
             .is_none_or(|c| !c.is_ascii_alphabetic())
-        {
-            return Some(unit.len());
-        }
+    {
+        return Some(unit.len());
     }
     None
 }
@@ -4596,7 +4594,7 @@ fn parse_variation_tag(raw: &str) -> Option<([u8; 4], &str)> {
     }
     let rest = &s[1..];
     let end = rest.find(quote as char)?;
-    let tag = rest[..end].as_bytes();
+    let tag = &rest.as_bytes()[..end];
     if tag.len() != 4 || !tag.iter().all(|b| b.is_ascii()) {
         return None;
     }

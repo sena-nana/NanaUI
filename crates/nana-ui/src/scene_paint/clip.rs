@@ -101,6 +101,7 @@ pub(super) fn paint_transform(
     )
 }
 
+#[cfg(test)]
 pub(super) fn is_translation(transform: [f32; 6]) -> bool {
     is_translation_projective(transform, [0.0, 0.0])
 }
@@ -304,7 +305,7 @@ pub(super) fn polygon_fragment_clips(
             }
             let affine = paint_affine(clip.transform.0, origin);
             let inverse = invert_affine(affine)?;
-            let local: Vec<[f32; 2]> = points.iter().copied().collect();
+            let local: Vec<[f32; 2]> = points.to_vec();
             Some(FragmentClip::from_local(
                 clip.bounds,
                 inverse,
@@ -550,6 +551,7 @@ pub(super) fn transformed_aabb_projective(
     }
 }
 
+#[cfg(test)]
 pub(super) fn translated_rect(
     bounds: SceneRect,
     transform: [f32; 6],

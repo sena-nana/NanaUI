@@ -308,6 +308,7 @@ pub(crate) fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
     String::new()
 }
 
+#[cfg(feature = "rich-text")]
 pub(crate) fn markdown_renderer_request(
     markdown: &RuntimeNativeMarkdown,
     props: &crate::WidgetProps,

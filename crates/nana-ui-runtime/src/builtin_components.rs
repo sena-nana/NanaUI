@@ -10,24 +10,33 @@ use nana_ui_core::{
     ValidationIntent, WorkspaceModel,
 };
 
+#[cfg(feature = "graph-canvas")]
+use crate::GraphCanvas;
+#[cfg(feature = "rich-text")]
+use crate::NativeMarkdown;
+#[cfg(feature = "charts")]
+use crate::TimeSeriesChart;
 use crate::{
-    ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Button, CalendarHeatmap,
-    CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy, Card, Checkbox,
-    ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
-    Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState,
-    ExtensionRegistrar, FormField, FrameworkError, GpuTextureView, GpuView, GraphCanvas,
-    GraphModel, HostedTextarea, IconButton, IconGlyph, ImageViewer, ImageViewerContent,
-    InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface,
-    NativeMarkdown, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode,
-    RangeField, ReorderItem, ReorderList, ScrollView, SearchDropdown, SearchDropdownOption,
-    SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow,
-    SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
-    Skeleton, Spinner, SplitPane, Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs,
-    Text, TextArea, TextInput, TextInputState, Thumbnail, ThumbnailState, TimeSeriesChart, Toast,
-    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace,
-    WorkspaceRegionSlot, XYPad, XYPadValue,
+    ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Button, Card, Checkbox, ColorField,
+    CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
+    Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
+    FormField, FrameworkError, GpuTextureView, GpuView, GraphModel, HostedTextarea, IconButton,
+    IconGlyph, InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots,
+    ModalSurface, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode,
+    RangeField, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
+    SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame,
+    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane,
+    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
+    TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
+    ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
+#[cfg(feature = "calendar")]
+use crate::{CalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy};
+#[cfg(feature = "image-viewer")]
+use crate::{ImageViewer, ImageViewerContent};
+#[cfg(feature = "controls")]
+use crate::{ReorderItem, ReorderList};
 
 fn overlay_l2_css_size(
     target: &mut Arc<nana_ui_core::LayoutStyle>,
@@ -93,9 +102,13 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<LevelMeter>()?;
         registrar.register_component::<CommandPalette>()?;
         registrar.register_component::<TreeView>()?;
+        #[cfg(feature = "calendar")]
         registrar.register_component::<CalendarHeatmap<()>>()?;
+        #[cfg(feature = "image-viewer")]
         registrar.register_component::<ImageViewer>()?;
+        #[cfg(feature = "rich-text")]
         registrar.register_component::<NativeMarkdown>()?;
+        #[cfg(feature = "graph-canvas")]
         registrar.register_component::<GraphCanvas>()?;
         registrar.register_component::<Workspace>()?;
         registrar.register_component::<Dock>()?;
@@ -112,7 +125,9 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Table>()?;
         registrar.register_component::<TableRow>()?;
         registrar.register_component::<TableCell>()?;
+        #[cfg(feature = "controls")]
         registrar.register_component::<ReorderList>()?;
+        #[cfg(feature = "charts")]
         registrar.register_component::<TimeSeriesChart>()?;
         registrar.register_component::<DesktopShell>()?;
         registrar.register_component::<AppTitleBar>()?;
@@ -127,8 +142,8 @@ impl UiExtension for NanaBuiltinComponents {
 }
 
 impl RegisterableComponent for Stack {
-    const TYPE_ID: &'static str = "nana.stack";
-    const TAGS: &'static [&'static str] = &["stack"];
+    const TYPE_ID: &'static str = crate::component_descriptors::STACK.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::STACK.tags;
     const BIND_KIND: crate::ComponentBindKind = crate::ComponentBindKind::Layout;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut layout = spec.layout.as_ref().clone();
@@ -144,8 +159,8 @@ impl RegisterableComponent for Stack {
 }
 
 impl RegisterableComponent for Text {
-    const TYPE_ID: &'static str = "nana.text";
-    const TAGS: &'static [&'static str] = &["text"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TEXT.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Text::new(spec.display_label()).style(crate::NodeStyle {
             layout: Arc::clone(spec.layout),
@@ -155,8 +170,8 @@ impl RegisterableComponent for Text {
 }
 
 impl RegisterableComponent for Button {
-    const TYPE_ID: &'static str = "nana.button";
-    const TAGS: &'static [&'static str] = &["button"];
+    const TYPE_ID: &'static str = crate::component_descriptors::BUTTON.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::BUTTON.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Button::new(spec.display_label())
             .layout(Arc::clone(spec.layout))
@@ -171,8 +186,8 @@ impl RegisterableComponent for Button {
 }
 
 impl RegisterableComponent for IconButton {
-    const TYPE_ID: &'static str = "nana.icon-button";
-    const TAGS: &'static [&'static str] = &["icon-button"];
+    const TYPE_ID: &'static str = crate::component_descriptors::ICON_BUTTON.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::ICON_BUTTON.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let icon = spec.icon.unwrap_or(Icon::Add);
         let mut component = IconButton::new(icon, Arc::<str>::from(spec.display_label()))
@@ -192,8 +207,8 @@ impl RegisterableComponent for IconButton {
 }
 
 impl RegisterableComponent for IconGlyph {
-    const TYPE_ID: &'static str = "nana.icon";
-    const TAGS: &'static [&'static str] = &["icon", "i"];
+    const TYPE_ID: &'static str = crate::component_descriptors::ICON_GLYPH.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::ICON_GLYPH.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let Some(icon) = spec.icon else {
             return IconGlyph::new(Icon::Search).size(0.0);
@@ -211,8 +226,8 @@ impl RegisterableComponent for IconGlyph {
 }
 
 impl RegisterableComponent for Checkbox {
-    const TYPE_ID: &'static str = "nana.checkbox";
-    const TAGS: &'static [&'static str] = &["checkbox"];
+    const TYPE_ID: &'static str = crate::component_descriptors::CHECKBOX.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CHECKBOX.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Checkbox::new(spec.display_label(), spec.toggled)
             .indeterminate(parse_flag(spec.attr("indeterminate")))
@@ -225,8 +240,8 @@ impl RegisterableComponent for Checkbox {
 }
 
 impl RegisterableComponent for Divider {
-    const TYPE_ID: &'static str = "nana.divider";
-    const TAGS: &'static [&'static str] = &["divider"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DIVIDER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DIVIDER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut divider = if spec
             .attr("orientation")
@@ -247,8 +262,8 @@ impl RegisterableComponent for Divider {
 }
 
 impl RegisterableComponent for NumberInput {
-    const TYPE_ID: &'static str = "nana.number-input";
-    const TAGS: &'static [&'static str] = &["number-input"];
+    const TYPE_ID: &'static str = crate::component_descriptors::NUMBER_INPUT.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::NUMBER_INPUT.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut input = NumberInput::new(f64::from(spec.number))
             .range(f64::from(spec.min), f64::from(spec.max))
@@ -270,8 +285,8 @@ impl RegisterableComponent for NumberInput {
 }
 
 impl RegisterableComponent for Switch {
-    const TYPE_ID: &'static str = "nana.switch";
-    const TAGS: &'static [&'static str] = &["switch"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SWITCH.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SWITCH.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Switch::new(spec.display_label(), spec.toggled)
             .disabled(spec.disabled)
@@ -288,8 +303,8 @@ impl RegisterableComponent for Switch {
 }
 
 impl RegisterableComponent for Card {
-    const TYPE_ID: &'static str = "nana.card";
-    const TAGS: &'static [&'static str] = &["card"];
+    const TYPE_ID: &'static str = crate::component_descriptors::CARD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CARD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut card = Card::new()
             .kind(parse_card_kind(spec.attr("card-kind")))
@@ -318,8 +333,8 @@ impl RegisterableComponent for Card {
 }
 
 impl RegisterableComponent for ListItem {
-    const TYPE_ID: &'static str = "nana.list-item";
-    const TAGS: &'static [&'static str] = &["list-item"];
+    const TYPE_ID: &'static str = crate::component_descriptors::LIST_ITEM.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::LIST_ITEM.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = ListItem::new(spec.display_label())
             .selected(spec.active)
@@ -338,8 +353,8 @@ impl RegisterableComponent for ListItem {
 }
 
 impl RegisterableComponent for Thumbnail {
-    const TYPE_ID: &'static str = "nana.thumbnail";
-    const TAGS: &'static [&'static str] = &["thumbnail"];
+    const TYPE_ID: &'static str = crate::component_descriptors::THUMBNAIL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::THUMBNAIL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut thumbnail = Thumbnail::new(spec.value).size(spec.size);
         if !spec.display_label().is_empty() {
@@ -358,8 +373,8 @@ impl RegisterableComponent for Thumbnail {
 }
 
 impl RegisterableComponent for TextInput {
-    const TYPE_ID: &'static str = "nana.text-input";
-    const TAGS: &'static [&'static str] = &["text-input"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TEXT_INPUT.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT_INPUT.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -385,8 +400,8 @@ impl RegisterableComponent for TextInput {
 }
 
 impl RegisterableComponent for TextArea {
-    const TYPE_ID: &'static str = "nana.textarea";
-    const TAGS: &'static [&'static str] = &["textarea"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TEXT_AREA.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT_AREA.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = textarea_placeholder(spec);
         let mut component = TextArea::new("")
@@ -409,8 +424,8 @@ impl RegisterableComponent for TextArea {
 }
 
 impl RegisterableComponent for HostedTextarea {
-    const TYPE_ID: &'static str = "nana.hosted-textarea";
-    const TAGS: &'static [&'static str] = &["hosted-textarea"];
+    const TYPE_ID: &'static str = crate::component_descriptors::HOSTED_TEXTAREA.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::HOSTED_TEXTAREA.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let language = highlight_language_from_spec(spec).unwrap_or("");
         let mut component = HostedTextarea::new("", language)
@@ -429,8 +444,8 @@ impl RegisterableComponent for HostedTextarea {
 }
 
 impl RegisterableComponent for RangeField {
-    const TYPE_ID: &'static str = "nana.range-field";
-    const TAGS: &'static [&'static str] = &["range-field"];
+    const TYPE_ID: &'static str = crate::component_descriptors::RANGE_FIELD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::RANGE_FIELD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let min = spec.min as f64;
         let max = if spec.max > spec.min {
@@ -461,8 +476,8 @@ impl RegisterableComponent for RangeField {
 }
 
 impl RegisterableComponent for Progress {
-    const TYPE_ID: &'static str = "nana.progress";
-    const TAGS: &'static [&'static str] = &["progress"];
+    const TYPE_ID: &'static str = crate::component_descriptors::PROGRESS.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::PROGRESS.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Progress::new(spec.number as f64, spec.max.max(1.0) as f64);
         if !spec.display_label().is_empty() {
@@ -473,16 +488,16 @@ impl RegisterableComponent for Progress {
 }
 
 impl RegisterableComponent for Spinner {
-    const TYPE_ID: &'static str = "nana.spinner";
-    const TAGS: &'static [&'static str] = &["spinner"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SPINNER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SPINNER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Spinner::new(spec.display_label())
     }
 }
 
 impl RegisterableComponent for StatusBadge {
-    const TYPE_ID: &'static str = "nana.status-badge";
-    const TAGS: &'static [&'static str] = &["status-badge"];
+    const TYPE_ID: &'static str = crate::component_descriptors::STATUS_BADGE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::STATUS_BADGE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         StatusBadge::new(spec.display_label(), parse_status_tone(spec.attr("tone")))
             .compact(spec.attr("compact").is_some_and(truthy_attr))
@@ -490,8 +505,8 @@ impl RegisterableComponent for StatusBadge {
 }
 
 impl RegisterableComponent for ValidationMessage {
-    const TYPE_ID: &'static str = "nana.validation-message";
-    const TAGS: &'static [&'static str] = &["validation-message"];
+    const TYPE_ID: &'static str = crate::component_descriptors::VALIDATION_MESSAGE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::VALIDATION_MESSAGE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let message = if spec.hint.is_empty() {
             spec.display_label()
@@ -503,8 +518,8 @@ impl RegisterableComponent for ValidationMessage {
 }
 
 impl RegisterableComponent for EmptyState {
-    const TYPE_ID: &'static str = "nana.empty-state";
-    const TAGS: &'static [&'static str] = &["empty-state"];
+    const TYPE_ID: &'static str = crate::component_descriptors::EMPTY_STATE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::EMPTY_STATE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = EmptyState::new(spec.display_label());
         if !spec.hint.is_empty() {
@@ -522,8 +537,8 @@ impl RegisterableComponent for EmptyState {
 }
 
 impl RegisterableComponent for LabeledValue {
-    const TYPE_ID: &'static str = "nana.labeled-value";
-    const TAGS: &'static [&'static str] = &["labeled-value"];
+    const TYPE_ID: &'static str = crate::component_descriptors::LABELED_VALUE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::LABELED_VALUE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let emphasis = if flag_attr(spec, &["muted"]) {
             ValueEmphasis::Muted
@@ -541,8 +556,8 @@ impl RegisterableComponent for LabeledValue {
 }
 
 impl RegisterableComponent for Dialog {
-    const TYPE_ID: &'static str = "nana.dialog";
-    const TAGS: &'static [&'static str] = &["dialog"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DIALOG.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DIALOG.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Dialog::new(spec.display_label());
         if !spec.hint.is_empty() {
@@ -556,8 +571,8 @@ impl RegisterableComponent for Dialog {
 }
 
 impl RegisterableComponent for ConfirmDialog {
-    const TYPE_ID: &'static str = "nana.confirm-dialog";
-    const TAGS: &'static [&'static str] = &["confirm-dialog"];
+    const TYPE_ID: &'static str = crate::component_descriptors::CONFIRM_DIALOG.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CONFIRM_DIALOG.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let message = if spec.hint.is_empty() {
             spec.value
@@ -572,8 +587,8 @@ impl RegisterableComponent for ConfirmDialog {
 }
 
 impl RegisterableComponent for Select {
-    const TYPE_ID: &'static str = "nana.select";
-    const TAGS: &'static [&'static str] = &["select"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SELECT.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SELECT.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -598,8 +613,8 @@ impl RegisterableComponent for Select {
 }
 
 impl RegisterableComponent for Tabs {
-    const TYPE_ID: &'static str = "nana.tabs";
-    const TAGS: &'static [&'static str] = &["tabs"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TABS.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TABS.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Tabs::new(if spec.value.is_empty() {
             spec.display_label()
@@ -616,8 +631,8 @@ impl RegisterableComponent for Tabs {
 }
 
 impl RegisterableComponent for SegmentedControl {
-    const TYPE_ID: &'static str = "nana.segmented";
-    const TAGS: &'static [&'static str] = &["segmented"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SEGMENTED_CONTROL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SEGMENTED_CONTROL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = if spec
             .attr("chrome")
@@ -639,8 +654,8 @@ impl RegisterableComponent for SegmentedControl {
 }
 
 impl RegisterableComponent for Dropdown {
-    const TYPE_ID: &'static str = "nana.dropdown";
-    const TAGS: &'static [&'static str] = &["dropdown"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DROPDOWN.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DROPDOWN.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -679,8 +694,8 @@ impl RegisterableComponent for Dropdown {
 }
 
 impl RegisterableComponent for SearchDropdown {
-    const TYPE_ID: &'static str = "nana.search-dropdown";
-    const TAGS: &'static [&'static str] = &["search-dropdown"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SEARCH_DROPDOWN.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SEARCH_DROPDOWN.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -712,8 +727,8 @@ impl RegisterableComponent for SearchDropdown {
 }
 
 impl RegisterableComponent for Drawer {
-    const TYPE_ID: &'static str = "nana.drawer";
-    const TAGS: &'static [&'static str] = &["drawer"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DRAWER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DRAWER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             Drawer::new(spec.display_label()).side(parse_drawer_side(spec.attr("side")));
@@ -728,8 +743,8 @@ impl RegisterableComponent for Drawer {
 }
 
 impl RegisterableComponent for Popover {
-    const TYPE_ID: &'static str = "nana.popover";
-    const TAGS: &'static [&'static str] = &["popover"];
+    const TYPE_ID: &'static str = crate::component_descriptors::POPOVER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::POPOVER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut popover = Popover::new()
             .trigger(spec.display_label())
@@ -742,8 +757,8 @@ impl RegisterableComponent for Popover {
 }
 
 impl RegisterableComponent for ContextMenu {
-    const TYPE_ID: &'static str = "nana.context-menu";
-    const TAGS: &'static [&'static str] = &["context-menu"];
+    const TYPE_ID: &'static str = crate::component_descriptors::CONTEXT_MENU.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CONTEXT_MENU.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let searchable = flag_attr(spec, &["searchable"]) || spec.options.len() >= 6;
         let query = spec
@@ -764,8 +779,8 @@ impl RegisterableComponent for ContextMenu {
 }
 
 impl RegisterableComponent for Toast {
-    const TYPE_ID: &'static str = "nana.toast";
-    const TAGS: &'static [&'static str] = &["toast"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TOAST.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TOAST.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Toast::new(spec.display_label(), parse_toast_tone(spec.attr("tone")));
         if !spec.hint.is_empty() {
@@ -776,8 +791,8 @@ impl RegisterableComponent for Toast {
 }
 
 impl RegisterableComponent for ActionMenu {
-    const TYPE_ID: &'static str = "nana.action-menu";
-    const TAGS: &'static [&'static str] = &["action-menu"];
+    const TYPE_ID: &'static str = crate::component_descriptors::ACTION_MENU.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::ACTION_MENU.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut menu = ActionMenu::new()
             .trigger(spec.display_label())
@@ -790,8 +805,8 @@ impl RegisterableComponent for ActionMenu {
 }
 
 impl RegisterableComponent for ActionMenuItem {
-    const TYPE_ID: &'static str = "nana.action-menu-item";
-    const TAGS: &'static [&'static str] = &["action-menu-item"];
+    const TYPE_ID: &'static str = crate::component_descriptors::ACTION_MENU_ITEM.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::ACTION_MENU_ITEM.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = ActionMenuItem::new(spec.display_label())
             .active(spec.active)
@@ -806,8 +821,8 @@ impl RegisterableComponent for ActionMenuItem {
 }
 
 impl RegisterableComponent for Tooltip {
-    const TYPE_ID: &'static str = "nana.tooltip";
-    const TAGS: &'static [&'static str] = &["tooltip"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TOOLTIP.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TOOLTIP.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Tooltip::new(if spec.display_label().is_empty() {
             spec.hint
@@ -818,8 +833,8 @@ impl RegisterableComponent for Tooltip {
 }
 
 impl RegisterableComponent for XYPad {
-    const TYPE_ID: &'static str = "nana.xy-pad";
-    const TAGS: &'static [&'static str] = &["xy-pad"];
+    const TYPE_ID: &'static str = crate::component_descriptors::X_Y_PAD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::X_Y_PAD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let x = attr_f32(spec, &["x", "data-x"]).unwrap_or(spec.number);
         let y = attr_f32(spec, &["y", "data-y"]).unwrap_or(0.0);
@@ -845,8 +860,8 @@ impl RegisterableComponent for XYPad {
 }
 
 impl RegisterableComponent for QrCode {
-    const TYPE_ID: &'static str = "nana.qr-code";
-    const TAGS: &'static [&'static str] = &["qr-code"];
+    const TYPE_ID: &'static str = crate::component_descriptors::QR_CODE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::QR_CODE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let size = match spec.layout.width {
             Some(LengthSpec::Px(px)) if px.is_finite() && px > 0.0 => px,
@@ -877,8 +892,8 @@ impl RegisterableComponent for QrCode {
 }
 
 impl RegisterableComponent for FormField {
-    const TYPE_ID: &'static str = "nana.form-field";
-    const TAGS: &'static [&'static str] = &["form-field"];
+    const TYPE_ID: &'static str = crate::component_descriptors::FORM_FIELD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::FORM_FIELD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = FormField::new(spec.display_label()).size(spec.size);
         if !spec.hint.is_empty() {
@@ -896,8 +911,8 @@ impl RegisterableComponent for FormField {
 }
 
 impl RegisterableComponent for ColorField {
-    const TYPE_ID: &'static str = "nana.color-field";
-    const TAGS: &'static [&'static str] = &["color-field"];
+    const TYPE_ID: &'static str = crate::component_descriptors::COLOR_FIELD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::COLOR_FIELD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let value = crate::parse_hex(spec.value)
             .or_else(|| crate::parse_hex(spec.attr("value").unwrap_or("")))
@@ -910,8 +925,8 @@ impl RegisterableComponent for ColorField {
 }
 
 impl RegisterableComponent for PathField {
-    const TYPE_ID: &'static str = "nana.path-field";
-    const TAGS: &'static [&'static str] = &["path-field"];
+    const TYPE_ID: &'static str = crate::component_descriptors::PATH_FIELD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::PATH_FIELD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = PathField::new(spec.value)
             .size(spec.size)
@@ -925,8 +940,8 @@ impl RegisterableComponent for PathField {
 }
 
 impl RegisterableComponent for InteractiveCard {
-    const TYPE_ID: &'static str = "nana.interactive-card";
-    const TAGS: &'static [&'static str] = &["interactive-card"];
+    const TYPE_ID: &'static str = crate::component_descriptors::INTERACTIVE_CARD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::INTERACTIVE_CARD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         InteractiveCard::new()
             .selected(spec.active)
@@ -935,8 +950,8 @@ impl RegisterableComponent for InteractiveCard {
 }
 
 impl RegisterableComponent for Skeleton {
-    const TYPE_ID: &'static str = "nana.skeleton";
-    const TAGS: &'static [&'static str] = &["skeleton"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SKELETON.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SKELETON.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut skeleton = Skeleton::new(
             spec.layout.width.unwrap_or(LengthSpec::Fill),
@@ -953,8 +968,8 @@ impl RegisterableComponent for Skeleton {
 }
 
 impl RegisterableComponent for LevelMeter {
-    const TYPE_ID: &'static str = "nana.level-meter";
-    const TAGS: &'static [&'static str] = &["level-meter"];
+    const TYPE_ID: &'static str = crate::component_descriptors::LEVEL_METER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::LEVEL_METER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = LevelMeter::new(spec.number).tone(parse_status_tone(spec.attr("tone")));
         if let Some(height) = spec.layout.height {
@@ -971,8 +986,8 @@ impl RegisterableComponent for LevelMeter {
 }
 
 impl RegisterableComponent for CommandPalette {
-    const TYPE_ID: &'static str = "nana.command-palette";
-    const TAGS: &'static [&'static str] = &["command-palette"];
+    const TYPE_ID: &'static str = crate::component_descriptors::COMMAND_PALETTE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::COMMAND_PALETTE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -1007,16 +1022,17 @@ impl RegisterableComponent for CommandPalette {
 }
 
 impl RegisterableComponent for TreeView {
-    const TYPE_ID: &'static str = "nana.tree-view";
-    const TAGS: &'static [&'static str] = &["tree-view"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TREE_VIEW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TREE_VIEW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         TreeView::new(tree_nodes_from_spec(spec)).size(spec.size)
     }
 }
 
+#[cfg(feature = "calendar")]
 impl RegisterableComponent for CalendarHeatmap<()> {
-    const TYPE_ID: &'static str = "nana.calendar-heatmap";
-    const TAGS: &'static [&'static str] = &["calendar-heatmap"];
+    const TYPE_ID: &'static str = crate::component_descriptors::CALENDAR_HEATMAP.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CALENDAR_HEATMAP.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = CalendarHeatmap::new(calendar_data_from_spec(spec))
             .options(calendar_options_from_spec(spec));
@@ -1027,9 +1043,10 @@ impl RegisterableComponent for CalendarHeatmap<()> {
     }
 }
 
+#[cfg(feature = "image-viewer")]
 impl RegisterableComponent for ImageViewer {
-    const TYPE_ID: &'static str = "nana.image-viewer";
-    const TAGS: &'static [&'static str] = &["image-viewer"];
+    const TYPE_ID: &'static str = crate::component_descriptors::IMAGE_VIEWER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::IMAGE_VIEWER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let slot = spec
             .attr("src")
@@ -1052,17 +1069,19 @@ impl RegisterableComponent for ImageViewer {
     }
 }
 
+#[cfg(feature = "rich-text")]
 impl RegisterableComponent for NativeMarkdown {
-    const TYPE_ID: &'static str = "nana.native-markdown";
-    const TAGS: &'static [&'static str] = &["native-markdown"];
+    const TYPE_ID: &'static str = crate::component_descriptors::NATIVE_MARKDOWN.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::NATIVE_MARKDOWN.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         NativeMarkdown::from_source(markdown_source_from_spec(spec))
     }
 }
 
+#[cfg(feature = "graph-canvas")]
 impl RegisterableComponent for GraphCanvas {
-    const TYPE_ID: &'static str = "nana.graph-canvas";
-    const TAGS: &'static [&'static str] = &["graph-canvas"];
+    const TYPE_ID: &'static str = crate::component_descriptors::GRAPH_CANVAS.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::GRAPH_CANVAS.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             GraphCanvas::new("main", graph_model_from_spec(spec)).disabled(spec.disabled);
@@ -1106,8 +1125,8 @@ impl RegisterableComponent for GraphCanvas {
 }
 
 impl RegisterableComponent for Workspace {
-    const TYPE_ID: &'static str = "nana.workspace";
-    const TAGS: &'static [&'static str] = &["workspace"];
+    const TYPE_ID: &'static str = crate::component_descriptors::WORKSPACE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::WORKSPACE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let slots = spec
             .slots
@@ -1121,16 +1140,16 @@ impl RegisterableComponent for Workspace {
 }
 
 impl RegisterableComponent for Dock {
-    const TYPE_ID: &'static str = "nana.dock";
-    const TAGS: &'static [&'static str] = &["dock"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DOCK.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DOCK.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Dock::new(dock_root_from_spec(spec))
     }
 }
 
 impl RegisterableComponent for SplitPane {
-    const TYPE_ID: &'static str = "nana.split-pane";
-    const TAGS: &'static [&'static str] = &["split-pane"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SPLIT_PANE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SPLIT_PANE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let default_size = attr_f32(spec, &["default-size", "defaultsize", "defaultSize"])
             .or_else(|| attr_f32(spec, &["size"]))
@@ -1157,8 +1176,8 @@ impl RegisterableComponent for SplitPane {
 }
 
 impl RegisterableComponent for AppShell {
-    const TYPE_ID: &'static str = "nana.app-shell";
-    const TAGS: &'static [&'static str] = &["app-shell"];
+    const TYPE_ID: &'static str = crate::component_descriptors::APP_SHELL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::APP_SHELL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = AppShell::new();
         if let Some(title_bar) = spec.slot("title-bar").or_else(|| spec.slot("title_bar")) {
@@ -1175,8 +1194,8 @@ impl RegisterableComponent for AppShell {
 }
 
 impl RegisterableComponent for SidebarFrame {
-    const TYPE_ID: &'static str = "nana.sidebar-frame";
-    const TAGS: &'static [&'static str] = &["sidebar-frame"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SIDEBAR_FRAME.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SIDEBAR_FRAME.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SidebarFrame::new().gap(spec.layout.gap_or(14.0));
         if let Some(top) = spec.slot("top") {
@@ -1194,8 +1213,8 @@ impl RegisterableComponent for SidebarFrame {
 }
 
 impl RegisterableComponent for SidebarRow {
-    const TYPE_ID: &'static str = "nana.sidebar-row";
-    const TAGS: &'static [&'static str] = &["sidebar-row"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SIDEBAR_ROW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SIDEBAR_ROW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SidebarRow::new(spec.display_label())
             .slots(ListItemSlots {
@@ -1221,8 +1240,8 @@ impl RegisterableComponent for SidebarRow {
 }
 
 impl RegisterableComponent for SettingsRow {
-    const TYPE_ID: &'static str = "nana.settings-row";
-    const TAGS: &'static [&'static str] = &["settings-row"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SETTINGS_ROW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SETTINGS_ROW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SettingsRow::new(spec.display_label())
             .stacked(flag_attr(spec, &["stacked"]))
@@ -1254,8 +1273,8 @@ impl RegisterableComponent for SettingsRow {
 }
 
 impl RegisterableComponent for SettingsCard {
-    const TYPE_ID: &'static str = "nana.settings-card";
-    const TAGS: &'static [&'static str] = &["settings-card"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SETTINGS_CARD.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SETTINGS_CARD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let title = if spec.slot("title").is_some() {
             ""
@@ -1267,8 +1286,8 @@ impl RegisterableComponent for SettingsCard {
 }
 
 impl RegisterableComponent for SettingsPage {
-    const TYPE_ID: &'static str = "nana.settings-page";
-    const TAGS: &'static [&'static str] = &["settings-page"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SETTINGS_PAGE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SETTINGS_PAGE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let model = settings_model_from_spec(spec).unwrap_or_else(|| fallback_settings_model(spec));
         let mut state = SettingsState::new(&model);
@@ -1288,8 +1307,9 @@ impl RegisterableComponent for SettingsPage {
 }
 
 impl RegisterableComponent for SettingsCollapsibleCard {
-    const TYPE_ID: &'static str = "nana.settings-collapsible-card";
-    const TAGS: &'static [&'static str] = &["settings-collapsible-card"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SETTINGS_COLLAPSIBLE_CARD.type_id;
+    const TAGS: &'static [&'static str] =
+        crate::component_descriptors::SETTINGS_COLLAPSIBLE_CARD.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SettingsCollapsibleCard::new(spec.active || spec.toggled)
             .disabled(spec.disabled)
@@ -1308,8 +1328,8 @@ impl RegisterableComponent for SettingsCollapsibleCard {
 }
 
 impl RegisterableComponent for List {
-    const TYPE_ID: &'static str = "nana.list";
-    const TAGS: &'static [&'static str] = &["list"];
+    const TYPE_ID: &'static str = crate::component_descriptors::LIST.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::LIST.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = List::new().style(layout_only_style(spec));
         if !spec.display_label().is_empty() {
@@ -1320,8 +1340,8 @@ impl RegisterableComponent for List {
 }
 
 impl RegisterableComponent for ScrollView {
-    const TYPE_ID: &'static str = "nana.scroll-view";
-    const TAGS: &'static [&'static str] = &["scroll-view"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SCROLL_VIEW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SCROLL_VIEW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = ScrollView::new(parse_scroll_axes(spec))
             .scrollbars(parse_scrollbar_visibility(spec))
@@ -1334,8 +1354,8 @@ impl RegisterableComponent for ScrollView {
 }
 
 impl RegisterableComponent for Table {
-    const TYPE_ID: &'static str = "nana.table";
-    const TAGS: &'static [&'static str] = &["table"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TABLE.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TABLE.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = Table::new().style(layout_only_style(spec));
         if !spec.display_label().is_empty() {
@@ -1346,8 +1366,8 @@ impl RegisterableComponent for Table {
 }
 
 impl RegisterableComponent for TableRow {
-    const TYPE_ID: &'static str = "nana.table-row";
-    const TAGS: &'static [&'static str] = &["tr"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TABLE_ROW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TABLE_ROW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         TableRow::new()
             .selected(spec.active || spec.toggled)
@@ -1358,8 +1378,8 @@ impl RegisterableComponent for TableRow {
 /// `th` and `td` share one type, so the header flag comes from an attribute
 /// rather than the tag.
 impl RegisterableComponent for TableCell {
-    const TYPE_ID: &'static str = "nana.table-cell";
-    const TAGS: &'static [&'static str] = &["td"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TABLE_CELL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TABLE_CELL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = TableCell::new(spec.display_label())
             .column_header(flag_attr(
@@ -1375,9 +1395,10 @@ impl RegisterableComponent for TableCell {
     }
 }
 
+#[cfg(feature = "controls")]
 impl RegisterableComponent for ReorderList {
-    const TYPE_ID: &'static str = "nana.reorder-list";
-    const TAGS: &'static [&'static str] = &["reorder-list"];
+    const TYPE_ID: &'static str = crate::component_descriptors::REORDER_LIST.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::REORDER_LIST.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let items = spec
             .options
@@ -1398,9 +1419,10 @@ impl RegisterableComponent for ReorderList {
     }
 }
 
+#[cfg(feature = "charts")]
 impl RegisterableComponent for TimeSeriesChart {
-    const TYPE_ID: &'static str = "nana.time-series-chart";
-    const TAGS: &'static [&'static str] = &["time-series-chart"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TIME_SERIES_CHART.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TIME_SERIES_CHART.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component =
             TimeSeriesChart::new(time_series_values_from_spec(spec)).style(layout_only_style(spec));
@@ -1412,8 +1434,8 @@ impl RegisterableComponent for TimeSeriesChart {
 }
 
 impl RegisterableComponent for DesktopShell {
-    const TYPE_ID: &'static str = "nana.desktop-shell";
-    const TAGS: &'static [&'static str] = &["desktop-shell"];
+    const TYPE_ID: &'static str = crate::component_descriptors::DESKTOP_SHELL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DESKTOP_SHELL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = DesktopShell::new();
         if let Some(title_bar) = spec.slot("title-bar").or_else(|| spec.slot("title_bar")) {
@@ -1448,8 +1470,8 @@ impl RegisterableComponent for DesktopShell {
 }
 
 impl RegisterableComponent for AppTitleBar {
-    const TYPE_ID: &'static str = "nana.app-title-bar";
-    const TAGS: &'static [&'static str] = &["app-title-bar"];
+    const TYPE_ID: &'static str = crate::component_descriptors::APP_TITLE_BAR.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::APP_TITLE_BAR.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = AppTitleBar::new(spec.display_label())
             .maximized(flag_attr(spec, &["maximized"]))
@@ -1477,8 +1499,8 @@ impl RegisterableComponent for AppTitleBar {
 }
 
 impl RegisterableComponent for PaneChrome {
-    const TYPE_ID: &'static str = "nana.pane-chrome";
-    const TAGS: &'static [&'static str] = &["pane-chrome"];
+    const TYPE_ID: &'static str = crate::component_descriptors::PANE_CHROME.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::PANE_CHROME.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = PaneChrome::new()
             .active(!spec.disabled)
@@ -1497,8 +1519,8 @@ impl RegisterableComponent for PaneChrome {
 }
 
 impl RegisterableComponent for SidebarSection {
-    const TYPE_ID: &'static str = "nana.sidebar-section";
-    const TAGS: &'static [&'static str] = &["sidebar-section"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SIDEBAR_SECTION.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SIDEBAR_SECTION.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = SidebarSection::new(spec.display_label())
             .size(spec.size)
@@ -1529,8 +1551,8 @@ impl RegisterableComponent for SidebarSection {
 }
 
 impl RegisterableComponent for SidebarFooter {
-    const TYPE_ID: &'static str = "nana.sidebar-footer";
-    const TAGS: &'static [&'static str] = &["sidebar-footer"];
+    const TYPE_ID: &'static str = crate::component_descriptors::SIDEBAR_FOOTER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::SIDEBAR_FOOTER.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         SidebarFooter::new().style(layout_only_style(spec))
     }
@@ -1588,6 +1610,7 @@ fn parse_scrollbar_visibility(spec: &SemanticSpec<'_>) -> nana_ui_core::Scrollba
     }
 }
 
+#[cfg(feature = "charts")]
 fn time_series_values_from_spec(spec: &SemanticSpec<'_>) -> Vec<f64> {
     if let Some(value) = spec_json(spec, &["values", "data", "series"]) {
         let values = json_array(&value)
@@ -2025,6 +2048,7 @@ fn tree_node_from_json(value: &serde_json::Value) -> Option<TreeNode<Arc<str>>> 
     }
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_data_from_spec(spec: &SemanticSpec<'_>) -> Vec<CalendarHeatmapDatum<()>> {
     let candidates = [
         spec_json(spec, &["data"]),
@@ -2042,12 +2066,14 @@ fn calendar_data_from_spec(spec: &SemanticSpec<'_>) -> Vec<CalendarHeatmapDatum<
     Vec::new()
 }
 
+#[cfg(feature = "calendar")]
 fn is_calendar_data_json(value: &serde_json::Value) -> bool {
     json_array(value)
         .into_iter()
         .any(|item| calendar_datum_from_json(item).is_some())
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_datum_from_json(value: &serde_json::Value) -> Option<CalendarHeatmapDatum<()>> {
     match value {
         serde_json::Value::Object(_) => {
@@ -2072,6 +2098,7 @@ fn calendar_datum_from_json(value: &serde_json::Value) -> Option<CalendarHeatmap
     }
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_options_from_spec(spec: &SemanticSpec<'_>) -> CalendarHeatmapOptions<()> {
     let Some(value) = spec_json(spec, &["options"]) else {
         return CalendarHeatmapOptions::default();
@@ -2082,6 +2109,7 @@ fn calendar_options_from_spec(spec: &SemanticSpec<'_>) -> CalendarHeatmapOptions
     calendar_options_from_json(&value)
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_options_from_json(value: &serde_json::Value) -> CalendarHeatmapOptions<()> {
     let mut options = CalendarHeatmapOptions::default();
     if let Some(size) = json_object_f32(value, &["cellSize", "cell_size", "cell-size"]) {
@@ -2173,6 +2201,7 @@ fn calendar_options_from_json(value: &serde_json::Value) -> CalendarHeatmapOptio
     options
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_weekday_labels_from_json(value: &serde_json::Value) -> Option<Vec<(u8, String)>> {
     let items = json_array(value);
     let mut labels = Vec::new();
@@ -2220,6 +2249,7 @@ fn calendar_weekday_labels_from_json(value: &serde_json::Value) -> Option<Vec<(u
     (!labels.is_empty()).then_some(labels)
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_level_strategy_from_json(
     value: &serde_json::Value,
 ) -> Option<CalendarLevelStrategy<()>> {
@@ -2267,6 +2297,7 @@ fn calendar_level_strategy_from_json(
     }
 }
 
+#[cfg(feature = "calendar")]
 fn calendar_string_template_from_json(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(template) if !template.is_empty() => Some(template.clone()),
@@ -2274,6 +2305,7 @@ fn calendar_string_template_from_json(value: &serde_json::Value) -> Option<Strin
     }
 }
 
+#[cfg(feature = "calendar")]
 fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> String {
     let mut out = template.to_string();
     for (needle, value) in replacements {
@@ -2282,6 +2314,7 @@ fn apply_calendar_template(template: &str, replacements: &[(&str, String)]) -> S
     out
 }
 
+#[cfg(feature = "rich-text")]
 fn markdown_source_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
     if !spec.value.trim().is_empty() {
         return spec.value;
@@ -2297,6 +2330,7 @@ fn markdown_source_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
 const DEFAULT_GRAPH_NODE_WIDTH: f32 = 160.0;
 const DEFAULT_GRAPH_NODE_HEIGHT: f32 = 80.0;
 
+#[cfg(feature = "graph-canvas")]
 fn graph_model_from_spec(spec: &SemanticSpec<'_>) -> GraphModel {
     let model = spec_json(spec, &["model"]);
     if let Some(model) = model.as_ref()
@@ -2337,6 +2371,7 @@ fn graph_model_from_spec(spec: &SemanticSpec<'_>) -> GraphModel {
         .unwrap_or_else(|_| GraphModel::empty())
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_viewport_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphViewport> {
     let value = spec_json(spec, &["viewport"]).or_else(|| {
         spec_json(spec, &["model"])
@@ -2348,6 +2383,7 @@ fn graph_viewport_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphViewport> {
     graph_viewport_from_json(&value)
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_viewport_from_json(value: &serde_json::Value) -> Option<GraphViewport> {
     if !value.is_object() {
         return None;
@@ -2364,6 +2400,7 @@ fn graph_viewport_from_json(value: &serde_json::Value) -> Option<GraphViewport> 
     Some(GraphViewport::new(offset, zoom))
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_point_from_json(value: &serde_json::Value) -> Option<GraphPoint> {
     match value {
         serde_json::Value::Object(_) => {
@@ -2378,6 +2415,7 @@ fn graph_point_from_json(value: &serde_json::Value) -> Option<GraphPoint> {
     }
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_selection_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphSelection> {
     let value = spec_json(spec, &["selection"]).or_else(|| {
         spec_json(spec, &["model"])
@@ -2387,6 +2425,7 @@ fn graph_selection_from_spec(spec: &SemanticSpec<'_>) -> Option<GraphSelection> 
         .or_else(|| serde_json::from_value::<GraphSelection>(value).ok())
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_selection_from_json(value: &serde_json::Value) -> Option<GraphSelection> {
     if !value.is_object() {
         return None;
@@ -2423,6 +2462,7 @@ fn graph_selection_from_json(value: &serde_json::Value) -> Option<GraphSelection
     None
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_node_from_json(value: &serde_json::Value) -> Option<GraphNode> {
     if let Ok(node) = serde_json::from_value::<GraphNode>(value.clone()) {
         return Some(node);
@@ -2488,6 +2528,7 @@ fn graph_node_from_json(value: &serde_json::Value) -> Option<GraphNode> {
     Some(node)
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_port_from_json(value: &serde_json::Value) -> Option<GraphPort> {
     if !value.is_object() {
         return None;
@@ -2503,6 +2544,7 @@ fn graph_port_from_json(value: &serde_json::Value) -> Option<GraphPort> {
     Some(GraphPort::new(id, caption, kind, side))
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_edge_from_json(index: usize, value: &serde_json::Value) -> Option<GraphEdge> {
     if let Ok(edge) = serde_json::from_value::<GraphEdge>(value.clone()) {
         return Some(edge);
@@ -2527,6 +2569,7 @@ fn graph_edge_from_json(index: usize, value: &serde_json::Value) -> Option<Graph
     Some(edge)
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_endpoint_from_json(
     value: &serde_json::Value,
     primary: &str,
@@ -2555,6 +2598,7 @@ fn graph_endpoint_from_json(
     }
 }
 
+#[cfg(feature = "graph-canvas")]
 fn parse_graph_port_kind(raw: &str) -> GraphPortKind {
     match raw.trim().to_ascii_lowercase().as_str() {
         "input" | "in" => GraphPortKind::Input,
@@ -2563,6 +2607,7 @@ fn parse_graph_port_kind(raw: &str) -> GraphPortKind {
     }
 }
 
+#[cfg(feature = "graph-canvas")]
 fn parse_graph_port_side(raw: &str, kind: GraphPortKind) -> GraphPortSide {
     match raw.trim().to_ascii_lowercase().as_str() {
         "top" => GraphPortSide::Top,
@@ -3183,6 +3228,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "calendar")]
     fn calendar_heatmap_json_data_is_not_empty() {
         let type_id = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
         let layout = Arc::new(LayoutStyle::default());
@@ -3198,6 +3244,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "calendar")]
     fn calendar_title_format_json_changes_cell_title() {
         let type_id = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
         let layout = Arc::new(LayoutStyle::default());
@@ -3218,6 +3265,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "graph-canvas")]
     fn graph_canvas_json_nodes_are_not_empty() {
         let type_id = ComponentTypeId::new("nana.graph-canvas").unwrap();
         let layout = Arc::new(LayoutStyle::default());
@@ -3243,6 +3291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rich-text")]
     fn native_markdown_reads_source_attr_when_value_empty() {
         let type_id = ComponentTypeId::new("nana.native-markdown").unwrap();
         let layout = Arc::new(LayoutStyle::default());

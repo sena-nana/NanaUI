@@ -3,9 +3,12 @@
 
 use raw_window_handle::HasWindowHandle;
 
+#[cfg(any(target_os = "windows", test))]
 const ENTER_SIZE_MOVE: u32 = 0x0231;
+#[cfg(any(target_os = "windows", test))]
 const EXIT_SIZE_MOVE: u32 = 0x0232;
 
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn size_move_active_after(message: u32, was_active: bool) -> bool {
     match message {
         ENTER_SIZE_MOVE => true,
