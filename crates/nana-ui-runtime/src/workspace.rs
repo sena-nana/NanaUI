@@ -331,6 +331,7 @@ impl Workspace {
             overlay,
             edges,
             self.workspace_corners,
+            self.model.region_transitioning(state.id()),
         );
         // 8px bar is centered on the painted edge, so half sits in the
         // neighboring track and must not be clipped by this region.
@@ -702,6 +703,7 @@ fn region_style(
     overlay: bool,
     edges: RegionEdges,
     workspace_corners: bool,
+    transitioning: bool,
 ) -> NodeStyle {
     let horizontal = matches!(
         state.placement_value(),
@@ -771,15 +773,22 @@ fn region_style(
             layout.flex_grow = Some(0.0);
             layout.flex_shrink = Some(0.0);
         }
+        // 尺寸约束只为展开态的交互钳制服务：过渡中的区域必须能缩到 0，
+        // 否则 min_size 会把收起动画整个钳死在最小宽度上。
+        let min_size = if transitioning {
+            0.0
+        } else {
+            state.min_size_value()
+        };
         if horizontal {
             layout.width = Some(track);
             layout.height = Some(LengthSpec::Fill);
-            layout.min_width = Some(LengthSpec::Px(state.min_size_value()));
+            layout.min_width = Some(LengthSpec::Px(min_size));
             layout.max_width = Some(LengthSpec::Px(state.max_size_value()));
         } else {
             layout.width = Some(LengthSpec::Fill);
             layout.height = Some(track);
-            layout.min_height = Some(LengthSpec::Px(state.min_size_value()));
+            layout.min_height = Some(LengthSpec::Px(min_size));
             layout.max_height = Some(LengthSpec::Px(state.max_size_value()));
         }
     }
@@ -1398,6 +1407,67 @@ mod tests {
         );
         assert!(context.world().node(start).unwrap().parent.is_none());
         assert!(context.world().node(hidden).unwrap().parent.is_none());
+    }
+
+    #[test]
+    fn a_transitioning_region_is_not_clamped_by_its_min_size() {
+        let mut context = AppContext::new();
+        let start = surface(&mut context);
+        let primary = surface(&mut context);
+        let layout = WorkspaceLayout::new([
+            RegionState::new(RegionId::Resources, RegionRole::Resources)
+                .size(235.0)
+                .min_size(180.0)
+                .collapsible(true),
+            RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+        ])
+        .expect("layout");
+        let model = WorkspaceModel::with_layout(layout);
+        let entity = mount(
+            &mut context,
+            Workspace::from_model(
+                &model,
+                [
+                    WorkspaceRegionSlot::new(RegionId::Resources, start),
+                    WorkspaceRegionSlot::new(RegionId::Primary, primary),
+                ],
+            ),
+        );
+        // 展开态：min_size 照常钳制交互尺寸。
+        assert_eq!(
+            context
+                .world()
+                .node_style(start)
+                .unwrap()
+                .layout
+                .min_width,
+            Some(LengthSpec::Px(180.0))
+        );
+        // 收起过渡采样期：min_size 必须让位，否则动画被钳死在最小宽度。
+        context
+            .update_component(entity, |workspace, _| {
+                assert!(workspace.apply(
+                    WorkspaceMutation::SetRegionCollapsed(RegionId::Resources, true),
+                    Duration::from_millis(40),
+                ));
+            })
+            .unwrap();
+        let style = context.world().node_style(start).unwrap();
+        assert_eq!(style.layout.min_width, Some(LengthSpec::Px(0.0)));
+        assert_eq!(style.layout.width, Some(LengthSpec::Px(235.0)));
+        // 结算后区域内容停靠，不再占据 track。
+        context
+            .update_component(entity, |workspace, _| {
+                assert!(workspace.apply(
+                    WorkspaceMutation::AdvanceAnimations,
+                    Duration::from_millis(40) + nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION,
+                ));
+            })
+            .unwrap();
+        assert_eq!(
+            context.world().mount_state(start),
+            Some(MountState::Parked)
+        );
     }
 
     #[test]

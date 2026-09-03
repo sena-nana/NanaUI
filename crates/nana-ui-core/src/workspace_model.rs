@@ -124,7 +124,15 @@ impl WorkspaceModel {
     }
 
     pub fn region_transitioning(&self, region: &RegionId) -> bool {
-        self.transitions.contains_key(region)
+        self.active_transition(region).is_some()
+    }
+
+    /// 过渡只在采样期内有效：已到结束时刻但尚未被下一次 Advance 回收的
+    /// 条目不参与可见性/覆盖/宽度判定，按结算后的 region 状态取值。
+    fn active_transition(&self, region: &RegionId) -> Option<&RegionTransition> {
+        self.transitions
+            .get(region)
+            .filter(|transition| !transition.finished_at(self.now))
     }
 
     pub fn geometry(
@@ -233,7 +241,7 @@ impl WorkspaceModel {
     }
 
     pub fn region_visible(&self, state: &RegionState) -> bool {
-        if self.transitions.contains_key(state.id()) {
+        if self.region_transitioning(state.id()) {
             !state.hidden_value() && !state.responsive_collapsed(self.inline_size())
         } else {
             state.visible_at(self.inline_size())
@@ -241,7 +249,7 @@ impl WorkspaceModel {
     }
 
     pub fn region_overlay(&self, state: &RegionState) -> bool {
-        self.transitions.get(state.id()).map_or_else(
+        self.active_transition(state.id()).map_or_else(
             || state.responsive_overlay(self.inline_size()),
             |transition| transition.overlay,
         )
@@ -251,7 +259,7 @@ impl WorkspaceModel {
         let Some(state) = self.layout.region(region) else {
             return 0.0;
         };
-        self.transitions.get(region).map_or_else(
+        self.active_transition(region).map_or_else(
             || {
                 if state.collapsed_value() {
                     0.0
@@ -408,6 +416,36 @@ mod tests {
             WorkspaceMutation::AdvanceAnimations,
             Duration::from_millis(600),
         ));
+    }
+
+    #[test]
+    fn a_finished_transition_reads_as_settled_before_the_next_advance() {
+        let mut model = WorkspaceModel::new();
+        assert!(model.update(
+            WorkspaceMutation::SetRegionCollapsed(RegionId::Resources, true),
+            Duration::from_millis(100),
+        ));
+        assert!(model.region_transitioning(&RegionId::Resources));
+        // 时钟推进但过渡尚未被 Advance 回收：查询必须按结算态取值，
+        // 否则收起后的区域会以过渡中的身份永久可见。
+        assert!(model.update(
+            WorkspaceMutation::SetViewport {
+                width: 800.0,
+                height: 600.0,
+            },
+            Duration::from_millis(500),
+        ));
+        assert!(model.has_active_transitions());
+        assert!(!model.region_transitioning(&RegionId::Resources));
+        assert_eq!(model.region_extent(&RegionId::Resources), 0.0);
+        let state = model.layout().region(&RegionId::Resources).unwrap();
+        assert!(!model.region_visible(state));
+        // 下一次 Advance 回收条目本身。
+        assert!(model.update(
+            WorkspaceMutation::AdvanceAnimations,
+            Duration::from_millis(500),
+        ));
+        assert!(!model.has_active_transitions());
     }
 
     #[test]
