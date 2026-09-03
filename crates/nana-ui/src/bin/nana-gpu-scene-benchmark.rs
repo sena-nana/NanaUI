@@ -480,7 +480,9 @@ fn scene_primitive_kinds(scene: &nana_ui_scene::UiScene, slot: &str) -> Vec<Stri
 
 fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
     match kind {
-        ScenePrimitiveKind::Quad { .. } | ScenePrimitiveKind::QuadBatch { .. } => "quad",
+        ScenePrimitiveKind::Quad { .. }
+        | ScenePrimitiveKind::QuadBatch { .. }
+        | ScenePrimitiveKind::QuadColorBatch { .. } => "quad",
         ScenePrimitiveKind::Text { .. } => "text",
         ScenePrimitiveKind::Icon { .. } | ScenePrimitiveKind::IconBatch { .. } => "icon",
         ScenePrimitiveKind::Spinner { .. } => "spinner",

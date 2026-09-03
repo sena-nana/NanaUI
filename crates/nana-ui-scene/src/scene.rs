@@ -1197,12 +1197,7 @@ impl UiScene {
                         },
                         10,
                         scene_rect(*scrim),
-                        VisualQuadStyle {
-                            background: Some([0.0, 0.0, 0.0, 0.45]),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid([0.0, 0.0, 0.0, 0.45]),
                     ));
                     let radius = UI_METRICS.radius_md;
                     let docked = match node.standard_visual.as_ref() {
@@ -1363,12 +1358,7 @@ impl UiScene {
                             },
                             1,
                             selection.iter().map(|selection| scene_rect(*selection)),
-                            VisualQuadStyle {
-                                background: Some(*selection_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*selection_color),
                         ));
                     }
                     self.insert_primitive(component_text_primitive(
@@ -1966,12 +1956,7 @@ impl UiScene {
                         },
                         1,
                         scene_rect(*h_axis),
-                        VisualQuadStyle {
-                            background: Some(*axis_color),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid(*axis_color),
                     ));
                     self.insert_primitive(visual_quad(
                         &VisualPrimitiveContext {
@@ -1984,12 +1969,7 @@ impl UiScene {
                         },
                         2,
                         scene_rect(*v_axis),
-                        VisualQuadStyle {
-                            background: Some(*axis_color),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid(*axis_color),
                     ));
                     self.insert_primitive(visual_quad(
                         &VisualPrimitiveContext {
@@ -2041,12 +2021,7 @@ impl UiScene {
                             },
                             1,
                             dark.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some([0.0, 0.0, 0.0, 1.0]),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid([0.0, 0.0, 0.0, 1.0]),
                         ));
                     }
                 }
@@ -2314,12 +2289,7 @@ impl UiScene {
                         },
                         10,
                         scene_rect(*scrim),
-                        VisualQuadStyle {
-                            background: Some([0.0, 0.0, 0.0, 0.45]),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid([0.0, 0.0, 0.0, 0.45]),
                     ));
                     self.insert_primitive(ScenePrimitive {
                         id: PrimitiveId { node: id, slot: 11 },
@@ -2759,12 +2729,7 @@ impl UiScene {
                             &context,
                             10,
                             grid.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*grid_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*grid_color),
                         ));
                     }
                     if !area.is_empty() {
@@ -2772,12 +2737,7 @@ impl UiScene {
                             &context,
                             11,
                             area.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*area_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*area_color),
                         ));
                     }
                     if line.len() >= 2 {
@@ -2829,12 +2789,7 @@ impl UiScene {
                             },
                             11,
                             scene_rect(*line),
-                            VisualQuadStyle {
-                                background: Some(*color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*color),
                         ));
                     }
                     for (index, (_, label, _)) in rows.iter().enumerate() {
@@ -2874,12 +2829,7 @@ impl UiScene {
                             },
                             1,
                             selection.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*selection_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*selection_color),
                         ));
                     }
                     self.insert_primitive(component_text_primitive(
@@ -2919,24 +2869,14 @@ impl UiScene {
                         &context,
                         10,
                         bounds,
-                        VisualQuadStyle {
-                            background: Some(*background),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid(*background),
                     ));
                     if !grid.is_empty() {
                         self.insert_primitive(visual_quad_batch(
                             &context,
                             11,
                             grid.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*grid_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*grid_color),
                         ));
                     }
                     for (index, (points, color)) in edges.iter().enumerate() {
@@ -2985,12 +2925,7 @@ impl UiScene {
                             &context,
                             40,
                             separators.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*separator_color),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*separator_color),
                         ));
                     }
                     for (index, (port, fill, border, border_width)) in ports.iter().enumerate() {
@@ -3058,12 +2993,7 @@ impl UiScene {
                             &context,
                             10,
                             nodes.iter().copied().map(scene_rect),
-                            VisualQuadStyle {
-                                background: Some(*node_fill),
-                                border_color: None,
-                                border_width: 0.0,
-                                corner_radius: corner_radii(0.0),
-                            },
+                            VisualQuadStyle::solid(*node_fill),
                         ));
                     }
                     if let Some(indicator) = indicator {
@@ -3104,12 +3034,7 @@ impl UiScene {
                         &context,
                         10,
                         scene_rect(*scrim),
-                        VisualQuadStyle {
-                            background: Some(*scrim_color),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid(*scrim_color),
                     ));
                     self.insert_primitive(visual_quad(
                         &context,
@@ -3126,12 +3051,7 @@ impl UiScene {
                         &context,
                         12,
                         scene_rect(*stage),
-                        VisualQuadStyle {
-                            background: Some(*stage_color),
-                            border_color: None,
-                            border_width: 0.0,
-                            corner_radius: corner_radii(0.0),
-                        },
+                        VisualQuadStyle::solid(*stage_color),
                     ));
                     self.insert_primitive(visual_quad(
                         &context,
@@ -3388,9 +3308,9 @@ impl UiScene {
                                 document_order: node_order,
                             };
                             for (slot, rects, color) in [
-                                (18, &git_marks.added, Some(git_marks.added_color)),
-                                (19, &git_marks.modified, Some(git_marks.modified_color)),
-                                (8, &git_marks.deleted, Some(git_marks.deleted_color)),
+                                (18, &git_marks.added, git_marks.added_color),
+                                (19, &git_marks.modified, git_marks.modified_color),
+                                (8, &git_marks.deleted, git_marks.deleted_color),
                             ] {
                                 if rects.is_empty() {
                                     continue;
@@ -3399,12 +3319,7 @@ impl UiScene {
                                     &git_context,
                                     slot,
                                     rects.iter().map(|rect| scene_rect(*rect)),
-                                    VisualQuadStyle {
-                                        background: color,
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
+                                    VisualQuadStyle::solid(color),
                                 ));
                             }
                         }
@@ -3436,12 +3351,7 @@ impl UiScene {
                                     &gutter_context,
                                     14,
                                     collapsed.iter().map(|gutter| scene_rect(gutter.bounds)),
-                                    VisualQuadStyle {
-                                        background: Some(collapsed[0].color),
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
+                                    VisualQuadStyle::solid(collapsed[0].color),
                                 ));
                             }
                             if !expanded.is_empty() {
@@ -3500,12 +3410,7 @@ impl UiScene {
                                 &visual_context,
                                 20 + marker_index as u8,
                                 scene_rect(*rect),
-                                VisualQuadStyle {
-                                    background: Some(*color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*color),
                             ));
                         }
                         // 查找匹配高亮：普通匹配（slot 3，文本之上、光标之
@@ -3518,12 +3423,7 @@ impl UiScene {
                                 &visual_context,
                                 3,
                                 normal_matches.iter().map(|marker| scene_rect(marker.rect)),
-                                VisualQuadStyle {
-                                    background: Some(normal_matches[0].color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(normal_matches[0].color),
                             ));
                         }
                         if !current_matches.is_empty() {
@@ -3531,12 +3431,7 @@ impl UiScene {
                                 &visual_context,
                                 6,
                                 current_matches.iter().map(|marker| scene_rect(marker.rect)),
-                                VisualQuadStyle {
-                                    background: Some(current_matches[0].color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(current_matches[0].color),
                             ));
                         }
                         // 颜色装饰 swatch：单个 QuadColorBatch（slot 23，诊断
@@ -3565,12 +3460,7 @@ impl UiScene {
                                 &visual_context,
                                 1,
                                 scene_rect(*rect),
-                                VisualQuadStyle {
-                                    background: Some(*color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*color),
                             ));
                         }
                         // 缩进参考线：1px 竖线批次，低对比结构标记。
@@ -3579,12 +3469,7 @@ impl UiScene {
                                 &visual_context,
                                 10,
                                 indent_guides.iter().map(|(rect, _)| scene_rect(*rect)),
-                                VisualQuadStyle {
-                                    background: Some(indent_guides[0].1),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(indent_guides[0].1),
                             ));
                         }
                         // 出现高亮：淡底色填充批次（slot 11，缩进参考线之
@@ -3594,12 +3479,7 @@ impl UiScene {
                                 &visual_context,
                                 11,
                                 occurrence_markers.iter().map(|(rect, _)| scene_rect(*rect)),
-                                VisualQuadStyle {
-                                    background: Some(occurrence_markers[0].1),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(occurrence_markers[0].1),
                             ));
                         }
                         // 空白字符显示：空格画小圆点（slot 16 单一批次），
@@ -3651,39 +3531,16 @@ impl UiScene {
                                 })
                                 .collect();
                             if !arrows.is_empty() {
-                                let bounds = arrows
-                                    .iter()
-                                    .copied()
-                                    .reduce(|left, right| {
-                                        let x = left.x.min(right.x);
-                                        let y = left.y.min(right.y);
-                                        let right_edge =
-                                            (left.x + left.width).max(right.x + right.width);
-                                        let bottom_edge =
-                                            (left.y + left.height).max(right.y + right.height);
-                                        SceneRect {
-                                            x,
-                                            y,
-                                            width: right_edge - x,
-                                            height: bottom_edge - y,
-                                        }
-                                    })
-                                    .unwrap_or_default();
-                                self.insert_primitive(ScenePrimitive {
-                                    id: PrimitiveId { node: id, slot: 60 },
-                                    node: id,
-                                    bounds,
-                                    transform,
-                                    clips: clips.clone(),
-                                    opacity,
-                                    z_index: node.z_index,
-                                    document_order: node_order,
-                                    kind: ScenePrimitiveKind::IconBatch {
-                                        bounds: arrows,
+                                self.insert_primitive(batch_primitive(
+                                    &visual_context,
+                                    60,
+                                    arrows,
+                                    |bounds| ScenePrimitiveKind::IconBatch {
+                                        bounds,
                                         icon: Icon::ArrowRight,
                                         color: Some(*whitespace_color),
                                     },
-                                });
+                                ));
                             }
                         }
                         // wrap guide：按列的全高 1px 竖线批次（slot 17）。
@@ -3694,12 +3551,7 @@ impl UiScene {
                                 &visual_context,
                                 17,
                                 wrap_guides.iter().map(|(rect, _)| scene_rect(*rect)),
-                                VisualQuadStyle {
-                                    background: Some(wrap_guides[0].1),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(wrap_guides[0].1),
                             ));
                         }
                         // minimap：面板（slot 70）、行条 + 1px 分隔线（slot
@@ -3712,36 +3564,21 @@ impl UiScene {
                                 &visual_context,
                                 70,
                                 scene_rect(minimap.panel),
-                                VisualQuadStyle {
-                                    background: Some(minimap.panel_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(minimap.panel_color),
                             ));
                             self.insert_primitive(visual_quad_batch(
                                 &visual_context,
                                 71,
                                 std::iter::once(scene_rect(minimap.separator))
                                     .chain(minimap.bars.iter().map(|bar| scene_rect(*bar))),
-                                VisualQuadStyle {
-                                    background: Some(minimap.bar_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(minimap.bar_color),
                             ));
                             if let Some(indicator) = minimap.indicator {
                                 self.insert_primitive(visual_quad(
                                     &visual_context,
                                     72,
                                     scene_rect(indicator),
-                                    VisualQuadStyle {
-                                        background: Some(minimap.indicator_color),
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
+                                    VisualQuadStyle::solid(minimap.indicator_color),
                                 ));
                             }
                         }
@@ -3751,28 +3588,17 @@ impl UiScene {
                         // 覆盖滚动内容之上。纯装饰只读：无命中框、不可交互，
                         // 复用正文同一 component_text_primitive 字形管线。
                         if let Some(sticky) = sticky_line {
-                            self.insert_primitive(visual_quad(
-                                &visual_context,
-                                80,
-                                scene_rect(sticky.panel),
-                                VisualQuadStyle {
-                                    background: Some(sticky.background),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
-                            ));
-                            self.insert_primitive(visual_quad(
-                                &visual_context,
-                                81,
-                                scene_rect(sticky.divider),
-                                VisualQuadStyle {
-                                    background: Some(sticky.divider_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
-                            ));
+                            // 面板条与分割线同形：纯色 Quad，仅 slot/矩形/色不同。
+                            let mut sticky_band = |slot: u8, rect: SceneRect, color: [f32; 4]| {
+                                self.insert_primitive(visual_quad(
+                                    &visual_context,
+                                    slot,
+                                    rect,
+                                    VisualQuadStyle::solid(color),
+                                ));
+                            };
+                            sticky_band(80, scene_rect(sticky.panel), sticky.background);
+                            sticky_band(81, scene_rect(sticky.divider), sticky.divider_color);
                             self.insert_primitive(component_text_primitive(
                                 id,
                                 82,
@@ -3808,12 +3634,7 @@ impl UiScene {
                                 &visual_context,
                                 6,
                                 scene_rect(*rect),
-                                VisualQuadStyle {
-                                    background: Some(*color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*color),
                             ));
                         }
                         if let Some(caret) = caret {
@@ -3821,12 +3642,7 @@ impl UiScene {
                                 &visual_context,
                                 4,
                                 scene_rect(*caret),
-                                VisualQuadStyle {
-                                    background: Some(*caret_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*caret_color),
                             ));
                         }
                         // 附加多光标：与主光标同形、半透明色的 quad 批次
@@ -3836,12 +3652,7 @@ impl UiScene {
                                 &visual_context,
                                 13,
                                 additional_carets.iter().map(|rect| scene_rect(*rect)),
-                                VisualQuadStyle {
-                                    background: Some(*additional_caret_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*additional_caret_color),
                             ));
                         }
                         if !preedit.is_empty() {
@@ -3849,12 +3660,7 @@ impl UiScene {
                                 &visual_context,
                                 5,
                                 preedit.iter().map(|preedit| scene_rect(*preedit)),
-                                VisualQuadStyle {
-                                    background: Some(*preedit_color),
-                                    border_color: None,
-                                    border_width: 0.0,
-                                    corner_radius: corner_radii(0.0),
-                                },
+                                VisualQuadStyle::solid(*preedit_color),
                             ));
                         }
                         if let Some(color) = focus_ring {
@@ -3939,12 +3745,7 @@ impl UiScene {
                                     &overlay_context,
                                     91,
                                     scene_rect(popup.rows[index].bounds),
-                                    VisualQuadStyle {
-                                        background: Some(popup.selected_background),
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
+                                    VisualQuadStyle::solid(popup.selected_background),
                                 ));
                             }
                             for (index, row) in popup.rows.iter().enumerate() {
@@ -4296,12 +4097,7 @@ impl UiScene {
                                     &visual_context,
                                     slot,
                                     scene_rect(bar.track),
-                                    VisualQuadStyle {
-                                        background: Some(background),
-                                        border_color: None,
-                                        border_width: 0.0,
-                                        corner_radius: corner_radii(0.0),
-                                    },
+                                    VisualQuadStyle::solid(background),
                                 ));
                             }
                             self.insert_primitive(visual_quad(
@@ -4951,12 +4747,7 @@ fn paint_select_handle(
                 width,
                 height: 1.0,
             },
-            VisualQuadStyle {
-                background: Some(color),
-                border_color: None,
-                border_width: 0.0,
-                corner_radius: corner_radii(0.0),
-            },
+            VisualQuadStyle::solid(color),
         ));
     }
 }
@@ -5138,6 +4929,18 @@ struct VisualQuadStyle {
     corner_radius: [f32; 4],
 }
 
+impl VisualQuadStyle {
+    /// 纯色填充：无边框、直角。装饰条、参考线、高亮底色共用。
+    fn solid(background: [f32; 4]) -> Self {
+        Self {
+            background: Some(background),
+            border_color: None,
+            border_width: 0.0,
+            corner_radius: corner_radii(0.0),
+        }
+    }
+}
+
 fn visual_quad(
     context: &VisualPrimitiveContext<'_>,
     slot: u8,
@@ -5296,13 +5099,14 @@ fn insert_text_decoration_strokes(
     }
 }
 
-fn visual_quad_batch(
+/// 批次图元共用的批次壳：对逐项 bounds 求并集作为图元 bounds，kind 由
+/// 调用方给出（QuadBatch / QuadColorBatch / IconBatch）。
+fn batch_primitive(
     context: &VisualPrimitiveContext<'_>,
     slot: u8,
-    bounds: impl IntoIterator<Item = SceneRect>,
-    style: VisualQuadStyle,
+    quad_bounds: Vec<SceneRect>,
+    kind: impl FnOnce(Vec<SceneRect>) -> ScenePrimitiveKind,
 ) -> ScenePrimitive {
-    let quad_bounds = bounds.into_iter().collect::<Vec<_>>();
     debug_assert!(!quad_bounds.is_empty());
     let bounds = quad_bounds
         .iter()
@@ -5332,16 +5136,28 @@ fn visual_quad_batch(
         opacity: context.opacity,
         z_index: context.z_index,
         document_order: context.document_order,
-        kind: ScenePrimitiveKind::QuadBatch {
-            bounds: quad_bounds,
+        kind: kind(quad_bounds),
+    }
+}
+
+fn visual_quad_batch(
+    context: &VisualPrimitiveContext<'_>,
+    slot: u8,
+    bounds: impl IntoIterator<Item = SceneRect>,
+    style: VisualQuadStyle,
+) -> ScenePrimitive {
+    let quad_bounds = bounds.into_iter().collect::<Vec<_>>();
+    batch_primitive(context, slot, quad_bounds, |bounds| {
+        ScenePrimitiveKind::QuadBatch {
+            bounds,
             background: style.background,
             border_color: style.border_color,
             border_width: style.border_width,
             corner_radius: style.corner_radius,
             shadow: None,
             surface: QuadSurfacePaint::default(),
-        },
-    }
+        }
+    })
 }
 
 fn visual_quad_color_batch(
@@ -5351,44 +5167,16 @@ fn visual_quad_color_batch(
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
     let (quad_bounds, colors): (Vec<SceneRect>, Vec<[f32; 4]>) = items.into_iter().unzip();
-    debug_assert!(!quad_bounds.is_empty());
     debug_assert_eq!(quad_bounds.len(), colors.len());
-    let bounds = quad_bounds
-        .iter()
-        .copied()
-        .reduce(|left, right| {
-            let x = left.x.min(right.x);
-            let y = left.y.min(right.y);
-            let right_edge = (left.x + left.width).max(right.x + right.width);
-            let bottom_edge = (left.y + left.height).max(right.y + right.height);
-            SceneRect {
-                x,
-                y,
-                width: right_edge - x,
-                height: bottom_edge - y,
-            }
-        })
-        .unwrap_or_default();
-    ScenePrimitive {
-        id: PrimitiveId {
-            node: context.node,
-            slot,
-        },
-        node: context.node,
-        bounds,
-        transform: context.transform,
-        clips: Arc::clone(context.clips),
-        opacity: context.opacity,
-        z_index: context.z_index,
-        document_order: context.document_order,
-        kind: ScenePrimitiveKind::QuadColorBatch {
-            bounds: quad_bounds,
+    batch_primitive(context, slot, quad_bounds, |bounds| {
+        ScenePrimitiveKind::QuadColorBatch {
+            bounds,
             colors,
             border_color: style.border_color,
             border_width: style.border_width,
             corner_radius: style.corner_radius,
-        },
-    }
+        }
+    })
 }
 
 /// 锚定浮层面板的共享绘制原语（补全弹层 slot 90 与 hover 浮窗 slot 120
@@ -8923,7 +8711,11 @@ mod tests {
                 [0.8, 0.8, 0.8, 1.0],
             )),
             label: region("/Users/dev/very-long-project-folder-name", 32.0, 100.0),
-            hint: Some(region("/Users/dev/very-long-project-folder-name", 132.0, 60.0)),
+            hint: Some(region(
+                "/Users/dev/very-long-project-folder-name",
+                132.0,
+                60.0,
+            )),
             background: None,
         });
 
