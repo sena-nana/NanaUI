@@ -53,6 +53,25 @@ fn find_scope_range(selection: &TextSelection) -> Option<(usize, usize)> {
     (range.start < range.end).then_some((range.start, range.end))
 }
 
+/// The match list for a find scope on the editor's value: an empty
+/// selection under [`TextFindScope::Selection`] falls back to the whole
+/// document.
+fn find_matches_in_scope(
+    value: &str,
+    query: &str,
+    options: TextSearchOptions,
+    scope: TextFindScope,
+    selection: &TextSelection,
+) -> Vec<std::ops::Range<usize>> {
+    match scope {
+        TextFindScope::Document => find_matches(value, query, options),
+        TextFindScope::Selection => match find_scope_range(selection) {
+            Some(range) => find_matches_in_range(value, query, options, range),
+            None => find_matches(value, query, options),
+        },
+    }
+}
+
 /// The focused plain text editor, if any.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusedTextEditor {
@@ -1064,13 +1083,9 @@ impl AppContext {
         let mut next_selections = Vec::with_capacity(selections.len());
         let mut grew = false;
         for &selection in &selections {
-            match expanded_selection(&state.value, selection) {
-                Some(next) => {
-                    grew |= next != selection;
-                    next_selections.push(next);
-                }
-                None => next_selections.push(selection),
-            }
+            let next = expanded_selection(&state.value, selection).unwrap_or(selection);
+            grew |= next != selection;
+            next_selections.push(next);
         }
         if !grew {
             return Ok(false);
@@ -1108,24 +1123,19 @@ impl AppContext {
             return Ok(false);
         };
         let state = self.editor_state(focused.node, focused.kind)?;
-        let valid = self
-            .selection_expansions
-            .as_ref()
-            .is_some_and(|(node, history, value)| {
-                *node == focused.node && *value == state.value && !history.is_empty()
-            });
-        if !valid {
-            self.selection_expansions = None;
-            return Ok(false);
+        match &mut self.selection_expansions {
+            Some((node, history, value))
+                if *node == focused.node && **value == state.value && !history.is_empty() =>
+            {
+                let (primary, additional) = history.pop().expect("non-empty checked above");
+                self.caret_goal_x = None;
+                self.write_editor_selections(focused.node, focused.kind, primary, additional)
+            }
+            _ => {
+                self.selection_expansions = None;
+                Ok(false)
+            }
         }
-        let Some((_, history, _)) = &mut self.selection_expansions else {
-            return Ok(false);
-        };
-        let Some((primary, additional)) = history.pop() else {
-            return Ok(false);
-        };
-        self.caret_goal_x = None;
-        self.write_editor_selections(focused.node, focused.kind, primary, additional)
     }
 
     /// Select the next literal match of `query` in the focused text editor,
@@ -1152,13 +1162,7 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
-        let matches = match scope {
-            TextFindScope::Document => find_matches(&state.value, query, options),
-            TextFindScope::Selection => match find_scope_range(&state.selection) {
-                Some(range) => find_matches_in_range(&state.value, query, options, range),
-                None => find_matches(&state.value, query, options),
-            },
-        };
+        let matches = find_matches_in_scope(&state.value, query, options, scope, &state.selection);
         let Some(found) = find_next_match(&matches, state.selection.ordered().end) else {
             return Ok(false);
         };
@@ -1191,13 +1195,7 @@ impl AppContext {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
-        let matches = match scope {
-            TextFindScope::Document => find_matches(&state.value, query, options),
-            TextFindScope::Selection => match find_scope_range(&state.selection) {
-                Some(range) => find_matches_in_range(&state.value, query, options, range),
-                None => find_matches(&state.value, query, options),
-            },
-        };
+        let matches = find_matches_in_scope(&state.value, query, options, scope, &state.selection);
         let Some(found) = find_previous_match(&matches, state.selection.ordered().start) else {
             return Ok(false);
         };
@@ -1297,15 +1295,8 @@ impl AppContext {
         self.caret_goal_x = None;
         let mut replaced = 0usize;
         self.edit_editor(focused.node, focused.kind, |state| {
-            let range = match scope {
-                TextFindScope::Document => None,
-                TextFindScope::Selection => find_scope_range(&state.selection),
-            };
-            let in_scope = |value: &str| match range {
-                Some(range) => find_matches_in_range(value, query, options, range),
-                None => find_matches(value, query, options),
-            };
-            let matches = in_scope(&state.value);
+            let matches =
+                find_matches_in_scope(&state.value, query, options, scope, &state.selection);
             if matches.is_empty() {
                 return None;
             }
@@ -1320,7 +1311,10 @@ impl AppContext {
                 query,
                 replacement,
                 options,
-                range,
+                match scope {
+                    TextFindScope::Document => None,
+                    TextFindScope::Selection => find_scope_range(&state.selection),
+                },
                 preserve_case,
             );
             replaced = count;
@@ -1361,16 +1355,7 @@ impl AppContext {
             self.text_pointer_drag = None;
             return Ok(false);
         }
-        let Some((content, scroll)) = self.world.text_input_pointer_context(node) else {
-            return Ok(false);
-        };
-        let Some((style, constraints)) = self.world.text_input_shape_context(node) else {
-            return Ok(false);
-        };
         let state = self.editor_state(node, focused.kind)?;
-        // 折叠视图：命中测试与双击/三击语义都按显示视图解析。
-        let fold_view = self.world.text_display_view(node);
-        let fold_view_value = fold_view.as_ref().map(|view| view.value.clone());
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
         let count = match &self.text_pointer_click {
@@ -1425,26 +1410,10 @@ impl AppContext {
                 .unwrap_or(false);
             return self.set_node_text_fold(node, fold, !collapsed);
         }
-        let mut geometry = EditorGeometry {
-            shaper,
-            node,
-            // 折叠态下命中测试按显示视图解析，再映射回值空间。
-            text: TextContent {
-                value: fold_view_value.as_ref().unwrap_or(&state.value).clone(),
-            },
-            style,
-            constraints,
-        };
-        let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let hit = caret_offset_at_point(
-            fold_view_value.as_ref().unwrap_or(&state.value),
-            local_x,
-            local_y,
-            geometry.probe(),
-        );
-        let offset = match &fold_view {
-            Some(view) => view.value_of(hit),
-            None => hit,
+        // 命中换算与拖选共用同一条 offset 路径（折叠视图按显示空间命中
+        // 后映射回值空间）。
+        let Some(offset) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
+            return Ok(false);
         };
         // 拖拽移动选中文本：普通按下落在主选区内部（多行、单选区、非
         // IME 组合期）时不落光标，进入拖拽状态机；Alt 按住为复制（macOS
@@ -1612,29 +1581,10 @@ impl AppContext {
         if focused.node != node {
             return Ok(false);
         }
-        let Some((content, scroll)) = self.world.text_input_pointer_context(node) else {
-            return Ok(false);
-        };
-        let Some((style, constraints)) = self.world.text_input_shape_context(node) else {
-            return Ok(false);
-        };
         let state = self.editor_state(node, focused.kind)?;
-        let fold_view = self.world.text_display_view(node);
-        let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
-        let mut geometry = EditorGeometry {
-            shaper,
-            node,
-            text: TextContent {
-                value: probe_value.to_owned(),
-            },
-            style,
-            constraints,
-        };
-        let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let hit = caret_offset_at_point(probe_value, local_x, local_y, geometry.probe());
-        let offset = match &fold_view {
-            Some(view) => view.value_of(hit),
-            None => hit,
+        // 命中换算与点击共用同一条 offset 路径。
+        let Some(offset) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
+            return Ok(false);
         };
         if offset == state.selection.focus {
             return Ok(false);
@@ -1739,12 +1689,15 @@ impl AppContext {
             return Ok(true);
         };
         // 源选区区间内（含边界，落点为退化 no-op）不显示指示线。
-        let inside = target >= drag.source.0 && target <= drag.source.1;
-        drag.target = (!inside).then_some(target);
+        drag.target = (!(drag.source.0..=drag.source.1).contains(&target)).then_some(target);
         if let (Some(target), Some((style, constraints))) =
             (drag.target, self.world.text_input_shape_context(drag.node))
         {
-            let value = self.fold_probe_value(drag.node, drag.kind)?;
+            // 折叠探测用显示值（无折叠时为编辑器原值）。
+            let value = match self.world.text_display_view(drag.node) {
+                Some(view) => view.value,
+                None => self.editor_state(drag.node, drag.kind)?.value,
+            };
             let mut geometry = EditorGeometry {
                 shaper,
                 node: drag.node,
@@ -1818,11 +1771,11 @@ impl AppContext {
         let (start, end) = drag.source;
         let length = end - start;
         // 源选区边界（含两端）都是退化落点：移动/复制均为 no-op，取消。
-        let inside = target >= start && target <= end;
-        let value = &state.value;
-        let (next, insert_at) = if inside {
+        if (start..=end).contains(&target) {
             return Ok(true);
-        } else if drag.copy {
+        }
+        let value = &state.value;
+        let (next, insert_at) = if drag.copy {
             // 复制：目标点插入选中文本，原文本保留。
             (
                 format!(
@@ -1918,18 +1871,6 @@ impl AppContext {
             Some(view) => view.value_of(hit),
             None => hit,
         }))
-    }
-
-    /// 折叠探测用显示值（无折叠时为编辑器原值）。
-    fn fold_probe_value(
-        &self,
-        node: StableNodeId,
-        kind: TextEditorKind,
-    ) -> Result<String, FrameworkError> {
-        match self.world.text_display_view(node) {
-            Some(view) => Ok(view.value),
-            None => Ok(self.editor_state(node, kind)?.value),
-        }
     }
 
     fn editor_state(
