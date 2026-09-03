@@ -14,6 +14,7 @@ use nana_ui_core::{
     LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement, VirtualListLayout,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout,
+    WorkspaceMutation,
 };
 
 #[cfg(test)]
@@ -35,7 +36,7 @@ use crate::{
     SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
     StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
     TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
-    UiWorldError, XYPad, XYPadDragState, XYPadEvent,
+    UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod assemble;
@@ -397,6 +398,8 @@ struct ComponentLifecycle {
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
+    workspace_transitions: HashMap<StableNodeId, ()>,
+    next_workspace_frame: Option<Duration>,
     overlay_pointer_sequences: HashSet<(DocumentId, u64)>,
     overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64)>,
     overlay_activation_tokens: HashMap<StableNodeId, u64>,
@@ -1462,10 +1465,18 @@ impl AppContext {
             .any(|target| self.world.is_mounted(*target))
             .then_some(self.component_lifecycle.next_loading_frame)
             .flatten();
+        let workspace_deadline = self
+            .component_lifecycle
+            .workspace_transitions
+            .keys()
+            .any(|target| self.world.is_mounted(*target))
+            .then_some(self.component_lifecycle.next_workspace_frame)
+            .flatten();
         self.world
             .next_animation_deadline()
             .into_iter()
             .chain(loading_deadline)
+            .chain(workspace_deadline)
             .chain(
                 self.component_lifecycle
                     .tooltips
@@ -1573,6 +1584,41 @@ impl AppContext {
             {
                 frame.component_updates.push(target);
             }
+        }
+        // 工作区折叠/展开过渡：结算前的每一帧采样一次模型并重投影，
+        // 过渡全部结束后停止帧调度。
+        if self
+            .component_lifecycle
+            .next_workspace_frame
+            .is_some_and(|deadline| deadline <= now)
+        {
+            let targets = self
+                .component_lifecycle
+                .workspace_transitions
+                .keys()
+                .copied()
+                .filter(|id| self.world.is_mounted(*id))
+                .collect::<Vec<_>>();
+            let mut any_transitioning = false;
+            for id in targets {
+                let mut still_transitioning = false;
+                let advanced = self
+                    .update_component(Entity::<Workspace>::from_stable_id(id), |workspace, _| {
+                        let changed = workspace.apply(WorkspaceMutation::AdvanceAnimations, now);
+                        still_transitioning = workspace.model.has_active_transitions();
+                        changed
+                    })
+                    .unwrap_or(false);
+                any_transitioning |= still_transitioning;
+                if advanced {
+                    frame.component_updates.push(id);
+                }
+            }
+            self.component_lifecycle.next_workspace_frame = if any_transitioning {
+                Some(now.checked_add(COMPONENT_FRAME_INTERVAL).unwrap_or(now))
+            } else {
+                None
+            };
         }
         frame.next_deadline = self.next_animation_deadline();
         frame
@@ -3483,6 +3529,30 @@ impl AppContext {
                     .any(|target| self.world.is_mounted(*target))
                 {
                     self.component_lifecycle.next_loading_frame = None;
+                }
+            }
+        }
+
+        // 工作区折叠/展开过渡由运行时帧循环接管：模型带未回收过渡的
+        // Workspace 登记进帧调度，结算后撤销，宿主无需自行驱动。
+        if self.views.get(&id).is_some_and(|view| view.is::<Workspace>()) {
+            let transitioning = self
+                .views
+                .get(&id)
+                .and_then(|view| view.downcast_ref::<Workspace>())
+                .is_some_and(|workspace| workspace.model.has_active_transitions());
+            if transitioning {
+                self.component_lifecycle.workspace_transitions.insert(id, ());
+                if self.world.is_mounted(id)
+                    && self.component_lifecycle.next_workspace_frame.is_none()
+                {
+                    self.component_lifecycle.next_workspace_frame =
+                        Some(self.component_lifecycle.now);
+                }
+            } else {
+                self.component_lifecycle.workspace_transitions.remove(&id);
+                if self.component_lifecycle.workspace_transitions.is_empty() {
+                    self.component_lifecycle.next_workspace_frame = None;
                 }
             }
         }
@@ -10490,6 +10560,67 @@ mod tests {
             !context
                 .advance_animations(Duration::from_secs(1))
                 .has_updates()
+        );
+    }
+
+    #[test]
+    fn workspace_transitions_schedule_only_while_transitioning() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let layout = nana_ui_core::WorkspaceLayout::new([
+            nana_ui_core::RegionState::new(
+                nana_ui_core::RegionId::Resources,
+                nana_ui_core::RegionRole::Resources,
+            )
+            .size(240.0)
+            .collapsible(true),
+            nana_ui_core::RegionState::new(
+                nana_ui_core::RegionId::Primary,
+                nana_ui_core::RegionRole::Primary,
+            )
+            .fill_priority(1),
+        ])
+        .expect("workspace layout");
+        let workspace = context
+            .create_component(
+                document,
+                Workspace::from_model(&nana_ui_core::WorkspaceModel::with_layout(layout), []),
+            )
+            .unwrap();
+        context
+            .update_component(workspace, |workspace, _| {
+                assert!(workspace.model.update(
+                    WorkspaceMutation::SetRegionCollapsed(
+                        nana_ui_core::RegionId::Resources,
+                        true,
+                    ),
+                    Duration::ZERO,
+                ));
+            })
+            .unwrap();
+        // 过渡登记进帧调度，deadline 立即生效。
+        assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+        let frame = context.advance_animations(Duration::ZERO);
+        assert!(frame.component_updates.contains(&workspace.stable_id()));
+        assert_eq!(
+            context.next_animation_deadline(),
+            Some(COMPONENT_FRAME_INTERVAL)
+        );
+        // 过渡结束的帧：回收过渡并撤销帧调度。
+        let frame = context.advance_animations(nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION);
+        assert!(frame.component_updates.contains(&workspace.stable_id()));
+        assert_eq!(context.next_animation_deadline(), None);
+        assert!(
+            !context
+                .advance_animations(nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION)
+                .has_updates()
+        );
+        assert_eq!(
+            context.read(workspace, |workspace| workspace
+                .model
+                .region_extent(&nana_ui_core::RegionId::Resources))
+                .unwrap(),
+            0.0
         );
     }
 
