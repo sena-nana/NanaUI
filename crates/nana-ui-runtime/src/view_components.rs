@@ -87,10 +87,6 @@ fn range_field_style() -> NodeStyle {
                 background: Some(nana_ui_core::SemanticColorRole::AccentStrong),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
-                ..SemanticPaint::default()
-            },
             disabled: SemanticPaint {
                 background: Some(nana_ui_core::SemanticColorRole::Faint),
                 border: Some(nana_ui_core::SemanticColorRole::Border),
