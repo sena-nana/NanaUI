@@ -1,6 +1,6 @@
 //! Default application mark, Windows PE embed, and macOS `.app` packaging.
 //!
-//! The geometric mark is a fallback identity. Applications register their own
+//! The Nana silhouette is the fallback identity. Applications register their own
 //! [`nana_ui_platform::WindowIcon`] at runtime, or embed a custom `.ico` from `build.rs`.
 //! The macOS Dock application fits registered icons into the system icon grid
 //! automatically; artwork that already carries grid margins opts out via
@@ -62,9 +62,13 @@ mod runtime_api {
     }
 
     pub fn default_window_icon() -> WindowIcon {
-        WindowIcon::from_rgba(rasterize(256), 256, 256)
-            .expect("default mark is valid RGBA")
-            .exact_pixels(true)
+        static ICON: std::sync::OnceLock<WindowIcon> = std::sync::OnceLock::new();
+        ICON.get_or_init(|| {
+            WindowIcon::from_rgba(rasterize(256), 256, 256)
+                .expect("default mark is valid RGBA")
+                .exact_pixels(true)
+        })
+        .clone()
     }
 
     pub fn resolved_application_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
