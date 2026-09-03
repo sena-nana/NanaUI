@@ -853,10 +853,10 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             .vue()
             .host(VueWindowId(id.0))
             .and_then(|host| host.lock().ok().map(|guard| guard.appearance()));
-        let native = context.material().is_native();
+        let transparent_surface = context.material().wants_transparent_surface();
         let theme = self.theme;
         if let (Some(appearance), Some(document)) = (appearance, self.documents.get(&id)) {
-            let tokens = theme_tokens_from_appearance(theme, &appearance, native);
+            let tokens = theme_tokens_from_appearance(theme, &appearance, transparent_surface);
             let _ = install_theme_tokens(document.get_mut().context_mut(), theme, tokens);
         }
         self.runtime.prepare_runtime_window(id);

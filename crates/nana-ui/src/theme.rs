@@ -156,19 +156,22 @@ impl ThemeTokens {
         self
     }
 
-    /// Apply Appearance backdrop alphas when a native window material is active.
+    /// Apply Appearance backdrop alphas when the window surface is transparent.
+    ///
+    /// Covers plain window alpha (`Transparent`) and native blur materials
+    /// (Vibrancy / Mica / Acrylic); only a chosen-solid window skips this.
     ///
     /// - [`BackdropTarget::Sidebar`]: translucency on `surface` (sidebar/chrome).
     ///   Title bar follows only when `titlebar_follows_sidebar` is true.
     /// - [`BackdropTarget::Main`]: translucency on `background` (primary content).
     pub fn with_backdrop(
         mut self,
-        native_material: bool,
+        transparent_surface: bool,
         target: BackdropTarget,
         opacity: f32,
         titlebar_follows_sidebar: bool,
     ) -> Self {
-        if !native_material {
+        if !transparent_surface {
             return self;
         }
         let opacity = AppearanceSettings::clamp_backdrop_opacity(opacity);
@@ -296,5 +299,12 @@ mod tests {
         assert!((main.colors.background.a - 0.5).abs() < f32::EPSILON);
         assert!((main.colors.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((main.titlebar.a - 1.0).abs() < f32::EPSILON);
+
+        let solid = ThemeMode::Light
+            .tokens()
+            .with_backdrop(false, BackdropTarget::Sidebar, 0.5, true);
+        assert!((solid.colors.surface.a - 1.0).abs() < f32::EPSILON);
+        assert!((solid.titlebar.a - 1.0).abs() < f32::EPSILON);
+        assert!((solid.colors.background.a - 1.0).abs() < f32::EPSILON);
     }
 }

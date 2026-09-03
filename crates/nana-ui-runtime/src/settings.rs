@@ -1261,10 +1261,10 @@ pub fn apply_appearance_event(
 }
 
 fn appearance_mode(appearance: &AppearanceSettings) -> (bool, bool) {
-    let no_system_blur = !appearance.window_material().wants_native();
+    let solid_mode = !appearance.window_material().wants_transparent_surface();
     let titlebar_follow_disabled =
-        no_system_blur || !matches!(appearance.backdrop_target(), BackdropTarget::Sidebar);
-    (no_system_blur, titlebar_follow_disabled)
+        solid_mode || !matches!(appearance.backdrop_target(), BackdropTarget::Sidebar);
+    (solid_mode, titlebar_follow_disabled)
 }
 
 fn opacity_percent(appearance: &AppearanceSettings) -> f64 {
@@ -2784,8 +2784,10 @@ mod tests {
             .unwrap();
         context.assemble_appearance_section(section).unwrap();
         let translucent = assembly_of(&context, section);
-        assert!(option_disabled(&context, translucent.target_sidebar));
-        assert!(switch_disabled(&context, translucent.titlebar_switch));
+        assert!(!option_disabled(&context, translucent.target_sidebar));
+        assert!(!option_disabled(&context, translucent.target_main));
+        assert!(!switch_disabled(&context, translucent.titlebar_switch));
+        assert!(translucent.opacity_range.is_some());
 
         let mut appearance = AppearanceSettings::default();
         appearance.set_window_material(WindowMaterialMode::Mica);
