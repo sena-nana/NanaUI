@@ -47,7 +47,7 @@ use winit::icon::{Icon, RgbaIcon};
 use winit::keyboard::ModifiersState;
 use winit::monitor::Fullscreen;
 #[cfg(target_os = "macos")]
-use winit::platform::macos::WindowAttributesMacOS;
+use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 #[cfg(target_os = "windows")]
 use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
@@ -1147,6 +1147,7 @@ enum RoutedWindowCommand {
     Move(WindowId),
     SetBounds(WindowId),
     SetFullscreen(WindowId),
+    SetSimpleFullscreen(WindowId),
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
@@ -1171,6 +1172,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::SetBounds { id, .. } if known(*id) => RoutedWindowCommand::SetBounds(*id),
         WindowCommand::SetFullscreen { id, .. } if known(*id) => {
             RoutedWindowCommand::SetFullscreen(*id)
+        }
+        WindowCommand::SetSimpleFullscreen { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetSimpleFullscreen(*id)
         }
         WindowCommand::SetMinimized { id, .. } if known(*id) => {
             RoutedWindowCommand::SetMinimized(*id)
@@ -1275,8 +1279,22 @@ fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
             physical_size.height as f32 / scale_factor,
         ),
         scale_factor,
-        maximized: window.is_maximized(),
+        maximized: geometry_maximized(window),
     }
+}
+
+/// macOS 的 winit `is_maximized` 底层是 `is_zoomed`:窗口 mask 为 borderless(进入
+/// 全屏后)时它靠临时改回 Titled|Resizable 再回滚来查询,查询本身会触发 resize 事件,
+/// 在 resize 事件处理路径中调用就形成死循环。全屏(原生或 simple)语义上不
+/// maximized,直接短路;`simple_fullscreen()` 是纯状态读,无副作用。
+#[cfg(target_os = "macos")]
+fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
+    !(window.fullscreen().is_some() || WindowExtMacOS::simple_fullscreen(window))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
+    window.is_maximized()
 }
 
 fn window_screen_origin(window: &dyn winit::window::Window) -> Option<(f32, f32)> {

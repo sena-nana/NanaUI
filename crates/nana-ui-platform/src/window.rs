@@ -362,6 +362,11 @@ pub enum WindowCommand {
         id: WindowId,
         fullscreen: bool,
     },
+    /// macOS 走 winit simple fullscreen(不切换 Space);其他平台回落原生 Borderless 全屏。
+    SetSimpleFullscreen {
+        id: WindowId,
+        fullscreen: bool,
+    },
     SetMinimized {
         id: WindowId,
         minimized: bool,
