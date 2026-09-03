@@ -1,6 +1,6 @@
 //! Compact line icons used by NanaUI navigation surfaces.
 //!
-//! [`Icon`] is a `Copy` identity that holds a pointer to static Lucide geometry.
+//! [`Icon`] is a `Copy` identity that holds a pointer to static Tabler geometry.
 //! Unused catalog constants are not referenced by a central match table, so fat
 //! LTO can drop them. [`parse_name`] only resolves shell chrome names.
 
@@ -71,7 +71,7 @@ impl Icon {
         }
     }
 
-    /// Lucide 24×24 source. Painters rasterize this with `currentColor`.
+    /// Tabler 24×24 source. Painters rasterize this with `currentColor`.
     pub fn svg(self) -> &'static str {
         self.0.svg
     }
@@ -99,6 +99,7 @@ impl Icon {
             .unwrap_or(s.as_str());
         let s = s
             .strip_prefix("lucide-")
+            .or_else(|| s.strip_prefix("tabler-"))
             .or_else(|| s.strip_prefix("icon:"))
             .unwrap_or(s);
         let s = s.strip_suffix("-icon").unwrap_or(s);
@@ -170,6 +171,11 @@ mod tests {
         assert_eq!(Icon::parse_name("nana-close"), Some(Icon::Close));
         assert_eq!(Icon::parse_name("plus"), Some(Icon::Add));
         assert_eq!(Icon::parse_name("lucide-search-icon"), Some(Icon::Search));
+        assert_eq!(Icon::parse_name("tabler-search"), Some(Icon::Search));
+        assert_eq!(
+            Icon::parse_name("icon-tabler-settings"),
+            Some(Icon::Settings)
+        );
         assert_eq!(Icon::parse_name("lucide-folder"), Some(Icon::Folder));
         assert_eq!(
             Icon::parse_name("lucide-panel-left-open"),

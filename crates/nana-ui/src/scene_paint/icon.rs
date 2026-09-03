@@ -294,7 +294,7 @@ impl IconPipeline {
             px,
         };
         if !self.atlas.contains_key(&key) {
-            let rgba = rasterize_lucide(icon.svg(), px)?;
+            let rgba = rasterize_icon(icon.svg(), px)?;
             self.insert_atlas(device, queue, key, px, &rgba);
         }
         let color = pack_linear(with_opacity(color, opacity));
@@ -480,7 +480,7 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2], scale: f32)
     }
 }
 
-fn rasterize_lucide(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
+fn rasterize_icon(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
     nana_svg_raster::rasterize_white_mask(svg, pixel_size, MAX_ATLAS_PX)
 }
 
@@ -489,8 +489,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lucide_svg_rasterizes_coverage() {
-        let rgba = rasterize_lucide(Icon::Search.svg(), 28).expect("search svg");
+    fn icon_svg_rasterizes_coverage() {
+        let rgba = rasterize_icon(Icon::Search.svg(), 28).expect("search svg");
         assert_eq!(rgba.len(), 28 * 28 * 4);
         let coverage = rgba.chunks(4).filter(|pixel| pixel[3] > 16).count();
         assert!(
@@ -523,10 +523,10 @@ mod tests {
     }
 
     #[test]
-    fn lucide_symmetric_icons_are_centered_in_the_atlas() {
+    fn symmetric_icons_are_centered_in_the_atlas() {
         let px = 48;
         for icon in [Icon::Add, Icon::Settings, Icon::Close] {
-            let rgba = rasterize_lucide(icon.svg(), px).expect("svg");
+            let rgba = rasterize_icon(icon.svg(), px).expect("svg");
             let (min_x, min_y, max_x, max_y) = ink_bbox(&rgba, px);
             let cx = (min_x + max_x) as f32 / 2.0;
             let cy = (min_y + max_y) as f32 / 2.0;

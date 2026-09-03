@@ -38,7 +38,7 @@ pub fn rasterize_stretch(
     )
 }
 
-/// Lucide atlas: contain in a square, `currentColor` → white mask.
+/// Icon atlas: contain in a square, `currentColor` → white mask.
 pub fn rasterize_white_mask(svg: &str, pixel_size: u32, max_edge: u32) -> Option<Vec<u8>> {
     let raster = render(
         Source::Str(svg),
