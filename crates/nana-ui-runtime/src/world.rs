@@ -3808,33 +3808,6 @@ impl UiWorld {
         // 括号配对着色：与语法高亮同一字形管线（ExtractedTextSpan →
         // 场景文本 span）。括号字符的覆盖色优先于语法 span（合并时切分
         // 重叠的语法 span），语义上括号配对色取代该字符的 punctuation 色。
-        let bracket_spans = self
-            .nodes
-            .text_input_presentation(id)
-            .map(|presentation| {
-                presentation
-                    .bracket_color_spans
-                    .iter()
-                    .filter(|&&(_, end, _)| end <= presentation.display_value.len())
-                    .map(|&(start, end, depth)| (start, end, depth))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let palette = &self.style_model.palette;
-        if bracket_spans.is_empty() {
-            let Some(presentation) = self.nodes.text_presentation(id) else {
-                return Vec::new();
-            };
-            return presentation
-                .spans
-                .iter()
-                .map(|span| ExtractedTextSpan {
-                    start: span.start,
-                    end: span.end,
-                    color: self.style_model.color(span.color).as_rgba_array(),
-                })
-                .collect();
-        }
         let syntax_spans = self
             .nodes
             .text_presentation(id)
@@ -3850,6 +3823,21 @@ impl UiWorld {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let bracket_spans = self
+            .nodes
+            .text_input_presentation(id)
+            .map(|presentation| {
+                presentation
+                    .bracket_color_spans
+                    .iter()
+                    .filter(|&&(_, end, _)| end <= presentation.display_value.len())
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // merge_bracket_glyph_spans 对空括号表原样返回语法 span，无需单独
+        // 短路。
+        let palette = &self.style_model.palette;
         merge_bracket_glyph_spans(syntax_spans, &bracket_spans, |depth| {
             bracket_depth_color(palette, depth)
         })
@@ -4908,22 +4896,17 @@ impl UiWorld {
                 // 线性扫区间表（区间数小，不加缓存）；钉住行不做内容偏移，
                 // 视口下缘被覆盖的内容照常滚动（非 VSCode 推开式布局）。
                 let sticky_line = if multiline
-                    && matches!(
-                        visual,
-                        StandardVisual::TextInput {
-                            editor_options: crate::TextEditorRenderOptions {
+                    && let StandardVisual::TextInput {
+                        folds: offered,
+                        editor_options:
+                            crate::TextEditorRenderOptions {
                                 sticky_scroll: true,
                                 ..
                             },
-                            ..
-                        }
-                    )
+                        ..
+                    } = visual
                     && let Some(input) = self.nodes.text_input(id)
                 {
-                    let offered: Arc<[crate::TextCodeFold]> = match visual {
-                        StandardVisual::TextInput { folds, .. } => Arc::clone(folds),
-                        _ => Arc::from([]),
-                    };
                     let view = self.text_display_view(id);
                     let display_of = |offset: usize| match &view {
                         Some(view) => view
