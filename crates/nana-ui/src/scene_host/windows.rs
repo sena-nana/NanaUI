@@ -52,6 +52,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
                 }
             }
+            RoutedWindowCommand::SetSimpleFullscreen(id) => {
+                let WindowCommand::SetSimpleFullscreen { fullscreen, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    #[cfg(target_os = "macos")]
+                    window.set_simple_fullscreen(fullscreen);
+                    #[cfg(not(target_os = "macos"))]
+                    window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+                }
+            }
             RoutedWindowCommand::SetMinimized(id) => {
                 let WindowCommand::SetMinimized { minimized, .. } = command else {
                     return;
