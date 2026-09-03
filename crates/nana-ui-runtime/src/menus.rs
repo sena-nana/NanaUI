@@ -524,6 +524,7 @@ impl crate::ComponentView for ContextMenu {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let open = world.project_menu_presence(id, self.open, mutations);
         let rows: Arc<[SelectOptionData]> = self
             .visible_items()
             .into_iter()
@@ -535,7 +536,7 @@ impl crate::ComponentView for ContextMenu {
                 icon: item.icon,
             })
             .collect();
-        if self.open {
+        if open {
             let visual = StandardVisual::MenuSurface {
                 kind: MenuSurfaceKind::ContextMenu,
                 open: true,
@@ -560,7 +561,7 @@ impl crate::ComponentView for ContextMenu {
             mutations.set_text_input(id, None);
         }
         let mut style = self.style.clone();
-        Arc::make_mut(&mut style.layout).hidden = !self.open;
+        Arc::make_mut(&mut style.layout).hidden = !open;
         project_common(
             id,
             world,

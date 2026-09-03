@@ -1517,7 +1517,9 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
             .any(|change| change.pointer_id == 7 && !change.captured)
     );
 
-    assert!(context.dismiss_overlay(host).unwrap());
+    assert!(!context.dismiss_overlay(host).unwrap());
+    assert!(context.active_runtime_overlay(document).is_none());
+    context.advance_animations(nana_ui_core::motion::MENU_POP);
     let dismissed_work = context.world_mut().take_system_work();
     assert!(dismissed_work.accessibility.contains(&host.stable_id()));
     context

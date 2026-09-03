@@ -29,7 +29,7 @@ impl AppContext {
                     parent: host.id,
                     child: overlay.id,
                 })?;
-        if previous.active == Some(overlay.id) {
+        if previous.active == Some(overlay.id) && !self.world.surface_closed(overlay.id) {
             return Ok(false);
         }
         if self.runtime_overlay_kind(overlay.id).is_none() {
@@ -118,6 +118,9 @@ impl AppContext {
         self.component_lifecycle
             .overlay_activation_tokens
             .insert(host.id, activation_token);
+        let mut motion = MutationQueue::new();
+        motion.set_surface_open(final_active, true, final_kind == RuntimeOverlayKind::Menu);
+        self.commit_mutations(motion)?;
         self.prepare_blocking_overlay_activation(overlay_node.document, final_active);
         Ok(true)
     }
@@ -128,7 +131,11 @@ impl AppContext {
             .world
             .overlay_host(host.id)
             .ok_or(FrameworkError::MissingView(host.id))?;
-        if previous.active.is_none() {
+        if previous.active.is_none()
+            || previous
+                .active
+                .is_some_and(|root| self.world.surface_closed(root))
+        {
             return Ok(false);
         }
         let document = self
@@ -136,13 +143,30 @@ impl AppContext {
             .node(host.id)
             .ok_or(FrameworkError::MissingView(host.id))?
             .document;
-        self.update_overlay_host(
-            host,
-            crate::OverlayHostState::default(),
-            document,
-            previous.restore_focus,
-            None,
-        )?;
+        let root = previous.active.expect("active overlay checked above");
+        if matches!(
+            self.runtime_overlay_kind(root),
+            Some(RuntimeOverlayKind::Dialog | RuntimeOverlayKind::Menu)
+        ) {
+            let mut mutations = MutationQueue::new();
+            mutations.set_surface_open(
+                root,
+                false,
+                self.runtime_overlay_kind(root) == Some(RuntimeOverlayKind::Menu),
+            );
+            self.commit_mutations(mutations)?;
+            self.update_component(host, |_, cx| {
+                cx.emit(crate::OverlayClosing { root });
+            })?;
+        } else {
+            self.update_overlay_host(
+                host,
+                crate::OverlayHostState::default(),
+                document,
+                previous.restore_focus,
+                None,
+            )?;
+        }
         Ok(true)
     }
 
@@ -229,6 +253,109 @@ impl AppContext {
         crate::InteractionState {
             pointer_events: blocks_pointer,
             focusable: false,
+        }
+    }
+}
+
+impl AppContext {
+    pub(super) fn finish_surface_exit(&mut self, root: StableNodeId) -> Result<(), FrameworkError> {
+        if !self.world.surface_closed(root) {
+            return Ok(());
+        }
+        let host = self
+            .world
+            .node(root)
+            .and_then(|node| node.parent)
+            .filter(|host| {
+                self.world
+                    .overlay_host(*host)
+                    .is_some_and(|state| state.active == Some(root))
+            });
+        if let Some(host) = host {
+            self.update_component(Entity::<OverlayHost>::from_stable_id(host), |_, cx| {
+                cx.mutations()
+                    .set_overlay_host(host, crate::OverlayHostState::default());
+                cx.emit(OverlayChanged { active: None });
+            })?;
+        } else if self
+            .views
+            .get(&root)
+            .is_some_and(|view| view.is::<crate::ActionMenu>())
+        {
+            self.update_component(Entity::<crate::ActionMenu>::from_stable_id(root), |_, _| {})?;
+        } else if self
+            .views
+            .get(&root)
+            .is_some_and(|view| view.is::<crate::Popover>())
+        {
+            self.update_component(Entity::<crate::Popover>::from_stable_id(root), |_, _| {})?;
+        } else if self
+            .views
+            .get(&root)
+            .is_some_and(|view| view.is::<crate::AnchoredActionMenu>())
+        {
+            self.update_component(
+                Entity::<crate::AnchoredActionMenu>::from_stable_id(root),
+                |_, _| {},
+            )?;
+        } else if self
+            .views
+            .get(&root)
+            .is_some_and(|view| view.is::<crate::ContextMenu>())
+        {
+            self.update_component(
+                Entity::<crate::ContextMenu>::from_stable_id(root),
+                |_, _| {},
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl AppContext {
+    pub(super) fn prepare_surface_closing(&self, mutations: &mut MutationQueue) {
+        let targets = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetSurfaceOpen { id, open, .. } => Some((*id, *open)),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        for (root, open) in targets {
+            if open {
+                continue;
+            }
+            let Some(node) = self.world.node(root) else {
+                continue;
+            };
+            let Some(host) = node.parent else {
+                continue;
+            };
+            let Some(state) = self
+                .world
+                .overlay_host(host)
+                .filter(|state| state.active == Some(root))
+            else {
+                continue;
+            };
+            mutations.set_interaction(
+                host,
+                crate::InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                },
+            );
+            if self
+                .world
+                .focused(node.document)
+                .is_some_and(|focus| self.overlay_descendant(root, focus))
+            {
+                let restore = state
+                    .restore_focus
+                    .filter(|focus| self.overlay_focus_candidate(node.document, *focus));
+                mutations.request_focus(node.document, restore);
+            }
         }
     }
 }

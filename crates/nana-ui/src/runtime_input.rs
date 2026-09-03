@@ -3241,6 +3241,8 @@ mod tests {
                 .unwrap()
                 .prevent_default
         );
+        assert!(context.active_runtime_overlay(document).is_none());
+        context.advance_animations(std::time::Duration::from_secs(1));
         assert_eq!(
             context
                 .world()

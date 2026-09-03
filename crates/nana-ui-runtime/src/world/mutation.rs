@@ -24,6 +24,7 @@ pub(super) struct ValidationPlan<'a> {
     /// Cloned from `source` on first animation mutation, same rationale.
     pub(super) animations: Option<HashMap<AnimationId, AnimationSpec>>,
     pub(super) text_inputs: HashMap<StableNodeId, Option<TextInputState>>,
+    pub(super) surface_open: HashMap<StableNodeId, bool>,
     pub(super) overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
     pub(super) accessibility: HashMap<StableNodeId, AccessibilityState>,
     /// Nodes visited by whole-set walks during this validation. Reported through
@@ -46,6 +47,7 @@ impl<'a> ValidationPlan<'a> {
             pointer_captures: None,
             animations: None,
             text_inputs: HashMap::new(),
+            surface_open: HashMap::new(),
             overlay_hosts: HashMap::new(),
             accessibility: HashMap::new(),
             scanned: 0,
@@ -237,6 +239,10 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetAccessibility { id, accessibility } => {
                     self.node(*id)?;
                     self.accessibility.insert(*id, accessibility.clone());
+                }
+                UiMutation::SetSurfaceOpen { id, open, .. } => {
+                    self.node(*id)?;
+                    self.surface_open.insert(*id, *open);
                 }
                 UiMutation::SetOverlayHost { host, state } => {
                     let host_document = self.node(*host)?.document;
@@ -788,6 +794,14 @@ impl<'a> ValidationPlan<'a> {
             let Some(active) = state.active else {
                 continue;
             };
+            if !self
+                .surface_open
+                .get(&active)
+                .copied()
+                .unwrap_or(!self.source.surface_closed(active))
+            {
+                continue;
+            }
             if !self.exists(active)
                 || self.is_parked(active)
                 || self.node(host)?.document != document
@@ -1041,6 +1055,8 @@ impl UiWorld {
                         self.animations.remove(&animation_id);
                         self.animation_deadlines.remove(&(deadline, animation_id));
                     }
+                    self.surface_motion.remove(&id);
+                    self.closing_surfaces.remove(&id);
                     self.switch_transitions.remove(&id);
                     self.hover_transitions.remove(&id);
                     self.clear_overlay_references(id);
@@ -1382,6 +1398,9 @@ impl UiWorld {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
             }
+            UiMutation::SetSurfaceOpen { id, open, menu } => {
+                self.set_surface_open(*id, *open, *menu);
+            }
             UiMutation::SetOverlayHost { host, state } => {
                 let previous = self.nodes.overlay_host(*host).copied();
                 if previous == Some(*state) {
@@ -1394,38 +1413,7 @@ impl UiWorld {
                     .and_then(|previous| previous.active)
                     .filter(|active| Some(*active) != state.active)
                 {
-                    let mut inactive_nodes = HashSet::new();
-                    let mut stack = vec![inactive];
-                    while let Some(id) = stack.pop() {
-                        stack.extend(self.record(id).hierarchy.children.iter().copied());
-                        inactive_nodes.insert(id);
-                    }
-                    let released = self
-                        .input
-                        .pointer_captures
-                        .iter()
-                        .filter_map(|(&(document, pointer_id), &target)| {
-                            inactive_nodes
-                                .contains(&target)
-                                .then_some((document, pointer_id, target))
-                        })
-                        .collect::<Vec<_>>();
-                    for (document, pointer_id, target) in released {
-                        self.input.pointer_captures.remove(&(document, pointer_id));
-                        self.input
-                            .pending_pointer_capture_changes
-                            .push(PointerCaptureChange {
-                                pointer_id,
-                                target,
-                                captured: false,
-                            });
-                    }
-                    self.input
-                        .pointer_hover
-                        .retain(|_, target| !inactive_nodes.contains(target));
-                    self.input
-                        .pointer_press
-                        .retain(|_, target| !inactive_nodes.contains(target));
+                    self.clear_surface_pointer_interactions(inactive);
                 }
                 let changed_roots = previous
                     .and_then(|previous| previous.active)

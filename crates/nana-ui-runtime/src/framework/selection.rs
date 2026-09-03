@@ -381,7 +381,8 @@ impl AppContext {
             .document_order(document)
             .into_iter()
             .filter(|id| {
-                self.sequential_focus_candidate(document, *id)
+                !self.world.motion_blocks_input(*id)
+                    && self.sequential_focus_candidate(document, *id)
                     && self.world.is_overlay_reachable(*id)
             })
             .collect()

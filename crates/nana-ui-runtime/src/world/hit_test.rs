@@ -223,6 +223,7 @@ impl UiWorld {
         for node in forest.iter().rev() {
             collect_hit_candidates(node, x, y, &mut candidates);
         }
+        candidates.retain(|id| !self.motion_blocks_input(*id));
         candidates
     }
 }
@@ -234,6 +235,9 @@ impl UiWorld {
     /// first hit, so pointer dispatch on every move does not collect and then
     /// discard the full candidate list.
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        if !self.closing_surfaces.is_empty() {
+            return self.hit_test_candidates(document, x, y).into_iter().next();
+        }
         let forest = self.hit_test_index.get(&document)?;
         forest
             .iter()
@@ -339,9 +343,13 @@ impl UiWorld {
         while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
             stack.pop()
         {
+            if self.motion_blocks_input(id) {
+                continue;
+            }
             let style = self.record(id).resolved.0.as_ref();
             let layout = self.record(id).layout;
-            let node_style = self.record(id).style.layout.as_ref();
+            let motion_layout = self.motion_layout(id, &self.record(id).style.layout);
+            let node_style = motion_layout.as_ref();
             let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {

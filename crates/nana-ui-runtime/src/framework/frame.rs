@@ -380,6 +380,21 @@ impl AppContext {
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
         self.component_lifecycle.now = now;
         let mut frame = self.world.advance_animations(now);
+        let finished_surfaces = frame
+            .samples
+            .iter()
+            .filter(|sample| {
+                sample.finished
+                    && crate::component_animation_id(
+                        crate::component_animation_kinds::SURFACE,
+                        sample.target,
+                    ) == Some(sample.id)
+            })
+            .map(|sample| sample.target)
+            .collect::<Vec<_>>();
+        for target in finished_surfaces {
+            let _ = self.finish_surface_exit(target);
+        }
         let tooltip_targets = self
             .component_lifecycle
             .tooltips

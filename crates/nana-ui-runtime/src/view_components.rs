@@ -1274,6 +1274,12 @@ pub struct OverlayChanged {
     pub active: Option<StableNodeId>,
 }
 
+/// Logical dismissal starts now; the host retains this root until its exit finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayClosing {
+    pub root: StableNodeId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliderError {
     NonFinite,

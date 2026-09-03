@@ -212,6 +212,8 @@ impl UiWorld {
                 self.style_model.palette.text.as_rgba_array()
             }
         });
+        let mut source_style = source_style;
+        source_style.layout = self.motion_layout(id, &source_style.layout);
         Some(ExtractedNode {
             id,
             kind,

@@ -4,6 +4,7 @@ mod extraction;
 mod geometry;
 mod hit_test;
 mod input;
+mod motion;
 mod mutation;
 mod style;
 mod text;
@@ -407,6 +408,8 @@ pub struct UiWorld {
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
     pub(crate) animation_now: Duration,
+    surface_motion: HashMap<StableNodeId, motion::SurfaceMotion>,
+    closing_surfaces: HashSet<StableNodeId>,
     switch_transitions: HashMap<StableNodeId, f32>,
     hover_transitions: HashMap<StableNodeId, style::HoverTransition>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
@@ -487,6 +490,8 @@ impl UiWorld {
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
             animation_now: Duration::ZERO,
+            surface_motion: HashMap::new(),
+            closing_surfaces: HashSet::new(),
             switch_transitions: HashMap::new(),
             hover_transitions: HashMap::new(),
             animation_deadlines: BTreeSet::new(),
@@ -1514,6 +1519,7 @@ impl UiWorld {
                 let active = state.active?;
                 let node = self.node(active)?;
                 if node.parent != Some(*host)
+                    || self.surface_closed(active)
                     || !self.is_overlay_reachable(active)
                     || !self
                         .accessibility(active)
@@ -1752,6 +1758,8 @@ impl UiWorld {
         }
 
         for &id in subtree {
+            self.surface_motion.remove(&id);
+            self.closing_surfaces.remove(&id);
             self.switch_transitions.remove(&id);
             self.hover_transitions.remove(&id);
             if self.overlay_host(id).is_some() {
