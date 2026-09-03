@@ -23,7 +23,7 @@ members = [
     "examples/runtime-host-fixture",
 ]
 resolver = "2"
-exclude = ["tools/css-parity-webview"]
+exclude = ["tools/css-parity-webview", "crates/nana-icons-tabler"]
 
 [workspace.dependencies]
 nana-ui-core = { path = "crates/nana-ui-core" }

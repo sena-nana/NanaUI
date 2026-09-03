@@ -1,0 +1,18 @@
+[package]
+name = "nana-icons-tabler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Full Tabler outline icon catalog as typed NanaUI `Icon` constants (generated)"
+license = "MIT"
+publish = false
+
+[lib]
+name = "nana_icons_tabler"
+path = "src/lib.rs"
+
+[dependencies]
+nana-ui-core = { path = "../nana-ui-core" }
+
+[dev-dependencies]
+nana-svg-raster = { path = "../nana-svg-raster" }

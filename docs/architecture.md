@@ -22,6 +22,11 @@ nana-ui                 宿主适配器：run_runtime、控件再导出、SceneW
 Vue 兼容（可选）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
+
+图标目录（可选，独立构建，不在 workspace members）
+    nana-icons-tabler    Tabler outline 全量 `Icon` 常量（生成物，见
+                          scripts/generate_tabler_catalog.py）。应用直用常量，
+                          链接器剔除未引用图标；不属于产品绘制路径
 ```
 
 依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
