@@ -54,6 +54,10 @@ impl UiWorld {
             .pointer_press
             .insert((document, pointer_id), target);
         if previous != Some(target) {
+            if self.hover_transitions.contains_key(&target) {
+                self.mark_hover_paint(target);
+            }
+            self.cancel_hover_transition(target);
             self.generation = self.generation.wrapping_add(1);
             if let Some(previous) = previous {
                 self.mark_interaction_style(previous);
@@ -78,11 +82,16 @@ impl UiWorld {
             self.validate_pointer_target(document, target)?;
         }
         let key = (document, pointer_id);
+        let old = self.input.pointer_hover.get(&key).copied();
+        let paints = [old, target].map(|id| id.map(|id| (id, self.hover_paint(id))));
         let previous = match target {
             Some(target) => self.input.pointer_hover.insert(key, target),
             None => self.input.pointer_hover.remove(&key),
         };
         if previous != target {
+            for (id, paint) in paints.into_iter().flatten() {
+                self.transition_hover(id, paint);
+            }
             self.generation = self.generation.wrapping_add(1);
             if let Some(previous) = previous {
                 self.mark_interaction_style(previous);

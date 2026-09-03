@@ -971,6 +971,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
     assert_eq!(
         context.world().standard_visual(switch.stable_id()),
         Some(StandardVisual::Switch {
+            thumb_progress: 1.0,
             label: Arc::from("Auto build"),
             hint: None,
             checked: false,
@@ -1020,6 +1021,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         .world_mut()
         .set_pointer_hover(document, 1, Some(checkbox.stable_id()))
         .unwrap();
+    context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
     let work = context.world_mut().take_system_work();
     context.world_mut().resolve_styles(&work.style).unwrap();
     let hovered_checked = context
@@ -2743,6 +2745,7 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         .world_mut()
         .set_pointer_hover(document, 1, Some(button.stable_id()))
         .unwrap();
+    context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
     let work = context.world_mut().take_system_work();
     context.world_mut().resolve_styles(&work.style).unwrap();
     assert_eq!(
@@ -2999,14 +3002,19 @@ fn icon_button_tooltip_uses_hover_clock_and_real_overlay_child() {
             Duration::from_millis(10),
         )
         .unwrap();
-    assert_eq!(
-        context.next_animation_deadline(),
-        Some(Duration::from_millis(110))
-    );
     assert!(
-        !context
-            .advance_animations(Duration::from_millis(109))
-            .has_updates()
+        context
+            .next_animation_deadline()
+            .is_some_and(|time| time <= Duration::from_millis(110))
+    );
+    context.advance_animations(Duration::from_millis(109));
+    assert_eq!(
+        context
+            .world()
+            .overlay_host(button.stable_id())
+            .unwrap()
+            .active,
+        None
     );
     assert!(
         context
@@ -3047,6 +3055,7 @@ fn icon_button_tooltip_uses_hover_clock_and_real_overlay_child() {
         context.world().overlay_host(button.stable_id()),
         Some(crate::OverlayHostState::default())
     );
+    context.advance_animations(Duration::from_millis(231));
     assert_eq!(context.next_animation_deadline(), None);
 }
 
@@ -3172,14 +3181,19 @@ fn tooltip_default_delay_stays_closed_until_deadline_and_is_label_only() {
             Duration::from_millis(10),
         )
         .unwrap();
-    assert_eq!(
-        context.next_animation_deadline(),
-        Some(Duration::from_millis(360))
-    );
     assert!(
-        !context
-            .advance_animations(Duration::from_millis(359))
-            .has_updates()
+        context
+            .next_animation_deadline()
+            .is_some_and(|time| time <= Duration::from_millis(360))
+    );
+    context.advance_animations(Duration::from_millis(359));
+    assert_eq!(
+        context
+            .world()
+            .overlay_host(button.stable_id())
+            .unwrap()
+            .active,
+        None
     );
     assert_eq!(
         context.world().overlay_host(button.stable_id()),

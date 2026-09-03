@@ -406,6 +406,9 @@ pub struct UiWorld {
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
+    pub(crate) animation_now: Duration,
+    switch_transitions: HashMap<StableNodeId, f32>,
+    hover_transitions: HashMap<StableNodeId, style::HoverTransition>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     style_model: StyleModelRef,
     generation: u64,
@@ -483,6 +486,9 @@ impl UiWorld {
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
+            animation_now: Duration::ZERO,
+            switch_transitions: HashMap::new(),
+            hover_transitions: HashMap::new(),
             animation_deadlines: BTreeSet::new(),
             style_model: StyleModelRef::default(),
             generation: 0,
@@ -1746,6 +1752,8 @@ impl UiWorld {
         }
 
         for &id in subtree {
+            self.switch_transitions.remove(&id);
+            self.hover_transitions.remove(&id);
             if self.overlay_host(id).is_some() {
                 self.nodes
                     .set_overlay_host(id, Some(OverlayHostState::default()));

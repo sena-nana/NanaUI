@@ -740,6 +740,7 @@ mod tests {
         assert!(label.bounds.x > 0.0, "label sits inside the button padding");
 
         world.set_pointer_hover(document(), 1, Some(id)).unwrap();
+        world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
         world.resolve_styles(&[id]).unwrap();
         let Some(ComponentGeometry::MenuSurface {
             trigger_surface, ..
