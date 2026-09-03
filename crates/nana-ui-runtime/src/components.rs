@@ -532,6 +532,8 @@ pub enum StandardVisual {
         leading: Option<StableNodeId>,
         content: Option<StableNodeId>,
         trailing: Option<StableNodeId>,
+        /// 单行补充信息；几何端生成右对齐的小字号 muted 文本区。
+        detail: Option<Arc<str>>,
     },
     StatusBadge {
         label: Arc<str>,
@@ -1011,6 +1013,7 @@ pub enum ComponentGeometry {
         leading: Option<LayoutBox>,
         content: Option<LayoutBox>,
         trailing: Option<LayoutBox>,
+        detail: Option<ComponentTextRegion>,
     },
     StatusBadge {
         indicator: LayoutBox,
