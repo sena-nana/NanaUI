@@ -2841,8 +2841,22 @@ fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
             physical_size.height as f32 / scale_factor,
         ),
         scale_factor,
-        maximized: window.is_maximized(),
+        maximized: geometry_maximized(window),
     }
+}
+
+/// macOS 的 winit `is_maximized` 底层是 `is_zoomed`:窗口 mask 为 borderless(进入
+/// 全屏后)时它靠临时改回 Titled|Resizable 再回滚来查询,查询本身会触发 resize 事件,
+/// 在 resize 事件处理路径中调用就形成死循环。全屏(原生或 simple)语义上不
+/// maximized,直接短路;`simple_fullscreen()` 是纯状态读,无副作用。
+#[cfg(target_os = "macos")]
+fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
+    !(window.fullscreen().is_some() || WindowExtMacOS::simple_fullscreen(window))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
+    window.is_maximized()
 }
 
 fn window_screen_origin(window: &dyn winit::window::Window) -> Option<(f32, f32)> {
