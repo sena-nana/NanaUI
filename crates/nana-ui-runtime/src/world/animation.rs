@@ -71,6 +71,14 @@ impl UiWorld {
                 }
                 component_updates.push(sample.target);
             }
+            if crate::component_animation_id(
+                crate::component_animation_kinds::SURFACE,
+                sample.target,
+            ) == Some(sample.id)
+            {
+                self.advance_surface_motion(&sample);
+                component_updates.push(sample.target);
+            }
             samples.push(sample);
         }
         if !component_updates.is_empty() {

@@ -18,7 +18,7 @@ impl UiWorld {
         if let Some(parent) = parent {
             self.resolve_style(parent, resolved)?;
         }
-        let layout = Arc::clone(&self.record(id).style.layout);
+        let layout = self.motion_layout(id, &self.record(id).style.layout);
         let inherited = parent
             .map(|parent| self.record(parent).resolved.0.as_ref().clone())
             .unwrap_or_default();

@@ -254,6 +254,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetStandardVisual { .. } => "SetStandardVisual",
         UiMutation::SetAccessibility { .. } => "SetAccessibility",
         UiMutation::SetOverlayHost { .. } => "SetOverlayHost",
+        UiMutation::SetSurfaceOpen { .. } => "SetSurfaceOpen",
         UiMutation::CapturePointer { .. } => "CapturePointer",
         UiMutation::ReleasePointer { .. } => "ReleasePointer",
         UiMutation::StartAnimation { .. } => "StartAnimation",

@@ -252,10 +252,10 @@ pub use video::Video;
 pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, HostedTextarea,
     IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged,
-    NumberInput, OverlayChanged, OverlayHost, RangeAdjustment, RangeChanged, RangeDragState,
-    RangeField, ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState, SecondaryPress,
-    SliderError, Stack, Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea,
-    TextChanged, TextInput, ToggleChanged, Tooltip,
+    NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment, RangeChanged,
+    RangeDragState, RangeField, ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState,
+    SecondaryPress, SliderError, Stack, Switch, Table, TableCell, TableCellFocused, TableRow, Text,
+    TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

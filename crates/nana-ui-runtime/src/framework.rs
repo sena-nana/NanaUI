@@ -974,6 +974,7 @@ impl AppContext {
         &mut self,
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        self.prepare_surface_closing(&mut mutations);
         let parked = mutations
             .as_slice()
             .iter()

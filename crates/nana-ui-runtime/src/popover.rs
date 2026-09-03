@@ -255,6 +255,7 @@ pub(crate) fn project_menu_surface(
     alignment: PopoverAlignment,
     label: &str,
 ) {
+    let open = world.project_menu_presence(id, open, mutations);
     let has_trigger = trigger.is_some() || trigger_icon.is_some();
     let has_chrome = open || has_trigger;
     if has_chrome {
@@ -507,6 +508,7 @@ pub(crate) fn project_anchored_menu(
     open: bool,
     label: &str,
 ) {
+    let open = world.project_menu_presence(id, open, mutations);
     if open {
         let visual = StandardVisual::MenuSurface {
             kind,

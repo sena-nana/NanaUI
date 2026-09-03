@@ -430,6 +430,9 @@ impl AppContext {
             .filter_map(|(document_order, host)| {
                 let state = self.world.overlay_host(*host)?;
                 let root = state.active?;
+                if self.world.surface_closed(root) {
+                    return None;
+                }
                 let node = self.world.node(root)?;
                 if node.parent != Some(*host)
                     || !self.world.is_mounted(*host)

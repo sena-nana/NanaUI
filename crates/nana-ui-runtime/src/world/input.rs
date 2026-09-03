@@ -181,3 +181,38 @@ pub(super) struct WorldInputState {
     pub(super) pointer_press: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pending_pointer_capture_changes: Vec<PointerCaptureChange>,
 }
+
+impl UiWorld {
+    pub(super) fn clear_surface_pointer_interactions(&mut self, root: StableNodeId) {
+        let inactive = self.subtree_ids(root).into_iter().collect::<HashSet<_>>();
+        let released = self
+            .input
+            .pointer_captures
+            .iter()
+            .filter_map(|(&(document, pointer_id), &target)| {
+                inactive
+                    .contains(&target)
+                    .then_some((document, pointer_id, target))
+            })
+            .collect::<Vec<_>>();
+        for (document, pointer_id, target) in released {
+            self.input.pointer_captures.remove(&(document, pointer_id));
+            self.input
+                .pending_pointer_capture_changes
+                .push(PointerCaptureChange {
+                    pointer_id,
+                    target,
+                    captured: false,
+                });
+        }
+        self.input
+            .pointer_hover
+            .retain(|_, target| !inactive.contains(target));
+        self.input
+            .pointer_press
+            .retain(|_, target| !inactive.contains(target));
+        for id in inactive {
+            self.cancel_hover_transition(id);
+        }
+    }
+}

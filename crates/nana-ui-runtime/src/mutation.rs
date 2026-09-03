@@ -94,6 +94,11 @@ pub enum UiMutation {
         id: StableNodeId,
         accessibility: AccessibilityState,
     },
+    SetSurfaceOpen {
+        id: StableNodeId,
+        open: bool,
+        menu: bool,
+    },
     SetOverlayHost {
         host: StableNodeId,
         state: OverlayHostState,
@@ -325,6 +330,11 @@ impl MutationQueue {
     pub fn release_pointer(&mut self, pointer_id: u64, target: StableNodeId) {
         self.mutations
             .push(UiMutation::ReleasePointer { pointer_id, target });
+    }
+
+    pub(crate) fn set_surface_open(&mut self, id: StableNodeId, open: bool, menu: bool) {
+        self.mutations
+            .push(UiMutation::SetSurfaceOpen { id, open, menu });
     }
 
     pub fn start_animation(&mut self, animation: AnimationSpec) {
