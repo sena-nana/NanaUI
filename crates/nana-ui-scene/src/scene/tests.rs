@@ -6366,7 +6366,6 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
             active: Some(text_region("a", row_rect(0))),
             suffix: text_region(", b)", row_rect(0)),
             doc: Some(text_region("blend", row_rect(1))),
-            active_bounds: Some(row_rect(0)),
             background: [0.1, 0.1, 0.1, 1.0],
             border: [0.3, 0.3, 0.3, 1.0],
             active_background: [0.2, 0.2, 0.2, 1.0],

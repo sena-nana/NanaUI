@@ -1088,9 +1088,6 @@ impl UiScene {
                             }
                         }
                         if let Some(popup) = signature_popup {
-                            // 签名帮助 slot 140+:面板/活动参数底/前缀/
-                            // 活动参数/后缀/文档行。越过补全 doc 132-139
-                            // 与 hover 120-131，带不得相交。
                             self.insert_primitive(overlay_panel_primitive(
                                 &overlay_context,
                                 140,
@@ -1098,11 +1095,11 @@ impl UiScene {
                                 popup.background,
                                 popup.border,
                             ));
-                            if let Some(bounds) = popup.active_bounds {
+                            if let Some(active) = popup.active.as_ref() {
                                 self.insert_primitive(visual_quad(
                                     &overlay_context,
                                     141,
-                                    scene_rect(bounds),
+                                    scene_rect(active.bounds),
                                     VisualQuadStyle::solid(popup.active_background),
                                 ));
                             }

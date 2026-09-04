@@ -466,13 +466,11 @@ pub struct TextHoverPopup {
     pub body_color: [f32; 4],
 }
 
-/// 宿主喂入的签名帮助内容。纯展示：触发、关闭与活动参数索引由宿主
-/// 决定（内核 `signature_at` 出参）；组件不解析源码。
+/// 宿主喂入的签名帮助。活动参数下标越界时由几何层钳到末参。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSignatureHelp {
     pub title: String,
     pub fn_doc: String,
-    /// `(形参名, 说明)`；活动参数下标越界时钳到末参。
     pub params: Vec<(String, String)>,
     pub active_index: usize,
 }
@@ -493,9 +491,7 @@ impl TextSignatureHelp {
     }
 }
 
-/// [`crate::ComponentGeometry::TextInput`] 的签名帮助浮窗几何。锚定
-/// caret；签名行拆成前缀 / 活动参数 / 后缀三段，活动参数 Accent 高亮。
-/// 绘制 slot 140+，越过补全 doc 带 132-139 与 hover 带 120-131。
+/// 签名帮助浮窗几何：签名行拆成前缀 / 活动参数 / 后缀，slot 140+。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSignaturePopup {
     pub panel: LayoutBox,
@@ -503,8 +499,6 @@ pub struct TextSignaturePopup {
     pub active: Option<ComponentTextRegion>,
     pub suffix: ComponentTextRegion,
     pub doc: Option<ComponentTextRegion>,
-    /// 活动参数底（无活动参数时 `None`）。
-    pub active_bounds: Option<LayoutBox>,
     pub background: [f32; 4],
     pub border: [f32; 4],
     pub active_background: [f32; 4],

@@ -8302,7 +8302,7 @@ fn signature_popup_highlights_active_parameter_and_revokes() {
         popup.doc.as_ref().map(|region| region.content.as_ref()),
         Some("start")
     );
-    assert!(popup.active_bounds.is_some());
+    assert!(popup.active.is_some());
 
     let mut queue = MutationQueue::new();
     queue.set_text_input_signature(id, None);
