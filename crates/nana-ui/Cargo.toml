@@ -60,7 +60,7 @@ cosmic-text.workspace = true
 cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b131eda1288d08df89ad5ba56de97713308", optional = true }
 image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
-nana-svg-raster = { workspace = true, optional = true }
+nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts"] }
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true

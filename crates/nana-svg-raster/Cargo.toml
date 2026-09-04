@@ -10,6 +10,9 @@ license = "MIT OR Apache-2.0"
 name = "nana_svg_raster"
 path = "src/lib.rs"
 
+[features]
+system-fonts = ["resvg/system-fonts"]
+
 [dependencies]
 resvg.workspace = true
 tiny-skia.workspace = true
