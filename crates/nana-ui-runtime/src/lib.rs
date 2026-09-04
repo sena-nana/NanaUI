@@ -111,14 +111,14 @@ pub use components::{
     MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
     OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
     ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
-    StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextCompletionPopup,
-    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
-    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
-    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment, TextHover,
-    TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
-    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp,
-    TextSignaturePopup, TextSnippet,
-    TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
+    StandardVisual, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
+    TextCompletion, TextCompletionPopup, TextCompletionRow, TextCompletionSnapshot, TextContent,
+    TextDiagnosticSeverity, TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry,
+    TextFoldGutter, TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment,
+    TextHover, TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan,
+    TextMetrics, TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -241,10 +241,12 @@ pub use sidebar::{
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use text_editing::{
-    TextCaretIntent, TextLineDirection, TextSearchOptions, expanded_selection, find_matches,
-    find_matches_capped, find_matches_in_range, find_next_match, find_previous_match,
-    matching_bracket_pair, preserve_case_replacement, replace_all_matches,
-    replace_all_matches_in_range, sort_lines,
+    TextCaretIntent, TextLineDirection, TextSearchOptions, atoms_in, delete_backward_atoms,
+    delete_forward_atoms, delete_to_line_end_atoms, delete_to_line_start_atoms,
+    delete_word_backward_atoms, delete_word_forward_atoms, expand_range_over_atoms,
+    expanded_selection, find_matches, find_matches_capped, find_matches_in_range, find_next_match,
+    find_previous_match, matching_bracket_pair, preserve_case_replacement, replace_all_matches,
+    replace_all_matches_in_range, snap_moved_caret, snap_pointer_caret, sort_lines,
 };
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};

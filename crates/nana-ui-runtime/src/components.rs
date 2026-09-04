@@ -192,6 +192,78 @@ impl TextColorSwatchSpan {
     }
 }
 
+/// Atomic inline range in a text editor: caret, delete, insert, and pointer
+/// hits treat `[start, end)` as one unit. Hosts feed these after each value
+/// change; invalid or overlapping ranges are ignored at use time.
+///
+/// `label` / `icon` / `token` are presentation: the committed value still
+/// holds the host token text, but painters draw a chip instead of that text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextAtomSpan {
+    pub start: usize,
+    pub end: usize,
+    pub label: Arc<str>,
+    pub icon: nana_ui_core::Icon,
+    pub token: Arc<str>,
+}
+
+impl TextAtomSpan {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            label: Arc::from(""),
+            icon: nana_ui_core::Icon::File,
+            token: Arc::from(""),
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn icon(mut self, icon: nana_ui_core::Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    pub fn token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.token = token.into();
+        self
+    }
+
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
+/// Chip drawn over an atomic range: body covers the token glyphs, close is a
+/// hit target. Coordinates are node space once placed on
+/// [`ComponentGeometry::TextInput`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextAtomChip {
+    pub bounds: LayoutBox,
+    pub close: LayoutBox,
+    pub icon: nana_ui_core::Icon,
+    pub icon_bounds: LayoutBox,
+    pub label: ComponentTextRegion,
+    pub token: Arc<str>,
+    pub start: usize,
+    pub end: usize,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+}
+
+/// Close control on an atomic chip was activated. The editor also deletes the
+/// atom range through the normal text history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAtomClosed {
+    pub token: Arc<str>,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// 代码折叠区间。字节偏移覆盖整个块（含首尾花括号），`start < end`。
 ///
 /// 宿主在每次文本变化后重新喂 [`crate::TextArea::code_folds`]；哪些区间
@@ -541,6 +613,10 @@ pub enum StandardVisual {
         /// 颜色装饰 span（行内色块，见 [`TextColorSwatchSpan`]）。偏移同样
         /// 由宿主维护；纯装饰不参与布局与命中，仅多行态派生几何。
         color_swatches: Arc<[TextColorSwatchSpan]>,
+        /// Atomic inline chips (see [`TextAtomSpan`]). Hosts feed these with
+        /// the committed token range plus display label/icon. Painters cover
+        /// the token glyphs with a chip; close hits delete the range.
+        atoms: Arc<[TextAtomSpan]>,
         /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding。
         line_numbers: bool,
         /// 缩进参考线。`Some(indent_unit)` 时在每个逻辑行的前导空白处按
@@ -1023,6 +1099,8 @@ pub enum ComponentGeometry {
         /// swatch 细描边的统一颜色（与空白字符 `whitespace_color` 同为
         /// 世界按令牌解析的共享色）。
         swatch_border_color: [f32; 4],
+        /// Inline atom chips covering token glyphs (icon + label + close).
+        atom_chips: Vec<TextAtomChip>,
         /// 光标所在行的低对比背景条。仅聚焦且选区收起时存在，占用选区层
         /// （选区与当前行条互斥）。
         caret_line: Option<(LayoutBox, [f32; 4])>,
@@ -1899,6 +1977,9 @@ pub struct TextInputPresentation {
     /// 颜色装饰 swatch（文本空间，仅多行态计算；每个 span 取末显示行一个
     /// 覆盖方块）。宿主未喂 span 时为空向量，零分配短路。
     pub swatch_marks: Vec<TextSwatchMark>,
+    /// Inline atom chips in text space. Hosts feed [`TextAtomSpan`]; empty
+    /// when none are present.
+    pub atom_chips: Vec<TextAtomChip>,
     /// 光标相邻括号与其配对端的描边框（文本空间，仅聚焦多行态计算）。
     pub bracket_marks: Vec<LayoutBox>,
     /// 括号配对着色 span：`(start, end, depth)`（字节区间 + 嵌套深度，

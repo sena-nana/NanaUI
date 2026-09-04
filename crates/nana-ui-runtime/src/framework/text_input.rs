@@ -473,6 +473,18 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
+            let atoms =
+                crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
+            if !atoms.is_empty() {
+                let range = editable.state().selection.ordered();
+                let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
+                if expanded != range {
+                    editable.state_mut().selection = crate::TextSelection {
+                        anchor: expanded.start,
+                        focus: expanded.end,
+                    };
+                }
+            }
             if !editable.replace_selection(text) {
                 return false;
             }

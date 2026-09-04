@@ -1784,6 +1784,7 @@ fn editor_extras_shape_and_derive_into_geometry() {
             ]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: true,
             indent_guides: None,
             folds: Arc::from([]),
@@ -1935,6 +1936,7 @@ fn fold_editor_world(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers,
             indent_guides: None,
             folds,
@@ -2014,6 +2016,7 @@ fn options_editor_world(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers,
             indent_guides: None,
             folds,
@@ -2098,6 +2101,7 @@ fn sticky_editor_world(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds,
@@ -2310,6 +2314,7 @@ fn git_gutter_editor_world(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers,
             indent_guides: None,
             folds,
@@ -2705,6 +2710,7 @@ fn git_gutter_refeed_replaces_marks() {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -2792,7 +2798,10 @@ fn inlay_world_validation_clamps_invalid_entries_and_normalizes() {
     );
     assert_eq!(
         normalized,
-        vec![crate::TextInlay::new(0, "z:"), crate::TextInlay::new(6, "t:")]
+        vec![
+            crate::TextInlay::new(0, "z:"),
+            crate::TextInlay::new(6, "t:")
+        ]
     );
     // 合法条目原样保留；空输入零产出。
     assert_eq!(
@@ -2862,11 +2871,17 @@ fn inlays_inside_folded_regions_are_dropped() {
     // 锚点 15 落在折叠隐藏区间 [8,28) 内：不出现。
     assert!(view.spans.iter().all(|span| span.value_start != 15));
     assert!(matches!(view.spans[0].kind, TextDisplaySpanKind::Inlay));
-    assert!(matches!(view.spans[1].kind, TextDisplaySpanKind::Fold { .. }));
+    assert!(matches!(
+        view.spans[1].kind,
+        TextDisplaySpanKind::Fold { .. }
+    ));
     assert!(matches!(view.spans[2].kind, TextDisplaySpanKind::Inlay));
     // 折叠后锚点的插入位置在摘要之后。
     let fold_span = &view.spans[1];
-    assert_eq!(view.spans[2].display_start, fold_span.display_start + fold_span.display_len);
+    assert_eq!(
+        view.spans[2].display_start,
+        fold_span.display_start + fold_span.display_len
+    );
 }
 
 /// 世界侧喂入：SetTextInputInlays 经世界校验（钳除 + 排序去重）后进
@@ -2998,6 +3013,7 @@ fn fold_state_survives_host_refeed_and_shift_rescue() {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([crate::TextCodeFold::new(107, 128)]),
@@ -3024,6 +3040,7 @@ fn fold_state_survives_host_refeed_and_shift_rescue() {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -3265,6 +3282,7 @@ fn match_spans_shape_into_highlights_and_derive_into_geometry() {
                 crate::TextMatchSpan::new("甲乙\n".len(), "third".len()).current(),
             ]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -3353,6 +3371,114 @@ fn match_spans_shape_into_highlights_and_derive_into_geometry() {
     assert_eq!(match_markers[1].color[3], 0.45);
 }
 
+#[test]
+fn atom_spans_cover_token_glyphs_with_label_and_close_hit() {
+    let token = "[文件引用: note.txt | /tmp/note.txt]";
+    let value = format!("see {token} end");
+    let start = value.find(token).unwrap();
+    let end = start + token.len();
+    let mut world = UiWorld::default();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "textarea".into(),
+        },
+    );
+    queue.set_standard_visual(
+        node(1),
+        Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([]),
+            matches: Arc::from([]),
+            color_swatches: Arc::from([]),
+            atoms: Arc::from([crate::TextAtomSpan::new(start, end)
+                .label("note.txt")
+                .token("file-1")]),
+            line_numbers: false,
+            indent_guides: None,
+            folds: Arc::from([]),
+            git_marks: Arc::from([]),
+            editor_options: Default::default(),
+        }),
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                height: Some(nana_ui_core::LengthSpec::Px(40.0)),
+                font_size: Some(10.0),
+                line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_text_input(
+        node(1),
+        Some(TextInputState {
+            value: value.clone(),
+            selection: crate::TextSelection::caret(end),
+            additional_selections: Vec::new(),
+        }),
+    );
+    queue.set_accessibility(
+        node(1),
+        AccessibilityState {
+            multiline: true,
+            editable: true,
+            ..AccessibilityState::default()
+        },
+    );
+    queue.set_interaction(
+        node(1),
+        crate::InteractionState {
+            pointer_events: true,
+            focusable: true,
+        },
+    );
+    queue.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 40.0,
+        },
+    );
+    world.commit(queue).unwrap();
+    world.resolve_styles(&[node(1)]).unwrap();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+    let presentation = world
+        .text_input_presentation(node(1))
+        .expect("presentation");
+    assert_eq!(presentation.atom_chips.len(), 1);
+    assert_eq!(
+        presentation.atom_chips[0].label.content.as_ref(),
+        "note.txt"
+    );
+    assert_ne!(presentation.atom_chips[0].label.content.as_ref(), token);
+    let geometry = world.component_geometry(node(1)).expect("geometry");
+    let crate::ComponentGeometry::TextInput { atom_chips, .. } = geometry else {
+        panic!("expected text input geometry");
+    };
+    assert_eq!(atom_chips.len(), 1);
+    assert_eq!(atom_chips[0].label.content.as_ref(), "note.txt");
+    let close = atom_chips[0].close;
+    assert_eq!(
+        world
+            .text_atom_close_hit(node(1), close.x + 1.0, close.y + 1.0)
+            .as_deref(),
+        Some("file-1")
+    );
+}
+
 /// 颜色装饰 swatch 测试的编辑器 world：多行 TextInput 视觉 + 指定
 /// swatch span 与滚动偏移，已布局（font 10、行高 14、200x60）。
 fn swatch_editor_world(
@@ -3382,6 +3508,7 @@ fn swatch_editor_world(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: swatches,
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -3553,6 +3680,7 @@ fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: Some(Arc::from("\t")),
             folds: Arc::from([]),
@@ -8017,6 +8145,7 @@ fn overlay_editor(
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),

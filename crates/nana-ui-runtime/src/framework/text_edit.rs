@@ -10,18 +10,20 @@ use super::{TextArea, TextInput, TextInputState, TextSelection};
 use crate::components::TextSnippetSession;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
-    apply_cursor_edits, apply_replacement, auto_indent_newline, auto_pair_edit, caret_focus,
-    caret_offset_at_point, clamp_boundary, delete_backward, delete_forward, delete_lines,
-    delete_to_line_end, delete_to_line_start, delete_word_backward, delete_word_forward,
-    duplicate_lines, expanded_selection, find_matches, find_matches_in_range, find_next_match,
-    find_previous_match, indent_selection, join_lines, logical_line_range, matching_bracket_pair,
-    move_lines, moved_selection, outdent_selection, page_caret_focus, page_caret_focus_logical,
-    preserve_case_replacement, replace_all_matches_in_range, sort_lines, toggle_line_comment,
+    apply_cursor_edits, apply_replacement, atoms_in, auto_indent_newline, auto_pair_edit,
+    caret_focus, caret_offset_at_point, clamp_boundary, delete_backward_atoms,
+    delete_forward_atoms, delete_lines, delete_to_line_end_atoms, delete_to_line_start_atoms,
+    delete_word_backward_atoms, delete_word_forward_atoms, duplicate_lines,
+    expand_range_over_atoms, expanded_selection, find_matches, find_matches_in_range,
+    find_next_match, find_previous_match, indent_selection, join_lines, logical_line_range,
+    matching_bracket_pair, move_lines, moved_selection, outdent_selection, page_caret_focus,
+    page_caret_focus_logical, preserve_case_replacement, replace_all_matches_in_range,
+    snap_moved_caret, snap_pointer_caret, sort_lines, toggle_line_comment,
     transform_selection_case, vertical_caret_focus, vertical_caret_focus_logical, word_range_at,
 };
 use crate::{
-    CodeEditing, MutationQueue, ScrollOffset, TextCodeFold, TextContent, TextShapeConstraints,
-    TextSnippet,
+    CodeEditing, MutationQueue, ScrollOffset, TextAtomSpan, TextCodeFold, TextContent,
+    TextShapeConstraints, TextSnippet,
 };
 use std::sync::Arc;
 
@@ -145,6 +147,35 @@ impl EditorGeometry<'_> {
 /// Nearest char boundary at or below `offset` (clamped to the value length).
 fn clamp_focus(value: &str, offset: usize) -> usize {
     crate::text_editing::clamp_boundary(value, offset)
+}
+
+fn snap_selection_over_atoms(
+    previous: TextSelection,
+    next: TextSelection,
+    extend: bool,
+    atoms: &[TextAtomSpan],
+) -> TextSelection {
+    if atoms.is_empty() {
+        return next;
+    }
+    let snapped = snap_moved_caret(previous.focus, next.focus, atoms);
+    if extend {
+        let selection = moved_selection(previous, snapped, true);
+        let range = expand_range_over_atoms(selection.ordered(), atoms);
+        if selection.focus >= selection.anchor {
+            TextSelection {
+                anchor: range.start,
+                focus: range.end,
+            }
+        } else {
+            TextSelection {
+                anchor: range.end,
+                focus: range.start,
+            }
+        }
+    } else {
+        TextSelection::caret(snapped)
+    }
 }
 
 /// The word/selection text occurrence search runs on: the primary selection
@@ -389,25 +420,24 @@ impl AppContext {
         // 前进到区间末端再重映射：一次按键跨过整个覆盖区间，值偏移步进
         // 为一。折叠摘要上的同源既有卡死一并修复；点击命中与垂直移动
         // 保持钳制语义（to_value）。
-        let to_value_moved =
-            |previous_focus: usize, moved: TextSelection| -> TextSelection {
-                match &fold_view {
-                    Some(view) => {
-                        let focus = if view.covers_display(moved.focus)
-                            && view.value_of(moved.focus) == previous_focus
-                        {
-                            view.value_of_forward(moved.focus)
-                        } else {
-                            view.value_of(moved.focus)
-                        };
-                        TextSelection {
-                            anchor: view.value_of(moved.anchor),
-                            focus,
-                        }
+        let to_value_moved = |previous_focus: usize, moved: TextSelection| -> TextSelection {
+            match &fold_view {
+                Some(view) => {
+                    let focus = if view.covers_display(moved.focus)
+                        && view.value_of(moved.focus) == previous_focus
+                    {
+                        view.value_of_forward(moved.focus)
+                    } else {
+                        view.value_of(moved.focus)
+                    };
+                    TextSelection {
+                        anchor: view.value_of(moved.anchor),
+                        focus,
                     }
-                    None => moved,
                 }
-            };
+                None => moved,
+            }
+        };
         let vertical = matches!(
             intent,
             TextCaretIntent::Up
@@ -476,6 +506,15 @@ impl AppContext {
             }
             if let Some(goal) = next_goal {
                 self.text_edit.caret_goal_x = Some((focused.node, goal));
+            }
+            let atoms = atoms_in(
+                &state.value,
+                &self.editor_text_atoms(focused.node, focused.kind),
+            );
+            if !atoms.is_empty() {
+                for (index, next) in next_selections.iter_mut().enumerate() {
+                    *next = snap_selection_over_atoms(selections[index], *next, extend, &atoms);
+                }
             }
             let primary = next_selections[primary_index];
             let additional = next_selections
@@ -573,6 +612,11 @@ impl AppContext {
         } else {
             to_value_moved(state.selection.focus, selection)
         };
+        let atoms = atoms_in(
+            &state.value,
+            &self.editor_text_atoms(focused.node, focused.kind),
+        );
+        let moved = snap_selection_over_atoms(state.selection, moved, extend, &atoms);
         self.write_editor_selection(focused.node, focused.kind, moved)
     }
 
@@ -590,14 +634,18 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
+        let atoms = self.editor_text_atoms(focused.node, focused.kind);
         self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
+            let atoms = atoms_in(value, &atoms);
             let replacement = match kind {
-                TextDeleteKind::Backward => delete_backward(value, selection)?,
-                TextDeleteKind::Forward => delete_forward(value, selection)?,
-                TextDeleteKind::WordBackward => delete_word_backward(value, selection)?,
-                TextDeleteKind::WordForward => delete_word_forward(value, selection)?,
-                TextDeleteKind::LineStart => delete_to_line_start(value, selection)?,
-                TextDeleteKind::LineEnd => delete_to_line_end(value, selection)?,
+                TextDeleteKind::Backward => delete_backward_atoms(value, selection, &atoms)?,
+                TextDeleteKind::Forward => delete_forward_atoms(value, selection, &atoms)?,
+                TextDeleteKind::WordBackward => {
+                    delete_word_backward_atoms(value, selection, &atoms)?
+                }
+                TextDeleteKind::WordForward => delete_word_forward_atoms(value, selection, &atoms)?,
+                TextDeleteKind::LineStart => delete_to_line_start_atoms(value, selection, &atoms)?,
+                TextDeleteKind::LineEnd => delete_to_line_end_atoms(value, selection, &atoms)?,
             };
             Some(CursorEdit::Span(replacement))
         })
@@ -1427,6 +1475,14 @@ impl AppContext {
             self.text_edit.text_pointer_drag = None;
             return self.text_editor_minimap_navigate(node, focused.kind, pointer_id, target);
         }
+        if count == 1
+            && !extend
+            && !add_cursor
+            && let Some(token) = self.world.text_atom_close_hit(node, x, y)
+        {
+            self.text_edit.text_pointer_drag = None;
+            return self.close_focused_text_atom(document, &token);
+        }
         // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
         // 光标（单击且无修饰时）。
         if count == 1
@@ -1481,23 +1537,26 @@ impl AppContext {
         if add_cursor && focused.multiline && count == 1 {
             return self.text_editor_toggle_cursor(node, focused.kind, &state, offset);
         }
+        let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, focused.kind));
         let (selection, additional) = match count {
             2 => {
                 let (start, end) = word_range_at(&state.value, offset);
+                let range = expand_range_over_atoms(start..end, &atoms);
                 (
                     TextSelection {
-                        anchor: start,
-                        focus: end,
+                        anchor: range.start,
+                        focus: range.end,
                     },
                     Vec::new(),
                 )
             }
             3 => {
                 let (start, end) = logical_line_range(&state.value, offset);
+                let range = expand_range_over_atoms(start..end, &atoms);
                 (
                     TextSelection {
-                        anchor: start,
-                        focus: end,
+                        anchor: range.start,
+                        focus: range.end,
                     },
                     Vec::new(),
                 )
@@ -1903,10 +1962,72 @@ impl AppContext {
         };
         let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
         let hit = caret_offset_at_point(probe_value, local_x, local_y, geometry.probe());
-        Ok(Some(match &fold_view {
+        let hit = match &fold_view {
             Some(view) => view.value_of(hit),
             None => hit,
-        }))
+        };
+        let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, kind));
+        Ok(Some(snap_pointer_caret(hit, &atoms)))
+    }
+
+    /// Delete the atom identified by `token` through the normal editor history
+    /// and notify [`crate::TextAtomClosed`].
+    pub fn close_focused_text_atom(
+        &mut self,
+        document: DocumentId,
+        token: &str,
+    ) -> Result<bool, FrameworkError> {
+        let Some(focused) = self.focused_text_editor(document) else {
+            return Ok(false);
+        };
+        if focused.kind != TextEditorKind::Area || !focused.accepts_input {
+            return Ok(false);
+        }
+        let atoms = atoms_in(
+            &self.editor_state(focused.node, focused.kind)?.value,
+            &self.editor_text_atoms(focused.node, focused.kind),
+        );
+        let Some(atom) = atoms
+            .iter()
+            .find(|atom| atom.token.as_ref() == token)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        self.write_editor_selection(
+            focused.node,
+            focused.kind,
+            TextSelection {
+                anchor: atom.start,
+                focus: atom.end,
+            },
+        )?;
+        if !self.delete_focused_text(document, TextDeleteKind::Backward)? {
+            return Ok(false);
+        }
+        let entity = Entity::<TextArea>::from_stable_id(focused.node);
+        self.update_component(entity, |_, cx| {
+            cx.emit(crate::TextAtomClosed {
+                token: Arc::clone(&atom.token),
+                start: atom.start,
+                end: atom.end,
+            });
+            false
+        })?;
+        Ok(true)
+    }
+
+    fn editor_text_atoms(&self, node: StableNodeId, kind: TextEditorKind) -> Vec<TextAtomSpan> {
+        match kind {
+            TextEditorKind::Area => self
+                .view_entity::<TextArea>(node)
+                .and_then(|entity| {
+                    self.read(entity, |area: &TextArea| area.atom_spans.to_vec())
+                        .ok()
+                })
+                .unwrap_or_default(),
+            TextEditorKind::Field => Vec::new(),
+        }
     }
 
     fn editor_state(
@@ -4033,6 +4154,100 @@ mod find_scope_smart_select_tests {
         assert_eq!(state.additional_selections, vec![TextSelection::caret(14)]);
         assert_eq!(selection_span(&context, node), (1, 1));
         assert!(!context.shrink_focused_text_selection(document).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod atom_tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, TextAtomSpan};
+    use std::sync::Arc;
+
+    fn focused_editor(value: &str) -> (AppContext, DocumentId, Entity<TextArea>, StableNodeId) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value))
+            .unwrap();
+        let node = area.stable_id();
+        context.focus_node(document, node).unwrap();
+        (context, document, area, node)
+    }
+
+    fn selection_of(context: &AppContext, node: StableNodeId) -> (usize, usize) {
+        let state = context.world().text_input(node).unwrap();
+        (state.selection.anchor, state.selection.focus)
+    }
+
+    #[test]
+    fn delete_and_caret_treat_atom_spans_as_one_unit() {
+        let value = "ab[chip]cd";
+        let atom = TextAtomSpan::new(2, 8);
+        let (mut context, document, area, node) = focused_editor(value);
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([atom.clone()]);
+                area.state.selection = TextSelection::caret(8);
+            })
+            .unwrap();
+        assert!(
+            context
+                .delete_focused_text(document, TextDeleteKind::Backward)
+                .unwrap()
+        );
+        assert_eq!(context.world().text_input(node).unwrap().value, "abcd");
+        assert_eq!(selection_of(&context, node), (2, 2));
+
+        context
+            .update_component(area, |area, _| {
+                area.state.replace_value(value);
+                area.atom_spans = Arc::from([atom.clone()]);
+                area.state.selection = TextSelection::caret(2);
+            })
+            .unwrap();
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::Right, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (8, 8));
+        assert!(
+            context
+                .move_focused_text_caret(document, TextCaretIntent::Left, false, None)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (2, 2));
+
+        context
+            .update_component(area, |area, _| {
+                area.state.selection = TextSelection::caret(5);
+            })
+            .unwrap();
+        assert!(context.replace_focused_text(document, "x").unwrap());
+        assert_eq!(context.world().text_input(node).unwrap().value, "abxcd");
+    }
+
+    #[test]
+    fn close_focused_text_atom_deletes_the_labeled_unit() {
+        let value = "ab[chip]cd";
+        let atom = TextAtomSpan::new(2, 8).label("chip").token("file-1");
+        let (mut context, document, area, node) = focused_editor(value);
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = closed.clone();
+        context
+            .on(area, move |_, event: &crate::TextAtomClosed, _| {
+                sink.lock().unwrap().push(event.token.to_string());
+            })
+            .unwrap();
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([atom]);
+                area.state.selection = TextSelection::caret(8);
+            })
+            .unwrap();
+        assert!(context.close_focused_text_atom(document, "file-1").unwrap());
+        assert_eq!(context.world().text_input(node).unwrap().value, "abcd");
+        assert_eq!(*closed.lock().unwrap(), vec!["file-1".to_string()]);
     }
 }
 

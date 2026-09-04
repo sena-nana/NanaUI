@@ -174,6 +174,219 @@ pub struct TextReplacement {
     pub caret: usize,
 }
 
+/// Valid, non-overlapping atoms inside `value`, sorted by start.
+pub fn atoms_in(value: &str, atoms: &[crate::TextAtomSpan]) -> Vec<crate::TextAtomSpan> {
+    let mut spans: Vec<_> = atoms
+        .iter()
+        .cloned()
+        .filter(|atom| {
+            atom.start < atom.end
+                && atom.end <= value.len()
+                && value.is_char_boundary(atom.start)
+                && value.is_char_boundary(atom.end)
+        })
+        .collect();
+    spans.sort_by_key(|atom| (atom.start, atom.end));
+    let mut cleaned = Vec::with_capacity(spans.len());
+    let mut cursor = 0usize;
+    for atom in spans {
+        if atom.start >= cursor {
+            cursor = atom.end;
+            cleaned.push(atom);
+        }
+    }
+    cleaned
+}
+
+/// Grow `range` until it covers every intersecting atom.
+pub fn expand_range_over_atoms(
+    range: std::ops::Range<usize>,
+    atoms: &[crate::TextAtomSpan],
+) -> std::ops::Range<usize> {
+    let mut start = range.start;
+    let mut end = range.end;
+    loop {
+        let mut grown = false;
+        for atom in atoms {
+            if atom.start < end && atom.end > start && (atom.start < start || atom.end > end) {
+                start = start.min(atom.start);
+                end = end.max(atom.end);
+                grown = true;
+            }
+        }
+        if !grown {
+            break;
+        }
+    }
+    start..end
+}
+
+fn atom_for_backward(atoms: &[crate::TextAtomSpan], caret: usize) -> Option<crate::TextAtomSpan> {
+    atoms
+        .iter()
+        .cloned()
+        .find(|atom| atom.start < caret && caret <= atom.end)
+}
+
+fn atom_for_forward(atoms: &[crate::TextAtomSpan], caret: usize) -> Option<crate::TextAtomSpan> {
+    atoms
+        .iter()
+        .cloned()
+        .find(|atom| atom.start <= caret && caret < atom.end)
+}
+
+fn covering_atom(atoms: &[crate::TextAtomSpan], offset: usize) -> Option<crate::TextAtomSpan> {
+    atoms
+        .iter()
+        .cloned()
+        .find(|atom| atom.start < offset && offset < atom.end)
+}
+
+fn replacement_for_range(range: std::ops::Range<usize>) -> TextReplacement {
+    TextReplacement {
+        caret: range.start,
+        insert: String::new(),
+        range,
+    }
+}
+
+fn expand_replacement(
+    mut replacement: TextReplacement,
+    atoms: &[crate::TextAtomSpan],
+) -> TextReplacement {
+    let expanded = expand_range_over_atoms(replacement.range.clone(), atoms);
+    replacement.caret = expanded.start;
+    replacement.range = expanded;
+    replacement
+}
+
+/// Delete backward, taking any atom that contains or ends at the caret.
+pub fn delete_backward_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    let range = selection.ordered();
+    if range.start != range.end {
+        return Some(replacement_for_range(expand_range_over_atoms(range, atoms)));
+    }
+    if let Some(atom) = atom_for_backward(atoms, range.start) {
+        return Some(replacement_for_range(atom.range()));
+    }
+    delete_backward(value, selection)
+}
+
+/// Delete forward, taking any atom that contains or starts at the caret.
+pub fn delete_forward_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    let range = selection.ordered();
+    if range.start != range.end {
+        return Some(replacement_for_range(expand_range_over_atoms(range, atoms)));
+    }
+    if let Some(atom) = atom_for_forward(atoms, range.start) {
+        return Some(replacement_for_range(atom.range()));
+    }
+    delete_forward(value, selection)
+}
+
+pub fn delete_word_backward_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    let range = selection.ordered();
+    if range.start == range.end
+        && let Some(atom) = atom_for_backward(atoms, range.start)
+    {
+        return Some(replacement_for_range(atom.range()));
+    }
+    Some(expand_replacement(
+        delete_word_backward(value, selection)?,
+        atoms,
+    ))
+}
+
+pub fn delete_word_forward_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    let range = selection.ordered();
+    if range.start == range.end
+        && let Some(atom) = atom_for_forward(atoms, range.start)
+    {
+        return Some(replacement_for_range(atom.range()));
+    }
+    Some(expand_replacement(
+        delete_word_forward(value, selection)?,
+        atoms,
+    ))
+}
+
+pub fn delete_to_line_start_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    Some(expand_replacement(
+        delete_to_line_start(value, selection)?,
+        atoms,
+    ))
+}
+
+pub fn delete_to_line_end_atoms(
+    value: &str,
+    selection: crate::TextSelection,
+    atoms: &[crate::TextAtomSpan],
+) -> Option<TextReplacement> {
+    Some(expand_replacement(
+        delete_to_line_end(value, selection)?,
+        atoms,
+    ))
+}
+
+/// Snap a caret that moved from `from` to `to` so it cannot rest inside an atom.
+pub fn snap_moved_caret(from: usize, to: usize, atoms: &[crate::TextAtomSpan]) -> usize {
+    if to == from {
+        return snap_pointer_caret(to, atoms);
+    }
+    if to < from {
+        for atom in atoms {
+            if from == atom.end && to < atom.end {
+                return atom.start;
+            }
+            if to > atom.start && to < atom.end {
+                return atom.start;
+            }
+        }
+    } else {
+        for atom in atoms {
+            if from == atom.start && to > atom.start {
+                return atom.end;
+            }
+            if to > atom.start && to < atom.end {
+                return atom.end;
+            }
+        }
+    }
+    to
+}
+
+/// Pointer hits inside an atom rest on the nearer boundary.
+pub fn snap_pointer_caret(offset: usize, atoms: &[crate::TextAtomSpan]) -> usize {
+    let Some(atom) = covering_atom(atoms, offset) else {
+        return offset;
+    };
+    if offset - atom.start <= atom.end - offset {
+        atom.start
+    } else {
+        atom.end
+    }
+}
+
 /// Delete backward from the caret: the selection, or one grapheme before it.
 pub fn delete_backward(value: &str, selection: crate::TextSelection) -> Option<TextReplacement> {
     let range = selection.ordered();
@@ -3065,5 +3278,49 @@ mod tests {
             page_caret_focus_logical(short, caret, TextCaretIntent::PageDown, false).unwrap();
         assert_eq!(bottom.focus, short.len());
         assert!(page_caret_focus_logical(short, caret, TextCaretIntent::Left, false).is_none());
+    }
+
+    #[test]
+    fn atoms_are_deleted_and_skipped_as_single_units() {
+        let value = "ab[chip]cd";
+        let atom = crate::TextAtomSpan::new(2, 8);
+        let atoms = atoms_in(value, &[atom]);
+        assert_eq!(
+            apply_replacement(
+                value,
+                &delete_backward_atoms(value, crate::TextSelection::caret(8), &atoms).unwrap()
+            ),
+            ("abcd".into(), 2)
+        );
+        assert_eq!(
+            apply_replacement(
+                value,
+                &delete_forward_atoms(value, crate::TextSelection::caret(2), &atoms).unwrap()
+            ),
+            ("abcd".into(), 2)
+        );
+        assert_eq!(
+            apply_replacement(
+                value,
+                &delete_backward_atoms(value, crate::TextSelection::caret(5), &atoms).unwrap()
+            ),
+            ("abcd".into(), 2)
+        );
+        assert_eq!(snap_moved_caret(8, 7, &atoms), 2);
+        assert_eq!(snap_moved_caret(2, 3, &atoms), 8);
+        assert_eq!(snap_pointer_caret(5, &atoms), 2);
+        assert_eq!(snap_pointer_caret(6, &atoms), 8);
+        assert_eq!(snap_moved_caret(1, 0, &atoms), 0);
+        let partial = crate::TextSelection {
+            anchor: 1,
+            focus: 4,
+        };
+        assert_eq!(
+            apply_replacement(
+                value,
+                &delete_backward_atoms(value, partial, &atoms).unwrap()
+            ),
+            ("acd".into(), 1)
+        );
     }
 }

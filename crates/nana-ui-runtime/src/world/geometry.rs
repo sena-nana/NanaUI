@@ -532,6 +532,30 @@ impl UiWorld {
                         self.style_model.palette.accent_soft_hover.as_rgba_array()
                     }
                 };
+                let map_chip_box = |rect: LayoutBox| LayoutBox {
+                    x: field_x(rect.x),
+                    y: content.y + rect.y - scroll_y,
+                    width: rect.width,
+                    height: rect.height,
+                };
+                let atom_chips = presentation
+                    .atom_chips
+                    .iter()
+                    .map(|chip| {
+                        let mut mapped = chip.clone();
+                        mapped.bounds = map_chip_box(chip.bounds);
+                        mapped.close = map_chip_box(chip.close);
+                        mapped.icon_bounds = map_chip_box(chip.icon_bounds);
+                        mapped.label.bounds = map_chip_box(chip.label.bounds);
+                        if mapped.label.color.is_none() {
+                            mapped.label.color =
+                                Some(self.style_model.palette.text.as_rgba_array());
+                        }
+                        mapped.background = self.style_model.palette.subtle.as_rgba_array();
+                        mapped.border = self.style_model.palette.border.as_rgba_array();
+                        mapped
+                    })
+                    .collect();
                 let match_markers = presentation
                     .match_marks
                     .iter()
@@ -953,6 +977,7 @@ impl UiWorld {
                     match_markers,
                     swatch_markers,
                     swatch_border_color: self.style_model.palette.border.as_rgba_array(),
+                    atom_chips,
                     caret_line,
                     bracket_markers,
                     occurrence_markers,
@@ -1046,9 +1071,7 @@ impl UiWorld {
                     signature_popup: {
                         // 签名帮助：宿主喂入即显示，锚定 caret；占位符与
                         // IME 组合期不弹出（与 hover 同一打字态门）。
-                        if multiline
-                            && !presentation.placeholder
-                            && presentation.preedit.is_none()
+                        if multiline && !presentation.placeholder && presentation.preedit.is_none()
                         {
                             self.nodes.text_signature(id).and_then(|help| {
                                 signature_popup_geometry(
