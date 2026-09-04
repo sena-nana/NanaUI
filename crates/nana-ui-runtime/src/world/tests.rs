@@ -8262,6 +8262,62 @@ fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
     assert_eq!(world.text_hover_scroll(id), 0);
 }
 
+#[test]
+fn signature_popup_highlights_active_parameter_and_revokes() {
+    let mut world = UiWorld::default();
+    let mut queue = MutationQueue::new();
+    let id = overlay_editor(&mut world, "mix(1.0, 2.0, 0.5)", 4, Arc::from([]));
+    queue.set_text_input_signature(
+        id,
+        Some(crate::TextSignatureHelp::new(
+            "mix",
+            "linear blend",
+            vec![
+                ("a".into(), "start".into()),
+                ("b".into(), "end".into()),
+                ("t".into(), String::new()),
+            ],
+            0,
+        )),
+    );
+    world.commit(queue).unwrap();
+    world.take_system_work();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[id], &mut shaper).unwrap();
+    let geometry = world.component_geometry(id).unwrap();
+    let crate::ComponentGeometry::TextInput {
+        signature_popup, ..
+    } = geometry
+    else {
+        panic!("text input geometry");
+    };
+    let popup = signature_popup.expect("signature popup");
+    assert_eq!(popup.prefix.content.as_ref(), "mix(");
+    assert_eq!(
+        popup.active.as_ref().map(|region| region.content.as_ref()),
+        Some("a")
+    );
+    assert_eq!(popup.suffix.content.as_ref(), ", b, t)");
+    assert_eq!(
+        popup.doc.as_ref().map(|region| region.content.as_ref()),
+        Some("start")
+    );
+    assert!(popup.active_bounds.is_some());
+
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_signature(id, None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+    let geometry = world.component_geometry(id).unwrap();
+    let crate::ComponentGeometry::TextInput {
+        signature_popup, ..
+    } = geometry
+    else {
+        panic!("text input geometry");
+    };
+    assert!(signature_popup.is_none());
+}
+
 // ---- Wave 4b-1：span 值→显示重映射 / 补全弹层文档行 ----
 
 /// 固定区间 presenter：按预设值空间区间出 span（颜色角色互异便于断言）。

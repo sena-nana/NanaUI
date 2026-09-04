@@ -394,7 +394,8 @@ impl<'a> ValidationPlan<'a> {
                 | UiMutation::SetTextInputCompletionDismissed { id }
                 | UiMutation::SetTextInputCompletionReopened { id }
                 | UiMutation::SetTextInputHover { id, .. }
-                | UiMutation::SetTextInputHoverScroll { id, .. } => {
+                | UiMutation::SetTextInputHoverScroll { id, .. }
+                | UiMutation::SetTextInputSignature { id, .. } => {
                     self.node(*id)?;
                 }
             }
@@ -1575,6 +1576,7 @@ impl UiWorld {
                     self.nodes.set_text_snippet_session(*id, None);
                     self.nodes.set_text_completion_view(*id, None);
                     self.nodes.set_text_hover_view(*id, None);
+                    self.nodes.set_text_signature(*id, None);
                 }
                 self.mark(
                     *id,
@@ -1776,6 +1778,18 @@ impl UiWorld {
                     None => self.nodes.set_text_hover_view(*id, None),
                 }
                 self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetTextInputSignature { id, help } => {
+                let changed = match (help.as_ref(), self.nodes.text_signature(*id)) {
+                    (None, None) => false,
+                    (None, Some(_)) => true,
+                    (Some(next), Some(fed)) => next != fed,
+                    (Some(_), None) => true,
+                };
+                if changed {
+                    self.nodes.set_text_signature(*id, help.clone());
+                    self.mark(*id, DirtyMask::RENDER);
+                }
             }
             UiMutation::SetTextInputHoverScroll { id, scroll } => {
                 let changed = self

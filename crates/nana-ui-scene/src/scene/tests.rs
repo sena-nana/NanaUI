@@ -301,6 +301,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
     });
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -1239,6 +1240,7 @@ fn text_input_editor_markers_and_line_labels_paint() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -1371,6 +1373,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -1497,6 +1500,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -1604,6 +1608,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         line_labels_font_size: 11.0,
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         minimap: Some(nana_ui_runtime::TextMinimapGeometry {
             panel: LayoutBox {
                 x: 136.0,
@@ -1842,6 +1847,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -1956,6 +1962,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -2062,6 +2069,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         git_marks: git,
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -2361,6 +2369,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -2505,6 +2514,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -2646,6 +2656,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
     });
 
     let mut scene = UiScene::new();
@@ -2777,6 +2788,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -2944,6 +2956,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
     });
 
     let mut scene = UiScene::new();
@@ -3057,6 +3070,7 @@ fn input_component_geometry(multiline: bool) -> Option<ComponentGeometry> {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
     })
 }
 
@@ -6341,6 +6355,22 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
             title_color: [1.0; 4],
             body_color: [0.6; 4],
         }),
+        signature_popup: Some(nana_ui_runtime::TextSignaturePopup {
+            panel: LayoutBox {
+                x: 8.0,
+                y: 140.0,
+                width: 160.0,
+                height: 32.0,
+            },
+            prefix: text_region("mix(", row_rect(0)),
+            active: Some(text_region("a", row_rect(0))),
+            suffix: text_region(", b)", row_rect(0)),
+            doc: Some(text_region("blend", row_rect(1))),
+            active_bounds: Some(row_rect(0)),
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.3, 0.3, 0.3, 1.0],
+            active_background: [0.2, 0.2, 0.2, 1.0],
+        }),
         background: None,
         border: None,
         border_width: 0.0,
@@ -6384,6 +6414,13 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
     assert!(matches!(kind(120), ScenePrimitiveKind::Quad { .. }));
     assert!(matches!(kind(121), ScenePrimitiveKind::Text { content, .. } if content == "hover"));
     assert!(matches!(kind(122), ScenePrimitiveKind::Text { content, .. } if content == "body"));
+    // 签名帮助 slot 140+：与 hover 120-131、补全 doc 132-139 不相交。
+    assert!(matches!(kind(140), ScenePrimitiveKind::Quad { .. }));
+    assert!(matches!(kind(141), ScenePrimitiveKind::Quad { .. }));
+    assert!(matches!(kind(142), ScenePrimitiveKind::Text { content, .. } if content == "mix("));
+    assert!(matches!(kind(143), ScenePrimitiveKind::Text { content, .. } if content == "a"));
+    assert!(matches!(kind(144), ScenePrimitiveKind::Text { content, .. } if content == ", b)"));
+    assert!(matches!(kind(145), ScenePrimitiveKind::Text { content, .. } if content == "blend"));
     // 两行之外没有多余文本层。
     assert!(
         scene
@@ -6489,6 +6526,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
             title_color: [1.0; 4],
             body_color: [0.6, 0.6, 0.6, 1.0],
         }),
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,
@@ -6708,6 +6746,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
         hover_popup: None,
+        signature_popup: None,
         background: None,
         border: None,
         border_width: 0.0,

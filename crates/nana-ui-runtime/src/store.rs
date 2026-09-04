@@ -181,6 +181,8 @@ pub(crate) struct NodeStore {
     text_completions: HashMap<StableNodeId, TextCompletionViewState>,
     /// hover 文档浮窗（仅宿主喂入 hover 的编辑器持有条目）。
     text_hovers: HashMap<StableNodeId, TextHoverViewState>,
+    /// 签名帮助浮窗（仅宿主喂入签名的编辑器持有条目）。
+    text_signatures: HashMap<StableNodeId, crate::TextSignatureHelp>,
     /// minimap 视口钉住（仅显式导航过的多行编辑器持有条目）。
     text_viewport_pins: HashMap<StableNodeId, ScrollOffset>,
     /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
@@ -252,6 +254,7 @@ impl NodeStore {
         self.text_snippets.remove(&id);
         self.text_completions.remove(&id);
         self.text_hovers.remove(&id);
+        self.text_signatures.remove(&id);
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
         Some(record)
@@ -344,6 +347,12 @@ impl NodeStore {
         TextHoverViewState,
         text_hover_view,
         set_text_hover_view
+    );
+    sparse!(
+        text_signatures,
+        crate::TextSignatureHelp,
+        text_signature,
+        set_text_signature
     );
     sparse!(
         text_viewport_pins,

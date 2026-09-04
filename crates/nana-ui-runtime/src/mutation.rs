@@ -4,7 +4,7 @@ use crate::{
     CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
     NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
     StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInlay,
-    TextInputState, TextSelection,
+    TextInputState, TextSelection, TextSignatureHelp,
 };
 use nana_ui_core::ThemeMode;
 use std::sync::Arc;
@@ -190,6 +190,12 @@ pub enum UiMutation {
     SetTextInputHoverScroll {
         id: StableNodeId,
         scroll: usize,
+    },
+    /// 宿主喂入或撤掉（`None`）签名帮助浮窗。纯展示，活动参数索引由
+    /// 宿主按内核 `signature_at` 写入。
+    SetTextInputSignature {
+        id: StableNodeId,
+        help: Option<TextSignatureHelp>,
     },
 }
 
@@ -447,6 +453,16 @@ impl MutationQueue {
     pub fn set_text_input_hover_scroll(&mut self, id: StableNodeId, scroll: usize) {
         self.mutations
             .push(UiMutation::SetTextInputHoverScroll { id, scroll });
+    }
+
+    /// 喂入或撤掉（`None`）签名帮助浮窗。
+    pub fn set_text_input_signature(
+        &mut self,
+        id: StableNodeId,
+        help: Option<TextSignatureHelp>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetTextInputSignature { id, help });
     }
 
     pub fn len(&self) -> usize {
