@@ -15,6 +15,7 @@ pub(crate) mod image_url;
 mod mesh;
 mod quad;
 mod text;
+pub(crate) mod url_texture_cache;
 mod validate;
 
 use std::{
@@ -100,6 +101,7 @@ pub struct SceneWgpuPainter {
     validated_order: VecDeque<u64>,
     /// Last fully scene-described dest; host textures / GPU slots skip reuse.
     painted: Option<PaintedDest>,
+    image_revision: u64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -177,11 +179,32 @@ impl SceneWgpuPainter {
             validated_scenes: HashMap::new(),
             validated_order: VecDeque::new(),
             painted: None,
+            image_revision: 0,
         }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// Wake the owning event loop when an asynchronous URL image completes.
+    pub fn set_image_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.quads.set_image_waker(wake.clone());
+        self.host_textures.set_image_waker(wake);
+    }
+
+    pub fn has_image_updates(&self) -> bool {
+        self.quads.has_image_updates() || self.host_textures.has_image_updates()
+    }
+
+    /// Offscreen hosts can await completion and paint again without polling pixels.
+    pub fn has_pending_images(&self) -> bool {
+        self.quads.has_pending_images() || self.host_textures.has_pending_images()
+    }
+
+    /// Completion generation, used by layered snapshot hosts to repaint earlier layers.
+    pub fn image_revision(&self) -> u64 {
+        self.image_revision
     }
 
     /// GPU counters from the last `paint` that encoded a real command buffer.
@@ -225,6 +248,12 @@ impl SceneWgpuPainter {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
+        let quad_images = self.quads.poll_images();
+        let mask_images = self.host_textures.poll_images();
+        if quad_images || mask_images {
+            self.painted = None;
+            self.image_revision = self.image_revision.wrapping_add(1);
+        }
         let instance = scene.instance_id();
         let operations = match self.validated_scenes.get(&instance) {
             Some(cached) => Arc::clone(cached),
@@ -311,6 +340,7 @@ impl SceneWgpuPainter {
 
         let batch_started = Instant::now();
         self.quads.begin_frame();
+        self.host_textures.begin_frame();
         self.meshes.begin_frame();
         self.icons.begin_frame(&self.queue, dest_physical);
         self.text.begin_frame(&self.queue, dest_physical);
@@ -923,6 +953,7 @@ impl SceneWgpuPainter {
             &mut dest_passes,
         );
         let encode = encode_started.elapsed();
+        self.quads.finish_frame();
         self.host_textures.trim();
         for _ in 0..self.text.take_frame_gpu_allocations() {
             gpu_work.record_realloc();

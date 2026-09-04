@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
 use nana_ui_core::{
@@ -11,7 +11,7 @@ use nana_ui_scene::QuadSurfacePaint;
 use super::{
     clip::LogicalRect,
     color::{orthographic, pack_linear, with_opacity},
-    image_url::decode_url_rgba,
+    url_texture_cache::UrlTextureCache,
 };
 use crate::PhysicalRect;
 
@@ -116,13 +116,6 @@ struct Uniforms {
     _padding: [f32; 3],
 }
 
-struct CachedUrlTexture {
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    width: u32,
-    height: u32,
-}
-
 pub(super) struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
     pipeline_msaa: wgpu::RenderPipeline,
@@ -132,7 +125,7 @@ pub(super) struct QuadPipeline {
     paint_capacity: usize,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
-    url_cache: HashMap<String, Option<CachedUrlTexture>>,
+    url_cache: UrlTextureCache,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
     instances: wgpu::Buffer,
     instance_capacity: usize,
@@ -284,7 +277,7 @@ impl QuadPipeline {
             paint_capacity,
             url_view,
             url_sampler,
-            url_cache: HashMap::new(),
+            url_cache: UrlTextureCache::default(),
             url_bind_groups,
             instances,
             instance_capacity,
@@ -298,7 +291,31 @@ impl QuadPipeline {
         self.pending.clear();
         self.pending_paint.clear();
         self.pending_urls.clear();
-        self.url_bind_groups.clear();
+        self.url_cache.begin_frame();
+    }
+
+    pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
+        self.url_cache.set_wake(wake);
+    }
+    pub(super) fn has_image_updates(&self) -> bool {
+        self.url_cache.has_updates()
+    }
+    pub(super) fn has_pending_images(&self) -> bool {
+        self.url_cache.has_pending()
+    }
+    pub(super) fn poll_images(&mut self) -> bool {
+        let changed = self.url_cache.poll();
+        if changed {
+            self.url_bind_groups.clear();
+        }
+        changed
+    }
+    pub(super) fn finish_frame(&mut self) {
+        self.url_cache.trim();
+        self.url_bind_groups.retain(|key, _| {
+            key.as_deref()
+                .is_none_or(|key| self.url_cache.contains_retained(key))
+        });
     }
 
     pub(super) fn pending_len(&self) -> u32 {
@@ -587,6 +604,7 @@ impl QuadPipeline {
         }
         let paint_reallocated = self.pending_paint.len() > self.paint_capacity;
         if paint_reallocated {
+            self.url_bind_groups.clear();
             self.paint_capacity = self.pending_paint.len().next_power_of_two();
             self.paint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.quad.paint"),
@@ -613,17 +631,12 @@ impl QuadPipeline {
     }
 
     fn rebuild_url_bind_groups(&mut self, device: &wgpu::Device) {
-        self.url_bind_groups.clear();
-        let mut unique = Vec::new();
-        for url in &self.pending_urls {
-            if !unique.iter().any(|existing| existing == url) {
-                unique.push(url.clone());
-            }
-        }
-        if !unique.iter().any(|url| url.is_none()) {
-            unique.push(None);
-        }
+        let mut unique: HashSet<_> = self.pending_urls.iter().cloned().collect();
+        unique.insert(None);
         for url in unique {
+            if self.url_bind_groups.contains_key(&url) {
+                continue;
+            }
             let bind_group = self.create_url_bind_group(device, url.as_deref());
             self.url_bind_groups.insert(url, bind_group);
         }
@@ -855,7 +868,7 @@ fn surface_paint_layers(surface: &QuadSurfacePaint) -> Vec<&BackgroundImage> {
 fn pack_paint(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    cache: &mut UrlTextureCache,
     surface: &QuadSurfacePaint,
     width: f32,
     height: f32,
@@ -875,7 +888,7 @@ fn pack_paint(
 fn pack_layer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    cache: &mut UrlTextureCache,
     surface: &QuadSurfacePaint,
     layer: &BackgroundImage,
     width: f32,
@@ -904,7 +917,7 @@ fn packed_mask_url(paint: &QuadPaintData, surface: &QuadSurfacePaint) -> Option<
 fn pack_shared(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    cache: &mut UrlTextureCache,
     surface: &QuadSurfacePaint,
     width: f32,
     height: f32,
@@ -986,7 +999,7 @@ fn pack_shared(
         position,
         repeat,
     }) = layer
-        && let Some((tex_w, tex_h)) = load_url_texture(device, queue, cache, url)
+        && let Some((tex_w, tex_h)) = cache.load(device, queue, url)
         && let Some(bits) = repeat_bits(*repeat)
     {
         paint.flags |= PAINT_URL;
@@ -1013,7 +1026,7 @@ fn pack_shared(
     }
     if paint.flags & PAINT_URL == 0
         && let Some(MaskImage::Url(url)) = surface.mask.as_ref()
-        && load_url_texture(device, queue, cache, url).is_some()
+        && cache.load(device, queue, url).is_some()
     {
         paint.flags |= PAINT_MASK | PAINT_MASK_URL;
     }
@@ -1061,71 +1074,12 @@ fn pack_mask_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::GradientSto
     paint.mask_pos2 = [positions[4], positions[5], positions[6], positions[7]];
 }
 
-fn load_url_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
-    url: &str,
-) -> Option<(u32, u32)> {
-    if let Some(cached) = cache.get(url) {
-        return cached.as_ref().map(|entry| (entry.width, entry.height));
-    }
-    let Some((width, height, rgba)) = decode_url_rgba(url) else {
-        cache.insert(url.to_string(), None);
-        return None;
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("nana-ui.scene.quad.url"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * width),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&Default::default());
-    cache.insert(
-        url.to_string(),
-        Some(CachedUrlTexture {
-            _texture: texture,
-            view,
-            width,
-            height,
-        }),
-    );
-    Some((width, height))
-}
-
 const BORDER_IMAGE_LINEAR_SIZE: u32 = 64;
 
 fn prepare_border_image_tiles(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    cache: &mut UrlTextureCache,
     spec: Option<&BorderImageSpec>,
     box_w: f32,
     box_h: f32,
@@ -1136,7 +1090,7 @@ fn prepare_border_image_tiles(
             if url.is_empty() {
                 return None;
             }
-            let (tex_w, tex_h) = load_url_texture(device, queue, cache, url)?;
+            let (tex_w, tex_h) = cache.load(device, queue, url)?;
             (url.clone(), tex_w as f32, tex_h as f32)
         }
         BackgroundImage::Gradient(CssGradient::Linear(linear)) => {
@@ -1170,55 +1124,14 @@ fn prepare_border_image_tiles(
 fn insert_rgba_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    cache: &mut HashMap<String, Option<CachedUrlTexture>>,
+    cache: &mut UrlTextureCache,
     key: &str,
     width: u32,
     height: u32,
     rgba: &[u8],
 ) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("nana-ui.scene.quad.border-image"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * width),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&Default::default());
-    cache.insert(
-        key.to_string(),
-        Some(CachedUrlTexture {
-            _texture: texture,
-            view,
-            width,
-            height,
-        }),
-    );
+    let texture = super::url_texture_cache::upload(device, queue, (width, height, rgba));
+    cache.insert(key.to_string(), texture);
 }
 
 fn linear_gradient_cache_key(linear: &LinearGradient) -> String {
@@ -1493,6 +1406,31 @@ fn quad_paint_test_device() -> (wgpu::Device, wgpu::Queue) {
 
 #[cfg(test)]
 #[test]
+fn stable_frames_reuse_bind_groups_and_storage_growth_rebinds() {
+    let (device, queue) = quad_paint_test_device();
+    let mut pipeline = QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let initial = pipeline.url_bind_groups.get(&None).unwrap().clone();
+    for _ in 0..3 {
+        pipeline.begin_frame();
+        pipeline.pending.push(SolidInstance::zeroed());
+        pipeline.pending_paint.push(QuadPaintData::zeroed());
+        pipeline.pending_urls.push(None);
+        pipeline.upload(&device, &queue, [64, 64], 1.0, None);
+        assert_eq!(pipeline.url_bind_groups.get(&None), Some(&initial));
+    }
+    pipeline.begin_frame();
+    let count = pipeline.paint_capacity + 1;
+    pipeline.pending.resize(count, SolidInstance::zeroed());
+    pipeline
+        .pending_paint
+        .resize(count, QuadPaintData::zeroed());
+    pipeline.pending_urls.resize(count, None);
+    pipeline.upload(&device, &queue, [64, 64], 1.0, None);
+    assert_ne!(pipeline.url_bind_groups.get(&None), Some(&initial));
+}
+
+#[cfg(test)]
+#[test]
 fn pack_paint_sets_mask_flag() {
     use nana_ui_core::{CssGradient, GradientStop, LinearGradient};
     use nana_ui_scene::QuadSurfacePaint;
@@ -1514,7 +1452,14 @@ fn pack_paint_sets_mask_flag() {
         }))),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_ne!(paint.flags & PAINT_MASK, 0, "flags={}", paint.flags);
     assert_eq!(paint.mask_stop_count, 2);
 }
@@ -1543,11 +1488,25 @@ fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
         }))),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 200.0, 100.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        200.0,
+        100.0,
+    );
     assert_ne!(paint.flags & PAINT_MASK_RADIAL, 0, "flags={}", paint.flags);
     assert!((paint.mask_center_x - 0.05).abs() < 1e-5);
     assert!((paint.mask_center_y - 0.20).abs() < 1e-5);
-    let missing = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 0.0, 100.0);
+    let missing = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        0.0,
+        100.0,
+    );
     assert_eq!(missing.flags & PAINT_MASK, 0, "zero width must fail closed");
 }
 
@@ -1565,7 +1524,14 @@ fn pack_paint_sets_hue_rotate() {
         }),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_ne!(paint.flags & PAINT_FILTER, 0, "flags={}", paint.flags);
     assert!((paint.filter_hue - 90.0).abs() < 0.01);
 }
@@ -1585,7 +1551,14 @@ fn pack_paint_sets_invert_and_opacity() {
         }),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_ne!(paint.flags & PAINT_FILTER, 0);
     assert!((paint.filter_invert - 1.0).abs() < 0.01);
     assert!((paint.filter_opacity - 0.5).abs() < 0.01);
@@ -1601,7 +1574,14 @@ fn pack_paint_packs_dashed_border_styles() {
         border_styles: [1, 2, 1, 0],
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_eq!(paint.border_styles, 1 | (2 << 2) | (1 << 4));
 }
 
@@ -1631,7 +1611,14 @@ fn pack_paint_sets_mask_url_flag_from_png_alpha() {
         mask: Some(MaskImage::Url(url)),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_ne!(paint.flags & PAINT_MASK, 0, "flags={}", paint.flags);
     assert_ne!(paint.flags & PAINT_MASK_URL, 0, "flags={}", paint.flags);
 }
@@ -1647,7 +1634,14 @@ fn pack_paint_ignores_unloadable_mask_url() {
         mask: Some(MaskImage::Url("nana-missing-mask-image-xyz.png".into())),
         ..Default::default()
     };
-    let paint = pack_paint(&device, &queue, &mut HashMap::new(), &surface, 64.0, 64.0);
+    let paint = pack_paint(
+        &device,
+        &queue,
+        &mut UrlTextureCache::default(),
+        &surface,
+        64.0,
+        64.0,
+    );
     assert_eq!(
         paint.flags & PAINT_MASK,
         0,

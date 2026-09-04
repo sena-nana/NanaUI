@@ -43,7 +43,7 @@ fn point_in_polygon(local: vec2<f32>, paint: QuadPaintData) -> bool {
         let vi = verts[i];
         let vj = verts[j];
         if ((vi.y > local.y) != (vj.y > local.y))
-            && (local.x < (vj.x - vi.x) * (local.y - vi.y) / max(vj.y - vi.y, 0.0001) + vi.x) {
+            && (local.x < (vj.x - vi.x) * (local.y - vi.y) / (vj.y - vi.y) + vi.x) {
             inside = !inside;
         }
         j = i;
