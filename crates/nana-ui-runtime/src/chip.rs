@@ -257,6 +257,35 @@ mod tests {
     }
 
     #[test]
+    fn activate_chip_emits_activate_and_skips_when_disabled() {
+        let mut context = AppContext::new();
+        let chip = context
+            .create_component(document(), Chip::new("Plan"))
+            .unwrap();
+        let fired = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let count = std::sync::Arc::clone(&fired);
+        context
+            .on(chip, move |_, _: &Activate, _| {
+                *count.lock().unwrap() += 1;
+            })
+            .unwrap();
+        assert!(context.activate_chip(chip).unwrap());
+        assert_eq!(*fired.lock().unwrap(), 1);
+        assert!(
+            context.activate_node(chip.stable_id()).unwrap(),
+            "Chip must be in builtin activations so pointer hits emit Activate"
+        );
+        assert_eq!(*fired.lock().unwrap(), 2);
+
+        context
+            .update_component(chip, |chip, _| chip.disabled = true)
+            .unwrap();
+        assert!(!context.activate_chip(chip).unwrap());
+        assert!(!context.activate_node(chip.stable_id()).unwrap());
+        assert_eq!(*fired.lock().unwrap(), 2);
+    }
+
+    #[test]
     fn assemble_chip_adds_close_only_when_dismissible() {
         let mut context = AppContext::new();
         let chip = context
