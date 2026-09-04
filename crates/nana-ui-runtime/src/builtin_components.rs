@@ -1074,7 +1074,56 @@ impl RegisterableComponent for NativeMarkdown {
     const TYPE_ID: &'static str = crate::component_descriptors::NATIVE_MARKDOWN.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::NATIVE_MARKDOWN.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        NativeMarkdown::from_source(markdown_source_from_spec(spec))
+        NativeMarkdown::from_source(markdown_source_from_spec(spec)).style(layout_only_style(spec))
+    }
+    const RETAIN_SEMANTIC_STATE: bool = true;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        if let Some(previous) =
+            previous.filter(|previous| previous.source() == Some(markdown_source_from_spec(spec)))
+        {
+            previous.clone().style(layout_only_style(spec))
+        } else {
+            Self::from_semantic(spec)
+        }
+    }
+    fn finish_semantic(
+        context: &mut crate::AppContext,
+        entity: crate::Entity<Self>,
+    ) -> Result<(), FrameworkError> {
+        context.assemble_markdown(entity).map(|_| ())
+    }
+    fn project_semantic(
+        &self,
+        spec: &SemanticSpec<'_>,
+        id: crate::StableNodeId,
+        world: &crate::UiWorld,
+        mutations: &mut crate::MutationQueue,
+    ) {
+        crate::ComponentView::project(self, id, world, mutations);
+        let request = self.blocks().iter().find_map(|block| {
+            let (source, kind, names) = match block {
+                crate::MarkdownBlock::Mermaid(source) => (
+                    source,
+                    "mermaid",
+                    ["mermaid-renderer", "mermaidrenderer", "data-mermaid-renderer"],
+                ),
+                crate::MarkdownBlock::DisplayMath(source) => (
+                    source,
+                    "math",
+                    ["math-renderer", "mathrenderer", "data-math-renderer"],
+                ),
+                _ => return None,
+            };
+            names
+                .into_iter()
+                .find_map(|name| spec.attr(name))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| crate::HighlightRequest::new(name, format!("{kind}:{source}")))
+        });
+        if world.highlight_request(id) != request.as_ref() {
+            mutations.set_highlight_request(id, request);
+        }
     }
 }
 
@@ -2322,12 +2371,13 @@ fn markdown_source_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
     spec.attr("source")
         .or_else(|| spec.attr("markdown"))
         .or_else(|| spec.attr("value"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .unwrap_or("")
 }
 
+#[cfg(feature = "graph-canvas")]
 const DEFAULT_GRAPH_NODE_WIDTH: f32 = 160.0;
+#[cfg(feature = "graph-canvas")]
 const DEFAULT_GRAPH_NODE_HEIGHT: f32 = 80.0;
 
 #[cfg(feature = "graph-canvas")]

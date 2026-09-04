@@ -7,24 +7,24 @@ use std::sync::Arc;
 
 use super::*;
 
-pub(crate) fn is_sidebar_frame_body(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_sidebar_frame_body(widget: &SemanticWidgetView<'_>) -> bool {
     crate::scroll::is_runtime_scroll_body(&widget.props)
 }
 
 pub(crate) fn widget_icon(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Option<nana_ui_core::Icon> {
     widget
         .children
         .iter()
         .filter_map(|child| snapshot.get(*child))
         .find(|child| child.kind == crate::WidgetKind::Icon)
-        .and_then(glyph_name_icon)
+        .and_then(|widget| glyph_name_icon(&widget))
         .or_else(|| glyph_name_icon(widget))
 }
 
-pub(crate) fn glyph_name_icon(widget: &crate::SemanticWidget) -> Option<nana_ui_core::Icon> {
+pub(crate) fn glyph_name_icon(widget: &SemanticWidgetView<'_>) -> Option<nana_ui_core::Icon> {
     nana_ui_core::Icon::parse_name(widget.props.display_label())
         .or_else(|| nana_ui_core::Icon::parse_name(&widget.props.value))
         .or_else(|| {
@@ -37,14 +37,14 @@ pub(crate) fn glyph_name_icon(widget: &crate::SemanticWidget) -> Option<nana_ui_
 }
 
 pub(crate) fn icon_consumed_by_parent(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> bool {
     let Some(parent) = widget.parent.and_then(|parent| snapshot.get(parent)) else {
         return false;
     };
     match parent.kind {
-        crate::WidgetKind::Button => widget_icon(parent, snapshot).is_some(),
+        crate::WidgetKind::Button => widget_icon(&parent, snapshot).is_some(),
         crate::WidgetKind::EmptyState => true,
         _ => false,
     }
@@ -61,26 +61,26 @@ pub(crate) enum ComponentRuleOutcome {
 
 /// Rule signature: `(kind + prop composition) → tag`.
 pub(crate) type ComponentRule =
-    fn(&crate::SemanticWidget, &crate::SemanticSnapshot) -> Option<ComponentRuleOutcome>;
+    fn(&SemanticWidgetView<'_>, &SemanticRead<'_>) -> Option<ComponentRuleOutcome>;
 
 pub(crate) fn rule_button_with_icon(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     (widget.kind == crate::WidgetKind::Button && widget_icon(widget, snapshot).is_some())
         .then_some(ComponentRuleOutcome::Tag("icon-button"))
 }
 
 pub(crate) fn rule_chip_variant(
-    widget: &crate::SemanticWidget,
-    _snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    _snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     (widget.kind == crate::WidgetKind::Chip).then_some(ComponentRuleOutcome::Tag("button"))
 }
 
 pub(crate) fn rule_standalone_icon(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     if widget.kind != crate::WidgetKind::Icon {
         return None;
@@ -92,16 +92,16 @@ pub(crate) fn rule_standalone_icon(
 }
 
 pub(crate) fn rule_confirm_dialog(
-    widget: &crate::SemanticWidget,
-    _snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    _snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     (widget.kind == crate::WidgetKind::Dialog && vue_confirm_dialog(&widget.props))
         .then_some(ComponentRuleOutcome::Tag("confirm-dialog"))
 }
 
 pub(crate) fn rule_hosted_textarea(
-    widget: &crate::SemanticWidget,
-    _snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    _snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     (widget.kind == crate::WidgetKind::Textarea
         && crate::widget_map::highlight_language(&widget.props).is_some())
@@ -109,8 +109,8 @@ pub(crate) fn rule_hosted_textarea(
 }
 
 pub(crate) fn rule_choice_field(
-    widget: &crate::SemanticWidget,
-    _snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    _snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
     if !widget.kind.is_choice_field() {
         return None;
@@ -142,8 +142,8 @@ pub(crate) const COMPONENT_RULES: &[ComponentRule] = &[
 ];
 
 pub(crate) fn resolve_widget_component_type(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     context: &AppContext,
 ) -> Option<ComponentTypeId> {
     for rule in COMPONENT_RULES {
@@ -186,7 +186,7 @@ pub(crate) fn resolve_widget_component_type(
     try_tag(kind.element_tag()).or_else(|| try_tag(kind.as_str()))
 }
 
-pub(crate) fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn can_bind_from_semantic(widget: &SemanticWidgetView<'_>) -> bool {
     if widget.kind == crate::WidgetKind::Chip && widget.props.role.eq_ignore_ascii_case("tab") {
         return false;
     }
@@ -266,7 +266,7 @@ pub(crate) fn can_bind_from_semantic(widget: &crate::SemanticWidget) -> bool {
         )
 }
 
-pub(crate) fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f32) {
+pub(crate) fn semantic_numeric_fields(widget: &SemanticWidgetView<'_>) -> (f32, f32) {
     match widget.kind {
         crate::WidgetKind::Progress => (widget.props.progress, widget.props.progress_max),
         crate::WidgetKind::LevelMeter => {
@@ -285,7 +285,7 @@ pub(crate) fn semantic_numeric_fields(widget: &crate::SemanticWidget) -> (f32, f
     }
 }
 
-pub(crate) fn bind_attr_overrides(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
+pub(crate) fn bind_attr_overrides(widget: &SemanticWidgetView<'_>) -> Vec<(String, String)> {
     let mut extras = Vec::new();
     let missing = |name: &str| {
         !widget
@@ -481,7 +481,7 @@ pub(crate) fn stringify_host_attr(value: &nana_js_engine::HostValue) -> String {
     }
 }
 
-pub(crate) fn bind_native_json_attrs(widget: &crate::SemanticWidget) -> Vec<(String, String)> {
+pub(crate) fn bind_native_json_attrs(widget: &SemanticWidgetView<'_>) -> Vec<(String, String)> {
     let mut extras = Vec::new();
     let missing = |name: &str, extras: &[(String, String)]| {
         !widget
@@ -689,7 +689,7 @@ pub(crate) fn shell_kind_from_ident(raw: &str) -> Option<crate::WidgetKind> {
     is_shell_composer_kind(parsed).then_some(parsed)
 }
 
-pub(crate) fn effective_kind(widget: &crate::SemanticWidget) -> crate::WidgetKind {
+pub(crate) fn effective_kind(widget: &SemanticWidgetView<'_>) -> crate::WidgetKind {
     if !matches!(
         widget.kind,
         crate::WidgetKind::Column | crate::WidgetKind::Box | crate::WidgetKind::Row
@@ -703,8 +703,8 @@ pub(crate) fn effective_kind(widget: &crate::SemanticWidget) -> crate::WidgetKin
 }
 
 pub(crate) fn bind_semantic_slots(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Vec<(String, StableNodeId)> {
     let mut slots = Vec::new();
     let push = |slots: &mut Vec<(String, StableNodeId)>, name: &str, id: Option<StableNodeId>| {
@@ -871,7 +871,7 @@ pub(crate) fn bind_semantic_slots(
                 .or_else(|| {
                     widget.children.iter().find_map(|child| {
                         let child = snapshot.get(*child)?;
-                        widget_tag(child)
+                        widget_tag(&child)
                             .eq_ignore_ascii_case("summary")
                             .then(|| StableNodeId::new(child.id))
                             .flatten()
@@ -888,7 +888,7 @@ pub(crate) fn bind_semantic_slots(
                             let child = snapshot.get(*child)?;
                             let id = StableNodeId::new(child.id)?;
                             (Some(id) != summary
-                                && !widget_tag(child).eq_ignore_ascii_case("summary"))
+                                && !widget_tag(&child).eq_ignore_ascii_case("summary"))
                             .then_some(id)
                         })
                     }),
@@ -942,7 +942,7 @@ pub(crate) fn bind_semantic_slots(
                 let Some(id) = StableNodeId::new(child.id) else {
                     continue;
                 };
-                push(&mut slots, &dock_item_id(child, index), Some(id));
+                push(&mut slots, &dock_item_id(&child, index), Some(id));
             }
         }
         crate::WidgetKind::SettingsPage => {
@@ -955,7 +955,7 @@ pub(crate) fn bind_semantic_slots(
             );
         }
         _ => {
-            for &child in &widget.children {
+            for &child in widget.children.iter() {
                 let Some(child) = snapshot.get(child) else {
                     continue;
                 };
@@ -1007,8 +1007,8 @@ pub(crate) fn bind_semantic_slots(
 }
 
 pub(crate) fn bind_semantic_copy(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> (Option<String>, Option<String>) {
     match widget.kind {
         crate::WidgetKind::LabeledValue => {
@@ -1033,7 +1033,7 @@ pub(crate) fn bind_semantic_copy(
         crate::WidgetKind::Table if widget.props.label.is_empty() => {
             let caption = widget.children.iter().find_map(|child| {
                 let child = snapshot.get(*child)?;
-                widget_tag(child)
+                widget_tag(&child)
                     .eq_ignore_ascii_case("caption")
                     .then(|| child.props.display_label().to_string())
                     .filter(|text| !text.is_empty())
@@ -1053,8 +1053,8 @@ pub(crate) fn context_menu_searchable(props: &crate::WidgetProps) -> bool {
 }
 
 pub(crate) fn try_bind_registered_component(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     id: StableNodeId,
     context: &AppContext,
     mutations: &mut MutationQueue,
@@ -1177,8 +1177,13 @@ pub(crate) fn try_bind_registered_component(
     )
     .then(|| context.world().text_input(id).cloned())
     .flatten();
-    match context.bind_semantic(id, &spec, mutations) {
-        Ok(ComponentBindKind::Projected) => {
+    let binding = context
+        .prepare_semantic_binding(id, &spec, mutations)
+        .ok()?;
+    let kind = binding.kind();
+    pending.bindings.push(binding);
+    match kind {
+        ComponentBindKind::Projected => {
             if let Some(mut state) = existing_input {
                 if state.value != widget.props.value {
                     state.replace_value(&widget.props.value);
@@ -1223,7 +1228,7 @@ pub(crate) fn try_bind_registered_component(
             enqueue_bound_assembly(widget, snapshot, id, context, mutations, pending);
             Some(true)
         }
-        Ok(ComponentBindKind::Layout) | Err(_) => None,
+        ComponentBindKind::Layout => None,
     }
 }
 
@@ -1240,7 +1245,7 @@ pub(crate) fn selection_chrome(
     }
 }
 
-pub(crate) fn option_from_widget(child: &crate::SemanticWidget) -> (String, String, bool) {
+pub(crate) fn option_from_widget(child: &SemanticWidgetView<'_>) -> (String, String, bool) {
     let id = if !child.props.value.is_empty() {
         child.props.value.clone()
     } else if !child.props.element_id.is_empty() {
@@ -1255,7 +1260,7 @@ pub(crate) fn option_from_widget(child: &crate::SemanticWidget) -> (String, Stri
     )
 }
 
-pub(crate) fn is_option_child(child: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_option_child(child: &SemanticWidgetView<'_>) -> bool {
     let tag = widget_tag(child);
     child.kind == crate::WidgetKind::Radio
         || tag.eq_ignore_ascii_case("option")
@@ -1264,19 +1269,19 @@ pub(crate) fn is_option_child(child: &crate::SemanticWidget) -> bool {
 }
 
 pub(crate) fn collect_choice_options(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Vec<(String, String, bool)> {
     let mut out = Vec::new();
     for child in element_child_widgets(widget, snapshot) {
-        if is_option_child(child) {
-            out.push(option_from_widget(child));
+        if is_option_child(&child) {
+            out.push(option_from_widget(&child));
             continue;
         }
-        if widget_tag(child).eq_ignore_ascii_case("optgroup") {
-            for nested in element_child_widgets(child, snapshot) {
-                if is_option_child(nested) {
-                    out.push(option_from_widget(nested));
+        if widget_tag(&child).eq_ignore_ascii_case("optgroup") {
+            for nested in element_child_widgets(&child, snapshot) {
+                if is_option_child(&nested) {
+                    out.push(option_from_widget(&nested));
                 }
             }
         }
@@ -1285,8 +1290,8 @@ pub(crate) fn collect_choice_options(
 }
 
 pub(crate) fn tree_child_bind_options(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Vec<(String, String, bool)> {
     if !widget.props.options.is_empty() {
         return Vec::new();
@@ -1295,7 +1300,7 @@ pub(crate) fn tree_child_bind_options(
         crate::WidgetKind::TreeView if host_tree_nodes(&widget.props).is_none() => {
             element_child_widgets(widget, snapshot)
                 .into_iter()
-                .map(option_from_widget)
+                .map(|widget| option_from_widget(&widget))
                 .collect()
         }
         crate::WidgetKind::Select
@@ -1308,8 +1313,8 @@ pub(crate) fn tree_child_bind_options(
 }
 
 pub(crate) fn enqueue_bound_assembly(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     id: StableNodeId,
     context: &AppContext,
     mutations: &mut MutationQueue,
@@ -1317,16 +1322,6 @@ pub(crate) fn enqueue_bound_assembly(
 ) {
     let world = context.world();
     match effective_kind(widget) {
-        #[cfg(feature = "rich-text")]
-        crate::WidgetKind::NativeMarkdown => {
-            let markdown =
-                RuntimeNativeMarkdown::from_source(&markdown_source_from_props(&widget.props));
-            let request = markdown_renderer_request(&markdown, &widget.props);
-            if world.highlight_request(id) != request.as_ref() {
-                mutations.set_highlight_request(id, request);
-            }
-            pending.markdowns.push((id, markdown));
-        }
         crate::WidgetKind::AppShell => {
             let title = widget.props.display_label();
             let (title_bar, body, overlay) = app_shell_slots(widget, snapshot);
@@ -1342,7 +1337,7 @@ pub(crate) fn enqueue_bound_assembly(
                 let bar = RuntimeAppTitleBar::new(bar_title);
                 if !snapshot
                     .get(title_bar.get())
-                    .is_some_and(is_title_bar_child)
+                    .is_some_and(|widget| is_title_bar_child(&widget))
                 {
                     bar.project(title_bar, world, mutations);
                     pending.title_bars.push((title_bar, bar));
@@ -1406,8 +1401,8 @@ pub(crate) fn enqueue_bound_assembly(
 }
 
 pub(crate) fn project_migrating_component(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     id: StableNodeId,
     context: &AppContext,
     mutations: &mut MutationQueue,
@@ -1532,8 +1527,8 @@ pub(crate) fn project_segmented_option(
 }
 
 pub(crate) fn project_aligned_segmented_option(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     id: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,

@@ -99,8 +99,8 @@ pub use color_field::{
 };
 pub use command_palette::CommandPalette;
 pub use component_registry::{
-    ComponentBindKind, ComponentRegistry, ComponentTypeId, RegisterableComponent, SemanticOption,
-    SemanticSpec, normalize_tag,
+    ComponentBindKind, ComponentRegistry, ComponentTypeId, PreparedSemanticBinding,
+    RegisterableComponent, SemanticOption, SemanticSpec, normalize_tag,
 };
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,

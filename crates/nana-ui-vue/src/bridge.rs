@@ -1001,6 +1001,7 @@ impl MessageBridge {
     }
 
     pub fn get_mut(&mut self, id: WidgetId) -> Option<&mut SemanticWidget> {
+        self.cascade.font_root.set(None);
         self.widgets.get_mut(&id)
     }
 
@@ -1018,6 +1019,7 @@ impl MessageBridge {
 
     /// Register html + body so Vue mounts parent under a real semantic root.
     pub fn ensure_document_roots(&mut self, html_id: WidgetId, body_id: WidgetId) {
+        self.cascade.font_root.set(None);
         let theme_label = self.theme_label().to_string();
         self.widgets.entry(html_id).or_insert_with(|| {
             let mut props = WidgetProps::default();
@@ -1080,6 +1082,7 @@ impl MessageBridge {
     /// Drop mounted app widgets under body; keep html/body scaffold.
     pub fn clear_mounted(&mut self) {
         if !self.scaffolded {
+            self.cascade.font_root.set(None);
             self.widgets.clear();
             self.roots.clear();
             self.changed_structure();
@@ -1146,7 +1149,17 @@ impl MessageBridge {
                 props.layout.position = crate::css_map::PositionSpec::Static;
             }
         }
-        self.widgets.insert(
+        let is_font_root = |widget: &SemanticWidget| {
+            widget.props.element_tag.eq_ignore_ascii_case("html")
+                || widget.props.element_tag.eq_ignore_ascii_case("body")
+        };
+        if props.element_tag.eq_ignore_ascii_case("html")
+            || props.element_tag.eq_ignore_ascii_case("body")
+            || self.widgets.get(&id).is_some_and(is_font_root)
+        {
+            self.cascade.font_root.set(None);
+        }
+        let previous = self.widgets.insert(
             id,
             SemanticWidget {
                 id,
@@ -1158,7 +1171,7 @@ impl MessageBridge {
         );
         // With document scaffold, only html is a root — insert parents under body.
         // Without scaffold (unit tests), keep legacy "register ⇒ root" behavior.
-        if !self.scaffolded && !self.roots.contains(&id) {
+        if !self.scaffolded && (previous.is_none() || !self.roots.contains(&id)) {
             self.roots.push(id);
         }
         self.reapply_layout_for(id);
@@ -1209,6 +1222,9 @@ impl MessageBridge {
     }
 
     pub fn unregister(&mut self, id: WidgetId) {
+        if self.cascade.font_root.get() == Some(Some(id)) {
+            self.cascade.font_root.set(None);
+        }
         let old_parent = self.widgets.get(&id).and_then(|w| w.parent);
         if let Some(slots) = self.generated_pseudo_children.remove(&id) {
             for child in [slots.before, slots.after].into_iter().flatten() {
@@ -1297,6 +1313,9 @@ impl MessageBridge {
     }
 
     fn teardown_generated_pseudo_sidecar(&mut self, child: WidgetId) {
+        if self.cascade.font_root.get() == Some(Some(child)) {
+            self.cascade.font_root.set(None);
+        }
         self.motion.computed_motion.remove(&child);
         self.motion.css_transitions.remove(&child);
         self.motion.css_transition_base.remove(&child);
@@ -2208,6 +2227,18 @@ impl MessageBridge {
     pub fn snapshot(&mut self) -> SemanticSnapshot {
         let changes = std::mem::take(&mut self.changes);
         self.peek_snapshot_with(changes)
+    }
+
+    pub(crate) fn take_snapshot_changes(&mut self) -> SnapshotChanges {
+        std::mem::take(&mut self.changes)
+    }
+    #[cfg(test)]
+    pub(crate) fn peek_snapshot_changes(&self) -> SnapshotChanges {
+        self.changes.clone()
+    }
+
+    pub(crate) fn widget_ids(&self) -> impl Iterator<Item = WidgetId> + '_ {
+        self.widgets.keys().copied()
     }
 
     /// Read-only snapshot for scans that must not consume the mutation

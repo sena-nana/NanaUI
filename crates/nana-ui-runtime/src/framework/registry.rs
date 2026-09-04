@@ -21,15 +21,59 @@ impl AppContext {
         spec: &SemanticSpec<'_>,
         mutations: &mut MutationQueue,
     ) -> Result<ComponentBindKind, FrameworkError> {
+        self.prepare_semantic_binding(id, spec, mutations)
+            .map(|binding| binding.kind())
+    }
+
+    /// Stage a registry component once, preserving opted-in interaction state.
+    pub fn prepare_semantic_binding(
+        &self,
+        id: StableNodeId,
+        spec: &SemanticSpec<'_>,
+        mutations: &mut MutationQueue,
+    ) -> Result<crate::PreparedSemanticBinding, FrameworkError> {
         let mut request = ComponentBindRequest {
             id,
             world: &self.world,
             mutations,
             spec,
+            previous: self.views.get(&id).map(|view| view.as_ref()),
+            retained: None,
+            finish: None,
         };
         let kind = self.components.bind(&mut request)?;
-        mutations.set_component_type(id, Some(spec.type_id.clone()));
-        Ok(kind)
+        request
+            .mutations
+            .set_component_type(id, Some(spec.type_id.clone()));
+        Ok(crate::PreparedSemanticBinding {
+            id,
+            type_id: spec.type_id.clone(),
+            kind,
+            retained: request.retained,
+            finish: request.finish,
+        })
+    }
+
+    /// Install typed state after its UiWorld projection was committed. Does not
+    /// project or parse a second time; optional assembly belongs to the type.
+    pub fn finish_semantic_binding(
+        &mut self,
+        binding: crate::PreparedSemanticBinding,
+    ) -> Result<(), FrameworkError> {
+        if !self.world.contains(binding.id) {
+            return Err(FrameworkError::MissingView(binding.id));
+        }
+        if self.world.component_type(binding.id) != Some(&binding.type_id) {
+            return Err(FrameworkError::ViewType(binding.id));
+        }
+        if let Some(component) = binding.retained {
+            self.views.insert(binding.id, component);
+            self.sync_component_lifecycle(binding.id)?;
+            if let Some(finish) = binding.finish {
+                finish(self, binding.id)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn install(&mut self, extension: &impl UiExtension) -> Result<(), FrameworkError> {

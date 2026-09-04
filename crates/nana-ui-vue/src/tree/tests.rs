@@ -1,6 +1,103 @@
 use super::*;
 
 #[test]
+fn borrowed_semantic_patch_reads_live_hierarchy_and_keeps_inspection_snapshot_owned() {
+    let mut document = NanaTreeDocument::new(400, 300, 1.0);
+    let mut bridge = crate::MessageBridge::new();
+    let mut ids = Vec::new();
+    bridge.register(
+        document.mount_root().0,
+        crate::WidgetKind::Column,
+        Default::default(),
+    );
+    for _ in 0..10_000 {
+        let node = document.create_element("button");
+        document.insert(node, document.mount_root(), None);
+        bridge.register(
+            node.0,
+            crate::WidgetKind::Button,
+            crate::WidgetProps {
+                label: "before".into(),
+                ..Default::default()
+            },
+        );
+        ids.push(node);
+    }
+    document.sync_semantics_from_bridge(&mut bridge);
+    let full = SemanticRead::bridge(&bridge, &document, Default::default());
+    let _ = document.prepare_semantic_styles(&full);
+    assert_eq!(
+        full.topology_work(),
+        (10_001, 10_000),
+        "each topology is copied once per prepare"
+    );
+    let owned = bridge.peek_snapshot();
+    bridge.set_label(ids[5000].0, "after");
+    let read = SemanticRead::bridge(&bridge, &document, bridge.peek_snapshot_changes());
+    let candidates = read.projection_ids(false);
+    assert_eq!(candidates, vec![document.mount_root().0, ids[5000].0]);
+    let widget = read.get(ids[5000].0).unwrap();
+    assert!(
+        std::ptr::eq(&widget.props, &bridge.get(ids[5000].0).unwrap().props),
+        "sync must borrow the payload"
+    );
+    document.sync_semantics_from_bridge(&mut bridge);
+    assert_eq!(
+        document
+            .runtime
+            .text(StableNodeId::try_from(ids[5000]).unwrap()),
+        Some("after")
+    );
+    assert_eq!(owned.widgets.len(), 10_001);
+    assert_eq!(owned.get(ids[5000].0).unwrap().props.label, "before");
+}
+
+#[test]
+fn borrowed_semantic_slots_ignore_stale_bridge_parenting() {
+    let mut document = NanaTreeDocument::new(400, 300, 1.0);
+    let mut bridge = crate::MessageBridge::new();
+    let button = document.create_element("button");
+    let icon = document.create_element("nana-icon");
+    document.insert(button, document.mount_root(), None);
+    document.insert(icon, document.mount_root(), None);
+    bridge.register(
+        button.0,
+        crate::WidgetKind::Button,
+        crate::WidgetProps {
+            label: "Open".into(),
+            ..Default::default()
+        },
+    );
+    bridge.register(
+        icon.0,
+        crate::WidgetKind::Icon,
+        crate::WidgetProps {
+            label: "search".into(),
+            ..Default::default()
+        },
+    );
+    document.sync_semantics_from_bridge(&mut bridge);
+    // Move only the Runtime node. The CSS working index intentionally stays stale.
+    document.insert(icon, button, None);
+    bridge.set_label(icon.0, "search");
+    document.flush_host_frame();
+    let read = SemanticRead::bridge(&bridge, &document, bridge.peek_snapshot_changes());
+    assert_eq!(read.get(icon.0).unwrap().parent, Some(button.0));
+    assert_eq!(read.get(button.0).unwrap().children.as_ref(), &[icon.0]);
+    assert_eq!(read.projection_ids(false), vec![button.0, icon.0]);
+    document.sync_semantics_from_bridge(&mut bridge);
+    assert_eq!(
+        document
+            .context()
+            .world()
+            .component_type(StableNodeId::try_from(button).unwrap())
+            .unwrap()
+            .as_str(),
+        "nana.icon-button"
+    );
+}
+
+#[test]
 fn rejected_mutation_does_not_drop_valid_pending_ops() {
     let mut doc = NanaTreeDocument::new(400, 200, 1.0);
     let text = doc.create_text("正文");
@@ -6054,4 +6151,92 @@ fn generated_after_inserts_after_origin_children() {
     let child_idx = order.iter().position(|id| *id == child.0).expect("child");
     let after_idx = order.iter().position(|id| *id == after_id).expect("after");
     assert!(host_idx < child_idx && child_idx < after_idx);
+}
+
+#[test]
+#[cfg(feature = "rich-text")]
+fn vue_markdown_rebinding_preserves_selection_until_source_changes() {
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let markdown = doc.create_element("nana-native-markdown");
+    doc.insert(markdown, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    bridge.register(
+        markdown.0,
+        crate::WidgetKind::NativeMarkdown,
+        crate::WidgetProps {
+            value: "Hello **world**\n\n```rust\nlet x = 1;\n```".into(),
+            ..Default::default()
+        },
+    );
+    doc.sync_semantic_styles(&bridge.snapshot());
+    let id = StableNodeId::try_from(markdown).unwrap();
+    let entity = Entity::<RuntimeNativeMarkdown>::from_stable_id(id);
+    let (group, children) = doc
+        .context()
+        .read(entity, |markdown| {
+            let bounds = nana_ui_runtime::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 100.0,
+            };
+            markdown.pointer_down(1.0, 8.0, bounds);
+            markdown.pointer_move(40.0, 8.0, bounds);
+            markdown.pointer_up(40.0, 8.0, bounds);
+            assert_eq!(markdown.selected_text().as_deref(), Some("Hello"));
+            (markdown.group_id(), markdown.fence_children().to_vec())
+        })
+        .unwrap();
+    bridge.set_label(markdown.0, "A new accessible label");
+    doc.sync_semantic_styles(&bridge.snapshot());
+    doc.context()
+        .read(entity, |markdown| {
+            assert_eq!(markdown.group_id(), group);
+            assert_eq!(markdown.selected_text().as_deref(), Some("Hello"));
+            assert_eq!(markdown.fence_children(), children);
+        })
+        .unwrap();
+    bridge.patch_prop(
+        markdown.0,
+        "value",
+        &nana_js_engine::HostValue::string("Replacement"),
+    );
+    doc.sync_semantic_styles(&bridge.snapshot());
+    doc.context()
+        .read(entity, |markdown| {
+            assert_eq!(markdown.plain_text(), "Replacement");
+            assert!(markdown.selected_text().is_none());
+            assert!(markdown.fence_children().is_empty());
+        })
+        .unwrap();
+    assert!(
+        children
+            .into_iter()
+            .all(|child| !doc.context().world().contains(child))
+    );
+}
+
+#[test]
+#[cfg(feature = "rich-text")]
+fn vue_markdown_source_attributes_preserve_significant_whitespace() {
+    for native in [false, true] {
+        for key in ["source", "markdown"] {
+            let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+            let node = doc.create_element("nana-native-markdown");
+            doc.insert(node, doc.mount_root(), None);
+            let mut props = crate::WidgetProps::default();
+            if native {
+                props.apply_prop(key, &nana_js_engine::HostValue::string("    code\n"));
+            } else {
+                props.attrs.insert(key.into(), "    code\n".into());
+            }
+            let mut bridge = crate::MessageBridge::new();
+            bridge.register(node.0, crate::WidgetKind::NativeMarkdown, props);
+            doc.sync_semantic_styles(&bridge.snapshot());
+            let entity = Entity::<RuntimeNativeMarkdown>::from_stable_id(
+                StableNodeId::try_from(node).unwrap(),
+            );
+            assert!(doc.context().read(entity, |markdown| matches!(&markdown.blocks()[0], nana_ui_runtime::MarkdownBlock::Code { source, .. } if source == "code")).unwrap());
+        }
+    }
 }

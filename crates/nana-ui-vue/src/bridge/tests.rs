@@ -3,6 +3,34 @@ use crate::css_map::JustifySpec;
 use nana_js_engine::HostValue;
 use std::collections::BTreeSet;
 
+#[test]
+fn root_font_identity_refreshes_and_computed_size_stays_live() {
+    let mut bridge = MessageBridge::new();
+    assert_eq!(bridge.document_root_font_px(), 16.0);
+    let props = |tag: &str, size| WidgetProps {
+        element_tag: tag.into(),
+        inline_style: format!("font-size:{size}px"),
+        ..Default::default()
+    };
+    bridge.register(1, WidgetKind::Column, props("body", 20));
+    assert_eq!(bridge.document_root_font_px(), 20.0);
+    bridge.register(2, WidgetKind::Column, props("html", 30));
+    assert_eq!(bridge.document_root_font_px(), 30.0);
+    bridge.widgets.get_mut(&2).unwrap().props.layout.font_size = Some(32.0);
+    assert_eq!(bridge.document_root_font_px(), 32.0);
+    bridge.unregister(2);
+    assert_eq!(bridge.document_root_font_px(), 20.0);
+    bridge.get_mut(1).unwrap().props.element_tag = "section".into();
+    assert_eq!(bridge.document_root_font_px(), 16.0);
+    bridge.register(1, WidgetKind::Column, props("html", 24));
+    assert_eq!(bridge.document_root_font_px(), 24.0);
+    bridge.register(1, WidgetKind::Column, props("section", 28));
+    assert_eq!(bridge.document_root_font_px(), 16.0);
+    bridge.ensure_document_roots(3, 4);
+    bridge.get_mut(3).unwrap().props.layout.font_size = Some(22.0);
+    assert_eq!(bridge.document_root_font_px(), 22.0);
+}
+
 /// Every canonical `as_str` must parse back to its kind. This is the
 /// compiler-unreachable seam the macro cannot enforce: a kind row whose
 /// `as_str` is not a `parse` key would silently return `None` at runtime.

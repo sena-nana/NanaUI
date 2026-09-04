@@ -1,9 +1,7 @@
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{AppearanceSettings, ThemeMode};
 use nana_ui_vue::{
-    DocumentId, LayoutBox, NanaTreeDocument, NodeHandle, SemanticSnapshot, SemanticWidget,
-    WidgetKind, WidgetProps,
+    DocumentId, LayoutBox, MessageBridge, NanaTreeDocument, NodeHandle, WidgetKind, WidgetProps,
 };
 use serde::Serialize;
 
@@ -35,6 +33,10 @@ struct Case {
     construction_ms: Distribution,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_semantic_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch_semantic_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     idle_semantic_ms: Option<Distribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,20 +84,30 @@ fn main() {
 fn bench_full(nodes: usize, warmup: usize, iterations: usize) -> Case {
     let mut construction = Vec::with_capacity(iterations);
     let mut initial_semantic = Vec::with_capacity(iterations);
+    let mut snapshots = Vec::with_capacity(iterations);
+    let mut patch_semantic = Vec::with_capacity(iterations);
     let mut idle_semantic = Vec::with_capacity(iterations);
     let mut initial_layout = Vec::with_capacity(iterations);
     let mut idle_layout = Vec::with_capacity(iterations);
     for iteration in 0..(warmup + iterations) {
         let started = Instant::now();
-        let (mut document, snapshot, boxes) = build_tree(nodes);
+        let (mut document, mut bridge, boxes) = build_tree(nodes);
         let construction_elapsed = started.elapsed();
 
         let started = Instant::now();
-        document.sync_semantic_styles(&snapshot);
+        let snapshot = bridge.peek_snapshot();
+        let snapshot_elapsed = started.elapsed();
+        assert_eq!(snapshot.widgets.len(), nodes + 1);
+        let started = Instant::now();
+        document.sync_semantics_from_bridge(&mut bridge);
         let initial_semantic_elapsed = started.elapsed();
+        let started = Instant::now();
+        bridge.set_label(boxes[0].0.0, "changed");
+        document.sync_semantics_from_bridge(&mut bridge);
+        let patch_elapsed = started.elapsed();
         let generation = document.runtime_generation();
         let started = Instant::now();
-        document.sync_semantic_styles(&snapshot);
+        document.sync_semantics_from_bridge(&mut bridge);
         let idle_semantic_elapsed = started.elapsed();
         assert_eq!(document.runtime_generation(), generation);
 
@@ -111,6 +123,8 @@ fn bench_full(nodes: usize, warmup: usize, iterations: usize) -> Case {
         if iteration >= warmup {
             construction.push(construction_elapsed);
             initial_semantic.push(initial_semantic_elapsed);
+            snapshots.push(snapshot_elapsed);
+            patch_semantic.push(patch_elapsed);
             idle_semantic.push(idle_semantic_elapsed);
             initial_layout.push(initial_layout_elapsed);
             idle_layout.push(idle_layout_elapsed);
@@ -123,6 +137,8 @@ fn bench_full(nodes: usize, warmup: usize, iterations: usize) -> Case {
         iterations,
         construction_ms: summarize(&construction),
         initial_semantic_ms: Some(summarize(&initial_semantic)),
+        snapshot_ms: Some(summarize(&snapshots)),
+        patch_semantic_ms: Some(summarize(&patch_semantic)),
         idle_semantic_ms: Some(summarize(&idle_semantic)),
         initial_layout_ms: Some(summarize(&initial_layout)),
         idle_layout_ms: Some(summarize(&idle_layout)),
@@ -146,6 +162,8 @@ fn bench_construction(nodes: usize, warmup: usize, iterations: usize) -> Case {
         iterations,
         construction_ms: summarize(&construction),
         initial_semantic_ms: None,
+        snapshot_ms: None,
+        patch_semantic_ms: None,
         idle_semantic_ms: None,
         initial_layout_ms: None,
         idle_layout_ms: None,
@@ -156,22 +174,21 @@ fn build_tree(
     nodes: usize,
 ) -> (
     NanaTreeDocument,
-    SemanticSnapshot,
+    MessageBridge,
     Vec<(NodeHandle, LayoutBox)>,
 ) {
     let mut document = NanaTreeDocument::with_id(DocumentId(1), 1280, 720, 1.0);
-    let mut widgets = Vec::with_capacity(nodes);
+    let mut bridge = MessageBridge::new();
+    bridge.register(
+        document.mount_root().0,
+        WidgetKind::Column,
+        WidgetProps::default(),
+    );
     let mut boxes = Vec::with_capacity(nodes);
     for index in 0..nodes {
         let handle = document.create_element("button");
         document.insert(handle, document.mount_root(), None);
-        widgets.push(SemanticWidget {
-            id: handle.0,
-            kind: WidgetKind::Button,
-            props: WidgetProps::default(),
-            children: Vec::new(),
-            parent: Some(document.mount_root().0),
-        });
+        bridge.register(handle.0, WidgetKind::Button, WidgetProps::default());
         boxes.push((
             handle,
             LayoutBox {
@@ -183,15 +200,7 @@ fn build_tree(
             },
         ));
     }
-    let snapshot = SemanticSnapshot {
-        revision: 1,
-        theme: ThemeMode::Light,
-        appearance: AppearanceSettings::default(),
-        roots: vec![document.mount_root().0],
-        widgets,
-        changes: Default::default(),
-    };
-    (document, snapshot, boxes)
+    (document, bridge, boxes)
 }
 
 fn elapsed_ms(duration: Duration) -> f64 {
