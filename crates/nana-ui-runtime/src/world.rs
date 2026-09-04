@@ -1004,13 +1004,23 @@ impl UiWorld {
             {
                 continue;
             }
-            let spans = self
+            // 基础层先出，语义 overlay 在 presenter 结果之后、sanitize 之前
+            // 合并（overlay 段优先，重叠处丢基础层）；presenter 未注册时
+            // 基础层为空，overlay 仍单独生效（宿主喂数据、框架只渲染）。
+            let base = self
                 .presenters
                 .get(request.presenter.as_ref())
-                .map(|presenter| {
-                    crate::presentation::sanitize_spans(&text, presenter.present(&text, &request))
-                })
+                .map(|presenter| presenter.present(&text, &request))
                 .unwrap_or_default();
+            let spans = match request.overlay.as_ref() {
+                Some(overlay) => {
+                    crate::presentation::sanitize_spans(
+                        &text,
+                        crate::presentation::merge_overlay_spans(base, overlay),
+                    )
+                }
+                None => crate::presentation::sanitize_spans(&text, base),
+            };
             self.nodes
                 .set_text_presentation(id, Some(TextPresentation { spans, source }));
         }

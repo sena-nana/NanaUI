@@ -336,7 +336,7 @@ impl UiScene {
                         },
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
-                        spans: scene_text_spans(&node, &text.value),
+                        spans: scene_text_spans(&node, None, &text.value),
                         text_shadow: style.paint.text_shadow,
                         underline: style.text_decoration.is_some_and(|d| d.underline),
                         line_through: style.text_decoration.is_some_and(|d| d.line_through),
@@ -979,8 +979,11 @@ impl UiScene {
                             ));
                         }
                         // 补全弹层与 hover 浮窗：编辑器覆盖层的最上层
-                        // （面板 slot 90 / 120，其余文本在各自段内递增），
-                        // 高于行号（40+）与折叠 gutter（14/15）。面板绘制
+                        // （面板 slot 90 / 120，其余文本在各自段内递增；
+                        // 补全 label/detail/kind/doc 各占 8 席：92+/100+/
+                        // 108+/132+，doc 带越过 hover 的 120-131——两浮
+                        // 窗独立共存，slot 带不得相交），高于行号（40+）
+                        // 与折叠 gutter（14/15）。面板绘制
                         // 共用 `overlay_panel_primitive`；行文本不换行，
                         // 超宽省略号截断。使用与焦点环同级的外层裁剪。
                         let overlay_context = VisualPrimitiveContext {
@@ -1047,6 +1050,17 @@ impl UiScene {
                                         108 + index as u8,
                                         kind,
                                         TextHorizontalAlignment::End,
+                                    ));
+                                }
+                                if let Some(doc) = row.doc.as_ref() {
+                                    // 文档行带 132+:hover 浮窗正文可用到
+                                    // 131,两浮窗独立共存,带不得相交
+                                    // (insert_primitive 按 (node,slot)
+                                    // 覆盖,相交即静默丢图元)。
+                                    self.insert_primitive(overlay_text(
+                                        132 + index as u8,
+                                        doc,
+                                        TextHorizontalAlignment::Start,
                                     ));
                                 }
                             }

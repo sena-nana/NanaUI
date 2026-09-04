@@ -1300,7 +1300,7 @@ fn component_text_primitive(
             } else {
                 TextVerticalAlignment::Center
             },
-            spans: scene_text_spans(node, region.content.as_ref()),
+            spans: scene_text_spans(node, Some(region), region.content.as_ref()),
             text_shadow: node.source_style.layout.paint.text_shadow,
             underline: node
                 .source_style
@@ -1336,15 +1336,32 @@ fn surface_corner_radii(style: &nana_ui_core::LayoutStyle, width: f32, height: f
     radii
 }
 
-fn scene_text_spans(node: &ExtractedNode, content: &str) -> Vec<SceneTextSpan> {
+fn scene_text_spans(
+    node: &ExtractedNode,
+    region: Option<&ComponentTextRegion>,
+    content: &str,
+) -> Vec<SceneTextSpan> {
     if node.text_spans.is_empty() {
         return Vec::new();
     }
-    let Some(source) = node.text.as_ref() else {
-        return Vec::new();
-    };
-    if source.value != content {
-        return Vec::new();
+    // TextInput 主文本区域：span 由 extraction 按 TextInput 呈现内容
+    // （折叠态经显示视图重投后的显示串）空间产出，直接按 content 校验
+    // 边界。其余区域（行号标签、钉住行、Select 标题、普通文本节点等）
+    // 不承载该空间，维持值空间等值守卫——内容与 span 空间不一致时整批
+    // 丢弃。
+    let editor_main_text = region.is_some_and(|region| {
+        matches!(
+            node.component_geometry.as_ref(),
+            Some(ComponentGeometry::TextInput { text, .. }) if std::ptr::eq(text, region)
+        )
+    });
+    if !editor_main_text {
+        let Some(source) = node.text.as_ref() else {
+            return Vec::new();
+        };
+        if source.value != content {
+            return Vec::new();
+        }
     }
     node.text_spans
         .iter()

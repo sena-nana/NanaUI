@@ -449,6 +449,39 @@ pub(super) fn build_text_display_view(
     })
 }
 
+/// 值空间 span 端点对 `[start, end)` 经显示视图重投到显示空间的可见片段：
+/// - 起点落在隐藏区间内部的片段从该折叠之后起（钳到摘要之后，摘要文本
+///   不着色）；
+/// - 跨折叠区间的片段在区间边界切分为可见前后两段；
+/// - 完全落入隐藏区间的片段丢弃。
+/// 输出片段按折叠顺序排列，均落在可见文本上（不覆盖任何摘要文本）。
+pub(super) fn remap_span_to_display(
+    span: (usize, usize),
+    view: &TextDisplayView,
+) -> Vec<(usize, usize)> {
+    let mut pieces = Vec::new();
+    let mut cursor = span.0;
+    for region in &view.spans {
+        if span.1 <= region.value_start {
+            break;
+        }
+        if cursor >= region.value_end {
+            continue;
+        }
+        if cursor < region.value_start {
+            pieces.push((view.display_of(cursor), view.display_of(region.value_start)));
+        }
+        cursor = region.value_end;
+        if cursor >= span.1 {
+            return pieces;
+        }
+    }
+    if cursor < span.1 {
+        pieces.push((view.display_of(cursor), view.display_of(span.1)));
+    }
+    pieces
+}
+
 /// 最小变更区间：`(old 中被替换的 start, old 中被替换的 end, 长度差)`。
 /// 与 [`crate::text_editing`] 的 transform diff 同构：按公共前后缀夹取。
 pub(super) fn value_edit_span(old: &str, new: &str) -> (usize, usize, isize) {
@@ -1710,9 +1743,11 @@ pub(super) fn anchored_overlay_panel(
 }
 
 /// 补全弹层几何：面板 + 可见行（label 主文本、detail 次要说明、kind 右
-/// 对齐标注）。宽度自适应最长行（label > detail > kind 依次让位，上限
-/// [`crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH`]），高度最多
-/// [`crate::components::TEXT_COMPLETION_VISIBLE_ROWS`] 行。
+/// 对齐标注、doc 文档行）。宽度自适应最长行（label > detail > kind 依次
+/// 让位，上限 [`crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH`]；
+/// doc 行不参与宽度自适应，按内容宽截断），高度最多
+/// [`crate::components::TEXT_COMPLETION_VISIBLE_ROWS`] 行（带文档行的
+/// 候选占两行高）。
 pub(super) fn completion_popup_geometry(
     state: &crate::store::TextCompletionViewState,
     metrics: &crate::components::TextCompletionPopupMetrics,
@@ -1730,7 +1765,8 @@ pub(super) fn completion_popup_geometry(
     }
     let len = items.len();
     let first_row = state.scroll.min(len.saturating_sub(1));
-    let visible_rows = (len - first_row).min(crate::components::TEXT_COMPLETION_VISIBLE_ROWS);
+    let visible = &items[first_row..(first_row + crate::components::TEXT_COMPLETION_VISIBLE_ROWS)
+        .min(len)];
     let row_height = anchor.line_height.max(1.0);
     let label_w = metrics.label_width;
     let mut content = label_w;
@@ -1748,18 +1784,24 @@ pub(super) fn completion_popup_geometry(
     }
     let content = content.min(crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
     let label_w = label_w.min(content);
+    let visible_rows = visible.len();
+    let doc_rows = visible
+        .iter()
+        .filter(|item| !item.doc.is_empty())
+        .count();
     let panel = anchored_overlay_panel(
         anchor,
         (content + crate::components::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
-        visible_rows as f32 * row_height + V_PAD * 2.0,
+        (visible_rows + doc_rows) as f32 * row_height + V_PAD * 2.0,
         viewport,
         ROW_GAP_ABOVE_BELOW,
     );
-    let rows = items[first_row..first_row + visible_rows]
+    let rows = visible
         .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let y = panel.y + V_PAD + index as f32 * row_height;
+        .scan(panel.y + V_PAD, |y, item| {
+            let label_line_y = *y;
+            let has_doc = !item.doc.is_empty();
+            *y += row_height * (1.0 + u8::from(has_doc) as f32);
             let label_rect_w = label_w.min(content);
             let detail_x =
                 panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD + label_rect_w + GAP;
@@ -1769,7 +1811,7 @@ pub(super) fn completion_popup_geometry(
                 .map(|_| crate::ComponentTextRegion {
                     bounds: LayoutBox {
                         x: detail_x,
-                        y,
+                        y: label_line_y,
                         width: metrics.detail_width,
                         height: row_height,
                     },
@@ -1786,7 +1828,7 @@ pub(super) fn completion_popup_geometry(
                         x: panel.x + panel.width
                             - crate::components::TEXT_COMPLETION_PANEL_PAD
                             - metrics.kind_width,
-                        y,
+                        y: label_line_y,
                         width: metrics.kind_width,
                         height: row_height,
                     },
@@ -1795,17 +1837,29 @@ pub(super) fn completion_popup_geometry(
                     font_size,
                     font_weight: None,
                 });
-            crate::TextCompletionRow {
+            let doc_rect = has_doc.then_some(crate::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD,
+                    y: label_line_y + row_height,
+                    width: content,
+                    height: row_height,
+                },
+                content: Arc::from(item.doc.as_str()),
+                color: Some(palette.muted.as_rgba_array()),
+                font_size,
+                font_weight: None,
+            });
+            Some(crate::TextCompletionRow {
                 bounds: LayoutBox {
                     x: panel.x,
-                    y,
+                    y: label_line_y,
                     width: panel.width,
-                    height: row_height,
+                    height: *y - label_line_y,
                 },
                 label: crate::ComponentTextRegion {
                     bounds: LayoutBox {
                         x: panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD,
-                        y,
+                        y: label_line_y,
                         width: label_rect_w,
                         height: row_height,
                     },
@@ -1816,7 +1870,8 @@ pub(super) fn completion_popup_geometry(
                 },
                 detail: detail_rect,
                 kind: kind_rect,
-            }
+                doc: doc_rect,
+            })
         })
         .collect();
     Some(crate::TextCompletionPopup {

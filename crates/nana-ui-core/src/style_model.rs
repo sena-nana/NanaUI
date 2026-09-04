@@ -138,6 +138,26 @@ pub enum SemanticColorRole {
     /// Chrome strip. Defaults to Surface; backdrop can keep it opaque while
     /// sidebar Surface is translucent.
     Titlebar,
+    // ---- 代码 token 角色（语义 overlay 通道；默认值见 `SemanticPalette::get`，
+    // Muted/Faint 系保守起步、逐主题可覆盖）----
+    /// 函数名（声明与调用点）。
+    Function,
+    /// 内置函数/语言预置名。
+    Builtin,
+    /// 类型名（struct 与类型别名并档同色）。
+    Type,
+    /// 变量绑定。
+    Variable,
+    /// 函数参数。
+    Parameter,
+    /// 常量声明。
+    Const,
+    /// 纹理绑定（一等产品概念）。
+    Texture,
+    /// 成员属性/字段访问。
+    Property,
+    /// 关键字。
+    Keyword,
 }
 
 impl SemanticColorRole {
@@ -332,6 +352,22 @@ impl SemanticPalette {
                 ..self.danger
             },
             SemanticColorRole::Titlebar => self.surface,
+            // 代码 token 角色默认值：Keyword/Function/Type 与 syntect
+            // 基础层已有视觉档位对齐，避免开启语义高亮后反而褪色；
+            // Builtin 在 syntect 无对应档位（现状不着色），accent 属
+            // 语义层的增强；结构性角色里 Variable 用正文前景（变量
+            // 本就是主体文本），Parameter/Const/Texture/Property 从
+            // Muted 系保守起步。主题层经派生入口覆盖对应基础色即
+            // 生效（如覆盖 accent 同时改 Keyword/Function/Builtin）。
+            SemanticColorRole::Keyword => self.accent_strong,
+            SemanticColorRole::Function => self.accent,
+            SemanticColorRole::Builtin => self.accent,
+            SemanticColorRole::Type => self.accent_on_soft,
+            SemanticColorRole::Variable => self.text,
+            SemanticColorRole::Parameter => self.muted,
+            SemanticColorRole::Const => self.muted,
+            SemanticColorRole::Texture => self.muted,
+            SemanticColorRole::Property => self.muted,
         }
     }
 }
@@ -466,5 +502,23 @@ mod tests {
     fn dark_palette_accent_matches_legacy_rgb() {
         let p = SemanticPalette::dark();
         assert!((p.accent.r - 123.0 / 255.0).abs() < 1e-5);
+    }
+
+    /// 代码 token 角色默认值：与 syntect 基础层档位对齐的四角色不褪色，
+    /// 结构性新角色从 Muted/Faint 系起步；dark/light 同一套派生规则。
+    #[test]
+    fn code_token_roles_default_to_conservative_theme_colors() {
+        for palette in [SemanticPalette::dark(), SemanticPalette::light()] {
+            assert_eq!(palette.get(SemanticColorRole::Keyword), palette.accent_strong);
+            assert_eq!(palette.get(SemanticColorRole::Function), palette.accent);
+            assert_eq!(palette.get(SemanticColorRole::Builtin), palette.accent);
+            assert_eq!(palette.get(SemanticColorRole::Type), palette.accent_on_soft);
+            assert_eq!(palette.get(SemanticColorRole::Variable), palette.text);
+            assert_eq!(palette.get(SemanticColorRole::Parameter), palette.muted);
+            assert_eq!(palette.get(SemanticColorRole::Const), palette.muted);
+            assert_eq!(palette.get(SemanticColorRole::Texture), palette.muted);
+            assert_eq!(palette.get(SemanticColorRole::Property), palette.muted);
+            assert_ne!(palette.get(SemanticColorRole::Keyword), palette.text);
+        }
     }
 }
