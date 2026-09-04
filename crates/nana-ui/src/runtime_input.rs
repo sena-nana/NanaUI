@@ -152,6 +152,14 @@ impl RuntimeInputAdapter {
                 }),
                 _ => None,
             };
+            if matches!(overlay_key, Some(OverlayKey::Escape))
+                && !modifiers.shift
+                && context.dismiss_focused_field_options(document)?
+            {
+                return Ok(InputDisposition {
+                    prevent_default: true,
+                });
+            }
             if let Some(key) = overlay_key
                 && context.route_overlay_key(document, key)?
             {
@@ -2989,6 +2997,131 @@ mod tests {
             .unwrap();
 
         assert!(context.read(menu, |menu| menu.popover.open).unwrap());
+    }
+
+    #[test]
+    fn escape_closes_focused_field_options_without_committing() {
+        use nana_ui_core::DropdownEvent;
+        use nana_ui_runtime::{
+            Dropdown, DropdownOption, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
+            Select, SelectOption,
+        };
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let select = context
+            .create_component(
+                document,
+                Select::new(Some("a"))
+                    .options([
+                        SelectOption::new("a", "Alpha"),
+                        SelectOption::new("b", "Beta"),
+                    ])
+                    .opened(true),
+            )
+            .unwrap();
+        let dropdown = context
+            .create_component(
+                document,
+                Dropdown::single(Some("a"))
+                    .options([
+                        DropdownOption::new("a", "Alpha"),
+                        DropdownOption::new("b", "Beta"),
+                    ])
+                    .opened(true),
+            )
+            .unwrap();
+        let search = context
+            .create_component(
+                document,
+                SearchDropdown::new(Some("a"))
+                    .options([
+                        SearchDropdownOption::new("a", "Alpha"),
+                        SearchDropdownOption::new("b", "Beta"),
+                    ])
+                    .query("Beta")
+                    .opened(true),
+            )
+            .unwrap();
+        let dropdown_events = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::clone(&dropdown_events);
+        context
+            .on(dropdown, move |_, event: &DropdownEvent<Arc<str>>, _| {
+                events.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+        let search_events = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::clone(&search_events);
+        context
+            .on(search, move |_, event: &SearchDropdownEvent, _| {
+                events.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+        context
+            .update_component(select, |field, _| field.highlighted = Some(1))
+            .unwrap();
+        context
+            .update_component(dropdown, |field, _| field.highlighted = Some(1))
+            .unwrap();
+        let selection = context
+            .read(dropdown, |field| field.selection.clone())
+            .unwrap();
+        let search_state = context.read(search, |field| field.state.clone()).unwrap();
+        let mut adapter = RuntimeInputAdapter::default();
+        let escape = InputEvent::Keyboard {
+            pressed: true,
+            key: "Escape".into(),
+            text: None,
+            code: "Escape".into(),
+            repeat: false,
+            modifiers: InputModifiers::default(),
+        };
+        for target in [select.stable_id(), dropdown.stable_id(), search.stable_id()] {
+            assert!(context.focus_node(document, target).unwrap());
+            assert!(
+                adapter
+                    .dispatch(&mut context, document, &escape)
+                    .unwrap()
+                    .prevent_default
+            );
+            assert!(
+                !adapter
+                    .dispatch(&mut context, document, &escape)
+                    .unwrap()
+                    .prevent_default
+            );
+        }
+        assert_eq!(
+            context
+                .read(select, |field| (field.opened, field.value.clone()))
+                .unwrap(),
+            (false, Some(Arc::from("a")))
+        );
+        assert_eq!(
+            context
+                .read(dropdown, |field| (field.opened, field.selection.clone()))
+                .unwrap(),
+            (false, selection)
+        );
+        assert_eq!(
+            context
+                .read(search, |field| (
+                    field.opened,
+                    field.value.clone(),
+                    field.query.clone(),
+                    field.state.clone()
+                ))
+                .unwrap(),
+            (false, Some(Arc::from("a")), "Beta".into(), search_state)
+        );
+        assert_eq!(
+            *dropdown_events.lock().unwrap(),
+            vec![DropdownEvent::Closed]
+        );
+        assert_eq!(
+            *search_events.lock().unwrap(),
+            vec![SearchDropdownEvent::Closed]
+        );
     }
 
     #[test]

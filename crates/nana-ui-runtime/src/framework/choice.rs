@@ -509,6 +509,47 @@ impl AppContext {
         Ok(None)
     }
 
+    /// Close only the focused field's detached options, leaving its value and
+    /// search draft intact. Returns false once the options are already closed.
+    pub fn dismiss_focused_field_options(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world().focused(document) else {
+            return Ok(false);
+        };
+        if let Some(entity) = self.view_entity::<Select>(target) {
+            return self.update_component(entity, |select, _| {
+                if !select.opened {
+                    return false;
+                }
+                select.close();
+                true
+            });
+        }
+        if let Some(entity) = self.view_entity::<Dropdown>(target) {
+            return self.update_component(entity, |dropdown, cx| {
+                if let Some(event) = dropdown.close() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        if let Some(entity) = self.view_entity::<SearchDropdown>(target) {
+            return self.update_component(entity, |dropdown, cx| {
+                if let Some(event) = dropdown.close() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        Ok(false)
+    }
+
     pub fn dismiss_detached_menus(
         &mut self,
         keep: Option<StableNodeId>,
