@@ -61,6 +61,11 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 
 `RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`。原生窗口句柄不穿过这条边界。
 
+`RuntimeProgramUpdate.redraw` 支持 `None`、`Window(id)`、`Windows(ids)`、`All`。
+合并局部更新会保留实际窗口集合；`RuntimeRedraw::for_windows` 会排序去重。
+`RuntimeRedraw` 现在持有窗口列表，只实现 `Clone`，不再实现 `Copy`；穷尽匹配需处理 `Windows`。
+Vue 输入按语义变化和已挂载节点消费的 Canvas／HostTexture 版本选择窗口。
+
 ## 建树
 
 ```text

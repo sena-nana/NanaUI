@@ -1,6 +1,6 @@
 # Vue
 
-这是兼容路径，不是新产品的默认写法。第一路径是 Rust 控件，见 [开始](start.md)。
+Vue + JS 是 NanaUI 的一等 L1/L2 消费方，与 Rust L3 共用 Runtime、UiScene 和组件注册合同。应用可按团队的开发习惯选择入口，Rust 入口见 [开始](start.md)。
 
 Vue 用来把已经按网页习惯写好的界面落到**同一棵**原生树上。写法和网页接近，跑起来不是网页：没有 WebView，也不能把普通 `@vue/runtime-dom` 网站产物丢进来当桌面应用。
 
@@ -24,7 +24,7 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 ## 两种写法，同一棵树
 
-**Nana 控件。** `NanaButton`、`NanaInput`、`NanaDialog` 直接表达语义，不必靠 class 去猜。兼容路径里优先这样写，才能和 Rust 第一路径用同一套控件。
+**Nana 控件。** `NanaButton`、`NanaInput`、`NanaDialog` 直接表达语义，Vue 标签和 Rust `create_component` 通过同一份 `ComponentRegistry` 解析组件类型。
 
 **普通标签和 CSS。** `div`、flex、间距、字号这一类网页习惯可用，但只覆盖 [布局](layout.md) 列出的子集。适合结构骨架，不适合冒充完整浏览器。
 
@@ -35,6 +35,10 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo（`header` / `footer` 是 `article` / `aside` / `main` / `nav` / `section` 后代时除外）；`section` / `form` 只有带可访问名时才是 region / form——名字可以来自 `aria-label`、`aria-labelledby` 或自身文本内容。class / role hints 把地标标签改成具体控件（如 `<nav role="tablist">`）时保留控件角色。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。
 
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
+
+## Markdown
+
+`NanaMarkdown` 用 `modelValue` 或 `value` 传入原始 Markdown，需启用 `rich-text`。源码未变化时保留解析结果和选区；源码变化后重新解析。高亮由共享 Runtime 绑定路径处理。
 
 ## 它提供的 Web 面，以及明确没有的
 
