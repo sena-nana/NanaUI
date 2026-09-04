@@ -27,6 +27,7 @@ impl VueHost {
     /// Identity comes from the tree (`data-nana-media` / `<video>` / `<audio>`)
     /// and the bridge snapshot. Visual slots still come only from
     /// `data-nana-video` / CustomRender, matching canvas/svg GPU prune.
+    #[cfg(any(feature = "hosted", test))]
     pub(crate) fn live_media_sets(&self) -> nana_ui_web_api::MediaLiveSets {
         let mut retain = std::collections::HashSet::new();
         let mut visual = std::collections::HashSet::new();
@@ -35,30 +36,29 @@ impl VueHost {
             retain.extend(sets.retain);
             visual.extend(sets.visual);
         }
-        if let Ok(mut bridge) = self.bridge.lock() {
-            let owned: Vec<(String, Option<String>, Option<String>)> = bridge
-                .snapshot()
-                .widgets
-                .into_iter()
-                .map(|widget| {
-                    (
-                        if widget.props.element_tag.is_empty() {
-                            widget.kind.element_tag().to_string()
+        if let Ok(bridge) = self.bridge.lock() {
+            let sets = nana_ui_web_api::media_live_sets_from_tree(
+                bridge
+                    .widget_ids()
+                    .filter_map(|id| bridge.get(id))
+                    .map(|widget| nana_ui_web_api::MediaTreeRef {
+                        tag: if widget.props.element_tag.is_empty() {
+                            widget.kind.element_tag()
                         } else {
-                            widget.props.element_tag.clone()
+                            &widget.props.element_tag
                         },
-                        widget.props.attrs.get("data-nana-media").cloned(),
-                        widget.props.attrs.get("data-nana-video").cloned(),
-                    )
-                })
-                .collect();
-            let sets = nana_ui_web_api::media_live_sets_from_tree(owned.iter().map(
-                |(tag, media_id, video_id)| nana_ui_web_api::MediaTreeRef {
-                    tag,
-                    media_id: media_id.as_deref(),
-                    video_id: video_id.as_deref(),
-                },
-            ));
+                        media_id: widget
+                            .props
+                            .attrs
+                            .get("data-nana-media")
+                            .map(String::as_str),
+                        video_id: widget
+                            .props
+                            .attrs
+                            .get("data-nana-video")
+                            .map(String::as_str),
+                    }),
+            );
             retain.extend(sets.retain);
             visual.extend(sets.visual);
         }

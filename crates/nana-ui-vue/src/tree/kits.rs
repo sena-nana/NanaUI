@@ -260,19 +260,19 @@ pub(crate) fn settings_active_tab(
 }
 
 pub(crate) fn settings_page_content_child(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Option<StableNodeId> {
     widget.children.iter().copied().find_map(|id| {
         let child = snapshot.get(id)?;
-        if is_settings_page_header_child(child) {
+        if is_settings_page_header_child(&child) {
             return None;
         }
         StableNodeId::new(id)
     })
 }
 
-pub(crate) fn is_settings_page_header_child(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_settings_page_header_child(widget: &SemanticWidgetView<'_>) -> bool {
     let slot = widget
         .props
         .attrs
@@ -306,35 +306,6 @@ pub(crate) fn markdown_source_from_props(props: &crate::WidgetProps) -> String {
         }
     }
     String::new()
-}
-
-#[cfg(feature = "rich-text")]
-pub(crate) fn markdown_renderer_request(
-    markdown: &RuntimeNativeMarkdown,
-    props: &crate::WidgetProps,
-) -> Option<HighlightRequest> {
-    let mermaid = crate::widget_map::mermaid_renderer(props)
-        .map(str::to_string)
-        .or_else(|| native_prop_text(props, &["mermaid-renderer", "mermaidrenderer"]));
-    let math = crate::widget_map::math_renderer(props)
-        .map(str::to_string)
-        .or_else(|| native_prop_text(props, &["math-renderer", "mathrenderer"]));
-    for block in markdown.blocks() {
-        match block {
-            nana_ui_runtime::MarkdownBlock::Mermaid(source) => {
-                if let Some(name) = mermaid.as_deref() {
-                    return Some(HighlightRequest::new(name, format!("mermaid:{source}")));
-                }
-            }
-            nana_ui_runtime::MarkdownBlock::DisplayMath(source) => {
-                if let Some(name) = math.as_deref() {
-                    return Some(HighlightRequest::new(name, format!("math:{source}")));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 pub(crate) fn native_prop_text(props: &crate::WidgetProps, keys: &[&str]) -> Option<String> {
@@ -442,22 +413,22 @@ pub(crate) fn host_value_truthy(value: &nana_js_engine::HostValue) -> bool {
 }
 
 pub(crate) fn is_shell_composer_slot(
-    snapshot: &crate::SemanticSnapshot,
-    widget: &crate::SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> bool {
     widget
         .parent
         .and_then(|parent| snapshot.get(parent))
-        .is_some_and(|parent| is_shell_composer_kind(effective_kind(parent)))
+        .is_some_and(|parent| is_shell_composer_kind(effective_kind(&parent)))
 }
 
 pub(crate) fn retain_projected_children(
-    widget: &crate::SemanticWidget,
+    widget: &SemanticWidgetView<'_>,
     parent: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
-    for child in &widget.children {
+    for child in widget.children.iter() {
         let Some(child_id) = StableNodeId::new(*child) else {
             continue;
         };
@@ -474,9 +445,9 @@ pub(crate) fn retain_projected_children(
 }
 
 pub(crate) fn element_child_widgets<'a>(
-    widget: &'a crate::SemanticWidget,
-    snapshot: &'a crate::SemanticSnapshot,
-) -> Vec<&'a crate::SemanticWidget> {
+    widget: &SemanticWidgetView<'a>,
+    snapshot: &SemanticRead<'a>,
+) -> Vec<SemanticWidgetView<'a>> {
     widget
         .children
         .iter()
@@ -485,18 +456,18 @@ pub(crate) fn element_child_widgets<'a>(
         .collect()
 }
 
-pub(crate) fn widget_slot(widget: &crate::SemanticWidget) -> String {
+pub(crate) fn widget_slot(widget: &SemanticWidgetView<'_>) -> String {
     crate::widget_map::attr_value(&widget.props, &["data-slot", "slot"])
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase()
 }
 
-pub(crate) fn widget_tag(widget: &crate::SemanticWidget) -> String {
+pub(crate) fn widget_tag(widget: &SemanticWidgetView<'_>) -> String {
     widget.props.element_tag.trim().to_ascii_lowercase()
 }
 
-pub(crate) fn widget_class_blob(widget: &crate::SemanticWidget) -> String {
+pub(crate) fn widget_class_blob(widget: &SemanticWidgetView<'_>) -> String {
     widget
         .props
         .class_names
@@ -507,7 +478,7 @@ pub(crate) fn widget_class_blob(widget: &crate::SemanticWidget) -> String {
         .to_ascii_lowercase()
 }
 
-pub(crate) fn is_title_bar_child(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_title_bar_child(widget: &SemanticWidgetView<'_>) -> bool {
     let slot = widget_slot(widget);
     if matches!(slot.as_str(), "title-bar" | "titlebar" | "app-title-bar") {
         return true;
@@ -522,11 +493,11 @@ pub(crate) fn is_title_bar_child(widget: &crate::SemanticWidget) -> bool {
         || class.contains("nana-app-title-bar")
 }
 
-pub(crate) fn is_body_child(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_body_child(widget: &SemanticWidgetView<'_>) -> bool {
     widget_slot(widget) == "body"
 }
 
-pub(crate) fn is_overlay_child(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_overlay_child(widget: &SemanticWidgetView<'_>) -> bool {
     let slot = widget_slot(widget);
     if slot == "overlay" {
         return true;
@@ -536,7 +507,7 @@ pub(crate) fn is_overlay_child(widget: &crate::SemanticWidget) -> bool {
     tag.contains("overlay") || class.contains("nana-app-shell__overlay")
 }
 
-pub(crate) fn is_split_handle_child(widget: &crate::SemanticWidget) -> bool {
+pub(crate) fn is_split_handle_child(widget: &SemanticWidgetView<'_>) -> bool {
     let slot = widget_slot(widget);
     if matches!(slot.as_str(), "handle" | "split-handle") {
         return true;
@@ -572,8 +543,8 @@ pub(crate) fn split_axis_from_props(props: &crate::WidgetProps) -> nana_ui_core:
 }
 
 pub(crate) fn split_pane_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     context: &AppContext,
     id: StableNodeId,
 ) -> RuntimeSplitPane {
@@ -638,7 +609,7 @@ pub(crate) fn split_pane_from_widget(
     }
 }
 
-pub(crate) fn workspace_region_token(widget: &crate::SemanticWidget) -> String {
+pub(crate) fn workspace_region_token(widget: &SemanticWidgetView<'_>) -> String {
     if !widget.props.region.is_empty() {
         return widget.props.region.to_ascii_lowercase();
     }
@@ -677,8 +648,8 @@ pub(crate) fn region_id_from_token(token: &str) -> Option<nana_ui_core::RegionId
 }
 
 pub(crate) fn workspace_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     context: &AppContext,
     id: StableNodeId,
 ) -> RuntimeWorkspace {
@@ -696,8 +667,8 @@ pub(crate) fn workspace_from_widget(
 }
 
 pub(crate) fn workspace_slots_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> Vec<WorkspaceRegionSlot> {
     let children = element_child_widgets(widget, snapshot);
     let mut slots = Vec::new();
@@ -729,7 +700,7 @@ pub(crate) fn workspace_slots_from_widget(
     slots
 }
 
-pub(crate) fn dock_item_id(widget: &crate::SemanticWidget, index: usize) -> String {
+pub(crate) fn dock_item_id(widget: &SemanticWidgetView<'_>, index: usize) -> String {
     crate::widget_map::attr_value(&widget.props, &["data-dock-id", "dock-id", "id", "data-id"])
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -747,7 +718,7 @@ pub(crate) fn dock_item_id(widget: &crate::SemanticWidget, index: usize) -> Stri
         })
 }
 
-pub(crate) fn dock_item_title(widget: &crate::SemanticWidget, id: &str) -> String {
+pub(crate) fn dock_item_title(widget: &SemanticWidgetView<'_>, id: &str) -> String {
     let title = widget.props.display_label();
     if title.is_empty() {
         id.to_string()
@@ -758,7 +729,7 @@ pub(crate) fn dock_item_title(widget: &crate::SemanticWidget, id: &str) -> Strin
 
 pub(crate) fn dock_content_for_id(
     id: &str,
-    children: &[(&crate::SemanticWidget, StableNodeId)],
+    children: &[(SemanticWidgetView<'_>, StableNodeId)],
 ) -> Option<StableNodeId> {
     children.iter().find_map(|(child, node)| {
         let child_id = dock_item_id(child, 0);
@@ -775,7 +746,7 @@ pub(crate) fn parse_dock_axis(raw: &str) -> DockAxis {
 
 pub(crate) fn dock_node_from_host(
     value: &nana_js_engine::HostValue,
-    children: &[(&crate::SemanticWidget, StableNodeId)],
+    children: &[(SemanticWidgetView<'_>, StableNodeId)],
 ) -> Option<DockNode> {
     match value {
         nana_js_engine::HostValue::String(id) if !id.is_empty() => Some(DockNode::item(
@@ -888,7 +859,7 @@ pub(crate) fn collect_dock_contents(
 }
 
 pub(crate) fn dock_root_from_children(
-    children: &[(&crate::SemanticWidget, StableNodeId)],
+    children: &[(SemanticWidgetView<'_>, StableNodeId)],
 ) -> (DockNode, Vec<(Arc<str>, Arc<str>)>) {
     let mut titles = Vec::new();
     let mut items = Vec::new();
@@ -914,8 +885,8 @@ pub(crate) fn dock_root_from_children(
 }
 
 pub(crate) fn dock_from_widget_bound(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
     context: &AppContext,
     id: StableNodeId,
 ) -> RuntimeDock {
@@ -934,8 +905,8 @@ pub(crate) fn dock_from_widget_bound(
 }
 
 pub(crate) fn dock_from_widget(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> RuntimeDock {
     let child_pairs = element_child_widgets(widget, snapshot)
         .into_iter()
@@ -968,8 +939,8 @@ pub(crate) fn dock_from_widget(
 }
 
 pub(crate) fn app_shell_slots(
-    widget: &crate::SemanticWidget,
-    snapshot: &crate::SemanticSnapshot,
+    widget: &SemanticWidgetView<'_>,
+    snapshot: &SemanticRead<'_>,
 ) -> (
     Option<StableNodeId>,
     Option<StableNodeId>,
@@ -1002,7 +973,7 @@ pub(crate) fn app_shell_slots(
         .or_else(|| {
             title_bar.and_then(|title_bar| {
                 snapshot.get(title_bar.get()).and_then(|bar| {
-                    element_child_widgets(bar, snapshot)
+                    element_child_widgets(&bar, snapshot)
                         .into_iter()
                         .find(|child| is_body_child(child))
                         .and_then(|child| StableNodeId::new(child.id))

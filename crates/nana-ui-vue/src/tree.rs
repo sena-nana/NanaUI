@@ -23,16 +23,17 @@ use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::GraphCanvas as RuntimeGraphCanvas;
 #[cfg(not(feature = "scene-view"))]
 use nana_ui_runtime::MeasureTextShaper;
-#[cfg(feature = "rich-text")]
+#[cfg(all(test, feature = "rich-text"))]
 use nana_ui_runtime::NativeMarkdown as RuntimeNativeMarkdown;
+#[cfg(feature = "graph-canvas")]
+use nana_ui_runtime::RegisterableComponent;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind,
     ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
-    Entity, HOST_TEXTURE_RENDERER, HighlightRequest, ImeComposition, InteractionState,
-    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue, NodeKind, NodeStyle,
-    RegisterableComponent, SegmentedOption as RuntimeSegmentedOption, SelectionChrome,
-    SemanticOption, SemanticSpec, SettingsPage as RuntimeSettingsPage,
+    Entity, HOST_TEXTURE_RENDERER, ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox,
+    LayoutViewport, MutationQueue, NodeKind, NodeStyle, SegmentedOption as RuntimeSegmentedOption,
+    SelectionChrome, SemanticOption, SemanticSpec, SettingsPage as RuntimeSettingsPage,
     SidebarFrame as RuntimeSidebarFrame, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
     TextInputState, UiMutation, UiWorld, Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
@@ -42,6 +43,8 @@ mod component_binding;
 mod gpu_slots;
 mod kits;
 mod layout;
+pub(crate) mod semantic_read;
+use semantic_read::{PreparedSemanticSync, SemanticRead, SemanticWidgetView};
 
 pub(crate) use component_binding::*;
 pub(crate) use gpu_slots::*;
@@ -278,13 +281,12 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
 
 #[derive(Default)]
 pub(crate) struct PendingAssembly {
+    bindings: Vec<nana_ui_runtime::PreparedSemanticBinding>,
     workspaces: Vec<(StableNodeId, RuntimeWorkspace)>,
     docks: Vec<(StableNodeId, RuntimeDock)>,
     split_panes: Vec<(StableNodeId, RuntimeSplitPane)>,
     title_bars: Vec<(StableNodeId, RuntimeAppTitleBar)>,
     app_shells: Vec<(StableNodeId, RuntimeAppShell)>,
-    #[cfg(feature = "rich-text")]
-    markdowns: Vec<(StableNodeId, RuntimeNativeMarkdown)>,
     settings_pages: Vec<(StableNodeId, RuntimeSettingsPage)>,
     #[cfg(feature = "graph-canvas")]
     graph_canvases: Vec<(StableNodeId, RuntimeGraphCanvas)>,
@@ -292,6 +294,10 @@ pub(crate) struct PendingAssembly {
 
 impl PendingAssembly {
     fn apply(self, context: &mut AppContext) {
+        for binding in self.bindings {
+            // The matching projection has already been committed.
+            let _ = context.finish_semantic_binding(binding);
+        }
         for (id, component) in self.title_bars {
             if let Ok(entity) = context.bind_component(id, component) {
                 let _ = context.assemble_app_title_bar(entity);
@@ -315,12 +321,6 @@ impl PendingAssembly {
         for (id, component) in self.app_shells {
             if let Ok(entity) = context.bind_component(id, component) {
                 let _ = context.assemble_app_shell(entity);
-            }
-        }
-        #[cfg(feature = "rich-text")]
-        for (id, component) in self.markdowns {
-            if let Ok(entity) = context.bind_component(id, component) {
-                let _ = context.assemble_markdown(entity);
             }
         }
         for (id, component) in self.settings_pages {
@@ -875,7 +875,8 @@ impl NanaTreeDocument {
     }
 
     fn enqueue_insert(&mut self, child: u64, parent: u64, anchor: Option<u64>) {
-        if let Some(old_parent) = self.live_parent(child)
+        let previous_parent = self.live_parent(child);
+        if let Some(old_parent) = previous_parent
             && old_parent != parent
         {
             self.overlay_children_mut(old_parent)
@@ -883,7 +884,9 @@ impl NanaTreeDocument {
         }
         self.pending.parent.insert(child, Some(parent));
         let siblings = self.overlay_children_mut(parent);
-        siblings.retain(|id| *id != child);
+        if previous_parent == Some(parent) {
+            siblings.retain(|id| *id != child);
+        }
         let index = anchor
             .and_then(|anchor| siblings.iter().position(|id| *id == anchor))
             .unwrap_or(siblings.len());
@@ -1208,6 +1211,25 @@ impl NanaTreeDocument {
             }
             return;
         }
+        let prepared = self.prepare_semantic_styles(&SemanticRead::snapshot(snapshot));
+        self.apply_semantic_styles(prepared);
+    }
+
+    /// Apply changed semantic props by borrowing the bridge; consume its mutation footprint.
+    pub fn sync_semantics_from_bridge(&mut self, bridge: &mut crate::MessageBridge) {
+        if self.synced_semantic_revision == Some(bridge.revision()) {
+            if !self.pending.is_empty() {
+                self.flush_host_frame();
+            }
+            return;
+        }
+        self.flush_host_frame();
+        let changes = bridge.take_snapshot_changes();
+        let prepared = self.prepare_semantic_styles(&SemanticRead::bridge(bridge, self, changes));
+        self.apply_semantic_styles(prepared);
+    }
+
+    fn prepare_semantic_styles(&self, snapshot: &SemanticRead<'_>) -> PreparedSemanticSync {
         // Incremental pass: project only the widgets the bridge marked dirty.
         // A structural change, a whole-document invalidation, or an empty
         // footprint with a bumped revision (footprint drained by another
@@ -1219,10 +1241,12 @@ impl NanaTreeDocument {
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
-        for widget in &snapshot.widgets {
-            if !full_pass && !snapshot.changes.dirty.contains(&widget.id) {
+        let projected = snapshot.projection_ids(full_pass);
+        for raw_id in &projected {
+            let Some(widget) = snapshot.get(*raw_id) else {
                 continue;
-            }
+            };
+            let widget = &widget;
             let Some(id) = StableNodeId::new(widget.id)
                 .filter(|id| self.runtime.contains(*id) || self.nodes.contains_key(&id.get()))
             else {
@@ -1331,7 +1355,7 @@ impl NanaTreeDocument {
                 // writeback leaves the projected geometry alone.
                 component_owned_layout.insert(id.get());
                 if widget.kind == crate::WidgetKind::GraphCanvas {
-                    for child in &widget.children {
+                    for child in widget.children.iter() {
                         component_owned_layout.insert(*child);
                     }
                 }
@@ -1465,11 +1489,30 @@ impl NanaTreeDocument {
                 mutations.set_text_input(id, None);
             }
         }
+        PreparedSemanticSync {
+            mutations,
+            pending,
+            component_owned_layout,
+            projected,
+            full_pass,
+            revision: snapshot.revision,
+        }
+    }
+
+    fn apply_semantic_styles(&mut self, prepared: PreparedSemanticSync) {
+        let PreparedSemanticSync {
+            mutations,
+            pending,
+            component_owned_layout,
+            projected,
+            full_pass,
+            revision,
+        } = prepared;
         if full_pass {
             self.component_owned_layout = component_owned_layout;
         } else {
             // Untouched widgets keep their ownership; dirty widgets re-decide.
-            for id in &snapshot.changes.dirty {
+            for id in &projected {
                 self.component_owned_layout.remove(id);
             }
             self.component_owned_layout.extend(component_owned_layout);
@@ -1478,7 +1521,7 @@ impl NanaTreeDocument {
         pending.apply(self.runtime.context_mut());
         self.adopt_runtime_allocated_ids();
         self.flush_runtime_systems();
-        self.synced_semantic_revision = Some(snapshot.revision);
+        self.synced_semantic_revision = Some(revision);
     }
 
     /// Revision of the last fully or incrementally applied semantic snapshot.

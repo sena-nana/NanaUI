@@ -187,6 +187,7 @@ impl MarkdownBlock {
 
 #[derive(Clone, Debug)]
 pub struct NativeMarkdown {
+    source: Option<Arc<str>>,
     blocks: Vec<MarkdownBlock>,
     selection: TextSelectionGroup,
     fence_children: Vec<StableNodeId>,
@@ -215,6 +216,7 @@ impl NativeMarkdown {
 
     pub fn new() -> Self {
         Self {
+            source: None,
             blocks: Vec::new(),
             selection: TextSelectionGroup::new(),
             fence_children: Vec::new(),
@@ -224,6 +226,7 @@ impl NativeMarkdown {
 
     pub fn from_blocks(blocks: impl IntoIterator<Item = MarkdownBlock>) -> Self {
         Self {
+            source: None,
             blocks: blocks.into_iter().collect(),
             selection: TextSelectionGroup::new(),
             fence_children: Vec::new(),
@@ -247,7 +250,13 @@ impl NativeMarkdown {
         for event in Parser::new_ext(source, options) {
             parser.push(event);
         }
-        parser.finish()
+        let mut markdown = parser.finish();
+        markdown.source = Some(Arc::from(source));
+        markdown
+    }
+
+    pub(crate) fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     pub fn blocks(&self) -> &[MarkdownBlock] {

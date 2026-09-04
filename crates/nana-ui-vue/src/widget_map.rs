@@ -14,9 +14,10 @@
 //! Overlay / layout kinds come from documented `nana-*` contracts, HTML tags, and
 //! ARIA `role` — not product kit BEM (`ui-dialog`, `ctx-menu`, `dd__menu`, …).
 
+use crate::tree::semantic_read::{SemanticRead, SemanticWidgetView};
 use std::collections::BTreeMap;
 
-use crate::bridge::{SemanticSnapshot, SemanticWidget, WidgetId, WidgetKind, WidgetProps};
+use crate::bridge::{WidgetId, WidgetKind, WidgetProps};
 
 /// Resolve a host element tag. Known HTML / `nana-*` kinds succeed; retired
 /// HTML aliases and tags that are neither HTML nor a registered component fail.
@@ -477,8 +478,8 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
 }
 
 pub(crate) fn first_button_child_id(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> Option<WidgetId> {
     widget.children.iter().copied().find(|&id| {
         snapshot
@@ -523,8 +524,8 @@ fn settings_row_marked(props: &WidgetProps, slot: &str, classes: &[&str]) -> boo
 }
 
 fn settings_row_child(
-    snapshot: &SemanticSnapshot,
-    parent: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    parent: &SemanticWidgetView<'_>,
     pred: impl Fn(&WidgetProps) -> bool,
 ) -> Option<WidgetId> {
     parent
@@ -535,12 +536,12 @@ fn settings_row_child(
 }
 
 fn settings_row_descendent(
-    snapshot: &SemanticSnapshot,
+    snapshot: &SemanticRead<'_>,
     id: WidgetId,
     pred: impl Fn(&WidgetProps) -> bool + Copy,
 ) -> Option<WidgetId> {
     let widget = snapshot.get(id)?;
-    for &child in &widget.children {
+    for &child in widget.children.iter() {
         if snapshot.get(child).is_some_and(|node| pred(&node.props)) {
             return Some(child);
         }
@@ -551,7 +552,7 @@ fn settings_row_descendent(
     None
 }
 
-fn settings_row_text_or_self(snapshot: &SemanticSnapshot, id: WidgetId) -> WidgetId {
+fn settings_row_text_or_self(snapshot: &SemanticRead<'_>, id: WidgetId) -> WidgetId {
     snapshot
         .get(id)
         .and_then(|node| {
@@ -567,8 +568,8 @@ fn settings_row_text_or_self(snapshot: &SemanticSnapshot, id: WidgetId) -> Widge
 }
 
 pub(crate) fn settings_row_slots(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> SettingsRowSlots {
     let is_label = |props: &WidgetProps| {
         settings_row_marked(
@@ -617,12 +618,12 @@ pub(crate) fn settings_row_slots(
     SettingsRowSlots { copy, label, hint }
 }
 
-pub(crate) fn settings_row_plain_text(snapshot: &SemanticSnapshot, id: WidgetId) -> String {
+pub(crate) fn settings_row_plain_text(snapshot: &SemanticRead<'_>, id: WidgetId) -> String {
     let Some(widget) = snapshot.get(id) else {
         return String::new();
     };
     let mut text = widget.props.display_label().to_string();
-    for &child in &widget.children {
+    for &child in widget.children.iter() {
         let child = settings_row_plain_text(snapshot, child);
         if child.is_empty() {
             continue;
@@ -636,8 +637,8 @@ pub(crate) fn settings_row_plain_text(snapshot: &SemanticSnapshot, id: WidgetId)
 }
 
 pub(crate) fn is_settings_row_projected_slot(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> bool {
     let mut parent = widget.parent;
     while let Some(parent_id) = parent {
@@ -645,7 +646,7 @@ pub(crate) fn is_settings_row_projected_slot(
             break;
         };
         if row.kind == WidgetKind::SettingsRow {
-            let slots = settings_row_slots(snapshot, row);
+            let slots = settings_row_slots(snapshot, &row);
             let mut id = Some(widget.id);
             while let Some(node_id) = id {
                 if node_id == parent_id {
@@ -664,8 +665,8 @@ pub(crate) fn is_settings_row_projected_slot(
 }
 
 pub(crate) fn settings_row_control_child_id(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> Option<WidgetId> {
     widget
         .children
@@ -722,13 +723,13 @@ pub(crate) fn settings_row_flags(props: &WidgetProps) -> (bool, bool, bool, bool
 }
 
 pub(crate) fn sidebar_frame_slots(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> (Option<WidgetId>, Option<WidgetId>, Option<WidgetId>) {
     let mut top = None;
     let mut body = None;
     let mut footer = None;
-    for &id in &widget.children {
+    for &id in widget.children.iter() {
         let Some(child) = snapshot.get(id) else {
             continue;
         };
@@ -796,12 +797,12 @@ pub(crate) fn sidebar_row_depth(props: &WidgetProps) -> u16 {
 }
 
 pub(crate) fn form_field_control_child_id(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> Option<WidgetId> {
     let mut first_non_text = None;
     let mut first_input_like = None;
-    for &id in &widget.children {
+    for &id in widget.children.iter() {
         let Some(child) = snapshot.get(id) else {
             continue;
         };
@@ -858,8 +859,8 @@ pub(crate) fn level_meter_value(props: &WidgetProps) -> f32 {
 }
 
 pub(crate) fn labeled_value_caption(
-    snapshot: &SemanticSnapshot,
-    widget: &SemanticWidget,
+    snapshot: &SemanticRead<'_>,
+    widget: &SemanticWidgetView<'_>,
 ) -> String {
     if !widget.props.label.is_empty() {
         return widget.props.label.clone();
@@ -885,29 +886,6 @@ pub(crate) fn highlight_language(props: &WidgetProps) -> Option<&str> {
     attr_value(props, &["language", "lang", "syntax"])
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-pub(crate) fn mermaid_renderer(props: &WidgetProps) -> Option<&str> {
-    attr_value(
-        props,
-        &[
-            "mermaid-renderer",
-            "mermaidrenderer",
-            "data-mermaid-renderer",
-        ],
-    )
-    .map(str::trim)
-    .filter(|value| !value.is_empty())
-}
-
-#[cfg(feature = "rich-text")]
-pub(crate) fn math_renderer(props: &WidgetProps) -> Option<&str> {
-    attr_value(
-        props,
-        &["math-renderer", "mathrenderer", "data-math-renderer"],
-    )
-    .map(str::trim)
-    .filter(|value| !value.is_empty())
 }
 
 /// HTML `dir="rtl"|"ltr"|"auto"` → [`nana_ui_core::DirSpec`].

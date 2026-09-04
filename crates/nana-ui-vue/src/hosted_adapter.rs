@@ -540,8 +540,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             document.flush_host_frame();
             host.report_commit_rejections(&mut document);
         }
-        // Build the O(widgets) snapshot only when the bridge moved past the
-        // document's synced revision; steady frames skip the clone entirely.
+        // Borrow semantic data only when the bridge moved past the synced revision.
         let synced = host
             .document()
             .lock()
@@ -552,10 +551,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             Err(_) => true,
         };
         if needs_snapshot {
-            let snapshot = host.semantic_snapshot();
-            if let Ok(mut document) = host.document().lock() {
-                document.sync_semantic_styles(&snapshot);
-            }
+            host.sync_semantics();
         }
         host.resolve_layout();
         if let Ok(mut document) = host.document().lock() {

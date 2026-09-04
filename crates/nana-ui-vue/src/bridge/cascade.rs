@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Debug, Default)]
 pub(super) struct State {
+    /// Root identity only; its computed font size is always read live.
+    pub(super) font_root: Cell<Option<Option<WidgetId>>>,
     /// Parsed author stylesheet rules (source order across inject calls).
     /// Declaration entries are cached on each [`StyleRule`] at parse time.
     pub(super) stylesheet_rules: Vec<StyleRule>,
@@ -710,14 +712,21 @@ impl MessageBridge {
 impl MessageBridge {
     /// Root `rem` base: html → body → CSS initial 16px.
     pub(super) fn document_root_font_px(&self) -> f32 {
-        self.widgets
-            .values()
-            .find(|w| w.props.element_tag.eq_ignore_ascii_case("html"))
-            .or_else(|| {
-                self.widgets
-                    .values()
-                    .find(|w| w.props.element_tag.eq_ignore_ascii_case("body"))
-            })
+        let root = self.cascade.font_root.get().unwrap_or_else(|| {
+            let root = self
+                .widgets
+                .values()
+                .find(|w| w.props.element_tag.eq_ignore_ascii_case("html"))
+                .or_else(|| {
+                    self.widgets
+                        .values()
+                        .find(|w| w.props.element_tag.eq_ignore_ascii_case("body"))
+                })
+                .map(|w| w.id);
+            self.cascade.font_root.set(Some(root));
+            root
+        });
+        root.and_then(|id| self.widgets.get(&id))
             .and_then(|w| w.props.layout.font_size)
             .unwrap_or(16.0)
             .max(1.0)

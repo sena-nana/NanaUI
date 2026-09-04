@@ -2302,7 +2302,13 @@ fn retain_live_keeps_audio_after_prepare_and_releases_on_remove() {
         doc.set_attribute(node, "data-nana-video", &video_id.to_string());
     }
 
+    let pending = host.bridge.lock().unwrap().peek_snapshot_changes();
     let sets = host.live_media_sets();
+    assert_eq!(
+        host.bridge.lock().unwrap().peek_snapshot_changes(),
+        pending,
+        "media discovery must not consume pending semantic updates"
+    );
     assert!(
         sets.retain.iter().any(|id| id.0 == audio_id),
         "CPU retain must include the audio element"

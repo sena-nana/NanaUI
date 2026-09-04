@@ -669,6 +669,20 @@ impl VueHost {
         snapshot
     }
 
+    /// Synchronize semantic changes without materializing an owned inspection snapshot.
+    /// Attributes are borrowed from the bridge and topology comes from Runtime.
+    pub fn sync_semantics(&self) {
+        self.sync_appearance_from_document();
+        let (logical_w, logical_h) = self.document.lock().expect("vue doc").logical_size();
+        let mut bridge = self.bridge.lock().expect("vue bridge");
+        let mut document = self.document.lock().expect("vue doc");
+        bridge.reparent_orphans();
+        bridge.sync_sidebar_footer_into_document(&mut document);
+        bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+        document.flush_host_frame();
+        document.sync_semantics_from_bridge(&mut bridge);
+    }
+
     /// Latest Appearance settings mirrored from L1 document dataset/style.
     pub fn appearance(&self) -> nana_ui_core::AppearanceSettings {
         self.sync_appearance_from_document();

@@ -7,7 +7,12 @@
 //! This is **not** the Vue JS host factory table (`nana_ui_vue::NativeComponentRegistry`).
 //! Register layout/hit/Scene components here via [`crate::ExtensionRegistrar::register_component`].
 
-use std::{any::TypeId, collections::HashMap, fmt, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    fmt,
+    sync::Arc,
+};
 
 use nana_ui_core::{ButtonKind, ControlSize, Icon, LayoutStyle};
 
@@ -131,6 +136,26 @@ pub(crate) struct ComponentBindRequest<'a> {
     pub world: &'a UiWorld,
     pub mutations: &'a mut MutationQueue,
     pub spec: &'a SemanticSpec<'a>,
+    pub previous: Option<&'a (dyn Any + Send)>,
+    pub retained: Option<Box<dyn Any + Send>>,
+    pub finish: Option<fn(&mut crate::AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+}
+
+/// A registry projection and its optional typed interaction state. Finish only
+/// after the caller has committed the projection's mutations successfully.
+pub struct PreparedSemanticBinding {
+    pub(crate) id: StableNodeId,
+    pub(crate) type_id: ComponentTypeId,
+    pub(crate) kind: ComponentBindKind,
+    pub(crate) retained: Option<Box<dyn Any + Send>>,
+    pub(crate) finish:
+        Option<fn(&mut crate::AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+}
+
+impl PreparedSemanticBinding {
+    pub fn kind(&self) -> ComponentBindKind {
+        self.kind
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +185,27 @@ pub trait RegisterableComponent: ComponentView {
     /// Layout primitives keep Vue generic style writeback (`Layout`).
     const BIND_KIND: ComponentBindKind = ComponentBindKind::Projected;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self;
+    /// Opt in when interaction uses typed component state rather than only
+    /// UiWorld fields. Builtins and extensions use the same retention path.
+    const RETAIN_SEMANTIC_STATE: bool = false;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, _previous: Option<&Self>) -> Self {
+        Self::from_semantic(spec)
+    }
+    fn project_semantic(
+        &self,
+        _spec: &SemanticSpec<'_>,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        self.project(id, world, mutations);
+    }
+    fn finish_semantic(
+        _context: &mut crate::AppContext,
+        _entity: crate::Entity<Self>,
+    ) -> Result<(), FrameworkError> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -275,8 +321,16 @@ fn normalized_tags(tags: &[&str]) -> Vec<String> {
 
 fn bind_registerable<C: RegisterableComponent>() -> Binder {
     Arc::new(|request| {
-        let component = C::from_semantic(request.spec);
-        component.project(request.id, request.world, request.mutations);
+        let component = C::reconcile_semantic(
+            request.spec,
+            request.previous.and_then(|value| value.downcast_ref::<C>()),
+        );
+        component.project_semantic(request.spec, request.id, request.world, request.mutations);
+        if C::RETAIN_SEMANTIC_STATE {
+            request.retained = Some(Box::new(component));
+            request.finish =
+                Some(|context, id| C::finish_semantic(context, crate::Entity::from_stable_id(id)));
+        }
         Ok(C::BIND_KIND)
     })
 }
