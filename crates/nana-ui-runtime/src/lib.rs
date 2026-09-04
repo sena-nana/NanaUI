@@ -241,12 +241,10 @@ pub use sidebar::{
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
 pub use text_editing::{
-    TextCaretIntent, TextLineDirection, TextSearchOptions, atoms_in, delete_backward_atoms,
-    delete_forward_atoms, delete_to_line_end_atoms, delete_to_line_start_atoms,
-    delete_word_backward_atoms, delete_word_forward_atoms, expand_range_over_atoms,
-    expanded_selection, find_matches, find_matches_capped, find_matches_in_range, find_next_match,
-    find_previous_match, matching_bracket_pair, preserve_case_replacement, replace_all_matches,
-    replace_all_matches_in_range, snap_moved_caret, snap_pointer_caret, sort_lines,
+    TextCaretIntent, TextLineDirection, TextSearchOptions, expanded_selection, find_matches,
+    find_matches_capped, find_matches_in_range, find_next_match, find_previous_match,
+    matching_bracket_pair, preserve_case_replacement, replace_all_matches,
+    replace_all_matches_in_range, sort_lines,
 };
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
