@@ -3,40 +3,44 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ButtonKind, CardKind, CommandPaletteItem, DrawerSide, GraphEdge, GraphEndpoint, GraphNode,
-    GraphPoint, GraphPort, GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport,
-    Icon, LengthSpec, RegionId, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
-    SplitAxis, SplitPaneModel, SplitPaneMutation, StatusTone, SwitchControlPosition, TreeNode,
-    ValidationIntent, WorkspaceModel,
+    ButtonKind, CardKind, CommandPaletteItem, DrawerSide, Icon, LengthSpec, RegionId,
+    SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis, SplitPaneModel,
+    SplitPaneMutation, StatusTone, SwitchControlPosition, TreeNode, ValidationIntent,
+    WorkspaceModel,
 };
 
-#[cfg(feature = "graph-canvas")]
-use crate::GraphCanvas;
 #[cfg(feature = "rich-text")]
 use crate::NativeMarkdown;
-#[cfg(feature = "charts")]
-use crate::TimeSeriesChart;
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Button, Card, Checkbox, ColorField,
     CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
     Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
-    FormField, FrameworkError, GpuTextureView, GpuView, GraphModel, HostedTextarea, IconButton,
-    IconGlyph, InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots,
-    ModalSurface, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode,
-    RangeField, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
-    SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame,
-    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane,
-    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
+    FormField, FrameworkError, GpuTextureView, GpuView, HostedTextarea, IconButton, IconGlyph,
+    InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface,
+    NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode, RangeField,
+    ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
+    SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
+    SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
+    StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
     TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
     ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 #[cfg(feature = "calendar")]
 use crate::{CalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy};
+#[cfg(feature = "charts")]
+use crate::TimeSeriesChart;
+#[cfg(feature = "graph-canvas")]
+use crate::{GraphCanvas, GraphModel};
 #[cfg(feature = "image-viewer")]
 use crate::{ImageViewer, ImageViewerContent};
 #[cfg(feature = "controls")]
 use crate::{ReorderItem, ReorderList};
+#[cfg(feature = "graph-canvas")]
+use nana_ui_core::{
+    GraphEdge, GraphEndpoint, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
+    GraphSelection, GraphSize, GraphViewport,
+};
 
 fn overlay_l2_css_size(
     target: &mut Arc<nana_ui_core::LayoutStyle>,

@@ -352,20 +352,20 @@ impl RuntimeInputAdapter {
                                 )?
                                 || context.update_dock_item_drag(document, *pointer_id, *x, *y)?
                                 || target
-                                    .map(|target| {
+                                    .map(|_target| {
                                         optional_input!(
                                             "graph-canvas",
-                                            context.hover_graph_canvas(target, *x, *y),
+                                            context.hover_graph_canvas(_target, *x, *y),
                                             Ok::<bool, FrameworkError>(false)
                                         )
                                     })
                                     .transpose()?
                                     .unwrap_or(false)
                                 || target
-                                    .map(|target| {
+                                    .map(|_target| {
                                         optional_input!(
                                             "calendar",
-                                            context.hover_calendar_heatmap(target, *x, *y),
+                                            context.hover_calendar_heatmap(_target, *x, *y),
                                             Ok::<bool, FrameworkError>(false)
                                         )
                                     })
@@ -734,8 +734,8 @@ impl RuntimeInputAdapter {
                         .transpose()?
                         .flatten()
                         .is_some()
-                } else if graph_target.is_some_and(|target| {
-                    optional_input!("graph-canvas", context.is_graph_canvas(target), false)
+                } else if graph_target.is_some_and(|_target| {
+                    optional_input!("graph-canvas", context.is_graph_canvas(_target), false)
                 }) {
                     optional_input!(
                         "graph-canvas",

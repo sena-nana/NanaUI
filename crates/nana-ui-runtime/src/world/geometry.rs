@@ -101,6 +101,7 @@ pub(super) fn estimated_text_width(text: &str, font_size: f32) -> f32 {
         .max(font_size)
 }
 
+#[cfg(feature = "charts")]
 pub(super) fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
     const STRIP: f32 = 2.0;
     let mut strips = Vec::new();
