@@ -333,6 +333,13 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         while let Ok(message) = ready.messages.try_recv() {
             ready.process_message(event_loop, message);
         }
+        if ready
+            .painters
+            .values()
+            .any(SceneWgpuPainter::has_image_updates)
+        {
+            ready.request_redraw_all();
+        }
     }
 
     fn window_event(
@@ -406,6 +413,10 @@ fn initialize<Program: RuntimeProgram>(
             format,
         ),
     );
+    for painter in painters.values_mut() {
+        let proxy = proxy.clone();
+        painter.set_image_waker(Arc::new(move || proxy.wake_up()));
+    }
     let tasks = spawn_task_workers(message_tx.clone(), proxy.clone());
     let geometry = window_geometry(graphics.window().as_ref());
     let context = program_context(

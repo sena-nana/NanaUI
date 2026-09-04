@@ -30,6 +30,7 @@ pub struct OffscreenSnapshots {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     painter: SceneWgpuPainter,
+    image_ready: std::sync::mpsc::Receiver<()>,
 }
 
 impl OffscreenSnapshots {
@@ -53,11 +54,16 @@ impl OffscreenSnapshots {
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             }))?;
-        let painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
+        let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
+        let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
+        painter.set_image_waker(std::sync::Arc::new(move || {
+            let _ = wake.try_send(());
+        }));
         Ok(Self {
             device,
             queue,
             painter,
+            image_ready,
         })
     }
 
@@ -98,68 +104,92 @@ impl OffscreenSnapshots {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if layers.is_empty() {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err("snapshot timed out waiting for URL images".into());
+            }
+            // Every attempt starts from the same owned target contents.
+            if layers.first().is_none_or(|(_, clears)| !clears) {
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("nana-ui snapshot clear"),
+                        });
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("nana-ui snapshot clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu_clear_color(clear)),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui snapshot clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu_clear_color(clear)),
-                        store: wgpu::StoreOp::Store,
+                let clear_submit = self.queue.submit([encoder.finish()]);
+                self.device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(clear_submit),
+                        timeout: None,
+                    })
+                    .map_err(|error| format!("snapshot clear poll failed: {error:?}"))?;
+            }
+            let image_revision = self.painter.image_revision();
+            for (scene, layer_clear) in layers {
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("nana-ui snapshot paint"),
+                        });
+                let viewport = ScenePaintViewport {
+                    logical_size: [size.width as f32, size.height as f32],
+                    physical_size: [size.width, size.height],
+                    scale_factor: 1.0,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: if *layer_clear {
+                        wgpu_clear(clear)
+                    } else {
+                        [0.0; 4]
                     },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let clear_submit = self.queue.submit([encoder.finish()]);
-            self.device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(clear_submit),
-                    timeout: None,
-                })
-                .map_err(|error| format!("snapshot clear poll failed: {error:?}"))?;
-        }
-        for (scene, layer_clear) in layers {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("nana-ui snapshot paint"),
-                });
-            let viewport = ScenePaintViewport {
-                logical_size: [size.width as f32, size.height as f32],
-                physical_size: [size.width, size.height],
-                scale_factor: 1.0,
-                scene_origin: [0.0, 0.0],
-                target_origin: [0.0, 0.0],
-                clear_color: wgpu_clear(clear),
-                clear: *layer_clear,
-            };
-            self.painter
-                .paint(
-                    scene,
-                    &mut encoder,
-                    &view,
-                    viewport,
-                    host_textures,
-                    gpu_renderers,
-                )
-                .map_err(paint_error)?;
-            let paint = self.queue.submit([encoder.finish()]);
-            self.device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(paint),
-                    timeout: None,
-                })
-                .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;
+                    clear: *layer_clear,
+                };
+                self.painter
+                    .paint(
+                        scene,
+                        &mut encoder,
+                        &view,
+                        viewport,
+                        host_textures,
+                        gpu_renderers,
+                    )
+                    .map_err(paint_error)?;
+                let paint = self.queue.submit([encoder.finish()]);
+                self.device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(paint),
+                        timeout: None,
+                    })
+                    .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;
+            }
+            // Completion during a later layer also requires repainting the earlier
+            // layers. Waiting and readback remain confined to this snapshot host.
+            if image_revision != self.painter.image_revision() {
+                continue;
+            }
+            if !self.painter.has_pending_images() {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            self.image_ready
+                .recv_timeout(remaining)
+                .map_err(|_| "snapshot timed out waiting for URL images")?;
         }
         let copy = self
             .device
@@ -167,6 +197,118 @@ impl OffscreenSnapshots {
                 label: Some("nana-ui snapshot copy"),
             });
         readback(&self.device, &self.queue, copy, &texture, size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nana_ui::runtime::{DocumentId, LayoutViewport, RuntimeDocument, Stack};
+    use nana_ui_core::{BackgroundImage, BackgroundImageFit, LayoutStyle, LengthSpec};
+
+    #[test]
+    fn first_layered_snapshot_waits_for_http_images_and_repaints_overlays() {
+        check_layered_snapshot(false);
+    }
+
+    #[test]
+    fn no_clear_translucent_layers_do_not_accumulate_across_retries() {
+        check_layered_snapshot(true);
+    }
+
+    fn check_layered_snapshot(no_clear: bool) {
+        use std::io::{Read, Write};
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(
+            8,
+            8,
+            image::Rgba([0, 0, 255, if no_clear { 128 } else { 255 }]),
+        )
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let url = format!("http://{}/blue.png", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let bytes = png.into_inner();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let mut background = RuntimeDocument::new(DocumentId::new(1).unwrap());
+        let mut layout = LayoutStyle {
+            width: Some(LengthSpec::Px(64.0)),
+            height: Some(LengthSpec::Px(64.0)),
+            ..Default::default()
+        };
+        layout.paint.background_image = Some(BackgroundImage::url_with_fit(
+            url,
+            BackgroundImageFit::Stretch,
+        ));
+        background
+            .context_mut()
+            .create_component(DocumentId::new(1).unwrap(), Stack::from_layout(layout))
+            .unwrap();
+        let mut overlay = RuntimeDocument::new(DocumentId::new(2).unwrap());
+        overlay
+            .context_mut()
+            .create_component(
+                DocumentId::new(2).unwrap(),
+                Stack::from_layout(LayoutStyle {
+                    width: Some(LengthSpec::Px(16.0)),
+                    height: Some(LengthSpec::Px(16.0)),
+                    background: Some([1.0, 0.0, 0.0, if no_clear { 0.5 } else { 1.0 }]),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let mut shaper = nana_ui::NanaTextShaper::default();
+        for document in [&mut background, &mut overlay] {
+            document
+                .flush(LayoutViewport::new(64.0, 64.0), &mut shaper)
+                .unwrap();
+        }
+        let mut gpu = OffscreenSnapshots::new().unwrap();
+        let pixels = gpu
+            .paint_layers(
+                &[(background.scene(), !no_clear), (overlay.scene(), false)],
+                Size::new(64, 64),
+                [0.0; 4],
+                None,
+                None,
+            )
+            .unwrap();
+        let at = |x: usize, y: usize| &pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
+        if no_clear {
+            assert!(
+                (127..=129).contains(&at(40, 40)[3]),
+                "background alpha accumulates: {:?}",
+                at(40, 40)
+            );
+            assert!(
+                (190..=193).contains(&at(8, 8)[3]),
+                "overlay alpha accumulates: {:?}",
+                at(8, 8)
+            );
+        } else {
+            assert!(
+                at(40, 40)[2] > 200 && at(40, 40)[0] < 40,
+                "first returned snapshot must include the image: {:?}",
+                at(40, 40)
+            );
+            assert!(
+                at(8, 8)[0] > 200 && at(8, 8)[2] < 40,
+                "overlay must stay above the loaded background"
+            );
+        }
+        server.join().unwrap();
     }
 }
 

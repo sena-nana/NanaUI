@@ -224,6 +224,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     }
                 }
                 self.graphics = graphics;
+                for painter in painters.values_mut() {
+                    let proxy = self.proxy.clone();
+                    painter.set_image_waker(Arc::new(move || proxy.wake_up()));
+                }
                 self.painters = painters;
                 self.auxiliary = rebuilt;
                 self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
@@ -261,8 +265,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
         let resources = self.graphics.resources();
-        self.painters
-            .entry(format)
-            .or_insert_with(|| SceneWgpuPainter::new(resources.device(), resources.queue(), format))
+        let proxy = self.proxy.clone();
+        self.painters.entry(format).or_insert_with(|| {
+            let mut painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
+            painter.set_image_waker(Arc::new(move || proxy.wake_up()));
+            painter
+        })
     }
 }

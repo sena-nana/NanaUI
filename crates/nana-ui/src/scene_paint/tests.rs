@@ -504,6 +504,7 @@ fn paint_draws_node_inserted_by_in_place_apply_delta() {
     );
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_node(
     value: u64,
     edges: Vec<(Vec<[f32; 2]>, [f32; 4])>,
@@ -545,7 +546,6 @@ fn graph_canvas_stroke_node(
 }
 
 #[test]
-#[cfg(feature = "charts")]
 #[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
     let (device, queue) = test_device();
@@ -611,6 +611,7 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -719,6 +720,7 @@ fn graph_canvas_stroke_paints_round_end_caps_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn tapered_stroke_paints_uneven_capsule_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -861,6 +863,7 @@ fn non_uniform_affine_stroke_covers_stretched_ellipse_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn butt_stroke_cuts_round_end_caps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -916,6 +919,7 @@ fn butt_stroke_cuts_round_end_caps_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn square_stroke_extends_flat_caps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -966,6 +970,7 @@ fn square_stroke_extends_flat_caps_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn dashed_stroke_skips_gaps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1114,6 +1119,7 @@ fn sdf_dotted_border_skips_gaps_on_gpu() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn per_point_stroke_colors_paint_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1384,6 +1390,7 @@ fn time_series_line_paints_capsule_coverage_on_gpu() {
     );
 }
 
+#[cfg(feature = "charts")]
 fn time_series_stroke_node(value: u64, points: Vec<[f32; 2]>, color: [f32; 4]) -> ExtractedNode {
     let mut node = extracted_div(
         value,
@@ -1471,6 +1478,7 @@ fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
 }
 
 #[test]
+#[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_skips_identical_instance_upload() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1486,6 +1494,7 @@ fn graph_canvas_stroke_skips_identical_instance_upload() {
     );
 }
 
+#[cfg(feature = "graph-canvas")]
 fn graph_canvas_scene(edges: Vec<(Vec<[f32; 2]>, [f32; 4])>) -> UiScene {
     let mut scene = UiScene::new();
     scene.apply_delta(
@@ -1495,6 +1504,7 @@ fn graph_canvas_scene(edges: Vec<(Vec<[f32; 2]>, [f32; 4])>) -> UiScene {
     scene
 }
 
+#[cfg(feature = "graph-canvas")]
 fn l_stroke_edges(count: usize) -> Vec<(Vec<[f32; 2]>, [f32; 4])> {
     (0..count)
         .map(|index| {
@@ -1550,6 +1560,7 @@ fn paint_scene_rgba(
     pixels
 }
 
+#[cfg(feature = "graph-canvas")]
 fn encode_scene_gpu_work(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -4750,9 +4761,32 @@ fn mask_url_alpha_scales_quad_in_document_order() {
 
 #[test]
 fn host_texture_mask_url_alpha_samples_in_document_order() {
+    check_host_texture_url_mask(false);
+}
+
+#[test]
+fn async_host_texture_mask_rebinds_after_image_completion() {
+    check_host_texture_url_mask(true);
+}
+
+fn check_host_texture_url_mask(remote: bool) {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mask = alpha_split_mask_png_data_url();
+    let server = remote.then(|| {
+        use base64::Engine;
+        LocalPngServer::serve(
+            base64::engine::general_purpose::STANDARD
+                .decode(mask.split_once(',').unwrap().1)
+                .unwrap(),
+        )
+    });
+    let mask = server.as_ref().map_or(mask, |server| server.url.clone());
+    let (wake, awoken) = std::sync::mpsc::channel();
+    painter.set_image_waker(Arc::new(move || {
+        let _ = wake.send(());
+    }));
     let mut node = extracted_div(
         1,
         &[],
@@ -4762,7 +4796,7 @@ fn host_texture_mask_url_alpha_samples_in_document_order() {
         64.0,
         nana_ui_core::LayoutStyle {
             paint: nana_ui_core::PaintStyle {
-                mask: Some(nana_ui_core::MaskImage::Url(alpha_split_mask_png_data_url())),
+                mask: Some(nana_ui_core::MaskImage::Url(mask)),
                 ..Default::default()
             },
             ..Default::default()
@@ -4797,6 +4831,28 @@ fn host_texture_mask_url_alpha_samples_in_document_order() {
             None,
         )
         .unwrap();
+    if remote {
+        let first = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        assert!(
+            pixel(&first, 64, 56, 32)[0] > 200,
+            "pending mask has not been applied yet"
+        );
+        awoken
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        assert!(!painter.has_pending_images());
+    }
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let left = pixel(&pixels, 64, 4, 32);
     let right = pixel(&pixels, 64, 56, 32);
@@ -5226,6 +5282,18 @@ fn paint_url_quad_and_sample_center(url: String) -> [u8; 4] {
     painter
         .paint(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
+    queue.submit([encoder.finish()]);
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while painter.has_pending_images() {
+        assert!(Instant::now() < deadline, "image did not complete");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    }
+    let encoder = device.create_command_encoder(&Default::default());
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let sample = pixel(&pixels, 64, 32, 32);
     drop(texture);
@@ -5253,8 +5321,18 @@ impl LocalPngServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         use std::io::{Read, Write};
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .unwrap();
                         let mut buf = [0u8; 1024];
-                        let _ = stream.read(&mut buf);
+                        let mut request = Vec::new();
+                        while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(read) => request.extend_from_slice(&buf[..read]),
+                            }
+                        }
                         let header = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             png.len()
@@ -5310,6 +5388,151 @@ fn background_image_http_url_paints_fixture_png() {
         sample[2] > 200 && sample[0] < 80,
         "http url png must paint blue tile, got {sample:?}"
     );
+}
+
+#[test]
+fn more_http_images_than_fetch_slots_eventually_paint() {
+    let (_, path) = blue_tile_fixture_png();
+    let server = LocalPngServer::serve(std::fs::read(path).unwrap());
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let (wake, awoken) = std::sync::mpsc::channel();
+    painter.set_image_waker(Arc::new(move || {
+        let _ = wake.send(());
+    }));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        (0..9).map(|id| {
+            paint_surface_quad_node(
+                id + 1,
+                (id % 3) as f32 * 20.0,
+                (id / 3) as f32 * 20.0,
+                20.0,
+                20.0,
+                [0.0; 4],
+                nana_ui_scene::QuadSurfacePaint {
+                    background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                        format!("{}?id={id}", server.url),
+                        nana_ui_core::BackgroundImageFit::Stretch,
+                    )),
+                    ..Default::default()
+                },
+            )
+        }),
+        [],
+    );
+    let mut pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0; 2],
+        [64; 2],
+        1.0,
+    );
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while painter.has_pending_images() {
+        awoken
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0; 2],
+            [64; 2],
+            1.0,
+        );
+    }
+    for id in 0..9 {
+        assert!(pixel(&pixels, 64, (id % 3) * 20 + 10, (id / 3) * 20 + 10)[2] > 200);
+    }
+}
+
+#[test]
+fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_completion() {
+    use std::{
+        io::{Read, Write},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (_, path) = blue_tile_fixture_png();
+    let png = std::fs::read(path).unwrap();
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/image.png", listener.local_addr().unwrap());
+    let (release, gated) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        stream.read(&mut request).unwrap();
+        gated
+            .recv_timeout(Duration::from_secs(10))
+            .expect("paint waited for the HTTP response");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        )
+        .unwrap();
+        stream.write_all(&png).unwrap();
+    });
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let (wake, awoken) = mpsc::channel();
+    painter.set_image_waker(Arc::new(move || {
+        let _ = wake.send(());
+    }));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0; 4],
+            nana_ui_scene::QuadSurfacePaint {
+                background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                    url,
+                    nana_ui_core::BackgroundImageFit::Stretch,
+                )),
+                ..Default::default()
+            },
+        )],
+        [],
+    );
+    let before = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0; 2],
+        [64; 2],
+        1.0,
+    );
+    assert!(painter.has_pending_images());
+    assert!(pixel(&before, 64, 32, 32)[2] < 80);
+    release.send(()).unwrap();
+    awoken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("image completion must wake an idle host");
+    assert!(painter.has_image_updates());
+    let after = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0; 2],
+        [64; 2],
+        1.0,
+    );
+    assert!(
+        pixel(&after, 64, 32, 32)[2] > 200,
+        "unchanged scene must paint the completed image"
+    );
+    assert!(!painter.has_pending_images());
+    server.join().unwrap();
 }
 
 fn red_tile_fixture_png() -> std::path::PathBuf {

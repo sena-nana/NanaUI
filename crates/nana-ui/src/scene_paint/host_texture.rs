@@ -13,6 +13,21 @@ pub(super) struct PreparedHostTexture {
 }
 
 impl HostTexturePipeline {
+    pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
+        self.pipeline.set_image_waker(wake);
+    }
+    pub(super) fn has_image_updates(&self) -> bool {
+        self.pipeline.has_image_updates()
+    }
+    pub(super) fn has_pending_images(&self) -> bool {
+        self.pipeline.has_pending_images()
+    }
+    pub(super) fn begin_frame(&mut self) {
+        self.pipeline.begin_frame();
+    }
+    pub(super) fn poll_images(&mut self) -> bool {
+        self.pipeline.poll_images()
+    }
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
