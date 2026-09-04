@@ -2194,8 +2194,7 @@ pub(super) fn hover_popup_geometry(
     })
 }
 
-/// 签名帮助浮窗几何：签名行拆成前缀 / 活动参数 / 后缀，活动参数 Accent
-/// 高亮；文档行取活动参数说明，否则函数级文档。锚定 caret。
+/// 签名帮助浮窗：签名行拆成前缀 / 活动参数 / 后缀，文档行取活动参数说明。
 pub(super) fn signature_popup_geometry(
     help: &crate::TextSignatureHelp,
     anchor: OverlayAnchor,
@@ -2206,43 +2205,34 @@ pub(super) fn signature_popup_geometry(
     const H_PAD: f32 = 10.0;
     const V_PAD: f32 = 6.0;
     const GAP: f32 = 4.0;
-    const VIEWPORT_GAP: f32 = 4.0;
     const MAX_WIDTH: f32 = 420.0;
     let line_height = anchor.line_height.max(1.0);
     let em = font_size.max(1.0) * 0.55;
     let measure = |value: &str| (value.chars().count() as f32 * em).max(1.0);
-    let active = if help.params.is_empty() {
-        0
+    let names: Vec<&str> = help.params.iter().map(|(name, _)| name.as_str()).collect();
+    let active = help.active_index.min(names.len().saturating_sub(1));
+    let prefix = if names.is_empty() {
+        format!("{}(", help.title)
     } else {
-        help.active_index.min(help.params.len() - 1)
+        format!(
+            "{}({}{}",
+            help.title,
+            names[..active].join(", "),
+            if active > 0 { ", " } else { "" }
+        )
     };
-    let mut prefix = help.title.clone();
-    prefix.push('(');
-    for (index, (name, _)) in help.params.iter().enumerate() {
-        if index == active {
-            break;
-        }
-        if index > 0 {
-            prefix.push_str(", ");
-        }
-        prefix.push_str(name);
-    }
-    if !help.params.is_empty() && active > 0 {
-        prefix.push_str(", ");
-    }
-    let active_name = help
-        .params
-        .get(active)
-        .map(|(name, _)| name.clone())
-        .unwrap_or_default();
-    let mut suffix = String::new();
-    if !help.params.is_empty() {
-        for (name, _) in help.params.iter().skip(active + 1) {
-            suffix.push_str(", ");
-            suffix.push_str(name);
-        }
-    }
-    suffix.push(')');
+    let active_name = names.get(active).copied().unwrap_or("");
+    let suffix = if names.is_empty() {
+        ")".to_owned()
+    } else {
+        format!(
+            "{})",
+            names[active + 1..]
+                .iter()
+                .map(|name| format!(", {name}"))
+                .collect::<String>()
+        )
+    };
     let doc = help
         .params
         .get(active)
@@ -2257,38 +2247,23 @@ pub(super) fn signature_popup_geometry(
     let active_w = if active_name.is_empty() {
         0.0
     } else {
-        measure(&active_name)
+        measure(active_name)
     };
     let suffix_w = measure(&suffix);
     let content_w = (prefix_w + active_w + suffix_w).clamp(1.0, MAX_WIDTH - H_PAD * 2.0);
-    let has_doc = doc.is_some();
     let panel = anchored_overlay_panel(
         anchor,
-        (content_w + H_PAD * 2.0).min(MAX_WIDTH).min(viewport.width.max(1.0)),
-        V_PAD * 2.0 + line_height + if has_doc { GAP + line_height } else { 0.0 },
+        (content_w + H_PAD * 2.0)
+            .min(MAX_WIDTH)
+            .min(viewport.width.max(1.0)),
+        V_PAD * 2.0 + line_height + if doc.is_some() { GAP + line_height } else { 0.0 },
         viewport,
-        VIEWPORT_GAP,
+        4.0,
     );
     let content_width = (panel.width - H_PAD * 2.0).max(0.0);
     let y = panel.y + V_PAD;
     let mut x = panel.x + H_PAD;
-    let prefix_width = prefix_w.min(content_width);
-    let prefix_region = crate::ComponentTextRegion {
-        bounds: LayoutBox {
-            x,
-            y,
-            width: prefix_width,
-            height: line_height,
-        },
-        content: Arc::from(prefix.as_str()),
-        color: Some(palette.text.as_rgba_array()),
-        font_size,
-        font_weight: None,
-    };
-    x += prefix_width;
-    let remaining = (panel.x + H_PAD + content_width - x).max(0.0);
-    let active_region = (!active_name.is_empty()).then(|| {
-        let width = active_w.min(remaining);
+    let region = |x: f32, y: f32, width: f32, content: &str, color: [f32; 4], weight: Option<u16>| {
         crate::ComponentTextRegion {
             bounds: LayoutBox {
                 x,
@@ -2296,47 +2271,52 @@ pub(super) fn signature_popup_geometry(
                 width,
                 height: line_height,
             },
-            content: Arc::from(active_name.as_str()),
-            color: Some(palette.accent.as_rgba_array()),
+            content: Arc::from(content),
+            color: Some(color),
             font_size,
-            font_weight: Some(600),
+            font_weight: weight,
         }
+    };
+    let prefix_width = prefix_w.min(content_width);
+    let prefix_region = region(x, y, prefix_width, &prefix, palette.text.as_rgba_array(), None);
+    x += prefix_width;
+    let remaining = (panel.x + H_PAD + content_width - x).max(0.0);
+    let active_region = (!active_name.is_empty()).then(|| {
+        region(
+            x,
+            y,
+            active_w.min(remaining),
+            active_name,
+            palette.accent.as_rgba_array(),
+            Some(600),
+        )
     });
     if let Some(active) = &active_region {
         x += active.bounds.width;
     }
     let suffix_remaining = (panel.x + H_PAD + content_width - x).max(0.0);
-    let suffix_region = crate::ComponentTextRegion {
-        bounds: LayoutBox {
-            x,
-            y,
-            width: suffix_w.min(suffix_remaining),
-            height: line_height,
-        },
-        content: Arc::from(suffix.as_str()),
-        color: Some(palette.text.as_rgba_array()),
-        font_size,
-        font_weight: None,
-    };
-    let doc_region = doc.map(|doc| crate::ComponentTextRegion {
-        bounds: LayoutBox {
-            x: panel.x + H_PAD,
-            y: y + line_height + GAP,
-            width: content_width,
-            height: line_height,
-        },
-        content: Arc::from(doc.as_str()),
-        color: Some(palette.muted.as_rgba_array()),
-        font_size,
-        font_weight: None,
-    });
     Some(crate::TextSignaturePopup {
         panel,
         prefix: prefix_region,
-        active: active_region.clone(),
-        suffix: suffix_region,
-        doc: doc_region,
-        active_bounds: active_region.map(|region| region.bounds),
+        active: active_region,
+        suffix: region(
+            x,
+            y,
+            suffix_w.min(suffix_remaining),
+            &suffix,
+            palette.text.as_rgba_array(),
+            None,
+        ),
+        doc: doc.map(|doc| {
+            region(
+                panel.x + H_PAD,
+                y + line_height + GAP,
+                content_width,
+                &doc,
+                palette.muted.as_rgba_array(),
+                None,
+            )
+        }),
         background: palette.surface.as_rgba_array(),
         border: palette.border_strong.as_rgba_array(),
         active_background: palette.hover.as_rgba_array(),
