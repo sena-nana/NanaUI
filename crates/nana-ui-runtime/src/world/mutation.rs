@@ -387,6 +387,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetTextInputFoldCollapsed { id, .. }
+                | UiMutation::SetTextInputInlays { id, .. }
                 | UiMutation::SetTextInputSnippet { id, .. }
                 | UiMutation::SetTextInputCompletions { id, .. }
                 | UiMutation::SetTextInputCompletionView { id, .. }
@@ -1550,6 +1551,7 @@ impl UiWorld {
                 }
                 if state.is_none() {
                     self.nodes.set_text_fold_view(*id, None);
+                    self.nodes.set_text_inlays(*id, None);
                     self.nodes.set_text_snippet_session(*id, None);
                     self.nodes.set_text_completion_view(*id, None);
                     self.nodes.set_text_hover_view(*id, None);
@@ -1628,6 +1630,30 @@ impl UiWorld {
                     );
                 }
                 if changed {
+                    self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetTextInputInlays { id, inlays } => {
+                // 世界校验（钳除风格，同折叠先例）：锚点 char boundary 且
+                // 不越界、文本非空且不含 '\n'，按 (offset, label) 排序去
+                // 重。空集（含全部非法被钳除）移除条目，零分配待机。
+                let value = self
+                    .nodes
+                    .text_input(*id)
+                    .map(|state| state.value.clone())
+                    .unwrap_or_default();
+                let normalized = normalize_text_inlays(&value, inlays);
+                let changed = self
+                    .nodes
+                    .text_inlays(*id)
+                    .map(|fed| fed.as_ref() != normalized.as_slice())
+                    .unwrap_or(!normalized.is_empty());
+                if changed {
+                    if normalized.is_empty() {
+                        self.nodes.set_text_inlays(*id, None);
+                    } else {
+                        self.nodes.set_text_inlays(*id, Some(normalized.into()));
+                    }
                     self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
                 }
             }

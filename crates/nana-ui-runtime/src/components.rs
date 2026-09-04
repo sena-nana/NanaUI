@@ -225,6 +225,29 @@ impl TextCodeFold {
     }
 }
 
+/// 行内提示（inlay）的一条喂入条目。`offset` 是值空间锚点（实参首
+/// 字节），`label` 是插入显示的装饰文本（如 `t:`）；纯插入型显示
+/// span——参与布局测量与软换行，但不进缓冲区：光标/选区/查找/撤销的
+/// offset 语义由显示视图映射自动免疫（插入区间内部无光标边界，点击
+/// 穿透吸附最近的缓冲字符）。世界校验：锚点必须是当前值的 char
+/// boundary 且不越界、文本非空且不含 `'\n'`（行数换算按 `\n` 计数），
+/// 按 `(offset, label)` 排序去重，非法条目钳除。IME 组合期与折叠隐藏
+/// 区间内的条目不显示（组合期整体退场，同 swatch 先例）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextInlay {
+    pub offset: usize,
+    pub label: String,
+}
+
+impl TextInlay {
+    pub fn new(offset: usize, label: impl Into<String>) -> Self {
+        Self {
+            offset,
+            label: label.into(),
+        }
+    }
+}
+
 /// 宿主触发的代码片段。`body` 中的 `$N`（N 为十进制数字）是占位标记：
 /// 插入时从文本中移除，`$1..$N` 按序号成为 Tab 跳位，`$0` 是插入后的
 /// 初始光标位置（缺省为插入文本末尾）。其余字符原样插入，`$` 后不跟

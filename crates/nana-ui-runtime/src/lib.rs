@@ -115,7 +115,7 @@ pub use components::{
     TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
     TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
     TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment, TextHover,
-    TextHoverPopup, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
     TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSnippet,
     TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
 };

@@ -6,7 +6,7 @@ use crate::{
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent,
     TextDiagnosticSpan, TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover,
-    TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
+    TextInlay, TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1729,6 +1729,12 @@ pub struct TextArea {
     /// 哪些区间处于折叠态由组件内部维护（宿主重喂时按区间匹配保留，
     /// 漂移的尽力平移匹配，失效的自动展开）。折叠是纯视图状态，不改值。
     pub code_folds: Arc<[TextCodeFold]>,
+    /// 行内提示（inlay，见 [`TextInlay`]）。纯插入型显示 span：插入文本
+    /// 参与布局测量与软换行，但不占缓冲 offset（光标/点击/查找经显示
+    /// 视图映射自动免疫）。宿主在语义快照就绪时喂入；快照失配/偏好关
+    /// 时撤空列表。世界校验后按 `(offset, label)` 排序去重；IME 组合期
+    /// 与折叠隐藏区间内的条目不显示。空列表零成本。
+    pub inlays: Arc<[TextInlay]>,
     /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本变化后
     /// 重新喂：`line` 为 1 基逻辑行号，渲染为 gutter 最左侧 2px 竖条。
     /// 行号 0、超过文档逻辑行数或被折叠隐藏的标记静默跳过；空列表零成本。
@@ -1793,6 +1799,7 @@ impl TextArea {
             line_numbers: false,
             code_editing: None,
             code_folds: Arc::from([]),
+            inlays: Arc::from([]),
             git_gutter: Arc::from([]),
             completions: Arc::from([]),
             hover: None,
@@ -1841,6 +1848,12 @@ impl TextArea {
     /// 折叠态由组件内部维护。
     pub fn code_folds(mut self, folds: Arc<[TextCodeFold]>) -> Self {
         self.code_folds = folds;
+        self
+    }
+
+    /// 设置行内提示（见 [`TextInlay`]）。快照失配/偏好关时宿主撤空列表。
+    pub fn inlays(mut self, inlays: Arc<[TextInlay]>) -> Self {
+        self.inlays = inlays;
         self
     }
 
@@ -2027,6 +2040,17 @@ impl ComponentView for TextArea {
             };
             if !fed_unchanged {
                 mutations.set_text_input_hover(id, self.hover.clone());
+            }
+        }
+        // 行内提示喂入：列表未变（指针或内容相等）且空列表无条目时不下发
+        // 变更；世界侧做锚点/文本校验与排序去重。
+        {
+            let fed_unchanged = match world.text_inlay_items(id) {
+                Some(fed) => Arc::ptr_eq(fed, &self.inlays) || *fed == self.inlays,
+                None => self.inlays.is_empty(),
+            };
+            if !fed_unchanged {
+                mutations.set_text_input_inlays(id, Arc::clone(&self.inlays));
             }
         }
         let mut effective_style = self.style.clone();
