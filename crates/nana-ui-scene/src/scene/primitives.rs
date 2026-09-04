@@ -552,6 +552,7 @@ impl UiScene {
                         match_markers,
                         swatch_markers,
                         swatch_border_color,
+                        atom_chips,
                         caret_line,
                         bracket_markers,
                         occurrence_markers,
@@ -734,6 +735,60 @@ impl UiScene {
                                     corner_radius: corner_radii(2.0),
                                 },
                             ));
+                        }
+                        if !atom_chips.is_empty() {
+                            let chip_fg = atom_chips
+                                .iter()
+                                .find_map(|chip| chip.label.color)
+                                .unwrap_or([0.12, 0.12, 0.14, 1.0]);
+                            self.insert_primitive(visual_quad_batch(
+                                &visual_context,
+                                22,
+                                atom_chips.iter().map(|chip| scene_rect(chip.bounds)),
+                                VisualQuadStyle {
+                                    background: Some(atom_chips[0].background),
+                                    border_color: Some(atom_chips[0].border),
+                                    border_width: 1.0,
+                                    corner_radius: corner_radii(4.0),
+                                },
+                            ));
+                            self.insert_primitive(batch_primitive(
+                                &visual_context,
+                                25,
+                                atom_chips
+                                    .iter()
+                                    .map(|chip| scene_rect(chip.close))
+                                    .collect(),
+                                |bounds| ScenePrimitiveKind::IconBatch {
+                                    bounds,
+                                    icon: Icon::Close,
+                                    color: Some(chip_fg),
+                                },
+                            ));
+                            for (index, chip) in atom_chips.iter().enumerate() {
+                                self.insert_primitive(batch_primitive(
+                                    &visual_context,
+                                    27 + index as u8,
+                                    vec![scene_rect(chip.icon_bounds)],
+                                    |bounds| ScenePrimitiveKind::IconBatch {
+                                        bounds,
+                                        icon: chip.icon,
+                                        color: Some(chip_fg),
+                                    },
+                                ));
+                                self.insert_primitive(component_text_primitive(
+                                    id,
+                                    32 + index as u8,
+                                    &chip.label,
+                                    TextHorizontalAlignment::Start,
+                                    true,
+                                    &node,
+                                    transform,
+                                    std::sync::Arc::clone(&clips),
+                                    opacity,
+                                    node_order,
+                                ));
+                            }
                         }
                         // 当前行条：slot 1 与选区同一层级（互斥：选区收起时
                         // 才有当前行条），绘制在文本之下。

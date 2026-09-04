@@ -1417,6 +1417,7 @@ impl ComponentView for TextInput {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -1632,6 +1633,7 @@ impl ComponentView for NumberInput {
             diagnostics: Arc::from([]),
             matches: Arc::from([]),
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             folds: Arc::from([]),
@@ -1721,6 +1723,10 @@ pub struct TextArea {
     /// 颜色装饰 span（见 [`TextColorSwatchSpan`]）。宿主在文本变化后负责
     /// 更新或清除；渲染层只钳制越界偏移，纯装饰不参与命中。
     pub color_swatches: Arc<[TextColorSwatchSpan]>,
+    /// Atomic inline ranges (see [`crate::TextAtomSpan`]). Hosts feed these
+    /// after each value change; caret, delete, insert, and pointer hits treat
+    /// each range as one unit. Empty is the ordinary text path.
+    pub atom_spans: Arc<[crate::TextAtomSpan]>,
     /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
     pub line_numbers: bool,
     /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
@@ -1799,6 +1805,7 @@ impl TextArea {
             diagnostics: Arc::from([]),
             match_spans: Arc::from([]),
             color_swatches: Arc::from([]),
+            atom_spans: Arc::from([]),
             line_numbers: false,
             code_editing: None,
             code_folds: Arc::from([]),
@@ -1839,6 +1846,12 @@ impl TextArea {
     /// 设置颜色装饰 span（见 [`TextColorSwatchSpan`]）。
     pub fn color_swatches(mut self, swatches: Arc<[TextColorSwatchSpan]>) -> Self {
         self.color_swatches = swatches;
+        self
+    }
+
+    /// Set atomic inline ranges (see [`crate::TextAtomSpan`]).
+    pub fn atom_spans(mut self, spans: impl Into<Arc<[crate::TextAtomSpan]>>) -> Self {
+        self.atom_spans = spans.into();
         self
     }
 
@@ -2008,6 +2021,7 @@ impl ComponentView for TextArea {
             diagnostics: Arc::clone(&self.diagnostics),
             matches: Arc::clone(&self.match_spans),
             color_swatches: Arc::clone(&self.color_swatches),
+            atoms: Arc::clone(&self.atom_spans),
             line_numbers: self.line_numbers,
             indent_guides: self
                 .code_editing

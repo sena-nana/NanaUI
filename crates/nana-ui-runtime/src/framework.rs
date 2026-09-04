@@ -77,6 +77,9 @@ trait EditableText: ComponentView {
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
+    fn text_atoms(&self) -> &[crate::TextAtomSpan] {
+        &[]
+    }
     /// IME commit path: replace only the primary selection's text. This is
     /// the documented multi-cursor IME restriction — composition commits to
     /// the primary cursor alone and other cursors survive via offset
@@ -188,6 +191,10 @@ impl EditableText for TextArea {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn text_atoms(&self) -> &[crate::TextAtomSpan] {
+        &self.atom_spans
     }
 
     fn state(&self) -> &TextInputState {

@@ -247,6 +247,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -291,6 +292,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         indent_guides: Vec::new(),
@@ -1170,6 +1172,7 @@ fn text_input_editor_markers_and_line_labels_paint() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: true,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1222,6 +1225,7 @@ fn text_input_editor_markers_and_line_labels_paint() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         line_labels: vec![
             nana_ui_runtime::LineLabel {
                 y: 0.0,
@@ -1304,6 +1308,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1362,6 +1367,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         ],
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -1441,6 +1447,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1489,6 +1496,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
             ),
         ],
         swatch_border_color: [0.5, 0.5, 0.5, 1.0],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -1564,6 +1572,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1593,6 +1602,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -1733,6 +1743,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1762,6 +1773,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -1918,6 +1930,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -1947,6 +1960,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -2005,6 +2019,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: true,
         indent_guides: None,
         folds: Arc::from([]),
@@ -2034,6 +2049,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -2326,6 +2342,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -2355,6 +2372,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -2470,6 +2488,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -2499,6 +2518,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -2584,6 +2604,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -2646,6 +2667,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         indent_guides: Vec::new(),
@@ -2700,6 +2722,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: Some(Arc::from("\t")),
         folds: Arc::from([]),
@@ -2729,6 +2752,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         // 当前行条与选区同层（slot 1）。
         caret_line: Some((
             LayoutBox {
@@ -2877,6 +2901,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -2946,6 +2971,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         indent_guides: Vec::new(),
@@ -2997,6 +3023,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -3060,6 +3087,7 @@ fn input_component_geometry(multiline: bool) -> Option<ComponentGeometry> {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         indent_guides: Vec::new(),
@@ -6276,6 +6304,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -6307,6 +6336,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -6446,6 +6476,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: false,
         indent_guides: None,
         folds: Arc::from([]),
@@ -6477,6 +6508,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -6557,17 +6589,22 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
     };
     // 满 8 行 doc 全部在场(132..139),不被 hover 覆盖。
     for slot in 132..=139 {
-        assert_eq!(content(slot).as_deref(), Some("doc"), "doc slot {slot} 在场");
+        assert_eq!(
+            content(slot).as_deref(),
+            Some("doc"),
+            "doc slot {slot} 在场"
+        );
     }
     // hover 图元同屏俱在(面板/标题/正文)。
-    assert!(
-        matches!(
-            scene
-                .primitive(PrimitiveId { node: id(1), slot: 120 })
-                .map(|primitive| primitive.kind.clone()),
-            Some(ScenePrimitiveKind::Quad { .. })
-        )
-    );
+    assert!(matches!(
+        scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 120
+            })
+            .map(|primitive| primitive.kind.clone()),
+        Some(ScenePrimitiveKind::Quad { .. })
+    ));
     assert_eq!(content(121).as_deref(), Some("hover"));
     assert_eq!(content(122).as_deref(), Some("body"));
 }
@@ -6700,9 +6737,8 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         value: value.into(),
     });
     // 行号标签绘制在左内边距区域：预留 gutter 宽度让标签层真实发出。
-    Arc::make_mut(&mut input.source_style.layout).padding_left = Some(
-        nana_ui_core::LengthSpec::Px(46.0),
-    );
+    Arc::make_mut(&mut input.source_style.layout).padding_left =
+        Some(nana_ui_core::LengthSpec::Px(46.0));
     input.standard_visual = Some(StandardVisual::TextInput {
         placeholder: Arc::from(""),
         size: nana_ui_core::ControlSize::Medium,
@@ -6712,6 +6748,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         diagnostics: Arc::from([]),
         matches: Arc::from([]),
         color_swatches: Arc::from([]),
+        atoms: Arc::from([]),
         line_numbers: true,
         indent_guides: None,
         folds: Arc::from([]),
@@ -6730,6 +6767,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         match_markers: Vec::new(),
         swatch_markers: Vec::new(),
         swatch_border_color: [0.0; 4],
+        atom_chips: Vec::new(),
         caret_line: None,
         bracket_markers: Vec::new(),
         drop_indicator: None,
@@ -6780,10 +6818,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     // 在途的 slot 拓宽重构)。
     let spans_of = |slot| {
         scene
-            .primitive(PrimitiveId {
-                node: id(1),
-                slot,
-            })
+            .primitive(PrimitiveId { node: id(1), slot })
             .map(|primitive| match &primitive.kind {
                 ScenePrimitiveKind::Text { spans, .. } => spans.clone(),
                 _ => panic!("text primitive"),
@@ -6807,8 +6842,5 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         ]
     );
     // 行号标签区域（slot 40）：内容 "1" 与 span 空间不一致，不带 span。
-    assert!(
-        spans_of(40).is_empty(),
-        "标签区域不承载编辑器显示空间 span"
-    );
+    assert!(spans_of(40).is_empty(), "标签区域不承载编辑器显示空间 span");
 }

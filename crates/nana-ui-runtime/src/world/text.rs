@@ -444,19 +444,14 @@ impl TextDisplayView {
             TextDisplaySpanKind::Inlay => {
                 // 紧邻的同锚点插入（多条标签背靠背）一并跨过。
                 for next in &self.spans {
-                    if matches!(next.kind, TextDisplaySpanKind::Inlay)
-                        && next.display_start == end
+                    if matches!(next.kind, TextDisplaySpanKind::Inlay) && next.display_start == end
                     {
                         end = next.display_start + next.display_len;
                     }
                 }
                 // end 处是锚点字符（值偏移 = 锚点）：右移一步 = 锚点 +
                 // 该字符长度；锚点在文档末尾时无后续字符，回到锚点。
-                self.value_of(end)
-                    + self.value[end..]
-                        .chars()
-                        .next()
-                        .map_or(0, char::len_utf8)
+                self.value_of(end) + self.value[end..].chars().next().map_or(0, char::len_utf8)
             }
         }
     }
@@ -519,13 +514,18 @@ pub(super) fn build_text_display_view(
         Fold(crate::TextCodeFold),
         Inlay(&'a crate::TextInlay),
     }
-    let mut segments: Vec<(usize, Segment<'_>)> = Vec::with_capacity(collapsed.len() + inlays.len());
+    let mut segments: Vec<(usize, Segment<'_>)> =
+        Vec::with_capacity(collapsed.len() + inlays.len());
     segments.extend(
         collapsed
             .iter()
             .map(|fold| (fold.hidden_start_in(value), Segment::Fold(*fold))),
     );
-    segments.extend(inlays.iter().map(|inlay| (inlay.offset, Segment::Inlay(inlay))));
+    segments.extend(
+        inlays
+            .iter()
+            .map(|inlay| (inlay.offset, Segment::Inlay(inlay))),
+    );
     segments.sort_by_key(|(position, segment)| (*position, segment_rank(segment)));
 
     fn segment_rank(segment: &Segment<'_>) -> u8 {
@@ -806,6 +806,7 @@ pub(super) struct TextInputPresentationSource {
     pub(super) matches: Arc<[TextMatchSpan]>,
     /// 颜色装饰 span（宿主喂入；仅多行态派生几何）。
     pub(super) color_swatches: Arc<[TextColorSwatchSpan]>,
+    pub(super) atoms: Arc<[crate::TextAtomSpan]>,
     pub(super) line_numbers: bool,
     pub(super) indent_guides: Option<Arc<str>>,
     /// git gutter 标记：宿主行号已校验并映射为显示行索引（0 基）；行号
@@ -838,6 +839,7 @@ pub(super) struct TextInputEditorExtras {
     pub(super) diagnostics: Arc<[TextDiagnosticSpan]>,
     pub(super) matches: Arc<[TextMatchSpan]>,
     pub(super) color_swatches: Arc<[TextColorSwatchSpan]>,
+    pub(super) atoms: Arc<[crate::TextAtomSpan]>,
     pub(super) line_numbers: bool,
     pub(super) indent_guides: Option<Arc<str>>,
     pub(super) git_marks: Arc<[TextGitMark]>,
@@ -899,6 +901,7 @@ pub(super) fn build_text_input_presentation_source(
             matches: extras.matches,
             // 占位文本不是文档内容，颜色装饰 span 不派生几何。
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             // 占位符态没有真实文档内容，git 标记随行号栏一并跳过（避免在
@@ -968,6 +971,7 @@ pub(super) fn build_text_input_presentation_source(
             matches: extras.matches,
             // 组合文本改变了字节布局，宿主偏移失效；组合期不派生 swatch。
             color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
             line_numbers: false,
             indent_guides: None,
             // 组合期标记按原值行号继续锚定（与诊断一致，宿主拥有生命周期）。
@@ -1034,6 +1038,18 @@ pub(super) fn build_text_input_presentation_source(
         .iter()
         .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
         .collect::<Vec<_>>();
+    let atoms = extras
+        .atoms
+        .iter()
+        .filter_map(|span| {
+            map_span(span.start, span.end.saturating_sub(span.start)).map(|(start, end)| {
+                let mut next = span.clone();
+                next.start = start;
+                next.end = end;
+                next
+            })
+        })
+        .collect::<Vec<_>>();
     // git gutter 标记：宿主行号校验 + 折叠隐藏行剔除后映射为显示行索引。
     let git_marks = map_git_marks(
         &state.value,
@@ -1052,6 +1068,7 @@ pub(super) fn build_text_input_presentation_source(
         diagnostics: Arc::from(diagnostics),
         matches: Arc::from(matches),
         color_swatches: Arc::from(color_swatches),
+        atoms: Arc::from(atoms),
         git_marks,
         line_numbers: extras.line_numbers,
         indent_guides: extras.indent_guides,
@@ -1432,6 +1449,32 @@ pub(super) fn shape_text_input_presentation(
     } else {
         Vec::new()
     };
+    let atom_chips = if source.multiline {
+        source
+            .atoms
+            .iter()
+            .filter_map(|atom| {
+                let start = clamp_boundary(&source.text.value, atom.start);
+                let end = clamp_boundary(&source.text.value, atom.end);
+                if end <= start {
+                    return None;
+                }
+                let rect = shaper
+                    .text_highlights(
+                        id,
+                        &source.text,
+                        (start, end),
+                        style,
+                        presentation_constraints,
+                    )
+                    .into_iter()
+                    .next()?;
+                Some(layout_atom_chip(rect, atom))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // 括号匹配：光标相邻括号与其配对端各一个字符框（描边绘制）。
     let bracket_marks = if source.multiline {
         let value = source.text.value.as_str();
@@ -1664,9 +1707,10 @@ pub(super) fn shape_text_input_presentation(
                     .spans
                     .iter()
                     .filter_map(|span| match &span.kind {
-                        TextDisplaySpanKind::Fold { hidden_lines, .. } => {
-                            Some((view.value[..span.display_start].matches('\n').count(), *hidden_lines))
-                        }
+                        TextDisplaySpanKind::Fold { hidden_lines, .. } => Some((
+                            view.value[..span.display_start].matches('\n').count(),
+                            *hidden_lines,
+                        )),
                         TextDisplaySpanKind::Inlay => None,
                     })
                     .collect();
@@ -1834,6 +1878,7 @@ pub(super) fn shape_text_input_presentation(
         diagnostic_marks,
         match_marks,
         swatch_marks,
+        atom_chips,
         bracket_marks,
         bracket_color_spans: source.bracket_color_spans,
         occurrence_marks,
@@ -1846,6 +1891,61 @@ pub(super) fn shape_text_input_presentation(
         git_marks,
         overlay_metrics,
         minimap_line_lengths: source.minimap_line_lengths,
+    }
+}
+
+const ATOM_CHIP_PAD_X: f32 = 4.0;
+const ATOM_CHIP_PAD_Y: f32 = 2.0;
+const ATOM_CHIP_GAP: f32 = 5.0;
+const ATOM_CHIP_ICON: f32 = 13.0;
+const ATOM_CHIP_CLOSE: f32 = 16.0;
+const ATOM_CHIP_LABEL: f32 = 12.0;
+
+fn layout_atom_chip(rect: LayoutBox, atom: &crate::TextAtomSpan) -> crate::TextAtomChip {
+    let min_width = ATOM_CHIP_PAD_X * 2.0 + ATOM_CHIP_ICON + ATOM_CHIP_GAP + ATOM_CHIP_CLOSE;
+    let height = rect.height.max(ATOM_CHIP_CLOSE + ATOM_CHIP_PAD_Y * 2.0);
+    let bounds = LayoutBox {
+        x: rect.x,
+        y: rect.y + (rect.height - height).max(0.0) * 0.5,
+        width: rect.width.max(min_width),
+        height,
+    };
+    let icon_bounds = LayoutBox {
+        x: bounds.x + ATOM_CHIP_PAD_X,
+        y: bounds.y + (bounds.height - ATOM_CHIP_ICON) * 0.5,
+        width: ATOM_CHIP_ICON,
+        height: ATOM_CHIP_ICON,
+    };
+    let close = LayoutBox {
+        x: bounds.x + bounds.width - ATOM_CHIP_PAD_X - ATOM_CHIP_CLOSE,
+        y: bounds.y + (bounds.height - ATOM_CHIP_CLOSE) * 0.5,
+        width: ATOM_CHIP_CLOSE,
+        height: ATOM_CHIP_CLOSE,
+    };
+    let label_x = icon_bounds.x + ATOM_CHIP_ICON + ATOM_CHIP_GAP;
+    let label_width = (close.x - ATOM_CHIP_GAP - label_x).max(0.0);
+    crate::TextAtomChip {
+        bounds,
+        close,
+        icon: atom.icon,
+        icon_bounds,
+        label: crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: label_x,
+                y: bounds.y,
+                width: label_width,
+                height: bounds.height,
+            },
+            content: Arc::clone(&atom.label),
+            color: None,
+            font_size: ATOM_CHIP_LABEL,
+            font_weight: Some(650),
+        },
+        token: Arc::clone(&atom.token),
+        start: atom.start,
+        end: atom.end,
+        background: [0.0; 4],
+        border: [0.0; 4],
     }
 }
 
@@ -2002,8 +2102,8 @@ pub(super) fn completion_popup_geometry(
     }
     let len = items.len();
     let first_row = state.scroll.min(len.saturating_sub(1));
-    let visible = &items[first_row..(first_row + crate::components::TEXT_COMPLETION_VISIBLE_ROWS)
-        .min(len)];
+    let visible =
+        &items[first_row..(first_row + crate::components::TEXT_COMPLETION_VISIBLE_ROWS).min(len)];
     let row_height = anchor.line_height.max(1.0);
     let label_w = metrics.label_width;
     let mut content = label_w;
@@ -2022,10 +2122,7 @@ pub(super) fn completion_popup_geometry(
     let content = content.min(crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
     let label_w = label_w.min(content);
     let visible_rows = visible.len();
-    let doc_rows = visible
-        .iter()
-        .filter(|item| !item.doc.is_empty())
-        .count();
+    let doc_rows = visible.iter().filter(|item| !item.doc.is_empty()).count();
     let panel = anchored_overlay_panel(
         anchor,
         (content + crate::components::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
@@ -2256,29 +2353,43 @@ pub(super) fn signature_popup_geometry(
         (content_w + H_PAD * 2.0)
             .min(MAX_WIDTH)
             .min(viewport.width.max(1.0)),
-        V_PAD * 2.0 + line_height + if doc.is_some() { GAP + line_height } else { 0.0 },
+        V_PAD * 2.0
+            + line_height
+            + if doc.is_some() {
+                GAP + line_height
+            } else {
+                0.0
+            },
         viewport,
         4.0,
     );
     let content_width = (panel.width - H_PAD * 2.0).max(0.0);
     let y = panel.y + V_PAD;
     let mut x = panel.x + H_PAD;
-    let region = |x: f32, y: f32, width: f32, content: &str, color: [f32; 4], weight: Option<u16>| {
-        crate::ComponentTextRegion {
-            bounds: LayoutBox {
-                x,
-                y,
-                width,
-                height: line_height,
-            },
-            content: Arc::from(content),
-            color: Some(color),
-            font_size,
-            font_weight: weight,
-        }
-    };
+    let region =
+        |x: f32, y: f32, width: f32, content: &str, color: [f32; 4], weight: Option<u16>| {
+            crate::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x,
+                    y,
+                    width,
+                    height: line_height,
+                },
+                content: Arc::from(content),
+                color: Some(color),
+                font_size,
+                font_weight: weight,
+            }
+        };
     let prefix_width = prefix_w.min(content_width);
-    let prefix_region = region(x, y, prefix_width, &prefix, palette.text.as_rgba_array(), None);
+    let prefix_region = region(
+        x,
+        y,
+        prefix_width,
+        &prefix,
+        palette.text.as_rgba_array(),
+        None,
+    );
     x += prefix_width;
     let remaining = (panel.x + H_PAD + content_width - x).max(0.0);
     let active_region = (!active_name.is_empty()).then(|| {
@@ -2578,6 +2689,7 @@ impl UiWorld {
                 diagnostics,
                 matches,
                 color_swatches,
+                atoms,
                 line_numbers,
                 indent_guides,
                 git_marks,
@@ -2587,6 +2699,7 @@ impl UiWorld {
                 diagnostics: Arc::clone(diagnostics),
                 matches: Arc::clone(matches),
                 color_swatches: Arc::clone(color_swatches),
+                atoms: Arc::clone(atoms),
                 line_numbers: *line_numbers,
                 indent_guides: indent_guides.clone(),
                 git_marks: Arc::clone(git_marks),
@@ -3212,6 +3325,17 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Hit the close control of an atom chip. Coordinates are node space.
+    pub fn text_atom_close_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<Arc<str>> {
+        match self.component_geometry(id)? {
+            crate::ComponentGeometry::TextInput { atom_chips, .. } => atom_chips
+                .iter()
+                .find(|chip| chip.close.contains(x, y))
+                .map(|chip| Arc::clone(&chip.token)),
+            _ => None,
+        }
+    }
+
     /// 命中折叠交互区域（gutter 箭头优先，其次折叠起始行的摘要标记），
     /// 返回对应折叠区间。坐标为节点空间。
     pub fn text_fold_hit(&self, id: StableNodeId, x: f32, y: f32) -> Option<crate::TextCodeFold> {
