@@ -121,6 +121,7 @@ impl AppContext {
 
     pub(super) fn register_builtin_activations(&mut self) {
         self.bind_activation::<Button>(Self::activate_button);
+        self.bind_activation::<Chip>(Self::activate_chip);
         self.bind_activation::<IconButton>(Self::activate_icon_button);
         self.bind_activation::<ListItem>(Self::activate_list_item);
         self.bind_activation::<SidebarRow>(Self::activate_sidebar_row);

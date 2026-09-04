@@ -36,7 +36,7 @@ use crate::component_registry::{
 };
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, BreadcrumbSegment, Button, Checkbox, CodeEditing, CommandPalette,
+    AnimationFrame, BreadcrumbSegment, Button, Checkbox, Chip, CodeEditing, CommandPalette,
     ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileTab,
     FormField, FrameProfile, FrameProfiler, FrameStage, IconButton, LabeledValue, List, ListItem,
     ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
@@ -1222,6 +1222,10 @@ impl AppContext {
     /// path. Disabled buttons do not emit or mutate retained state.
     pub fn activate_button(&mut self, entity: Entity<Button>) -> Result<bool, FrameworkError> {
         self.activate_component(entity, |button| button.disabled || button.loading)
+    }
+
+    pub fn activate_chip(&mut self, entity: Entity<Chip>) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |chip| chip.disabled)
     }
 
     pub fn activate_icon_button(
