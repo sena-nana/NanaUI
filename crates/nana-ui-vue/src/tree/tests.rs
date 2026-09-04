@@ -6240,3 +6240,213 @@ fn vue_markdown_source_attributes_preserve_significant_whitespace() {
         }
     }
 }
+
+#[test]
+fn spacing_settings_props_update_internal_body_and_restore_defaults() {
+    use nana_js_engine::HostValue;
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let page = doc.create_element("nana-settings-page");
+    let child = doc.create_element("div");
+    doc.insert(page, doc.mount_root(), None);
+    doc.insert(child, page, None);
+    doc.flush_host_frame();
+    let mut bridge = crate::MessageBridge::new();
+    bridge.register(child.0, crate::WidgetKind::Column, Default::default());
+    bridge.insert_child(child.0, page.0, None);
+    let mut identity = None;
+    for value in [
+        Some(HostValue::Number(0.0)),
+        Some(HostValue::Object(
+            [
+                ("top".into(), HostValue::Number(3.0)),
+                ("right".into(), HostValue::Number(4.0)),
+                ("bottom".into(), HostValue::Number(5.0)),
+                ("left".into(), HostValue::Number(6.0)),
+            ]
+            .into_iter()
+            .collect(),
+        )),
+        None,
+    ] {
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop(
+            "settings",
+            &settings_page_model_value(&[("appearance", "Appearance", false)], "appearance", false),
+        );
+        if let Some(value) = &value {
+            props.apply_prop("content-padding", value);
+            props.apply_prop("content-gap", &HostValue::Number(7.0));
+        }
+        bridge.register(page.0, crate::WidgetKind::SettingsPage, props);
+        bridge.insert_child(child.0, page.0, None);
+        doc.sync_semantics_from_bridge(&mut bridge);
+        let assembly = settings_page_assembly(&doc, StableNodeId::try_from(page).unwrap());
+        if let Some(first) = &identity {
+            assert_eq!(first, &assembly);
+        } else {
+            identity = Some(assembly.clone());
+        }
+        let layout = &doc
+            .context()
+            .world()
+            .node_style(assembly.body.unwrap())
+            .unwrap()
+            .layout;
+        let padding = layout.resolved_padding();
+        match value {
+            Some(HostValue::Number(_)) => assert!(padding.is_zero()),
+            Some(_) => assert_eq!(
+                (padding.top, padding.right, padding.bottom, padding.left),
+                (3.0, 4.0, 5.0, 6.0)
+            ),
+            None => assert_eq!(
+                (padding.top, padding.right, padding.bottom, padding.left),
+                (20.0, 24.0, 24.0, 24.0)
+            ),
+        }
+        assert_eq!(
+            layout.gap,
+            Some(nana_ui_core::LengthSpec::Px(if value.is_some() {
+                7.0
+            } else {
+                16.0
+            }))
+        );
+    }
+}
+
+#[test]
+fn spacing_css_host_ops_match_rust_layout() {
+    use nana_ui_core::{LayoutStyle, LengthSpec};
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let parent = doc.create_element("div");
+    let child = doc.create_element("div");
+    let leaf = doc.create_element("div");
+    doc.insert(parent, doc.mount_root(), None);
+    doc.insert(child, parent, None);
+    doc.insert(leaf, child, None);
+    let mut bridge = crate::MessageBridge::new();
+    for (node, css) in [
+        (parent, "width:200px"),
+        (child, "width:100px;padding:10%;margin:5px"),
+        (leaf, "width:10px;height:10px"),
+    ] {
+        let mut props = crate::WidgetProps::default();
+        props.apply_prop("style", &nana_js_engine::HostValue::string(css));
+        bridge.register(node.0, crate::WidgetKind::Column, props);
+    }
+    bridge.insert_child(child.0, parent.0, None);
+    bridge.insert_child(leaf.0, child.0, None);
+    doc.sync_semantics_from_bridge(&mut bridge);
+    doc.flush_host_frame();
+    let actual = doc.context().world();
+    let document = nana_ui_runtime::DocumentId::new(99).unwrap();
+    let mut rust = nana_ui_runtime::AppContext::new();
+    let a = rust
+        .create_component(
+            document,
+            nana_ui_runtime::Stack::from_layout(LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let b = rust
+        .create_detached_component(
+            document,
+            nana_ui_runtime::Stack::from_layout(LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                padding: Some(LengthSpec::Percent(10.0)),
+                margin: Some(LengthSpec::Px(5.0)),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let c = rust
+        .create_detached_component(
+            document,
+            nana_ui_runtime::Stack::from_layout(LayoutStyle {
+                width: Some(LengthSpec::Px(10.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    rust.append_child(a, b).unwrap();
+    rust.append_child(b, c).unwrap();
+    let boxes = nana_ui_runtime::RuntimeLayoutEngine
+        .layout_document(
+            rust.world(),
+            document,
+            nana_ui_runtime::LayoutViewport::new(400.0, 300.0),
+        )
+        .unwrap()
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    for (vue, rust) in [
+        (parent, a.stable_id()),
+        (child, b.stable_id()),
+        (leaf, c.stable_id()),
+    ] {
+        assert_eq!(
+            actual
+                .layout_box(StableNodeId::try_from(vue).unwrap())
+                .unwrap(),
+            boxes[&rust]
+        );
+    }
+}
+
+#[test]
+fn spacing_card_class_does_not_override_runtime_defaults_or_partial_css() {
+    use nana_ui_core::{LengthSpec, PaddingSpec};
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let card = doc.create_element("nana-card");
+    doc.insert(card, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    for (css, expected) in [
+        (
+            "",
+            PaddingSpec {
+                left: 16.0,
+                right: 16.0,
+                top: 14.0,
+                bottom: 14.0,
+            },
+        ),
+        (
+            "padding-top:0",
+            PaddingSpec {
+                left: 16.0,
+                right: 16.0,
+                top: 0.0,
+                bottom: 14.0,
+            },
+        ),
+        ("padding:0", PaddingSpec::uniform(0.0)),
+        (
+            "",
+            PaddingSpec {
+                left: 16.0,
+                right: 16.0,
+                top: 14.0,
+                bottom: 14.0,
+            },
+        ),
+    ] {
+        let mut props = crate::WidgetProps::default();
+        props.element_tag = "nana-card".into();
+        props.apply_prop("class", &nana_js_engine::HostValue::string("nana-card"));
+        props.apply_prop("style", &nana_js_engine::HostValue::string(css));
+        bridge.register(card.0, crate::WidgetKind::Card, props);
+        doc.sync_semantics_from_bridge(&mut bridge);
+        let layout = &doc
+            .context()
+            .world()
+            .node_style(StableNodeId::try_from(card).unwrap())
+            .unwrap()
+            .layout;
+        assert_eq!(layout.resolved_padding(), expected);
+        assert_ne!(layout.padding, Some(LengthSpec::Px(12.0)));
+    }
+}

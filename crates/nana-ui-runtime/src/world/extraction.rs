@@ -214,6 +214,19 @@ impl UiWorld {
         });
         let mut source_style = source_style;
         source_style.layout = self.motion_layout(id, &source_style.layout);
+        // Scene receives the layout-resolved padding; it must not resolve %
+        // against the painted node's own width. Authored world style stays intact.
+        let padding = self.used_layout_padding(id);
+        if source_style.layout.resolved_padding_against(Some(layout.width)) != padding {
+            let layout = Arc::make_mut(&mut source_style.layout);
+            layout.padding = None;
+            layout.logical_padding = Default::default();
+            layout.padding_logical = Default::default();
+            layout.padding_top = Some(nana_ui_core::LengthSpec::Px(padding.top));
+            layout.padding_right = Some(nana_ui_core::LengthSpec::Px(padding.right));
+            layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(padding.bottom));
+            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding.left));
+        }
         Some(ExtractedNode {
             id,
             kind,

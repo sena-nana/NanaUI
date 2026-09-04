@@ -46,6 +46,8 @@ export const NanaSettingsPage = {
   props: {
     tab: { type: [String, Array], default: undefined },
     settings: { type: Object, default: null },
+    contentPadding: { type: [Number, Object], default: undefined },
+    contentGap: { type: Number, default: undefined },
     hideHeader: { type: Boolean, default: undefined },
   },
   setup(props, { attrs, slots }) {
@@ -76,6 +78,8 @@ export const NanaSettingsPage = {
           settings: props.settings != null ? props.settings : model.value,
           tab: props.tab !== undefined ? props.tab : view.key,
           "hide-header": hideHeader,
+          "content-padding": props.contentPadding,
+          "content-gap": props.contentGap,
           "data-agent-id":
             attrs["data-agent-id"] ||
             (view.section ? `settings.page.${view.key}` : "nana.settings.page.empty"),

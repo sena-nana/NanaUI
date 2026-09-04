@@ -66,9 +66,40 @@ pub(super) fn intrinsic_size_scoped(
         padding.left + padding.right + border.left + border.right,
         padding.top + padding.bottom + border.top + border.bottom,
     );
+    // Measure descendants against this node's declared content box, not its
+    // parent's full budget. Percent padding still resolves against the parent.
+    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
+    let content_axis = |spec: Option<LengthSpec>, available: f32, margins: f32, chrome: f32| {
+        let resolved = resolve_axis(
+            demote_fill_spec_if_indefinite(spec, available),
+            available,
+            available - margins,
+            viewport,
+            fonts,
+        );
+        let extent = resolved.unwrap_or(available);
+        if resolved.is_some()
+            && matches!(style.box_sizing, BoxSizing::ContentBox)
+            && spec.is_some_and(LengthSpec::is_definite_declared)
+        {
+            extent.max(0.0)
+        } else {
+            (extent - chrome).max(0.0)
+        }
+    };
     let content_available = Size::new(
-        (available.width - chrome.width).max(0.0),
-        (available.height - chrome.height).max(0.0),
+        content_axis(
+            style.width,
+            available.width,
+            margin.left + margin.right,
+            chrome.width,
+        ),
+        content_axis(
+            style.height,
+            available.height,
+            margin.top + margin.bottom,
+            chrome.height,
+        ),
     );
     let flow_children = collect_flow_children(&children, nodes, style.display)?;
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
@@ -113,6 +144,17 @@ pub(super) fn intrinsic_size_scoped(
     let grid_tracks = match direction {
         FlexDirection::Row => style.active_grid_columns(),
         FlexDirection::Column => style.active_grid_rows(),
+    };
+    let child_margin = |child, nodes: &LayoutInputMap<'_>| {
+        nodes
+            .style(child)
+            .map(|style| {
+                style.resolved_margin_against_fonts(
+                    Some(content_available.width),
+                    fonts_of(&style, child_font_px),
+                )
+            })
+            .unwrap_or_default()
     };
     let children = if uses_2d_grid(style, &flow_children, nodes) {
         let grid = layout_grid_2d(
@@ -168,21 +210,18 @@ pub(super) fn intrinsic_size_scoped(
         )
     } else {
         let gaps = gap * flow_children.len().saturating_sub(1) as f32;
+        let mut main = gaps;
+        let mut cross = 0.0f32;
+        for (child, size) in flow_children.iter().zip(&child_sizes) {
+            let margin = child_margin(*child, nodes);
+            main += main_extent(*size, direction)
+                + main_start_margin(margin, direction)
+                + main_end_margin(margin, direction);
+            cross = cross.max(cross_extent(*size, direction) + cross_margin(margin, direction));
+        }
         match direction {
-            FlexDirection::Row => Size::new(
-                child_sizes.iter().map(|size| size.width).sum::<f32>() + gaps,
-                child_sizes
-                    .iter()
-                    .map(|size| size.height)
-                    .fold(0.0, f32::max),
-            ),
-            FlexDirection::Column => Size::new(
-                child_sizes
-                    .iter()
-                    .map(|size| size.width)
-                    .fold(0.0, f32::max),
-                child_sizes.iter().map(|size| size.height).sum::<f32>() + gaps,
-            ),
+            FlexDirection::Row => Size::new(main.max(0.0), cross),
+            FlexDirection::Column => Size::new(cross, main.max(0.0)),
         }
     };
     let text = text_metrics.unwrap_or_default();
@@ -201,7 +240,11 @@ pub(super) fn intrinsic_size_scoped(
     let max_content_w = content.width + chrome.width;
     let stacked_min_w = child_sizes
         .iter()
-        .map(|size| size.width)
+        .zip(&flow_children)
+        .map(|(size, child)| {
+            let margin = child_margin(*child, nodes);
+            size.width + margin.left + margin.right
+        })
         .fold(0.0f32, f32::max)
         + chrome.width;
     // nowrap row: min-content cannot be narrower than the packed sum.

@@ -666,11 +666,22 @@ pub(super) fn layout_grid_2d(
     let mut col_auto = vec![0.0f32; col_tracks.len()];
     let mut row_auto = vec![0.0f32; row_tracks.len()];
     for item in &items {
+        let margin = nodes
+            .style(item.id)
+            .map(|style| {
+                style.resolved_margin_against_fonts(
+                    Some(content.width),
+                    fonts_of(&style, fonts.element_px),
+                )
+            })
+            .unwrap_or_default();
         if item.col_span == 1 && item.col < col_auto.len() {
-            col_auto[item.col] = col_auto[item.col].max(item.intrinsic.width);
+            col_auto[item.col] =
+                col_auto[item.col].max(item.intrinsic.width + margin.left + margin.right);
         }
         if item.row_span == 1 && item.row < row_auto.len() {
-            row_auto[item.row] = row_auto[item.row].max(item.intrinsic.height);
+            row_auto[item.row] =
+                row_auto[item.row].max(item.intrinsic.height + margin.top + margin.bottom);
         }
     }
     let col_sizes = resolve_grid_track_sizes(&col_tracks, content.width, col_gap, &col_auto);
@@ -752,28 +763,6 @@ pub(super) fn size_is_indefinite(spec: Option<LengthSpec>) -> bool {
     !spec.is_some_and(LengthSpec::is_definite_declared)
 }
 
-/// After tracks exist, percent / Fill / calc resolve against the final cell.
-pub(super) fn used_in_grid_cell(
-    spec: Option<LengthSpec>,
-    intrinsic: f32,
-    cell: f32,
-    viewport: LayoutViewport,
-    fonts: FontSizeContext,
-) -> f32 {
-    match spec {
-        Some(LengthSpec::Fill) => cell.max(0.0),
-        Some(other) if other.is_definite_declared() => other
-            .resolve_with_fonts(
-                Some(cell.max(0.0)),
-                Some((viewport.width, viewport.height)),
-                fonts,
-            )
-            .map(|value| value.max(0.0))
-            .unwrap_or(intrinsic),
-        _ => intrinsic,
-    }
-}
-
 pub(super) fn align_in_grid_cell(
     align: AlignSpec,
     used: f32,
@@ -798,7 +787,6 @@ pub(super) fn align_in_grid_cell(
 pub(super) fn place_grid_2d_items(
     grid: &Grid2DLayout,
     content_origin: Point,
-    content: Size,
     style: &LayoutStyle,
     viewport: LayoutViewport,
     child_font_px: f32,
@@ -819,6 +807,21 @@ pub(super) fn place_grid_2d_items(
         let cell_y = row_off.get(item.row).copied().unwrap_or(0.0);
         let cell_w = grid_span_extent(&grid.col_sizes, item.col, item.col_span, grid.col_gap);
         let cell_h = grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
+        let cell = Size::new(cell_w, cell_h);
+        // Final tracks are the containing block for item padding and descendants.
+        let measured = intrinsic_size_scoped(
+            item.id,
+            cell,
+            Some(FlexDirection::Row),
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?;
+        let margin = child_style.resolved_margin_against_fonts(Some(cell_w), child_fonts);
+        let inner_w = (cell_w - margin.left - margin.right).max(0.0);
+        let inner_h = (cell_h - margin.top - margin.bottom).max(0.0);
         let justify = child_style.resolved_justify_self(style.justify_items);
         let align = child_style.resolved_align_self(style.align_items);
         let stretch_x = justify == AlignSpec::Stretch && size_is_indefinite(child_style.width);
@@ -829,40 +832,30 @@ pub(super) fn place_grid_2d_items(
         let stretch_y = align == AlignSpec::Stretch
             && size_is_indefinite(child_style.height)
             && !ratio_filled_height;
-        let measured_w = used_in_grid_cell(
-            child_style.width,
-            item.intrinsic.width,
-            cell_w,
-            viewport,
-            child_fonts,
-        );
-        let measured_h = used_in_grid_cell(
-            child_style.height,
-            item.intrinsic.height,
-            cell_h,
-            viewport,
-            child_fonts,
-        );
-        let (off_x, used_w) = align_in_grid_cell(justify, measured_w, cell_w, stretch_x);
-        let (off_y, used_h) = align_in_grid_cell(align, measured_h, cell_h, stretch_y);
+        // Measurement already resolved declared lengths, min/max and box-sizing
+        // against the final cell. Re-resolving here would drop content-box chrome.
+        let measured_w = measured.width;
+        let measured_h = measured.height;
+        let (off_x, used_w) = align_in_grid_cell(justify, measured_w, inner_w, stretch_x);
+        let (off_y, used_h) = align_in_grid_cell(align, measured_h, inner_h, stretch_y);
         let mut child_size = Size::new(used_w, used_h);
         if !stretch_y {
             fill_auto_height_from_aspect_ratio(
                 child_style,
                 &mut child_size,
-                Some(content.width),
+                Some(cell_w),
                 child_fonts,
             );
         }
         let child_origin = Point {
-            x: content_origin.x + cell_x + off_x,
-            y: content_origin.y + cell_y + off_y,
+            x: content_origin.x + cell_x + margin.left + off_x,
+            y: content_origin.y + cell_y + margin.top + off_y,
         };
         if !subtree_unchanged(
             item.id,
             child_origin,
             child_size,
-            content,
+            cell,
             child_style,
             child_fonts,
             scope,
@@ -885,7 +878,7 @@ pub(super) fn place_grid_2d_items(
                 item.id,
                 child_origin,
                 child_size,
-                content,
+                cell,
                 viewport,
                 child_font_px,
                 nodes,

@@ -101,39 +101,16 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
     for name in class_names {
         match name.as_str() {
             "nana-settings-page" | "settings-page" => {
+                // Runtime owns the scrolling body and its spacing.
                 layout.ensure_direction(FlexDirection::Column);
-                if layout.gap.is_none() {
-                    layout.gap = Some(LengthSpec::Px(16.0));
-                }
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
-                if layout.padding.is_none()
-                    && layout.padding_top.is_none()
-                    && layout.padding_left.is_none()
-                {
-                    layout.padding_top = Some(LengthSpec::Px(20.0));
-                    layout.padding_right = Some(LengthSpec::Px(24.0));
-                    layout.padding_bottom = Some(LengthSpec::Px(24.0));
-                    layout.padding_left = Some(LengthSpec::Px(24.0));
-                }
             }
             "nana-settings-card" | "nana-card" | "card" => {
-                // Public nana-controls / card contract (not app page classes).
-                // Do not invent gap: Lilia `.card` + `.card-heading { margin-bottom }`
-                // already owns heading↔body spacing; a default gap:8 double-counts
-                // that 8px and pushes charts down.
+                // Card projection supplies defaults after author CSS is known.
                 layout.ensure_direction(FlexDirection::Column);
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
-                if layout.padding.is_none()
-                    && layout.padding_top.is_none()
-                    && layout.padding_left.is_none()
-                {
-                    layout.padding = Some(LengthSpec::Px(12.0));
-                }
-                if layout.border_radius.is_none() {
-                    layout.border_radius = Some(16.0);
-                }
             }
             "nana-settings-card__body" => {
                 layout.ensure_direction(FlexDirection::Column);
@@ -276,15 +253,6 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 }
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
-                if layout.padding.is_none()
-                    && layout.padding_top.is_none()
-                    && layout.padding_left.is_none()
-                {
-                    layout.padding_top = Some(LengthSpec::Px(20.0));
-                    layout.padding_right = Some(LengthSpec::Px(24.0));
-                    layout.padding_bottom = Some(LengthSpec::Px(20.0));
-                    layout.padding_left = Some(LengthSpec::Px(24.0));
-                }
             }
             "titlebar" | "nana-workspace-shell__titlebar" => {
                 // Public chrome strip contract: horizontal Fixed height.

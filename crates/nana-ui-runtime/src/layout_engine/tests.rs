@@ -1726,18 +1726,6 @@ fn grid_cell_resolves_unsimplified_calc_against_cell() {
         matches!(spec, LengthSpec::Calc(_)),
         "min() + px must stay as Calc AST"
     );
-    assert!(
-        (used_in_grid_cell(
-            Some(spec),
-            0.0,
-            400.0,
-            LayoutViewport::new(400.0, 80.0),
-            FontSizeContext::default(),
-        ) - 110.0)
-            .abs()
-            < 0.01,
-        "grid used size must resolve calc against the cell, not intrinsic 0"
-    );
 
     let child = StyleLayoutNode {
         id: "child".into(),
@@ -2827,4 +2815,266 @@ fn grid_auto_slot_overflow_does_not_reuse_origin() {
     );
     assert_eq!(row, 0);
     assert!(col >= 2, "implicit column past wrap, got {col}");
+}
+
+fn spacing_tree(styles: &[(u64, LayoutStyle)]) -> HashMap<StableNodeId, LayoutBox> {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut q = MutationQueue::new();
+    q.create(id(1), document, NodeKind::Document);
+    for (i, (parent, layout)) in styles.iter().enumerate() {
+        let node = id(i as u64 + 2);
+        q.create(node, document, NodeKind::Element { tag: "div".into() });
+        q.insert(id(*parent), node, None);
+        q.set_style(
+            node,
+            NodeStyle {
+                layout: Arc::new(layout.clone()),
+                ..Default::default()
+            },
+        );
+    }
+    world.commit(q).unwrap();
+    full_boxes(&world, document, LayoutViewport::new(400.0, 300.0))
+}
+
+#[test]
+fn spacing_hug_includes_child_margins_on_both_axes() {
+    for direction in [FlexDirection::Row, FlexDirection::Column] {
+        let boxes = spacing_tree(&[
+            (
+                1,
+                LayoutStyle {
+                    width: Some(LengthSpec::Shrink),
+                    height: Some(LengthSpec::Shrink),
+                    direction: Some(direction),
+                    ..Default::default()
+                },
+            ),
+            (
+                2,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    margin: Some(LengthSpec::Px(10.0)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!((boxes[&id(2)].width, boxes[&id(2)].height), (60.0, 40.0));
+        assert_eq!((boxes[&id(3)].x, boxes[&id(3)].y), (10.0, 10.0));
+    }
+}
+
+#[test]
+fn spacing_percent_padding_uses_containing_width() {
+    let boxes = spacing_tree(&[
+        (
+            1,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                padding: Some(LengthSpec::Percent(10.0)),
+                ..Default::default()
+            },
+        ),
+        (
+            3,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(10.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..Default::default()
+            },
+        ),
+    ]);
+    assert_eq!(boxes[&id(4)].x - boxes[&id(3)].x, 20.0);
+    assert_eq!(boxes[&id(4)].y - boxes[&id(3)].y, 20.0);
+    assert_eq!(boxes[&id(3)].height, 50.0);
+}
+
+#[test]
+fn spacing_negative_margin_extends_flex_fill_budget() {
+    let boxes = spacing_tree(&[
+        (
+            1,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                direction: Some(FlexDirection::Row),
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                margin_left: Some(LengthSpec::Px(-10.0)),
+                margin_right: Some(LengthSpec::Px(-10.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                ..Default::default()
+            },
+        ),
+    ]);
+    assert_eq!(boxes[&id(3)].width, 220.0);
+    assert_eq!(boxes[&id(3)].x, -10.0);
+}
+
+#[test]
+fn spacing_center_aligns_asymmetric_margin_box() {
+    let boxes = spacing_tree(&[
+        (
+            1,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                direction: Some(FlexDirection::Row),
+                align_items: AlignSpec::Center,
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(20.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                margin_top: Some(LengthSpec::Px(30.0)),
+                margin_bottom: Some(LengthSpec::Px(10.0)),
+                ..Default::default()
+            },
+        ),
+    ]);
+    assert_eq!(boxes[&id(3)].y, 50.0);
+}
+
+#[test]
+fn spacing_grid_padding_and_margin_use_final_cell() {
+    let boxes = spacing_tree(&[
+        (
+            1,
+            LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(300.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                grid_columns: Some(vec![GridTrack::Px(100.0), GridTrack::Px(200.0)]),
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                margin: Some(LengthSpec::Px(10.0)),
+                padding: Some(LengthSpec::Percent(10.0)),
+                ..Default::default()
+            },
+        ),
+        (
+            3,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(10.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..Default::default()
+            },
+        ),
+    ]);
+    assert_eq!(boxes[&id(3)].x, 10.0);
+    assert_eq!(boxes[&id(3)].width, 80.0);
+    assert_eq!(boxes[&id(4)].x - boxes[&id(3)].x, 10.0);
+}
+
+#[test]
+fn spacing_fixed_box_reflows_percent_padding_when_parent_resizes() {
+    use crate::{AppContext, Stack};
+    let document = DocumentId::new(42).unwrap();
+    let mut context = AppContext::new();
+    let root = context
+        .create_component(document, Stack::column(0.0).width(LengthSpec::Px(200.0)))
+        .unwrap();
+    let child = context
+        .create_detached_component(
+            document,
+            Stack::from_layout(LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                padding: Some(LengthSpec::Percent(10.0)),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let leaf = context
+        .create_detached_component(document, Stack::column(0.0).height(LengthSpec::Px(10.0)))
+        .unwrap();
+    context.append_child(root, child).unwrap();
+    context.append_child(child, leaf).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    context.layout_document(document, viewport).unwrap();
+    let before = context.world().layout_box(child.stable_id()).unwrap();
+    assert_eq!(
+        context.world().layout_box(leaf.stable_id()).unwrap().x,
+        20.0
+    );
+    context
+        .update_component(root, |root, _| {
+            *root = root.clone().width(LengthSpec::Px(300.0))
+        })
+        .unwrap();
+    context
+        .layout_document_scoped(document, viewport, &[root.stable_id()])
+        .unwrap();
+    assert_eq!(
+        context.world().layout_box(child.stable_id()).unwrap(),
+        before
+    );
+    assert_eq!(
+        context.world().layout_box(leaf.stable_id()).unwrap().x,
+        30.0
+    );
+    let extracted = context.world().extract_nodes(&[child.stable_id()]);
+    assert_eq!(
+        extracted[0].source_style.layout.resolved_padding().left,
+        30.0
+    );
+    assert_eq!(
+        context
+            .world()
+            .node_style(child.stable_id())
+            .unwrap()
+            .layout
+            .padding,
+        Some(LengthSpec::Percent(10.0))
+    );
+}
+
+#[test]
+fn spacing_grid_content_box_keeps_padding_in_border_size() {
+    let boxes = spacing_tree(&[
+        (
+            1,
+            LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                grid_columns: Some(vec![GridTrack::Px(200.0)]),
+                ..Default::default()
+            },
+        ),
+        (
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                box_sizing: BoxSizing::ContentBox,
+                padding: Some(LengthSpec::Px(10.0)),
+                margin: Some(LengthSpec::Px(5.0)),
+                ..Default::default()
+            },
+        ),
+    ]);
+    assert_eq!((boxes[&id(3)].x, boxes[&id(3)].y), (5.0, 5.0));
+    assert_eq!((boxes[&id(3)].width, boxes[&id(3)].height), (60.0, 40.0));
 }

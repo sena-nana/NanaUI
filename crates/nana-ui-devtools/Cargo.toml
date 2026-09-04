@@ -53,3 +53,7 @@ wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 nana-js-v8 = { workspace = true, features = ["engine"] }
+
+[[example]]
+name = "spacing-layout"
+required-features = ["agent-bin"]

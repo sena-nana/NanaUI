@@ -191,6 +191,7 @@ impl RuntimeLayoutEngine {
         for (id, box_) in &emitted {
             retained.boxes.insert(*id, *box_);
         }
+        retained.used_padding.extend(nodes.used_padding.drain());
         retained.intrinsics.extend(intrinsic);
         retained.materialized_inputs = nodes.materialized;
         // Despawned ids linger in the retained maps; keep them bounded.
@@ -199,6 +200,7 @@ impl RuntimeLayoutEngine {
         let universe = if force_full { nodes.len() } else { world.len() };
         if retained.boxes.len() > universe.saturating_mul(2) {
             retained.boxes.retain(|id, _| world.contains(*id));
+            retained.used_padding.retain(|id, _| world.contains(*id));
         }
         if retained.intrinsics.len() > universe.saturating_mul(4) {
             retained
@@ -312,12 +314,14 @@ pub struct RetainedLayoutCache {
     intrinsics: HashMap<(StableNodeId, u32, u32), Size>,
     boxes: HashMap<StableNodeId, LayoutBox>,
     materialized_inputs: usize,
+    pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
 }
 
 impl RetainedLayoutCache {
     fn clear(&mut self) {
         self.intrinsics.clear();
         self.boxes.clear();
+        self.used_padding.clear();
         self.materialized_inputs = 0;
     }
 }
@@ -327,6 +331,7 @@ struct LayoutInputMap<'a> {
     world: &'a UiWorld,
     nodes: HashMap<StableNodeId, LayoutInput>,
     materialized: usize,
+    used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
 }
 
 impl<'a> LayoutInputMap<'a> {
@@ -335,6 +340,7 @@ impl<'a> LayoutInputMap<'a> {
             world,
             nodes: HashMap::new(),
             materialized: 0,
+            used_padding: HashMap::new(),
         }
     }
 
@@ -429,7 +435,9 @@ fn subtree_unchanged(
         Some(containing.height),
         child_fonts,
     );
-    cached.x == origin.x + relative_x
+    scope.retained.used_padding.get(&child).copied()
+        == Some(child_style.resolved_padding_against_fonts(Some(containing.width), child_fonts))
+        && cached.x == origin.x + relative_x
         && cached.y == origin.y + relative_y
         && cached.width == size.width
         && cached.height == size.height

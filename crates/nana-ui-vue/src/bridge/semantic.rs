@@ -472,7 +472,8 @@ impl WidgetProps {
         match key.as_str() {
             "data" | "nodes" | "edges" | "model" | "source" | "markdown" | "tree" | "items"
             | "values" | "series" | "viewport" | "selection" | "layout" | "root" | "axis"
-            | "size" | "default-size" | "min" | "max" | "settings" | "tab" | "hide-header" => {
+            | "size" | "default-size" | "min" | "max" | "settings" | "tab" | "hide-header"
+            | "content-padding" | "content-gap" => {
                 self.persist_native_payload(&key, value);
             }
             "options" => {

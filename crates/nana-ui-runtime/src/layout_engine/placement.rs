@@ -89,6 +89,9 @@ pub(super) fn place_node_scoped(
         },
     );
 
+    let padding = style.resolved_padding_against_fonts(Some(containing.width), fonts);
+    nodes.used_padding.insert(id, padding);
+
     if let Some(modal) = modal.as_ref() {
         place_modal_children(
             id,
@@ -105,7 +108,6 @@ pub(super) fn place_node_scoped(
         return Ok(());
     }
 
-    let padding = style.resolved_padding_against_fonts(Some(size.width), fonts);
     let border = style.resolved_border_edges();
     let content_origin = Point {
         x: origin.x + border.left + padding.left,
@@ -202,7 +204,6 @@ pub(super) fn place_node_scoped(
         place_grid_2d_items(
             &grid,
             content_origin,
-            content,
             style,
             viewport,
             child_font_px,
@@ -494,7 +495,8 @@ pub(super) fn place_node_scoped(
                     }
                     AlignSpec::Center => {
                         cross_cursor
-                            + ((line_box_cross - cross_extent(child_size, direction)) / 2.0)
+                            + cross_start_margin(margin, direction)
+                            + ((cross_available - cross_extent(child_size, direction)) / 2.0)
                                 .max(0.0)
                     }
                     AlignSpec::End => {

@@ -637,6 +637,16 @@ pub(crate) fn bind_native_json_attrs(widget: &SemanticWidgetView<'_>) -> Vec<(St
             push(&mut extras, "max", &["max"]);
         }
         crate::WidgetKind::SettingsPage => {
+            push(
+                &mut extras,
+                "content-padding",
+                &["content-padding", "contentPadding", "contentpadding"],
+            );
+            push(
+                &mut extras,
+                "content-gap",
+                &["content-gap", "contentGap", "contentgap"],
+            );
             push_json(&mut extras, "settings", &["settings", "model"]);
             push(&mut extras, "tab", &["tab", "value"]);
             push(
@@ -1225,7 +1235,7 @@ pub(crate) fn try_bind_registered_component(
                     .graph_canvases
                     .push((id, RuntimeGraphCanvas::from_semantic(&spec)));
             }
-            enqueue_bound_assembly(widget, snapshot, id, context, mutations, pending);
+            enqueue_bound_assembly(widget, snapshot, &spec, id, context, mutations, pending);
             Some(true)
         }
         ComponentBindKind::Layout => None,
@@ -1315,6 +1325,7 @@ pub(crate) fn tree_child_bind_options(
 pub(crate) fn enqueue_bound_assembly(
     widget: &SemanticWidgetView<'_>,
     snapshot: &SemanticRead<'_>,
+    spec: &SemanticSpec<'_>,
     id: StableNodeId,
     context: &AppContext,
     mutations: &mut MutationQueue,
@@ -1384,7 +1395,12 @@ pub(crate) fn enqueue_bound_assembly(
             if let Some(tab) = settings_active_tab(&widget.props) {
                 state.select(&model, &tab);
             }
-            let mut component = RuntimeSettingsPage::new(model, state);
+            let mut component =
+                <RuntimeSettingsPage as nana_ui_runtime::RegisterableComponent>::from_semantic(
+                    spec,
+                );
+            component.model = model;
+            component.state = state;
             if let Some(content) = settings_page_content_child(widget, snapshot) {
                 component = component.content(content);
             }

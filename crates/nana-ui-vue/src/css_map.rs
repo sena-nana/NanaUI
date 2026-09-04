@@ -8364,17 +8364,17 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
 
         let mut card = LayoutStyle::default();
         card.apply_class_layout_hints(&["card".into()]);
-        assert_eq!(card.border_radius, Some(16.0));
-        assert_eq!(card.padding, Some(LengthSpec::Px(12.0)));
+        assert!(card.border_radius.is_none());
+        assert!(card.padding.is_none());
         assert!(card.border_width.is_none());
         assert!(card.border_color.is_none());
         assert!(card.background.is_none());
 
         let mut primary_region = LayoutStyle::default();
         primary_region.apply_class_layout_hints(&["nana-workspace-shell__primary".into()]);
-        assert_eq!(primary_region.padding_top, Some(LengthSpec::Px(20.0)));
-        assert_eq!(primary_region.padding_bottom, Some(LengthSpec::Px(20.0)));
-        assert_eq!(primary_region.padding_left, Some(LengthSpec::Px(24.0)));
+        assert!(primary_region.padding_top.is_none());
+        assert!(primary_region.padding_bottom.is_none());
+        assert!(primary_region.padding_left.is_none());
 
         let mut handle = LayoutStyle::default();
         handle.apply_css_text("position:absolute;width:8px;height:100%", None, None);

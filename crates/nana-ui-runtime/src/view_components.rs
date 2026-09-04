@@ -831,24 +831,7 @@ impl Card {
             loading_phase: 0.0,
             // 背景、边框、圆角不在此预填：project 按 kind 提供默认值，
             // 用户经 `.style(...)` 显式给出的值优先于 kind。
-            style: NodeStyle {
-                layout: Arc::new(nana_ui_core::LayoutStyle {
-                    padding_left: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.panel_padding_x,
-                    )),
-                    padding_right: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.panel_padding_x,
-                    )),
-                    padding_top: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.panel_padding_y,
-                    )),
-                    padding_bottom: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.panel_padding_y,
-                    )),
-                    ..nana_ui_core::LayoutStyle::default()
-                }),
-                ..NodeStyle::default()
-            },
+            style: NodeStyle::default(),
         }
     }
 
@@ -867,13 +850,13 @@ impl Card {
         self.loading = loading;
         self
     }
-    pub fn padding(mut self, padding: f32) -> Self {
-        let layout = Arc::make_mut(&mut self.style.layout);
-        let value = nana_ui_core::LengthSpec::Px(padding.max(0.0));
-        layout.padding_left = Some(value);
-        layout.padding_right = Some(value);
-        layout.padding_top = Some(value);
-        layout.padding_bottom = Some(value);
+    /// Replace all four padding edges, including logical declarations.
+    pub fn padding(self, padding: f32) -> Self {
+        self.padding_xy(padding, padding)
+    }
+
+    pub fn padding_xy(mut self, x: f32, y: f32) -> Self {
+        replace_padding_xy(Arc::make_mut(&mut self.style.layout), x, y);
         self
     }
     pub fn height(mut self, height: f32) -> Self {
@@ -919,6 +902,20 @@ impl ComponentView for Card {
         }
         let mut effective_style = self.style.clone();
         let layout = Arc::make_mut(&mut effective_style.layout);
+        // Defaults belong to the projection, never the authored declaration.
+        if layout.padding.is_none() {
+            let x = nana_ui_core::LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x);
+            let y = nana_ui_core::LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y);
+            layout.padding_left.get_or_insert(x);
+            layout.padding_right.get_or_insert(x);
+            layout.padding_top.get_or_insert(y);
+            layout.padding_bottom.get_or_insert(y);
+            if layout.logical_padding.has_logical() {
+                layout.logical_padding.phys_left.get_or_insert(x);
+                layout.logical_padding.phys_right.get_or_insert(x);
+            }
+        }
+
         let (kind_background, kind_border, kind_border_width) = match self.kind {
             nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
                 (Some(nana_ui_core::SemanticColorRole::Surface), None, 0.0)
@@ -3412,23 +3409,14 @@ impl Stack {
         self
     }
 
-    /// 四边统一内边距。
-    pub fn padding(mut self, padding: f32) -> Self {
-        let layout = Arc::make_mut(&mut self.style.layout);
-        let value = nana_ui_core::LengthSpec::Px(padding.max(0.0));
-        layout.padding = Some(value);
-        self
+    /// 四边统一内边距，覆盖先前物理及逻辑边声明。
+    pub fn padding(self, padding: f32) -> Self {
+        self.padding_xy(padding, padding)
     }
 
-    /// 水平与垂直内边距。
-    pub fn padding_xy(mut self, padding_x: f32, padding_y: f32) -> Self {
-        let layout = Arc::make_mut(&mut self.style.layout);
-        let x = nana_ui_core::LengthSpec::Px(padding_x.max(0.0));
-        let y = nana_ui_core::LengthSpec::Px(padding_y.max(0.0));
-        layout.padding_left = Some(x);
-        layout.padding_right = Some(x);
-        layout.padding_top = Some(y);
-        layout.padding_bottom = Some(y);
+    /// 水平与垂直内边距，后调用者覆盖四边。
+    pub fn padding_xy(mut self, x: f32, y: f32) -> Self {
+        replace_padding_xy(Arc::make_mut(&mut self.style.layout), x, y);
         self
     }
 
@@ -3824,4 +3812,101 @@ mod tests {
         assert!((row_box.x - (list_box.x - inset)).abs() < 0.5);
         assert!((row_box.width - (list_box.width + inset * 2.0)).abs() < 0.5);
     }
+}
+
+#[cfg(test)]
+mod spacing_tests {
+    use super::*;
+    use nana_ui_core::{DirSpec, LengthSpec, PaddingSpec};
+
+    #[test]
+    fn spacing_stack_last_padding_setter_wins_after_direction_change() {
+        let stack = Stack::column(0.0)
+            .padding_xy(12.0, 10.0)
+            .with_layout(|layout| {
+                layout.logical_padding.set_start(Some(LengthSpec::Px(30.0)));
+                layout.padding_logical.block_end = Some(LengthSpec::Px(40.0));
+            })
+            .padding(0.0);
+        let mut layout = (*stack.node_style().layout).clone();
+        layout.dir = Some(DirSpec::Rtl);
+        layout.bake_logical_edges();
+        assert_eq!(layout.resolved_padding(), PaddingSpec::uniform(0.0));
+        let layout = Stack::column(0.0)
+            .padding(9.0)
+            .padding_xy(2.0, 3.0)
+            .node_style()
+            .layout;
+        assert_eq!(
+            layout.resolved_padding(),
+            PaddingSpec {
+                left: 2.0,
+                right: 2.0,
+                top: 3.0,
+                bottom: 3.0
+            }
+        );
+    }
+
+    #[test]
+    fn spacing_card_defaults_restore_after_partial_style_removal() {
+        let mut context = crate::AppContext::new();
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).padding_top = Some(LengthSpec::Px(0.0));
+        let card = context
+            .create_component(document, Card::new().style(style))
+            .unwrap();
+        let padding = context
+            .world()
+            .node_style(card.stable_id())
+            .unwrap()
+            .layout
+            .resolved_padding();
+        assert_eq!(
+            padding,
+            PaddingSpec {
+                top: 0.0,
+                right: 16.0,
+                bottom: 14.0,
+                left: 16.0
+            }
+        );
+        context
+            .update_component(card, |card, _| {
+                card.style = NodeStyle::default();
+            })
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(card.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding(),
+            PaddingSpec {
+                top: 14.0,
+                right: 16.0,
+                bottom: 14.0,
+                left: 16.0
+            }
+        );
+        assert!(
+            context
+                .read(card, |card| card.style.layout.padding_left.is_none())
+                .unwrap()
+        );
+    }
+}
+
+/// Imperative builders replace all edges; raw LayoutStyle keeps CSS precedence.
+fn replace_padding_xy(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32) {
+    use nana_ui_core::LengthSpec;
+    layout.padding = None;
+    layout.logical_padding = Default::default();
+    layout.padding_logical = Default::default();
+    layout.padding_left = Some(LengthSpec::Px(x.max(0.0)));
+    layout.padding_right = layout.padding_left;
+    layout.padding_top = Some(LengthSpec::Px(y.max(0.0)));
+    layout.padding_bottom = layout.padding_top;
 }

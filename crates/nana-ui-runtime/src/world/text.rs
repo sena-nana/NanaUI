@@ -2037,7 +2037,7 @@ impl UiWorld {
                 ..crate::TextShapeConstraints::default()
             };
         }
-        let padding = source.layout.resolved_padding_against(Some(layout.width));
+        let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_edges();
         let leading_visual = match self.nodes.visual(id) {
             Some(StandardVisual::Checkbox { .. }) => 24.0,
@@ -2603,10 +2603,7 @@ impl UiWorld {
         ) {
             return None;
         }
-        let padding = node
-            .style
-            .layout
-            .resolved_padding_against(Some(node.layout.width));
+        let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content = LayoutBox {
             x: node.layout.x + border + padding.left,
@@ -2979,10 +2976,7 @@ impl UiWorld {
         let presentation = self.nodes.text_input_presentation(id)?;
         let line_height = presentation.line_height.max(1.0);
         let node = self.nodes.get(id)?;
-        let padding = node
-            .style
-            .layout
-            .resolved_padding_against(Some(node.layout.width));
+        let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
@@ -3038,10 +3032,7 @@ impl UiWorld {
             .count() as f32;
         let reveal_y = line_index * line_height;
         let node = self.nodes.get(id)?;
-        let padding = node
-            .style
-            .layout
-            .resolved_padding_against(Some(node.layout.width));
+        let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);

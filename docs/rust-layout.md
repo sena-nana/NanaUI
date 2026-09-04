@@ -73,3 +73,43 @@ let style = NodeStyle::default()
 ## 浮层
 
 对话框、菜单、抽屉、气泡必须用[控件](components.md)里的浮层（`Dialog`、`ActionMenu`、`Popover`、`Drawer`），锚定到触发控件的槽位；不要用绝对定位或 `fixed` 自己摆。
+
+## 边距归属与覆盖
+
+| 容器 | 默认责任 |
+| --- | --- |
+| Shell / Workspace | 区域、分隔及窗口 chrome，不替业务内容添加页面留白 |
+| Stack | 排列和显式 gap，默认 padding 为零 |
+| Card / SettingsCard | 内部留白：左右 16、上下 14；不附带外部间距 |
+| SettingsPage | 滚动 body：上 20、右 24、下 24、左 24；标题与内容间 gap 为 16 |
+
+页面留白和卡片内部留白是两个不同边界，可以同时存在。框架不会根据嵌套层级自动清零。兄弟间距优先由父级 gap 负责；显式 margin 与 gap 相加，不自动折叠。
+
+- `Stack::padding(v)` / `padding_xy(x, y)`、`Card::padding(v)` / `padding_xy(x, y)` 覆盖四边，包括此前的逻辑边声明；后调用者生效，`padding(0.0)` 可明确贴边。
+- 原始 `LayoutStyle` 仍是声明式：分边覆盖统一 padding。Card 未声明的边回落默认值，显式零保留；`.style(NodeStyle)` 替换用户声明，但不再隐式取消卡片默认内边距。默认值只存在于投影，删除覆盖可恢复默认。
+- `SettingsPage::content_padding(PaddingSpec)` 和 `content_gap(f32)` 只控制内部滚动 body。省略时用标准值；移除覆盖可将对应公开字段恢复为 `None`。full-page Tab 直接承载业务内容，不创建滚动 body，这两个设置也不作用于该模式。
+
+四类组合（挂载仍通过 `ui.nest` / `append_child`）：
+
+```rust
+use nana_ui::runtime::{Card, Stack};
+use nana_ui_core::PaddingSpec;
+
+// 页面中放卡片：SettingsPage(content) → Stack → Card。
+let sections = Stack::column(16.0); // 多张卡片之间的间隔
+let card = Card::new();           // 卡片内部使用标准留白
+
+// 卡片内排列控件：Card → Stack → 控件，不再手写第二层 padding。
+let fields = Stack::column(8.0);
+
+// 贴边列表：页面或卡片谁负责该边界，就清零谁。
+let flush_card = Card::new().padding(0.0);
+let flush_page = page.content_padding(PaddingSpec::uniform(0.0));
+
+// 滚动到底：内容放进 SettingsPage.content；底部留白由 body 计算，
+// 不再添加末尾 Spacer，也不在页面外壳重复加 padding。
+```
+
+### 旧用法迁移
+
+原来依赖 `.padding_xy(...).padding(0)` 未生效的布局，应直接保留需要的最终 padding；原来借 Card `.style(...)` 清零的地方，改为显式 `.padding(0.0)`。SettingsCard 不再默认附带 12px 底部 margin；多卡片页面使用父级 `Stack::column(gap)`，需要保留特定外边距时显式声明。修复后的容器量测计入子项 margin；百分比 padding 四边均相对包含块宽度，Grid 项相对最终单元格。

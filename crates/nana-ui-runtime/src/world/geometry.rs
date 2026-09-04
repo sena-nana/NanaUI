@@ -147,7 +147,7 @@ impl UiWorld {
             let node = self.nodes.get(id)?;
             (node.layout, node.style.clone())
         };
-        let padding = source.layout.resolved_padding_against(Some(bounds.width));
+        let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_width();
         let content = LayoutBox {
             x: bounds.x + border + padding.left,
