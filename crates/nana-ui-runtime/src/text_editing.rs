@@ -175,7 +175,7 @@ pub struct TextReplacement {
 }
 
 /// Valid, non-overlapping atoms inside `value`, sorted by start.
-pub fn atoms_in(value: &str, atoms: &[crate::TextAtomSpan]) -> Vec<crate::TextAtomSpan> {
+pub(crate) fn atoms_in(value: &str, atoms: &[crate::TextAtomSpan]) -> Vec<crate::TextAtomSpan> {
     let mut spans: Vec<_> = atoms
         .iter()
         .cloned()
@@ -199,7 +199,7 @@ pub fn atoms_in(value: &str, atoms: &[crate::TextAtomSpan]) -> Vec<crate::TextAt
 }
 
 /// Grow `range` until it covers every intersecting atom.
-pub fn expand_range_over_atoms(
+pub(crate) fn expand_range_over_atoms(
     range: std::ops::Range<usize>,
     atoms: &[crate::TextAtomSpan],
 ) -> std::ops::Range<usize> {
@@ -261,7 +261,7 @@ fn expand_replacement(
 }
 
 /// Delete backward, taking any atom that contains or ends at the caret.
-pub fn delete_backward_atoms(
+pub(crate) fn delete_backward_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -277,7 +277,7 @@ pub fn delete_backward_atoms(
 }
 
 /// Delete forward, taking any atom that contains or starts at the caret.
-pub fn delete_forward_atoms(
+pub(crate) fn delete_forward_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -292,7 +292,7 @@ pub fn delete_forward_atoms(
     delete_forward(value, selection)
 }
 
-pub fn delete_word_backward_atoms(
+pub(crate) fn delete_word_backward_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -309,7 +309,7 @@ pub fn delete_word_backward_atoms(
     ))
 }
 
-pub fn delete_word_forward_atoms(
+pub(crate) fn delete_word_forward_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -326,7 +326,7 @@ pub fn delete_word_forward_atoms(
     ))
 }
 
-pub fn delete_to_line_start_atoms(
+pub(crate) fn delete_to_line_start_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -337,7 +337,7 @@ pub fn delete_to_line_start_atoms(
     ))
 }
 
-pub fn delete_to_line_end_atoms(
+pub(crate) fn delete_to_line_end_atoms(
     value: &str,
     selection: crate::TextSelection,
     atoms: &[crate::TextAtomSpan],
@@ -349,7 +349,7 @@ pub fn delete_to_line_end_atoms(
 }
 
 /// Snap a caret that moved from `from` to `to` so it cannot rest inside an atom.
-pub fn snap_moved_caret(from: usize, to: usize, atoms: &[crate::TextAtomSpan]) -> usize {
+pub(crate) fn snap_moved_caret(from: usize, to: usize, atoms: &[crate::TextAtomSpan]) -> usize {
     if to == from {
         return snap_pointer_caret(to, atoms);
     }
@@ -376,7 +376,7 @@ pub fn snap_moved_caret(from: usize, to: usize, atoms: &[crate::TextAtomSpan]) -
 }
 
 /// Pointer hits inside an atom rest on the nearer boundary.
-pub fn snap_pointer_caret(offset: usize, atoms: &[crate::TextAtomSpan]) -> usize {
+pub(crate) fn snap_pointer_caret(offset: usize, atoms: &[crate::TextAtomSpan]) -> usize {
     let Some(atom) = covering_atom(atoms, offset) else {
         return offset;
     };
