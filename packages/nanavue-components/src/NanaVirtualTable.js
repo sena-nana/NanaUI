@@ -3,7 +3,7 @@
  * Geometry matches `VirtualTableLayout`.
  */
 import { computed, h } from "@vue/runtime-core";
-import { virtualWindow } from "./virtual-window.js";
+import { createWindowIndex } from "./virtual-window.js";
 import { useScrollWindow, windowChildren } from "./NanaVirtualList.js";
 
 export const NanaVirtualTable = {
@@ -22,26 +22,23 @@ export const NanaVirtualTable = {
   },
   setup(props, { slots, attrs }) {
     const { x, y, width, height, bindHost, onScroll } = useScrollWindow();
-    const rows = computed(() =>
-      virtualWindow({
+    const rowSizes = computed(() =>
+      createWindowIndex({
         count: props.rowCount,
         itemExtent: props.rowExtent,
         extents: props.rowExtents,
-        scroll: y.value,
-        viewport: height.value,
-        overscan: props.overscan,
       }),
     );
-    const columns = computed(() =>
-      virtualWindow({
+    const columnSizes = computed(() =>
+      createWindowIndex({
         count: props.columnCount,
         itemExtent: props.columnExtent,
         extents: props.columnExtents,
-        scroll: x.value,
-        viewport: width.value,
-        overscan: props.overscan,
       }),
     );
+
+    const rows = computed(() => rowSizes.value.window(y.value, height.value, props.overscan));
+    const columns = computed(() => columnSizes.value.window(x.value, width.value, props.overscan));
 
     return () =>
       h(

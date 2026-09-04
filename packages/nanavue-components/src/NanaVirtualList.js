@@ -3,7 +3,7 @@
  * Geometry matches `VirtualListLayout::window`.
  */
 import { computed, h, onMounted, onUpdated, ref } from "@vue/runtime-core";
-import { virtualWindow } from "./virtual-window.js";
+import { createWindowIndex } from "./virtual-window.js";
 
 export function hostExtent(el, axis) {
   if (!el) return 0;
@@ -86,16 +86,15 @@ export const NanaVirtualList = {
   },
   setup(props, { slots, attrs }) {
     const { y, height, bindHost, onScroll } = useScrollWindow();
-    const windowed = computed(() =>
-      virtualWindow({
+    const sizes = computed(() =>
+      createWindowIndex({
         count: props.count,
         itemExtent: props.itemExtent,
         extents: props.extents,
-        scroll: y.value,
-        viewport: height.value,
-        overscan: props.overscan,
       }),
     );
+
+    const windowed = computed(() => sizes.value.window(y.value, height.value, props.overscan));
 
     return () =>
       h(
