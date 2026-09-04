@@ -46,6 +46,9 @@ wgpu = { workspace = true, optional = true }
 nana-svg-raster.workspace = true
 # Intentionally NOT depending on nana-js-v8. Apps link the concrete engine.
 
+[dev-dependencies]
+pollster.workspace = true
+
 [[bin]]
 name = "nana-vue-runtime-benchmark"
 path = "src/bin/nana-vue-runtime-benchmark.rs"

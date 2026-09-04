@@ -1208,6 +1208,11 @@ fn windows_to_redraw(redraw: RuntimeRedraw, known: &[WindowId]) -> Vec<WindowId>
         RuntimeRedraw::None => Vec::new(),
         RuntimeRedraw::Window(id) => known.iter().copied().filter(|known| *known == id).collect(),
         RuntimeRedraw::All => known.to_vec(),
+        RuntimeRedraw::Windows(ids) => known
+            .iter()
+            .copied()
+            .filter(|id| ids.contains(id))
+            .collect(),
     }
 }
 

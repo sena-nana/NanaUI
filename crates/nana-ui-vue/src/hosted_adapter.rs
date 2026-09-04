@@ -35,6 +35,19 @@ pub struct VueHostedRuntime<E: JsEngine> {
     application_api: HostApiRegistry,
 }
 
+#[derive(PartialEq)]
+struct WindowVisualRevision {
+    semantic: u64,
+    runtime: u64,
+    surfaces: HashMap<String, SurfaceRevision>,
+}
+
+#[derive(PartialEq)]
+struct SurfaceRevision {
+    canvas: Option<u64>,
+    texture: Option<(u64, u64, u64, u32, u32, nana_ui::HostTextureAlphaMode)>,
+}
+
 impl<E: JsEngine> VueHostedRuntime<E> {
     pub fn new(
         engine: E,
@@ -176,10 +189,65 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         id: WindowId,
         event: &InputEvent,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        Ok(match self.emit_runtime_input(VueWindowId(id.0), event) {
-            Ok(_) => self.runtime_program_update(true),
-            Err(_) => RuntimeProgramUpdate::default(),
+        let before = self.window_visual_revisions();
+        // A callback may update another document or mutate state before throwing.
+        // Preserve those changes even when event delivery reports an error.
+        let _ = self.emit_runtime_input(VueWindowId(id.0), event);
+        let after = self.window_visual_revisions();
+        let redraw = RuntimeRedraw::for_windows(
+            after
+                .into_iter()
+                .filter_map(|(id, revision)| (before.get(&id) != Some(&revision)).then_some(id)),
+        );
+        Ok(RuntimeProgramUpdate {
+            redraw,
+            ..self.runtime_program_update(false)
         })
+    }
+
+    fn window_visual_revisions(&self) -> HashMap<WindowId, WindowVisualRevision> {
+        self.vue
+            .window_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let host = self.vue.host(id)?;
+                let host = host.lock().ok()?;
+                let semantic = host.bridge().lock().ok()?.revision();
+                let document = host.document();
+                let document = document.lock().ok()?;
+                let canvas = host.canvas_runtime_ref().clone();
+                let canvas = canvas.lock().ok()?;
+                let textures = host.host_textures();
+                let surfaces = document
+                    .consumed_surface_slots()
+                    .map(|slot| {
+                        let canvas = slot
+                            .strip_prefix("canvas:")
+                            .and_then(|id| id.parse().ok())
+                            .and_then(|id| canvas.version(nana_ui_web_api::CanvasId(id)));
+                        let texture = textures.get(&slot).map(|binding| {
+                            (
+                                binding.texture.instance_identity(),
+                                binding.texture.generation(),
+                                binding.texture.version(),
+                                binding.width,
+                                binding.height,
+                                binding.alpha_mode,
+                            )
+                        });
+                        (slot, SurfaceRevision { canvas, texture })
+                    })
+                    .collect();
+                Some((
+                    WindowId(id.0),
+                    WindowVisualRevision {
+                        semantic,
+                        runtime: document.runtime_generation(),
+                        surfaces,
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn emit_runtime_input(
@@ -971,6 +1039,258 @@ mod tests {
     use nana_ui::{
         TitleBarDragTracker, WindowChromeAction, WindowChromeState, apply_title_bar_pointer,
     };
+
+    #[derive(Default)]
+    struct InputEngine {
+        on_event: Option<Box<dyn FnOnce()>>,
+    }
+
+    impl JsEngine for InputEngine {
+        fn initialize(&mut self, _: RuntimeArtifact) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn register_host_api(&mut self, _: &HostApiRegistry) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn resolve_function(
+            &mut self,
+            _: &str,
+        ) -> Result<nana_js_engine::JsFunctionId, JsEngineError> {
+            Ok(nana_js_engine::JsFunctionId(1))
+        }
+        fn invoke(
+            &mut self,
+            _: nana_js_engine::JsFunctionId,
+            _: &[nana_js_engine::HostValue],
+        ) -> Result<nana_js_engine::HostValue, JsEngineError> {
+            if let Some(callback) = self.on_event.take() {
+                callback();
+            }
+            Ok(nana_js_engine::HostValue::Bool(true))
+        }
+        fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn interrupt(&mut self) {}
+        fn request_gc(&mut self) {}
+        fn shutdown(&mut self) {}
+    }
+
+    #[test]
+    fn input_redraw_tracks_noop_single_and_cross_window_changes() {
+        let vue = VueRuntime::new(400, 300, 1.0);
+        for _ in 0..2 {
+            vue.host_api_registry().call("windowCreate", &[]).unwrap();
+        }
+        let ids = vue.window_ids();
+        let mut bridges = Vec::new();
+        for id in &ids {
+            let host = vue.host(*id).unwrap();
+            let mut host = host.lock().unwrap();
+            host.callbacks.fire_event = Some(nana_js_engine::JsFunctionId(1));
+            let bridge = host.bridge();
+            bridge.lock().unwrap().set_theme(ThemeMode::Light);
+            bridges.push(bridge);
+        }
+        let mut runtime = VueHostedRuntime {
+            engine: InputEngine::default(),
+            vue,
+            application_api: HostApiRegistry::new(),
+        };
+        for id in &ids {
+            runtime
+                .vue
+                .host(*id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .pump_frame(&mut runtime.engine)
+                .unwrap();
+        }
+        let event = InputEvent::Keyboard {
+            pressed: true,
+            key: "F1".into(),
+            code: "F1".into(),
+            text: None,
+            repeat: false,
+            modifiers: nana_ui_platform::InputModifiers::default(),
+        };
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::None
+        );
+        let changed = bridges[1].clone();
+        runtime.engine.on_event = Some(Box::new(move || {
+            changed.lock().unwrap().set_theme(ThemeMode::Dark)
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::Window(WindowId(ids[1].0))
+        );
+        let changed = [bridges[0].clone(), bridges[2].clone()];
+        runtime.engine.on_event = Some(Box::new(move || {
+            for bridge in changed {
+                bridge.lock().unwrap().set_theme(ThemeMode::Dark);
+            }
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::for_windows([WindowId(ids[0].0), WindowId(ids[2].0)])
+        );
+    }
+
+    #[test]
+    fn input_redraw_tracks_consumed_canvas_and_live_texture_handles() {
+        use nana_ui::{HostTexture, HostTextureAlphaMode};
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let view = || {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("input redraw regression"),
+                    size: wgpu::Extent3d {
+                        width: 8,
+                        height: 8,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let mut runtime = VueHostedRuntime {
+            engine: InputEngine::default(),
+            vue: VueRuntime::new(400, 300, 1.0),
+            application_api: HostApiRegistry::new(),
+        };
+        runtime
+            .vue
+            .host_api_registry()
+            .call("windowCreate", &[])
+            .unwrap();
+        let secondary = runtime
+            .vue
+            .window_ids()
+            .into_iter()
+            .find(|id| *id != VueWindowId::PRIMARY)
+            .unwrap();
+        let host = runtime.vue.host(secondary).unwrap();
+        let host = host.lock().unwrap();
+        let canvas = host.canvas_runtime_ref().clone();
+        let id = canvas.lock().unwrap().create_canvas(8, 8).unwrap();
+        let detached_id = canvas.lock().unwrap().create_canvas(8, 8).unwrap();
+        let registry = host.host_textures().clone();
+        let texture = HostTexture::from_wgpu(7, 1, view());
+        registry.register(
+            "secondary",
+            texture.clone(),
+            8,
+            8,
+            HostTextureAlphaMode::Opaque,
+        );
+        let document = host.document();
+        let mut document = document.lock().unwrap();
+        let detached = document.create_element("canvas");
+        document.set_attribute(detached, "data-nana-canvas", &detached_id.0.to_string());
+        for (tag, attr, value) in [
+            ("canvas", "data-nana-canvas", id.0.to_string()),
+            ("nana-gpu", "data-nana-gpu", "secondary".into()),
+        ] {
+            let node = document.create_element(tag);
+            let root = document.mount_root();
+            document.insert(node, root, None);
+            document.set_attribute(node, attr, &value);
+        }
+        drop(document);
+        drop(host);
+        for id in runtime.vue.window_ids() {
+            let host = runtime.vue.host(id).unwrap();
+            let mut host = host.lock().unwrap();
+            host.callbacks.fire_event = Some(nana_js_engine::JsFunctionId(1));
+            host.pump_frame(&mut runtime.engine).unwrap();
+        }
+        let event = InputEvent::Keyboard {
+            pressed: true,
+            key: "F1".into(),
+            code: "F1".into(),
+            text: None,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let consumed = canvas.clone();
+        runtime.engine.on_event = Some(Box::new(move || {
+            consumed.lock().unwrap().resize_canvas(id, 8, 8).unwrap()
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::Window(WindowId(secondary.0))
+        );
+        let unused = canvas.clone();
+        runtime.engine.on_event = Some(Box::new(move || {
+            unused.lock().unwrap().create_canvas(8, 8).unwrap();
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::None
+        );
+        let detached = canvas.clone();
+        runtime.engine.on_event = Some(Box::new(move || {
+            detached
+                .lock()
+                .unwrap()
+                .resize_canvas(detached_id, 16, 16)
+                .unwrap();
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::None
+        );
+        runtime.engine.on_event = Some(Box::new(move || {
+            texture.invalidate();
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::Window(WindowId(secondary.0))
+        );
+        let replacement = HostTexture::from_wgpu(7, 1, view());
+        replacement.invalidate();
+        runtime.engine.on_event = Some(Box::new(move || {
+            registry.register("secondary", replacement, 8, 8, HostTextureAlphaMode::Opaque);
+        }));
+        assert_eq!(
+            runtime
+                .runtime_input(WindowId::PRIMARY, &event)
+                .unwrap()
+                .redraw,
+            RuntimeRedraw::Window(WindowId(secondary.0))
+        );
+    }
 
     #[test]
     fn vue_window_documents_are_the_same_runtime_tree() {

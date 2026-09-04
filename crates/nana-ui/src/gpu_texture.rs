@@ -359,6 +359,13 @@ impl HostTexture {
         self.state.id
     }
 
+    /// Identity of this shared handle, distinct from its caller-assigned cache id.
+    /// Clones share an identity; replacing a registry binding with a new handle
+    /// changes it even when the caller reuses the same id and initial version.
+    pub fn instance_identity(&self) -> u64 {
+        self.state.instance_identity
+    }
+
     pub fn generation(&self) -> u64 {
         self.state.view.generation()
     }
