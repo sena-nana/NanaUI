@@ -10,12 +10,14 @@
 #![allow(clippy::type_complexity)]
 
 mod animation;
+mod avatar;
 mod breadcrumb;
 mod builtin_components;
 #[cfg(feature = "calendar")]
 mod calendar;
 #[cfg(feature = "charts")]
 mod charts;
+mod chip;
 mod color_field;
 mod command_palette;
 pub mod component_descriptors;
@@ -40,6 +42,7 @@ mod layout_engine;
 mod menus;
 mod mutation;
 mod overlay_surfaces;
+mod overlay_visibility;
 mod pane;
 mod pane_section;
 mod path_field;
@@ -79,6 +82,7 @@ pub use animation::{
     AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
     component_animation_id, component_animation_kinds,
 };
+pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
 pub use breadcrumb::{
     Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };
@@ -93,6 +97,7 @@ pub use calendar::{
 };
 #[cfg(feature = "charts")]
 pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
+pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
     ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
     sanitize_rgba,
@@ -194,6 +199,9 @@ pub use nana_ui_core::{
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
     ModalSlots, ModalSurface, ModalSurfaceKind,
+};
+pub use overlay_visibility::{
+    OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityConfig,
 };
 pub use pane::{PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode};
 pub use pane_section::PaneSection;

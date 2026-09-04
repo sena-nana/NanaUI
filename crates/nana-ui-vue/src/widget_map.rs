@@ -457,6 +457,7 @@ fn class_token_kind(token: &str) -> Option<WidgetKind> {
         "ui-list-item" => WidgetKind::ListItem,
         "nana-sidebar-nav__item" => WidgetKind::SidebarRow,
         "nana-empty" => WidgetKind::EmptyState,
+        "nana-avatar" => WidgetKind::Avatar,
         "nana-status" => WidgetKind::StatusBadge,
         "nana-validation" => WidgetKind::ValidationMessage,
         "ui-progress" => WidgetKind::Progress,

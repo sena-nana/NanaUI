@@ -34,6 +34,7 @@
     "./NanaQrCode": "./src/NanaQrCode.js",
     "./NanaDivider": "./src/NanaDivider.js",
     "./NanaThumbnail": "./src/NanaThumbnail.js",
+    "./NanaAvatar": "./src/NanaAvatar.js",
     "./NanaCard": "./src/NanaCard.js",
     "./NanaList": "./src/NanaList.js",
     "./NanaListItem": "./src/NanaListItem.js",

@@ -35,6 +35,8 @@ descriptors! {
     CARD => { type_id: "nana.card", tags: &["card"] },
     LIST_ITEM => { type_id: "nana.list-item", tags: &["list-item"] },
     THUMBNAIL => { type_id: "nana.thumbnail", tags: &["thumbnail"] },
+    CHIP => { type_id: "nana.chip", tags: &["chip"] },
+    AVATAR => { type_id: "nana.avatar", tags: &["avatar"] },
     TEXT_INPUT => { type_id: "nana.text-input", tags: &["text-input"] },
     TEXT_AREA => { type_id: "nana.textarea", tags: &["textarea"] },
     HOSTED_TEXTAREA => { type_id: "nana.hosted-textarea", tags: &["hosted-textarea"] },

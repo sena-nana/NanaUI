@@ -15,17 +15,18 @@ pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::TimeSeriesChart;
 pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppearanceSection,
-    Button, Card, Checkbox, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuEvent,
-    ContextMenuItem, Dialog, Drawer, Dropdown, DropdownEvent, DropdownOption, DropdownSelection,
-    EmptyState, FormField, IconButton, InteractiveCard, LabeledValue, LevelMeter, ListItem,
-    OverlayHost, Popover, Progress, ProgressCancelled, QrCode, RangeField, SearchDropdown,
-    SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select, SelectOption,
-    SettingsCard, SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton,
-    SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,
-    SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup, TabDragSurface,
-    TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Thumbnail, ThumbnailState, Toast,
-    Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad,
-    tree_navigation_event,
+    Avatar, Button, Card, Checkbox, Chip, ChipDismissed, CommandPalette, ConfirmDialog,
+    ContextMenu, ContextMenuEvent, ContextMenuItem, Dialog, Drawer, Dropdown, DropdownEvent,
+    DropdownOption, DropdownSelection, EmptyState, FormField, IconButton, InteractiveCard,
+    LabeledValue, LevelMeter, ListItem, OVERLAY_IDLE, OverlayHost, OverlayLocks, OverlayVisibility,
+    OverlayVisibilityConfig, Popover, Progress, ProgressCancelled, QrCode, RangeField,
+    SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl, Select,
+    SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow, SidebarFooter,
+    SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
+    SidebarSectionSlots, SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup,
+    TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, Thumbnail,
+    ThumbnailState, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
+    ValidationMessage, XYPad, tree_navigation_event,
 };
 #[cfg(feature = "calendar")]
 pub use nana_ui_runtime::{

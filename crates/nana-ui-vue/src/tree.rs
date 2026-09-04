@@ -1289,6 +1289,7 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::Card
                         | crate::WidgetKind::Divider
                         | crate::WidgetKind::Thumbnail
+                        | crate::WidgetKind::Avatar
                         | crate::WidgetKind::List
                         | crate::WidgetKind::ListItem
                         | crate::WidgetKind::ScrollView
