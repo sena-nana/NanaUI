@@ -3013,6 +3013,14 @@ mod tests {
                 .prevent_default
         );
         assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
+        // The next Escape belongs to the application navigation layer. A
+        // host must pass the per-event result rather than cache overlay state.
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &escape)
+                .unwrap()
+                .prevent_default
+        );
     }
 
     #[test]
