@@ -2,9 +2,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
-    Activate, AppShell, AppTitleBar, Button, CalendarHeatmap, CalendarHeatmapDatum,
-    CalendarHeatmapEvent, Card, Checkbox, DesktopShell, DockFloatingSurface, DocumentId, Dropdown,
-    DropdownEvent, DropdownOption, EmptyState, Entity, FrameworkError, GraphCanvas,
+    Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
+    CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DockFloatingSurface, DocumentId,
+    Dropdown, DropdownEvent, DropdownOption, EmptyState, Entity, FrameworkError, GraphCanvas,
     GraphCanvasEvent, GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard,
     LabeledValue, LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown,
     NodeStyle, OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree,
@@ -1374,6 +1374,23 @@ fn mount_controls(
                 ui.adopt(node);
             }
         });
+        let chip_row = ui.leaf(HostStack::leading_row(8.0));
+        ui.nest(chip_row, |ui| {
+            for chip in [Chip::new("默认"), Chip::new("已选").selected(true)] {
+                let node = ui.leaf(chip);
+                ui.adopt(node);
+            }
+        });
+        let avatar_row = ui.leaf(HostStack::leading_row(8.0));
+        ui.nest(avatar_row, |ui| {
+            for avatar in [
+                Avatar::empty().label("空"),
+                Avatar::empty().size(40.0).label("大"),
+            ] {
+                let node = ui.leaf(avatar);
+                ui.adopt(node);
+            }
+        });
         let thumb_lead = ui.leaf(Thumbnail::empty());
         let thumb_label = ui.leaf(list_label_text("缩略图项"));
         let thumb_item = ui.leaf(ListItem::new("缩略图项").slots(ListItemSlots {
@@ -1388,6 +1405,8 @@ fn mount_controls(
         ui.nest(list_panel, |ui| {
             ui.adopt(list_title);
             ui.adopt(thumb_row);
+            ui.adopt(chip_row);
+            ui.adopt(avatar_row);
             ui.adopt(thumb_item);
             ui.adopt(list);
         });

@@ -11,25 +11,25 @@ use nana_ui_core::{
 
 #[cfg(feature = "rich-text")]
 use crate::NativeMarkdown;
+#[cfg(feature = "charts")]
+use crate::TimeSeriesChart;
 use crate::{
-    ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Button, Card, Checkbox, ColorField,
-    CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog, Divider,
-    Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState, ExtensionRegistrar,
-    FormField, FrameworkError, GpuTextureView, GpuView, HostedTextarea, IconButton, IconGlyph,
-    InteractiveCard, LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface,
-    NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress, QrCode, RangeField,
-    ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
-    SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
-    SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
-    StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
+    ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Avatar, Button, Card, Checkbox, Chip,
+    ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
+    Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState,
+    ExtensionRegistrar, FormField, FrameworkError, GpuTextureView, GpuView, HostedTextarea,
+    IconButton, IconGlyph, InteractiveCard, LabeledValue, LevelMeter, List, ListItem,
+    ListItemSlots, ModalSurface, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress,
+    QrCode, RangeField, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
+    SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame,
+    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane,
+    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
     TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
     ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 #[cfg(feature = "calendar")]
 use crate::{CalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy};
-#[cfg(feature = "charts")]
-use crate::TimeSeriesChart;
 #[cfg(feature = "graph-canvas")]
 use crate::{GraphCanvas, GraphModel};
 #[cfg(feature = "image-viewer")]
@@ -72,6 +72,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Card>()?;
         registrar.register_component::<ListItem>()?;
         registrar.register_component::<Thumbnail>()?;
+        registrar.register_component::<Chip>()?;
+        registrar.register_component::<Avatar>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
         registrar.register_component::<HostedTextarea>()?;
@@ -342,6 +344,40 @@ impl RegisterableComponent for ListItem {
             });
         overlay_l2_css_size(&mut component.style.layout, spec.layout.as_ref());
         component
+    }
+}
+
+impl RegisterableComponent for Chip {
+    const TYPE_ID: &'static str = crate::component_descriptors::CHIP.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::CHIP.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let selected = spec.active
+            || spec.toggled
+            || matches!(spec.button_kind, nana_ui_core::ButtonKind::Selected);
+        Chip::new(spec.display_label())
+            .selected(selected)
+            .disabled(spec.disabled)
+            .dismissible(flag_attr(spec, &["dismissible", "dismiss"]))
+            .size(spec.size)
+    }
+}
+
+impl RegisterableComponent for Avatar {
+    const TYPE_ID: &'static str = crate::component_descriptors::AVATAR.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::AVATAR.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut avatar = Avatar::new(spec.value);
+        if !spec.display_label().is_empty() {
+            avatar = avatar.label(Arc::<str>::from(spec.display_label()));
+        }
+        if let Some(size) = spec
+            .attr("size")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| *value > 0.0)
+        {
+            avatar = avatar.size(size);
+        }
+        avatar
     }
 }
 
@@ -1098,7 +1134,11 @@ impl RegisterableComponent for NativeMarkdown {
                 crate::MarkdownBlock::Mermaid(source) => (
                     source,
                     "mermaid",
-                    ["mermaid-renderer", "mermaidrenderer", "data-mermaid-renderer"],
+                    [
+                        "mermaid-renderer",
+                        "mermaidrenderer",
+                        "data-mermaid-renderer",
+                    ],
                 ),
                 crate::MarkdownBlock::DisplayMath(source) => (
                     source,

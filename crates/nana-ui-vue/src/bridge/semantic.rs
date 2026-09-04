@@ -20,7 +20,7 @@ pub enum WidgetKind {
     Button,
     /// Compact icon control → Runtime `IconButton` (`nana.icon-button`).
     IconButton,
-    /// Compact selectable chip — Button Selected/Subtle variant.
+    /// Compact selectable chip — Runtime `Chip` (`nana.chip`).
     Chip,
     Input,
     /// Numeric stepper → Runtime `NumberInput` (`nana.number-input`).
@@ -43,6 +43,8 @@ pub enum WidgetKind {
     Divider,
     /// Image/file preview tile → Runtime `Thumbnail`.
     Thumbnail,
+    /// Circular cover-fit host-texture slot → Runtime `Avatar`.
+    Avatar,
     /// Vertical item stack → Runtime `List`.
     List,
     ListItem,
@@ -205,6 +207,7 @@ widget_kind_table! {
     Card => { aliases: [], as_str: "card", tag: "nana-card" },
     Divider => { aliases: ["hr"], as_str: "divider", tag: "hr" },
     Thumbnail => { aliases: [], as_str: "thumbnail", tag: "nana-thumbnail" },
+    Avatar => { aliases: [], as_str: "avatar", tag: "nana-avatar" },
     List => { aliases: [], as_str: "list", tag: "ul" },
     ListItem => { aliases: [], as_str: "list-item", tag: "li" },
     ScrollView => { aliases: [], as_str: "scroll-view", tag: "nana-scroll-view" },

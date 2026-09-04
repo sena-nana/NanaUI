@@ -74,10 +74,9 @@ fn kind_element_tags_resolve_back_to_a_kind() {
 #[test]
 fn kind_tags_resolve_in_builtin_runtime_registry() {
     // Vue-only kinds with no Runtime component of their own: the assembly
-    // rules in tree.rs downgrade them (Chip → `nana.button` variant, Radio
-    // → SegmentedControl radio chrome), so their element_tag intentionally
-    // does not resolve on its own.
-    const FACADE_ONLY: &[WidgetKind] = &[WidgetKind::Chip, WidgetKind::Radio];
+    // rules in tree.rs downgrade them (Radio → SegmentedControl radio
+    // chrome), so their element_tag intentionally does not resolve on its own.
+    const FACADE_ONLY: &[WidgetKind] = &[WidgetKind::Radio];
     let context = nana_ui_runtime::AppContext::new();
     let mut unresolved: Vec<String> = Vec::new();
     for kind in WidgetKind::ALL {

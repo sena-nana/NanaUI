@@ -46,6 +46,7 @@ export { NanaXyPad } from "./NanaXyPad.js";
 export { NanaQrCode } from "./NanaQrCode.js";
 export { NanaDivider } from "./NanaDivider.js";
 export { NanaThumbnail } from "./NanaThumbnail.js";
+export { NanaAvatar } from "./NanaAvatar.js";
 export { NanaCard } from "./NanaCard.js";
 export { NanaList } from "./NanaList.js";
 export { NanaListItem } from "./NanaListItem.js";

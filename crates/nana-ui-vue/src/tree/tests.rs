@@ -1899,7 +1899,7 @@ fn bridge_footprint_classifies_mutations() {
 }
 
 #[test]
-fn nana_chip_projects_selected_button_not_a_second_control() {
+fn nana_chip_projects_runtime_chip() {
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);
     let node = doc.create_element("nana-chip");
     doc.insert(node, doc.mount_root(), None);
@@ -1920,7 +1920,7 @@ fn nana_chip_projects_selected_button_not_a_second_control() {
             .component_type(id)
             .map(|type_id| type_id.as_str().to_owned())
             .as_deref(),
-        Some("nana.button")
+        Some("nana.chip")
     );
     let accessibility = doc
         .accessibility_snapshot()

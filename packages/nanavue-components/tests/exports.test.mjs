@@ -61,6 +61,7 @@ const HOST_TAGS = {
   NanaNumberInput: "input",
   NanaDivider: "hr",
   NanaThumbnail: "nana-thumbnail",
+  NanaAvatar: "nana-avatar",
   NanaCard: "nana-card",
   NanaList: "ul",
   NanaListItem: "li",

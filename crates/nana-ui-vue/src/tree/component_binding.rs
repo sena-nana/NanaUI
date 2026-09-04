@@ -75,7 +75,7 @@ pub(crate) fn rule_chip_variant(
     widget: &SemanticWidgetView<'_>,
     _snapshot: &SemanticRead<'_>,
 ) -> Option<ComponentRuleOutcome> {
-    (widget.kind == crate::WidgetKind::Chip).then_some(ComponentRuleOutcome::Tag("button"))
+    (widget.kind == crate::WidgetKind::Chip).then_some(ComponentRuleOutcome::Tag("chip"))
 }
 
 pub(crate) fn rule_standalone_icon(
@@ -254,6 +254,7 @@ pub(crate) fn can_bind_from_semantic(widget: &SemanticWidgetView<'_>) -> bool {
                 | crate::WidgetKind::SettingsCollapsibleCard
                 | crate::WidgetKind::Divider
                 | crate::WidgetKind::Thumbnail
+                | crate::WidgetKind::Avatar
                 | crate::WidgetKind::List
                 | crate::WidgetKind::ScrollView
                 | crate::WidgetKind::Table
@@ -592,6 +593,12 @@ pub(crate) fn bind_native_json_attrs(widget: &SemanticWidgetView<'_>) -> Vec<(St
         }
         crate::WidgetKind::Thumbnail => {
             push(&mut extras, "aspect", &["aspect"]);
+        }
+        crate::WidgetKind::Chip => {
+            push(&mut extras, "dismissible", &["dismissible", "dismiss"]);
+        }
+        crate::WidgetKind::Avatar => {
+            push(&mut extras, "size", &["size"]);
         }
         crate::WidgetKind::TableCell => {
             push(
