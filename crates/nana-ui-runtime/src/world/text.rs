@@ -2194,6 +2194,155 @@ pub(super) fn hover_popup_geometry(
     })
 }
 
+/// 签名帮助浮窗几何：签名行拆成前缀 / 活动参数 / 后缀，活动参数 Accent
+/// 高亮；文档行取活动参数说明，否则函数级文档。锚定 caret。
+pub(super) fn signature_popup_geometry(
+    help: &crate::TextSignatureHelp,
+    anchor: OverlayAnchor,
+    viewport: LayoutBox,
+    font_size: f32,
+    palette: &SemanticPalette,
+) -> Option<crate::TextSignaturePopup> {
+    const H_PAD: f32 = 10.0;
+    const V_PAD: f32 = 6.0;
+    const GAP: f32 = 4.0;
+    const VIEWPORT_GAP: f32 = 4.0;
+    const MAX_WIDTH: f32 = 420.0;
+    let line_height = anchor.line_height.max(1.0);
+    let em = font_size.max(1.0) * 0.55;
+    let measure = |value: &str| (value.chars().count() as f32 * em).max(1.0);
+    let active = if help.params.is_empty() {
+        0
+    } else {
+        help.active_index.min(help.params.len() - 1)
+    };
+    let mut prefix = help.title.clone();
+    prefix.push('(');
+    for (index, (name, _)) in help.params.iter().enumerate() {
+        if index == active {
+            break;
+        }
+        if index > 0 {
+            prefix.push_str(", ");
+        }
+        prefix.push_str(name);
+    }
+    if !help.params.is_empty() && active > 0 {
+        prefix.push_str(", ");
+    }
+    let active_name = help
+        .params
+        .get(active)
+        .map(|(name, _)| name.clone())
+        .unwrap_or_default();
+    let mut suffix = String::new();
+    if !help.params.is_empty() {
+        for (name, _) in help.params.iter().skip(active + 1) {
+            suffix.push_str(", ");
+            suffix.push_str(name);
+        }
+    }
+    suffix.push(')');
+    let doc = help
+        .params
+        .get(active)
+        .map(|(_, doc)| doc.as_str())
+        .filter(|doc| !doc.is_empty())
+        .or_else(|| {
+            let doc = help.fn_doc.trim();
+            (!doc.is_empty()).then_some(doc)
+        })
+        .map(|doc| doc.lines().next().unwrap_or(doc).to_owned());
+    let prefix_w = measure(&prefix);
+    let active_w = if active_name.is_empty() {
+        0.0
+    } else {
+        measure(&active_name)
+    };
+    let suffix_w = measure(&suffix);
+    let content_w = (prefix_w + active_w + suffix_w).clamp(1.0, MAX_WIDTH - H_PAD * 2.0);
+    let has_doc = doc.is_some();
+    let panel = anchored_overlay_panel(
+        anchor,
+        (content_w + H_PAD * 2.0).min(MAX_WIDTH).min(viewport.width.max(1.0)),
+        V_PAD * 2.0 + line_height + if has_doc { GAP + line_height } else { 0.0 },
+        viewport,
+        VIEWPORT_GAP,
+    );
+    let content_width = (panel.width - H_PAD * 2.0).max(0.0);
+    let y = panel.y + V_PAD;
+    let mut x = panel.x + H_PAD;
+    let prefix_width = prefix_w.min(content_width);
+    let prefix_region = crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x,
+            y,
+            width: prefix_width,
+            height: line_height,
+        },
+        content: Arc::from(prefix.as_str()),
+        color: Some(palette.text.as_rgba_array()),
+        font_size,
+        font_weight: None,
+    };
+    x += prefix_width;
+    let remaining = (panel.x + H_PAD + content_width - x).max(0.0);
+    let active_region = (!active_name.is_empty()).then(|| {
+        let width = active_w.min(remaining);
+        crate::ComponentTextRegion {
+            bounds: LayoutBox {
+                x,
+                y,
+                width,
+                height: line_height,
+            },
+            content: Arc::from(active_name.as_str()),
+            color: Some(palette.accent.as_rgba_array()),
+            font_size,
+            font_weight: Some(600),
+        }
+    });
+    if let Some(active) = &active_region {
+        x += active.bounds.width;
+    }
+    let suffix_remaining = (panel.x + H_PAD + content_width - x).max(0.0);
+    let suffix_region = crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x,
+            y,
+            width: suffix_w.min(suffix_remaining),
+            height: line_height,
+        },
+        content: Arc::from(suffix.as_str()),
+        color: Some(palette.text.as_rgba_array()),
+        font_size,
+        font_weight: None,
+    };
+    let doc_region = doc.map(|doc| crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x: panel.x + H_PAD,
+            y: y + line_height + GAP,
+            width: content_width,
+            height: line_height,
+        },
+        content: Arc::from(doc.as_str()),
+        color: Some(palette.muted.as_rgba_array()),
+        font_size,
+        font_weight: None,
+    });
+    Some(crate::TextSignaturePopup {
+        panel,
+        prefix: prefix_region,
+        active: active_region.clone(),
+        suffix: suffix_region,
+        doc: doc_region,
+        active_bounds: active_region.map(|region| region.bounds),
+        background: palette.surface.as_rgba_array(),
+        border: palette.border_strong.as_rgba_array(),
+        active_background: palette.hover.as_rgba_array(),
+    })
+}
+
 /// 补全弹层行宽度量。`items` 指针与上一次度量一致时整段复用（打字重
 /// 喂之外的每次 shape 不再逐行测量）；测量只发生在宿主喂入新列表之后。
 pub(super) fn completion_popup_metrics(
@@ -3135,6 +3284,14 @@ impl UiWorld {
     /// 当前喂入的 hover 文档（供组件投影做喂入去重）。
     pub(crate) fn text_hover_doc(&self, id: StableNodeId) -> Option<&crate::TextHover> {
         self.nodes.text_hover_view(id).map(|state| &state.doc)
+    }
+
+    /// 当前喂入的签名帮助（供组件投影做喂入去重）。
+    pub(crate) fn text_signature_help(
+        &self,
+        id: StableNodeId,
+    ) -> Option<&crate::TextSignatureHelp> {
+        self.nodes.text_signature(id)
     }
 }
 

@@ -6,7 +6,7 @@ use crate::{
     NodeKind, NodeStyle, OverlayHostState, ScrollOffset, SemanticPaint, StableNodeId,
     StandardVisual, TextCodeFold, TextColorSwatchSpan, TextCompletion, TextContent,
     TextDiagnosticSpan, TextEditorRenderOptions, TextGitMark, TextHorizontalAlignment, TextHover,
-    TextInlay, TextInputState, TextMatchSpan, TextVerticalAlignment, UiWorld,
+    TextInlay, TextInputState, TextMatchSpan, TextSignatureHelp, TextVerticalAlignment, UiWorld,
 };
 
 fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
@@ -1752,6 +1752,9 @@ pub struct TextArea {
     /// （组件不自动隐藏）。正文滚动存放在组件内部状态里：重喂相同文档
     /// 不下发变更（滚动位置保留），换新文档重新显示并回到顶部。
     pub hover: Option<TextHover>,
+    /// 签名帮助浮窗（见 [`TextSignatureHelp`]）。`Some` 锚定 caret 显示，
+    /// `None` 隐藏；触发/关闭/活动参数由宿主决定。
+    pub signature: Option<TextSignatureHelp>,
     /// 光标处单词/选中文本的出现高亮（内部派生：聚焦时从主光标/选区
     /// 派生查询并扫描全文档，不给宿主增加喂入负担）。默认 `false`：
     /// 派生按出现次数做 shaper 探针（上限 200），成本高于同类的括号
@@ -1803,6 +1806,7 @@ impl TextArea {
             git_gutter: Arc::from([]),
             completions: Arc::from([]),
             hover: None,
+            signature: None,
             occurrence_highlight: false,
             relative_line_numbers: false,
             show_whitespace: false,
@@ -1874,6 +1878,12 @@ impl TextArea {
     /// 设置 hover 文档浮窗（见 [`TextHover`]）。`None` 表示隐藏。
     pub fn hover(mut self, hover: Option<TextHover>) -> Self {
         self.hover = hover;
+        self
+    }
+
+    /// 设置签名帮助浮窗（见 [`TextSignatureHelp`]）。`None` 表示隐藏。
+    pub fn signature(mut self, signature: Option<TextSignatureHelp>) -> Self {
+        self.signature = signature;
         self
     }
 
@@ -2040,6 +2050,17 @@ impl ComponentView for TextArea {
             };
             if !fed_unchanged {
                 mutations.set_text_input_hover(id, self.hover.clone());
+            }
+        }
+        // 签名帮助喂入：内容未变时不下发变更。
+        {
+            let fed_unchanged = match (world.text_signature_help(id), self.signature.as_ref()) {
+                (Some(fed), Some(help)) => fed == help,
+                (None, None) => true,
+                _ => false,
+            };
+            if !fed_unchanged {
+                mutations.set_text_input_signature(id, self.signature.clone());
             }
         }
         // 行内提示喂入：列表未变（指针或内容相等）且空列表无条目时不下发

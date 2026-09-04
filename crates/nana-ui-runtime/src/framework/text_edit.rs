@@ -2239,6 +2239,13 @@ impl AppContext {
         self.focused_completion_session(document).is_some()
     }
 
+    /// 聚焦编辑器当前是否显示签名帮助浮窗。Esc 两段式：签名在场时
+    /// 路由层先消费 Esc（不关补全），由宿主撤掉签名会话。
+    pub fn focused_text_signature_showing(&self, document: DocumentId) -> bool {
+        self.focused_text_editor(document)
+            .is_some_and(|focused| self.world.text_signature_help(focused.node).is_some())
+    }
+
     /// 补全弹层的上下键导航：在候选间移动选中项（编辑器选区不动），
     /// 滚动窗口跟随选中项。弹层未激活或已在边界时返回 `Ok(false)`——
     /// 边界仍消费事件由路由层决定（弹层激活期间一律消费）。
@@ -3265,7 +3272,9 @@ mod fold_snippet_tests {
 
 #[cfg(test)]
 mod completion_tests {
-    use crate::{AppContext, DocumentId, Entity, StableNodeId, TextArea, TextCompletion};
+    use crate::{
+        AppContext, DocumentId, Entity, StableNodeId, TextArea, TextCompletion, TextSignatureHelp,
+    };
     use std::sync::Arc;
 
     fn items(labels: &[&str]) -> Arc<[TextCompletion]> {
@@ -3512,6 +3521,29 @@ mod completion_tests {
             })
             .unwrap();
         assert!(!context.scroll_focused_text_completion(document, 1).unwrap());
+    }
+
+    #[test]
+    fn signature_showing_is_reported_for_escape_two_stage() {
+        let (mut context, document, area, _node) =
+            completion_editor("mix(", items(&["mix", "max"]));
+        assert!(!context.focused_text_signature_showing(document));
+        assert!(context.focused_text_completion_active(document));
+        context
+            .update_component(area, |view, _| {
+                view.signature = Some(TextSignatureHelp::new(
+                    "mix",
+                    "",
+                    vec![("e1".into(), String::new())],
+                    0,
+                ));
+            })
+            .unwrap();
+        assert!(context.focused_text_signature_showing(document));
+        assert!(
+            context.focused_text_completion_active(document),
+            "签名在场时补全会话仍保持"
+        );
     }
 
     #[test]

@@ -116,7 +116,8 @@ pub use components::{
     TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
     TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment, TextHover,
     TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
-    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSnippet,
+    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp,
+    TextSignaturePopup, TextSnippet,
     TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
 };
 pub use dock::{

@@ -567,6 +567,7 @@ impl UiScene {
                         git_marks,
                         completion_popup,
                         hover_popup,
+                        signature_popup,
                         minimap,
                         sticky_line,
                         ..
@@ -1082,6 +1083,50 @@ impl UiScene {
                                 self.insert_primitive(overlay_text(
                                     122 + index as u8,
                                     row,
+                                    TextHorizontalAlignment::Start,
+                                ));
+                            }
+                        }
+                        if let Some(popup) = signature_popup {
+                            // 签名帮助 slot 140+:面板/活动参数底/前缀/
+                            // 活动参数/后缀/文档行。越过补全 doc 132-139
+                            // 与 hover 120-131，带不得相交。
+                            self.insert_primitive(overlay_panel_primitive(
+                                &overlay_context,
+                                140,
+                                scene_rect(popup.panel),
+                                popup.background,
+                                popup.border,
+                            ));
+                            if let Some(bounds) = popup.active_bounds {
+                                self.insert_primitive(visual_quad(
+                                    &overlay_context,
+                                    141,
+                                    scene_rect(bounds),
+                                    VisualQuadStyle::solid(popup.active_background),
+                                ));
+                            }
+                            self.insert_primitive(overlay_text(
+                                142,
+                                &popup.prefix,
+                                TextHorizontalAlignment::Start,
+                            ));
+                            if let Some(active) = popup.active.as_ref() {
+                                self.insert_primitive(overlay_text(
+                                    143,
+                                    active,
+                                    TextHorizontalAlignment::Start,
+                                ));
+                            }
+                            self.insert_primitive(overlay_text(
+                                144,
+                                &popup.suffix,
+                                TextHorizontalAlignment::Start,
+                            ));
+                            if let Some(doc) = popup.doc.as_ref() {
+                                self.insert_primitive(overlay_text(
+                                    145,
+                                    doc,
                                     TextHorizontalAlignment::Start,
                                 ));
                             }

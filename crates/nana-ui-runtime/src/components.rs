@@ -466,6 +466,50 @@ pub struct TextHoverPopup {
     pub body_color: [f32; 4],
 }
 
+/// 宿主喂入的签名帮助内容。纯展示：触发、关闭与活动参数索引由宿主
+/// 决定（内核 `signature_at` 出参）；组件不解析源码。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSignatureHelp {
+    pub title: String,
+    pub fn_doc: String,
+    /// `(形参名, 说明)`；活动参数下标越界时钳到末参。
+    pub params: Vec<(String, String)>,
+    pub active_index: usize,
+}
+
+impl TextSignatureHelp {
+    pub fn new(
+        title: impl Into<String>,
+        fn_doc: impl Into<String>,
+        params: Vec<(String, String)>,
+        active_index: usize,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            fn_doc: fn_doc.into(),
+            params,
+            active_index,
+        }
+    }
+}
+
+/// [`crate::ComponentGeometry::TextInput`] 的签名帮助浮窗几何。锚定
+/// caret；签名行拆成前缀 / 活动参数 / 后缀三段，活动参数 Accent 高亮。
+/// 绘制 slot 140+，越过补全 doc 带 132-139 与 hover 带 120-131。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextSignaturePopup {
+    pub panel: LayoutBox,
+    pub prefix: ComponentTextRegion,
+    pub active: Option<ComponentTextRegion>,
+    pub suffix: ComponentTextRegion,
+    pub doc: Option<ComponentTextRegion>,
+    /// 活动参数底（无活动参数时 `None`）。
+    pub active_bounds: Option<LayoutBox>,
+    pub background: [f32; 4],
+    pub border: [f32; 4],
+    pub active_background: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StandardVisual {
     ModalFrame {
@@ -1018,6 +1062,8 @@ pub enum ComponentGeometry {
         completion_popup: Option<TextCompletionPopup>,
         /// hover 文档浮窗（宿主喂入时存在，纯展示；slot 120+）。
         hover_popup: Option<TextHoverPopup>,
+        /// 签名帮助浮窗（宿主喂入时存在，锚定 caret；slot 140+）。
+        signature_popup: Option<TextSignaturePopup>,
         /// minimap 竖条（开启选项的多行编辑器存在；slot 70/71/72）。
         minimap: Option<TextMinimapGeometry>,
         /// sticky scroll 钉住行（开启选项且滚动视口落在宿主喂入的折叠区间

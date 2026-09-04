@@ -175,13 +175,15 @@ impl RuntimeInputAdapter {
                 });
             }
             // overlay 未消费的 Esc：先取消拖拽移动选中，再结束 snippet 会
-            // 话，再关闭补全弹层，最后塌缩多光标到主光标。都只在聚焦多行
+            // 话，签名帮助在场时消费但不关补全（两段式：宿主随后撤签名），
+            // 再关闭补全弹层，最后塌缩多光标到主光标。都只在聚焦多行
             // 编辑器且状态存在时消费事件，否则穿透给宿主（首次按下才生
             // 效，repeat 不消费）。
             if matches!(overlay_key, Some(OverlayKey::Escape))
                 && !repeat
                 && (context.cancel_focused_text_selection_drag(document)
                     || context.cancel_focused_text_snippet(document)?
+                    || context.focused_text_signature_showing(document)
                     || context.dismiss_focused_text_completion(document)?
                     || context.collapse_focused_text_selections(document)?)
             {

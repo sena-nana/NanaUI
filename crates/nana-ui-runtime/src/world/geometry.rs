@@ -1043,6 +1043,30 @@ impl UiWorld {
                                 )
                             })
                     },
+                    signature_popup: {
+                        // 签名帮助：宿主喂入即显示，锚定 caret；占位符与
+                        // IME 组合期不弹出（与 hover 同一打字态门）。
+                        if multiline
+                            && !presentation.placeholder
+                            && presentation.preedit.is_none()
+                        {
+                            self.nodes.text_signature(id).and_then(|help| {
+                                signature_popup_geometry(
+                                    help,
+                                    OverlayAnchor {
+                                        x: field_x(presentation.caret_x),
+                                        line_top: line_y + presentation.caret_y,
+                                        line_height,
+                                    },
+                                    bounds,
+                                    size.text_size(),
+                                    &self.style_model.palette,
+                                )
+                            })
+                        } else {
+                            None
+                        }
+                    },
                     minimap,
                     sticky_line,
                     background: style.background,
