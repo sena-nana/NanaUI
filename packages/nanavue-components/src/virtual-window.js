@@ -74,19 +74,35 @@ export function uniformWindow(count, itemExtent, scrollOffset, viewportExtent, o
 }
 
 export function variableWindow(extents, scrollOffset, viewportExtent, overscanExtent) {
-  const items = Array.isArray(extents) ? extents.map(sanitizeExtent) : [];
-  const len = items.length;
-  if (len === 0) return emptyWindow(0);
-  const prefix = new Array(len + 1).fill(0);
-  for (let i = 0; i < len; i += 1) prefix[i + 1] = prefix[i] + items[i];
-  return windowFromPrefix({
-    len,
-    total: prefix[len],
-    prefixAt: (end) => prefix[Math.min(end, len)],
-    scrollOffset,
-    viewportExtent,
-    overscanExtent,
-  });
+  return createWindowIndex({ extents }).window(scrollOffset, viewportExtent, overscanExtent);
+}
+
+/**
+ * Build once per size change, query on every scroll. Vue callers keep this in
+ * a computed that reads sizes only, so in-place reactive edits also invalidate
+ * the prefix sums without making scroll/viewport changes rebuild them.
+ */
+export function createWindowIndex({ count = 0, itemExtent = 0, extents } = {}) {
+  if (!Array.isArray(extents) || extents.length === 0) {
+    return {
+      window: (scroll, viewport, overscan) =>
+        uniformWindow(count, itemExtent, scroll, viewport, overscan),
+    };
+  }
+  const len = extents.length;
+  const prefix = new Array(len + 1);
+  prefix[0] = 0;
+  for (let i = 0; i < len; i += 1) prefix[i + 1] = prefix[i] + sanitizeExtent(extents[i]);
+  return {
+    window: (scrollOffset, viewportExtent, overscanExtent) => windowFromPrefix({
+      len,
+      total: prefix[len],
+      prefixAt: (end) => prefix[Math.min(end, len)],
+      scrollOffset,
+      viewportExtent,
+      overscanExtent,
+    }),
+  };
 }
 
 export function virtualWindow({
@@ -97,8 +113,5 @@ export function virtualWindow({
   viewport = 0,
   overscan = 0,
 } = {}) {
-  if (Array.isArray(extents) && extents.length) {
-    return variableWindow(extents, scroll, viewport, overscan);
-  }
-  return uniformWindow(count, itemExtent, scroll, viewport, overscan);
+  return createWindowIndex({ count, itemExtent, extents }).window(scroll, viewport, overscan);
 }

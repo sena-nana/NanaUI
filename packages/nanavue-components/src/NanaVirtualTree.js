@@ -3,7 +3,7 @@
  * Pass the expanded walk (`count` / `extents`); collapsed subtrees stay off the index.
  */
 import { computed, h } from "@vue/runtime-core";
-import { virtualWindow } from "./virtual-window.js";
+import { createWindowIndex } from "./virtual-window.js";
 import { useScrollWindow, windowChildren } from "./NanaVirtualList.js";
 
 export const NanaVirtualTree = {
@@ -19,16 +19,15 @@ export const NanaVirtualTree = {
   },
   setup(props, { slots, attrs }) {
     const { y, height, bindHost, onScroll } = useScrollWindow();
-    const windowed = computed(() =>
-      virtualWindow({
+    const sizes = computed(() =>
+      createWindowIndex({
         count: props.count,
         itemExtent: props.itemExtent,
         extents: props.extents,
-        scroll: y.value,
-        viewport: height.value,
-        overscan: props.overscan,
       }),
     );
+
+    const windowed = computed(() => sizes.value.window(y.value, height.value, props.overscan));
 
     return () =>
       h(

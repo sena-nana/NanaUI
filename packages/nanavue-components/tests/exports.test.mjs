@@ -307,7 +307,6 @@ describe("Runtime catalog Vue wrappers", () => {
     for (const [file, tag] of Object.entries(tags)) {
       const src = readFileSync(join(root, file), "utf8");
       assert.match(src, new RegExp(`h\\(\\s*["']${tag}["']`));
-      assert.match(src, /virtualWindow/);
     }
   });
 
