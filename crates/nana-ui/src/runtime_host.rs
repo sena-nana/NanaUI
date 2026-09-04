@@ -135,12 +135,26 @@ impl fmt::Display for RuntimeTaskError {
 
 impl std::error::Error for RuntimeTaskError {}
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RuntimeRedraw {
     #[default]
     None,
     Window(WindowId),
+    Windows(Vec<WindowId>),
     All,
+}
+
+impl RuntimeRedraw {
+    pub fn for_windows(windows: impl IntoIterator<Item = WindowId>) -> Self {
+        let mut windows: Vec<_> = windows.into_iter().collect();
+        windows.sort_by_key(|id| id.0);
+        windows.dedup();
+        match windows.as_slice() {
+            [] => Self::None,
+            [id] => Self::Window(*id),
+            _ => Self::Windows(windows),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -181,10 +195,16 @@ impl RuntimeProgramUpdate {
         self.redraw = match (self.redraw, other.redraw) {
             (RuntimeRedraw::All, _) | (_, RuntimeRedraw::All) => RuntimeRedraw::All,
             (RuntimeRedraw::None, redraw) | (redraw, RuntimeRedraw::None) => redraw,
-            (RuntimeRedraw::Window(left), RuntimeRedraw::Window(right)) if left == right => {
-                RuntimeRedraw::Window(left)
+            (left, right) => {
+                let into_windows = |redraw| match redraw {
+                    RuntimeRedraw::Window(id) => vec![id],
+                    RuntimeRedraw::Windows(ids) => ids,
+                    _ => Vec::new(),
+                };
+                RuntimeRedraw::for_windows(
+                    into_windows(left).into_iter().chain(into_windows(right)),
+                )
             }
-            _ => RuntimeRedraw::All,
         };
         self
     }

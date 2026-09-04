@@ -624,6 +624,17 @@ impl NanaTreeDocument {
         }
     }
 
+    /// Read the existing surface index without scanning the facade tree.
+    #[cfg(feature = "hosted")]
+    pub(crate) fn consumed_surface_slots(&self) -> impl Iterator<Item = String> + '_ {
+        self.host_texture_nodes.iter().filter_map(|id| {
+            let node = NodeHandle(*id);
+            self.contains(self.mount_root(), node)
+                .then(|| self.surface_host_texture_slot(node))
+                .flatten()
+        })
+    }
+
     fn index_host_texture_node(&mut self, el: NodeHandle) {
         if self.surface_host_texture_slot(el).is_some() {
             self.host_texture_nodes.insert(el.0);

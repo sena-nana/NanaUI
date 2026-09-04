@@ -311,7 +311,9 @@ impl CanvasSurface {
     }
 
     fn resize(&mut self, width: u32, height: u32) -> Result<(), CanvasError> {
+        let next_version = self.version.saturating_add(1);
         *self = Self::new(width, height)?;
+        self.version = next_version;
         Ok(())
     }
 
@@ -2098,6 +2100,19 @@ fn unpremultiply_rgba(rgba: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_preserves_monotonic_upload_versions() {
+        let mut runtime = CanvasRuntime::new();
+        let id = runtime.create_canvas(8, 8).unwrap();
+        runtime
+            .command(id, "fillRect", &[0.0, 0.0, 8.0, 8.0].map(HostValue::Number))
+            .unwrap();
+        let version = runtime.version(id).unwrap();
+        runtime.resize_canvas(id, 8, 8).unwrap();
+        assert!(runtime.version(id).unwrap() > version);
+        assert!(runtime.take_upload(id, Some(version)).unwrap().is_some());
+    }
 
     #[test]
     fn fill_text_paints_glyph_coverage_and_measures_width() {

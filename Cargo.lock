@@ -2077,6 +2077,7 @@ dependencies = [
  "nana-ui-runtime",
  "nana-ui-scene",
  "nana-ui-web-api",
+ "pollster",
  "serde",
  "serde_json",
  "wgpu",
