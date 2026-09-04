@@ -8073,3 +8073,187 @@ fn hover_popup_anchors_scrolls_and_hit_tests_panel() {
     assert!(hover_popup.is_none());
     assert_eq!(world.text_hover_scroll(id), 0);
 }
+
+// ---- Wave 4b-1：span 值→显示重映射 / 补全弹层文档行 ----
+
+/// 固定区间 presenter：按预设值空间区间出 span（颜色角色互异便于断言）。
+struct FixedSpanPresenter {
+    spans: Vec<(usize, usize, SemanticColorRole)>,
+}
+
+impl crate::TextPresenter for FixedSpanPresenter {
+    fn name(&self) -> &'static str {
+        crate::HIGHLIGHT_PRESENTER
+    }
+    fn present(&self, _text: &str, _request: &crate::HighlightRequest) -> Vec<crate::TextSpan> {
+        self.spans
+            .iter()
+            .map(|&(start, end, color)| crate::TextSpan { start, end, color })
+            .collect()
+    }
+}
+
+/// 折叠态语法高亮回归锚 + 重映射端点语义：折叠后剩余文本仍带语法色
+/// （不再整批丢弃）；起点落在隐藏区间内部的 span 钳到摘要之后；跨折叠
+/// 区间的 span 在边界切分；摘要文本保持中性色（无 span 覆盖摘要区间）。
+#[test]
+fn folded_editor_remaps_syntax_spans_into_display_space() {
+    let mut world = UiWorld::default();
+    world
+        .register_presenter(Box::new(FixedSpanPresenter {
+            // 探针值空间互不重叠（sanitize 会按序裁掉重叠尾段）：
+            // (0,4) 完全在折叠前；(5,12) 尾段落入隐藏区间；(20,34) 起点
+            // 在隐藏区间内部、终点在折叠之后。
+            spans: vec![
+                (0, 4, SemanticColorRole::Accent),
+                (5, 12, SemanticColorRole::Success),
+                (20, 34, SemanticColorRole::Warning),
+            ],
+        }))
+        .unwrap();
+    fold_editor_world(&mut world, Arc::from([FOLD_BLOCK]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
+    queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+    world.commit(queue).unwrap();
+    world.resolve_presentations(&[node(1)]).unwrap();
+
+    let extracted = &world.extract_nodes(&[node(1)])[0];
+    // 显示视图：FOLD_VALUE 折叠 [8,28) → "fn a() { …3\nfn b() {}"，
+    // 摘要 " …3" 占显示区间 [8,13)。
+    let display = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+    assert_eq!(display.spans[0].value_start, 8);
+    assert_eq!(display.spans[0].display_start, 8);
+    assert_eq!(display.spans[0].display_len, 5);
+    let spans: Vec<(usize, usize)> = extracted
+        .text_spans
+        .iter()
+        .map(|span| (span.start, span.end))
+        .collect();
+    // 回归锚：折叠态 spans 保留（现状守卫整丢）。期望端点：
+    // (0,4) 原样；(5,12) → (5,8)（尾段止于摘要之前）；(20,34) →
+    // (13,19)（起点钳到摘要之后）。
+    assert_eq!(
+        spans,
+        vec![(0, 4), (5, 8), (13, 19)],
+        "折叠后剩余文本仍带语法色，端点按显示视图重投"
+    );
+    // 摘要中性：没有任何 span 覆盖摘要区间 [8,13)。
+    assert!(
+        extracted
+            .text_spans
+            .iter()
+            .all(|span| span.end <= 8 || span.start >= 13),
+        "摘要文本不着色"
+    );
+
+    // 跨折叠区间的切分：整段跨越 [8,28) 的 span 在边界切分为可见前后
+    // 两段（摘要不着色）。
+    let mut world = UiWorld::default();
+    world
+        .register_presenter(Box::new(FixedSpanPresenter {
+            spans: vec![(5, 33, SemanticColorRole::Accent)],
+        }))
+        .unwrap();
+    fold_editor_world(&mut world, Arc::from([FOLD_BLOCK]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
+    queue.set_text_input_fold_collapsed(node(1), Arc::from([FOLD_BLOCK]));
+    world.commit(queue).unwrap();
+    world.resolve_presentations(&[node(1)]).unwrap();
+    let spans: Vec<(usize, usize)> = world.extract_nodes(&[node(1)])[0]
+        .text_spans
+        .iter()
+        .map(|span| (span.start, span.end))
+        .collect();
+    assert_eq!(spans, vec![(5, 8), (13, 18)], "跨折叠区间在边界切分");
+
+    // 对照锚：未折叠时同一 presenter 的 span 保持值空间原样。
+    let mut world = UiWorld::default();
+    world
+        .register_presenter(Box::new(FixedSpanPresenter {
+            spans: vec![(0, 4, SemanticColorRole::Accent)],
+        }))
+        .unwrap();
+    fold_editor_world(&mut world, Arc::from([FOLD_BLOCK]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
+    world.commit(queue).unwrap();
+    world.resolve_presentations(&[node(1)]).unwrap();
+    let spans: Vec<(usize, usize)> = world.extract_nodes(&[node(1)])[0]
+        .text_spans
+        .iter()
+        .map(|span| (span.start, span.end))
+        .collect();
+    assert_eq!(spans, vec![(0, 4)]);
+}
+
+/// `remap_span_to_display` 端点单测：隐藏区内起点钳后 / 跨区间切分 /
+/// 尾段落入隐藏区间丢弃 / 完全隐藏丢弃 / 折叠前后的区间原样映射。
+#[test]
+fn remap_span_to_display_endpoints() {
+    let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+    // 隐藏区间 [8,28)，摘要占显示 [8,13)。
+    let pieces = |start: usize, end: usize| remap_span_to_display((start, end), &view);
+    // 折叠前后：恒等映射。
+    assert_eq!(pieces(0, 4), vec![(0, 4)]);
+    assert_eq!(pieces(28, 33), vec![(13, 18)]);
+    // 起点在隐藏区间内部：钳到摘要之后。
+    assert_eq!(pieces(11, 34), vec![(13, 19)]);
+    // 跨折叠区间：边界切分，摘要不着色。
+    assert_eq!(pieces(5, 30), vec![(5, 8), (13, 15)]);
+    // 尾段落入隐藏区间：止于摘要之前。
+    assert_eq!(pieces(2, 10), vec![(2, 8)]);
+    // 完全隐藏：丢弃。
+    assert!(pieces(10, 12).is_empty());
+}
+
+/// 补全弹层文档行：带 `doc` 的候选整行占两行高，文档行呈现为 label 行
+/// 下方的次要色单行；无 doc 的候选保持单行高。
+#[test]
+fn completion_popup_doc_row_doubles_row_height_and_presents_doc_line() {
+    let mut world = UiWorld::default();
+    let items: Arc<[crate::TextCompletion]> = vec![
+        crate::TextCompletion::new("normalize", "fn").detail("fn normalize(e: vec2f) -> vec2f"),
+        crate::TextCompletion::new("normalize", "fn")
+            .detail("fn normalize(e: vec2f) -> vec2f")
+            .doc("返回与输入同方向的单位向量。"),
+        crate::TextCompletion::new("max", "fn"),
+    ]
+    .into();
+    let id = overlay_editor(&mut world, "nor", 3, items);
+    let geometry = world.component_geometry(id).unwrap();
+    let crate::ComponentGeometry::TextInput {
+        completion_popup, ..
+    } = geometry
+    else {
+        panic!("text input geometry");
+    };
+    let popup = completion_popup.expect("completion popup");
+    assert_eq!(popup.rows.len(), 3);
+    // 无 doc 的行单行高（14），带 doc 的行两行高（28）。
+    assert_eq!(popup.rows[0].bounds.height, 14.0);
+    assert_eq!(popup.rows[2].bounds.height, 14.0);
+    let documented = &popup.rows[1];
+    assert_eq!(documented.bounds.height, 28.0);
+    let doc = documented.doc.as_ref().expect("doc row");
+    assert_eq!(doc.content.as_ref(), "返回与输入同方向的单位向量。");
+    // 文档行在 label 行下方，占满内容宽。
+    assert_eq!(doc.bounds.y, documented.label.bounds.y + 14.0);
+    assert_eq!(doc.bounds.height, 14.0);
+    assert!(doc.bounds.width + 0.5 >= documented.label.bounds.width);
+    // 无 doc 的候选没有文档行区域。
+    assert!(popup.rows[0].doc.is_none());
+    assert!(popup.rows[2].doc.is_none());
+    // 面板高度 = 4 行内容（3 候选 + 1 文档行）+ 上下内边距。
+    assert_eq!(popup.panel.height, 4.0 * 14.0 + 8.0);
+    // 行命中仍按整行（含文档行）返回绝对下标。
+    assert_eq!(
+        world.text_completion_hit(
+            id,
+            documented.bounds.x + 1.0,
+            documented.bounds.y + documented.bounds.height - 1.0
+        ),
+        Some(1)
+    );
+}

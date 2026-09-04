@@ -26,6 +26,11 @@ pub struct TextSpan {
 pub struct HighlightRequest {
     pub presenter: Arc<str>,
     pub language: Arc<str>,
+    /// 宿主喂入的语义 overlay 段（值空间，与基础层同文本；框架只渲染，
+    /// 不解释内容）。合并时 overlay 段优先，基础层与 overlay 重叠处丢弃
+    /// 基础层；`None` 与空表等价于无 overlay（纯基础层）。内容哈希纳入
+    /// `presentation_source` 缓存键。
+    pub overlay: Option<Arc<[TextSpan]>>,
 }
 
 impl HighlightRequest {
@@ -33,12 +38,20 @@ impl HighlightRequest {
         Self {
             presenter: presenter.into(),
             language: language.into(),
+            overlay: None,
         }
     }
 
     /// Request the built-in `"highlight"` presenter.
     pub fn highlight(language: impl Into<Arc<str>>) -> Self {
         Self::new(HIGHLIGHT_PRESENTER, language)
+    }
+
+    /// 附带语义 overlay 段（值空间）。撤除 overlay 时重建不带 overlay 的
+    /// 请求（缓存键随内容变化，下一次 resolve 回到纯基础层）。
+    pub fn with_overlay(mut self, overlay: Arc<[TextSpan]>) -> Self {
+        self.overlay = Some(overlay);
+        self
     }
 }
 
@@ -59,8 +72,54 @@ pub(crate) fn presentation_source(text: &str, request: &HighlightRequest) -> u64
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     request.presenter.hash(&mut hasher);
     request.language.hash(&mut hasher);
+    // overlay 内容参与缓存键：宿主换喂语义段（含撤除）即失效重算。
+    request.overlay.hash(&mut hasher);
     text.hash(&mut hasher);
     hasher.finish()
+}
+
+/// 合并语义 overlay 段：overlay 优先，基础层与 overlay 重叠处被切分丢弃。
+/// 合并发生在 presenter 结果之后、`sanitize_spans` 之前；输出交由 sanitize
+/// 排序、校验与相邻同色合并。
+pub(crate) fn merge_overlay_spans(base: Vec<TextSpan>, overlay: &[TextSpan]) -> Vec<TextSpan> {
+    if overlay.is_empty() {
+        return base;
+    }
+    let mut regions: Vec<(usize, usize)> = overlay
+        .iter()
+        .map(|span| (span.start, span.end))
+        .filter(|(start, end)| start < end)
+        .collect();
+    regions.sort_unstable();
+    let mut merged = Vec::with_capacity(base.len() + overlay.len());
+    for span in base {
+        let mut cursor = span.start;
+        for &(start, end) in &regions {
+            if end <= cursor || start >= span.end {
+                continue;
+            }
+            if start > cursor {
+                merged.push(TextSpan {
+                    start: cursor,
+                    end: start.min(span.end),
+                    color: span.color,
+                });
+            }
+            cursor = cursor.max(end).min(span.end);
+            if cursor >= span.end {
+                break;
+            }
+        }
+        if cursor < span.end {
+            merged.push(TextSpan {
+                start: cursor,
+                end: span.end,
+                color: span.color,
+            });
+        }
+    }
+    merged.extend_from_slice(overlay);
+    merged
 }
 
 pub(crate) fn sanitize_spans(text: &str, spans: Vec<TextSpan>) -> Vec<TextSpan> {
@@ -503,6 +562,98 @@ mod tests {
                 ) && &"fn main() {}"[span.start..span.end] == "fn"
             }),
             "expected rust `fn` to map to Accent or AccentStrong, got {spans:?}"
+        );
+    }
+
+    fn span(start: usize, end: usize, color: SemanticColorRole) -> TextSpan {
+        TextSpan { start, end, color }
+    }
+
+    /// overlay 段优先：基础层与 overlay 重叠处被切分丢弃，overlay 原样保留
+    /// 在合并结果里（排序/校验交给 sanitize）。
+    #[test]
+    fn merge_overlay_spans_prioritizes_overlay_and_cuts_base() {
+        let merged = merge_overlay_spans(
+            vec![span(0, 10, SemanticColorRole::Accent), span(20, 30, SemanticColorRole::Muted)],
+            &[span(5, 8, SemanticColorRole::Danger)],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                span(0, 5, SemanticColorRole::Accent),
+                span(8, 10, SemanticColorRole::Accent),
+                span(20, 30, SemanticColorRole::Muted),
+                span(5, 8, SemanticColorRole::Danger),
+            ]
+        );
+    }
+
+    /// overlay 内容参与 `presentation_source` 缓存键：换喂/撤除即失效，
+    /// 内容相同（不同 Arc 分配）保持同键。
+    #[test]
+    fn presentation_source_hash_includes_overlay_content() {
+        let text = "fn main";
+        let plain = presentation_source(text, &HighlightRequest::highlight("rs"));
+        let with_overlay = presentation_source(
+            text,
+            &HighlightRequest::highlight("rs")
+                .with_overlay(Arc::from([span(0, 2, SemanticColorRole::Danger)])),
+        );
+        assert_ne!(plain, with_overlay, "overlay 变更必须失效缓存");
+        let same_content = presentation_source(
+            text,
+            &HighlightRequest::highlight("rs")
+                .with_overlay(Arc::from([span(0, 2, SemanticColorRole::Danger)])),
+        );
+        assert_eq!(with_overlay, same_content, "同内容 overlay 不无谓失效");
+    }
+
+    /// overlay 全覆盖时基础层整段丢弃；撤 overlay（重建不带 overlay 的
+    /// 请求）后缓存键失效、回落纯基础层。无效偏移的 overlay 段被
+    /// sanitize 丢弃，不进 presentation。
+    #[test]
+    fn overlay_wins_over_base_and_revocation_falls_back_to_syntect() {
+        let mut world = UiWorld::new();
+        world
+            .register_presenter(Box::new(KeywordPresenter))
+            .unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document(), NodeKind::Text);
+        queue.set_text(
+            id(1),
+            TextContent {
+                value: "fn main".into(),
+            },
+        );
+        queue.set_highlight_request(
+            id(1),
+            Some(
+                HighlightRequest::highlight("rs").with_overlay(Arc::from([
+                    span(0, 7, SemanticColorRole::Danger),
+                    span(9, 99, SemanticColorRole::Success),
+                ])),
+            ),
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_presentations(&work.text).unwrap();
+        // 基础层 "fn"(0,2 Accent) 全部落在 overlay 内被丢；越界段被
+        // sanitize 丢弃，只剩 Danger 全覆盖段。
+        assert_eq!(
+            world.text_presentation(id(1)).unwrap().spans,
+            vec![span(0, 7, SemanticColorRole::Danger)]
+        );
+
+        // 撤 overlay：同 presenter/language、无 overlay 的请求重建 →
+        // 缓存键变化 → 重算回基础层。
+        let mut queue = MutationQueue::new();
+        queue.set_highlight_request(id(1), Some(HighlightRequest::highlight("rs")));
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_presentations(&work.text).unwrap();
+        assert_eq!(
+            world.text_presentation(id(1)).unwrap().spans,
+            vec![span(0, 2, SemanticColorRole::Accent)]
         );
     }
 }

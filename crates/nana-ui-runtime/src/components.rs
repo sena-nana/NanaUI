@@ -303,7 +303,8 @@ pub struct TextMatchMarker {
 
 /// 一条补全候选。`label` 是接受后插入的主体；`kind_label` 是右侧类型
 /// 标注（如 `fn` / `struct` / `关键字`，宿主决定文案）；`detail` 是签名等
-/// 次要说明，可为空。
+/// 次要说明，可为空；`doc` 是候选的简短文档行（弹层内 label 行下方的
+/// 次要色单行，超宽省略号截断），可为空。
 ///
 /// 过滤完全由宿主负责：宿主按当前词前缀过滤后喂入
 /// [`crate::TextArea::completions`]，组件只负责展示、键盘导航与接受，
@@ -313,6 +314,7 @@ pub struct TextCompletion {
     pub label: String,
     pub kind_label: String,
     pub detail: String,
+    pub doc: String,
 }
 
 impl TextCompletion {
@@ -321,11 +323,18 @@ impl TextCompletion {
             label: label.into(),
             kind_label: kind_label.into(),
             detail: String::new(),
+            doc: String::new(),
         }
     }
 
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
+        self
+    }
+
+    /// 设置文档行（label 行下方的次要色单行说明）。
+    pub fn doc(mut self, doc: impl Into<String>) -> Self {
+        self.doc = doc.into();
         self
     }
 }
@@ -396,6 +405,9 @@ pub struct TextCompletionRow {
     pub detail: Option<ComponentTextRegion>,
     /// 右对齐类型标注；所有候选的 kind 都为空时整列省略。
     pub kind: Option<ComponentTextRegion>,
+    /// 文档行：label 行下方的次要色单行（`doc` 为空的候选没有；有文档
+    /// 行的候选整行占两行高）。
+    pub doc: Option<ComponentTextRegion>,
 }
 
 /// [`crate::ComponentGeometry::TextInput`] 的补全弹层几何。仅聚焦多行

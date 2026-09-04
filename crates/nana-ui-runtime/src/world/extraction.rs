@@ -276,17 +276,37 @@ impl UiWorld {
         // 括号配对着色：与语法高亮同一字形管线（ExtractedTextSpan →
         // 场景文本 span）。括号字符的覆盖色优先于语法 span（合并时切分
         // 重叠的语法 span），语义上括号配对色取代该字符的 punctuation 色。
+        // 折叠态：值空间语法 span 先经显示视图重投到显示串（起点落在
+        // 隐藏区间内部的钳到摘要之后；跨折叠区间的在边界切分；摘要文本
+        // 保持中性色），与显示空间的括号 span 同空间合并。无 span 时零
+        // 分配跳过视图构建。
         let syntax_spans = self
             .nodes
             .text_presentation(id)
             .map(|presentation| {
+                if presentation.spans.is_empty() {
+                    return Vec::new();
+                }
+                let display_view = self.text_display_view(id);
                 presentation
                     .spans
                     .iter()
-                    .map(|span| ExtractedTextSpan {
-                        start: span.start,
-                        end: span.end,
-                        color: self.style_model.color(span.color).as_rgba_array(),
+                    .flat_map(|span| {
+                        let pieces = match display_view.as_ref() {
+                            Some(view) => crate::world::text::remap_span_to_display(
+                                (span.start, span.end),
+                                view,
+                            ),
+                            None => vec![(span.start, span.end)],
+                        };
+                        pieces
+                            .into_iter()
+                            .map(move |(start, end)| ExtractedTextSpan {
+                                start,
+                                end,
+                                color: self.style_model.color(span.color).as_rgba_array(),
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()
             })

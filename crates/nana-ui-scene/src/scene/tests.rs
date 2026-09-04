@@ -6317,6 +6317,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
                     label: text_region("label", row_rect(index)),
                     detail: None,
                     kind: Some(text_region("fn", row_rect(index))),
+                    doc: None,
                 })
                 .collect(),
             background: [0.1, 0.1, 0.1, 1.0],
@@ -6391,5 +6392,385 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
                 slot: 94
             })
             .is_none()
+    );
+}
+
+/// 文档行 slot 带(132+)与 hover 浮窗(120-131)独立共存:满 8 行带
+/// doc 的候选 + hover 同屏时,全部 doc 图元与 hover 图元俱在——锁
+/// 定"insert_primitive 按 (node,slot) 覆盖"下带不相交的约束。
+#[test]
+fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
+    let mut input = node(1, None, &[]);
+    input.standard_visual = Some(StandardVisual::TextInput {
+        placeholder: Arc::from(""),
+        size: nana_ui_core::ControlSize::Medium,
+        secure: false,
+        invalid: false,
+        steppers: false,
+        diagnostics: Arc::from([]),
+        matches: Arc::from([]),
+        color_swatches: Arc::from([]),
+        line_numbers: false,
+        indent_guides: None,
+        folds: Arc::from([]),
+        git_marks: Arc::from([]),
+        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+    });
+    let row_rect = |index: usize| LayoutBox {
+        x: 10.0,
+        y: 20.0 + index as f32 * 28.0,
+        width: 120.0,
+        height: 28.0,
+    };
+    let text_region = |content: &str, bounds: LayoutBox| ComponentTextRegion {
+        bounds,
+        content: Arc::from(content),
+        color: Some([0.9, 0.9, 0.9, 1.0]),
+        font_size: 12.0,
+        font_weight: None,
+    };
+    input.component_geometry = Some(ComponentGeometry::TextInput {
+        multiline: true,
+        text: text_region("fn", LayoutBox::default()),
+        selection: Vec::new(),
+        caret: None,
+        additional_carets: Vec::new(),
+        additional_caret_color: [0.0; 4],
+        preedit: Vec::new(),
+        diagnostic_markers: Vec::new(),
+        match_markers: Vec::new(),
+        swatch_markers: Vec::new(),
+        swatch_border_color: [0.0; 4],
+        caret_line: None,
+        bracket_markers: Vec::new(),
+        drop_indicator: None,
+        indent_guides: Vec::new(),
+        line_labels: Vec::new(),
+        line_labels_color: [0.0; 4],
+        line_labels_font_size: 11.0,
+        folds: nana_ui_runtime::TextFoldGeometry::default(),
+        git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
+        completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
+            panel: LayoutBox {
+                x: 8.0,
+                y: 18.0,
+                width: 120.0,
+                height: 224.0,
+            },
+            selected: 0,
+            first_row: 0,
+            rows: (0..8)
+                .map(|index| nana_ui_runtime::TextCompletionRow {
+                    bounds: row_rect(index),
+                    label: text_region("label", row_rect(index)),
+                    detail: None,
+                    kind: None,
+                    doc: Some(text_region("doc", row_rect(index))),
+                })
+                .collect(),
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.3, 0.3, 0.3, 1.0],
+            selected_background: [0.2, 0.2, 0.2, 1.0],
+            label_color: [1.0; 4],
+            detail_color: [0.5; 4],
+            kind_color: [0.4; 4],
+        }),
+        hover_popup: Some(nana_ui_runtime::TextHoverPopup {
+            panel: LayoutBox {
+                x: 8.0,
+                y: 260.0,
+                width: 120.0,
+                height: 28.0,
+            },
+            title: text_region("hover", row_rect(0)),
+            body_rows: vec![text_region("body", row_rect(1))],
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.3, 0.3, 0.3, 1.0],
+            title_color: [1.0; 4],
+            body_color: [0.6, 0.6, 0.6, 1.0],
+        }),
+        background: None,
+        border: None,
+        border_width: 0.0,
+        focus_ring: None,
+        selection_color: [0.0; 4],
+        caret_color: [0.0; 4],
+        preedit_color: [0.0; 4],
+        occurrence_markers: Vec::new(),
+        whitespace_marks: Vec::new(),
+        whitespace_color: [0.0; 4],
+        wrap_guides: Vec::new(),
+        steppers: None,
+        minimap: None,
+        sticky_line: None,
+    });
+    let mut scene = UiScene::new();
+    scene.apply_delta([input], []);
+
+    // slot 形参不写死类型:经 PrimitiveId 推断,在 slot u8 与 u32 两种
+    // 基线下都编译(他人 slot 拓宽重构在途,本测试不得绑定其任一侧)。
+    let content = |slot| {
+        scene
+            .primitive(PrimitiveId { node: id(1), slot })
+            .map(|primitive| match &primitive.kind {
+                ScenePrimitiveKind::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .flatten()
+    };
+    // 满 8 行 doc 全部在场(132..139),不被 hover 覆盖。
+    for slot in 132..=139 {
+        assert_eq!(content(slot).as_deref(), Some("doc"), "doc slot {slot} 在场");
+    }
+    // hover 图元同屏俱在(面板/标题/正文)。
+    assert!(
+        matches!(
+            scene
+                .primitive(PrimitiveId { node: id(1), slot: 120 })
+                .map(|primitive| primitive.kind.clone()),
+            Some(ScenePrimitiveKind::Quad { .. })
+        )
+    );
+    assert_eq!(content(121).as_deref(), Some("hover"));
+    assert_eq!(content(122).as_deref(), Some("body"));
+}
+
+#[cfg(feature = "rich-text")]
+#[test]
+fn markdown_keeps_and_removes_more_than_256_scene_primitives() {
+    let source = (0..300)
+        .map(|index| format!("Paragraph {index}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let view = nana_ui_runtime::NativeMarkdown::from_source(&source);
+    let mut markdown = node(991, None, &[]);
+    markdown.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 9000.0,
+    };
+    markdown.standard_visual = Some(StandardVisual::NativeMarkdown {
+        blocks: view.blocks().to_vec().into(),
+        text: source.clone().into(),
+        selection: None,
+    });
+    markdown.component_geometry = Some(ComponentGeometry::NativeMarkdown {
+        drawing: view.drawing(markdown.layout),
+        text: ComponentTextRegion {
+            bounds: markdown.layout,
+            content: source.into(),
+            color: Some([1.0; 4]),
+            font_size: 13.0,
+            font_weight: None,
+        },
+        selection: Vec::new(),
+        selection_color: [0.0; 4],
+    });
+    let mut scene = UiScene::new();
+    scene.apply_delta([markdown], []);
+    let primitives = scene
+        .primitives()
+        .filter(|p| p.node == id(991))
+        .collect::<Vec<_>>();
+    assert_eq!(primitives.len(), 300);
+    assert_eq!(
+        primitives
+            .iter()
+            .map(|p| p.id)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        300
+    );
+    scene.apply_delta([], [id(991)]);
+    assert!(scene.primitives().all(|p| p.node != id(991)));
+}
+
+#[cfg(feature = "rich-text")]
+#[test]
+fn markdown_formulas_and_diagrams_emit_svg_surfaces_with_theme_ink() {
+    let source = "$$\\frac{1}{\\sqrt{x^2+1}}$$\n\n```mermaid\nflowchart TD\nA-->B\n```";
+    let view = nana_ui_runtime::NativeMarkdown::from_source(source);
+    let mut markdown = node(992, None, &[]);
+    markdown.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 430.0,
+        height: 900.0,
+    };
+    markdown.standard_visual = Some(StandardVisual::NativeMarkdown {
+        blocks: view.blocks().to_vec().into(),
+        text: view.plain_text().into(),
+        selection: None,
+    });
+    markdown.component_geometry = Some(ComponentGeometry::NativeMarkdown {
+        drawing: view.drawing(markdown.layout),
+        text: ComponentTextRegion {
+            bounds: markdown.layout,
+            content: view.plain_text().into(),
+            color: Some([1.0, 1.0, 1.0, 1.0]),
+            font_size: 13.0,
+            font_weight: None,
+        },
+        selection: Vec::new(),
+        selection_color: [0.0; 4],
+    });
+    let mut scene = UiScene::new();
+    scene.apply_delta([markdown], []);
+    let images = scene
+        .primitives()
+        .filter_map(|p| match &p.kind {
+            ScenePrimitiveKind::Quad { surface, .. } => surface
+                .content_image
+                .as_ref()
+                .map(|image| (&p.bounds, image)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 2);
+    for (bounds, image) in images {
+        assert!(bounds.width > 0.0 && bounds.width <= 430.0 && bounds.height > 20.0);
+        let BackgroundImage::Url { url, .. } = image else {
+            panic!("expected native SVG source")
+        };
+        assert!(url.starts_with("data:image/svg+xml,"));
+        assert!(url.contains("rgb%28255%2C255%2C255%29"));
+        assert!(!url.contains("%23010203"));
+    }
+}
+
+/// Wave 4b-1 守卫端点：TextInput 主文本区域携带折叠重映射后的显示空间
+/// span（值串 ≠ 显示串时不再整批丢弃）；同一节点的行号标签区域不承载
+/// 编辑器 span（内容与 span 空间不一致，整批丢弃）。
+#[test]
+fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
+    let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
+    let display = "fn a() { …3\nfn b() {}";
+    let text_region = |content: &str| ComponentTextRegion {
+        bounds: LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 60.0,
+        },
+        content: Arc::from(content),
+        color: Some([0.9, 0.9, 0.9, 1.0]),
+        font_size: 12.0,
+        font_weight: None,
+    };
+    let mut input = node(1, None, &[]);
+    input.text = Some(TextContent {
+        value: value.into(),
+    });
+    // 行号标签绘制在左内边距区域：预留 gutter 宽度让标签层真实发出。
+    Arc::make_mut(&mut input.source_style.layout).padding_left = Some(
+        nana_ui_core::LengthSpec::Px(46.0),
+    );
+    input.standard_visual = Some(StandardVisual::TextInput {
+        placeholder: Arc::from(""),
+        size: nana_ui_core::ControlSize::Medium,
+        secure: false,
+        invalid: false,
+        steppers: false,
+        diagnostics: Arc::from([]),
+        matches: Arc::from([]),
+        color_swatches: Arc::from([]),
+        line_numbers: true,
+        indent_guides: None,
+        folds: Arc::from([]),
+        git_marks: Arc::from([]),
+        editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
+    });
+    input.component_geometry = Some(ComponentGeometry::TextInput {
+        multiline: true,
+        text: text_region(display),
+        selection: Vec::new(),
+        caret: None,
+        additional_carets: Vec::new(),
+        additional_caret_color: [0.0; 4],
+        preedit: Vec::new(),
+        diagnostic_markers: Vec::new(),
+        match_markers: Vec::new(),
+        swatch_markers: Vec::new(),
+        swatch_border_color: [0.0; 4],
+        caret_line: None,
+        bracket_markers: Vec::new(),
+        drop_indicator: None,
+        indent_guides: Vec::new(),
+        line_labels: vec![nana_ui_runtime::LineLabel {
+            y: 0.0,
+            height: 14.0,
+            number: 1,
+        }],
+        line_labels_color: [0.5; 4],
+        line_labels_font_size: 11.0,
+        folds: nana_ui_runtime::TextFoldGeometry::default(),
+        git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
+        completion_popup: None,
+        hover_popup: None,
+        background: None,
+        border: None,
+        border_width: 0.0,
+        focus_ring: None,
+        selection_color: [0.0; 4],
+        caret_color: [0.0; 4],
+        preedit_color: [0.0; 4],
+        occurrence_markers: Vec::new(),
+        whitespace_marks: Vec::new(),
+        whitespace_color: [0.0; 4],
+        wrap_guides: Vec::new(),
+        steppers: None,
+        minimap: None,
+        sticky_line: None,
+    });
+    input.text_spans = vec![
+        nana_ui_runtime::ExtractedTextSpan {
+            start: 0,
+            end: 4,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        nana_ui_runtime::ExtractedTextSpan {
+            start: 13,
+            end: 16,
+            color: [0.0, 1.0, 0.0, 1.0],
+        },
+    ];
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([input], []);
+    // slot 形参经 PrimitiveId 推断,u8/u32 基线都编译(同前,不绑定
+    // 在途的 slot 拓宽重构)。
+    let spans_of = |slot| {
+        scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot,
+            })
+            .map(|primitive| match &primitive.kind {
+                ScenePrimitiveKind::Text { spans, .. } => spans.clone(),
+                _ => panic!("text primitive"),
+            })
+            .expect("text primitive")
+    };
+    // 主文本区域（slot 2）：显示空间 span 原样生效（旧守卫在此整批丢弃）。
+    assert_eq!(
+        spans_of(2),
+        vec![
+            SceneTextSpan {
+                start: 0,
+                end: 4,
+                color: [1.0, 0.0, 0.0, 1.0]
+            },
+            SceneTextSpan {
+                start: 13,
+                end: 16,
+                color: [0.0, 1.0, 0.0, 1.0]
+            }
+        ]
+    );
+    // 行号标签区域（slot 40）：内容 "1" 与 span 空间不一致，不带 span。
+    assert!(
+        spans_of(40).is_empty(),
+        "标签区域不承载编辑器显示空间 span"
     );
 }
