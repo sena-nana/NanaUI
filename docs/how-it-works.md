@@ -85,7 +85,7 @@ Vue   button / input / ul / table / nana-*  ─┼─► UiWorld ─► UiScene 
 Vue   div + CSS 子集                         ─┘
 ```
 
-没有 WebView 壳。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。这是迁已有界面的路，不是新产品的默认写法。见 [Vue](vue.md)。应用内打开网页是另一件事，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。
+没有 WebView 壳。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。Vue + JS 与 Rust L3 共用 Runtime 和组件合同。见 [Vue](vue.md)。应用内打开网页是另一件事，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。
 
 ## 不要做的
 

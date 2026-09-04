@@ -53,6 +53,14 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 
 `HostTexture` 用稳定 slot 和 generation 包住可采样纹理。宿主替换或改尺寸时加 generation，NanaUI 只重建绑定，不拆布局。`revision` 的高 32 位是 generation、低 32 位是内容 version（`pack_gpu_revision`）。
 
+`HostTexture::instance_identity()` 区分使用相同公开 id 的不同 handle，克隆共享该身份。
+自接事件循环使用 URL 图片时，给 `SceneWgpuPainter::set_image_waker` 安装唤醒回调，
+完成通知后请求重绘。内建宿主已接入；离屏工具可用 `has_pending_images()` 等待资源后再次绘制。
+HTTP 获取与解码在后台进行，纹理上传仍使用宿主 Device／Queue。
+Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4 个 HTTP 资源，
+闲置纹理最多保留 256 项／64 MiB，120 个绘制帧未使用后释放，当前帧工作集按需保留。
+栅格图片解码限制为 4096 像素边长和 64 MiB 分配预算，SVG 沿用 2048 像素边长上限。
+
 合成顺序就是文档顺序：`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样，不攒到帧尾。多层就是相邻的几张 `GpuTextureView`。不要绕过界面树去直写窗口 Surface。
 
 ## GpuView

@@ -19,7 +19,7 @@ nana-ui                 宿主适配器：run_runtime、控件再导出、SceneW
     └── nana-window     系统材质、标题栏拖拽 / 客户区 chrome / 缩放；
                         普通控件不得拿窗口句柄
 
-Vue 兼容（可选）
+Vue + JS L1/L2（可选宿主）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 

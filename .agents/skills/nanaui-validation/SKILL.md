@@ -76,7 +76,7 @@ python3 perf/runners/nana/run.py --scenario hover --from-report perf/fixtures/na
 python3 perf/runners/nana/run.py --scenario mutation-paint-only --from-report perf/fixtures/nana-runtime-static-tree.json
 python3 perf/runners/nana/run.py --scenario static-tree-100 --from-report perf/fixtures/nana-runtime-static-tree.json
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
-cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json
+cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --list-overscan-px 160 --table-overscan-y-px 160 --output target/performance/framework.json
 cargo run --release --locked -p nana-ui-vue --features benchmark --bin nana-vue-runtime-benchmark -- --output target/performance/vue.json
 cargo run --release --locked -p nana-ui-scene --features benchmark --bin nana-scene-benchmark -- --output target/performance/scene.json
 python3 scripts/validate-runtime-performance.py \

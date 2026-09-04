@@ -33,7 +33,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
-部分族需要 Cargo feature（`calendar`、`charts`、`graph-canvas`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 只控制 `nana-ui` 的再导出路径和 `ComponentSupport` 的 `compiled` 标记；控件实现都在 `nana-ui-runtime` 里，不启用也照样编译，仍可从 `nana_ui::runtime` 取到。要真正裁二进制得在 `nana-ui-runtime` 一侧做，目前没有。
+部分族需要 Cargo feature（`calendar`、`charts`、`graph-canvas`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 会转发到 `nana-ui-runtime` 和 `nana-ui-scene`，控制对应实现、几何投影和公开导出。`components` 启用全部可选控件族；精简宿主按需选择。Vue 标签也受相同功能开关约束，缺失时会报告组件不可用。
 
 `ColorField` 是色块 + hex，`assemble_color_field` 挂 HSV 选择器；提交发 `ColorChanged`，拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮，浏览只发 `BrowseRequested`，由应用打开系统对话框。
 

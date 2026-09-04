@@ -19,7 +19,7 @@ NanaUI 是一套 **保留式原生桌面 UI 运行时**。应用打开窗口、�
 
 再精确一点：
 
-**相对 Electron / Tauri。** 它们优化的是「用 Web 技术出桌面窗口」。NanaUI 的 Vue 路径是兼容输入：Vue 3 的一个子集经 Custom Renderer 落到 `UiWorld`，不是把 `@vue/runtime-dom` 产物丢进 WebView。没有 Tauri 的窗口 / 插件 / invoke 协议，也没有浏览器 CORS、Cookie、Service Worker。
+**相对 Electron / Tauri。** 它们优化的是「用 Web 技术出桌面窗口」。NanaUI 将 Vue + JS 作为一等 L1/L2 消费入口：Vue 3 的一个子集经 Custom Renderer 落到 `UiWorld`，不是把 `@vue/runtime-dom` 产物丢进 WebView。没有 Tauri 的窗口 / 插件 / invoke 协议，也没有浏览器 CORS、Cookie、Service Worker。
 
 **相对游戏引擎。** 引擎优化的是场景和相机。产品壳（标题栏、侧栏、设置、Dock、系统材质）是后加层。NanaUI 相反：壳是一等界面；实时画面由应用画到纹理，再作为普通节点挂上树。不要绕过界面树去直写窗口 Surface。
 
