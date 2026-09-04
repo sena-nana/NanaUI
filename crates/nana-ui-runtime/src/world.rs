@@ -19,10 +19,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    ControlSize, GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSize, LayoutStyle,
-    PointerEventsSpec, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
-    ThemeMode, TooltipConfig, cubic_point, icon_y_on_text_glyph_center,
+    ControlSize, LayoutStyle, PointerEventsSpec, SemanticColorRole, SemanticPalette, StyleModelRef,
+    SwitchControlPosition, ThemeMode, icon_y_on_text_glyph_center,
 };
+
+#[cfg(feature = "calendar")]
+use nana_ui_core::TooltipConfig;
+#[cfg(feature = "graph-canvas")]
+use nana_ui_core::{GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSize, cubic_point};
 
 use crate::animation::ActiveAnimation;
 use crate::components::{

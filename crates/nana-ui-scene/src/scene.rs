@@ -1470,6 +1470,7 @@ fn quad_surface_from_style(
     }
 }
 
+#[cfg(any(feature = "charts", feature = "graph-canvas"))]
 fn visual_stroke(
     context: &VisualPrimitiveContext<'_>,
     slot: u8,
