@@ -908,6 +908,20 @@ impl<'a> ValidationPlan<'a> {
     }
 }
 
+// Select options extend the hit region without changing the field layout.
+// Highlight and label changes remain paint-only.
+fn select_menu_hit_shape(visual: Option<&StandardVisual>) -> Option<(ControlSize, usize)> {
+    match visual {
+        Some(StandardVisual::Select {
+            opened: true,
+            size,
+            options,
+            ..
+        }) => Some((*size, options.len())),
+        _ => None,
+    }
+}
+
 impl UiWorld {
     pub(super) fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
         match mutation {
@@ -1293,6 +1307,7 @@ impl UiWorld {
                     modal_presentation_changed,
                     modal_state_changed,
                     menu_state_changed,
+                    select_hit_changed,
                     text_folds_changed,
                 ) = {
                     let previous_visual = self.nodes.visual(*id);
@@ -1329,6 +1344,8 @@ impl UiWorld {
                         // surface's own open state, so opening it has to reach
                         // them the way an overlay host reaches its branch.
                         menu_surface_open(previous_visual) != menu_surface_open(visual.as_ref()),
+                        select_menu_hit_shape(previous_visual)
+                            != select_menu_hit_shape(visual.as_ref()),
                         text_folds_changed,
                     )
                 };
@@ -1365,6 +1382,9 @@ impl UiWorld {
                             0
                         },
                 );
+                if select_hit_changed {
+                    self.mark(*id, DirtyMask::INPUT);
+                }
                 if menu_state_changed {
                     self.mark_subtree(
                         *id,
