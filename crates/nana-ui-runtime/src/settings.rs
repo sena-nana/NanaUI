@@ -4,8 +4,8 @@ use std::sync::Arc;
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
     ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
-    OverflowSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId, ThemeMode,
-    UI_METRICS, WindowMaterialMode,
+    OverflowSpec, PaddingSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId,
+    ThemeMode, UI_METRICS, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -26,7 +26,6 @@ const ROW_STACK_GAP_LOOSE: f32 = 10.0;
 const ROW_INLINE_GAP: f32 = 8.0;
 const ROW_INLINE_GAP_LOOSE: f32 = 14.0;
 const ROW_COPY_GAP: f32 = 2.0;
-const CARD_TRAILING_GAP: f32 = 12.0;
 
 /// Non-interactive chrome wrapping an application-owned control child.
 #[derive(Debug, Clone, PartialEq)]
@@ -344,16 +343,10 @@ impl SettingsCard {
         if !self.title.is_empty() {
             card = card.title(Arc::clone(&self.title));
         }
-        let mut style = card.style.clone();
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.margin_bottom = Some(
-            self.style
-                .layout
-                .margin_bottom
-                .or(layout.margin_bottom)
-                .unwrap_or(LengthSpec::Px(CARD_TRAILING_GAP)),
-        );
+        let mut style = self.style.clone();
+        Arc::make_mut(&mut style.layout)
+            .width
+            .get_or_insert(LengthSpec::Fill);
         card.style = style;
         card
     }
@@ -956,6 +949,9 @@ pub struct SettingsPage {
     pub model: SettingsModel,
     pub state: SettingsState,
     pub content: Option<StableNodeId>,
+    /// Insets of the internal scrolling body; None uses the standard page frame.
+    pub content_padding: Option<PaddingSpec>,
+    pub content_gap: Option<f32>,
     pub assembly: Option<SettingsPageAssembly>,
 }
 
@@ -973,8 +969,25 @@ impl SettingsPage {
             model,
             state,
             content: None,
+            content_padding: None,
+            content_gap: None,
             assembly: None,
         }
+    }
+
+    pub fn content_padding(mut self, padding: PaddingSpec) -> Self {
+        self.content_padding = Some(PaddingSpec {
+            top: padding.top.max(0.0),
+            right: padding.right.max(0.0),
+            bottom: padding.bottom.max(0.0),
+            left: padding.left.max(0.0),
+        });
+        self
+    }
+
+    pub fn content_gap(mut self, gap: f32) -> Self {
+        self.content_gap = Some(gap.max(0.0));
+        self
     }
 
     pub fn content(mut self, content: StableNodeId) -> Self {
@@ -1085,20 +1098,29 @@ impl ComponentView for SettingsSidebarLeading {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-struct SettingsPageBody;
+struct SettingsPageBody {
+    padding: Option<PaddingSpec>,
+    gap: Option<f32>,
+}
 
 impl SettingsPageBody {
-    fn style() -> NodeStyle {
+    fn style(&self) -> NodeStyle {
         let mut style = NodeStyle::default();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Column);
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(LengthSpec::Fill);
-        layout.gap = Some(LengthSpec::Px(SETTINGS_PAGE_GAP));
-        layout.padding_top = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_TOP));
-        layout.padding_right = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_RIGHT));
-        layout.padding_bottom = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_BOTTOM));
-        layout.padding_left = Some(LengthSpec::Px(SETTINGS_PAGE_PADDING_LEFT));
+        layout.gap = Some(LengthSpec::Px(self.gap.unwrap_or(SETTINGS_PAGE_GAP)));
+        let padding = self.padding.unwrap_or(PaddingSpec {
+            top: SETTINGS_PAGE_PADDING_TOP,
+            right: SETTINGS_PAGE_PADDING_RIGHT,
+            bottom: SETTINGS_PAGE_PADDING_BOTTOM,
+            left: SETTINGS_PAGE_PADDING_LEFT,
+        });
+        layout.padding_top = Some(LengthSpec::Px(padding.top));
+        layout.padding_right = Some(LengthSpec::Px(padding.right));
+        layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
+        layout.padding_left = Some(LengthSpec::Px(padding.left));
         style
     }
 }
@@ -1115,7 +1137,7 @@ impl ComponentView for SettingsPageBody {
             id,
             world,
             mutations,
-            &Self::style(),
+            &self.style(),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -2294,11 +2316,13 @@ impl AppContext {
         page: Entity<SettingsPage>,
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, page.stable_id())?;
-        let (model, state, content, mut assembly) = self.read(page, |page| {
+        let (model, state, content, padding, gap, mut assembly) = self.read(page, |page| {
             (
                 page.model.clone(),
                 page.state.clone(),
                 page.content,
+                page.content_padding,
+                page.content_gap,
                 page.assembly.clone().unwrap_or_default(),
             )
         })?;
@@ -2323,10 +2347,13 @@ impl AppContext {
             return reconcile_children(self, page, &ordered);
         }
 
+        let body_style = SettingsPageBody { padding, gap };
         let body = if let Some(id) = assembly.body {
-            Entity::<SettingsPageBody>::from_stable_id(id)
+            let entity = Entity::<SettingsPageBody>::from_stable_id(id);
+            self.update_component(entity, |body, _| *body = body_style)?;
+            entity
         } else {
-            let entity = self.create_detached_component(document, SettingsPageBody)?;
+            let entity = self.create_detached_component(document, body_style)?;
             assembly.body = Some(entity.stable_id());
             entity
         };
@@ -2566,7 +2593,7 @@ mod tests {
         ));
         assert_eq!(
             context.world().node_style(id).unwrap().layout.margin_bottom,
-            Some(LengthSpec::Px(CARD_TRAILING_GAP))
+            None
         );
     }
 
@@ -3441,5 +3468,92 @@ mod tests {
             context.world().node(page.stable_id()).unwrap().children,
             vec![assembly.scroll.unwrap()]
         );
+    }
+}
+
+#[cfg(test)]
+mod spacing_tests {
+    use super::*;
+
+    #[test]
+    fn spacing_settings_body_updates_without_replacing_scroll_or_content() {
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let model = SettingsModel::new(
+            "appearance",
+            [nana_ui_core::SettingsTab::new("appearance", "Appearance")],
+        )
+        .unwrap();
+        let state = SettingsState::new(&model);
+        let content = context
+            .create_component(document, Text::new("Content"))
+            .unwrap();
+        let page = context
+            .create_component(
+                document,
+                SettingsPage::new(model, state).content(content.stable_id()),
+            )
+            .unwrap();
+        context.assemble_settings_page(page).unwrap();
+        let first = context.read(page, |p| p.assembly.clone().unwrap()).unwrap();
+        let body = first.body.unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(body)
+                .unwrap()
+                .layout
+                .resolved_padding(),
+            PaddingSpec {
+                top: 20.0,
+                right: 24.0,
+                bottom: 24.0,
+                left: 24.0
+            }
+        );
+        let mut q = MutationQueue::new();
+        q.set_scroll_offset(
+            first.scroll.unwrap(),
+            crate::ScrollOffset { x: 0.0, y: 30.0 },
+        );
+        context.world_mut().commit(q).unwrap();
+        context
+            .update_component(page, |p, _| {
+                p.content_padding = Some(PaddingSpec::uniform(0.0));
+                p.content_gap = Some(7.0);
+            })
+            .unwrap();
+        context.assemble_settings_page(page).unwrap();
+        let second = context.read(page, |p| p.assembly.clone().unwrap()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            context
+                .world()
+                .scroll_offset(first.scroll.unwrap())
+                .unwrap()
+                .y,
+            30.0
+        );
+        let layout = &context.world().node_style(body).unwrap().layout;
+        assert!(layout.resolved_padding().is_zero());
+        assert_eq!(layout.gap, Some(LengthSpec::Px(7.0)));
+        assert!(
+            context
+                .world()
+                .node(body)
+                .unwrap()
+                .children
+                .contains(&content.stable_id())
+        );
+        context
+            .update_component(page, |p, _| {
+                p.content_padding = None;
+                p.content_gap = None;
+            })
+            .unwrap();
+        context.assemble_settings_page(page).unwrap();
+        let layout = &context.world().node_style(body).unwrap().layout;
+        assert_eq!(layout.resolved_padding().bottom, 24.0);
+        assert_eq!(layout.gap, Some(LengthSpec::Px(16.0)));
     }
 }

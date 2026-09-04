@@ -95,13 +95,12 @@
 }
 
 /* SettingsPage / Card / Row — peers of Lilia settings + Rust SettingsRow/Card */
+/* Runtime SettingsPage owns padding/gap inside its scrolling body. */
 .nana-settings-page,
 .settings-page.nana-settings-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
   min-width: 0;
-  padding: 20px 24px 24px;
   color: var(--text, #1a1a1f);
 }
 .nana-settings-page__header h1,
@@ -370,7 +369,6 @@
 }
 .nana-workspace-shell__primary {
   min-width: 0;
-  padding: 20px 24px;
 }
 
 /* SidebarFrame — mirrors Rust SidebarFrame + Lilia secondary-panel geometry */

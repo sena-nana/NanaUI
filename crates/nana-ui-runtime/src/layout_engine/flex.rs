@@ -142,7 +142,7 @@ pub(super) fn resolve_flex_fill_sizes(
     let mut active: Vec<(usize, f32)> = Vec::new();
     let mut occupied = gap_total;
     for i in 0..n {
-        occupied += margin_mains[i].max(0.0);
+        occupied += margin_mains[i];
         if let Some(width) = fixed_or_fill[i] {
             sizes[i] = width.max(0.0);
             occupied += sizes[i];
@@ -230,7 +230,7 @@ pub(super) fn apply_flex_shrink(
     if content_main <= 1e-3 {
         return;
     }
-    let margin_total: f32 = margin_mains.iter().map(|margin| margin.max(0.0)).sum();
+    let margin_total: f32 = margin_mains.iter().copied().sum();
     let used = sizes.iter().sum::<f32>() + margin_total + gap_total;
     let mut overflow = used - content_main;
     if overflow <= 1e-3 {

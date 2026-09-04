@@ -215,7 +215,13 @@ impl AppContext {
             let mut scope = Vec::with_capacity(layouts.len());
             for (id, layout) in layouts {
                 scope.push(id);
-                if self.world.layout_box(id) != Some(layout) {
+                let padding_changed = self
+                    .layout_cache
+                    .used_padding
+                    .get(&id)
+                    .copied()
+                    .is_some_and(|padding| self.world.write_layout_padding(id, padding));
+                if padding_changed || self.world.layout_box(id) != Some(layout) {
                     mutations.write_layout(id, layout);
                 }
             }

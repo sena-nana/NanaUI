@@ -1166,6 +1166,28 @@ impl UiWorld {
             .collect()
     }
 
+    pub(crate) fn write_layout_padding(
+        &mut self,
+        id: StableNodeId,
+        padding: nana_ui_core::PaddingSpec,
+    ) -> bool {
+        let record = self.record_mut(id);
+        let changed = record.layout_padding != Some(padding);
+        record.layout_padding = Some(padding);
+        changed
+    }
+
+    /// Padding resolved by the layout pass, including its containing block and font.
+    pub(crate) fn used_layout_padding(&self, id: StableNodeId) -> nana_ui_core::PaddingSpec {
+        let record = self.record(id);
+        record.layout_padding.unwrap_or_else(|| {
+            record
+                .style
+                .layout
+                .resolved_padding_against(Some(record.layout.width))
+        })
+    }
+
     /// Layout-facing style without assembling a [`LayoutInput`].
     ///
     /// Parked, detached, and inactive-overlay nodes match [`Self::layout_inputs`]:

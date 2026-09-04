@@ -318,17 +318,6 @@ impl RegisterableComponent for Card {
         }
         card.style.layout = Arc::clone(spec.layout);
         let layout = Arc::make_mut(&mut card.style.layout);
-        if layout.padding.is_none()
-            && layout.padding_top.is_none()
-            && layout.padding_right.is_none()
-            && layout.padding_bottom.is_none()
-            && layout.padding_left.is_none()
-        {
-            layout.padding_left = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x));
-            layout.padding_right = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x));
-            layout.padding_top = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y));
-            layout.padding_bottom = Some(LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y));
-        }
         if layout.border_radius.is_none() {
             layout.border_radius = Some(nana_ui_core::UI_METRICS.radius_md);
         }
@@ -1334,7 +1323,7 @@ impl RegisterableComponent for SettingsCard {
         } else {
             spec.display_label()
         };
-        SettingsCard::new(title)
+        SettingsCard::new(title).style(layout_only_style(spec))
     }
 }
 
@@ -1352,6 +1341,27 @@ impl RegisterableComponent for SettingsPage {
             state.select(&model, &SettingsTabId::from(tab.trim()));
         }
         let mut component = SettingsPage::new(model, state);
+        if let Some(raw) = spec
+            .attr("content-padding")
+            .or_else(|| spec.attr("contentPadding"))
+        {
+            let padding = serde_json::from_str::<f32>(raw)
+                .map(nana_ui_core::PaddingSpec::uniform)
+                .or_else(|_| serde_json::from_str::<nana_ui_core::PaddingSpec>(raw))
+                .ok()
+                .filter(|p| {
+                    [p.top, p.right, p.bottom, p.left]
+                        .iter()
+                        .all(|v| v.is_finite())
+                });
+            if let Some(padding) = padding {
+                component = component.content_padding(padding);
+            }
+        }
+        if let Some(gap) = attr_f32(spec, &["content-gap", "contentGap"]).filter(|v| v.is_finite())
+        {
+            component = component.content_gap(gap);
+        }
         if let Some(content) = spec.slot("content").or_else(|| spec.slot("body")) {
             component = component.content(content);
         }

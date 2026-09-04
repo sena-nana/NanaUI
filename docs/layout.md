@@ -71,3 +71,53 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 ## 和 Rust 布局的关系
 
 Vue 侧 CSS 解析出的是同一份 `LayoutStyle`。L3 用 [`Stack`](rust-layout.md) 表达这份合同（`from_layout` / 字段 builder）；L2 `nana-*` 只解析到同一 `ComponentTypeId`，不按 `display` / `flex-direction` 改布局身份。真正算盒子的是 Runtime 的 `RuntimeLayoutEngine`，产品帧走 `RuntimeDocument::flush`。JavaScript 查询到的盒子是绘制阶段的投影，滚动不写回 Runtime 的布局权威。
+
+## 页面与卡片的留白
+
+NanaUI 的容器边距归属见 [Rust 布局合同](rust-layout.md#边距归属与覆盖)，Vue 与 Rust 共用同一 Runtime 布局。普通 `div` 默认没有 padding；`NanaCard` 默认左右 16、上下 14，CSS 只覆盖声明的边，`padding: 0` 明确清零。兄弟 margin 与父级 gap 相加；不自动去重或折叠。
+
+```vue
+<!-- 页面中嵌套卡片：页面外沿和卡片内部是不同边界。 -->
+<NanaSettingsPage :settings="settings">
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <NanaCard>
+      <!-- 卡片内 Stack：gap 排列字段，不额外加 padding。 -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <NanaInput /><NanaButton>保存</NanaButton>
+      </div>
+    </NanaCard>
+  </div>
+</NanaSettingsPage>
+
+<!-- 贴边列表：显式关闭负责该边界的容器留白。 -->
+<NanaSettingsPage :settings="settings" :content-padding="0">
+  <NanaCard style="padding:0"><NanaList /></NanaCard>
+</NanaSettingsPage>
+
+<!-- 滚动到底仍保留底部 24px；不要额外添加 Spacer。 -->
+<NanaSettingsPage :settings="settings"
+  :content-padding="{ top:20, right:24, bottom:24, left:24 }"
+  :content-gap="16">
+  <YourLongContent />
+</NanaSettingsPage>
+```
+
+`contentPadding` 接受数值或完整的 `{top,right,bottom,left}` 对象，单位为逻辑像素；`contentGap` 是数值。负数按零处理，非法输入回落默认值。移除属性或设为 `undefined` 恢复默认。它们作用于内部滚动 body，动态更新不重建内容和滚动节点；full-page Tab 没有该 body，仍由业务负责布局。公共 CSS 不再在 SettingsPage 外壳重复声明 padding/gap。
+
+`NanaWorkspaceShell` 的 primary 也不再默认加页面 padding；直接放业务内容的旧页面应在自己的内容根设置 `padding:20px 24px`，嵌套 SettingsPage 时不再补这一层。语义卡片的 class/tag 布局提示不再覆盖 Runtime 内边距或圆角默认值。
+
+### 边距回归与截图复现
+
+`crates/nana-ui-devtools/examples/spacing-layout.rs` 使用真实 Runtime / UiScene 离屏绘制，检查 640×300 和 280×300 下的嵌套卡片、内容区清零和滚动尾部。默认 JS fixture 直接提交 host ops：
+
+```bash
+cargo run -p nana-ui-devtools --features agent-bin --example spacing-layout --locked
+```
+
+输出 PNG、布局/a11y 证据到 `target/spacing-layout/`。也可将同目录的 `spacing-layout-vue.js` 用消费应用的 bundler 打包为 IIFE，再传入产物路径，验证实际 `NanaSettingsPage` / `NanaCard` wrappers：
+
+```bash
+cargo run -p nana-ui-devtools --features agent-bin --example spacing-layout --locked -- path/to/spacing-layout-vue.iife.js
+```
+
+此验收覆盖宿主机器上的离屏 GPU 绘制，不代替 Windows/Linux 原生窗口或 Surface 验收。

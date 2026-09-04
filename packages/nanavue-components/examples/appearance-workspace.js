@@ -45,7 +45,7 @@ export function createAppearanceWorkspaceDemo(options = {}) {
                   active.value = item.key;
                 },
               }),
-            default: () => {
+            default: () => h("div", { style: "width:100%;padding:20px 24px" }, [(() => {
               if (active.value === "appearance") {
                 return h(NanaAppearancePanel, {
                   title: "外观",
@@ -67,7 +67,7 @@ export function createAppearanceWorkspaceDemo(options = {}) {
                 h("h2", null, "Home"),
                 h("p", null, "Select Appearance or Workspace in the sidebar."),
               ]);
-            },
+            })()]),
           },
         );
     },
