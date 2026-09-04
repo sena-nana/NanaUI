@@ -280,6 +280,20 @@ impl UiWorld {
         // 隐藏区间内部的钳到摘要之后；跨折叠区间的在边界切分；摘要文本
         // 保持中性色），与显示空间的括号 span 同空间合并。无 span 时零
         // 分配跳过视图构建。
+        // 与 shape 路径同门（`text_input_presentation_source` 仅多行态构
+        // 视图）：单行输入不构折叠/inlay 显示视图，两条路径对单行喂入
+        // 的 inlay 一致不呈现。
+        let display_view = if self.nodes.get(id).is_some_and(|node| node.accessibility.multiline)
+            && (self.nodes.text_inlays(id).is_some()
+                || self
+                    .nodes
+                    .text_presentation(id)
+                    .is_some_and(|presentation| !presentation.spans.is_empty()))
+        {
+            self.text_display_view(id)
+        } else {
+            None
+        };
         let syntax_spans = self
             .nodes
             .text_presentation(id)
@@ -287,7 +301,6 @@ impl UiWorld {
                 if presentation.spans.is_empty() {
                     return Vec::new();
                 }
-                let display_view = self.text_display_view(id);
                 presentation
                     .spans
                     .iter()
@@ -326,9 +339,29 @@ impl UiWorld {
         // merge_bracket_glyph_spans 对空括号表原样返回语法 span，无需单独
         // 短路。
         let palette = &self.style_model.palette;
-        merge_bracket_glyph_spans(syntax_spans, &bracket_spans, |depth| {
+        let merged = merge_bracket_glyph_spans(syntax_spans, &bracket_spans, |depth| {
             bracket_depth_color(palette, depth)
-        })
+        });
+        // 行内 inlay 着色：插入区间整段 Muted 灰字（同字号，单 Attrs 限制
+        // 下的声明式取舍），inlay 区间优先——与 inlay 重叠的基础层被切分
+        // 丢弃。无 inlay 时零分配原样返回；组合期显示视图已不含 inlay。
+        let inlay_spans: Vec<(usize, usize)> = display_view
+            .as_ref()
+            .map(|view| {
+                view.spans
+                    .iter()
+                    .filter(|span| matches!(span.kind, TextDisplaySpanKind::Inlay))
+                    .map(|span| (span.display_start, span.display_start + span.display_len))
+                    .collect()
+            })
+            .unwrap_or_default();
+        merge_inlay_glyph_spans(
+            merged,
+            &inlay_spans,
+            self.style_model
+                .color(SemanticColorRole::Muted)
+                .as_rgba_array(),
+        )
     }
 }
 

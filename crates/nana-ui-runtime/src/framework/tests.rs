@@ -8,7 +8,8 @@ use crate::{
     ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
     SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Stack, StandardVisual, Switch,
     TabOption, Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea,
-    TextChanged, TextContent, TextInput, TextSelection, ToggleChanged,
+    TextCaretIntent, TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection,
+    ToggleChanged,
 };
 
 #[derive(Debug)]
@@ -5032,4 +5033,103 @@ fn component_without_opt_in_keeps_data_change_schedule() {
         Some("0"),
         "components that do not opt in must not reproject on child structure changes"
     );
+}
+
+/// 行内 inlay 下的水平光标移动:插入区间内部没有 caret 边界,Right/
+/// WordRight 的显示目标落入区间内部时前进到区间末端重映射——一次按键
+/// 跨过整个插入区间,值偏移步进为一;Left/WordLeft 逆向同理不卡死。
+/// 断言以裸文本移动 oracle 等值:inlay 呈现不改变值空间移动结果。
+fn move_caret_from(
+    context: &mut AppContext,
+    document: DocumentId,
+    node: crate::StableNodeId,
+    focus: usize,
+    intent: TextCaretIntent,
+) -> usize {
+    context
+        .update_component(Entity::<TextArea>::from_stable_id(node), |area, _| {
+            area.state.selection = TextSelection::caret(focus);
+        })
+        .unwrap();
+    assert!(
+        context
+            .move_focused_text_caret(document, intent, false, None)
+            .unwrap(),
+        "水平移动必须是有效移动,不得被插入区间钳成空操作"
+    );
+    context.world().text_input(node).unwrap().selection.focus
+}
+
+#[test]
+fn caret_movement_steps_across_inlays_without_sticking() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let value = "f(x, y)";
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value).inlays(Arc::from([
+                TextInlay::new(2, "a:"),
+                TextInlay::new(5, "b:"),
+            ])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    assert!(context.focus_node(document, node).unwrap());
+
+    // 四个水平意图在 inlay 呈现下与裸文本 oracle 完全一致(移动免疫),
+    // 起点覆盖锚点、锚点前后与第二处插入区间。
+    for (intent, starts) in [
+        (TextCaretIntent::Right, [2usize, 3, 4, 5].as_slice()),
+        (TextCaretIntent::Left, [6, 5, 3, 2].as_slice()),
+        (TextCaretIntent::WordRight, [2usize, 4, 5].as_slice()),
+        (TextCaretIntent::WordLeft, [6, 5, 3].as_slice()),
+    ] {
+        for &start in starts {
+            let expected = crate::text_editing::caret_focus(
+                value,
+                TextSelection::caret(start),
+                intent,
+            )
+            .unwrap_or(start);
+            let moved = move_caret_from(&mut context, document, node, start, intent);
+            assert_eq!(moved, expected, "{intent:?} from {start} 越过 inlay 后应与裸文本一致");
+        }
+    }
+
+    // 评审探针场景:光标停在 inlay 锚点连按 Right,每次都前进一格。
+    let mut focus = 2;
+    for expected in [3, 4, 5, 6] {
+        focus = move_caret_from(&mut context, document, node, focus, TextCaretIntent::Right);
+        assert_eq!(focus, expected, "连按 Right 不得卡死在锚点");
+    }
+}
+
+/// 折叠摘要上的 Right 同源卡死(既有隐患的回归锚):摘要文本内部没有
+/// caret 边界,Right 一次跨过整个摘要落到折叠后首字符,再按继续前进。
+#[test]
+fn caret_right_steps_across_fold_summaries() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
+    let fold = TextCodeFold::new(7, 28);
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value).code_folds(Arc::from([fold])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_fold_collapsed(node, Arc::from([fold]));
+    context.commit_mutations(queue).unwrap();
+    assert!(context.focus_node(document, node).unwrap());
+
+    // 折叠起始行行尾(值 8,摘要 ` …3` 占显示 [8,13)):Right 一次跨过
+    // 整个摘要,落到折叠后首字符(值 28);再 Right 前进到 `fn b` 的
+    // `f`(值 29)。
+    let moved = move_caret_from(&mut context, document, node, 8, TextCaretIntent::Right);
+    assert_eq!(moved, 28, "Right 一次跨过折叠摘要");
+    let moved = move_caret_from(&mut context, document, node, moved, TextCaretIntent::Right);
+    assert_eq!(moved, 29, "摘要之后继续逐字符前进");
 }

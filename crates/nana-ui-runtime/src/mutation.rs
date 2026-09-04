@@ -3,8 +3,8 @@ use crate::{
     AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec, ComponentTypeId,
     CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
     NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
-    StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInputState,
-    TextSelection,
+    StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInlay,
+    TextInputState, TextSelection,
 };
 use nana_ui_core::ThemeMode;
 use std::sync::Arc;
@@ -146,6 +146,13 @@ pub enum UiMutation {
     SetTextInputFoldCollapsed {
         id: StableNodeId,
         folds: Arc<[TextCodeFold]>,
+    },
+    /// 宿主喂入或撤掉（空表）行内提示（inlay）。世界校验后按
+    /// `(offset, label)` 排序去重存储；纯视图装饰，committed value 不受
+    /// 影响。
+    SetTextInputInlays {
+        id: StableNodeId,
+        inlays: Arc<[TextInlay]>,
     },
     /// Start, advance-side-effect-free replace, or end (`None`) the snippet
     /// session of one editor.
@@ -387,6 +394,12 @@ impl MutationQueue {
     pub fn set_text_input_fold_collapsed(&mut self, id: StableNodeId, folds: Arc<[TextCodeFold]>) {
         self.mutations
             .push(UiMutation::SetTextInputFoldCollapsed { id, folds });
+    }
+
+    /// 喂入或撤掉（空表）行内提示（见 [`TextInlay`]）。
+    pub fn set_text_input_inlays(&mut self, id: StableNodeId, inlays: Arc<[TextInlay]>) {
+        self.mutations
+            .push(UiMutation::SetTextInputInlays { id, inlays });
     }
 
     pub fn set_text_input_snippet(

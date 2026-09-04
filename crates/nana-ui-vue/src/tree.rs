@@ -269,6 +269,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::ReplaceTextSelection { .. } => "ReplaceTextSelection",
         UiMutation::SetHighlightRequest { .. } => "SetHighlightRequest",
         UiMutation::SetTextInputFoldCollapsed { .. } => "SetTextInputFoldCollapsed",
+        UiMutation::SetTextInputInlays { .. } => "SetTextInputInlays",
         UiMutation::SetTextInputSnippet { .. } => "SetTextInputSnippet",
         UiMutation::SetTextInputCompletions { .. } => "SetTextInputCompletions",
         UiMutation::SetTextInputCompletionView { .. } => "SetTextInputCompletionView",

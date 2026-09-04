@@ -384,6 +384,30 @@ impl AppContext {
                 None => selection,
             }
         };
+        // 水平移动的显示目标被覆盖区间（折叠摘要 / inlay 插入文本）钳回
+        // 起点值偏移时（区间内部无 caret 边界，逐字符右移会变成空操作），
+        // 前进到区间末端再重映射：一次按键跨过整个覆盖区间，值偏移步进
+        // 为一。折叠摘要上的同源既有卡死一并修复；点击命中与垂直移动
+        // 保持钳制语义（to_value）。
+        let to_value_moved =
+            |previous_focus: usize, moved: TextSelection| -> TextSelection {
+                match &fold_view {
+                    Some(view) => {
+                        let focus = if view.covers_display(moved.focus)
+                            && view.value_of(moved.focus) == previous_focus
+                        {
+                            view.value_of_forward(moved.focus)
+                        } else {
+                            view.value_of(moved.focus)
+                        };
+                        TextSelection {
+                            anchor: view.value_of(moved.anchor),
+                            focus,
+                        }
+                    }
+                    None => moved,
+                }
+            };
         let vertical = matches!(
             intent,
             TextCaretIntent::Up
@@ -437,7 +461,12 @@ impl AppContext {
                         if index == primary_index {
                             next_goal = goal;
                         }
-                        next_selections.push(to_value(moved));
+                        let mapped = if vertical {
+                            to_value(moved)
+                        } else {
+                            to_value_moved(selection.focus, moved)
+                        };
+                        next_selections.push(mapped);
                     }
                     None => next_selections.push(selection),
                 }
@@ -539,7 +568,12 @@ impl AppContext {
                 None => return Ok(false),
             }
         };
-        self.write_editor_selection(focused.node, focused.kind, to_value(selection))
+        let moved = if vertical {
+            to_value(selection)
+        } else {
+            to_value_moved(state.selection.focus, selection)
+        };
+        self.write_editor_selection(focused.node, focused.kind, moved)
     }
 
     /// Delete around the caret(s) of the focused text editor. With multiple
@@ -2424,7 +2458,7 @@ impl AppContext {
             .spans
             .iter()
             .filter(|span| offsets.iter().any(|offset| view.span_hides(span, *offset)))
-            .map(|span| span.fold)
+            .filter_map(|span| span.fold())
             .collect();
         if to_unfold.is_empty() {
             return Ok(());

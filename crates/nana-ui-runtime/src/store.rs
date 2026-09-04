@@ -172,6 +172,9 @@ pub(crate) struct NodeStore {
     modal_text: HashMap<StableNodeId, ModalTextPresentation>,
     /// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
     text_fold_views: HashMap<StableNodeId, TextFoldViewState>,
+    /// 行内提示（inlay）集（仅喂过非空 inlay 的编辑器节点持有条目；
+    /// 世界校验后按 `(offset, label)` 排序去重）。
+    text_inlays: HashMap<StableNodeId, Arc<[crate::TextInlay]>>,
     /// 活跃 snippet 会话（仅会话进行中的编辑器持有条目）。
     text_snippets: HashMap<StableNodeId, TextSnippetSession>,
     /// 补全弹层会话（仅候选会话活跃的编辑器持有条目）。
@@ -245,6 +248,7 @@ impl NodeStore {
         self.empty_state_text.remove(&id);
         self.modal_text.remove(&id);
         self.text_fold_views.remove(&id);
+        self.text_inlays.remove(&id);
         self.text_snippets.remove(&id);
         self.text_completions.remove(&id);
         self.text_hovers.remove(&id);
@@ -316,6 +320,12 @@ impl NodeStore {
         TextFoldViewState,
         text_fold_view,
         set_text_fold_view
+    );
+    sparse!(
+        text_inlays,
+        Arc<[crate::TextInlay]>,
+        text_inlays,
+        set_text_inlays
     );
     sparse!(
         text_snippets,

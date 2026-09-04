@@ -2729,14 +2729,17 @@ fn git_gutter_refeed_replaces_marks() {
 #[test]
 fn text_fold_display_view_substitutes_and_maps_offsets() {
     // 块折叠：起始行保留，隐藏三行（两个语句行与 `}` 行）替换为 ` …3`。
-    let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+    let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK], &[]).unwrap();
     let marker = format!("{TEXT_FOLD_MARK_PREFIX}3");
     assert_eq!(view.value, format!("fn a() {{{marker}\nfn b() {{}}"));
     assert_eq!(view.spans.len(), 1);
     let span = &view.spans[0];
     assert_eq!(span.value_start, 8);
     assert_eq!(span.value_end, 28);
-    assert_eq!(span.hidden_lines, 3);
+    assert!(matches!(
+        &span.kind,
+        TextDisplaySpanKind::Fold { hidden_lines, .. } if *hidden_lines == 3
+    ));
 
     // 值↔显示双向映射：隐藏区间内部钳到折叠起始行行尾。
     assert_eq!(view.display_of(0), 0);
@@ -2755,16 +2758,201 @@ fn text_fold_display_view_substitutes_and_maps_offsets() {
     assert!(!view.span_hides(span, 28));
 
     // 嵌套折叠：子折叠的隐藏范围完全落在父折叠内，跳过不重复隐藏。
-    let nested =
-        build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK, crate::TextCodeFold::new(12, 20)])
-            .unwrap();
+    let nested = build_text_display_view(
+        FOLD_VALUE,
+        &[FOLD_BLOCK, crate::TextCodeFold::new(12, 20)],
+        &[],
+    )
+    .unwrap();
     assert_eq!(nested.spans.len(), 1);
     assert_eq!(nested.value, view.value);
 
     // 单行区间没有可隐藏的行：不可折叠。
     let single_line = crate::TextCodeFold::new(29, FOLD_VALUE.len());
     assert!(!single_line.collapsible_in(FOLD_VALUE));
-    assert!(build_text_display_view(FOLD_VALUE, &[single_line]).is_none());
+    assert!(build_text_display_view(FOLD_VALUE, &[single_line], &[]).is_none());
+}
+
+/// 世界校验四例：非 char boundary 锚点、空文本、含 `'\n'`、越界锚点
+/// 一律钳除；乱序输入排序、重复条目去重（钳除风格，同折叠先例）。
+#[test]
+fn inlay_world_validation_clamps_invalid_entries_and_normalizes() {
+    let value = "héllo wörld";
+    let normalized = normalize_text_inlays(
+        value,
+        &[
+            crate::TextInlay::new(2, "非边界:"),
+            crate::TextInlay::new(4, ""),
+            crate::TextInlay::new(6, "a\nb"),
+            crate::TextInlay::new(value.len() + 5, "越界:"),
+            crate::TextInlay::new(6, "t:"),
+            crate::TextInlay::new(6, "t:"),
+            crate::TextInlay::new(0, "z:"),
+        ],
+    );
+    assert_eq!(
+        normalized,
+        vec![crate::TextInlay::new(0, "z:"), crate::TextInlay::new(6, "t:")]
+    );
+    // 合法条目原样保留；空输入零产出。
+    assert_eq!(
+        normalize_text_inlays(value, &[crate::TextInlay::new(4, "x:")]),
+        vec![crate::TextInlay::new(4, "x:")]
+    );
+    assert!(normalize_text_inlays(value, &[]).is_empty());
+}
+
+/// 插入型显示 span：插入文本物化进显示串并参与布局；值↔显示映射在
+/// inlay 两侧互逆（offset 免疫），插入区间内部钳到锚点（无 caret 边界，
+/// 点击穿透吸附锚点字符）。
+#[test]
+fn inlay_display_view_inserts_and_maps_offsets() {
+    let value = "f(x, y)";
+    let view = build_text_display_view(
+        value,
+        &[],
+        &[
+            crate::TextInlay::new(2, "a:"),
+            crate::TextInlay::new(5, "b:"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(view.value, "f(a:x, b:y)");
+    assert_eq!(view.spans.len(), 2);
+    assert!(matches!(view.spans[0].kind, TextDisplaySpanKind::Inlay));
+    assert!(matches!(view.spans[1].kind, TextDisplaySpanKind::Inlay));
+    // 锚点映射到插入文本起点（插入文本渲染在锚点字符之前）；锚点之后
+    // 的偏移平移插入长度。
+    assert_eq!(view.display_of(0), 0);
+    assert_eq!(view.display_of(2), 2);
+    assert_eq!(view.display_of(3), 5);
+    assert_eq!(view.display_of(5), 7);
+    assert_eq!(view.display_of(6), 10);
+    // 插入区间内部（含内部任意点）钳到锚点；右边界即锚点。
+    assert_eq!(view.value_of(2), 2);
+    assert_eq!(view.value_of(3), 2);
+    assert_eq!(view.value_of(4), 2);
+    assert_eq!(view.value_of(8), 5);
+    assert_eq!(view.value_of(9), 5);
+    // 往返互逆：光标/点击在 inlay 右侧行为不变（映射自动免疫）。
+    for offset in [0, 2, 3, 5, 6, value.len()] {
+        assert_eq!(view.value_of(view.display_of(offset)), offset);
+    }
+    // inlay 片段没有隐藏区间。
+    assert!(!view.span_hides(&view.spans[0], 2));
+}
+
+/// 折叠隐藏区间内的 inlay 锚点（锚点字符被摘要替换）丢弃；折叠前后的
+/// 锚点保留且显示位置平移正确（照抄 map_span 的隐藏丢弃先例）。
+#[test]
+fn inlays_inside_folded_regions_are_dropped() {
+    let marker = format!("{TEXT_FOLD_MARK_PREFIX}3");
+    let view = build_text_display_view(
+        FOLD_VALUE,
+        &[FOLD_BLOCK],
+        &[
+            crate::TextInlay::new(15, "x:"),
+            crate::TextInlay::new(4, "p:"),
+            crate::TextInlay::new(28, "q:"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(view.value, format!("fn ap:() {{{marker}q:\nfn b() {{}}"));
+    assert_eq!(view.spans.len(), 3);
+    // 锚点 15 落在折叠隐藏区间 [8,28) 内：不出现。
+    assert!(view.spans.iter().all(|span| span.value_start != 15));
+    assert!(matches!(view.spans[0].kind, TextDisplaySpanKind::Inlay));
+    assert!(matches!(view.spans[1].kind, TextDisplaySpanKind::Fold { .. }));
+    assert!(matches!(view.spans[2].kind, TextDisplaySpanKind::Inlay));
+    // 折叠后锚点的插入位置在摘要之后。
+    let fold_span = &view.spans[1];
+    assert_eq!(view.spans[2].display_start, fold_span.display_start + fold_span.display_len);
+}
+
+/// 世界侧喂入：SetTextInputInlays 经世界校验（钳除 + 排序去重）后进
+/// 显示视图；IME 组合期整体退场（同 swatch 先例），组合结束恢复；空表
+/// 撤除条目。
+#[test]
+fn inlay_feeds_validate_in_world_and_retire_during_ime() {
+    let mut world = UiWorld::default();
+    fold_editor_world(&mut world, Arc::from([]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_inlays(
+        node(1),
+        Arc::from([
+            crate::TextInlay::new(FOLD_VALUE.len() + 5, "越界:"),
+            crate::TextInlay::new(32, "p:"),
+            crate::TextInlay::new(4, "p:"),
+            crate::TextInlay::new(4, "p:"),
+        ]),
+    );
+    world.commit(queue).unwrap();
+    let view = world.text_display_view(node(1)).expect("inlay view");
+    // 越界钳除、重复去重：只剩锚点 4 与 32 两条；插入文本进显示串。
+    assert_eq!(view.spans.len(), 2);
+    assert_eq!(view.value, "fn ap:() {\n    x();\n    y();\n}\nfn p:b() {}");
+
+    // IME 组合期：inlay 整体退场（组合拼接改变字节布局，锚点漂移），
+    // 显示视图回到原值。
+    let mut queue = MutationQueue::new();
+    queue.request_focus(document(1), Some(node(1)));
+    queue.set_ime(
+        node(1),
+        Some(ImeComposition {
+            text: "拼".into(),
+            selection: None,
+        }),
+    );
+    world.commit(queue).unwrap();
+    assert!(
+        world.text_display_view(node(1)).is_none(),
+        "组合期 inlay 退场"
+    );
+
+    // 组合结束恢复。
+    let mut queue = MutationQueue::new();
+    queue.set_ime(node(1), None);
+    world.commit(queue).unwrap();
+    assert!(world.text_display_view(node(1)).is_some(), "组合结束恢复");
+
+    // 空表撤除条目（零分配待机）。
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_inlays(node(1), Arc::from([]));
+    world.commit(queue).unwrap();
+    assert!(world.text_display_view(node(1)).is_none(), "空表撤除");
+}
+
+/// 提取层：inlay 显示区间整段 Muted 灰字（同字号），值空间语法 span
+/// 经重映射后不覆盖插入文本。
+#[test]
+fn inlay_display_regions_get_muted_spans_in_extraction() {
+    let mut world = UiWorld::default();
+    fold_editor_world(&mut world, Arc::from([]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
+    queue.set_text_input_inlays(node(1), Arc::from([crate::TextInlay::new(4, "p:")]));
+    world.commit(queue).unwrap();
+    world.resolve_presentations(&[node(1)]).unwrap();
+    let extracted = &world.extract_nodes(&[node(1)])[0];
+    let muted = world
+        .style_model
+        .color(SemanticColorRole::Muted)
+        .as_rgba_array();
+    let inlay_span = extracted
+        .text_spans
+        .iter()
+        .find(|span| span.start == 4 && span.end == 6)
+        .expect("inlay region colored");
+    assert_eq!(inlay_span.color, muted, "inlay 整段 Muted 灰字");
+    // 其余 span 不与 inlay 区间重叠（重映射起点越过插入文本）。
+    assert!(
+        extracted
+            .text_spans
+            .iter()
+            .filter(|span| !(span.start == 4 && span.end == 6 && span.color == muted))
+            .all(|span| span.end <= 4 || span.start >= 6),
+        "值空间 span 不覆盖插入文本"
+    );
 }
 
 #[test]
@@ -8121,7 +8309,7 @@ fn folded_editor_remaps_syntax_spans_into_display_space() {
     let extracted = &world.extract_nodes(&[node(1)])[0];
     // 显示视图：FOLD_VALUE 折叠 [8,28) → "fn a() { …3\nfn b() {}"，
     // 摘要 " …3" 占显示区间 [8,13)。
-    let display = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+    let display = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK], &[]).unwrap();
     assert_eq!(display.spans[0].value_start, 8);
     assert_eq!(display.spans[0].display_start, 8);
     assert_eq!(display.spans[0].display_len, 5);
@@ -8192,7 +8380,7 @@ fn folded_editor_remaps_syntax_spans_into_display_space() {
 /// 尾段落入隐藏区间丢弃 / 完全隐藏丢弃 / 折叠前后的区间原样映射。
 #[test]
 fn remap_span_to_display_endpoints() {
-    let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK]).unwrap();
+    let view = build_text_display_view(FOLD_VALUE, &[FOLD_BLOCK], &[]).unwrap();
     // 隐藏区间 [8,28)，摘要占显示 [8,13)。
     let pieces = |start: usize, end: usize| remap_span_to_display((start, end), &view);
     // 折叠前后：恒等映射。
@@ -8255,5 +8443,63 @@ fn completion_popup_doc_row_doubles_row_height_and_presents_doc_line() {
             documented.bounds.y + documented.bounds.height - 1.0
         ),
         Some(1)
+    );
+}
+
+/// merge_inlay_glyph_spans 的重叠路径契约：基座 span 与 inlay 区间重叠
+/// 时，inlay 色整段胜出（基座在 inlay 边界切分），重叠段不得被吞掉。
+#[test]
+fn inlay_glyph_merge_lets_inlay_color_win_on_overlap() {
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let muted = [0.5, 0.5, 0.5, 1.0];
+    let merged = merge_inlay_glyph_spans(
+        vec![
+            ExtractedTextSpan {
+                start: 0,
+                end: 4,
+                color: red,
+            },
+            ExtractedTextSpan {
+                start: 6,
+                end: 10,
+                color: green,
+            },
+        ],
+        &[(1usize, 3usize), (6, 8)],
+        muted,
+    );
+    // 前半段重叠（基座 [0,4) × inlay [1,3)）：基座切分前后两段，inlay
+    // 区间整段 muted；后半段（基座 [6,10) × inlay [6,8)）：起点重合时
+    // 无前残余，inlay 整段 + 基座尾段。
+    assert_eq!(
+        merged,
+        vec![
+            ExtractedTextSpan {
+                start: 0,
+                end: 1,
+                color: red,
+            },
+            ExtractedTextSpan {
+                start: 1,
+                end: 3,
+                color: muted,
+            },
+            ExtractedTextSpan {
+                start: 3,
+                end: 4,
+                color: red,
+            },
+            ExtractedTextSpan {
+                start: 6,
+                end: 8,
+                color: muted,
+            },
+            ExtractedTextSpan {
+                start: 8,
+                end: 10,
+                color: green,
+            },
+        ]
     );
 }

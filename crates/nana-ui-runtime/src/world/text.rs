@@ -334,25 +334,38 @@ pub(super) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorR
 /// 折叠摘要标记前缀：折叠起始行行尾显示 ` …N`（N 为隐藏行数）。
 pub(super) const TEXT_FOLD_MARK_PREFIX: &str = " …";
 
-/// 一个折叠态区间的值空间↔显示空间映射片段。
+/// 一个显示视图片段的形态：折叠替换（隐藏值区间并显示摘要）或纯插入
+/// （inlay，值域空区间 + 锚点处插入装饰文本）。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TextDisplaySpan {
-    /// 该片段对应的折叠区间（值空间）。
-    pub fold: crate::TextCodeFold,
-    /// 值空间中被隐藏的字节区间 `[hidden_start, fold.end)`。
-    pub value_start: usize,
-    pub value_end: usize,
-    /// 显示空间中替代文本（` …N`）的起始偏移。
-    pub display_start: usize,
-    /// 替代文本的字节长度。
-    pub display_len: usize,
-    /// 该折叠隐藏的逻辑行数（摘要标记中的 N）。
-    pub hidden_lines: u32,
+pub(crate) enum TextDisplaySpanKind {
+    /// 折叠替换：隐藏 `[value_start, value_end)` 并显示 ` …N` 摘要。
+    Fold {
+        fold: crate::TextCodeFold,
+        hidden_lines: u32,
+    },
+    /// 纯插入（inlay）：`value_start == value_end` 为锚点，锚点处插入
+    /// `label` 文本。插入区间内部无 caret 边界（`value_of` 钳到锚点）。
+    Inlay,
 }
 
-/// 折叠后的显示视图：`value` 是把折叠态区间替换为 ` …N` 摘要后的显示
-/// 文本；`spans` 按值空间顺序列出每个替换片段。几何、点击命中、光标
-/// 移动都以显示视图为准；编辑命令仍按原始值语义处理（折叠不改值）。
+/// 显示视图的一个映射片段。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextDisplaySpan {
+    /// 值空间区间 `[value_start, value_end)`；插入型为空区间（锚点）。
+    pub value_start: usize,
+    pub value_end: usize,
+    /// 显示空间中替代/插入文本的起始偏移。
+    pub display_start: usize,
+    /// 替代/插入文本的字节长度。
+    pub display_len: usize,
+    /// 片段形态（折叠替换或纯插入）。
+    pub kind: TextDisplaySpanKind,
+}
+
+/// 折叠/插入后的显示视图：`value` 是折叠区间替换为 ` …N` 摘要、inlay
+/// 锚点处插入装饰文本后的显示文本；`spans` 按值空间顺序列出每个映射
+/// 片段（折叠替换与纯插入两类）。几何、点击命中、光标移动都以显示
+/// 视图为准；编辑命令仍按原始值语义处理（折叠与 inlay 都不改值）。
 #[derive(Debug, Clone)]
 pub(crate) struct TextDisplayView {
     pub value: String,
@@ -360,8 +373,9 @@ pub(crate) struct TextDisplayView {
 }
 
 impl TextDisplayView {
-    /// 值空间偏移 → 显示空间偏移。落在隐藏区间内部时钳制到该折叠的
-    /// 替代文本起点（即折叠起始行的行尾）。
+    /// 值空间偏移 → 显示空间偏移。折叠：落在隐藏区间内部时钳制到该折叠
+    /// 的替代文本起点（折叠起始行行尾）。inlay：锚点映射到插入文本
+    /// 起点（插入文本渲染在锚点字符之前），锚点之后的偏移平移插入长度。
     pub fn display_of(&self, offset: usize) -> usize {
         let mut delta = 0isize;
         for span in &self.spans {
@@ -377,8 +391,9 @@ impl TextDisplayView {
         ((offset as isize + delta).max(0)) as usize
     }
 
-    /// 显示空间偏移 → 值空间偏移。落在替代文本内部时钳制到折叠起始行
-    /// 的行尾（值空间中该折叠的隐藏起点）。
+    /// 显示空间偏移 → 值空间偏移。折叠：落在替代文本内部时钳制到折叠
+    /// 起始行的行尾。inlay：落在插入文本内部（含右边界）时钳到锚点
+    /// （插入区间内部无 caret 边界，点击穿透吸附锚点处的缓冲字符）。
     pub fn value_of(&self, display: usize) -> usize {
         let mut delta = 0isize;
         for span in &self.spans {
@@ -396,48 +411,185 @@ impl TextDisplayView {
     }
 
     /// 值空间偏移是否严格落在该片段的隐藏区间内部（折叠起始行行尾不算）。
+    /// 插入型片段没有隐藏区间，恒为 `false`。
     pub fn span_hides(&self, span: &TextDisplaySpan, offset: usize) -> bool {
         offset > span.value_start && offset < span.value_end
     }
+
+    /// 显示偏移是否严格落在某个覆盖区间（折叠摘要 / inlay 插入文本）
+    /// 内部。区间内部没有 caret 边界：按 [`Self::value_of`] 会被钳回
+    /// 区间起点的值偏移。
+    pub fn covers_display(&self, display: usize) -> bool {
+        self.spans.iter().any(|span| {
+            display > span.display_start && display < span.display_start + span.display_len
+        })
+    }
+
+    /// 右向移动语义的显示→值映射：目标落在覆盖区间内部时不钳回区间
+    /// 起点（那样逐字符右移会被钳成空操作），而是前进到区间末端的值
+    /// 偏移——一次按键跨过整个覆盖区间，值偏移步进为一：折叠摘要 →
+    /// 折叠后首字符；inlay → 锚点字符之后的下一个值边界（紧邻的同锚点
+    /// 插入一并跨过）。非内部目标与 [`Self::value_of`] 一致。点击命中
+    /// 与垂直移动保持钳制语义，不走本映射。
+    pub fn value_of_forward(&self, display: usize) -> usize {
+        let Some(span) = self.spans.iter().find(|span| {
+            display > span.display_start && display < span.display_start + span.display_len
+        }) else {
+            return self.value_of(display);
+        };
+        let mut end = span.display_start + span.display_len;
+        match &span.kind {
+            // 折叠：区间末端即折叠后首字符的显示位。
+            TextDisplaySpanKind::Fold { .. } => self.value_of(end),
+            TextDisplaySpanKind::Inlay => {
+                // 紧邻的同锚点插入（多条标签背靠背）一并跨过。
+                for next in &self.spans {
+                    if matches!(next.kind, TextDisplaySpanKind::Inlay)
+                        && next.display_start == end
+                    {
+                        end = next.display_start + next.display_len;
+                    }
+                }
+                // end 处是锚点字符（值偏移 = 锚点）：右移一步 = 锚点 +
+                // 该字符长度；锚点在文档末尾时无后续字符，回到锚点。
+                self.value_of(end)
+                    + self.value[end..]
+                        .chars()
+                        .next()
+                        .map_or(0, char::len_utf8)
+            }
+        }
+    }
 }
 
-/// 由折叠态区间构建显示视图；`collapsed` 为空时返回 `None`（零分配短路）。
+impl TextDisplaySpan {
+    /// 折叠形态的区间数据；插入型（inlay）片段返回 `None`。
+    pub(crate) fn fold(&self) -> Option<crate::TextCodeFold> {
+        match &self.kind {
+            TextDisplaySpanKind::Fold { fold, .. } => Some(*fold),
+            TextDisplaySpanKind::Inlay => None,
+        }
+    }
+}
+
+/// 世界校验后的 inlay 集合：锚点必须是 `value` 的 char boundary 且不
+/// 越界、文本非空且不含 `'\n'`（行数换算按 `\n` 计数，换行会破坏行高
+/// 与行号）；按 `(offset, label)` 排序去重。非法条目钳除（照抄
+/// [`crate::UiMutation::SetTextInputFoldCollapsed`] 的规范化风格，不做
+/// 整体拒绝）——inlay 是宿主随语义快照防抖重喂的视图装饰，钳除让
+/// 部分陈旧的喂入不至于拖垮整批。
+pub(super) fn normalize_text_inlays(
+    value: &str,
+    inlays: &[crate::TextInlay],
+) -> Vec<crate::TextInlay> {
+    let mut normalized: Vec<crate::TextInlay> = inlays
+        .iter()
+        .filter(|inlay| {
+            inlay.offset <= value.len()
+                && value.is_char_boundary(inlay.offset)
+                && !inlay.label.is_empty()
+                && !inlay.label.contains('\n')
+        })
+        .cloned()
+        .collect();
+    normalized.sort_by(|a, b| (&a.offset, &a.label).cmp(&(&b.offset, &b.label)));
+    normalized.dedup();
+    normalized
+}
+
+/// 由折叠态区间与 inlay 集合构建显示视图；两者都为空时返回 `None`
+/// （零分配短路）。
 ///
 /// 嵌套折叠：子折叠的隐藏区间与前一个已接受区间重叠（即完全落在父折叠
-/// 的隐藏范围内）时跳过——父折叠已经把这些行隐藏。
+/// 的隐藏范围内）时跳过——父折叠已经把这些行隐藏。inlay 锚点落在折叠
+/// 隐藏区间内（锚点字符被替换）时丢弃，照抄诊断/匹配 span 的隐藏丢弃
+/// 先例，不强制展开；同锚点的多条 inlay 按标签序依次插入。
 pub(super) fn build_text_display_view(
     value: &str,
     collapsed: &[crate::TextCodeFold],
+    inlays: &[crate::TextInlay],
 ) -> Option<TextDisplayView> {
-    if collapsed.is_empty() {
+    if collapsed.is_empty() && inlays.is_empty() {
         return None;
     }
+    // 折叠与插入统一按值空间位置归并：折叠取隐藏起点（替换区间的键），
+    // inlay 取锚点。同键时折叠在前——锚点等于隐藏起点的 inlay 其锚点
+    // 字符已被摘要替换，随后按「锚点已被消费」丢弃。
+    enum Segment<'a> {
+        Fold(crate::TextCodeFold),
+        Inlay(&'a crate::TextInlay),
+    }
+    let mut segments: Vec<(usize, Segment<'_>)> = Vec::with_capacity(collapsed.len() + inlays.len());
+    segments.extend(
+        collapsed
+            .iter()
+            .map(|fold| (fold.hidden_start_in(value), Segment::Fold(*fold))),
+    );
+    segments.extend(inlays.iter().map(|inlay| (inlay.offset, Segment::Inlay(inlay))));
+    segments.sort_by_key(|(position, segment)| (*position, segment_rank(segment)));
+
+    fn segment_rank(segment: &Segment<'_>) -> u8 {
+        match segment {
+            Segment::Fold(_) => 0,
+            Segment::Inlay(_) => 1,
+        }
+    }
+
     let mut display = String::with_capacity(value.len());
     let mut spans = Vec::new();
     let mut cursor = 0usize;
-    for &fold in collapsed {
-        if fold.start >= fold.end || fold.end > value.len() {
-            continue;
+    for (_, segment) in &segments {
+        match segment {
+            Segment::Fold(fold) => {
+                let fold = *fold;
+                if fold.start >= fold.end || fold.end > value.len() {
+                    continue;
+                }
+                let hidden_start = fold.hidden_start_in(value);
+                if hidden_start >= fold.end || hidden_start < cursor {
+                    // 单行区间没有可隐藏的行；与前一个折叠重叠的子折叠
+                    // 不重复隐藏。
+                    continue;
+                }
+                display.push_str(&value[cursor..hidden_start]);
+                let display_start = display.len();
+                let hidden_lines = value[hidden_start..fold.end].matches('\n').count();
+                display.push_str(TEXT_FOLD_MARK_PREFIX);
+                display.push_str(&hidden_lines.to_string());
+                spans.push(TextDisplaySpan {
+                    value_start: hidden_start,
+                    value_end: fold.end,
+                    display_start,
+                    display_len: display.len() - display_start,
+                    kind: TextDisplaySpanKind::Fold {
+                        fold,
+                        hidden_lines: hidden_lines as u32,
+                    },
+                });
+                cursor = fold.end;
+            }
+            Segment::Inlay(inlay) => {
+                // 锚点越界/非边界（防御：正常路径已在世界校验钳除）或
+                // 已被前面的折叠消费（锚点字符被摘要替换）时丢弃。
+                if inlay.offset > value.len()
+                    || !value.is_char_boundary(inlay.offset)
+                    || inlay.offset < cursor
+                {
+                    continue;
+                }
+                display.push_str(&value[cursor..inlay.offset]);
+                let display_start = display.len();
+                display.push_str(&inlay.label);
+                spans.push(TextDisplaySpan {
+                    value_start: inlay.offset,
+                    value_end: inlay.offset,
+                    display_start,
+                    display_len: inlay.label.len(),
+                    kind: TextDisplaySpanKind::Inlay,
+                });
+                cursor = inlay.offset;
+            }
         }
-        let hidden_start = fold.hidden_start_in(value);
-        if hidden_start >= fold.end || hidden_start < cursor {
-            // 单行区间没有可隐藏的行；与前一个折叠重叠的子折叠不重复隐藏。
-            continue;
-        }
-        display.push_str(&value[cursor..hidden_start]);
-        let display_start = display.len();
-        let hidden_lines = value[hidden_start..fold.end].matches('\n').count();
-        display.push_str(TEXT_FOLD_MARK_PREFIX);
-        display.push_str(&hidden_lines.to_string());
-        spans.push(TextDisplaySpan {
-            fold,
-            value_start: hidden_start,
-            value_end: fold.end,
-            display_start,
-            display_len: display.len() - display_start,
-            hidden_lines: hidden_lines as u32,
-        });
-        cursor = fold.end;
     }
     if spans.is_empty() {
         return None;
@@ -453,12 +605,25 @@ pub(super) fn build_text_display_view(
 /// - 起点落在隐藏区间内部的片段从该折叠之后起（钳到摘要之后，摘要文本
 ///   不着色）；
 /// - 跨折叠区间的片段在区间边界切分为可见前后两段；
-/// - 完全落入隐藏区间的片段丢弃。
+/// - 完全落入隐藏区间的片段丢弃；
+/// - 片段起点与 inlay 插入点重合时前进到插入文本之后（插入文本由
+///   inlay 自己的着色 span 整段覆盖，值空间 span 不越过）。
+///
 /// 输出片段按折叠顺序排列，均落在可见文本上（不覆盖任何摘要文本）。
 pub(super) fn remap_span_to_display(
     span: (usize, usize),
     view: &TextDisplayView,
 ) -> Vec<(usize, usize)> {
+    /// 显示起点越过紧邻其后的 inlay 插入区间（同锚点连续多条时链式
+    /// 前进；spans 按显示顺序排列）。
+    fn skip_inlay_prefix(view: &TextDisplayView, mut start: usize) -> usize {
+        for span in &view.spans {
+            if matches!(span.kind, TextDisplaySpanKind::Inlay) && span.display_start == start {
+                start = span.display_start + span.display_len;
+            }
+        }
+        start
+    }
     let mut pieces = Vec::new();
     let mut cursor = span.0;
     for region in &view.spans {
@@ -469,7 +634,11 @@ pub(super) fn remap_span_to_display(
             continue;
         }
         if cursor < region.value_start {
-            pieces.push((view.display_of(cursor), view.display_of(region.value_start)));
+            let start = skip_inlay_prefix(view, view.display_of(cursor));
+            let end = view.display_of(region.value_start);
+            if start < end {
+                pieces.push((start, end));
+            }
         }
         cursor = region.value_end;
         if cursor >= span.1 {
@@ -477,7 +646,11 @@ pub(super) fn remap_span_to_display(
         }
     }
     if cursor < span.1 {
-        pieces.push((view.display_of(cursor), view.display_of(span.1)));
+        let start = skip_inlay_prefix(view, view.display_of(cursor));
+        let end = view.display_of(span.1);
+        if start < end {
+            pieces.push((start, end));
+        }
     }
     pieces
 }
@@ -1038,6 +1211,65 @@ pub(super) fn merge_bracket_glyph_spans(
     merged
 }
 
+/// 把行内 inlay 的着色区间合并进显示 span 集：inlay 区间优先（与
+/// inlay 重叠的基础层被切分丢弃），inlay 区间以给定颜色整段重发。两侧
+/// 输入各自不重叠且有序；输出按起点有序、互不重叠（场景文本渲染按
+/// 游标推进消费 span）。
+pub(super) fn merge_inlay_glyph_spans(
+    mut spans: Vec<ExtractedTextSpan>,
+    inlays: &[(usize, usize)],
+    color: [f32; 4],
+) -> Vec<ExtractedTextSpan> {
+    if inlays.is_empty() {
+        return spans;
+    }
+    spans.sort_unstable_by_key(|span| (span.start, span.end));
+    let mut merged: Vec<ExtractedTextSpan> = Vec::with_capacity(spans.len() + inlays.len());
+    let mut inlay_index = 0usize;
+    for span in spans.drain(..) {
+        while inlay_index < inlays.len() && inlays[inlay_index].1 <= span.start {
+            let &(start, end) = &inlays[inlay_index];
+            if start < end {
+                merged.push(ExtractedTextSpan { start, end, color });
+            }
+            inlay_index += 1;
+        }
+        let mut cursor = span.start;
+        while inlay_index < inlays.len() && inlays[inlay_index].0 < span.end {
+            let &(start, end) = &inlays[inlay_index];
+            if start > cursor {
+                merged.push(ExtractedTextSpan {
+                    start: cursor,
+                    end: start,
+                    color: span.color,
+                });
+            }
+            // inlay 区间以 inlay 色整段胜出（与前置/尾 flush 同款补发，
+            // 重叠路径不吞段）。
+            if start < end {
+                merged.push(ExtractedTextSpan { start, end, color });
+            }
+            cursor = end.max(cursor);
+            inlay_index += 1;
+        }
+        if cursor < span.end {
+            merged.push(ExtractedTextSpan {
+                start: cursor,
+                end: span.end,
+                color: span.color,
+            });
+        }
+    }
+    while inlay_index < inlays.len() {
+        let &(start, end) = &inlays[inlay_index];
+        if start < end {
+            merged.push(ExtractedTextSpan { start, end, color });
+        }
+        inlay_index += 1;
+    }
+    merged
+}
+
 /// minimap 行长收集：每个逻辑行的非空白字符数（O(文档) 单趟扫描）。
 /// 行数与滚动换算的 `matches('\n') + 1` 语义一致（尾随换行是可滚动到
 /// 的空逻辑行）；空白行计 0（绘制层不产生行条）。
@@ -1425,16 +1657,17 @@ pub(super) fn shape_text_input_presentation(
             .collect();
         // 折叠隐藏行后，显示行索引不再等于原始逻辑行号：把每个折叠片段
         // 之前的隐藏行数累计回行号（无折叠时返回空表，几何层按索引 + 1）。
+        // inlay 片段不隐藏行（文本禁 '\n'），不参与计数。
         let mut numbers = match &source.fold {
             Some(view) => {
                 let span_lines: Vec<(usize, u32)> = view
                     .spans
                     .iter()
-                    .map(|span| {
-                        (
-                            view.value[..span.display_start].matches('\n').count(),
-                            span.hidden_lines,
-                        )
+                    .filter_map(|span| match &span.kind {
+                        TextDisplaySpanKind::Fold { hidden_lines, .. } => {
+                            Some((view.value[..span.display_start].matches('\n').count(), *hidden_lines))
+                        }
+                        TextDisplaySpanKind::Inlay => None,
                     })
                     .collect();
                 starts
@@ -1476,12 +1709,16 @@ pub(super) fn shape_text_input_presentation(
         (Vec::new(), Vec::new())
     };
     // 折叠摘要标记：折叠起始行行尾 ` …N` 的文本框（文本空间），供几何层
-    // 生成点击命中区域。
+    // 生成点击命中区域。inlay 片段没有交互语义，不产生标记。
     let fold_marks = match &source.fold {
         Some(view) if source.multiline => view
             .spans
             .iter()
-            .map(|span| {
+            .filter_map(|span| {
+                let fold = match &span.kind {
+                    TextDisplaySpanKind::Fold { fold, .. } => *fold,
+                    TextDisplaySpanKind::Inlay => return None,
+                };
                 let (x, y, height) = shaper.text_position(
                     id,
                     &source.text,
@@ -1496,15 +1733,15 @@ pub(super) fn shape_text_input_presentation(
                     style,
                     presentation_constraints,
                 );
-                crate::components::TextFoldMark {
+                Some(crate::components::TextFoldMark {
                     rect: LayoutBox {
                         x,
                         y,
                         width: (end_x - x).max(1.0),
                         height,
                     },
-                    fold: span.fold,
-                }
+                    fold,
+                })
             })
             .collect(),
         _ => Vec::new(),
@@ -2231,7 +2468,9 @@ impl UiWorld {
         // 焦点随 source 下发：出现高亮只在聚焦编辑器上派生，未聚焦的
         // 多行编辑器零分配跳过整条扫描路径。
         let focused = self.input.focused.get(&self.record(id).document) == Some(&id);
-        // 折叠显示视图：仅多行态且有折叠态区间时构建（空集合零成本短路）。
+        // 折叠/inlay 显示视图：仅多行态且有折叠态区间或行内提示时构建
+        // （两者都为空集合时零成本短路，不分配显示串）。IME 组合期
+        // inlay 退场由 text_display_view 内部处理。
         let fold = if multiline {
             self.text_display_view(id)
         } else {
@@ -2952,11 +3191,31 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// 折叠后的显示视图；没有折叠态区间时 `None`（零分配短路）。
+    /// 折叠/inlay 后的显示视图；没有折叠态区间与行内提示时 `None`
+    /// （零分配短路）。
     pub(crate) fn text_display_view(&self, id: StableNodeId) -> Option<TextDisplayView> {
         let state = self.nodes.text_input(id)?;
-        let entry = self.nodes.text_fold_view(id)?;
-        build_text_display_view(&state.value, &entry.collapsed)
+        let inlays = self.nodes.text_inlays(id);
+        let entry = self.nodes.text_fold_view(id);
+        if inlays.is_none() && entry.is_none() {
+            return None;
+        }
+        // IME 组合期 inlay 整体退场（同 swatch 先例：组合拼接改变显示
+        // 字节布局，值空间锚点漂移）；折叠照常参与组合拼接。
+        let inlays: &[crate::TextInlay] = match (self.nodes.ime(id).is_some(), inlays) {
+            (false, Some(fed)) => fed,
+            _ => &[],
+        };
+        let collapsed = entry
+            .as_ref()
+            .map(|entry| entry.collapsed.as_slice())
+            .unwrap_or(&[]);
+        build_text_display_view(&state.value, collapsed, inlays)
+    }
+
+    /// 当前喂入的行内提示集（供组件投影做喂入去重）。
+    pub(crate) fn text_inlay_items(&self, id: StableNodeId) -> Option<&Arc<[crate::TextInlay]>> {
+        self.nodes.text_inlays(id)
     }
 }
 
