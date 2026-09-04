@@ -271,7 +271,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .flatten();
         let program_input =
             self.program
-                .input_event_routed(id, &input, pointer_hit, &self.context_for(id));
+                .input_event_routed_with_disposition(id, &input, pointer_hit, disposition, &self.context_for(id));
         if let Err(error) = &program_input {
             self.program.host_failure(HostFailure::InputHandler {
                 window: id,

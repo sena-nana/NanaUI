@@ -419,6 +419,22 @@ pub trait RuntimeProgram: Sized + 'static {
         self.input_event(id, event, context)
     }
 
+    /// Receive raw input after Runtime dispatch, including whether a control
+    /// consumed its default action. Hooks still run for consumed events so
+    /// applications can drain pending input; gate application shortcuts with
+    /// `disposition.prevent_default` to avoid handling the same Escape twice.
+    /// The default preserves existing `input_event_routed` implementations.
+    fn input_event_routed_with_disposition(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+        pointer_hit: Option<StableNodeId>,
+        _disposition: nana_ui_platform::InputDisposition,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.input_event_routed(id, event, pointer_hit, context)
+    }
+
     fn window_event(
         &mut self,
         _event: WindowEvent,
