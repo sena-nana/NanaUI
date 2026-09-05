@@ -543,6 +543,7 @@ impl crate::ComponentView for ContextMenu {
                 trigger: None,
                 trigger_icon: None,
                 gap: 0.0,
+                overlay: None,
                 query: self.searchable.then(|| Arc::clone(&self.query)),
                 rows,
                 highlighted: self.highlighted,

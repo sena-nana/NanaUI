@@ -3,8 +3,8 @@ use std::sync::{Arc, LazyLock};
 
 use nana_ui_core::{
     CardKind, ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon,
-    LayoutStyle, LineBreakSpec, LineHeightSpec, SemanticColorRole, SwitchControlPosition,
-    UI_BASE_TEXT_SIZE, WordBreakSpec,
+    LayoutStyle, LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement,
+    SemanticColorRole, SwitchControlPosition, UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
 pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
@@ -805,6 +805,9 @@ pub enum StandardVisual {
         trigger: Option<Arc<str>>,
         trigger_icon: Option<Icon>,
         gap: f32,
+        /// Present when this node is an in-flow trigger; the menu items layout
+        /// as a separate overlay column and must not share this node's box.
+        overlay: Option<TriggeredMenuOverlay>,
         query: Option<Arc<str>>,
         rows: Arc<[SelectOptionData]>,
         highlighted: Option<usize>,
@@ -910,6 +913,17 @@ pub enum MenuSurfaceKind {
     Popover,
     ActionMenu,
     ContextMenu,
+}
+
+/// Anchor for an in-flow trigger's overlay panel. The trigger node stays in
+/// the host layout; items are placed at this origin as a viewport-fixed column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriggeredMenuOverlay {
+    pub placement: PopoverPlacement,
+    pub alignment: PopoverAlignment,
+    pub width: f32,
+    pub padding: f32,
+    pub gap: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

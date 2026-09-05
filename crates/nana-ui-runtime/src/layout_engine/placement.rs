@@ -579,6 +579,25 @@ pub(super) fn place_node_scoped(
             )?;
         }
     }
+    if let Some(overlay) = triggered_menu_overlay(nodes.world, id) {
+        place_triggered_menu_items(
+            overlay,
+            LayoutBox {
+                x: origin.x,
+                y: origin.y,
+                width: size.width,
+                height: size.height,
+            },
+            &positioned,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
+        return Ok(());
+    }
     for child in positioned {
         let Some(child_style) = nodes.style(child) else {
             continue;
@@ -678,6 +697,109 @@ pub(super) fn place_node_scoped(
                 None,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn triggered_menu_overlay(
+    world: &crate::UiWorld,
+    id: StableNodeId,
+) -> Option<crate::TriggeredMenuOverlay> {
+    match world.standard_visual(id) {
+        Some(crate::StandardVisual::MenuSurface {
+            open: true,
+            overlay: Some(overlay),
+            ..
+        }) => Some(overlay),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_triggered_menu_items(
+    overlay: crate::TriggeredMenuOverlay,
+    trigger: LayoutBox,
+    items: &[StableNodeId],
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut IntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    let inner_width = (overlay.width - overlay.padding * 2.0).max(0.0);
+    let available = Size::new(inner_width, viewport.height);
+    let mut item_sizes = Vec::with_capacity(items.len());
+    let mut content_height = 0.0;
+    for (index, child) in items.iter().copied().enumerate() {
+        let size = intrinsic_size_scoped(
+            child,
+            available,
+            None,
+            viewport,
+            parent_font_px,
+            nodes,
+            intrinsic,
+            scope,
+        )?;
+        if index > 0 {
+            content_height += crate::popover::MENU_ITEM_GAP;
+        }
+        content_height += size.height;
+        item_sizes.push(size);
+    }
+    let surface_height = overlay.padding * 2.0 + content_height;
+    let viewport_box = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: viewport.width,
+        height: viewport.height,
+    };
+    let (origin_x, origin_y) = crate::popover::resolve_popover_origin(
+        trigger,
+        overlay.width,
+        surface_height,
+        viewport_box,
+        overlay.placement,
+        overlay.alignment,
+        overlay.gap,
+    );
+    let mut cursor_y = origin_y + overlay.padding;
+    let item_x = origin_x + overlay.padding;
+    for (child, child_size) in items.iter().copied().zip(item_sizes) {
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        let child_style = child_style.as_ref();
+        let child_fonts = fonts_of(child_style, parent_font_px);
+        let child_origin = Point {
+            x: item_x,
+            y: cursor_y,
+        };
+        if !subtree_unchanged(
+            child,
+            child_origin,
+            child_size,
+            available,
+            child_style,
+            child_fonts,
+            scope,
+        ) {
+            place_node_scoped(
+                child,
+                child_origin,
+                child_size,
+                available,
+                viewport,
+                parent_font_px,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+                None,
+            )?;
+        }
+        cursor_y += child_size.height + crate::popover::MENU_ITEM_GAP;
     }
     Ok(())
 }

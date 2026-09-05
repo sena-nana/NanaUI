@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ControlSize, FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
+    FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
     PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE, UI_METRICS,
 };
 
@@ -9,7 +9,7 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentElevation, ComponentGeometry,
     ComponentTextRegion, InteractionState, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind,
-    NodeStyle, StableNodeId, StandardVisual, UiWorld,
+    NodeStyle, StableNodeId, StandardVisual, TriggeredMenuOverlay, UiWorld,
 };
 
 const POPOVER_WIDTH: f32 = 240.0;
@@ -19,6 +19,8 @@ const ACTION_MENU_WIDTH: f32 = 200.0;
 const ACTION_MENU_PADDING: f32 = 4.0;
 const ACTION_MENU_GAP: f32 = 4.0;
 const MENU_MIN_WIDTH: f32 = 120.0;
+pub(crate) const MENU_ITEM_GAP: f32 = 1.0;
+pub(crate) const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 /// The trigger is a real button, so it matches the compact control height
 /// rather than hugging its glyphs.
 pub(crate) const TRIGGER_HEIGHT: f32 = UI_METRICS.compact_control_height;
@@ -265,6 +267,13 @@ pub(crate) fn project_menu_surface(
             trigger: trigger.clone(),
             trigger_icon,
             gap,
+            overlay: has_trigger.then_some(TriggeredMenuOverlay {
+                placement,
+                alignment,
+                width: width.max(MENU_MIN_WIDTH),
+                padding,
+                gap,
+            }),
             query: None,
             rows: Arc::from([]),
             highlighted: None,
@@ -292,27 +301,13 @@ pub(crate) fn project_menu_surface(
             },
         );
     }
-    let mut style = triggered_menu_style(
+    let style = triggered_menu_style(
         trigger_icon.is_some(),
         trigger.as_deref(),
         open,
         width,
         padding,
-        gap,
     );
-    if open && has_trigger {
-        let surface_height = open_surface_height(world, id, TRIGGER_HEIGHT, padding, gap);
-        anchor_open_surface(
-            id,
-            world,
-            &mut style,
-            placement,
-            alignment,
-            width.max(MENU_MIN_WIDTH),
-            surface_height,
-            gap,
-        );
-    }
     project_common(
         id,
         world,
@@ -330,63 +325,42 @@ pub(crate) fn project_menu_surface(
     );
 }
 
-/// An open surface must not participate in its host layout: it anchors to the
-/// box of the slot it is mounted in (the parent node, which keeps the trigger's
-/// neighbourhood stable) and switches to a viewport-basis `Fixed` box. Without
-/// a laid-out slot the surface falls back to the previous in-flow morph.
-fn anchor_open_surface(
-    id: StableNodeId,
-    world: &UiWorld,
-    style: &mut NodeStyle,
-    placement: PopoverPlacement,
-    alignment: PopoverAlignment,
-    surface_width: f32,
-    surface_height: f32,
-    gap: f32,
-) {
-    let slot = world
-        .node(id)
-        .and_then(|node| node.parent)
-        .and_then(|parent| world.layout_box(parent))
-        .or_else(|| world.layout_box(id));
-    let Some(slot_box) = slot else {
-        return;
-    };
-    // The viewport is not known at projection time, so edge clamping is left to
-    // a later pass; the placement math itself stays in resolve_popover_origin.
-    let unbounded = LayoutBox {
-        x: -1.0e9,
-        y: -1.0e9,
-        width: 2.0e9,
-        height: 2.0e9,
-    };
-    let (x, y) = resolve_popover_origin(
-        slot_box,
-        surface_width,
-        surface_height,
-        unbounded,
-        placement,
-        alignment,
-        gap,
-    );
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.position = PositionSpec::Fixed;
-    layout.offset_left = Some(LengthSpec::Px(x));
-    layout.offset_top = Some(LengthSpec::Px(y));
-}
-
-/// Estimated open-surface height (trigger strip plus item rows) for the origin
-/// math above; rows measure like compact menu items with 1px separation.
-fn open_surface_height(
+pub(crate) fn overlay_surface_from_items(
     world: &UiWorld,
     id: StableNodeId,
-    trigger_height: f32,
-    padding: f32,
-    gap: f32,
-) -> f32 {
-    let items = world.node(id).map(|node| node.children.len()).unwrap_or(0) as f32;
-    let item = ControlSize::Small.height();
-    trigger_height + gap + padding * 2.0 + items * item + (items - 1.0).max(0.0)
+    overlay: Option<&TriggeredMenuOverlay>,
+) -> LayoutBox {
+    let Some(overlay) = overlay else {
+        return LayoutBox::default();
+    };
+    let children = world.node(id).map(|node| node.children).unwrap_or_default();
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    let mut any = false;
+    for child in children {
+        let Some(child_box) = world.layout_box(child) else {
+            continue;
+        };
+        if child_box.width <= 0.0 && child_box.height <= 0.0 {
+            continue;
+        }
+        any = true;
+        min_x = min_x.min(child_box.x);
+        min_y = min_y.min(child_box.y);
+        max_x = max_x.max(child_box.x + child_box.width);
+        max_y = max_y.max(child_box.y + child_box.height);
+    }
+    if !any {
+        return LayoutBox::default();
+    }
+    LayoutBox {
+        x: min_x - overlay.padding,
+        y: min_y - overlay.padding,
+        width: (max_x - min_x) + overlay.padding * 2.0,
+        height: (max_y - min_y) + overlay.padding * 2.0,
+    }
 }
 
 fn triggered_menu_style(
@@ -395,17 +369,14 @@ fn triggered_menu_style(
     open: bool,
     width: f32,
     padding: f32,
-    gap: f32,
 ) -> NodeStyle {
-    let has_trigger = trigger.is_some() || icon_trigger;
-    let trigger_h = if has_trigger { TRIGGER_HEIGHT } else { 0.0 };
+    if icon_trigger {
+        return trigger_icon_button_style();
+    }
+    if trigger.is_some() {
+        return trigger_button_style();
+    }
     if !open {
-        if icon_trigger {
-            return trigger_icon_button_style();
-        }
-        if trigger.is_some() {
-            return trigger_button_style();
-        }
         // Nothing to press and nothing to show, so the node keeps the smallest
         // box that stays out of the way.
         return NodeStyle {
@@ -425,10 +396,10 @@ fn triggered_menu_style(
             width: Some(LengthSpec::Px(width.max(MENU_MIN_WIDTH))),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
-            gap: Some(LengthSpec::Px(1.0)),
+            gap: Some(LengthSpec::Px(MENU_ITEM_GAP)),
             padding_left: Some(LengthSpec::Px(padding)),
             padding_right: Some(LengthSpec::Px(padding)),
-            padding_top: Some(LengthSpec::Px(trigger_h + gap + padding)),
+            padding_top: Some(LengthSpec::Px(padding)),
             padding_bottom: Some(LengthSpec::Px(padding)),
             border_radius: Some(UI_METRICS.radius_md),
             ..nana_ui_core::LayoutStyle::default()
@@ -489,7 +460,7 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
             padding_bottom: Some(LengthSpec::Px(padding)),
             border_width: Some(1.0),
             border_radius: Some(UI_METRICS.radius_md),
-            z_index: Some(1_000),
+            z_index: Some(MENU_OVERLAY_Z_INDEX),
             ..nana_ui_core::LayoutStyle::default()
         }),
         background: Some(SemanticColorRole::Surface),
@@ -516,6 +487,7 @@ pub(crate) fn project_anchored_menu(
             trigger: None,
             trigger_icon: None,
             gap: 0.0,
+            overlay: None,
             query: None,
             rows: Arc::from([]),
             highlighted: None,
@@ -549,23 +521,13 @@ pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
     trigger_icon: Option<Icon>,
-    gap: f32,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
+    surface: LayoutBox,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let has_trigger = trigger.is_some() || trigger_icon.is_some();
     let trigger_h = if has_trigger { TRIGGER_HEIGHT } else { 0.0 };
-    let surface = if trigger_h > 0.0 {
-        LayoutBox {
-            x: bounds.x,
-            y: bounds.y + trigger_h + gap,
-            width: bounds.width,
-            height: (bounds.height - trigger_h - gap).max(0.0),
-        }
-    } else {
-        bounds
-    };
     // In icon mode the trigger text is only the accessible name, so no text
     // region is emitted and the glyph owns the chrome.
     let label = if trigger_icon.is_none() {
@@ -720,6 +682,7 @@ mod tests {
                 trigger: Some(Arc::from("Actions")),
                 trigger_icon: None,
                 gap: 0.0,
+                overlay: None,
                 query: None,
                 rows: Arc::from([]),
                 highlighted: None,
@@ -811,17 +774,9 @@ mod tests {
             })
             .unwrap();
         let open = context.world().node_style(id).unwrap();
-        assert_eq!(
-            open.layout.padding_top,
-            Some(LengthSpec::Px(
-                TRIGGER_HEIGHT + POPOVER_GAP + POPOVER_PADDING
-            ))
-        );
-        assert_eq!(
-            open.layout.padding_left,
-            Some(LengthSpec::Px(POPOVER_PADDING))
-        );
-        assert!(open.background.is_none());
+        assert_eq!(open.layout.height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(open.background, Some(SemanticColorRole::Subtle));
+        assert_eq!(open.layout.position, PositionSpec::Static);
     }
 
     #[test]
@@ -885,6 +840,7 @@ mod tests {
                 trigger: None,
                 trigger_icon: Some(Icon::Add),
                 gap: 0.0,
+                overlay: None,
                 query: None,
                 rows: Arc::from([]),
                 highlighted: None,
@@ -970,9 +926,8 @@ mod tests {
         );
     }
 
-    /// An open menu is a viewport-basis surface: its host row keeps the exact
-    /// boxes it had while the menu was closed, instead of growing by the
-    /// surface height.
+    /// An open menu's items leave the host row: the trigger keeps the closed
+    /// box, neighbours stay put, and the panel hangs below the trigger.
     #[test]
     fn an_open_menu_stops_participating_in_its_host_layout() {
         let mut context = AppContext::new();
@@ -996,6 +951,7 @@ mod tests {
             .unwrap();
         let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
         let closed_sibling = context.world().layout_box(sibling.stable_id()).unwrap();
+        let closed_trigger = context.world().layout_box(menu.stable_id()).unwrap();
 
         context
             .update_component(menu, |menu, _| {
@@ -1010,28 +966,39 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
-        let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
+        let open_trigger = context.world().layout_box(menu.stable_id()).unwrap();
         let open_slot = context.world().layout_box(slot.stable_id()).unwrap();
+        let open_item = context.world().layout_box(item.stable_id()).unwrap();
         let style = context.world().node_style(menu.stable_id()).unwrap();
-        assert_eq!(style.layout.position, PositionSpec::Fixed);
-        // The surface hangs below the slot it is mounted in (Bottom + Start).
-        assert!((open_menu.y - (closed_slot.y + closed_slot.height + ACTION_MENU_GAP)).abs() < 1.0);
-        assert!((open_menu.x - closed_slot.x).abs() < 1.0);
-        // The slot collapses once the surface leaves the flow, but neighbours
-        // keep their closed-layout boxes: nothing else is pushed around.
-        assert!(open_slot.height < closed_slot.height);
+        assert_eq!(style.layout.position, PositionSpec::Static);
+        assert_eq!(open_trigger, closed_trigger);
+        assert_eq!(open_slot, closed_slot);
         assert_eq!(
             context.world().layout_box(sibling.stable_id()).unwrap(),
             closed_sibling
         );
+        assert!(
+            open_item.y >= open_trigger.y + open_trigger.height + ACTION_MENU_GAP - 1.0,
+            "panel hangs below the trigger: trigger={open_trigger:?} item={open_item:?}"
+        );
+        let item_style = context.world().layout_style(item.stable_id()).unwrap();
+        assert_eq!(item_style.position, PositionSpec::Fixed);
     }
 
-    /// `Top` placement anchors the surface above its slot: the bottom edge
-    /// sits one gap above the slot top, so bottom-of-window triggers open
-    /// upwards.
+    /// `Top` placement anchors the panel above the trigger: the trigger stays
+    /// in place and the item column sits one gap above it.
     #[test]
     fn top_placement_opens_the_surface_above_its_slot() {
         let mut context = AppContext::new();
+        let column = context
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let spacer = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(240.0)),
+            )
+            .unwrap();
         let row = context
             .create_component(document(), crate::Stack::row(8.0))
             .unwrap();
@@ -1046,12 +1013,14 @@ mod tests {
                     .placement(PopoverPlacement::Top),
             )
             .unwrap();
+        context.append_child(column, spacer).unwrap();
+        context.append_child(column, row).unwrap();
         context.append_child(row, slot).unwrap();
         context.append_child(slot, menu).unwrap();
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
+        let closed_trigger = context.world().layout_box(menu.stable_id()).unwrap();
 
         context
             .update_component(menu, |menu, _| {
@@ -1066,11 +1035,15 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
-        let open_menu = context.world().layout_box(menu.stable_id()).unwrap();
-        assert!(open_menu.y < closed_slot.y, "surface opens above the slot");
+        let open_trigger = context.world().layout_box(menu.stable_id()).unwrap();
+        let open_item = context.world().layout_box(item.stable_id()).unwrap();
+        assert_eq!(
+            open_trigger, closed_trigger,
+            "trigger stays in the host row"
+        );
         assert!(
-            ((open_menu.y + open_menu.height) - (closed_slot.y - ACTION_MENU_GAP)).abs() < 1.0,
-            "surface bottom clears the slot top by one gap"
+            open_item.y + open_item.height <= open_trigger.y - ACTION_MENU_GAP + 1.0,
+            "panel opens above the trigger: trigger={open_trigger:?} item={open_item:?}"
         );
     }
 

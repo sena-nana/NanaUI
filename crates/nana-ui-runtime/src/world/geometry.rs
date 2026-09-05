@@ -2132,16 +2132,24 @@ impl UiWorld {
             StandardVisual::MenuSurface {
                 trigger,
                 trigger_icon,
-                gap,
+                overlay,
                 ..
-            } => Some(crate::popover::menu_surface_geometry(
-                bounds,
-                trigger.as_ref(),
-                *trigger_icon,
-                *gap,
-                style,
-                &self.style_model.palette,
-            )),
+            } => {
+                let has_trigger = trigger.is_some() || trigger_icon.is_some();
+                let surface = if has_trigger {
+                    crate::popover::overlay_surface_from_items(self, id, overlay.as_ref())
+                } else {
+                    bounds
+                };
+                Some(crate::popover::menu_surface_geometry(
+                    bounds,
+                    trigger.as_ref(),
+                    *trigger_icon,
+                    style,
+                    &self.style_model.palette,
+                    surface,
+                ))
+            }
             StandardVisual::ActionMenuItem {
                 label,
                 hint,
