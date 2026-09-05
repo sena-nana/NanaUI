@@ -12,7 +12,9 @@
   GPU 槽（`CustomRenderNode` / `gpu_slots`）。`crates/nana-ui` 是宿主适配器：
   `run_runtime`、crate-root 再导出、`SceneWgpuPainter`。
 - `crates/nana-window` 负责系统材质以及标题栏拖拽 / 客户区 chrome / 缩放桥；
-  普通控件不得访问窗口句柄。
+  普通控件不得访问窗口句柄。叠加标题栏仍走 `AppTitleBar` 透明模式与布局槽；
+  全屏由消费方关闭标题栏拖动和窗口按钮，保留业务槽内容。
+  Windows 窗口按钮使用框架统一圆角图标按钮样式与实际按钮命中区域。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。
 - 宿主拥有 Window、Surface、Device 与 Queue。`SceneWgpuPainter` 注入该 GPU
   上下文；禁止第二套 Device/Queue、正式路径 CPU 回读或伪零拷贝。GPU 内容是

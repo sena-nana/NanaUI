@@ -1,5 +1,7 @@
 # 窗口
 
+Windows 自绘窗口按钮采用 NanaUI 图标按钮外观：28×28、控件圆角、垂直居中；按钮间距 2px，按钮组左右各留 6px。普通按钮使用常规悬停/按下颜色，关闭按钮使用危险色。按钮的实际区域处理窗口操作，周围留白不扩展为系统式整块按钮；macOS 原生红黄绿按钮保持平台行为。
+
 NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都按桌面软件来，不按浏览器来。
 
 `run_runtime(RuntimeWindowSettings::new("标题"))` 会创建主窗口、唯一 GPU 上下文，并开始事件循环。`RuntimeWindowSettings` 就是 `nana_ui_platform::WindowSettings`。
@@ -7,6 +9,8 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 ## 标题栏
 
 默认自绘标题栏：左侧内容、中间标题、右侧窗口按钮。空白处拖动窗口；按钮先吃到指针，不会被拖走。
+
+叠加在舞台上的标题栏仍使用 `AppTitleBar`，通过 `leading / center / trailing / controls` 布局槽承载文字和操作，并调用 `assemble_app_title_bar`。`transparent(true)` 仅移除栏背景，保留内容与命中，不需要开启整窗透明。`drag_enabled(false)` 禁止栏内空白与文字启动拖窗，并在后续输入时取消已按下但未完成的手势；隐藏或卸载标题栏也会取消。默认分别为 `false`、`true`。全屏保留业务入口时设置 `drag_enabled(false)` 和 `show_window_controls(false)`；不要另外添加顶边坐标拖动逻辑。语义入口支持 `transparent` 和 `drag-enabled`。标题为空且没有 center 内容时不保留中间占位，右侧按内容宽度保留空间，左侧使用剩余宽度并可收缩；有标题或 center 时保持左右对称布局。
 
 - macOS：透明标题栏 + full-size content，NanaUI 画 36px 标题栏，左侧给系统红黄绿留 78px。系统默认只把红黄绿放在标准标题栏高度内居中，`prepare_client_chrome` 会按标题栏高度平移按钮容器，使其在 36px 内居中。
 - Windows / Linux：关掉系统 decorations，由 `AppTitleBar` 画最小化、最大化、关闭，控件组贴标题栏右缘。
@@ -29,11 +33,11 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 | `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 圆角（Windows 11 DWM 阴影）；不用 winit `undecorated_shadow`（会把客户区顶边内缩 1px，标题栏盖不住） | 关 |
 | `system_caption: false` 且 `transparent: true` | 关 | 无自绘阴影（避免 DWM 合成冲突） | 开 |
 
-不透明自绘窗关掉 decorations 且不用 `undecorated_shadow`：winit 用 `WM_NCCALCSIZE` 把客户区铺到窗口外沿，创建后不再清 `WS_CAPTION`（`SetWindowPos(SWP_FRAMECHANGED)` 会在 `can_create_surfaces` 里卡住 UI 线程）。透明自绘窗仍清 caption，避免 DWM 合成留下系统边框。自定义标题栏按钮高 `TITLE_BAR_HEIGHT`、宽 `WINDOW_CONTROL_WIDTH`，贴标题栏右上角。
+不透明自绘窗关掉 decorations 且不用 `undecorated_shadow`：winit 用 `WM_NCCALCSIZE` 把客户区铺到窗口外沿，创建后不再清 `WS_CAPTION`（`SetWindowPos(SWP_FRAMECHANGED)` 会在 `can_create_surfaces` 里卡住 UI 线程）。透明自绘窗仍清 caption，避免 DWM 合成留下系统边框。自定义标题栏按钮宽高均为 `WINDOW_CONTROL_WIDTH`，在高 `TITLE_BAR_HEIGHT` 的 controls 槽内垂直居中，按钮组两侧保留 `WINDOW_CONTROL_PADDING`。
 
 命中顺序（逻辑像素，已含当前 `scale_factor`）：
 
-1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽；客户区最外 8px 缩放过按钮区域时同样让位，关闭键占住右上角。
+1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽；客户区最外 8px 缩放区域与实际按钮相交时同样让位；按钮之外的边角继续支持窗口缩放。
 2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 
