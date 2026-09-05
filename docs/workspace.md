@@ -35,6 +35,8 @@
 
 `SettingsModel` / `SettingsState` 维护稳定 Tab 和恢复规则。具体设置值（主题、账号、路径）仍由应用状态拥有。设置页用独立的 `WorkspaceController` 时，进入设置不会覆盖主工作区的尺寸和折叠。
 
+全窗画面上需要仍可交互的任务区域时，用独立 `OverlayHost` + `Panel`；它不改变主区尺寸，不锁外部指针或 Tab。应用提供业务页面、详情返回状态和 viewport insets；NanaUI 负责面板表面、关闭生命周期与有效焦点恢复。不要把业务路由塞进 SettingsState，也不要为非模态面板再写一套挂载/卸载和焦点控制。
+
 ## Dock
 
 产品 Dock 是 Runtime 的 `Dock` / `DockWorkspace`（crate 根再导出）。pane 内容是子节点；split 比例、浮动窗、命中条由框架算。
