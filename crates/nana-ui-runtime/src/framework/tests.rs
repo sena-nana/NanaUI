@@ -2702,6 +2702,8 @@ fn scroll_view_with_forty_rows_dirties_forty_one_hit_targets() {
         context.append_child(scroll, row).unwrap();
     }
     let _ = context.take_system_work();
+    // A scroll patch requires the retained hit tree from the initial frame.
+    context.rebuild_hit_test(document);
     assert!(
         context
             .scroll_to(scroll, ScrollOffset { x: 0.0, y: 120.0 })
@@ -4014,9 +4016,10 @@ fn builtin_and_plugin_components_share_one_registry() {
         Some("nana.gpu-view")
     );
     assert_eq!(
-        context.resolve_component_tag("chip"),
-        None,
-        "chip is a Button variant, not a registry tag"
+        context
+            .resolve_component_tag("chip")
+            .map(ComponentTypeId::as_str),
+        Some("nana.chip")
     );
     assert_eq!(
         context.resolve_component_tag("virtual-list"),
@@ -5086,14 +5089,14 @@ fn caret_movement_steps_across_inlays_without_sticking() {
         (TextCaretIntent::WordLeft, [6, 5, 3].as_slice()),
     ] {
         for &start in starts {
-            let expected = crate::text_editing::caret_focus(
-                value,
-                TextSelection::caret(start),
-                intent,
-            )
-            .unwrap_or(start);
+            let expected =
+                crate::text_editing::caret_focus(value, TextSelection::caret(start), intent)
+                    .unwrap_or(start);
             let moved = move_caret_from(&mut context, document, node, start, intent);
-            assert_eq!(moved, expected, "{intent:?} from {start} 越过 inlay 后应与裸文本一致");
+            assert_eq!(
+                moved, expected,
+                "{intent:?} from {start} 越过 inlay 后应与裸文本一致"
+            );
         }
     }
 
@@ -5114,10 +5117,7 @@ fn caret_right_steps_across_fold_summaries() {
     let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
     let fold = TextCodeFold::new(7, 28);
     let area = context
-        .create_component(
-            document,
-            TextArea::new(value).code_folds(Arc::from([fold])),
-        )
+        .create_component(document, TextArea::new(value).code_folds(Arc::from([fold])))
         .unwrap();
     let node = area.stable_id();
     let mut queue = MutationQueue::new();

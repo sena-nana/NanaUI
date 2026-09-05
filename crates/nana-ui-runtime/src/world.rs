@@ -408,6 +408,8 @@ pub struct UiWorld {
     /// Scroll deltas awaiting the in-place hit-index patch (see
     /// `UiMutation::SetScrollOffset`). Drained by the frame driver.
     scroll_hit_updates: Vec<(StableNodeId, [f32; 2])>,
+    /// Input changes that cannot be represented by scroll translation alone.
+    non_scroll_hit_dirty: HashSet<StableNodeId>,
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
@@ -490,6 +492,7 @@ impl UiWorld {
             dirty_entities: HashSet::new(),
             hit_test_index: HashMap::new(),
             scroll_hit_updates: Vec::new(),
+            non_scroll_hit_dirty: HashSet::new(),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
@@ -1694,6 +1697,14 @@ impl UiWorld {
     }
 
     fn mark(&mut self, id: StableNodeId, bits: u16) -> bool {
+        if bits & DirtyMask::INPUT != 0 {
+            self.non_scroll_hit_dirty.insert(id);
+        }
+        self.mark_scroll_compatible(id, bits)
+    }
+
+    /// Record dirtiness without claiming that hit membership or geometry changed.
+    fn mark_scroll_compatible(&mut self, id: StableNodeId, bits: u16) -> bool {
         let changed = self.record_mut(id).dirty.insert(bits);
         if changed {
             self.dirty_entities.insert(id);

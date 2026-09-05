@@ -276,6 +276,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closed_modal_live_presence_retires_scene_and_reopening_projects_updates() {
+        use nana_ui_runtime::{
+            DesktopShell, Dialog, Entity, MeasureTextShaper, ModalSlots, OverlayHost, Stack, Text,
+        };
+        let id = DocumentId::new(91).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let page = document
+            .context_mut()
+            .create_detached_component(id, Stack::fill_column(0.0))
+            .unwrap();
+        let dialog = document
+            .context_mut()
+            .create_detached_component(id, Dialog::new("Queue"))
+            .unwrap();
+        let body = document
+            .context_mut()
+            .create_detached_component(id, Stack::column(0.0))
+            .unwrap();
+        let text = document
+            .context_mut()
+            .create_detached_component(id, Text::new("First item"))
+            .unwrap();
+        document.context_mut().append_child(body, text).unwrap();
+        document
+            .context_mut()
+            .set_modal_slots(
+                dialog,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let shell = document
+            .context_mut()
+            .create_component(id, DesktopShell::new().primary(page.stable_id()))
+            .unwrap();
+        document
+            .context_mut()
+            .update_component(shell, |shell, _| shell.overlays.push(dialog.stable_id()))
+            .unwrap();
+        document
+            .context_mut()
+            .assemble_desktop_shell(shell)
+            .unwrap();
+        let host = Entity::<OverlayHost>::from_stable_id(
+            document
+                .context()
+                .read(shell, |shell| shell.overlay.unwrap())
+                .unwrap(),
+        );
+        let mut clock = std::time::Duration::ZERO;
+        let mut settle = |document: &mut RuntimeDocument| {
+            let viewport = LayoutViewport::new(640.0, 480.0);
+            document.flush(viewport, &mut MeasureTextShaper).unwrap();
+            clock += std::time::Duration::from_secs(1);
+            document.context_mut().advance_animations(clock);
+            document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        };
+        document
+            .context_mut()
+            .activate_overlay(host, dialog)
+            .unwrap();
+        settle(&mut document);
+        assert!(
+            document
+                .scene()
+                .primitives()
+                .any(|p| p.node == text.stable_id())
+        );
+        document.context_mut().dismiss_overlay(host).unwrap();
+        document
+            .context_mut()
+            .update_component(text, |text, _| text.value = "Second item".into())
+            .unwrap();
+        settle(&mut document);
+        assert!(
+            !document.scene().primitives().any(|p| [
+                text.stable_id(),
+                body.stable_id(),
+                dialog.stable_id()
+            ]
+            .contains(&p.node))
+        );
+        document
+            .context_mut()
+            .activate_overlay(host, dialog)
+            .unwrap();
+        settle(&mut document);
+        assert!(
+            document
+                .scene()
+                .primitives()
+                .any(|p| p.node == text.stable_id())
+        );
+    }
+
+    #[test]
     fn focused_textarea_typing_settles_the_frame() {
         use nana_ui_runtime::{MeasureTextShaper, TextArea, TextSelection};
 

@@ -284,6 +284,9 @@ impl AppContext {
     /// Composite search surfaces (palettes, menus, dropdowns) own their
     /// navigation and are deliberately not plain editors.
     pub fn focused_text_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
+        if self.has_focused_ime_composition(document) {
+            return None;
+        }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
             return self.editor_info(entity, TextEditorKind::Area);
         }

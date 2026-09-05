@@ -64,15 +64,14 @@ pub(super) fn patch_hit_scroll(
 ) {
     for node in nodes {
         if node.id != scroller && subtree.contains(&node.id) {
-            let [a, b, c, d, e, f] = node.transform;
-            node.transform = [
-                a,
-                b,
-                c,
-                d,
-                a * delta[0] + c * delta[1] + e,
-                b * delta[0] + d * delta[1] + f,
-            ];
+            node.transform[4] += delta[0];
+            node.transform[5] += delta[1];
+            // Descendant clipping viewports move with the same ancestor scroll.
+            // The scroller's own clip stays fixed because its entry is skipped.
+            for (_, transform) in node.self_clips.iter_mut().chain(&mut node.child_clips) {
+                transform[4] += delta[0];
+                transform[5] += delta[1];
+            }
         }
         patch_hit_scroll(&mut node.children, scroller, subtree, delta);
     }
@@ -250,9 +249,8 @@ impl UiWorld {
     /// Pre-compose a scroll translation onto descendant hit entries of
     /// `scroller`. The scroller chrome stays un-scrolled — rebuild applies
     /// scroll only when walking children. Equivalent to a rebuild because
-    /// scroll changes nothing else about the entries (membership, order,
-    /// z-index, and clips are scroll-invariant: the scroller's own clip never
-    /// includes its scroll offset).
+    /// scroll preserves entry membership, order and z-index. Descendant clips
+    /// translate with their entries; the scroller's own clip stays fixed.
     pub fn update_hit_test_scroll(
         &mut self,
         document: DocumentId,
@@ -272,7 +270,11 @@ impl UiWorld {
         let Some(entries) = self.hit_test_index.get_mut(&document) else {
             return;
         };
-        patch_hit_scroll(entries, scroller, &subtree, delta);
+        let Some([a, b, c, d, _, _]) = find_hit_transform(entries, scroller) else {
+            return;
+        };
+        let viewport_delta = [a * delta[0] + c * delta[1], b * delta[0] + d * delta[1]];
+        patch_hit_scroll(entries, scroller, &subtree, viewport_delta);
     }
 }
 
@@ -286,6 +288,9 @@ impl UiWorld {
         updates: &[(StableNodeId, [f32; 2])],
     ) -> bool {
         !updates.is_empty()
+            && !input
+                .iter()
+                .any(|id| self.non_scroll_hit_dirty.contains(id))
             && input.iter().all(|node| {
                 updates.iter().any(|(scroller, _)| {
                     *scroller == *node || {
@@ -664,9 +669,14 @@ impl UiWorld {
         let Some(roots) = self.minimal_hit_patch_roots(document, dirty) else {
             return false;
         };
-        for root in roots {
+        for &root in &roots {
             if !self.patch_hit_subtree(document, root) {
                 return false;
+            }
+        }
+        for root in roots {
+            for id in self.subtree_ids(root) {
+                self.non_scroll_hit_dirty.remove(&id);
             }
         }
         true
@@ -691,5 +701,17 @@ impl UiWorld {
         forest.sort_by_key(|entry| (entry.z_index, entry.order));
         self.note_hit_nodes_built(&forest);
         self.hit_test_index.insert(document, forest);
+        let covered = self
+            .non_scroll_hit_dirty
+            .iter()
+            .copied()
+            .filter(|id| !self.contains(*id) || self.record(*id).document == document)
+            .collect::<Vec<_>>();
+        for id in covered {
+            self.non_scroll_hit_dirty.remove(&id);
+        }
     }
 }
+
+#[cfg(test)]
+mod scroll_invalidation_tests;

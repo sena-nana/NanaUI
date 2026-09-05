@@ -1033,6 +1033,7 @@ impl UiWorld {
                     self.forget_visual_presence(id);
                     let _removed = self.nodes.remove(id);
                     self.dirty_entities.remove(&id);
+                    self.non_scroll_hit_dirty.remove(&id);
                     self.refresh_root_membership(id);
                     if self.input.focused.get(&snapshot.document) == Some(&id) {
                         self.input.focused.remove(&snapshot.document);
@@ -1235,7 +1236,7 @@ impl UiWorld {
                     // Descendants keep LayoutBox; paint uses scroll_offset.
                     self.scroll_hit_updates
                         .push((*id, [previous.x - offset.x, previous.y - offset.y]));
-                    self.mark(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                    self.mark_scroll_compatible(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetScrollMetrics { id, metrics } => {
@@ -1246,7 +1247,7 @@ impl UiWorld {
                     self.record_mut(*id).scroll_offset = clamped;
                     self.scroll_hit_updates
                         .push((*id, [current.x - clamped.x, current.y - clamped.y]));
-                    self.mark(*id, DirtyMask::INPUT | DirtyMask::RENDER);
+                    self.mark_scroll_compatible(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetInteraction { id, interaction } => {
