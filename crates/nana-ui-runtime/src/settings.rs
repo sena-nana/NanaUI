@@ -791,7 +791,7 @@ impl ComponentView for AppearanceSection {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        SettingsCard::new("外观").project(id, world, mutations);
+        SettingsCard::new("").project(id, world, mutations);
     }
 }
 
@@ -851,7 +851,7 @@ impl ComponentView for AboutSection {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        SettingsCard::new("关于").project(id, world, mutations);
+        SettingsCard::new("").project(id, world, mutations);
         let accessibility = AccessibilityState {
             role: AccessibilityRole::Generic,
             label: Some(Arc::clone(&self.metadata.product_title)),
@@ -2686,8 +2686,18 @@ mod tests {
                 ref title,
                 kind: CardKind::Surface,
                 ..
-            }) if title.as_deref() == Some("外观")
+            }) if title.is_none()
         ));
+        assert_eq!(
+            context
+                .world()
+                .node_style(section.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding()
+                .top,
+            UI_METRICS.panel_padding_y
+        );
     }
 
     fn row_labels(context: &AppContext, section: Entity<AppearanceSection>) -> Vec<String> {
@@ -2965,6 +2975,24 @@ mod tests {
                     .ok()
             })
             .collect::<Vec<_>>();
+        assert!(matches!(
+            context.world().standard_visual(section.stable_id()),
+            Some(StandardVisual::Card {
+                ref title,
+                kind: CardKind::Surface,
+                ..
+            }) if title.is_none()
+        ));
+        assert_eq!(
+            context
+                .world()
+                .node_style(section.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding()
+                .top,
+            UI_METRICS.panel_padding_y
+        );
         assert_eq!(labels, ["名称", "版本"]);
         assert_eq!(
             visible_hint_text(&context, assembly.name_row.unwrap()),
@@ -3555,5 +3583,54 @@ mod spacing_tests {
         let layout = &context.world().node_style(body).unwrap().layout;
         assert_eq!(layout.resolved_padding().bottom, 24.0);
         assert_eq!(layout.gap, Some(LengthSpec::Px(16.0)));
+    }
+
+    #[test]
+    fn appearance_section_as_page_content_does_not_repeat_page_title() {
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let model = SettingsModel::new(
+            "appearance",
+            [nana_ui_core::SettingsTab::new("appearance", "外观")],
+        )
+        .unwrap();
+        let state = SettingsState::new(&model);
+        let section = context
+            .create_component(
+                document,
+                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+            )
+            .unwrap();
+        let page = context
+            .create_component(
+                document,
+                SettingsPage::new(model, state).content(section.stable_id()),
+            )
+            .unwrap();
+        context.assemble_appearance_section(section).unwrap();
+        context.assemble_settings_page(page).unwrap();
+        let title = context
+            .read(page, |page| page.assembly.clone().unwrap().title)
+            .unwrap()
+            .expect("settings page title");
+        assert_eq!(context.world().text(title), Some("外观"));
+        assert!(matches!(
+            context.world().standard_visual(section.stable_id()),
+            Some(StandardVisual::Card {
+                ref title,
+                kind: CardKind::Surface,
+                ..
+            }) if title.is_none()
+        ));
+        assert_eq!(
+            context
+                .world()
+                .node_style(section.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding()
+                .top,
+            UI_METRICS.panel_padding_y
+        );
     }
 }
