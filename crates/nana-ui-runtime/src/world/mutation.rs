@@ -667,6 +667,13 @@ impl<'a> ValidationPlan<'a> {
                     AccessibilityRole::Dialog | AccessibilityRole::AlertDialog => {
                         accessibility.modal
                     }
+                    AccessibilityRole::Region => {
+                        !accessibility.modal
+                            && accessibility
+                                .label
+                                .as_ref()
+                                .is_some_and(|label| !label.is_empty())
+                    }
                     AccessibilityRole::Menu
                     | AccessibilityRole::Tooltip
                     | AccessibilityRole::Status => true,

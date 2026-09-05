@@ -54,6 +54,7 @@ descriptors! {
     SEGMENTED_CONTROL => { type_id: "nana.segmented", tags: &["segmented"] },
     DROPDOWN => { type_id: "nana.dropdown", tags: &["dropdown"] },
     SEARCH_DROPDOWN => { type_id: "nana.search-dropdown", tags: &["search-dropdown"] },
+    PANEL => { type_id: "nana.panel", tags: &["panel"] },
     DRAWER => { type_id: "nana.drawer", tags: &["drawer"] },
     POPOVER => { type_id: "nana.popover", tags: &["popover"] },
     CONTEXT_MENU => { type_id: "nana.context-menu", tags: &["context-menu"] },

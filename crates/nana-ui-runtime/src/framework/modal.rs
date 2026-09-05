@@ -3,6 +3,98 @@
 use super::*;
 
 impl AppContext {
+    /// Move an open nonmodal panel between hosts without closing, rebuilding,
+    /// or stealing focus. Useful for pinning the same retained task content.
+    /// The destination's previous child becomes inactive but remains retained.
+    /// Both hosts must belong to the same document. Emits OverlayChanged on
+    /// each host; no OverlayClosing is emitted because the panel stays open.
+    pub fn transfer_panel(
+        &mut self,
+        panel: Entity<crate::Panel>,
+        source: Entity<OverlayHost>,
+        destination: Entity<OverlayHost>,
+    ) -> Result<bool, FrameworkError> {
+        self.read(panel, |_| ())?;
+        self.read(source, |_| ())?;
+        self.read(destination, |_| ())?;
+        if source == destination {
+            return Ok(false);
+        }
+        let source_state = self
+            .world
+            .overlay_host(source.id)
+            .ok_or(FrameworkError::MissingView(source.id))?;
+        let destination_state = self
+            .world
+            .overlay_host(destination.id)
+            .ok_or(FrameworkError::MissingView(destination.id))?;
+        let panel_node = self
+            .world
+            .node(panel.id)
+            .ok_or(FrameworkError::MissingView(panel.id))?;
+        if source_state.active != Some(panel.id)
+            || self.world.surface_closed(panel.id)
+            || panel_node.parent != Some(source.id)
+            || self
+                .world
+                .node(destination.id)
+                .is_none_or(|node| node.document != panel_node.document)
+            || !self.world.is_mounted(destination.id)
+            || self.overlay_descendant(panel.id, destination.id)
+        {
+            return Err(FrameworkError::InvalidComponentHierarchy {
+                parent: source.id,
+                child: panel.id,
+            });
+        }
+        let focus = self.world.focused(panel_node.document);
+        // If the destination was focused, replacing its old child makes that
+        // focus invalid. Move to this panel's first action in that case only.
+        let next_focus = if destination_state
+            .active
+            .is_some_and(|root| focus.is_some_and(|id| self.overlay_descendant(root, id)))
+        {
+            self.first_overlay_focusable(panel_node.document, panel.id)
+        } else {
+            focus
+        };
+        let document = panel_node.document;
+        let next = crate::OverlayHostState {
+            active: Some(panel.id),
+            restore_focus: destination_state
+                .restore_focus
+                .or(source_state.restore_focus),
+        };
+        self.update_component(source, |_, cx| {
+            cx.mutations()
+                .set_overlay_host(source.id, crate::OverlayHostState::default());
+            cx.mutations().set_interaction(
+                source.id,
+                crate::InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                },
+            );
+            cx.mutations().insert(destination.id, panel.id, None);
+            cx.mutations().set_overlay_host(destination.id, next);
+            cx.mutations().set_interaction(
+                destination.id,
+                crate::InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                },
+            );
+            cx.mutations().request_focus(document, next_focus);
+            cx.emit(OverlayChanged { active: None });
+        })?;
+        self.update_component(destination, |_, cx| {
+            cx.emit(OverlayChanged {
+                active: Some(panel.id),
+            })
+        })?;
+        Ok(true)
+    }
+
     /// Activate one direct overlay child and move focus into its retained
     /// subtree in the same Runtime transaction.
     pub fn activate_overlay<O: View>(
@@ -111,7 +203,7 @@ impl AppContext {
                 return Err(error);
             }
         };
-        if !final_kind.blocks_pointer() {
+        if !final_kind.blocks_pointer() && final_kind != RuntimeOverlayKind::Panel {
             return Ok(true);
         }
         self.component_lifecycle.next_overlay_activation_token = activation_token;
@@ -146,7 +238,7 @@ impl AppContext {
         let root = previous.active.expect("active overlay checked above");
         if matches!(
             self.runtime_overlay_kind(root),
-            Some(RuntimeOverlayKind::Dialog | RuntimeOverlayKind::Menu)
+            Some(RuntimeOverlayKind::Dialog | RuntimeOverlayKind::Menu | RuntimeOverlayKind::Panel)
         ) {
             let mut mutations = MutationQueue::new();
             mutations.set_surface_open(
@@ -216,6 +308,12 @@ impl AppContext {
         dismiss_restore: Option<StableNodeId>,
         activation_focus: Option<StableNodeId>,
     ) -> Result<(), FrameworkError> {
+        let preserve_focus = next.active.is_some_and(|root| {
+            self.views
+                .get(&root)
+                .and_then(|view| view.downcast_ref::<crate::Panel>())
+                .is_some_and(|panel| !panel.focus_on_open)
+        });
         let focus = activation_focus
             .or_else(|| {
                 next.active
@@ -226,6 +324,11 @@ impl AppContext {
                     .or(dismiss_restore)
                     .filter(|id| self.overlay_focus_candidate(document, *id))
             });
+        let focus = if preserve_focus {
+            self.world.focused(document)
+        } else {
+            focus
+        };
         let host_id = host.id;
         let interaction = self.overlay_host_interaction(next.active);
         self.update_component(host, |_host, cx| {
@@ -351,9 +454,11 @@ impl AppContext {
                 .focused(node.document)
                 .is_some_and(|focus| self.overlay_descendant(root, focus))
             {
-                let restore = state
-                    .restore_focus
-                    .filter(|focus| self.overlay_focus_candidate(node.document, *focus));
+                let restore = state.restore_focus.filter(|focus| {
+                    self.overlay_focus_candidate(node.document, *focus)
+                        && self.world.is_overlay_reachable(*focus)
+                        && !self.world.motion_blocks_input(*focus)
+                });
                 mutations.request_focus(node.document, restore);
             }
         }

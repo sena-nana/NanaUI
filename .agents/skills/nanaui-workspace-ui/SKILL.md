@@ -15,6 +15,7 @@ description: Maintain NanaUI's Workspace and UI system. Product path is Runtime 
 - Preserve stable Region/Settings identities, sizing constraints, serialization, and public export
   compatibility.
 - Centralize shared tokens and component states. Every visible action must update real Rust state.
+- Use `Panel` on an independent `OverlayHost` for nonmodal task surfaces; reuse overlay presence and focus lifecycle. Application routes, pinning and viewport reservations stay application-owned. Keep `Dialog` / `Drawer` modal, and do not assign Menu/Dialog accessibility roles to nonmodal panels. `focus_first_in` uses Runtime's sequential focus rules.
 - Route GPU resources to `$nanaui-gpu-integration`, window handles to
   `$nanaui-window-materials`, and verification to `$nanaui-validation`.
 

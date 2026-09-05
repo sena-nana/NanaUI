@@ -45,6 +45,7 @@ mod overlay_surfaces;
 mod overlay_visibility;
 mod pane;
 mod pane_section;
+mod panel;
 mod path_field;
 mod placeholders;
 mod popover;
@@ -274,3 +275,5 @@ pub use world::{
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,
 };
+
+pub use panel::{Panel, PanelEdge, PanelInsets};

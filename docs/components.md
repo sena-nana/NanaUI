@@ -29,6 +29,14 @@ import "@nanaui/nanavue-components/controls.css";
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
+`Panel` 是非模态任务面板，挂到独立 `OverlayHost` 的直接子节点，通过同一份 `activate_overlay` / `dismiss_overlay` 管理显示和退出动画。面板使用 Card 表面和具名 Region 无障碍语义，只有卡面命中，外部舞台和普通 Tab 顺序保持可用；不能用 Menu 或 Dialog 冒充非模态面板。可见标题、返回/关闭按钮和内容由应用装配为普通子节点，长内容使用 `ScrollView`。关闭按钮调用 `dismiss_overlay`，不直接删除节点。
+
+`Panel::viewport(viewport, PanelEdge::Right, width, PanelInsets { .. })` 将宽高限制在应用预留标题栏、底栏等空间之后的视口内；也可用 `Panel::bounds` 获取同一布局合同的矩形。`viewport` 使用相对于宿主的逻辑坐标，宿主必须覆盖传入视口。`Panel::style` 可接入现有样式；没有第二套主题或绘制器。每个同时存在的面板使用独立 host，层级通过现有 `z_index` 控制，确认框应位于任务面板上方。
+
+激活默认聚焦首个有效子控件；恢复固定面板时用 `focus_on_open(false)` 保留当前焦点。关闭时只有焦点仍在面板内才恢复有效入口，隐藏、卸载或失效入口不会被聚焦。`focus_first_in(document, root)` 使用 Runtime 的 Tab 候选规则聚焦子树。需要先返回业务详情的应用用 `close_on_escape(false)` 接管 Escape，再在路由根关闭面板；业务导航、固定偏好和窄窗时收起哪个面板由应用拥有。
+
+同一 host 只激活一个直接子面板；其余子树保留内容和编辑状态，但不绘制、不命中、不参与 Tab，无需 park。固定/取消固定同一内容时，使用 `transfer_panel(panel, source_host, destination_host)` 原子移交到同文档中的另一 host，保留节点、焦点和动画，不先 dismiss 再 reparent。目标旧面板成为 inactive；两个 host 分别收到 `OverlayChanged`，不发送 `OverlayClosing`。关闭退场中的面板不可转移。
+
 `dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。

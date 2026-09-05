@@ -14,6 +14,7 @@
 - `crates/nana-window` 负责系统材质以及标题栏拖拽 / 客户区 chrome / 缩放桥；
   普通控件不得访问窗口句柄。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。
+- 非模态任务浮层使用 `OverlayHost` + `Panel`，共享 Runtime 关闭生命周期与焦点恢复；业务导航、固定策略与视口预留由消费应用持有，不借用模态 Dialog/Menu 的语义。
 - 宿主拥有 Window、Surface、Device 与 Queue。`SceneWgpuPainter` 注入该 GPU
   上下文；禁止第二套 Device/Queue、正式路径 CPU 回读或伪零拷贝。GPU 内容是
   一等 Scene 节点（`CustomRenderNode`）：与 Button/Text 一样参与布局、裁剪、
