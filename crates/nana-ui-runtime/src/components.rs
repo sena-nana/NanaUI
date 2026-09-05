@@ -1503,7 +1503,8 @@ pub struct ComputedStyle {
     /// CSS `visibility` after inheritance (`visible` / `hidden`).
     pub visibility: nana_ui_core::VisibilitySpec,
     /// Self and every ancestor generate a layout box (`hidden` /
-    /// `display: none` anywhere up the chain makes this `false`). Unlike CSS
+    /// `display: none` or an inactive overlay/menu branch anywhere up the chain
+    /// makes this `false`). Unlike CSS
     /// `visibility`, a descendant cannot override it back to `true`.
     pub box_visible: bool,
     pub visible: bool,
