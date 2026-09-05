@@ -71,6 +71,7 @@ use crate::{
     HostedSurfaceFrame, RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry,
     TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
     apply_title_bar_pointer, default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
+    title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
 
@@ -384,9 +385,7 @@ fn initialize<Program: RuntimeProgram>(
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
     if !settings.system_caption {
         let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
-        if settings.transparent {
-            let _ = suppress_system_caption(window.as_ref());
-        }
+        let _ = suppress_system_caption(window.as_ref());
     }
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
@@ -1053,7 +1052,10 @@ struct WindowsSceneChrome {
 fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsSceneChrome {
     WindowsSceneChrome {
         decorations: system_caption,
-        undecorated_shadow: !system_caption && !transparent,
+        // winit's undecorated-shadow path insets the client by 1px on the top
+        // so DWM can attach a drop shadow. That leaves a strip the title bar
+        // cannot paint. Windows 11 rounded corners already provide a shadow.
+        undecorated_shadow: false,
         no_redirection_bitmap: transparent,
     }
 }
@@ -2087,7 +2089,7 @@ mod tests {
 
         let opaque_client = windows_scene_chrome(false, false);
         assert!(!opaque_client.decorations);
-        assert!(opaque_client.undecorated_shadow);
+        assert!(!opaque_client.undecorated_shadow);
         assert!(!opaque_client.no_redirection_bitmap);
 
         settings.system_caption = true;

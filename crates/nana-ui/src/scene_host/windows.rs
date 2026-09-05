@@ -171,9 +171,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         );
         if !settings.system_caption {
             let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
-            if settings.transparent {
-                let _ = suppress_system_caption(window.as_ref());
-            }
+            let _ = suppress_system_caption(window.as_ref());
         }
         let material = apply_window_surface(
             window.as_ref(),
@@ -576,7 +574,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         resize_scene_window(window.as_ref(), edge);
     }
     pub(super) fn frame_resize_edge_at(
-        &self,
+        &mut self,
         id: WindowId,
         x: f32,
         y: f32,
@@ -584,13 +582,24 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let fullscreen = self
             .window(id)
             .is_some_and(|window| window.fullscreen().is_some());
-        frame_resize_edge_for(
+        let edge = frame_resize_edge_for(
             self.settings_of(id),
             &self.geometry_of(id),
             fullscreen,
             x,
             y,
-        )
+        )?;
+        if self.caption_control_at(id, x, y) {
+            return None;
+        }
+        Some(edge)
+    }
+    fn caption_control_at(&mut self, id: WindowId, x: f32, y: f32) -> bool {
+        self.program
+            .read_document(id, |document| {
+                pointer_hits_window_control(document.context(), document.document(), x, y)
+            })
+            .unwrap_or(false)
     }
     pub(super) fn settings_of(&self, id: WindowId) -> &RuntimeWindowSettings {
         if id == WindowId::PRIMARY {
