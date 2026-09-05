@@ -517,6 +517,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         trigger: None,
         trigger_icon: None,
         gap: 0.0,
+        overlay: None,
         query: None,
         rows: Arc::from([
             nana_ui_runtime::SelectOptionData {
@@ -4408,6 +4409,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         trigger: None,
         trigger_icon: Some(nana_ui_core::Icon::Add),
         gap: 0.0,
+        overlay: None,
         query: None,
         rows: Arc::from([]),
         highlighted: None,

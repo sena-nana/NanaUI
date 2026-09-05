@@ -123,7 +123,7 @@ pub use components::{
     TextHover, TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan,
     TextMetrics, TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
     TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
-    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,

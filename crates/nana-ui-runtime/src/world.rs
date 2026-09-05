@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::{
-    ControlSize, LayoutStyle, PointerEventsSpec, SemanticColorRole, SemanticPalette, StyleModelRef,
-    SwitchControlPosition, ThemeMode, icon_y_on_text_glyph_center,
+    ControlSize, LayoutStyle, LengthSpec, PointerEventsSpec, PositionSpec, SemanticColorRole,
+    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode, icon_y_on_text_glyph_center,
 };
 
 #[cfg(feature = "calendar")]
@@ -1212,8 +1212,29 @@ impl UiWorld {
             || !self.menu_branch_open(id)
         {
             Arc::make_mut(&mut style).hidden = true;
+            return style;
+        }
+        if let Some(overlay) = self.parent_triggered_overlay(id) {
+            let layout = Arc::make_mut(&mut style);
+            layout.position = PositionSpec::Fixed;
+            layout.width = Some(LengthSpec::Px(
+                (overlay.width - overlay.padding * 2.0).max(0.0),
+            ));
+            layout.z_index = Some(crate::popover::MENU_OVERLAY_Z_INDEX);
         }
         style
+    }
+
+    fn parent_triggered_overlay(&self, id: StableNodeId) -> Option<crate::TriggeredMenuOverlay> {
+        let parent = self.record(id).hierarchy.parent?;
+        match self.nodes.visual(parent)? {
+            StandardVisual::MenuSurface {
+                open: true,
+                overlay: Some(overlay),
+                ..
+            } => Some(*overlay),
+            _ => None,
+        }
     }
 
     fn record(&self, id: StableNodeId) -> &NodeRecord {
@@ -1603,8 +1624,7 @@ impl UiWorld {
     }
 
     /// A closed menu keeps its items in the tree but out of the frame. They
-    /// would otherwise stretch the trigger they hang under, since the trigger
-    /// and the surface share one box.
+    /// would otherwise stretch the in-flow trigger they hang under.
     fn menu_branch_open(&self, id: StableNodeId) -> bool {
         let Some(parent) = self.record(id).hierarchy.parent else {
             return true;
