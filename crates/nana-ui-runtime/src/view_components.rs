@@ -1714,8 +1714,8 @@ pub struct TextArea {
     pub scroll_offset: ScrollOffset,
     pub style: NodeStyle,
     pub highlight: Option<HighlightRequest>,
-    /// 编译诊断 span 标记（错误/警告下划线）。宿主在文本变化后负责更新或
-    /// 清除；渲染层只钳制越界偏移。
+    /// 编译诊断 span 标记（错误/警告下划线，可选行尾文案与悬停）。宿主在
+    /// 文本变化后负责更新或清除；渲染层只钳制越界偏移。
     pub diagnostics: Arc<[TextDiagnosticSpan]>,
     /// 查找匹配高亮 span（普通匹配与当前匹配）。宿主在文本变化后负责更新
     /// 或清除；渲染层只钳制越界偏移。
@@ -1831,7 +1831,8 @@ impl TextArea {
         self
     }
 
-    /// 设置诊断 span 标记（见 [`TextDiagnosticSpan`]）。
+    /// 设置诊断 span 标记（见 [`TextDiagnosticSpan`]）。带 `message` 的条目
+    /// 画行尾文案，并在指针落在 span/行尾时弹出 hover。
     pub fn diagnostics(mut self, diagnostics: Arc<[TextDiagnosticSpan]>) -> Self {
         self.diagnostics = diagnostics;
         self

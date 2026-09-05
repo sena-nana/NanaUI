@@ -1,6 +1,12 @@
 //! Text shaping, editor presentation and display mappings.
 
 use super::*;
+use std::collections::HashMap;
+
+use crate::components::{
+    TextDiagnosticHit, TextDiagnosticLabel, TextDiagnosticMark, TextDiagnosticSeverity,
+    TextDiagnosticSpan,
+};
 
 pub(super) struct CountingShaper<'a, S: TextShaper> {
     pub(super) inner: &'a mut S,
@@ -1026,7 +1032,14 @@ pub(super) fn build_text_input_presentation_source(
     let diagnostics = extras
         .diagnostics
         .iter()
-        .filter_map(|span| map_span(span.offset, span.length).map(|_| span.clone()))
+        .filter_map(|span| {
+            map_span(span.offset, span.length).map(|(start, end)| TextDiagnosticSpan {
+                offset: start,
+                length: end.saturating_sub(start).max(1),
+                severity: span.severity,
+                message: span.message.clone(),
+            })
+        })
         .collect::<Vec<_>>();
     let matches = extras
         .matches
@@ -1301,6 +1314,136 @@ pub(super) fn collect_non_whitespace_line_lengths(value: &str) -> Vec<u32> {
         .collect()
 }
 
+const DIAGNOSTIC_UNDERLINE: f32 = 2.0;
+const DIAGNOSTIC_LABEL_GAP: f32 = 8.0;
+const DIAGNOSTIC_LABEL_MAX_CHARS: usize = 80;
+
+fn truncate_diagnostic_message(message: &str) -> String {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let first = trimmed.lines().next().unwrap_or(trimmed);
+    let mut chars = first.chars();
+    let taken: String = chars.by_ref().take(DIAGNOSTIC_LABEL_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{taken}…")
+    } else {
+        taken
+    }
+}
+
+fn line_end_offset(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    text[offset..]
+        .find('\n')
+        .map_or(text.len(), |index| offset + index)
+}
+
+fn derive_diagnostic_decorations(
+    id: StableNodeId,
+    source: &TextInputPresentationSource,
+    style: &ComputedStyle,
+    presentation_constraints: crate::TextShapeConstraints,
+    line_height: f32,
+    shaper: &mut impl TextShaper,
+) -> (
+    Vec<TextDiagnosticMark>,
+    Vec<TextDiagnosticLabel>,
+    Vec<TextDiagnosticHit>,
+) {
+    let mut marks = Vec::new();
+    let mut hits = Vec::new();
+    struct LineWinner {
+        rank: u8,
+        severity: TextDiagnosticSeverity,
+        message: String,
+        offset: usize,
+    }
+    let mut winners: HashMap<usize, LineWinner> = HashMap::new();
+    let font_size = style.font_size.max(1.0);
+    for span in source.diagnostics.iter() {
+        let start = clamp_boundary(&source.text.value, span.offset);
+        let end = clamp_boundary(&source.text.value, span.offset + span.length.max(1));
+        if end <= start {
+            continue;
+        }
+        let rects = shaper.text_highlights(
+            id,
+            &source.text,
+            (start, end),
+            style,
+            presentation_constraints,
+        );
+        if span.severity.draws_underline() {
+            for rect in &rects {
+                marks.push(TextDiagnosticMark {
+                    rect: LayoutBox {
+                        x: rect.x,
+                        y: rect.y + rect.height - DIAGNOSTIC_UNDERLINE,
+                        width: rect.width.max(1.0),
+                        height: DIAGNOSTIC_UNDERLINE,
+                    },
+                    severity: span.severity,
+                });
+            }
+        }
+        let message = truncate_diagnostic_message(&span.message);
+        if !message.is_empty() {
+            for rect in &rects {
+                hits.push(TextDiagnosticHit {
+                    rect: *rect,
+                    offset: start,
+                    message: span.message.clone(),
+                });
+            }
+            let line = source.text.value[..start]
+                .bytes()
+                .filter(|&byte| byte == b'\n')
+                .count();
+            let rank = span.severity.rank();
+            let replace = winners.get(&line).is_none_or(|winner| rank > winner.rank);
+            if replace {
+                winners.insert(
+                    line,
+                    LineWinner {
+                        rank,
+                        severity: span.severity,
+                        message,
+                        offset: start,
+                    },
+                );
+            }
+        }
+    }
+    let mut labels = Vec::new();
+    let mut lines: Vec<_> = winners.into_iter().collect();
+    lines.sort_by_key(|(line, _)| *line);
+    for (_, winner) in lines {
+        let end = line_end_offset(&source.text.value, winner.offset);
+        let (x, y, height) =
+            shaper.text_position(id, &source.text, end, style, presentation_constraints);
+        let width = (font_size * 0.55 * winner.message.chars().count() as f32).max(1.0);
+        let rect = LayoutBox {
+            x: x + DIAGNOSTIC_LABEL_GAP,
+            y,
+            width,
+            height: height.max(line_height),
+        };
+        hits.push(TextDiagnosticHit {
+            rect,
+            offset: winner.offset,
+            message: winner.message.clone(),
+        });
+        labels.push(TextDiagnosticLabel {
+            rect,
+            text: winner.message,
+            severity: winner.severity,
+        });
+    }
+    (marks, labels, hits)
+}
+
 pub(super) fn shape_text_input_presentation(
     id: StableNodeId,
     source: TextInputPresentationSource,
@@ -1351,37 +1494,19 @@ pub(super) fn shape_text_input_presentation(
         shaper.text_highlights(id, &source.text, preedit, style, presentation_constraints)
     });
 
-    // 编辑器扩展：诊断下划线 / 滚动意图几何 / 行号 y 表（仅多行态）。
+    // 编辑器扩展：诊断下划线 / 行尾文案 / 悬停命中 / 行号 y 表（仅多行态）。
     // 边界钳制复用 [`crate::text_editing::clamp_boundary`]。
-    let diagnostic_marks = if source.multiline {
-        let mut marks = Vec::new();
-        for span in source.diagnostics.iter() {
-            let start = clamp_boundary(&source.text.value, span.offset);
-            let end = clamp_boundary(&source.text.value, span.offset + span.length.max(1));
-            if end <= start {
-                continue;
-            }
-            for rect in shaper.text_highlights(
-                id,
-                &source.text,
-                (start, end),
-                style,
-                presentation_constraints,
-            ) {
-                marks.push(TextDiagnosticMark {
-                    rect: LayoutBox {
-                        x: rect.x,
-                        y: rect.y + rect.height - 2.0,
-                        width: rect.width.max(1.0),
-                        height: 2.0,
-                    },
-                    severity: span.severity,
-                });
-            }
-        }
-        marks
+    let (diagnostic_marks, diagnostic_labels, diagnostic_hits) = if source.multiline {
+        derive_diagnostic_decorations(
+            id,
+            &source,
+            style,
+            presentation_constraints,
+            line_height,
+            shaper,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), Vec::new())
     };
     // 查找匹配高亮：与选区一致的整行高条带（非诊断式下划线）。
     let match_marks = if source.multiline {
@@ -1876,6 +2001,8 @@ pub(super) fn shape_text_input_presentation(
             Vec::new()
         },
         diagnostic_marks,
+        diagnostic_labels,
+        diagnostic_hits,
         match_marks,
         swatch_marks,
         atom_chips,
@@ -3275,6 +3402,25 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// 文本空间坐标命中诊断 span 或行尾文案时，返回用于 hover 的文档。
+    pub fn text_diagnostic_hit(
+        &self,
+        id: StableNodeId,
+        local_x: f32,
+        local_y: f32,
+    ) -> Option<crate::TextHover> {
+        let presentation = self.text_input_presentation(id)?;
+        presentation
+            .diagnostic_hits
+            .iter()
+            .find(|hit| hit.rect.contains(local_x, local_y))
+            .map(|hit| crate::TextHover::new(hit.offset, hit.message.clone(), String::new()))
+    }
+
+    pub fn diagnostic_hover_ids(&self) -> Vec<StableNodeId> {
+        self.nodes.diagnostic_hover_ids()
+    }
+
     /// 指针是否落在 hover 浮窗面板上（含内边距）。坐标为节点空间。
     pub fn text_hover_panel_hit(&self, id: StableNodeId, x: f32, y: f32) -> bool {
         let Some(crate::ComponentGeometry::TextInput { hover_popup, .. }) =

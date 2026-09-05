@@ -74,19 +74,41 @@ pub struct TooltipVisual {
 }
 
 /// 诊断标记的严重级别（编辑器下划线颜色随之变化）。
+///
+/// Error / Warning 画 squiggle；Information / Hint 只走行尾文案，不画
+/// 红/黄下划线。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextDiagnosticSeverity {
     Error,
     Warning,
+    Information,
+    Hint,
+}
+
+impl TextDiagnosticSeverity {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Error => 3,
+            Self::Warning => 2,
+            Self::Information => 1,
+            Self::Hint => 0,
+        }
+    }
+
+    pub fn draws_underline(self) -> bool {
+        matches!(self, Self::Error | Self::Warning)
+    }
 }
 
 /// 编辑器诊断 span。`offset`/`length` 为字节偏移，宿主负责在文本变化后
-/// 更新或清除；越界部分在几何计算时被钳制。
+/// 更新或清除；越界部分在几何计算时被钳制。`message` 供行尾文案与悬停
+/// 浮窗使用；空串不画行尾、不产生悬停命中。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextDiagnosticSpan {
     pub offset: usize,
     pub length: usize,
     pub severity: TextDiagnosticSeverity,
+    pub message: String,
 }
 
 impl TextDiagnosticSpan {
@@ -95,7 +117,13 @@ impl TextDiagnosticSpan {
             offset,
             length,
             severity,
+            message: String::new(),
         }
+    }
+
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
     }
 }
 
@@ -604,8 +632,9 @@ pub enum StandardVisual {
         /// text input that also steps, so it reuses this visual instead of
         /// growing a second editable contract.
         steppers: bool,
-        /// 代码编辑器扩展：编译诊断 span 标记。偏移由宿主维护——文本变化后
-        /// 由宿主更新或清除，渲染层仅做越界钳制，不做偏移迁移。
+        /// 代码编辑器扩展：编译诊断 span 标记（含可选 message）。偏移由宿主
+        /// 维护——文本变化后由宿主更新或清除，渲染层仅做越界钳制，不做偏移
+        /// 迁移。Error/Warning 画 squiggle；有 message 时画行尾文案并可悬停。
         diagnostics: Arc<[TextDiagnosticSpan]>,
         /// 查找匹配高亮 span（普通匹配与当前匹配，见 [`TextMatchSpan`]）。
         /// 偏移同样由宿主维护。
@@ -1091,6 +1120,8 @@ pub enum ComponentGeometry {
         preedit: Vec<LayoutBox>,
         /// 诊断下划线条带（节点空间矩形 + 已解析的颜色）。
         diagnostic_markers: Vec<(LayoutBox, [f32; 4])>,
+        /// 行尾诊断文案（节点空间文字区域 + 已解析颜色）。
+        diagnostic_labels: Vec<ComponentTextRegion>,
         /// 查找匹配高亮条带（节点空间矩形 + 已解析的颜色；`current` 为当前
         /// 匹配，绘制层级在普通匹配之上）。
         match_markers: Vec<TextMatchMarker>,
@@ -1816,6 +1847,22 @@ pub struct TextDiagnosticMark {
     pub severity: TextDiagnosticSeverity,
 }
 
+/// 行尾诊断文案（文本空间，overlay，不进缓冲区、不参与光标/换行）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDiagnosticLabel {
+    pub rect: LayoutBox,
+    pub text: String,
+    pub severity: TextDiagnosticSeverity,
+}
+
+/// 诊断悬停命中框（文本空间，整行高的 span 像素 + 行尾文案）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDiagnosticHit {
+    pub rect: LayoutBox,
+    pub offset: usize,
+    pub message: String,
+}
+
 /// 颜色装饰 swatch（文本空间）：锚定在 span 末显示行的行内覆盖方块，
 /// 尺寸随行高缩放、垂直居中；颜色按宿主给定的 RGBA 直传。
 #[derive(Debug, Clone, PartialEq)]
@@ -1972,6 +2019,10 @@ pub struct TextInputPresentation {
     pub additional_carets: Vec<(f32, f32)>,
     /// 诊断下划线条带（文本空间），仅多行态计算。
     pub diagnostic_marks: Vec<TextDiagnosticMark>,
+    /// 行尾诊断文案（文本空间 overlay），仅多行态计算。
+    pub diagnostic_labels: Vec<TextDiagnosticLabel>,
+    /// 诊断悬停命中框（文本空间），仅多行态计算。
+    pub diagnostic_hits: Vec<TextDiagnosticHit>,
     /// 查找匹配高亮条带（文本空间），仅多行态计算。
     pub match_marks: Vec<TextMatchMark>,
     /// 颜色装饰 swatch（文本空间，仅多行态计算；每个 span 取末显示行一个

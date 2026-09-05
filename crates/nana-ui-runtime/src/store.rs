@@ -152,6 +152,9 @@ pub(crate) struct TextHoverViewState {
     pub doc: crate::TextHover,
     /// 正文滚过的逻辑行数。
     pub scroll: usize,
+    /// 由诊断 span 指针命中写入。离开 span 时框架撤掉；宿主喂入的
+    /// 符号 hover 把此位置为 false。
+    pub diagnostic: bool,
 }
 
 #[derive(Default)]
@@ -383,6 +386,14 @@ impl NodeStore {
         id: StableNodeId,
     ) -> Option<&mut TextHoverViewState> {
         self.text_hovers.get_mut(&id)
+    }
+
+    pub(crate) fn diagnostic_hover_ids(&self) -> Vec<StableNodeId> {
+        self.text_hovers
+            .iter()
+            .filter(|(_, state)| state.diagnostic)
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
 

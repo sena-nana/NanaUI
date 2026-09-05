@@ -506,6 +506,10 @@ impl UiWorld {
                     crate::TextDiagnosticSeverity::Warning => {
                         self.style_model.palette.warning.as_rgba_array()
                     }
+                    crate::TextDiagnosticSeverity::Information
+                    | crate::TextDiagnosticSeverity::Hint => {
+                        self.style_model.palette.muted.as_rgba_array()
+                    }
                 };
                 let diagnostic_markers = presentation
                     .diagnostic_marks
@@ -520,6 +524,22 @@ impl UiWorld {
                             },
                             marker_color(mark.severity),
                         )
+                    })
+                    .collect();
+                let diagnostic_labels = presentation
+                    .diagnostic_labels
+                    .iter()
+                    .map(|label| crate::ComponentTextRegion {
+                        bounds: LayoutBox {
+                            x: field_x(label.rect.x),
+                            y: content.y + label.rect.y - scroll_y,
+                            width: label.rect.width,
+                            height: label.rect.height,
+                        },
+                        content: std::sync::Arc::from(label.text.as_str()),
+                        color: Some(marker_color(label.severity)),
+                        font_size: size.text_size(),
+                        font_weight: None,
                     })
                     .collect();
                 // 查找匹配：普通匹配用 accent 软色令牌，当前匹配用同一 accent
@@ -974,6 +994,7 @@ impl UiWorld {
                 });
                 Some(crate::ComponentGeometry::TextInput {
                     diagnostic_markers,
+                    diagnostic_labels,
                     match_markers,
                     swatch_markers,
                     swatch_border_color: self.style_model.palette.border.as_rgba_array(),

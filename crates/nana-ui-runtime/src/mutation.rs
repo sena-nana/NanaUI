@@ -186,6 +186,12 @@ pub enum UiMutation {
         id: StableNodeId,
         hover: Option<TextHover>,
     },
+    /// 诊断 span 指针命中写入的 hover。`None` 只撤诊断占用的浮窗，不碰
+    /// 宿主符号 hover。
+    SetTextInputDiagnosticHover {
+        id: StableNodeId,
+        hover: Option<TextHover>,
+    },
     /// 滚动 hover 浮窗正文（逻辑行数）。
     SetTextInputHoverScroll {
         id: StableNodeId,
@@ -450,17 +456,18 @@ impl MutationQueue {
             .push(UiMutation::SetTextInputHover { id, hover });
     }
 
+    pub fn set_text_input_diagnostic_hover(&mut self, id: StableNodeId, hover: Option<TextHover>) {
+        self.mutations
+            .push(UiMutation::SetTextInputDiagnosticHover { id, hover });
+    }
+
     pub fn set_text_input_hover_scroll(&mut self, id: StableNodeId, scroll: usize) {
         self.mutations
             .push(UiMutation::SetTextInputHoverScroll { id, scroll });
     }
 
     /// 喂入或撤掉（`None`）签名帮助浮窗。
-    pub fn set_text_input_signature(
-        &mut self,
-        id: StableNodeId,
-        help: Option<TextSignatureHelp>,
-    ) {
+    pub fn set_text_input_signature(&mut self, id: StableNodeId, help: Option<TextSignatureHelp>) {
         self.mutations
             .push(UiMutation::SetTextInputSignature { id, help });
     }
