@@ -48,7 +48,6 @@ export function createAppearanceWorkspaceDemo(options = {}) {
             default: () => h("div", { style: "width:100%;padding:20px 24px" }, [(() => {
               if (active.value === "appearance") {
                 return h(NanaAppearancePanel, {
-                  title: "外观",
                   description: "nanavue-components Appearance demo（Segmented / Switch / Range）。",
                 });
               }

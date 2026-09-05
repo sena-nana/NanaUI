@@ -64,8 +64,8 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use expansion::ExpansionState;
 pub use geometry::{
     ContentFit, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect,
-    TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WorkspaceGeometry,
-    custom_window_controls_width,
+    TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH,
+    WorkspaceGeometry, custom_window_controls_width,
 };
 pub use graph::{
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,

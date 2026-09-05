@@ -83,7 +83,7 @@ let style = NodeStyle::default()
 | Card / SettingsCard | 内部留白：左右 16、上下 14；不附带外部间距 |
 | SettingsPage | 滚动 body：上 20、右 24、下 24、左 24；标题与内容间 gap 为 16 |
 
-页面留白和卡片内部留白是两个不同边界，可以同时存在。框架不会根据嵌套层级自动清零。兄弟间距优先由父级 gap 负责；显式 margin 与 gap 相加，不自动折叠。
+页面留白和卡片内部留白是两个不同边界，可以同时存在。框架不会根据嵌套层级自动清零。兄弟间距优先由父级 gap 负责；显式 margin 与 gap 相加，不自动折叠。页标题由 `SettingsPage` 的 tab label 负责；`AppearanceSection` / `AboutSection` 作为 page content 时投影无标题卡片，避免卡片 title 再加 24px 顶边并与页标题重复。需要分区名时才给 `SettingsCard` 设 title。
 
 - `Stack::padding(v)` / `padding_xy(x, y)`、`Card::padding(v)` / `padding_xy(x, y)` 覆盖四边，包括此前的逻辑边声明；后调用者生效，`padding(0.0)` 可明确贴边。
 - 原始 `LayoutStyle` 仍是声明式：分边覆盖统一 padding。Card 未声明的边回落默认值，显式零保留；`.style(NodeStyle)` 替换用户声明，但不再隐式取消卡片默认内边距。默认值只存在于投影，删除覆盖可恢复默认。

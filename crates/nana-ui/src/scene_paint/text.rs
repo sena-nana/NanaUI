@@ -10,7 +10,8 @@ use super::clip::{self, LogicalRect};
 use super::color::{orthographic, pack_linear, to_rgba8, with_opacity};
 use crate::PhysicalRect;
 use crate::nana_text::{
-    RTL_ISOLATE_PREFIX, RTL_ISOLATE_SUFFIX, cosmic_wrap, shape_attrs, wrap_for_css_direction,
+    RTL_ISOLATE_PREFIX, RTL_ISOLATE_SUFFIX, cosmic_wrap, ellipsize_end, measured_text_overflows,
+    shape_attrs, wrap_for_css_direction,
 };
 
 const SHAPE_CACHE_CAP: usize = 512;
@@ -663,6 +664,8 @@ impl TextPipeline {
         };
         let painted = presentation_spans(content, spans, default_color, opacity);
         let rich = painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color);
+        // Width, height and requested ellipsis uniquely determine the result;
+        // cache lookup before shaping avoids repeating the overflow probe.
         let key = ShapeKeyRef {
             content,
             family,
@@ -714,14 +717,7 @@ impl TextPipeline {
                 opentype.word_break,
                 opentype.line_break,
             ));
-            buffer.set_ellipsize(if ellipsis {
-                let limit = max_lines
-                    .map(|n| cosmic_text::EllipsizeHeightLimit::Lines(n.max(1) as usize))
-                    .unwrap_or(cosmic_text::EllipsizeHeightLimit::Height(physical_height));
-                cosmic_text::Ellipsize::End(limit)
-            } else {
-                cosmic_text::Ellipsize::None
-            });
+            buffer.set_ellipsize(cosmic_text::Ellipsize::None);
             if rich {
                 let mut rich_text = painted
                     .iter()
@@ -737,6 +733,18 @@ impl TextPipeline {
                 buffer.set_text(&shaped, &attrs, shaping, align);
             }
             buffer.shape_until_scroll(&mut fonts, false);
+            if ellipsis
+                && measured_text_overflows(
+                    &buffer,
+                    wrap,
+                    Some(physical_width),
+                    Some(physical_height),
+                    max_lines,
+                )
+            {
+                buffer.set_ellipsize(ellipsize_end(max_lines, Some(physical_height)));
+                buffer.shape_until_scroll(&mut fonts, false);
+            }
             drop(fonts);
             self.shape_cache.insert(hash, key.to_owned_key(), buffer);
         }
@@ -1429,6 +1437,123 @@ fn quad_aabb(corners: &[[f32; 2]]) -> LogicalRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ellipsis_paint_keeps_exact_fit_and_truncates_only_narrow_boxes() {
+        use nana_ui_runtime::{
+            ComputedStyle, StableNodeId, TextContent, TextShapeConstraints, TextShaper,
+        };
+
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        pipeline.begin_frame(&queue, [512, 64]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut shaper = crate::NanaTextShaper::default();
+        let style = ComputedStyle {
+            font_size: 12.0,
+            font_weight: Some(600),
+            ..ComputedStyle::default()
+        };
+        for content in ["未命名 1", "shade"] {
+            let natural = shaper
+                .shape(
+                    StableNodeId::new(1).unwrap(),
+                    &TextContent {
+                        value: content.into(),
+                    },
+                    &style,
+                    TextShapeConstraints {
+                        wrap: false,
+                        shaping: TextShaping::Advanced,
+                        ..TextShapeConstraints::default()
+                    },
+                )
+                .width;
+            // Revisit the exact-fit entry after inserting a truncated one.
+            let mut full_glyphs = Vec::new();
+            for (width, ellipsis) in [
+                (natural, false),
+                (natural, true),
+                (natural * 0.5, true),
+                (natural, true),
+            ] {
+                pipeline
+                    .prepare(
+                        &device,
+                        &queue,
+                        &mut encoder,
+                        LogicalRect::from_xywh(0.0, 0.0, width, 24.0),
+                        LogicalRect::from_xywh(0.0, 0.0, 512.0, 64.0),
+                        1.0,
+                        content,
+                        Some([1.0; 4]),
+                        12.0,
+                        Some(600),
+                        None,
+                        None,
+                        false,
+                        nana_ui_core::TextWrapBreak::Word,
+                        false,
+                        ellipsis,
+                        None,
+                        TextShaping::Advanced,
+                        TextHorizontalAlignment::Start,
+                        TextVerticalAlignment::Top,
+                        &[],
+                        0.0,
+                        &[],
+                        &SceneTextOpenType::default(),
+                        clip::IDENTITY_AFFINE,
+                        [0.0; 2],
+                        clip::FragmentClip::PASS,
+                        1.0,
+                        [0.0; 2],
+                    )
+                    .expect("label must prepare");
+                let entry = pipeline
+                    .shape_cache
+                    .entries
+                    .values()
+                    .find(|entry| {
+                        entry.key.content == content
+                            && entry.key.width_bits == width.to_bits()
+                            && entry.key.ellipsis == ellipsis
+                    })
+                    .expect("prepared label must be cached at its own width");
+                let painted_width = measure(&entry.buffer).0;
+                let painted_glyphs: Vec<_> = entry
+                    .buffer
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs.iter())
+                    .map(|glyph| (glyph.font_id, glyph.glyph_id, glyph.start, glyph.end))
+                    .collect();
+                if !ellipsis {
+                    assert!(!painted_glyphs.is_empty());
+                    full_glyphs = painted_glyphs;
+                    continue;
+                }
+                if width == natural {
+                    assert_eq!(
+                        painted_glyphs, full_glyphs,
+                        "exact-fit paint must retain every original glyph"
+                    );
+                    assert!(
+                        (painted_width - natural).abs() < 0.01,
+                        "exact-fit paint changed {content:?}: {painted_width} vs {natural}"
+                    );
+                } else {
+                    assert_ne!(
+                        painted_glyphs, full_glyphs,
+                        "narrow paint must replace the text tail"
+                    );
+                    assert!(
+                        painted_width <= width + 0.5 && painted_width < natural,
+                        "narrow paint must truncate {content:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn rtl_latin_in_wide_box_places_first_glyph_on_the_right() {

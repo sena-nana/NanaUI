@@ -1578,6 +1578,10 @@ impl RegisterableComponent for AppTitleBar {
     const TAGS: &'static [&'static str] = crate::component_descriptors::APP_TITLE_BAR.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = AppTitleBar::new(spec.display_label())
+            .transparent(flag_attr(spec, &["transparent"]))
+            .drag_enabled(
+                parse_tristate_attr(spec, &["drag-enabled", "dragenabled"]).unwrap_or(true),
+            )
             .maximized(flag_attr(spec, &["maximized"]))
             .style(layout_only_style(spec));
         if let Some(show) = parse_tristate_attr(spec, &["window-controls", "windowcontrols"]) {
@@ -3067,6 +3071,27 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[test]
+    fn title_bar_semantic_transparency_and_drag_policy() {
+        let type_id = ComponentTypeId::new(AppTitleBar::TYPE_ID).unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let defaults =
+            AppTitleBar::from_semantic(&spec_with(&type_id, &layout, &[], &[], &[], "", ""));
+        assert!(!defaults.transparent);
+        assert!(defaults.drag_enabled);
+        let configured = AppTitleBar::from_semantic(&spec_with(
+            &type_id,
+            &layout,
+            &[("transparent", "true"), ("drag-enabled", "false")],
+            &[],
+            &[],
+            "",
+            "",
+        ));
+        assert!(configured.transparent);
+        assert!(!configured.drag_enabled);
     }
 
     #[test]
