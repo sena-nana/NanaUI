@@ -29,7 +29,7 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 | `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 圆角（Windows 11 DWM 阴影）；不用 winit `undecorated_shadow`（会把客户区顶边内缩 1px，标题栏盖不住） | 关 |
 | `system_caption: false` 且 `transparent: true` | 关 | 无自绘阴影（避免 DWM 合成冲突） | 开 |
 
-自绘 chrome 窗口创建后会清掉 `WS_CAPTION`，客户区铺到窗口外沿。自定义标题栏按钮高 `TITLE_BAR_HEIGHT`、宽 `WINDOW_CONTROL_WIDTH`，贴标题栏右上角。
+不透明自绘窗关掉 decorations 且不用 `undecorated_shadow`：winit 用 `WM_NCCALCSIZE` 把客户区铺到窗口外沿，创建后不再清 `WS_CAPTION`（`SetWindowPos(SWP_FRAMECHANGED)` 会在 `can_create_surfaces` 里卡住 UI 线程）。透明自绘窗仍清 caption，避免 DWM 合成留下系统边框。自定义标题栏按钮高 `TITLE_BAR_HEIGHT`、宽 `WINDOW_CONTROL_WIDTH`，贴标题栏右上角。
 
 命中顺序（逻辑像素，已含当前 `scale_factor`）：
 

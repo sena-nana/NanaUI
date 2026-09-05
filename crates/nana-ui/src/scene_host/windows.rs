@@ -169,10 +169,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             settings.icon.as_ref(),
             id == WindowId::PRIMARY,
         );
-        if !settings.system_caption {
-            let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
-            let _ = suppress_system_caption(window.as_ref());
-        }
+        apply_client_chrome_after_create(window.as_ref(), &settings);
         let material = apply_window_surface(
             window.as_ref(),
             self.last_theme,
