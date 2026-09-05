@@ -17,8 +17,9 @@ pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
     prepared
 }
 
-/// Clears the Win32 caption frame so a client-chrome window is not left with
-/// `WS_CAPTION`. Other platforms no-op.
+/// Clears the Win32 caption frame so a transparent client-chrome window is not
+/// left with `WS_CAPTION`. Opaque frameless windows keep winit's caption bit
+/// and extend the client through `WM_NCCALCSIZE`. Other platforms no-op.
 pub fn suppress_system_caption<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     #[cfg(target_os = "windows")]
     {

@@ -383,10 +383,7 @@ fn initialize<Program: RuntimeProgram>(
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
-    if !settings.system_caption {
-        let _ = prepare_client_chrome(window.as_ref(), f64::from(TITLE_BAR_HEIGHT));
-        let _ = suppress_system_caption(window.as_ref());
-    }
+    apply_client_chrome_after_create(window.as_ref(), &settings);
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
     let mut material = apply_window_surface(
@@ -1057,6 +1054,29 @@ fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsScene
         // cannot paint. Windows 11 rounded corners already provide a shadow.
         undecorated_shadow: false,
         no_redirection_bitmap: transparent,
+    }
+}
+
+/// Opaque frameless windows keep winit's `WS_CAPTION` and extend the client
+/// through `WM_NCCALCSIZE`. Clearing caption after create sends
+/// `SetWindowPos(SWP_FRAMECHANGED)` while the host is still inside
+/// `can_create_surfaces`, which hangs the UI thread. Transparent client
+/// chrome still strips caption so DWM composition is not left with a system
+/// frame.
+fn suppress_caption_after_create(system_caption: bool, transparent: bool) -> bool {
+    !system_caption && transparent
+}
+
+fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    settings: &RuntimeWindowSettings,
+) {
+    if settings.system_caption {
+        return;
+    }
+    let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT));
+    if suppress_caption_after_create(settings.system_caption, settings.transparent) {
+        let _ = suppress_system_caption(window);
     }
 }
 
@@ -1878,8 +1898,9 @@ mod tests {
         platform_input_key, platform_input_modifiers, platform_window_event,
         resolved_scene_ime_request, route_window_command, scene_clear_color,
         scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, tablet_pointer_id, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
+        should_deliver_program_ime, suppress_caption_after_create, tablet_pointer_id, window_level,
+        window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
+        windows_to_redraw, winit_icon,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -2091,6 +2112,9 @@ mod tests {
         assert!(!opaque_client.decorations);
         assert!(!opaque_client.undecorated_shadow);
         assert!(!opaque_client.no_redirection_bitmap);
+        assert!(!suppress_caption_after_create(false, false));
+        assert!(suppress_caption_after_create(false, true));
+        assert!(!suppress_caption_after_create(true, true));
 
         settings.system_caption = true;
         let caption = scene_window_attributes(&settings, &[]);
