@@ -276,6 +276,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetTextInputCompletionDismissed { .. } => "SetTextInputCompletionDismissed",
         UiMutation::SetTextInputCompletionReopened { .. } => "SetTextInputCompletionReopened",
         UiMutation::SetTextInputHover { .. } => "SetTextInputHover",
+        UiMutation::SetTextInputDiagnosticHover { .. } => "SetTextInputDiagnosticHover",
         UiMutation::SetTextInputHoverScroll { .. } => "SetTextInputHoverScroll",
         UiMutation::SetTextInputSignature { .. } => "SetTextInputSignature",
     }

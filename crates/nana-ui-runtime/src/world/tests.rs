@@ -1893,6 +1893,158 @@ fn editor_extras_shape_and_derive_into_geometry() {
     assert_eq!(text.bounds.y, -2.0);
 }
 
+#[test]
+fn diagnostic_labels_pick_line_winner_and_skip_hint_underline() {
+    let value = "alpha\nbeta\n";
+    let mut world = UiWorld::default();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "textarea".into(),
+        },
+    );
+    queue.set_standard_visual(
+        node(1),
+        Some(StandardVisual::TextInput {
+            placeholder: Arc::from(""),
+            size: nana_ui_core::ControlSize::Medium,
+            secure: false,
+            invalid: false,
+            steppers: false,
+            diagnostics: Arc::from([
+                crate::TextDiagnosticSpan::new(0, 5, crate::TextDiagnosticSeverity::Error)
+                    .with_message("bad ident"),
+                crate::TextDiagnosticSpan::new(0, 2, crate::TextDiagnosticSeverity::Warning)
+                    .with_message("also here"),
+                crate::TextDiagnosticSpan::new(6, 4, crate::TextDiagnosticSeverity::Hint)
+                    .with_message("hint text"),
+            ]),
+            matches: Arc::from([]),
+            color_swatches: Arc::from([]),
+            atoms: Arc::from([]),
+            line_numbers: true,
+            indent_guides: None,
+            folds: Arc::from([]),
+            git_marks: Arc::from([]),
+            editor_options: Default::default(),
+        }),
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                height: Some(nana_ui_core::LengthSpec::Px(40.0)),
+                font_size: Some(10.0),
+                line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
+                ..nana_ui_core::LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_text_input(
+        node(1),
+        Some(TextInputState {
+            value: value.into(),
+            selection: crate::TextSelection::caret(0),
+            additional_selections: Vec::new(),
+        }),
+    );
+    queue.set_accessibility(
+        node(1),
+        AccessibilityState {
+            multiline: true,
+            editable: true,
+            ..AccessibilityState::default()
+        },
+    );
+    queue.set_interaction(
+        node(1),
+        crate::InteractionState {
+            pointer_events: true,
+            focusable: true,
+        },
+    );
+    queue.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 40.0,
+        },
+    );
+    world.commit(queue).unwrap();
+    world.resolve_styles(&[node(1)]).unwrap();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+    let presentation = world
+        .text_input_presentation(node(1))
+        .expect("presentation");
+    assert_eq!(
+        presentation.diagnostic_marks.len(),
+        2,
+        "hint has no squiggle"
+    );
+    assert!(
+        presentation
+            .diagnostic_marks
+            .iter()
+            .all(|mark| mark.severity.draws_underline())
+    );
+    assert_eq!(presentation.diagnostic_labels.len(), 2);
+    assert_eq!(presentation.diagnostic_labels[0].text, "bad ident");
+    assert_eq!(
+        presentation.diagnostic_labels[0].severity,
+        crate::TextDiagnosticSeverity::Error
+    );
+    assert_eq!(presentation.diagnostic_labels[1].text, "hint text");
+    assert_eq!(
+        presentation.diagnostic_labels[1].severity,
+        crate::TextDiagnosticSeverity::Hint
+    );
+    let hit = presentation
+        .diagnostic_hits
+        .iter()
+        .find(|hit| hit.message == "bad ident")
+        .expect("error hit");
+    let hover = world
+        .text_diagnostic_hit(node(1), hit.rect.x + 0.5, hit.rect.y + 0.5)
+        .expect("hover");
+    assert_eq!(hover.title, "bad ident");
+
+    let mut hover_queue = MutationQueue::new();
+    hover_queue.set_text_input_diagnostic_hover(node(1), Some(hover));
+    world.commit(hover_queue).unwrap();
+    world.take_system_work();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+    let geometry = world.component_geometry(node(1)).expect("geometry");
+    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
+        panic!("text input geometry");
+    };
+    assert_eq!(
+        hover_popup
+            .expect("diagnostic hover")
+            .title
+            .content
+            .as_ref(),
+        "bad ident"
+    );
+
+    let mut clear = MutationQueue::new();
+    clear.set_text_input_diagnostic_hover(node(1), None);
+    world.commit(clear).unwrap();
+    world.take_system_work();
+    let geometry = world.component_geometry(node(1)).expect("geometry");
+    let crate::ComponentGeometry::TextInput { hover_popup, .. } = geometry else {
+        panic!("text input geometry");
+    };
+    assert!(hover_popup.is_none());
+}
+
 /// 折叠测试编辑器："fn a() {\n    x();\n    y();\n}\nfn b() {}"。
 /// 块折叠区间为 `{`（偏移 7）到 `}` 之后（28），隐藏三行
 /// （两个语句行与 `}` 行）。

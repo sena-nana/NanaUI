@@ -2548,6 +2548,50 @@ impl AppContext {
         self.world.commit(mutations)?;
         Ok(true)
     }
+
+    /// 指针落在诊断 squiggle 或行尾文案上时打开诊断 hover；离开则撤掉
+    /// 诊断占用的浮窗（不撤宿主符号 hover）。停在已打开的诊断浮窗上保持。
+    pub fn update_text_diagnostic_hover(
+        &mut self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> Result<(), FrameworkError> {
+        if let Some(node) = self.world.text_hover_panel_at(document, x, y)
+            && self
+                .world
+                .text_hover_view(node)
+                .is_some_and(|state| state.diagnostic)
+        {
+            return Ok(());
+        }
+        let target = self.world.hit_test(document, x, y);
+        let hit = target.and_then(|id| {
+            let (content, scroll) = self.world.text_input_pointer_context(id)?;
+            let local_x = x - content.x + scroll.x;
+            let local_y = y - content.y + scroll.y;
+            self.world
+                .text_diagnostic_hit(id, local_x, local_y)
+                .map(|hover| (id, hover))
+        });
+        let mut mutations = crate::MutationQueue::new();
+        let mut dirty = false;
+        if let Some((id, hover)) = hit.as_ref() {
+            mutations.set_text_input_diagnostic_hover(*id, Some(hover.clone()));
+            dirty = true;
+        }
+        for id in self.world.diagnostic_hover_ids() {
+            if hit.as_ref().is_some_and(|(hit_id, _)| *hit_id == id) {
+                continue;
+            }
+            mutations.set_text_input_diagnostic_hover(id, None);
+            dirty = true;
+        }
+        if dirty {
+            self.world.commit(mutations)?;
+        }
+        Ok(())
+    }
 }
 
 /// 键盘导航的滚动窗口跟随：选中项离开可见窗口时把窗口滑到包含它的

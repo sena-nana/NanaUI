@@ -30,8 +30,8 @@ use nana_ui_core::{GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSiz
 
 use crate::animation::ActiveAnimation;
 use crate::components::{
-    EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan, TextDiagnosticMark,
-    TextDiagnosticSpan, TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
+    EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
+    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
     TextInputPresentation, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
     TextSwatchMark, TextWhitespaceKind, TextWhitespaceMark,
 };
@@ -1013,12 +1013,10 @@ impl UiWorld {
                 .map(|presenter| presenter.present(&text, &request))
                 .unwrap_or_default();
             let spans = match request.overlay.as_ref() {
-                Some(overlay) => {
-                    crate::presentation::sanitize_spans(
-                        &text,
-                        crate::presentation::merge_overlay_spans(base, overlay),
-                    )
-                }
+                Some(overlay) => crate::presentation::sanitize_spans(
+                    &text,
+                    crate::presentation::merge_overlay_spans(base, overlay),
+                ),
                 None => crate::presentation::sanitize_spans(&text, base),
             };
             self.nodes

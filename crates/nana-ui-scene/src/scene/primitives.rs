@@ -549,6 +549,7 @@ impl UiScene {
                         caret_color,
                         preedit_color,
                         diagnostic_markers,
+                        diagnostic_labels,
                         match_markers,
                         swatch_markers,
                         swatch_border_color,
@@ -694,6 +695,20 @@ impl UiScene {
                                 20 + marker_index as u8,
                                 scene_rect(*rect),
                                 VisualQuadStyle::solid(*color),
+                            ));
+                        }
+                        for (label_index, region) in diagnostic_labels.iter().enumerate() {
+                            self.insert_primitive(component_text_primitive(
+                                id,
+                                58 + label_index as u8,
+                                region,
+                                TextHorizontalAlignment::Start,
+                                true,
+                                &node,
+                                transform,
+                                std::sync::Arc::clone(&clips),
+                                opacity,
+                                node_order,
                             ));
                         }
                         // 查找匹配高亮：普通匹配（slot 3，文本之上、光标之

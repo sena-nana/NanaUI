@@ -394,6 +394,7 @@ impl<'a> ValidationPlan<'a> {
                 | UiMutation::SetTextInputCompletionDismissed { id }
                 | UiMutation::SetTextInputCompletionReopened { id }
                 | UiMutation::SetTextInputHover { id, .. }
+                | UiMutation::SetTextInputDiagnosticHover { id, .. }
                 | UiMutation::SetTextInputHoverScroll { id, .. }
                 | UiMutation::SetTextInputSignature { id, .. } => {
                     self.node(*id)?;
@@ -1772,10 +1773,45 @@ impl UiWorld {
                             Some(crate::store::TextHoverViewState {
                                 doc: doc.clone(),
                                 scroll: 0,
+                                diagnostic: false,
                             }),
                         );
                     }
                     None => self.nodes.set_text_hover_view(*id, None),
+                }
+                self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetTextInputDiagnosticHover { id, hover } => {
+                let current = self.nodes.text_hover_view(*id);
+                let changed = match (hover, current) {
+                    (None, Some(state)) => state.diagnostic,
+                    (None, None) => false,
+                    (Some(doc), Some(state)) => !state.diagnostic || &state.doc != doc,
+                    (Some(_), None) => true,
+                };
+                if !changed {
+                    return;
+                }
+                match hover {
+                    Some(doc) => {
+                        let scroll = current
+                            .filter(|state| state.diagnostic && state.doc == *doc)
+                            .map(|state| state.scroll)
+                            .unwrap_or(0);
+                        self.nodes.set_text_hover_view(
+                            *id,
+                            Some(crate::store::TextHoverViewState {
+                                doc: doc.clone(),
+                                scroll,
+                                diagnostic: true,
+                            }),
+                        );
+                    }
+                    None => {
+                        if current.is_some_and(|state| state.diagnostic) {
+                            self.nodes.set_text_hover_view(*id, None);
+                        }
+                    }
                 }
                 self.mark(*id, DirtyMask::RENDER);
             }

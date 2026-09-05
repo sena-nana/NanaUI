@@ -289,6 +289,7 @@ impl RuntimeInputAdapter {
                 let target = overlay.target;
                 context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
+                context.update_text_diagnostic_hover(document, *x, *y)?;
                 #[cfg(feature = "graph-canvas")]
                 let graph_button = match *button {
                     1 => GraphPointerButton::Middle,
