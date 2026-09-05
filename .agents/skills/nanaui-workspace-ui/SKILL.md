@@ -14,7 +14,9 @@ description: Maintain NanaUI's Workspace and UI system. Product path is Runtime 
 - Treat Runtime / UiScene / `SceneWgpuPainter` as the product view path.
 - Preserve stable Region/Settings identities, sizing constraints, serialization, and public export
   compatibility.
+- Overlay title bars use `AppTitleBar::transparent(true)` and its mounted slots; keep drag ownership in NanaUI. Fullscreen consumers retain business slots with `drag_enabled(false)` and `show_window_controls(false)`, not a parallel pointer gesture.
 - Centralize shared tokens and component states. Every visible action must update real Rust state.
+- Windows custom title-bar controls follow the LiliaUI rounded icon-button pattern (28px square, control radius, 2px gaps, 6px horizontal group insets). Preserve normal hover/pressed feedback and Close danger feedback; hit bounds follow the inset buttons rather than covering the frame corner.
 - Route GPU resources to `$nanaui-gpu-integration`, window handles to
   `$nanaui-window-materials`, and verification to `$nanaui-validation`.
 
