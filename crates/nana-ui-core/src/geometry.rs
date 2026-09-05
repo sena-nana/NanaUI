@@ -5,15 +5,16 @@ use crate::layout::{RegionId, RegionPlacement, RegionScope, RegionState, Workspa
 /// Fixed chrome dimensions used by the NanaUI application shell.
 pub const TITLE_BAR_HEIGHT: f32 = 36.0;
 pub const RESIZE_HANDLE_SIZE: f32 = 8.0;
-/// Custom caption-button width. Matches the Windows 11 caption control so the
-/// trailing hit target covers the corner instead of sitting inside a 28px icon.
-pub const WINDOW_CONTROL_WIDTH: f32 = 46.0;
+/// Square size of the shell's rounded icon buttons.
+pub const WINDOW_CONTROL_WIDTH: f32 = 28.0;
 /// Gap between custom Minimize / Maximize / Close buttons.
 pub const WINDOW_CONTROL_GAP: f32 = 2.0;
+/// Horizontal inset on each side of the custom window-control group.
+pub const WINDOW_CONTROL_PADDING: f32 = 6.0;
 
-/// Trailing width of the three custom caption buttons, including gaps.
+/// Trailing width of the three custom caption buttons, including gaps and insets.
 pub const fn custom_window_controls_width() -> f32 {
-    WINDOW_CONTROL_WIDTH * 3.0 + WINDOW_CONTROL_GAP * 2.0
+    WINDOW_CONTROL_WIDTH * 3.0 + WINDOW_CONTROL_GAP * 2.0 + WINDOW_CONTROL_PADDING * 2.0
 }
 
 /// A backend-neutral logical-pixel position.
@@ -516,9 +517,9 @@ mod tests {
 
     #[test]
     fn custom_window_controls_span_three_caption_buttons() {
-        assert_eq!(WINDOW_CONTROL_WIDTH, 46.0);
+        assert_eq!(WINDOW_CONTROL_WIDTH, 28.0);
         assert_eq!(WINDOW_CONTROL_GAP, 2.0);
-        assert_eq!(custom_window_controls_width(), 142.0);
+        assert_eq!(custom_window_controls_width(), 100.0);
     }
 
     #[test]

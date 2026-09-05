@@ -152,6 +152,7 @@ impl Default for WindowChromeState {
 pub struct TitleBarDragTracker {
     pressed: bool,
     control: Option<WindowChromeAction>,
+    drag_bar: Option<nana_ui_runtime::StableNodeId>,
 }
 
 impl TitleBarDragTracker {
@@ -161,6 +162,16 @@ impl TitleBarDragTracker {
         document: DocumentId,
         event: &InputEvent,
     ) -> Vec<WindowChromeEvent> {
+        if self.pressed
+            && self.control.is_none()
+            && self
+                .drag_bar
+                .is_none_or(|bar| !title_bar_drag_enabled(context, bar))
+        {
+            self.pressed = false;
+            self.drag_bar = None;
+            return vec![WindowChromeEvent::PointerCancelled];
+        }
         match event {
             InputEvent::Pointer {
                 phase: PointerPhase::Down,
@@ -182,9 +193,10 @@ impl TitleBarDragTracker {
                         self.control = Some(action);
                         Vec::new()
                     }
-                    TitleBarHit::Drag => {
+                    TitleBarHit::Drag(bar) => {
                         self.pressed = true;
                         self.control = None;
+                        self.drag_bar = Some(bar);
                         vec![
                             WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
                             WindowChromeEvent::PointerPressed,
@@ -236,7 +248,7 @@ impl TitleBarDragTracker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TitleBarHit {
     None,
-    Drag,
+    Drag(nana_ui_runtime::StableNodeId),
     Control(WindowChromeAction),
 }
 
@@ -245,14 +257,14 @@ enum TitleBarHit {
 fn title_bar_drag_hit(context: &AppContext, document: DocumentId, x: f32, y: f32) -> bool {
     matches!(
         title_bar_pointer_hit(context, document, x, y),
-        TitleBarHit::Drag
+        TitleBarHit::Drag(_)
     )
 }
 
 /// True when `(x, y)` is a custom Minimize / Maximize / Close control.
 ///
-/// Client-frame resize must skip this region so the top-right caption corner
-/// stays Close (Fitts) instead of NorthEast resize.
+/// Client-frame resize must skip the actual button bounds. Padding around
+/// the rounded buttons remains available to the title bar and frame.
 pub fn title_bar_hits_window_control(
     context: &AppContext,
     document: DocumentId,
@@ -284,7 +296,11 @@ fn title_bar_pointer_hit(
             if native_title_bar_control_hit(context, id, x, y) {
                 return TitleBarHit::None;
             }
-            return TitleBarHit::Drag;
+            return if title_bar_drag_enabled(context, id) {
+                TitleBarHit::Drag(id)
+            } else {
+                TitleBarHit::None
+            };
         }
         if is_title_bar_control(context, id) && control.is_none() {
             return TitleBarHit::None;
@@ -326,6 +342,30 @@ pub fn apply_title_bar_pointer(
         action = state.update(chrome_event).or(action);
     }
     action
+}
+
+fn title_bar_drag_enabled(context: &AppContext, bar: nana_ui_runtime::StableNodeId) -> bool {
+    if !context.world().is_mounted(bar)
+        || context
+            .read(Entity::<AppTitleBar>::from_stable_id(bar), |bar| {
+                !bar.drag_enabled
+            })
+            .unwrap_or(false)
+    {
+        return false;
+    }
+    let mut current = Some(bar);
+    while let Some(id) = current {
+        if context
+            .world()
+            .node_style(id)
+            .is_some_and(|style| style.layout.hidden)
+        {
+            return false;
+        }
+        current = context.world().node(id).and_then(|node| node.parent);
+    }
+    true
 }
 
 fn is_app_title_bar(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
@@ -691,6 +731,116 @@ mod tests {
     }
 
     #[test]
+    fn transparent_title_bar_slots_drag_labels_but_not_business_buttons() {
+        use super::title_bar_drag_hit;
+        let (mut context, document, bar, button) = title_bar_document();
+        let text = context
+            .create_component(
+                document,
+                nana_ui_runtime::Text::new("Status").style(nana_ui_runtime::NodeStyle {
+                    layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                        width: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                        height: Some(nana_ui_core::LengthSpec::Px(20.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        context
+            .update_component(bar, |bar, _| {
+                bar.transparent = true;
+                bar.trailing = Some(text.stable_id());
+            })
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let text_box = context.world().layout_box(text.stable_id()).unwrap();
+        let button_box = context.world().layout_box(button.stable_id()).unwrap();
+        assert!(title_bar_drag_hit(
+            &context,
+            document,
+            text_box.x + text_box.width / 2.0,
+            text_box.y + text_box.height / 2.0
+        ));
+        assert!(!title_bar_drag_hit(
+            &context,
+            document,
+            button_box.x + button_box.width / 2.0,
+            button_box.y + button_box.height / 2.0
+        ));
+        context
+            .update_component(bar, |bar, _| bar.drag_enabled = false)
+            .unwrap();
+        assert!(!title_bar_drag_hit(
+            &context,
+            document,
+            text_box.x + text_box.width / 2.0,
+            text_box.y + text_box.height / 2.0
+        ));
+    }
+
+    #[test]
+    fn disabling_or_hiding_title_bar_cancels_pending_drag() {
+        use super::{TitleBarDragTracker, apply_title_bar_pointer, title_bar_drag_hit};
+        for hidden in [false, true] {
+            let (mut context, document, bar, _) = title_bar_document();
+            let bounds = context.world().layout_box(bar.stable_id()).unwrap();
+            let x = bounds.x + bounds.width - 24.0;
+            let y = bounds.y + bounds.height / 2.0;
+            let mut state = WindowChromeState::default();
+            let mut tracker = TitleBarDragTracker::default();
+            apply_title_bar_pointer(
+                &mut state,
+                &mut tracker,
+                &context,
+                document,
+                &pointer_down(x, y),
+            );
+            context
+                .update_component(bar, |bar, _| {
+                    if hidden {
+                        std::sync::Arc::make_mut(&mut bar.style.layout).hidden = true;
+                    } else {
+                        bar.drag_enabled = false;
+                    }
+                })
+                .unwrap();
+            assert!(!title_bar_drag_hit(&context, document, x, y));
+            assert_eq!(
+                apply_title_bar_pointer(
+                    &mut state,
+                    &mut tracker,
+                    &context,
+                    document,
+                    &pointer_move(x + 8.0, y)
+                ),
+                None
+            );
+            context
+                .update_component(bar, |bar, _| {
+                    bar.drag_enabled = true;
+                    std::sync::Arc::make_mut(&mut bar.style.layout).hidden = false;
+                })
+                .unwrap();
+            assert_eq!(
+                apply_title_bar_pointer(
+                    &mut state,
+                    &mut tracker,
+                    &context,
+                    document,
+                    &pointer_move(x + 16.0, y)
+                ),
+                None
+            );
+            assert!(title_bar_drag_hit(&context, document, x, y));
+        }
+    }
+
+    #[test]
     fn blank_title_bar_pointer_starts_window_drag() {
         use super::{TitleBarDragTracker, apply_title_bar_pointer, title_bar_drag_hit};
 
@@ -821,9 +971,9 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn close_control_covers_the_trailing_caption_corner() {
+    fn inset_close_button_owns_its_bounds_but_not_the_frame_corner() {
         use super::{title_bar_drag_hit, title_bar_hits_window_control};
-        use nana_ui_core::{TITLE_BAR_HEIGHT, WINDOW_CONTROL_WIDTH};
+        use nana_ui_core::{TITLE_BAR_HEIGHT, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH};
         use nana_ui_runtime::{AppContext, AppTitleBar, DocumentId, LayoutViewport};
 
         let document = DocumentId::new(1).unwrap();
@@ -843,16 +993,30 @@ mod tests {
             .expect("assembled controls");
         let close = context.world().node(controls).unwrap().children[2];
         let close_box = context.world().layout_box(close).unwrap();
-        assert_eq!(close_box.y, 0.0);
-        assert_eq!(close_box.height, TITLE_BAR_HEIGHT);
+        assert_eq!(close_box.y, (TITLE_BAR_HEIGHT - WINDOW_CONTROL_WIDTH) / 2.0);
+        assert_eq!(close_box.height, WINDOW_CONTROL_WIDTH);
         assert_eq!(close_box.width, WINDOW_CONTROL_WIDTH);
-        assert_eq!(close_box.x + close_box.width, 800.0);
+        assert_eq!(
+            close_box.x + close_box.width,
+            800.0 - WINDOW_CONTROL_PADDING
+        );
 
         let corner_x = 800.0 - 1.0;
         let corner_y = 1.0;
-        assert!(title_bar_hits_window_control(
+        assert!(!title_bar_hits_window_control(
             &context, document, corner_x, corner_y
         ));
-        assert!(!title_bar_drag_hit(&context, document, corner_x, corner_y));
+        assert!(title_bar_hits_window_control(
+            &context,
+            document,
+            close_box.x + close_box.width / 2.0,
+            close_box.y + close_box.height / 2.0
+        ));
+        assert!(!title_bar_drag_hit(
+            &context,
+            document,
+            close_box.x + close_box.width / 2.0,
+            close_box.y + close_box.height / 2.0
+        ));
     }
 }

@@ -4,16 +4,15 @@ use std::sync::Arc;
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, OverflowSpec,
     PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP,
-    WINDOW_CONTROL_WIDTH, WindowChrome, WorkspaceModel,
+    WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH, WindowChrome, WorkspaceModel,
 };
 
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
-    FrameworkError, IconButton, InteractionState, InteractionStyle, MutationQueue, NodeKind,
-    NodeStyle, OverlayHost, SemanticPaint, SidebarFrame, StableNodeId, StandardVisual, Text,
-    TextContent, TextHorizontalAlignment, TextVerticalAlignment, UiWorld, Workspace,
-    WorkspaceRegionSlot,
+    FrameworkError, IconButton, InteractionState, MutationQueue, NodeKind, NodeStyle, OverlayHost,
+    SidebarFrame, StableNodeId, StandardVisual, Text, TextContent, TextHorizontalAlignment,
+    TextVerticalAlignment, UiWorld, Workspace, WorkspaceRegionSlot,
 };
 
 const SLOT_PADDING: f32 = 6.0;
@@ -65,6 +64,8 @@ impl WindowChromeAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppTitleBar {
     pub title: Arc<str>,
+    pub transparent: bool,
+    pub drag_enabled: bool,
     pub leading: Option<StableNodeId>,
     pub center: Option<StableNodeId>,
     pub trailing: Option<StableNodeId>,
@@ -81,6 +82,8 @@ impl AppTitleBar {
     pub fn new(title: impl Into<Arc<str>>) -> Self {
         Self {
             title: title.into(),
+            transparent: false,
+            drag_enabled: true,
             leading: None,
             center: None,
             trailing: None,
@@ -92,6 +95,18 @@ impl AppTitleBar {
             maximized: false,
             style: NodeStyle::default(),
         }
+    }
+
+    /// Removes only the title-bar background, preserving foreground and slot content.
+    pub fn transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    /// Enables native window dragging from the bar's non-interactive content.
+    pub fn drag_enabled(mut self, enabled: bool) -> Self {
+        self.drag_enabled = enabled;
+        self
     }
 
     pub fn leading(mut self, leading: StableNodeId) -> Self {
@@ -180,7 +195,7 @@ impl AppTitleBar {
         let columns = title_bar_has_columns(world, id);
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
-        style.background = Some(SemanticColorRole::Titlebar);
+        style.background = (!self.transparent).then_some(SemanticColorRole::Titlebar);
         style.text_horizontal_alignment = TextHorizontalAlignment::Center;
         style.text_vertical_alignment = TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
@@ -209,6 +224,18 @@ impl AppTitleBar {
 
     fn project_slots(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let children = world.node(id).map(|node| node.children).unwrap_or_default();
+        let center_has_content = children.iter().any(|&child| {
+            node_tag(world, child).as_deref() == Some(CENTER_COLUMN_TAG)
+                && world.node(child).is_some_and(|slot| {
+                    slot.children.iter().any(|&content| {
+                        world.node(content).is_some_and(|node| {
+                            !matches!(node.kind, NodeKind::Text)
+                                || world.text(content).is_some_and(|text| !text.is_empty())
+                        })
+                    })
+                })
+        });
+        let content_only = self.title.is_empty() && self.center.is_none() && !center_has_content;
         let mut saw_columns = false;
         for child in children {
             match node_tag(world, child).as_deref() {
@@ -216,6 +243,7 @@ impl AppTitleBar {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
                         apply_fill_column(layout, JustifySpec::Start);
+                        layout.overflow_x = OverflowSpec::Hidden;
                         layout.padding_left =
                             Some(LengthSpec::Px(SLOT_PADDING + self.chrome_padding_left()));
                         layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
@@ -227,12 +255,18 @@ impl AppTitleBar {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
                         apply_center_column(layout, self.resolved_center_width());
+                        layout.hidden = content_only;
                     });
                 }
                 Some(TRAILING_COLUMN_TAG) => {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
-                        apply_fill_column(layout, JustifySpec::End);
+                        if content_only {
+                            apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
+                            layout.hidden = false;
+                        } else {
+                            apply_fill_column(layout, JustifySpec::End);
+                        }
                         layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                         // Custom controls hug the window edge; native or
                         // absent controls keep the shared slot padding.
@@ -443,9 +477,11 @@ impl AppTitleBarControls {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
-        layout.align_items = AlignSpec::Stretch;
+        layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::End;
         layout.gap = Some(layout.gap.unwrap_or(LengthSpec::Px(WINDOW_CONTROL_GAP)));
+        layout.padding_left = Some(LengthSpec::Px(WINDOW_CONTROL_PADDING));
+        layout.padding_right = Some(LengthSpec::Px(WINDOW_CONTROL_PADDING));
         layout.height = Some(LengthSpec::Fill);
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
@@ -1890,52 +1926,27 @@ fn project_window_control(
 }
 
 fn window_control_style(danger: bool) -> NodeStyle {
-    let mut style = NodeStyle::default();
-    style.foreground = Some(SemanticColorRole::Muted);
-    style.background = None;
-    style.text_horizontal_alignment = crate::TextHorizontalAlignment::Center;
-    style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
-    style.interaction = InteractionStyle {
-        hovered: SemanticPaint {
-            foreground: Some(if danger {
-                SemanticColorRole::Danger
-            } else {
-                SemanticColorRole::Text
-            }),
-            background: Some(if danger {
-                SemanticColorRole::DangerSoftHover
-            } else {
-                SemanticColorRole::Hover
-            }),
-            ..SemanticPaint::default()
-        },
-        pressed: SemanticPaint {
-            foreground: Some(if danger {
-                SemanticColorRole::Danger
-            } else {
-                SemanticColorRole::Text
-            }),
-            background: Some(if danger {
-                SemanticColorRole::DangerSoftPressed
-            } else {
-                SemanticColorRole::Active
-            }),
-            ..SemanticPaint::default()
-        },
-        ..InteractionStyle::default()
-    };
+    let mut style = IconButton::new(Icon::Close, "")
+        .size(ControlSize::Small)
+        .style;
+    if danger {
+        style.interaction.hovered.foreground = Some(SemanticColorRole::Danger);
+        style.interaction.hovered.background = Some(SemanticColorRole::DangerSoftHover);
+        style.interaction.pressed.foreground = Some(SemanticColorRole::Danger);
+        style.interaction.pressed.background = Some(SemanticColorRole::DangerSoftPressed);
+    }
     let layout = Arc::make_mut(&mut style.layout);
     layout.width = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
-    layout.height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
+    layout.height = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
     layout.min_width = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
-    layout.min_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
+    layout.min_height = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
     layout.padding_left = Some(LengthSpec::Px(0.0));
     layout.padding_right = Some(LengthSpec::Px(0.0));
     layout.padding_top = Some(LengthSpec::Px(0.0));
     layout.padding_bottom = Some(LengthSpec::Px(0.0));
-    layout.border_radius = Some(0.0);
+    layout.border_width = Some(0.0);
     style
 }
 
@@ -2048,6 +2059,140 @@ mod tests {
         match visual {
             Some(StandardVisual::Icon { icon, .. }) => Some(icon),
             _ => None,
+        }
+    }
+
+    #[test]
+    fn empty_title_bar_keeps_implicitly_mounted_center_text() {
+        let mut context = AppContext::new();
+        let text = context
+            .create_component(
+                document(),
+                Text::new("Mounted title").style(title_label_style()),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(document(), AppTitleBar::new(""))
+            .unwrap();
+        context.append_child(bar, text).unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(640.0, 400.0))
+            .unwrap();
+        let center = context
+            .world()
+            .node(text.stable_id())
+            .unwrap()
+            .parent
+            .unwrap();
+        assert!(!context.world().node_style(center).unwrap().layout.hidden);
+        let bounds = context.world().layout_box(text.stable_id()).unwrap();
+        assert!(bounds.width > 0.0 && bounds.height > 0.0);
+        assert_eq!(
+            context.world().text(text.stable_id()),
+            Some("Mounted title")
+        );
+        assert_eq!(
+            context.world().layout_box(center).unwrap().width,
+            DEFAULT_CENTER_WIDTH
+        );
+    }
+
+    #[test]
+    fn empty_title_bar_reserves_trailing_content_at_narrow_width() {
+        let mut context = AppContext::new();
+        let leading = context
+            .create_component(
+                document(),
+                Text::new("A long stage name").style(NodeStyle {
+                    layout: Arc::new(nana_ui_core::LayoutStyle {
+                        width: Some(LengthSpec::Fill),
+                        min_width: Some(LengthSpec::Px(0.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let trailing = context
+            .create_component(
+                document(),
+                Text::new("Status").style(NodeStyle {
+                    layout: Arc::new(nana_ui_core::LayoutStyle {
+                        width: Some(LengthSpec::Px(280.0)),
+                        flex_shrink: Some(0.0),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("")
+                    .leading(leading.stable_id())
+                    .trailing(trailing.stable_id())
+                    .show_window_controls(true)
+                    .leading_inset(0.0),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(640.0, 400.0))
+            .unwrap();
+        let controls = context.read(bar, |bar| bar.controls.unwrap()).unwrap();
+        let a = context.world().layout_box(leading.stable_id()).unwrap();
+        let b = context.world().layout_box(trailing.stable_id()).unwrap();
+        let c = context.world().layout_box(controls).unwrap();
+        assert!((b.width - 280.0).abs() < 0.1);
+        assert!(a.x + a.width <= b.x + 0.1);
+        assert!(b.x + b.width <= c.x + 0.1);
+        assert!((c.x + c.width - 640.0).abs() < 0.1);
+        assert!(a.width > 0.0);
+    }
+
+    #[test]
+    fn transparent_title_bar_preserves_slot_content_and_geometry() {
+        let mut context = AppContext::new();
+        let text = context
+            .create_component(document(), Text::new("Status"))
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana").trailing(text.stable_id()),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let before = context.world().layout_box(text.stable_id()).unwrap();
+        let parent = context.world().node(text.stable_id()).unwrap().parent;
+        for transparent in [true, false] {
+            context
+                .update_component(bar, |bar, _| bar.transparent = transparent)
+                .unwrap();
+            context
+                .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+                .unwrap();
+            let style = context.world().node_style(bar.stable_id()).unwrap();
+            assert_eq!(
+                style.background,
+                (!transparent).then_some(SemanticColorRole::Titlebar)
+            );
+            assert!(style.layout.background.is_none());
+            assert_eq!(style.foreground, Some(SemanticColorRole::Text));
+            assert_eq!(
+                context.world().layout_box(text.stable_id()).unwrap(),
+                before
+            );
+            assert_eq!(
+                context.world().node(text.stable_id()).unwrap().parent,
+                parent
+            );
+            assert_eq!(context.world().text(text.stable_id()), Some("Status"));
         }
     }
 
@@ -2170,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_window_controls_keep_their_look_and_hug_the_trailing_edge() {
+    fn custom_window_controls_are_inset_square_buttons() {
         let window_width = 800.0;
         let mut context = AppContext::new();
         let bar = context
@@ -2202,17 +2347,19 @@ mod tests {
         for (index, button) in buttons.iter().enumerate() {
             let bounds = world.layout_box(*button).unwrap();
             assert_eq!(bounds.width, WINDOW_CONTROL_WIDTH);
-            assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
-            assert_eq!(bounds.y, 0.0);
+            assert_eq!(bounds.height, WINDOW_CONTROL_WIDTH);
+            assert_eq!(bounds.y, (TITLE_BAR_HEIGHT - WINDOW_CONTROL_WIDTH) / 2.0);
             assert_eq!(
                 bounds.x,
-                container.x + index as f32 * (WINDOW_CONTROL_WIDTH + WINDOW_CONTROL_GAP),
+                container.x
+                    + WINDOW_CONTROL_PADDING
+                    + index as f32 * (WINDOW_CONTROL_WIDTH + WINDOW_CONTROL_GAP),
                 "buttons keep the shared control gap"
             );
         }
         let close = world.layout_box(buttons[2]).unwrap();
-        assert_eq!(close.x + close.width, window_width);
-        assert_eq!(close.y, 0.0);
+        assert_eq!(close.x + close.width, window_width - WINDOW_CONTROL_PADDING);
+        assert!(close.y > container.y);
     }
 
     #[test]
