@@ -276,6 +276,165 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retained_panel_close_preserves_scroll_offset_through_layout() {
+        use nana_ui_runtime::{
+            MeasureTextShaper, NodeStyle, OverlayHost, Panel, ScrollAxes, ScrollOffset, ScrollView,
+            Text,
+        };
+        use std::time::Duration;
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let cx = runtime.context_mut();
+        let host = cx.create_component(document, OverlayHost::new()).unwrap();
+        let panel = cx
+            .create_component(document, Panel::new("Settings"))
+            .unwrap();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(200.0));
+        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(120.0));
+        let scroll = cx
+            .create_component(document, ScrollView::new(ScrollAxes::Vertical).style(style))
+            .unwrap();
+        cx.append_child(host, panel).unwrap();
+        cx.append_child(panel, scroll).unwrap();
+        for index in 0..10 {
+            let mut style = NodeStyle::default();
+            Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(40.0));
+            let row = cx
+                .create_component(document, Text::new(format!("Row {index}")).style(style))
+                .unwrap();
+            cx.append_child(scroll, row).unwrap();
+        }
+        cx.activate_overlay(host, panel).unwrap();
+        cx.advance_animations(Duration::from_secs(1));
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        let mut shaper = MeasureTextShaper;
+        runtime.flush(viewport, &mut shaper).unwrap();
+        let offset = ScrollOffset { x: 0.0, y: 80.0 };
+        runtime.context_mut().scroll_to(scroll, offset).unwrap();
+        runtime.flush(viewport, &mut shaper).unwrap();
+        assert_eq!(
+            runtime.context().world().scroll_offset(scroll.stable_id()),
+            Some(offset)
+        );
+        runtime.context_mut().dismiss_overlay(host).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_secs(2));
+        runtime.flush(viewport, &mut shaper).unwrap();
+        assert_eq!(
+            runtime.context().world().scroll_offset(scroll.stable_id()),
+            Some(offset)
+        );
+        runtime.context_mut().activate_overlay(host, panel).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_secs(3));
+        runtime.flush(viewport, &mut shaper).unwrap();
+        assert_eq!(
+            runtime.context().world().scroll_offset(scroll.stable_id()),
+            Some(offset)
+        );
+    }
+
+    #[test]
+    fn retained_panel_descendants_leave_the_paint_scene_on_close_and_switch() {
+        use nana_ui_runtime::{Card, MeasureTextShaper, OverlayHost, Panel, Text};
+        use std::time::Duration;
+
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let cx = runtime.context_mut();
+        let host = cx.create_component(document, OverlayHost::new()).unwrap();
+        let panel = cx
+            .create_component(document, Panel::new("Settings"))
+            .unwrap();
+        let title = cx
+            .create_component(document, Text::new("Settings title"))
+            .unwrap();
+        let body = cx.create_component(document, Card::new()).unwrap();
+        let action = cx.create_component(document, Button::new("Save")).unwrap();
+        let other = cx.create_component(document, Panel::new("Other")).unwrap();
+        let other_action = cx
+            .create_component(document, Button::new("Other action"))
+            .unwrap();
+        cx.append_child(host, panel).unwrap();
+        cx.append_child(panel, title).unwrap();
+        cx.append_child(panel, body).unwrap();
+        cx.append_child(body, action).unwrap();
+        cx.append_child(host, other).unwrap();
+        cx.append_child(other, other_action).unwrap();
+        // The metrics-only shaper does not emit glyph runs; give the title a
+        // background so its scene contribution is still independently tested.
+        cx.update_component(title, |text, _| {
+            Arc::make_mut(&mut text.style.layout).background = Some([0.2, 0.3, 0.4, 1.0]);
+        })
+        .unwrap();
+        // Explicit CSS visibility must not resurrect a retained inactive branch.
+        cx.update_component(action, |button, _| {
+            Arc::make_mut(&mut button.style.layout).paint.visibility =
+                Some(nana_ui_core::VisibilitySpec::Visible);
+        })
+        .unwrap();
+        cx.activate_overlay(host, panel).unwrap();
+        cx.advance_animations(Duration::from_secs(1));
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        let mut shaper = MeasureTextShaper;
+        runtime.flush(viewport, &mut shaper).unwrap();
+        let painted = |runtime: &RuntimeDocument, id| {
+            runtime
+                .scene()
+                .primitives()
+                .any(|primitive| primitive.id.node == id)
+        };
+        let branch = [
+            panel.stable_id(),
+            title.stable_id(),
+            body.stable_id(),
+            action.stable_id(),
+        ];
+        for id in branch {
+            assert!(painted(&runtime, id), "open panel node {id:?} must paint");
+        }
+        runtime.context_mut().dismiss_overlay(host).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_secs(2));
+        runtime.flush(viewport, &mut shaper).unwrap();
+        for id in branch {
+            assert!(
+                !painted(&runtime, id),
+                "closed panel node {id:?} left paint primitives"
+            );
+        }
+        assert!(runtime.scene().primitives().next().is_none());
+        runtime.context_mut().activate_overlay(host, panel).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_secs(3));
+        runtime.flush(viewport, &mut shaper).unwrap();
+        for id in branch {
+            assert!(
+                painted(&runtime, id),
+                "reopened panel node {id:?} must paint"
+            );
+        }
+        runtime.context_mut().activate_overlay(host, other).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_secs(4));
+        runtime.flush(viewport, &mut shaper).unwrap();
+        for id in branch {
+            assert!(
+                !painted(&runtime, id),
+                "replaced panel node {id:?} left paint primitives"
+            );
+        }
+        assert!(painted(&runtime, other_action.stable_id()));
+    }
+
+    #[test]
     fn focused_textarea_typing_settles_the_frame() {
         use nana_ui_runtime::{MeasureTextShaper, TextArea, TextSelection};
 

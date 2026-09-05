@@ -37,6 +37,8 @@ import "@nanaui/nanavue-components/controls.css";
 
 同一 host 只激活一个直接子面板；其余子树保留内容和编辑状态，但不绘制、不命中、不参与 Tab，无需 park。固定/取消固定同一内容时，使用 `transfer_panel(panel, source_host, destination_host)` 原子移交到同文档中的另一 host，保留节点、焦点和动画，不先 dismiss 再 reparent。目标旧面板成为 inactive；两个 host 分别收到 `OverlayChanged`，不发送 `OverlayClosing`。关闭退场中的面板不可转移。
 
+inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visible` 沿整棵子树继承，子节点不能用 CSS `visibility: visible` 重新参与绘制；普通 CSS `visibility: hidden` 仍允许子节点显式覆盖。关闭保留的 Panel 不重置 `ScrollView` 滚动偏移；重新打开相同节点且内容与视口不变时恢复原位置，内容或视口变化时仍遵循正常范围约束。`nana-ui-scene` 的 `RuntimeDocument` 行为回归通过实际增量场景图元检查关闭、重开和切换，并在完整布局刷新前后验证关闭重开的滚动偏移，不仅断言 world 显隐字段。
+
 `dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
