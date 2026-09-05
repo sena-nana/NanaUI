@@ -3,6 +3,15 @@
 use super::*;
 
 impl AppContext {
+    /// Native composition owns its pending text and committed insertion range.
+    /// Ordinary key edits must wait for the IME commit/cancel event.
+    pub(super) fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
+        self.world
+            .focused_text_input(document)
+            .and_then(|(target, _)| self.world.ime(target))
+            .is_some_and(|composition| !composition.text.is_empty())
+    }
+
     pub fn set_ime_preedit(
         &mut self,
         document: DocumentId,
@@ -164,6 +173,9 @@ impl AppContext {
         document: DocumentId,
         text: &str,
     ) -> Result<bool, FrameworkError> {
+        if self.has_focused_ime_composition(document) {
+            return Ok(false);
+        }
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.replace_editable_selection(entity, text);
         }
@@ -189,6 +201,9 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
+        if self.has_focused_ime_composition(document) {
+            return Ok(false);
+        }
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.delete_editable_backward(entity);
         }
@@ -491,5 +506,79 @@ impl AppContext {
             cx.emit(editable.change());
             true
         })
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+    #[test]
+    fn preedit_owns_committed_range_until_commit_for_single_and_multiline_editors() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, TextInput::new("ab"))
+            .unwrap();
+        let area = context
+            .create_component(document, TextArea::new("ab"))
+            .unwrap();
+        for node in [field.stable_id(), area.stable_id()] {
+            assert!(context.focus_node(document, node).unwrap());
+            context
+                .set_ime_preedit(document, "ni".into(), None)
+                .unwrap();
+            let before = context.world().text_input(node).unwrap().clone();
+            let preedit = context.world().ime(node).unwrap().clone();
+            assert!(
+                !context
+                    .move_focused_text_caret(document, crate::TextCaretIntent::Left, false, None)
+                    .unwrap()
+            );
+            assert!(
+                !context
+                    .delete_focused_text(document, crate::TextDeleteKind::Backward)
+                    .unwrap()
+            );
+            assert!(
+                !context
+                    .delete_focused_text(document, crate::TextDeleteKind::Forward)
+                    .unwrap()
+            );
+            assert!(!context.delete_focused_text_backward(document).unwrap());
+            assert!(!context.replace_focused_text(document, "raw-key").unwrap());
+            assert_eq!(context.world().text_input(node), Some(&before));
+            assert_eq!(context.world().ime(node), Some(&preedit));
+            assert!(context.commit_ime(document, "你").unwrap());
+            assert_eq!(context.world().text_input(node).unwrap().value, "ab你");
+            assert!(context.world().ime(node).is_none());
+            assert!(context.delete_focused_text_backward(document).unwrap());
+            assert_eq!(context.world().text_input(node).unwrap().value, "ab");
+        }
+    }
+    #[test]
+    fn ime_surrounding_delete_and_empty_preedit_keep_their_explicit_edit_contracts() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, TextInput::new("ab"))
+            .unwrap();
+        context.focus_node(document, field.stable_id()).unwrap();
+        context
+            .set_ime_preedit(document, "ni".into(), None)
+            .unwrap();
+        assert!(context.delete_ime_surrounding(document, 1, 0).unwrap());
+        assert_eq!(
+            context.world().text_input(field.stable_id()).unwrap().value,
+            "a"
+        );
+        assert_eq!(context.world().ime(field.stable_id()).unwrap().text, "ni");
+        context
+            .set_ime_preedit(document, String::new(), None)
+            .unwrap();
+        assert!(context.replace_focused_text(document, "c").unwrap());
+        assert_eq!(
+            context.world().text_input(field.stable_id()).unwrap().value,
+            "ac"
+        );
     }
 }

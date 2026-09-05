@@ -26,7 +26,12 @@ impl UiWorld {
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
-        let box_visible = !layout.omits_box() && inherited.box_visible;
+        // Overlay/menu presence is structural: descendants cannot make a closed
+        // branch paintable again by resolving their own local visibility.
+        let box_visible = !layout.omits_box()
+            && inherited.box_visible
+            && self.overlay_branch_active(id)
+            && self.menu_branch_open(id);
         let pointer_events =
             PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events);
         let next = ComputedStyle {
@@ -37,10 +42,7 @@ impl UiWorld {
             opacity: layout.opacity.unwrap_or(1.0) * inherited.opacity,
             visibility,
             box_visible,
-            visible: box_visible
-                && visibility != nana_ui_core::VisibilitySpec::Hidden
-                && self.overlay_branch_active(id)
-                && self.menu_branch_open(id),
+            visible: box_visible && visibility != nana_ui_core::VisibilitySpec::Hidden,
             pointer_events,
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),

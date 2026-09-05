@@ -14,14 +14,7 @@ impl UiScene {
                 let prefix = prefixes
                     .entry(primitive.node)
                     .or_insert_with(|| group_prefix(&self.nodes, &self.node_order, primitive.node));
-                let mut stack = Vec::with_capacity(prefix.len() + 1);
-                stack.extend_from_slice(prefix);
-                stack.push((primitive.z_index, primitive.document_order));
-                SceneOrderKey {
-                    stack,
-                    slot: primitive.id.slot,
-                    node: primitive.node,
-                }
+                order_key_from_prefix(&self.nodes, prefix, primitive)
             })
             .collect();
         self.ordered.clear();

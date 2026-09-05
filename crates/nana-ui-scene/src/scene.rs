@@ -1150,8 +1150,28 @@ fn order_key(
     node_order: &HashMap<StableNodeId, usize>,
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {
-    let mut stack = group_prefix(nodes, node_order, primitive.node);
-    stack.push((primitive.z_index, primitive.document_order));
+    order_key_from_prefix(
+        nodes,
+        &group_prefix(nodes, node_order, primitive.node),
+        primitive,
+    )
+}
+
+fn order_key_from_prefix(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    prefix: &[(i32, usize)],
+    primitive: &ScenePrimitive,
+) -> SceneOrderKey {
+    let mut stack = Vec::with_capacity(prefix.len() + 1);
+    stack.extend_from_slice(prefix);
+    // A group's own paint is the prefix, before its descendants. Repeating its
+    // outer z-index here incorrectly puts lower-z children behind its backplate.
+    if !nodes
+        .get(&primitive.node)
+        .is_some_and(|node| is_stacking_group(nodes, node))
+    {
+        stack.push((primitive.z_index, primitive.document_order));
+    }
     SceneOrderKey {
         stack,
         slot: primitive.id.slot,

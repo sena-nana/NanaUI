@@ -178,13 +178,13 @@ pub struct TextReplacement {
 pub(crate) fn atoms_in(value: &str, atoms: &[crate::TextAtomSpan]) -> Vec<crate::TextAtomSpan> {
     let mut spans: Vec<_> = atoms
         .iter()
-        .cloned()
         .filter(|atom| {
             atom.start < atom.end
                 && atom.end <= value.len()
                 && value.is_char_boundary(atom.start)
                 && value.is_char_boundary(atom.end)
         })
+        .cloned()
         .collect();
     spans.sort_by_key(|atom| (atom.start, atom.end));
     let mut cleaned = Vec::with_capacity(spans.len());
@@ -224,22 +224,22 @@ pub(crate) fn expand_range_over_atoms(
 fn atom_for_backward(atoms: &[crate::TextAtomSpan], caret: usize) -> Option<crate::TextAtomSpan> {
     atoms
         .iter()
-        .cloned()
         .find(|atom| atom.start < caret && caret <= atom.end)
+        .cloned()
 }
 
 fn atom_for_forward(atoms: &[crate::TextAtomSpan], caret: usize) -> Option<crate::TextAtomSpan> {
     atoms
         .iter()
-        .cloned()
         .find(|atom| atom.start <= caret && caret < atom.end)
+        .cloned()
 }
 
 fn covering_atom(atoms: &[crate::TextAtomSpan], offset: usize) -> Option<crate::TextAtomSpan> {
     atoms
         .iter()
-        .cloned()
         .find(|atom| atom.start < offset && offset < atom.end)
+        .cloned()
 }
 
 fn replacement_for_range(range: std::ops::Range<usize>) -> TextReplacement {

@@ -143,11 +143,11 @@ impl OverlayVisibility {
         if self.startup_until.is_some_and(|until| now >= until) {
             self.startup_until = None;
         }
-        if let Some(hot) = self.hot_since {
-            if now.saturating_duration_since(hot) >= self.config.hover_dwell {
-                self.hot_since = None;
-                return self.activity(now);
-            }
+        if let Some(hot) = self.hot_since
+            && now.saturating_duration_since(hot) >= self.config.hover_dwell
+        {
+            self.hot_since = None;
+            return self.activity(now);
         }
         if self.deadline.is_some_and(|deadline| deadline <= now) {
             self.deadline = None;
