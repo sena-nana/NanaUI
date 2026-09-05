@@ -706,17 +706,8 @@ impl NanaTextShaper {
             style.word_break,
             style.line_break,
         ));
-        buffer.set_ellipsize(if constraints.ellipsis {
-            let limit = constraints
-                .max_lines
-                .map(|n| EllipsizeHeightLimit::Lines(n.max(1) as usize))
-                .unwrap_or_else(|| {
-                    EllipsizeHeightLimit::Height(constraints.max_height.unwrap_or(f32::INFINITY))
-                });
-            Ellipsize::End(limit)
-        } else {
-            Ellipsize::None
-        });
+        // Probe without reserving `…`, which can truncate exact-fit labels.
+        buffer.set_ellipsize(Ellipsize::None);
         let attrs = text_attrs(style);
         let shaping = match constraints.shaping {
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
@@ -734,6 +725,19 @@ impl NanaTextShaper {
         // same containing block paint uses, so caret and glyphs stay aligned.
         if has_rtl && constraints.max_width.is_none() {
             buffer.set_size(Some(min_width), Some(min_height));
+            buffer.shape_until_scroll(&mut fonts, false);
+        }
+
+        if constraints.ellipsis
+            && measured_text_overflows(
+                &buffer,
+                constraints.wrap,
+                constraints.max_width,
+                constraints.max_height,
+                constraints.max_lines,
+            )
+        {
+            buffer.set_ellipsize(ellipsize_end(constraints.max_lines, constraints.max_height));
             buffer.shape_until_scroll(&mut fonts, false);
         }
 
@@ -958,6 +962,50 @@ fn measure(buffer: &Buffer) -> (f32, f32, bool) {
                 has_rtl || run.rtl,
             )
         })
+}
+
+/// cosmic-text compares overflow with `>`; a shrink-to-fit box equal to the
+/// natural width must not count as overflow.
+const ELLIPSIS_OVERFLOW_EPSILON: f32 = 0.5;
+
+pub(crate) fn ellipsize_end(max_lines: Option<u16>, max_height: Option<f32>) -> Ellipsize {
+    let limit = max_lines
+        .map(|n| EllipsizeHeightLimit::Lines(n.max(1) as usize))
+        .unwrap_or_else(|| EllipsizeHeightLimit::Height(max_height.unwrap_or(f32::INFINITY)));
+    Ellipsize::End(limit)
+}
+
+pub(crate) fn measured_text_overflows(
+    buffer: &Buffer,
+    wrap: bool,
+    max_width: Option<f32>,
+    max_height: Option<f32>,
+    max_lines: Option<u16>,
+) -> bool {
+    // layout_runs() hides overflow rows. The layout cache includes the first
+    // row beyond the viewport without needing to shape the whole document.
+    let (width, height, line_count) = buffer
+        .lines
+        .iter()
+        .filter_map(|line| line.layout_opt())
+        .flatten()
+        .fold((0.0f32, 0.0f32, 0usize), |(width, height, lines), row| {
+            (
+                row.w.max(width),
+                height + row.line_height_opt.unwrap_or(buffer.metrics().line_height),
+                lines + 1,
+            )
+        });
+    if wrap {
+        if max_lines.is_some_and(|n| line_count > n.max(1) as usize) {
+            return true;
+        }
+        max_height
+            .is_some_and(|limit| limit.is_finite() && height > limit + ELLIPSIS_OVERFLOW_EPSILON)
+    } else {
+        max_width
+            .is_some_and(|limit| limit.is_finite() && width > limit + ELLIPSIS_OVERFLOW_EPSILON)
+    }
 }
 
 fn grapheme_x(buffer: &Buffer, line: usize, index: usize) -> Option<f32> {
@@ -1572,5 +1620,201 @@ mod tests {
             used.iter().any(|name| name == "Host Sans"),
             "shaper must hit the CSS alias, used={used:?}"
         );
+    }
+
+    #[test]
+    fn nowrap_ellipsis_keeps_exact_fit_and_truncates_narrow_labels() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle {
+            font_size: 12.0,
+            font_weight: Some(600),
+            font_family: Some("Noto Sans SC".into()),
+            ..ComputedStyle::default()
+        };
+        let constraints = TextShapeConstraints {
+            wrap: false,
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        };
+        for label in ["未命名 1", "shade", "效果图", "fs_main"] {
+            let text = TextContent {
+                value: label.into(),
+            };
+            let natural = shaper.shape(node(), &text, &style, constraints).width;
+            for width in [natural, natural * 0.5] {
+                let shaped = shaper
+                    .shape(
+                        node(),
+                        &text,
+                        &style,
+                        TextShapeConstraints {
+                            max_width: Some(width),
+                            ellipsis: true,
+                            ..constraints
+                        },
+                    )
+                    .width;
+                if width == natural {
+                    assert!(
+                        (shaped - natural).abs() < 0.01,
+                        "exact-fit {label:?}: {shaped} vs {natural}"
+                    );
+                } else {
+                    assert!(
+                        shaped <= width + 0.5 && shaped < natural,
+                        "narrow {label:?}: {shaped} exceeds {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_ellipsis_detects_rows_beyond_visible_height() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle {
+            font_size: 12.0,
+            ..ComputedStyle::default()
+        };
+        let text = "alpha beta gamma delta epsilon zeta";
+        for (max_height, max_lines) in [(Some(14.4), None), (None, Some(1))] {
+            let constraints = TextShapeConstraints {
+                max_width: Some(80.0),
+                max_height,
+                max_lines,
+                wrap: true,
+                shaping: TextShaping::Advanced,
+                ..TextShapeConstraints::default()
+            };
+            let full = shaper.shape_buffer(text, &style, constraints);
+            let clipped = shaper.shape_buffer(
+                text,
+                &style,
+                TextShapeConstraints {
+                    ellipsis: true,
+                    ..constraints
+                },
+            );
+            let visible_text_end = |buffer: &Buffer| {
+                buffer
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs.iter())
+                    .map(|glyph| glyph.end)
+                    .max()
+                    .unwrap_or(0)
+            };
+            assert!(
+                visible_text_end(&clipped) < visible_text_end(&full),
+                "ellipsis must replace overflowing text for height={max_height:?}, lines={max_lines:?}"
+            );
+            assert_eq!(clipped.layout_runs().count(), 1);
+        }
+    }
+
+    #[test]
+    fn breadcrumb_segments_fit_wide_center_and_ellipsis_in_narrow_center() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        for center_width in [440.0, 90.0] {
+            let mut context = nana_ui_runtime::AppContext::new();
+            let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+            let breadcrumb = context
+                .create_component(document, nana_ui_runtime::Breadcrumb::new())
+                .unwrap();
+            context
+                .set_breadcrumb_items(
+                    breadcrumb,
+                    vec![
+                        nana_ui_runtime::BreadcrumbItem::new("未命名 1")
+                            .tone(nana_ui_runtime::BreadcrumbTone::Parent),
+                        nana_ui_runtime::BreadcrumbItem::new("shade")
+                            .tone(nana_ui_runtime::BreadcrumbTone::Current)
+                            .interactive(true),
+                    ],
+                )
+                .unwrap();
+            let bar = context
+                .create_component(
+                    document,
+                    nana_ui_runtime::AppTitleBar::new("Nana")
+                        .center(breadcrumb.stable_id())
+                        .center_width(center_width),
+                )
+                .unwrap();
+            context.assemble_app_title_bar(bar).unwrap();
+
+            let mut shaper = NanaTextShaper::default();
+            let order = context.world().document_order(document);
+            context.shape_text(&order, &mut shaper).unwrap();
+            context
+                .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+                .unwrap();
+            let reshaped = context
+                .shape_text_for_layout(document, &mut shaper)
+                .unwrap();
+            if reshaped {
+                context
+                    .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+                    .unwrap();
+            }
+
+            let segments = context
+                .read(breadcrumb, |bar| bar.segment_nodes().to_vec())
+                .unwrap();
+            assert_eq!(segments.len(), 2);
+            let mut truncated = false;
+            for segment in segments {
+                let label = context
+                    .world()
+                    .text(segment)
+                    .expect("segment text")
+                    .to_owned();
+                let style = context
+                    .world()
+                    .computed_style(segment)
+                    .expect("segment style")
+                    .clone();
+                let metrics = context
+                    .world()
+                    .text_metrics(segment)
+                    .expect("segment metrics");
+                let natural = shaper.shape(
+                    segment,
+                    &TextContent {
+                        value: label.clone(),
+                    },
+                    &style,
+                    TextShapeConstraints {
+                        wrap: false,
+                        shaping: TextShaping::Advanced,
+                        ..TextShapeConstraints::default()
+                    },
+                );
+                let bounds = context.world().layout_box(segment).expect("segment layout");
+                if center_width == 440.0 {
+                    assert!(
+                        (metrics.width - natural.width).abs() < 0.5,
+                        "short breadcrumb {label:?} must keep natural width: metrics={} natural={}",
+                        metrics.width,
+                        natural.width
+                    );
+                } else {
+                    assert!(
+                        metrics.width <= bounds.width + 0.5,
+                        "narrow segment {label:?} must fit its box: metrics={} box={}",
+                        metrics.width,
+                        bounds.width
+                    );
+                    truncated |= metrics.width + 0.5 < natural.width;
+                }
+            }
+            if center_width < 440.0 {
+                assert!(
+                    truncated,
+                    "narrow breadcrumb center must shrink overflowing text"
+                );
+            }
+        }
     }
 }

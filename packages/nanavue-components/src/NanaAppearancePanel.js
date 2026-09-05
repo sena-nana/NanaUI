@@ -74,7 +74,7 @@ function backdropOptions(support) {
 export const NanaAppearancePanel = {
   name: "NanaAppearancePanel",
   props: {
-    title: { type: String, default: "外观" },
+    title: { type: String, default: "" },
     description: { type: String, default: "" },
     materialStatus: { type: String, default: "" },
     platformHint: { type: String, default: "" },
