@@ -1580,7 +1580,7 @@ impl NumberInput {
 
     /// Publish a value from the application. Rejects nothing: the value is
     /// snapped and clamped into the field's own rules.
-    pub(crate) fn assign(&mut self, value: f64) -> bool {
+    pub fn assign(&mut self, value: f64) -> bool {
         let next = self.spec.snap(value);
         if next == self.value && self.state.value == self.spec.format(next) {
             return false;
@@ -1727,7 +1727,7 @@ pub struct TextArea {
     /// after each value change; caret, delete, insert, and pointer hits treat
     /// each range as one unit. Empty is the ordinary text path.
     pub atom_spans: Arc<[crate::TextAtomSpan]>,
-    /// 行号栏。行号绘制在节点左内边距区域，宿主需预留足够的 padding-left。
+    /// 行号栏。组件自动为行号、折叠箭头和 git 标记预留左侧空间。
     pub line_numbers: bool,
     /// 代码编辑行为（括号配对、缩进、注释切换）。`None` 时为普通多行文本。
     pub code_editing: Option<CodeEditing>,
@@ -1744,7 +1744,7 @@ pub struct TextArea {
     /// git gutter 标记（见 [`TextGitMark`]）。宿主在 git 状态与文本变化后
     /// 重新喂：`line` 为 1 基逻辑行号，渲染为 gutter 最左侧 2px 竖条。
     /// 行号 0、超过文档逻辑行数或被折叠隐藏的标记静默跳过；空列表零成本。
-    /// 宿主需预留足够的 padding-left（gutter 与行号共用左侧区域）。
+    /// 组件自动预留左侧 gutter，不需要宿主设置 padding-left。
     pub git_gutter: Arc<[TextGitMark]>,
     /// 补全候选（见 [`TextCompletion`]）。过滤完全由宿主负责：宿主按当前
     /// 词前缀过滤后在文本/光标变化时重新喂入，非空列表激活候选会话（弹层
@@ -1856,7 +1856,7 @@ impl TextArea {
         self
     }
 
-    /// 启用行号栏（行号绘制在节点左内边距区域）。
+    /// 启用行号栏，按文档行数自动预留 gutter；更大的自定义左内边距保留。
     pub fn line_numbers(mut self, line_numbers: bool) -> Self {
         self.line_numbers = line_numbers;
         self
@@ -2090,6 +2090,30 @@ impl ComponentView for TextArea {
             }
         }
         let mut effective_style = self.style.clone();
+        if self.line_numbers || !self.code_folds.is_empty() || !self.git_gutter.is_empty() {
+            // Reserve the left marker lane even before fold/git results arrive,
+            // so asynchronous decorations do not move the source horizontally.
+            // Labels use the control's caption size, independently of source text.
+            let label_size = (nana_ui_core::ControlSize::Medium.text_size() - 1.0).max(10.0);
+            let digits = if self.line_numbers {
+                let lines = self
+                    .state
+                    .value
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1;
+                lines.ilog10() as usize + 1
+            } else {
+                0
+            };
+            let gutter = 18.0 + digits as f32 * label_size * 0.65 + 4.0;
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            let padding = layout.resolved_padding();
+            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
+                padding.left.max(gutter).ceil(),
+            ));
+        }
         if self.invalid && !self.style_override {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
             effective_style.interaction.hovered.border =
@@ -2218,6 +2242,84 @@ impl ComponentView for HostedTextarea {
 mod hosted_textarea_tests {
     use super::*;
     use crate::{DocumentId, MutationQueue, UiWorld};
+
+    #[test]
+    fn number_input_steps_from_the_value_published_by_the_application() {
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                NumberInput::new(1.0).range(0.0, 10.0).step(0.5).precision(1),
+            )
+            .unwrap();
+        context
+            .update_component(input, |input, _| {
+                input.assign(7.0);
+            })
+            .unwrap();
+        assert!(context.step_number_input(input, 1).unwrap());
+        assert_eq!(context.read(input, NumberInput::value).unwrap(), 7.5);
+        let nodes = context.world().project_accessibility(document);
+        assert_eq!(nodes[0].numeric_value, Some(7.5));
+    }
+
+    #[test]
+    fn textarea_gutter_tracks_line_count_and_restores_plain_text_spacing() {
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("source").line_numbers(true))
+            .unwrap();
+        let padding = |context: &crate::AppContext| {
+            context
+                .world()
+                .node_style(area.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding()
+                .left
+        };
+        let single_line = padding(&context);
+        let plain_padding = TextArea::new("").style.layout.resolved_padding().left;
+        assert!(single_line > plain_padding);
+        context
+            .update_component(area, |area, _| {
+                area.state.replace_value("\n".repeat(999));
+            })
+            .unwrap();
+        assert!(padding(&context) > single_line);
+        context
+            .update_component(area, |area, _| {
+                area.state.replace_value("source".to_owned());
+            })
+            .unwrap();
+        assert_eq!(padding(&context), single_line);
+        context
+            .update_component(area, |area, _| area.line_numbers = false)
+            .unwrap();
+        assert_eq!(padding(&context), plain_padding);
+    }
+
+    #[test]
+    fn textarea_gutter_preserves_larger_host_spacing() {
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut area = TextArea::new("source").line_numbers(true);
+        Arc::make_mut(&mut area.style.layout).padding_left =
+            Some(nana_ui_core::LengthSpec::Px(96.0));
+        let area = context.create_component(document, area).unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(area.stable_id())
+                .unwrap()
+                .layout
+                .resolved_padding()
+                .left,
+            96.0
+        );
+    }
 
     #[test]
     fn hosted_textarea_always_requests_the_highlight_presenter() {

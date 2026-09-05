@@ -50,7 +50,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 }
                 emit(visual_stroke(
                     &context,
-                    12u8.saturating_add(index as u8),
+                    12u64.saturating_add(index as u64),
                     bounds,
                     points.clone(),
                     1.6,
@@ -58,10 +58,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, (node_bounds, label, fill, border)) in graph_nodes.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 emit(visual_quad(
                     &context,
-                    20u8.saturating_add(index),
+                    20u64.saturating_add(index),
                     scene_rect(*node_bounds),
                     VisualQuadStyle {
                         background: Some(*fill),
@@ -72,7 +72,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
                 emit(component_text_primitive(
                     id,
-                    50u8.saturating_add(index),
+                    50u64.saturating_add(index),
                     label,
                     TextHorizontalAlignment::Start,
                     true,
@@ -92,10 +92,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, (port, fill, border, border_width)) in ports.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 emit(visual_quad(
                     &context,
-                    80u8.saturating_add(index),
+                    80u64.saturating_add(index),
                     scene_rect(*port),
                     VisualQuadStyle {
                         background: Some(*fill),
@@ -106,10 +106,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, (label, alignment)) in port_labels.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 emit(component_text_primitive(
                     id,
-                    110u8.saturating_add(index),
+                    110u64.saturating_add(index),
                     label,
                     *alignment,
                     true,
@@ -121,10 +121,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, label) in edge_labels.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 emit(component_text_primitive(
                     id,
-                    140u8.saturating_add(index),
+                    140u64.saturating_add(index),
                     label,
                     TextHorizontalAlignment::Center,
                     true,

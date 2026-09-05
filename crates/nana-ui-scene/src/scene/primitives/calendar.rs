@@ -34,7 +34,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         z_index: node.z_index,
                         document_order: node_order,
                     },
-                    10u8.saturating_add(index as u8),
+                    10u64.saturating_add(index as u64),
                     rects,
                     VisualQuadStyle {
                         background: Some(color),
@@ -47,7 +47,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             for (index, label) in labels.iter().enumerate() {
                 emit(component_text_primitive(
                     id,
-                    40u8.saturating_add(index as u8),
+                    40u64.saturating_add(index as u64),
                     label,
                     TextHorizontalAlignment::Start,
                     false,

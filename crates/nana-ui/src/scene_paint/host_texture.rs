@@ -45,7 +45,7 @@ impl HostTexturePipeline {
         queue: &wgpu::Queue,
         binding: HostTextureBinding,
         node: u64,
-        slot: u8,
+        slot: u64,
         bounds: LogicalRect,
         affine: [f32; 6],
         persp: [f32; 2],

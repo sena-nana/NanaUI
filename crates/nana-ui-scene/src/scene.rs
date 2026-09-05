@@ -128,8 +128,22 @@ impl ClipRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PrimitiveId {
     pub node: StableNodeId,
-    pub slot: u8,
+    /// Fixed component slots occupy 0..=255. Unbounded component collections
+    /// use a separate namespace and a checked collection index.
+    pub slot: u64,
 }
+
+fn collection_slot(namespace: u32, index: usize) -> u64 {
+    debug_assert!(namespace != 0);
+    (u64::from(namespace) << 32)
+        | u64::from(u32::try_from(index).expect("primitive collection exceeds u32::MAX items"))
+}
+
+const TEXT_LINE_LABELS: u32 = 1;
+const TEXT_DIAGNOSTIC_MARKERS: u32 = 2;
+const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
+const TEXT_ATOM_ICONS: u32 = 4;
+const TEXT_ATOM_LABELS: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuadSurfacePaint {
@@ -372,7 +386,10 @@ struct SceneOrderKey {
     /// `isolation: isolate`, and positioned + `z-index` keep a subtree
     /// contiguous against siblings. Not full CSS Appendix E.
     stack: Vec<(i32, usize)>,
-    slot: u8,
+    /// Collection identity must not lift scrolling text above sticky bands,
+    /// minimaps or popup surfaces owned by the same component.
+    paint_layer: u64,
+    slot: u64,
     node: StableNodeId,
 }
 
@@ -812,7 +829,7 @@ impl UiScene {
             .range(
                 PrimitiveId { node, slot: 0 }..=PrimitiveId {
                     node,
-                    slot: u8::MAX,
+                    slot: u64::MAX,
                 },
             )
             .map(|(_, primitive)| primitive)
@@ -1145,6 +1162,17 @@ fn group_prefix(
     stack
 }
 
+fn primitive_paint_layer(slot: u64) -> u64 {
+    match slot >> 32 {
+        namespace if namespace == u64::from(TEXT_LINE_LABELS) => 40,
+        namespace if namespace == u64::from(TEXT_DIAGNOSTIC_MARKERS) => 20,
+        namespace if namespace == u64::from(TEXT_DIAGNOSTIC_LABELS) => 58,
+        namespace if namespace == u64::from(TEXT_ATOM_ICONS) => 27,
+        namespace if namespace == u64::from(TEXT_ATOM_LABELS) => 32,
+        _ => slot,
+    }
+}
+
 fn order_key(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node_order: &HashMap<StableNodeId, usize>,
@@ -1154,6 +1182,7 @@ fn order_key(
     stack.push((primitive.z_index, primitive.document_order));
     SceneOrderKey {
         stack,
+        paint_layer: primitive_paint_layer(primitive.id.slot),
         slot: primitive.id.slot,
         node: primitive.node,
     }
@@ -1194,7 +1223,7 @@ fn paint_select_handle(
                 z_index,
                 document_order,
             },
-            3 + index as u8,
+            3 + index as u64,
             SceneRect {
                 x: center_x - width / 2.0,
                 y: center_y - 1.5 + index as f32,
@@ -1243,7 +1272,7 @@ fn component_geometry_owns_text(geometry: Option<&ComponentGeometry>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn component_text_primitive(
     id: StableNodeId,
-    slot: u8,
+    slot: u64,
     region: &ComponentTextRegion,
     horizontal_alignment: TextHorizontalAlignment,
     ellipsis: bool,
@@ -1409,7 +1438,7 @@ impl VisualQuadStyle {
 
 fn visual_quad(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1490,7 +1519,7 @@ fn quad_surface_from_style(
 #[cfg(any(feature = "charts", feature = "graph-canvas"))]
 fn visual_stroke(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     points: Vec<[f32; 2]>,
     width: f32,
@@ -1528,7 +1557,7 @@ fn insert_text_decoration_strokes(
     mut sink: impl FnMut(ScenePrimitive),
 ) {
     let width = 1.0_f32.max(bounds.height * 0.06);
-    let mut emit = |slot: u8, y: f32| {
+    let mut emit = |slot: u64, y: f32| {
         sink(ScenePrimitive {
             id: PrimitiveId {
                 node: context.node,
@@ -1568,7 +1597,7 @@ fn insert_text_decoration_strokes(
 /// 调用方给出（QuadBatch / QuadColorBatch / IconBatch）。
 fn batch_primitive(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     quad_bounds: Vec<SceneRect>,
     kind: impl FnOnce(Vec<SceneRect>) -> ScenePrimitiveKind,
 ) -> ScenePrimitive {
@@ -1607,7 +1636,7 @@ fn batch_primitive(
 
 fn visual_quad_batch(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: impl IntoIterator<Item = SceneRect>,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1627,7 +1656,7 @@ fn visual_quad_batch(
 
 fn visual_quad_color_batch(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     items: impl IntoIterator<Item = (SceneRect, [f32; 4])>,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1648,7 +1677,7 @@ fn visual_quad_color_batch(
 /// 共用）：圆角面板底 + 1px 边框，浮在编辑器内容之上。
 fn overlay_panel_primitive(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     background: [f32; 4],
     border: [f32; 4],
@@ -1671,7 +1700,7 @@ fn overlay_panel_primitive(
 #[allow(clippy::too_many_arguments)]
 fn overlay_text_primitive(
     id: StableNodeId,
-    slot: u8,
+    slot: u64,
     region: &ComponentTextRegion,
     horizontal_alignment: TextHorizontalAlignment,
     node: &ExtractedNode,
