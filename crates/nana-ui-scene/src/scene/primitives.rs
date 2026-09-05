@@ -676,7 +676,7 @@ impl UiScene {
                                     };
                                     self.insert_primitive(component_text_primitive(
                                         id,
-                                        40 + label_index as u8,
+                                        collection_slot(TEXT_LINE_LABELS, label_index),
                                         &region,
                                         TextHorizontalAlignment::End,
                                         false,
@@ -692,7 +692,7 @@ impl UiScene {
                         for (marker_index, (rect, color)) in diagnostic_markers.iter().enumerate() {
                             self.insert_primitive(visual_quad(
                                 &visual_context,
-                                20 + marker_index as u8,
+                                collection_slot(TEXT_DIAGNOSTIC_MARKERS, marker_index),
                                 scene_rect(*rect),
                                 VisualQuadStyle::solid(*color),
                             ));
@@ -700,7 +700,7 @@ impl UiScene {
                         for (label_index, region) in diagnostic_labels.iter().enumerate() {
                             self.insert_primitive(component_text_primitive(
                                 id,
-                                58 + label_index as u8,
+                                collection_slot(TEXT_DIAGNOSTIC_LABELS, label_index),
                                 region,
                                 TextHorizontalAlignment::Start,
                                 true,
@@ -783,7 +783,7 @@ impl UiScene {
                             for (index, chip) in atom_chips.iter().enumerate() {
                                 self.insert_primitive(batch_primitive(
                                     &visual_context,
-                                    27 + index as u8,
+                                    collection_slot(TEXT_ATOM_ICONS, index),
                                     vec![scene_rect(chip.icon_bounds)],
                                     |bounds| ScenePrimitiveKind::IconBatch {
                                         bounds,
@@ -793,7 +793,7 @@ impl UiScene {
                                 ));
                                 self.insert_primitive(component_text_primitive(
                                     id,
-                                    32 + index as u8,
+                                    collection_slot(TEXT_ATOM_LABELS, index),
                                     &chip.label,
                                     TextHorizontalAlignment::Start,
                                     true,
@@ -941,7 +941,7 @@ impl UiScene {
                         // 复用正文同一 component_text_primitive 字形管线。
                         if let Some(sticky) = sticky_line {
                             // 面板条与分割线同形：纯色 Quad，仅 slot/矩形/色不同。
-                            let mut sticky_band = |slot: u8, rect: SceneRect, color: [f32; 4]| {
+                            let mut sticky_band = |slot: u64, rect: SceneRect, color: [f32; 4]| {
                                 self.insert_primitive(visual_quad(
                                     &visual_context,
                                     slot,
@@ -1066,7 +1066,7 @@ impl UiScene {
                             document_order: node_order,
                         };
                         let overlay_text =
-                            |slot: u8,
+                            |slot: u64,
                              region: &ComponentTextRegion,
                              alignment: TextHorizontalAlignment| {
                                 overlay_text_primitive(
@@ -1105,20 +1105,20 @@ impl UiScene {
                             }
                             for (index, row) in popup.rows.iter().enumerate() {
                                 self.insert_primitive(overlay_text(
-                                    92 + index as u8,
+                                    92 + index as u64,
                                     &row.label,
                                     TextHorizontalAlignment::Start,
                                 ));
                                 if let Some(detail) = row.detail.as_ref() {
                                     self.insert_primitive(overlay_text(
-                                        100 + index as u8,
+                                        100 + index as u64,
                                         detail,
                                         TextHorizontalAlignment::Start,
                                     ));
                                 }
                                 if let Some(kind) = row.kind.as_ref() {
                                     self.insert_primitive(overlay_text(
-                                        108 + index as u8,
+                                        108 + index as u64,
                                         kind,
                                         TextHorizontalAlignment::End,
                                     ));
@@ -1129,7 +1129,7 @@ impl UiScene {
                                     // (insert_primitive 按 (node,slot)
                                     // 覆盖,相交即静默丢图元)。
                                     self.insert_primitive(overlay_text(
-                                        132 + index as u8,
+                                        132 + index as u64,
                                         doc,
                                         TextHorizontalAlignment::Start,
                                     ));
@@ -1151,7 +1151,7 @@ impl UiScene {
                             ));
                             for (index, row) in popup.body_rows.iter().enumerate() {
                                 self.insert_primitive(overlay_text(
-                                    122 + index as u8,
+                                    122 + index as u64,
                                     row,
                                     TextHorizontalAlignment::Start,
                                 ));

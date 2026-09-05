@@ -78,6 +78,17 @@ impl OffscreenSnapshots {
         self.paint_layers(&[(scene, true)], size, clear, host_textures, gpu_renderers)
     }
 
+    /// Paint logical scene coordinates into a physical snapshot at a scale.
+    pub fn paint_scaled(
+        &mut self,
+        scene: &UiScene,
+        size: Size<u32>,
+        scale_factor: f32,
+        clear: [f32; 4],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        self.paint_layers_scaled(&[(scene, true)], size, scale_factor, clear, None, None)
+    }
+
     pub fn paint_layers(
         &mut self,
         layers: &[(&UiScene, bool)],
@@ -86,6 +97,21 @@ impl OffscreenSnapshots {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        self.paint_layers_scaled(layers, size, 1.0, clear, host_textures, gpu_renderers)
+    }
+
+    fn paint_layers_scaled(
+        &mut self,
+        layers: &[(&UiScene, bool)],
+        size: Size<u32>,
+        scale_factor: f32,
+        clear: [f32; 4],
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return Err("snapshot scale must be finite and positive".into());
+        }
         if size.width == 0 || size.height == 0 {
             return Err("snapshot size must be non-zero".into());
         }
@@ -148,9 +174,12 @@ impl OffscreenSnapshots {
                             label: Some("nana-ui snapshot paint"),
                         });
                 let viewport = ScenePaintViewport {
-                    logical_size: [size.width as f32, size.height as f32],
+                    logical_size: [
+                        size.width as f32 / scale_factor,
+                        size.height as f32 / scale_factor,
+                    ],
                     physical_size: [size.width, size.height],
-                    scale_factor: 1.0,
+                    scale_factor,
                     scene_origin: [0.0, 0.0],
                     target_origin: [0.0, 0.0],
                     clear_color: if *layer_clear {

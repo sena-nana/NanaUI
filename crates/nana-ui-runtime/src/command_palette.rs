@@ -50,6 +50,8 @@ pub struct CommandPalette {
     pub placeholder: Arc<str>,
     pub empty_label: Arc<str>,
     pub items: Vec<CommandPaletteItem>,
+    /// Items have already been filtered and ranked by the host.
+    pub filtered_items: bool,
     pub query: String,
     pub selected: usize,
     pub state: TextInputState,
@@ -67,6 +69,7 @@ impl CommandPalette {
             placeholder: Arc::from("搜索操作"),
             empty_label: Arc::from("没有可用操作"),
             items,
+            filtered_items: false,
             query: String::new(),
             selected: 0,
             state: TextInputState::new(""),
@@ -92,10 +95,17 @@ impl CommandPalette {
         self
     }
 
+    /// Preserve host-filtered results and their ranking without applying the
+    /// palette's substring filter again. Query editing still emits Search.
+    pub fn filtered_items(mut self, filtered: bool) -> Self {
+        self.filtered_items = filtered;
+        self
+    }
+
     pub fn visible_items(&self) -> Vec<&CommandPaletteItem> {
         self.items
             .iter()
-            .filter(|item| item_matches(item, &self.query))
+            .filter(|item| self.filtered_items || item_matches(item, &self.query))
             .collect()
     }
 
@@ -451,6 +461,31 @@ mod tests {
                 "workspace.settings"
             )))
         );
+    }
+
+    #[test]
+    fn host_filtered_results_keep_ranking_for_navigation_and_selection() {
+        let mut palette = sample().filtered_items(true);
+        assert_eq!(
+            palette.set_query("wfs"),
+            CommandPaletteEvent::Search("wfs".into())
+        );
+        assert_eq!(palette.visible_items().len(), 3);
+        assert_eq!(
+            palette.confirm(),
+            Some(CommandPaletteEvent::Select(ActionId::new(
+                "workspace.files"
+            )))
+        );
+        palette.navigate(ActionPickerNavigation::Next);
+        assert_eq!(
+            palette.confirm(),
+            Some(CommandPaletteEvent::Select(ActionId::new(
+                "workspace.settings"
+            )))
+        );
+        palette.items.clear();
+        assert_eq!(palette.confirm(), None);
     }
 
     #[test]

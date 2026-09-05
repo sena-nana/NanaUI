@@ -366,6 +366,7 @@ pub struct RuntimeAgentSession {
     document: RuntimeDocument,
     shaper: NanaTextShaper,
     gpu: Option<OffscreenSnapshots>,
+    scale_factor: f32,
     width: u32,
     height: u32,
     clear: [f32; 4],
@@ -373,7 +374,23 @@ pub struct RuntimeAgentSession {
 
 impl RuntimeAgentSession {
     pub fn new(document: RuntimeDocument, width: u32, height: u32) -> Result<Self, AgentError> {
+        Self::new_scaled(document, width, height, 1.0)
+    }
+
+    /// Width and height are logical pixels; PNG dimensions include the scale.
+    pub fn new_scaled(
+        document: RuntimeDocument,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) -> Result<Self, AgentError> {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return Err(AgentError(
+                "snapshot scale must be finite and positive".into(),
+            ));
+        }
         let mut session = Self {
+            scale_factor,
             document,
             shaper: NanaTextShaper::default(),
             gpu: None,
@@ -464,12 +481,16 @@ impl RuntimeAgentSession {
 
     pub fn screenshot_rgba(&mut self) -> Result<(Size<u32>, Vec<u8>), AgentError> {
         self.flush()?;
-        let size = Size::new(self.width, self.height);
+        let size = Size::new(
+            (self.width as f32 * self.scale_factor).round() as u32,
+            (self.height as f32 * self.scale_factor).round() as u32,
+        );
+        let scale = self.scale_factor;
         let clear = self.clear;
         let scene = self.document.scene().clone();
         let gpu = self.gpu_mut()?;
         let pixels = gpu
-            .paint(&scene, size, clear, None, None)
+            .paint_scaled(&scene, size, scale, clear)
             .map_err(|error| AgentError(error.to_string()))?;
         Ok((size, pixels))
     }

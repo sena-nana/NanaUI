@@ -1155,8 +1155,7 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
     ));
 }
 
-#[test]
-fn text_input_editor_markers_and_line_labels_paint() {
+fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
     let mut input = node(1, None, &[]);
     input.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -1264,10 +1263,166 @@ fn text_input_editor_markers_and_line_labels_paint() {
         sticky_line: None,
     });
 
+    input
+}
+
+#[test]
+fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions() {
+    let mut input = editor_input_with_markers_and_line_labels();
+    let Some(ComponentGeometry::TextInput {
+        line_labels,
+        diagnostic_markers,
+        diagnostic_labels,
+        sticky_line,
+        ..
+    }) = input.component_geometry.as_mut()
+    else {
+        unreachable!()
+    };
+    *line_labels = (0..320)
+        .map(|index| nana_ui_runtime::LineLabel {
+            y: index as f32 * 16.0,
+            height: 16.0,
+            number: index + 1,
+        })
+        .collect();
+    *diagnostic_markers = (0..320)
+        .map(|index| {
+            (
+                LayoutBox {
+                    x: 40.0,
+                    y: index as f32 * 16.0 + 12.0,
+                    width: 10.0,
+                    height: 2.0,
+                },
+                [0.9, 0.1, 0.1, 1.0],
+            )
+        })
+        .collect();
+    *diagnostic_labels = (0..320)
+        .map(|index| nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 64.0,
+                y: index as f32 * 16.0,
+                width: 60.0,
+                height: 16.0,
+            },
+            content: Arc::from(format!("error {index}")),
+            color: Some([1.0; 4]),
+            font_size: 11.0,
+            font_weight: None,
+        })
+        .collect();
+    *sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
+        panel: LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 124.0,
+            height: 16.0,
+        },
+        divider: LayoutBox {
+            x: 0.0,
+            y: 15.0,
+            width: 124.0,
+            height: 1.0,
+        },
+        text: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox {
+                x: 40.0,
+                y: 0.0,
+                width: 84.0,
+                height: 16.0,
+            },
+            content: Arc::from("sticky"),
+            color: Some([1.0; 4]),
+            font_size: 13.0,
+            font_weight: None,
+        },
+        background: [1.0; 4],
+        divider_color: [0.2, 0.2, 0.2, 1.0],
+    });
+    let mut scene = UiScene::new();
+    scene.apply_delta([input.clone()], []);
+    let text_count = |scene: &UiScene, diagnostic: bool| {
+        scene.primitives().filter(|primitive| {
+        matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. }
+            if if diagnostic { content.starts_with("error ") } else { content.parse::<u32>().is_ok() })
+    }).count()
+    };
+    assert_eq!(
+        text_count(&scene, false),
+        320,
+        "every line number remains drawable"
+    );
+    assert_eq!(
+        text_count(&scene, true),
+        320,
+        "every inline diagnostic remains drawable"
+    );
+    let painted: Vec<_> = scene.primitives().collect();
+    let sticky_position = painted
+        .iter()
+        .position(|primitive| primitive.id.slot == 80)
+        .unwrap();
+    assert!(
+        painted
+            .iter()
+            .enumerate()
+            .filter(|(_, primitive)| primitive.id.slot > 255)
+            .all(|(position, _)| position < sticky_position),
+        "scrolling labels and markers paint below the opaque sticky header"
+    );
+    assert_eq!(
+        scene
+            .primitives()
+            .filter(|primitive| matches!(
+                primitive.kind,
+                ScenePrimitiveKind::Quad {
+                    background: Some([0.9, 0.1, 0.1, 1.0]),
+                    ..
+                }
+            ))
+            .count(),
+        320
+    );
+    let Some(ComponentGeometry::TextInput {
+        line_labels,
+        diagnostic_markers,
+        diagnostic_labels,
+        ..
+    }) = input.component_geometry.as_mut()
+    else {
+        unreachable!()
+    };
+    line_labels.truncate(3);
+    diagnostic_markers.truncate(2);
+    diagnostic_labels.truncate(2);
+    scene.apply_delta([input], []);
+    assert_eq!(
+        text_count(&scene, false),
+        3,
+        "shortening removes obsolete line labels"
+    );
+    assert_eq!(
+        text_count(&scene, true),
+        2,
+        "diagnostic replacement removes obsolete labels"
+    );
+    scene.apply_delta([], [id(1)]);
+    assert_eq!(
+        scene.primitives().count(),
+        0,
+        "removing the editor removes all collection primitives"
+    );
+}
+
+#[test]
+fn text_input_editor_markers_and_line_labels_paint() {
+    let input = editor_input_with_markers_and_line_labels();
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
     // 每个标记一条 quad（颜色不同）。
-    let marker = |slot: u8, y: f64| {
+    let marker = |slot: u64, y: f64| {
         scene
             .primitives()
             .find(|primitive| {
@@ -1275,12 +1430,12 @@ fn text_input_editor_markers_and_line_labels_paint() {
             })
             .expect("marker quad")
     };
-    let error_quad = marker(20, 12.0);
+    let error_quad = marker(collection_slot(TEXT_DIAGNOSTIC_MARKERS, 0), 12.0);
     let ScenePrimitiveKind::Quad { background, .. } = &error_quad.kind else {
         panic!("expected quad");
     };
     assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
-    let warning_quad = marker(21, 30.0);
+    let warning_quad = marker(collection_slot(TEXT_DIAGNOSTIC_MARKERS, 1), 30.0);
     let ScenePrimitiveKind::Quad { background, .. } = &warning_quad.kind else {
         panic!("expected quad");
     };
@@ -1289,7 +1444,7 @@ fn text_input_editor_markers_and_line_labels_paint() {
     let label = scene
             .primitives()
             .find(|primitive| {
-                primitive.id.slot == 41
+                primitive.id.slot == collection_slot(TEXT_LINE_LABELS, 1)
                     && matches!(&primitive.kind, ScenePrimitiveKind::Text { content, .. } if content == "2")
             })
             .expect("line label");
@@ -1403,7 +1558,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
     // 普通匹配为 slot 3 的 quad 批次，当前匹配为更强的 slot 6 批次。
-    let batch = |slot: u8| {
+    let batch = |slot: u64| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
             .expect("match batch")
@@ -1430,7 +1585,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
     let diagnostic = scene
         .primitive(PrimitiveId {
             node: id(1),
-            slot: 20,
+            slot: collection_slot(TEXT_DIAGNOSTIC_MARKERS, 0),
         })
         .expect("diagnostic quad");
     let ScenePrimitiveKind::Quad { background, .. } = &diagnostic.kind else {
@@ -1881,7 +2036,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
-    let batch = |slot: u8| {
+    let batch = |slot: u64| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
             .unwrap_or_else(|| panic!("slot {slot} primitive"))
@@ -2151,7 +2306,7 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
 
     // 三类各一个 quad 批次（slot 18 新增 / 19 修改 / 8 删除），批次内
     // 同色合批、bounds 逐一对应。
-    let batch = |slot: u8| scene.primitive(PrimitiveId { node: id(1), slot });
+    let batch = |slot: u64| scene.primitive(PrimitiveId { node: id(1), slot });
     let added = batch(18).expect("added batch");
     match &added.kind {
         ScenePrimitiveKind::QuadBatch {
@@ -2206,7 +2361,10 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
     }
 
     // 与行号（slot 40+）、折叠箭头（slot 14/15）共存，slot 互不冲突。
-    assert!(batch(40).is_some(), "line number label");
+    assert!(
+        batch(collection_slot(TEXT_LINE_LABELS, 0)).is_some(),
+        "line number label"
+    );
     assert!(batch(14).is_some(), "collapsed fold gutter");
     assert!(
         scene
@@ -2285,7 +2443,7 @@ fn text_input_sticky_line_paints_panel_divider_and_head_text() {
 
     // 背景条与底缘分割线各一个 quad，头行文本复用正文字形管线；
     // 无钉住几何时三个 slot 全部为空。
-    let primitive = |slot: u8| scene.primitive(PrimitiveId { node: id(1), slot });
+    let primitive = |slot: u64| scene.primitive(PrimitiveId { node: id(1), slot });
     let panel = primitive(80).expect("sticky panel");
     match &panel.kind {
         ScenePrimitiveKind::Quad { background, .. } => {
@@ -2418,7 +2576,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
     scene.apply_delta([input], []);
     // 折叠态（slot 14，实心）与展开态（slot 15，描边）各一个批次，
     // 超过旧 slot 上限（21）后仍全部渲染。
-    let batch = |slot: u8| {
+    let batch = |slot: u64| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
             .expect("gutter batch")
@@ -2595,7 +2753,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         );
     }
     // 批次外的任何 slot 都不承载 Tab 箭头。
-    for slot in [61u8, 100, 200, 255] {
+    for slot in [61u64, 100, 200, 255] {
         assert!(
             scene.primitive(PrimitiveId { node: id(1), slot }).is_none(),
             "slot {slot} must stay empty"
@@ -2845,7 +3003,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
-    let primitive = |slot: u8| {
+    let primitive = |slot: u64| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
             .expect("chrome primitive")
@@ -3718,7 +3876,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
         .primitives()
         .filter(|primitive| primitive.node == node)
         .collect::<Vec<_>>();
-    let position = |slot: u8| {
+    let position = |slot: u64| {
         ordered
             .iter()
             .position(|primitive| primitive.id.slot == slot)
@@ -6435,7 +6593,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
-    let kind = |slot: u8| {
+    let kind = |slot: u64| {
         scene
             .primitive(PrimitiveId { node: id(1), slot })
             .map(|primitive| primitive.kind.clone())
@@ -6861,5 +7019,8 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         ]
     );
     // 行号标签区域（slot 40）：内容 "1" 与 span 空间不一致，不带 span。
-    assert!(spans_of(40).is_empty(), "标签区域不承载编辑器显示空间 span");
+    assert!(
+        spans_of(collection_slot(TEXT_LINE_LABELS, 0)).is_empty(),
+        "标签区域不承载编辑器显示空间 span"
+    );
 }

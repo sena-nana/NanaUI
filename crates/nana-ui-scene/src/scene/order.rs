@@ -19,6 +19,7 @@ impl UiScene {
                 stack.push((primitive.z_index, primitive.document_order));
                 SceneOrderKey {
                     stack,
+                    paint_layer: primitive_paint_layer(primitive.id.slot),
                     slot: primitive.id.slot,
                     node: primitive.node,
                 }

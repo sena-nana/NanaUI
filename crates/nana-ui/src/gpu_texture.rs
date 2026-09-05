@@ -681,7 +681,7 @@ pub(crate) struct GpuTexturePrimitive {
 }
 
 impl GpuTexturePrimitive {
-    pub(crate) fn from_scene(node: u64, slot: u8, layer: HostTextureLayer) -> Self {
+    pub(crate) fn from_scene(node: u64, slot: u64, layer: HostTextureLayer) -> Self {
         Self {
             layer,
             presentation: PresentationIdentity::Scene { node, slot },
@@ -1037,7 +1037,7 @@ struct TextureFingerprint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PresentationIdentity {
-    Scene { node: u64, slot: u8 },
+    Scene { node: u64, slot: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
