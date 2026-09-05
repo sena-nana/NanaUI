@@ -249,6 +249,22 @@ fn title_bar_drag_hit(context: &AppContext, document: DocumentId, x: f32, y: f32
     )
 }
 
+/// True when `(x, y)` is a custom Minimize / Maximize / Close control.
+///
+/// Client-frame resize must skip this region so the top-right caption corner
+/// stays Close (Fitts) instead of NorthEast resize.
+pub fn title_bar_hits_window_control(
+    context: &AppContext,
+    document: DocumentId,
+    x: f32,
+    y: f32,
+) -> bool {
+    matches!(
+        title_bar_pointer_hit(context, document, x, y),
+        TitleBarHit::Control(_)
+    )
+}
+
 fn title_bar_pointer_hit(
     context: &AppContext,
     document: DocumentId,
@@ -801,5 +817,42 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn close_control_covers_the_trailing_caption_corner() {
+        use super::{title_bar_drag_hit, title_bar_hits_window_control};
+        use nana_ui_core::{TITLE_BAR_HEIGHT, WINDOW_CONTROL_WIDTH};
+        use nana_ui_runtime::{AppContext, AppTitleBar, DocumentId, LayoutViewport};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document, AppTitleBar::new("Nana"))
+            .unwrap();
+        assert!(context.assemble_app_title_bar(bar).unwrap());
+        context
+            .layout_document(document, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        let controls = context
+            .read(bar, |bar| bar.controls)
+            .unwrap()
+            .expect("assembled controls");
+        let close = context.world().node(controls).unwrap().children[2];
+        let close_box = context.world().layout_box(close).unwrap();
+        assert_eq!(close_box.y, 0.0);
+        assert_eq!(close_box.height, TITLE_BAR_HEIGHT);
+        assert_eq!(close_box.width, WINDOW_CONTROL_WIDTH);
+        assert_eq!(close_box.x + close_box.width, 800.0);
+
+        let corner_x = 800.0 - 1.0;
+        let corner_y = 1.0;
+        assert!(title_bar_hits_window_control(
+            &context, document, corner_x, corner_y
+        ));
+        assert!(!title_bar_drag_hit(&context, document, corner_x, corner_y));
     }
 }

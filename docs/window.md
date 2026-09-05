@@ -26,12 +26,14 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 | 设置 | 系统边框 | 阴影 / 圆角 | `WS_EX_NOREDIRECTIONBITMAP` |
 | --- | --- | --- | --- |
 | `system_caption: true` | 开（系统标题栏与缩放） | 系统默认 | 仅透明窗口打开 |
-| `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | `undecorated_shadow` + 圆角 | 关 |
+| `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 圆角（Windows 11 DWM 阴影）；不用 winit `undecorated_shadow`（会把客户区顶边内缩 1px，标题栏盖不住） | 关 |
 | `system_caption: false` 且 `transparent: true` | 关 | 无自绘阴影（避免 DWM 合成冲突） | 开 |
+
+自绘 chrome 窗口创建后会清掉 `WS_CAPTION`，客户区铺到窗口外沿。自定义标题栏按钮高 `TITLE_BAR_HEIGHT`、宽 `WINDOW_CONTROL_WIDTH`，贴标题栏右上角。
 
 命中顺序（逻辑像素，已含当前 `scale_factor`）：
 
-1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽。
+1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽；客户区最外 8px 缩放过按钮区域时同样让位，关闭键占住右上角。
 2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 

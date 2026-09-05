@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, OverflowSpec,
-    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, UI_METRICS, WindowChrome,
-    WorkspaceModel,
+    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP,
+    WINDOW_CONTROL_WIDTH, WindowChrome, WorkspaceModel,
 };
 
 use crate::view_components::project_common;
@@ -22,7 +22,6 @@ const DEFAULT_CENTER_WIDTH: f32 = 168.0;
 /// Extra gap after the native traffic-light exclusion so leading chrome
 /// (sidebar toggle) cannot sit on the caption buttons.
 const NATIVE_LEADING_CLEARANCE: f32 = 8.0;
-const CONTROL_GAP: f32 = 2.0;
 const TITLE_FONT_SIZE: f32 = 13.0;
 const TITLE_FONT_WEIGHT: u16 = 600;
 const OVERLAY_Z_INDEX: i32 = 1;
@@ -444,9 +443,9 @@ impl AppTitleBarControls {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
-        layout.align_items = AlignSpec::Center;
+        layout.align_items = AlignSpec::Stretch;
         layout.justify_content = JustifySpec::End;
-        layout.gap = Some(layout.gap.unwrap_or(LengthSpec::Px(CONTROL_GAP)));
+        layout.gap = Some(layout.gap.unwrap_or(LengthSpec::Px(WINDOW_CONTROL_GAP)));
         layout.height = Some(LengthSpec::Fill);
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
@@ -1891,7 +1890,6 @@ fn project_window_control(
 }
 
 fn window_control_style(danger: bool) -> NodeStyle {
-    let extent = ControlSize::Small.height();
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Muted);
     style.background = None;
@@ -1927,17 +1925,17 @@ fn window_control_style(danger: bool) -> NodeStyle {
         ..InteractionStyle::default()
     };
     let layout = Arc::make_mut(&mut style.layout);
-    layout.width = Some(LengthSpec::Px(extent));
-    layout.height = Some(LengthSpec::Px(extent));
-    layout.min_width = Some(LengthSpec::Px(extent));
-    layout.min_height = Some(LengthSpec::Px(extent));
+    layout.width = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
+    layout.height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
+    layout.min_width = Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH));
+    layout.min_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
     layout.padding_left = Some(LengthSpec::Px(0.0));
     layout.padding_right = Some(LengthSpec::Px(0.0));
     layout.padding_top = Some(LengthSpec::Px(0.0));
     layout.padding_bottom = Some(LengthSpec::Px(0.0));
-    layout.border_radius = Some(UI_METRICS.radius_sm);
+    layout.border_radius = Some(0.0);
     style
 }
 
@@ -2193,7 +2191,6 @@ mod tests {
             .expect("custom chrome mounts controls");
         let buttons = world.node(controls).unwrap().children.clone();
         assert_eq!(buttons.len(), 3);
-        let extent = ControlSize::Small.height();
         let container = world.layout_box(controls).unwrap();
         assert_eq!(container.height, TITLE_BAR_HEIGHT);
         assert_eq!(container.y, 0.0);
@@ -2204,15 +2201,18 @@ mod tests {
         );
         for (index, button) in buttons.iter().enumerate() {
             let bounds = world.layout_box(*button).unwrap();
-            assert_eq!(bounds.width, extent);
-            assert_eq!(bounds.height, extent);
-            assert_eq!(bounds.y, (TITLE_BAR_HEIGHT - extent) / 2.0);
+            assert_eq!(bounds.width, WINDOW_CONTROL_WIDTH);
+            assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
+            assert_eq!(bounds.y, 0.0);
             assert_eq!(
                 bounds.x,
-                container.x + index as f32 * (extent + CONTROL_GAP),
+                container.x + index as f32 * (WINDOW_CONTROL_WIDTH + WINDOW_CONTROL_GAP),
                 "buttons keep the shared control gap"
             );
         }
+        let close = world.layout_box(buttons[2]).unwrap();
+        assert_eq!(close.x + close.width, window_width);
+        assert_eq!(close.y, 0.0);
     }
 
     #[test]
@@ -2478,7 +2478,7 @@ mod tests {
                 .unwrap()
                 .layout
                 .width,
-            Some(LengthSpec::Px(ControlSize::Small.height()))
+            Some(LengthSpec::Px(WINDOW_CONTROL_WIDTH))
         );
         assert_eq!(
             context
