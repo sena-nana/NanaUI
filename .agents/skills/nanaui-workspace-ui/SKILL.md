@@ -17,6 +17,9 @@ description: Maintain NanaUI's Workspace and UI system. Product path is Runtime 
 - Overlay title bars use `AppTitleBar::transparent(true)` and its mounted slots; keep drag ownership in NanaUI. Fullscreen consumers retain business slots with `drag_enabled(false)` and `show_window_controls(false)`, not a parallel pointer gesture.
 - Centralize shared tokens and component states. Every visible action must update real Rust state.
 - Use `Panel` on an independent `OverlayHost` for nonmodal task surfaces; reuse overlay presence and focus lifecycle. Application routes, pinning and viewport reservations stay application-owned. Keep `Dialog` / `Drawer` modal, and do not assign Menu/Dialog accessibility roles to nonmodal panels. `focus_first_in` uses Runtime's sequential focus rules.
+- Mount `ContextMenu` on an `OverlayHost` and open it with `activate_overlay`; the framework owns Escape and outside-press dismissal and syncs the view's own `open` plus `ContextMenuEvent::Dismiss`. Do not rebuild a per-application outside-press test.
+- Pin transient surfaces with the component's own placement entry (`Panel::viewport`, `Toast::place_in`) instead of authoring absolute offsets; the application supplies the free area and the reserved `PanelInsets`, the framework does the geometry.
+- `Spinner` runs its own rotation timeline while it is mounted and visible; never tick a phase from the host, and hide or unmount it to stop the turn.
 - Windows custom title-bar controls follow the LiliaUI rounded icon-button pattern (28px square, control radius, 2px gaps, 6px horizontal group insets). Preserve normal hover/pressed feedback and Close danger feedback; hit bounds follow the inset buttons rather than covering the frame corner.
 - Route GPU resources to `$nanaui-gpu-integration`, window handles to
   `$nanaui-window-materials`, and verification to `$nanaui-validation`.

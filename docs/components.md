@@ -29,6 +29,12 @@ import "@nanaui/nanavue-components/controls.css";
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
+`ContextMenu` 同样挂在 `OverlayHost` 下并用 `activate_overlay` 打开：框架按 Menu 语义负责 Escape 与点击外部收起，应用不再自建点外判定。框架驱动的收起会同步组件自身的 `open` 并发出 `ContextMenuEvent::Dismiss`，与选中项收起走同一条回执，应用不需要事后对账两份状态。
+
+`Toast::place_in(viewport, PopoverAlignment::Center, max_width, PanelInsets { .. })` 用与 `Panel::viewport` 相同的预留合同把提示钉进空闲区域：`align` 决定它在剩余宽度里的分布，`max_width` 封顶，高度仍由内容决定并贴住预留的底边。`viewport` 是定位宿主自身的盒子。未放置的 toast 仍然填满所在行；放置过的 toast 保留自己的宽度。空闲区域由应用给出——只有应用知道它开了哪些面板。
+
+`Spinner` 自己转：挂载后由动画时钟驱动旋转相位，宿主不需要每帧递增再写回。停用改为卸载或停放该节点，不要靠不喂相位来"冻住"它。
+
 `Panel` 是非模态任务面板，挂到独立 `OverlayHost` 的直接子节点，通过同一份 `activate_overlay` / `dismiss_overlay` 管理显示和退出动画。面板使用 Card 表面和具名 Region 无障碍语义，只有卡面命中，外部舞台和普通 Tab 顺序保持可用；不能用 Menu 或 Dialog 冒充非模态面板。可见标题、返回/关闭按钮和内容由应用装配为普通子节点，长内容使用 `ScrollView`。关闭按钮调用 `dismiss_overlay`，不直接删除节点。
 
 `Panel::viewport(viewport, PanelEdge::Right, width, PanelInsets { .. })` 将宽高限制在应用预留标题栏、底栏等空间之后的视口内；也可用 `Panel::bounds` 获取同一布局合同的矩形。`viewport` 使用相对于宿主的逻辑坐标，宿主必须覆盖传入视口。`Panel::style` 可接入现有样式；没有第二套主题或绘制器。每个同时存在的面板使用独立 host，层级通过现有 `z_index` 控制，确认框应位于任务面板上方。

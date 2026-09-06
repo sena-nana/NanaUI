@@ -650,6 +650,37 @@ impl AppContext {
                 frame.component_updates.push(target);
             }
         }
+        let spinner_targets = frame
+            .samples
+            .iter()
+            .map(|sample| sample.target)
+            .filter(|target| {
+                self.views
+                    .get(target)
+                    .is_some_and(|view| view.is::<crate::Spinner>())
+            })
+            .collect::<Vec<_>>();
+        for target in spinner_targets {
+            let Some(phase) = frame
+                .samples
+                .iter()
+                .find(|sample| sample.target == target)
+                .map(|sample| sample.progress)
+            else {
+                continue;
+            };
+            if self
+                .update_component(
+                    Entity::<crate::Spinner>::from_stable_id(target),
+                    |spinner, _| {
+                        spinner.phase = phase;
+                    },
+                )
+                .is_ok()
+            {
+                frame.component_updates.push(target);
+            }
+        }
         // 工作区折叠/展开过渡：结算前的每一帧采样一次模型并重投影，
         // 过渡全部结束后停止帧调度。
         if self

@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{
-    AccessibilityRole, AccessibilityState, AlignSpec, ComponentView, FlexDirection,
-    InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
-    SemanticColorRole, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment, UiWorld,
+    AccessibilityRole, AccessibilityState, AlignSpec, AnimationDirection, AnimationFillMode,
+    AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentView,
+    Easing, FlexDirection, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind,
+    NodeStyle, SemanticColorRole, StableNodeId, StandardVisual, TextContent, TextVerticalAlignment,
+    UiWorld, component_animation_id, component_animation_kinds,
 };
 use nana_ui_core::Icon;
 
@@ -630,11 +633,35 @@ impl ComponentView for Progress {
 pub struct Spinner {
     pub label: Arc<str>,
     pub size: f32,
-    pub phase: f32,
+    /// Runtime-sampled rotation phase in `0.0..=1.0`. The animation dispatch
+    /// owns this field, so a mounted spinner turns without the host ticking it.
+    pub(crate) phase: f32,
     pub style: NodeStyle,
 }
 
 impl Spinner {
+    /// Playback longhands of the infinite rotation timeline.
+    pub(crate) const SPIN_PLAYBACK: AnimationPlayback = AnimationPlayback {
+        iteration_count: AnimationIteration::INFINITE,
+        direction: AnimationDirection::Normal,
+        fill_mode: AnimationFillMode::None,
+        play_state: AnimationPlayState::Running,
+    };
+
+    /// The spinner's rotation timeline anchored at `start`, or `None` when its
+    /// hashed animation ID would be zero.
+    pub(crate) fn spin_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+        let animation = component_animation_id(component_animation_kinds::SPINNER, id)?;
+        Some(AnimationSpec::new(
+            animation,
+            id,
+            start,
+            nana_ui_core::motion::SPINNER_ROTATION,
+            crate::framework::COMPONENT_FRAME_INTERVAL,
+            Easing::Linear,
+        ))
+    }
+
     pub fn new(label: impl Into<Arc<str>>) -> Self {
         Self {
             label: label.into(),
@@ -646,11 +673,6 @@ impl Spinner {
 
     pub fn size(mut self, size: f32) -> Self {
         self.size = sanitize_spinner_size(size);
-        self
-    }
-
-    pub fn phase(mut self, phase: f32) -> Self {
-        self.phase = if phase.is_finite() { phase } else { 0.0 };
         self
     }
 
@@ -707,6 +729,22 @@ impl ComponentView for Spinner {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        // A busy indicator turns on its own: start the timeline once for a
+        // freshly created or mounted node and never restart a running one, so
+        // repeated projections and per-frame phase writes cannot reset it.
+        // A hidden spinner generates no box, so its timeline stops rather than
+        // holding the host awake for a turn nobody can see.
+        if let Some(spec) = Self::spin_animation(id, Duration::ZERO) {
+            let startable = !world.contains(id) || world.is_mounted(id);
+            let running = world.animation_is_active(spec.id);
+            if self.style.layout.hidden {
+                if running {
+                    mutations.stop_animation(spec.id);
+                }
+            } else if startable && !running {
+                mutations.start_animation_with_playback(spec, Self::SPIN_PLAYBACK);
+            }
+        }
         project_visual(
             id,
             world,
@@ -1917,6 +1955,62 @@ mod tests {
         assert_eq!(
             context.world().node_style(id).unwrap().layout.height,
             Some(LengthSpec::Px(14.0))
+        );
+    }
+
+    #[test]
+    fn a_mounted_spinner_turns_without_the_host_ticking_it() {
+        fn projected_phase(context: &AppContext, id: StableNodeId) -> f32 {
+            match context.world().standard_visual(id) {
+                Some(StandardVisual::Spinner { phase, .. }) => phase,
+                other => panic!("expected a spinner visual, got {other:?}"),
+            }
+        }
+
+        let mut context = AppContext::new();
+        let spinner = context
+            .create_component(document(), Spinner::new("Loading"))
+            .unwrap();
+        let id = spinner.stable_id();
+        let _ = context.take_system_work();
+
+        let steady = context.advance_animations(Duration::ZERO);
+        assert!(steady.has_updates());
+        assert_eq!(projected_phase(&context, id), 0.0);
+        assert!(
+            steady
+                .next_deadline
+                .is_some_and(|deadline| deadline > Duration::ZERO),
+            "the timeline schedules its own follow-up frames"
+        );
+
+        context.advance_animations(Duration::from_millis(450));
+        let half = projected_phase(&context, id);
+        assert!((half - 0.5).abs() < 1e-4, "half a turn at half the period");
+        assert!(!context.take_system_work().is_empty());
+
+        context.advance_animations(Duration::from_millis(675));
+        assert!(projected_phase(&context, id) > half, "the turn continues");
+        assert!(
+            context.next_animation_deadline().is_some(),
+            "an indeterminate spinner never settles"
+        );
+
+        // A hidden spinner must not hold the host awake for an invisible turn.
+        context
+            .update_component(spinner, |spinner, _| {
+                Arc::make_mut(&mut spinner.style.layout).hidden = true;
+            })
+            .unwrap();
+        assert_eq!(context.next_animation_deadline(), None);
+        context
+            .update_component(spinner, |spinner, _| {
+                Arc::make_mut(&mut spinner.style.layout).hidden = false;
+            })
+            .unwrap();
+        assert!(
+            context.next_animation_deadline().is_some(),
+            "showing it again resumes the turn"
         );
     }
 }

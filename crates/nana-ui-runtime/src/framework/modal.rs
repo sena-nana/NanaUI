@@ -259,6 +259,17 @@ impl AppContext {
                 None,
             )?;
         }
+        // A context menu keeps its own `open` flag, so an exit driven by the
+        // host has to reach the view as well. Without this the surface closes
+        // while the component still reports itself open and the application
+        // never observes the dismissal it would observe from a selection.
+        if self
+            .views
+            .get(&root)
+            .is_some_and(|view| view.downcast_ref::<ContextMenu>().is_some())
+        {
+            self.dismiss_context_menu(Entity::from_stable_id(root))?;
+        }
         Ok(true)
     }
 

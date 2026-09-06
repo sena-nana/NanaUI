@@ -639,20 +639,33 @@ impl AppContext {
         {
             self.component_lifecycle.next_loading_frame = Some(self.component_lifecycle.now);
         }
-        // Parking cancels a skeleton's pulse timeline; remounting restarts it.
+        // Parking cancels a component's own timeline; remounting restarts it.
         // Projections only start timelines for pending or mounted nodes, and a
         // remount may never project again on its own.
-        if self.world.is_mounted(id)
-            && self
+        if self.world.is_mounted(id) {
+            let mut mutations = MutationQueue::new();
+            if self
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<crate::Skeleton>())
-            && let Some(spec) = crate::Skeleton::pulse_animation(id, self.component_lifecycle.now)
-            && !self.world.animation_is_active(spec.id)
-        {
-            let mut mutations = MutationQueue::new();
-            mutations.start_animation_with_playback(spec, crate::Skeleton::PULSE_PLAYBACK);
-            self.world.commit(mutations)?;
+                && let Some(spec) =
+                    crate::Skeleton::pulse_animation(id, self.component_lifecycle.now)
+                && !self.world.animation_is_active(spec.id)
+            {
+                mutations.start_animation_with_playback(spec, crate::Skeleton::PULSE_PLAYBACK);
+            }
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<crate::Spinner>())
+                && let Some(spec) = crate::Spinner::spin_animation(id, self.component_lifecycle.now)
+                && !self.world.animation_is_active(spec.id)
+            {
+                mutations.start_animation_with_playback(spec, crate::Spinner::SPIN_PLAYBACK);
+            }
+            if !mutations.is_empty() {
+                self.world.commit(mutations)?;
+            }
         }
         Ok(())
     }

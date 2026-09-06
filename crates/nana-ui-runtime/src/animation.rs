@@ -30,6 +30,8 @@ pub mod component_animation_kinds {
     pub const SWITCH: u64 = 2;
     pub const HOVER: u64 = 3;
     pub const SURFACE: u64 = 4;
+    /// Spinner rotation timeline.
+    pub const SPINNER: u64 = 5;
 }
 
 /// Derives the animation ID for one component-owned timeline from the

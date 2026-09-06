@@ -14,12 +14,42 @@ pub enum PanelEdge {
 }
 
 /// Logical pixels reserved by the application for window chrome and tools.
+/// Shared by every surface the application pins into that reserved space.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PanelInsets {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
     pub left: f32,
+}
+
+impl PanelInsets {
+    /// Clamp reserved chrome into `viewport` in start/end order, including when
+    /// chrome consumes the entire viewport. Non-finite values read as zero.
+    pub(crate) fn clamp_into(self, viewport: LayoutBox) -> Self {
+        let vw = positive(viewport.width);
+        let vh = positive(viewport.height);
+        let left = positive(self.left).min(vw);
+        let top = positive(self.top).min(vh);
+        Self {
+            top,
+            right: positive(self.right).min(vw - left),
+            bottom: positive(self.bottom).min(vh - top),
+            left,
+        }
+    }
+}
+
+pub(crate) fn positive(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn origin(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 /// A named nonmodal region. Its children provide the visible title, actions and
@@ -97,36 +127,19 @@ impl Panel {
         width: f32,
         insets: PanelInsets,
     ) -> LayoutBox {
-        fn positive(value: f32) -> f32 {
-            if value.is_finite() {
-                value.max(0.0)
-            } else {
-                0.0
-            }
-        }
         let vw = positive(viewport.width);
         let vh = positive(viewport.height);
-        let left = positive(insets.left).min(vw);
-        let right = positive(insets.right).min(vw - left);
-        let top = positive(insets.top).min(vh);
-        let bottom = positive(insets.bottom).min(vh - top);
-        let width = positive(width).min(vw - left - right);
+        let insets = insets.clamp_into(viewport);
+        let width = positive(width).min(vw - insets.left - insets.right);
         LayoutBox {
-            x: if viewport.x.is_finite() {
-                viewport.x
-            } else {
-                0.0
-            } + match edge {
-                PanelEdge::Left => left,
-                PanelEdge::Right => vw - right - width,
-            },
-            y: if viewport.y.is_finite() {
-                viewport.y
-            } else {
-                0.0
-            } + top,
+            x: origin(viewport.x)
+                + match edge {
+                    PanelEdge::Left => insets.left,
+                    PanelEdge::Right => vw - insets.right - width,
+                },
+            y: origin(viewport.y) + insets.top,
             width,
-            height: vh - top - bottom,
+            height: vh - insets.top - insets.bottom,
         }
     }
 }
