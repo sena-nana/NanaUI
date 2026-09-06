@@ -5464,8 +5464,22 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
     let (release, gated) = mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0; 1024];
-        stream.read_exact(&mut request).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 256];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        assert!(
+            request.windows(4).any(|window| window == b"\r\n\r\n"),
+            "HTTP request headers must be complete"
+        );
         gated
             .recv_timeout(Duration::from_secs(10))
             .expect("paint waited for the HTTP response");
@@ -5532,6 +5546,136 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
         "unchanged scene must paint the completed image"
     );
     assert!(!painter.has_pending_images());
+    server.join().unwrap();
+}
+
+#[test]
+fn async_http_image_rebinds_each_render_target_after_shared_completion() {
+    use std::{
+        io::{Read, Write},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (_, path) = blue_tile_fixture_png();
+    let png = std::fs::read(path).unwrap();
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/image.png", listener.local_addr().unwrap());
+    let (release, gated) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 256];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        assert!(request.windows(4).any(|window| window == b"\r\n\r\n"));
+        gated
+            .recv_timeout(Duration::from_secs(10))
+            .expect("paint waited for the HTTP response");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        )
+        .unwrap();
+        stream.write_all(&png).unwrap();
+    });
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (wake, awoken) = mpsc::channel();
+    painter.set_image_waker(Arc::new(move || {
+        let _ = wake.send(());
+    }));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0; 4],
+            nana_ui_scene::QuadSurfacePaint {
+                background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                    url,
+                    nana_ui_core::BackgroundImageFit::Stretch,
+                )),
+                ..Default::default()
+            },
+        )],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0; 2],
+        physical_size: [64; 2],
+        scale_factor: 1.0,
+        scene_origin: [0.0; 2],
+        target_origin: [0.0; 2],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    let (first_texture, first_view) = test_copy_target(&device, format, 64, 64);
+    let (second_texture, second_view) = test_copy_target(&device, format, 64, 64);
+    for (id, target) in [(1, &first_view), (2, &second_view)] {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint_target(
+                RenderTargetId(id),
+                &scene,
+                &mut encoder,
+                target,
+                viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    }
+    assert!(painter.has_pending_images());
+
+    release.send(()).unwrap();
+    awoken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("image completion must wake both target owners");
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint_target(
+            RenderTargetId(1),
+            &scene,
+            &mut encoder,
+            &first_view,
+            viewport,
+            None,
+            None,
+        )
+        .unwrap();
+    let first_pixels = readback_rgba(&device, &queue, encoder, &first_texture, 64, 64);
+    assert!(is_blue_slot(pixel(&first_pixels, 64, 32, 32)));
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint_target(
+            RenderTargetId(2),
+            &scene,
+            &mut encoder,
+            &second_view,
+            viewport,
+            None,
+            None,
+        )
+        .unwrap();
+    let second_pixels = readback_rgba(&device, &queue, encoder, &second_texture, 64, 64);
+    assert!(is_blue_slot(pixel(&second_pixels, 64, 32, 32)));
     server.join().unwrap();
 }
 
