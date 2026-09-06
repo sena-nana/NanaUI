@@ -122,6 +122,21 @@ impl GraphInteraction {
     }
 }
 
+/// Resolving a window point against a graph canvas.
+///
+/// Right-click routing ([`crate::SecondaryPress`]) reports window coordinates,
+/// while [`GraphCanvas::hit_test`] and [`GraphViewport`] work in canvas-local
+/// view space. [`crate::AppContext::graph_canvas_hit_at`] bridges the two so a
+/// host never re-derives the canvas transform.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphCanvasHit {
+    /// The point in canvas-local view space, the space
+    /// [`GraphViewport::view_to_world`] converts from.
+    pub local: GraphPoint,
+    /// Node, port or edge under the point; `None` on empty canvas background.
+    pub selection: Option<GraphSelection>,
+}
+
 const PORT_RADIUS: f32 = 4.0;
 const PORT_RADIUS_ACTIVE: f32 = 5.0;
 const PORT_GRAB_RADIUS: f32 = 12.0;
@@ -1002,6 +1017,31 @@ impl crate::AppContext {
         self.update_component(entity, |canvas, _| {
             canvas.set_hover(Some(local_point(bounds, x, y)))
         })
+    }
+
+    /// Resolve a window point against a graph canvas: the canvas-local point
+    /// and what sits under it. `None` when `target` is not a graph canvas, has
+    /// no layout box, or the point falls outside its bounds.
+    ///
+    /// This is how a host turns the window coordinates carried by
+    /// [`crate::SecondaryPress`] into a menu decision. Pure query: it does not
+    /// select, focus or hover, and it ignores `disabled` the way
+    /// [`Self::hover_graph_canvas`] does — geometry stays geometry, and what a
+    /// hit means is the application's call.
+    pub fn graph_canvas_hit_at(
+        &self,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<GraphCanvasHit> {
+        let entity = self.graph_canvas_entity(target)?;
+        let bounds = self.world().layout_box(target)?;
+        if !point_in_bounds(bounds, x, y) {
+            return None;
+        }
+        let local = local_point(bounds, x, y);
+        let selection = self.read(entity, |canvas| canvas.hit_test(local)).ok()?;
+        Some(GraphCanvasHit { local, selection })
     }
 
     pub fn clear_graph_canvas_hover(
@@ -2111,5 +2151,47 @@ mod tests {
             context.world().standard_visual(canvas.stable_id()),
             Some(StandardVisual::GraphCanvas { ref nodes, .. }) if nodes.len() == 2
         ));
+    }
+
+    #[test]
+    fn hit_at_translates_window_points_into_canvas_local_space() {
+        let mut context = AppContext::new();
+        let canvas = context
+            .create_component(document(), GraphCanvas::new("gallery", sample_graph()))
+            .unwrap();
+        // A canvas that does not start at the window origin is the case a host
+        // cannot resolve on its own without copying the canvas transform.
+        let mut mutations = MutationQueue::new();
+        mutations.write_layout(
+            canvas.stable_id(),
+            LayoutBox {
+                x: 40.0,
+                y: 25.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        );
+        context.commit_mutations(mutations).unwrap();
+
+        let on_node = context
+            .graph_canvas_hit_at(canvas.stable_id(), 110.0, 85.0)
+            .expect("inside the canvas");
+        assert_eq!(on_node.local, GraphPoint::new(70.0, 60.0));
+        assert_eq!(
+            on_node.selection,
+            Some(GraphSelection::Node("source".into()))
+        );
+
+        let on_background = context
+            .graph_canvas_hit_at(canvas.stable_id(), 240.0, 225.0)
+            .expect("inside the canvas");
+        assert_eq!(on_background.local, GraphPoint::new(200.0, 200.0));
+        assert_eq!(on_background.selection, None);
+
+        assert!(
+            context
+                .graph_canvas_hit_at(canvas.stable_id(), 10.0, 10.0)
+                .is_none()
+        );
     }
 }

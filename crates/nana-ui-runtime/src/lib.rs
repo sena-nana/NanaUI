@@ -161,9 +161,9 @@ pub use gpu_slots::{
 };
 #[cfg(feature = "graph-canvas")]
 pub use graph_canvas::{
-    GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphEdgePaint,
-    GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton, GraphPortPaint,
-    GraphScrollDelta, wheel_zoom_factor,
+    GRAPH_CANVAS_RENDERER, GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphCanvasHit,
+    GraphEdgePaint, GraphInteraction, GraphNodeContent, GraphNodePaint, GraphPointerButton,
+    GraphPortPaint, GraphScrollDelta, wheel_zoom_factor,
 };
 #[cfg(feature = "graph-canvas")]
 pub use graph_minimap::{GraphMinimap, GraphMinimapDrag, GraphMinimapEvent};

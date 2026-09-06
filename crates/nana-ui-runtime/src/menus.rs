@@ -326,6 +326,9 @@ pub struct ContextMenu {
     pub query: Arc<str>,
     pub searchable: bool,
     pub state: TextInputState,
+    /// Bounds the surface is kept inside; `None` anchors verbatim.
+    /// See [`Self::place_in`].
+    pub viewport: Option<LayoutBox>,
 }
 
 impl ContextMenu {
@@ -342,6 +345,7 @@ impl ContextMenu {
             query: Arc::from(""),
             searchable: false,
             state: TextInputState::new(""),
+            viewport: None,
         };
         menu.apply_anchor();
         menu
@@ -405,20 +409,14 @@ impl ContextMenu {
         }
     }
 
+    /// Keep the surface inside `viewport` from now on. The bounds are retained,
+    /// so filtering and drilling into a submenu — both of which re-anchor the
+    /// surface as its row count changes — stay inside it too. Without this a
+    /// pointer-anchored menu can lay out past the window with no way to reach
+    /// its lower rows.
     pub fn place_in(&mut self, viewport: LayoutBox) {
-        let height = context_menu_height(self.visible_items().len(), self.searchable);
-        let origin = resolve_anchored_origin(
-            self.anchor_x,
-            self.anchor_y,
-            self.width,
-            height,
-            viewport,
-            AnchoredMenuPlacement::BottomStart,
-        );
-        let layout = Arc::make_mut(&mut self.style.layout);
-        layout.offset_left = Some(LengthSpec::Px(origin.0));
-        layout.offset_top = Some(LengthSpec::Px(origin.1));
-        layout.height = Some(LengthSpec::Px(height));
+        self.viewport = Some(viewport);
+        self.apply_anchor();
     }
 
     pub fn select_index(&mut self, index: usize) -> Option<ContextMenuEvent> {
@@ -459,10 +457,21 @@ impl ContextMenu {
 
     fn apply_anchor(&mut self) {
         let height = context_menu_height(self.visible_items().len(), self.searchable);
+        let (x, y) = match self.viewport {
+            Some(viewport) => resolve_anchored_origin(
+                self.anchor_x,
+                self.anchor_y,
+                self.width,
+                height,
+                viewport,
+                AnchoredMenuPlacement::BottomStart,
+            ),
+            None => (self.anchor_x, self.anchor_y),
+        };
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
-        layout.offset_left = Some(LengthSpec::Px(self.anchor_x));
-        layout.offset_top = Some(LengthSpec::Px(self.anchor_y));
+        layout.offset_left = Some(LengthSpec::Px(x));
+        layout.offset_top = Some(LengthSpec::Px(y));
         layout.height = Some(LengthSpec::Px(height));
     }
 
@@ -1282,5 +1291,42 @@ mod tests {
         }
         // A wider hint shifts its start further left while the end edge holds.
         assert!(long_hint.bounds.x < short_hint.bounds.x);
+    }
+
+    /// `place_in` 的视口是持久属性：筛选或进子级都会按新的行数重新锚定，
+    /// 那些重新锚定同样不得把面板放到视口外面去。
+    #[test]
+    fn a_placed_menu_stays_inside_its_viewport_after_filtering() {
+        let viewport = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 900.0,
+        };
+        let items = (0..40)
+            .map(|index| ContextMenuItem::new(format!("item{index}"), format!("Item {index}")))
+            .collect::<Vec<_>>();
+        let mut menu = ContextMenu::new(1200.0, 700.0)
+            .items(items)
+            .searchable(true);
+        menu.place_in(viewport);
+        let inside = |menu: &ContextMenu| {
+            let layout = &menu.style.layout;
+            let (Some(LengthSpec::Px(x)), Some(LengthSpec::Px(y)), Some(LengthSpec::Px(height))) =
+                (layout.offset_left, layout.offset_top, layout.height)
+            else {
+                panic!("anchored surface must carry a resolved box");
+            };
+            x >= viewport.x
+                && x + menu.width <= viewport.x + viewport.width
+                && y >= viewport.y
+                && (height > viewport.height || y + height <= viewport.y + viewport.height)
+        };
+        assert!(inside(&menu), "首次放置就落在视口内");
+
+        // 筛选后行数变少、面板变矮，重新锚定仍须留在视口内。
+        menu.set_query("Item 3");
+        assert!(menu.visible_items().len() < 40, "筛选缩短了列表");
+        assert!(inside(&menu), "筛选后重新锚定仍在视口内");
     }
 }
