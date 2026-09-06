@@ -149,6 +149,13 @@ cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts -
 
 同机时间、原始报告和截图链接见[阶段性能记录](high-refresh-performance.md)。
 
+本轮收尾复验：`cargo test -p nana-ui-runtime --lib --locked layout_engine` 通过 73 项；
+`cargo test -p nana-ui --lib --features hosted --locked scene_paint:: -- --test-threads=1`
+通过 185 项，其中包含 affine 文本投影 uniform 缓存、Quad 局部颜色上传和 Icon 稳定帧
+复用测试。此前并行 Cargo 进程造成的 Windows linker 文件争用已通过停止遗留进程并串行
+执行验证解决；`cargo clippy -p nana-ui-runtime --lib --locked --no-deps -- -D warnings`
+与 `cargo clippy -p nana-ui --lib --features hosted --locked --no-deps -- -D warnings` 均通过。
+
 - 改动前 `cargo test -p nana-ui-scene --lib --locked`：88 项通过。
 - Runtime 改动前报告：`target/performance/high-refresh-before-runtime.json`。
 - 第一轮真实 GPU 绘制测试：173 项通过；后续新增路径仍需最终复验。
@@ -169,6 +176,12 @@ Windows 原生 Agent 的百万项跳转、真实坐标点击和保留项释放�
 最终验收尚在进行。不能将上述阶段结果解释为 120Hz、十万节点或全部平台已达标。
 
 ## 尚未实现或验收的范围
+
+本轮补充的稳定帧工作量证据：`LayoutInputMap::prefetch` 现在直接填充最终
+`HashMap`，避免大文档首次布局的中间输入容器搬运；Quad 颜色批次的单项变化只更新
+变化实例范围，Icon 批次在内容稳定时复用 atlas 与顶点缓冲。对应的 Runtime 布局测试和
+真实 wgpu `scene_paint` 测试已通过。这些结果只证明局部上传与缓存复用合同，不改变下面
+完整工作区、Surface 刷新率和平台行为仍需验收的结论。
 
 最新回归：Core 177、Runtime 803、Scene 94 项通过；真实 GPU `scene_paint::`
 195 项通过；原生 Agent 百万项列表与冻结表格的两项截图/点击测试通过。

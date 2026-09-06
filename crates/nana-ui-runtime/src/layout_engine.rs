@@ -474,14 +474,22 @@ impl<'a> LayoutInputMap<'a> {
 
     fn prefetch(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
         // Full passes prefetch once, immediately after constructing this map.
+        // Fill the final cache directly: materializing a temporary Vec and
+        // then moving every input into a HashMap doubles the container work on
+        // the cold path that large documents pay most often.
         debug_assert!(self.nodes.is_empty());
-        let inputs = self.world.layout_inputs(ids)?;
-        self.materialized = inputs.len();
-        // `layout_inputs` already materializes the complete frontier. Reserve
-        // the exact size before collecting so a large full pass does not grow
-        // the hash table through several rehashes.
-        let mut nodes = HashMap::with_capacity(inputs.len());
-        nodes.extend(inputs.into_iter().map(|input| (input.id, input)));
+        if !ids.is_empty() {
+            self.world.record_hot_path_allocation(
+                1,
+                ids.len().saturating_mul(std::mem::size_of::<LayoutInput>()),
+            );
+        }
+        let mut nodes = HashMap::with_capacity(ids.len());
+        for &id in ids {
+            let input = self.world.layout_input(id)?;
+            nodes.insert(id, input);
+        }
+        self.materialized = nodes.len();
         self.nodes = nodes;
         Ok(())
     }
