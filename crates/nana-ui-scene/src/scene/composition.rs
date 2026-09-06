@@ -41,6 +41,34 @@ impl UiScene {
         Ok(plan)
     }
 
+    /// The first host-texture slot two nodes claim with different revisions
+    /// (or different renderers), if any.
+    ///
+    /// Such a frame is rejected before anything is drawn — `frame_graph` fails
+    /// and the painter draws nothing, so a single mismatched view blanks the
+    /// whole frame rather than just itself. Hosts that bind one slot from
+    /// several views (the same cover as an avatar and as a plain texture view,
+    /// say) can assert this stays `None` without depending on the render graph.
+    pub fn conflicting_external_resource(&self) -> Option<Arc<str>> {
+        let mut seen: BTreeMap<&Arc<str>, (&Arc<str>, u64)> = BTreeMap::new();
+        for primitive in self.primitives() {
+            let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
+                continue;
+            };
+            let claim = (&custom.renderer, custom.revision);
+            match seen.get(&custom.resource) {
+                Some(previous) if *previous != claim => {
+                    return Some(Arc::clone(&custom.resource));
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(&custom.resource, claim);
+                }
+            }
+        }
+        None
+    }
+
     fn validate_plan_resources(&self, plan: &FramePlan) -> Result<(), GraphError> {
         let mut revisions = HashMap::new();
         for id in plan.custom_nodes.iter() {
@@ -77,18 +105,18 @@ impl UiScene {
             external: true,
         })?;
         let mut next_resource = 1_u64;
+        // One source of truth for the invariant: the public query and the graph
+        // must never disagree about which frames are rejected.
+        if let Some(resource) = self.conflicting_external_resource() {
+            return Err(GraphError::ConflictingExternalResource(
+                resource.to_string(),
+            ));
+        }
         let mut custom_nodes: BTreeMap<Arc<str>, (PrimitiveId, CustomRenderNode)> = BTreeMap::new();
         for primitive in self.primitives() {
             let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
                 continue;
             };
-            if let Some((_, previous)) = custom_nodes.get(&custom.resource)
-                && (previous.revision != custom.revision || previous.renderer != custom.renderer)
-            {
-                return Err(GraphError::ConflictingExternalResource(
-                    custom.resource.to_string(),
-                ));
-            }
             custom_nodes
                 .entry(custom.resource.clone())
                 .or_insert((primitive.id, custom.clone()));

@@ -171,7 +171,9 @@ fn ten_thousand_clipped_text_nodes_cull_before_preparation_and_survive_scroll() 
         let mut text = node(value, Some(1), &[]);
         text.layout.y = (value - 2) as f32 * 20.0;
         text.layout.height = 18.0;
-        text.text = Some(TextContent { value: format!("Row {value}") });
+        text.text = Some(TextContent {
+            value: format!("Row {value}"),
+        });
         let style = Arc::make_mut(&mut text.source_style.layout);
         style.overflow_x = nana_ui_core::OverflowSpec::Hidden;
         style.overflow_y = nana_ui_core::OverflowSpec::Hidden;
@@ -179,7 +181,12 @@ fn ten_thousand_clipped_text_nodes_cull_before_preparation_and_survive_scroll() 
     }
     let mut scene = UiScene::new();
     scene.apply_delta(nodes, []);
-    let viewport = SceneRect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 };
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 100.0,
+    };
     assert!(scene.visible_operations(viewport).unwrap().len() <= 7);
     let plan = scene.frame_plan().unwrap();
     scroller.scroll_offset.y = 100_010.0;
@@ -188,10 +195,16 @@ fn ten_thousand_clipped_text_nodes_cull_before_preparation_and_survive_scroll() 
     assert!(Arc::ptr_eq(&plan, &scene.frame_plan().unwrap()));
     let visible = scene.visible_operations(viewport).unwrap();
     assert!(visible.len() <= 7);
-    assert!(visible.iter().any(|op| matches!(op, RenderOperation::Draw(primitive) if primitive.node == id(5002))),
-        "partially visible first row must survive scrolling");
+    assert!(
+        visible
+            .iter()
+            .any(|op| matches!(op, RenderOperation::Draw(primitive) if primitive.node == id(5002))),
+        "partially visible first row must survive scrolling"
+    );
     for op in visible {
-        let RenderOperation::Draw(primitive) = op else { panic!("ordinary text"); };
+        let RenderOperation::Draw(primitive) = op else {
+            panic!("ordinary text");
+        };
         assert!((5002..=5007).contains(&primitive.node.get()));
     }
 }
@@ -200,18 +213,56 @@ fn ten_thousand_clipped_text_nodes_cull_before_preparation_and_survive_scroll() 
 fn stroke_visibility_uses_points_and_caps_beyond_the_nominal_node_box() {
     let mut scene = UiScene::new();
     scene.apply_delta([node(1, None, &[])], []);
-    let primitive = PrimitiveId { node: id(1), slot: 12 };
+    let primitive = PrimitiveId {
+        node: id(1),
+        slot: 12,
+    };
     scene.insert_primitive(ScenePrimitive {
-        id: primitive, node: id(1), bounds: SceneRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
-        transform: AffineTransform::IDENTITY, clips: Arc::from([]), opacity: 1.0, z_index: 0, document_order: 0,
+        id: primitive,
+        node: id(1),
+        bounds: SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        },
+        transform: AffineTransform::IDENTITY,
+        clips: Arc::from([]),
+        opacity: 1.0,
+        z_index: 0,
+        document_order: 0,
         kind: ScenePrimitiveKind::Stroke {
-            points: vec![[500.0, 500.0], [550.0, 550.0]], width: 2.0, widths: vec![20.0, 2.0],
-            color: [1.0; 4], cap: StrokeCap::Square, pattern: None,
+            points: vec![[500.0, 500.0], [550.0, 550.0]],
+            width: 2.0,
+            widths: vec![20.0, 2.0],
+            color: [1.0; 4],
+            cap: StrokeCap::Square,
+            pattern: None,
         },
     });
-    assert!(scene.visible_operations(SceneRect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 }).unwrap().is_empty());
-    assert_eq!(scene.visible_operations(SceneRect { x: 489.0, y: 489.0, width: 2.0, height: 2.0 }).unwrap(),
-        vec![RenderOperation::Draw(primitive)], "wide square cap extends beyond the first endpoint and node box");
+    assert!(
+        scene
+            .visible_operations(SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0
+            })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        scene
+            .visible_operations(SceneRect {
+                x: 489.0,
+                y: 489.0,
+                width: 2.0,
+                height: 2.0
+            })
+            .unwrap(),
+        vec![RenderOperation::Draw(primitive)],
+        "wide square cap extends beyond the first endpoint and node box"
+    );
 }
 
 #[test]
@@ -5385,8 +5436,16 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
 
     let mut scene = UiScene::new();
     scene.apply_delta([canvas.clone()], []);
-    assert!(scene.primitives().any(|primitive| primitive.id.slot == (1u64 << 32)));
-    assert!(!scene.primitives().any(|primitive| primitive.id.slot == (1u64 << 32) + 1));
+    assert!(
+        scene
+            .primitives()
+            .any(|primitive| primitive.id.slot == (1u64 << 32))
+    );
+    assert!(
+        !scene
+            .primitives()
+            .any(|primitive| primitive.id.slot == (1u64 << 32) + 1)
+    );
 
     canvas.component_geometry = Some(geometry(vec![
         (edge.clone(), [0.5, 0.5, 0.5, 1.0]),
@@ -5394,17 +5453,25 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
     ]));
     scene.apply_delta([canvas.clone()], []);
     assert!(
-        scene.primitives().any(|primitive| primitive.id.slot == (1u64 << 32)),
+        scene
+            .primitives()
+            .any(|primitive| primitive.id.slot == (1u64 << 32)),
         "base edge batch must remain in paint order"
     );
     assert!(
-        scene.primitives().any(|primitive| primitive.id.slot == (1u64 << 32) + 1),
+        scene
+            .primitives()
+            .any(|primitive| primitive.id.slot == (1u64 << 32) + 1),
         "selected/connecting overlay must enter paint order on the next extract"
     );
 
     canvas.component_geometry = Some(geometry(vec![(edge, [0.5, 0.5, 0.5, 1.0])]));
     scene.apply_delta([canvas], []);
-    assert!(scene.primitives().any(|primitive| primitive.id.slot == (1u64 << 32)));
+    assert!(
+        scene
+            .primitives()
+            .any(|primitive| primitive.id.slot == (1u64 << 32))
+    );
     assert!(
         scene
             .primitive(PrimitiveId {
@@ -5642,23 +5709,50 @@ fn card_body_text_is_painted_independently_of_its_optional_title() {
     for title in [None, Some("Card heading")] {
         let mut card = node(1, None, &[2, 3]);
         card.standard_visual = Some(StandardVisual::Card {
-            title: title.map(Arc::from), kind: nana_ui_core::CardKind::Surface,
-            loading: false, loading_phase: 0.0,
+            title: title.map(Arc::from),
+            kind: nana_ui_core::CardKind::Surface,
+            loading: false,
+            loading_phase: 0.0,
         });
         card.component_geometry = Some(ComponentGeometry::Card {
             title: title.map(|content| ComponentTextRegion {
-                bounds: LayoutBox { x: 10.0, y: 8.0, width: 160.0, height: 18.0 },
-                content: Arc::from(content), color: None, font_size: 13.0, font_weight: None,
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 160.0,
+                    height: 18.0,
+                },
+                content: Arc::from(content),
+                color: None,
+                font_size: 13.0,
+                font_weight: None,
             }),
-            content: LayoutBox { x: 10.0, y: 30.0, width: 160.0, height: 90.0 },
-            elevation: None, spinner: None,
+            content: LayoutBox {
+                x: 10.0,
+                y: 30.0,
+                width: 160.0,
+                height: 90.0,
+            },
+            elevation: None,
+            spinner: None,
         });
         let mut scene = UiScene::new();
-        scene.apply_delta([card, text_node(2, 1, "Request title"), text_node(3, 1, "Request explanation")], []);
+        scene.apply_delta(
+            [
+                card,
+                text_node(2, 1, "Request title"),
+                text_node(3, 1, "Request explanation"),
+            ],
+            [],
+        );
         assert_eq!(visible_text_count(&scene, &[id(2), id(3)]), 2);
-        let painted = scene.primitives().filter_map(|primitive| match &primitive.kind {
-            ScenePrimitiveKind::Text { content, .. } => Some(content.as_str()), _ => None,
-        }).collect::<Vec<_>>();
+        let painted = scene
+            .primitives()
+            .filter_map(|primitive| match &primitive.kind {
+                ScenePrimitiveKind::Text { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert!(painted.contains(&"Request title"));
         assert!(painted.contains(&"Request explanation"));
     }
@@ -7154,14 +7248,21 @@ fn timestamp_chart_gap_segments_share_one_stroke_without_visible_bridges() {
     }
 }
 
-
 #[cfg(feature = "graph-canvas")]
 #[test]
 fn large_graph_primitive_families_do_not_overwrite_each_other() {
-    let bounds = LayoutBox { x: 0.0, y: 0.0, width: 100.0, height: 30.0 };
+    let bounds = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 30.0,
+    };
     let text = ComponentTextRegion {
-        bounds, content: "label".into(), color: Some([1.0; 4]),
-        font_size: 13.0, font_weight: None,
+        bounds,
+        content: "label".into(),
+        color: Some([1.0; 4]),
+        font_size: 13.0,
+        font_weight: None,
     };
     let geometry = |count| ComponentGeometry::GraphCanvas {
         nodes: vec![(bounds, text.clone(), [0.2; 4], Some([1.0; 4])); count],
@@ -7170,7 +7271,10 @@ fn large_graph_primitive_families_do_not_overwrite_each_other() {
         port_labels: vec![(text.clone(), TextHorizontalAlignment::Start); count],
         edges: vec![(vec![[0.0, 0.0], [100.0, 20.0]], [0.4; 4]); count],
         edge_labels: vec![text.clone(); count],
-        grid: vec![bounds], background: [0.1; 4], grid_color: [0.2; 4], separator_color: [0.3; 4],
+        grid: vec![bounds],
+        background: [0.1; 4],
+        grid_color: [0.2; 4],
+        separator_color: [0.3; 4],
     };
     let mut canvas = node(993, None, &[]);
     canvas.layout = bounds;
@@ -7178,11 +7282,64 @@ fn large_graph_primitive_families_do_not_overwrite_each_other() {
     for count in [300, 2, 300, 0] {
         canvas.component_geometry = Some(geometry(count));
         scene.apply_delta([canvas.clone()], []);
-        let primitives = scene.primitives().filter(|p| p.node == id(993)).collect::<Vec<_>>();
+        let primitives = scene
+            .primitives()
+            .filter(|p| p.node == id(993))
+            .collect::<Vec<_>>();
         assert_eq!(primitives.len(), count * 6 + 3);
-        assert_eq!(primitives.iter().map(|p| p.id).collect::<std::collections::HashSet<_>>().len(), count * 6 + 3);
-        assert_eq!(primitives.iter().filter(|p| matches!(p.kind, ScenePrimitiveKind::Text { .. })).count(), count * 3);
+        assert_eq!(
+            primitives
+                .iter()
+                .map(|p| p.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            count * 6 + 3
+        );
+        assert_eq!(
+            primitives
+                .iter()
+                .filter(|p| matches!(p.kind, ScenePrimitiveKind::Text { .. }))
+                .count(),
+            count * 3
+        );
     }
     scene.apply_delta([], [id(993)]);
     assert!(scene.primitives().all(|p| p.node != id(993)));
+}
+
+/// The public query and the graph must agree on every frame. If they drift, a
+/// host asserting `conflicting_external_resource().is_none()` would pass while
+/// the painter still refuses to draw anything.
+#[test]
+fn conflict_query_agrees_with_the_frame_graph() {
+    let mut scene = UiScene::new();
+    let mut first = node(1, None, &[]);
+    first.custom_render = Some(CustomRenderNode::new("nana.host-texture", "cover", 1));
+    let mut second = node(2, None, &[]);
+    second.custom_render = Some(CustomRenderNode::new("nana.host-texture", "cover", 1));
+    scene.apply_delta([first.clone(), second.clone()], []);
+    assert!(
+        scene.conflicting_external_resource().is_none(),
+        "two views agreeing on one slot is the normal case"
+    );
+    assert!(scene.frame_plan().is_ok());
+
+    // Only the second view is re-bound: the slot is now claimed twice with
+    // different revisions, which rejects the whole frame.
+    second.custom_render.as_mut().unwrap().revision = 2;
+    scene.apply_delta([second], []);
+    assert_eq!(
+        scene.conflicting_external_resource().as_deref(),
+        Some("cover")
+    );
+    assert!(matches!(
+        scene.frame_plan(),
+        Err(GraphError::ConflictingExternalResource(_))
+    ));
+
+    // Bringing the first view to the same revision heals the frame.
+    first.custom_render.as_mut().unwrap().revision = 2;
+    scene.apply_delta([first], []);
+    assert!(scene.conflicting_external_resource().is_none());
+    assert!(scene.frame_plan().is_ok());
 }
