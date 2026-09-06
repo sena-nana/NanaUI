@@ -17,5 +17,14 @@ path = "src/bin/css_parity_webview.rs"
 [dependencies]
 nana-css-parity = { path = "../css-parity" }
 # macOS WKWebView / wry reference only — never enable from nana-ui product crates.
+#
+# Dependabot flags glib 0.18.5 here (GHSA-wrw7-89jp-8q8g, medium: unsoundness in
+# `VariantStrIter` causing NULL derefs). It cannot be lifted from this manifest:
+# glib arrives only on tao's Linux/GTK path, and the gtk-rs 0.18 line that tao
+# pins has no glib 0.20 release. Bumping wry to 0.56.1 was tried and still
+# resolves glib 0.18.5. This tool is a macOS reference binary outside the
+# workspace, never links from a product crate, and never calls `VariantStrIter`.
+# Revisit when tao moves to gtk-rs with glib >= 0.20; do not churn the lockfile
+# chasing it in the meantime.
 wry = { version = "=0.55.1", default-features = true }
 tao = { version = "0.31", default-features = true }
