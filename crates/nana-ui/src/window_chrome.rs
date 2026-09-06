@@ -410,10 +410,14 @@ fn native_title_bar_control_hit(
 }
 
 fn is_title_bar_control(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
-    context
-        .world()
-        .accessibility(id)
-        .is_some_and(|state| state.role == AccessibilityRole::Button)
+    context.world().accessibility(id).is_some_and(|state| {
+        // Editable text keeps press-drag for caret and selection; a window
+        // drag from inside an embedded input would break both.
+        matches!(
+            state.role,
+            AccessibilityRole::Button | AccessibilityRole::TextInput
+        )
+    })
 }
 
 fn px_length(spec: Option<LengthSpec>) -> f32 {
@@ -710,6 +714,84 @@ mod tests {
 
         let mut state = WindowChromeState::default();
         let mut tracker = TitleBarDragTracker::default();
+        let pressed = apply_title_bar_pointer(
+            &mut state,
+            &mut tracker,
+            &context,
+            document,
+            &pointer_down(blank_x, blank_y),
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(pressed, Some(WindowChromeAction::Drag));
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(pressed, None);
+            assert_eq!(
+                apply_title_bar_pointer(
+                    &mut state,
+                    &mut tracker,
+                    &context,
+                    document,
+                    &pointer_move(blank_x + 8.0, blank_y),
+                ),
+                Some(WindowChromeAction::Drag)
+            );
+        }
+    }
+
+    #[test]
+    fn text_input_inside_title_bar_keeps_press_drag_for_selection() {
+        use super::{TitleBarDragTracker, apply_title_bar_pointer, title_bar_drag_hit};
+        use nana_ui_runtime::{AppContext, AppTitleBar, DocumentId, LayoutViewport, TextInput};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, TextInput::new("搜索"))
+            .unwrap();
+        let bar = context
+            .create_component(document, AppTitleBar::new("Nana").center(input.stable_id()))
+            .unwrap();
+        assert!(context.assemble_app_title_bar(bar).unwrap());
+        context
+            .layout_document(document, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        let input_box = context.world().layout_box(input.stable_id()).unwrap();
+        let x = input_box.x + input_box.width / 2.0;
+        let y = input_box.y + input_box.height / 2.0;
+        assert!(!title_bar_drag_hit(&context, document, x, y));
+
+        // 输入框子树内按下并拖过阈值不得产生拖窗动作;空白区仍要能拖。
+        let blank_x = input_box.x - 12.0;
+        let blank_y = input_box.y + input_box.height / 2.0;
+        assert!(title_bar_drag_hit(&context, document, blank_x, blank_y));
+
+        let mut state = WindowChromeState::default();
+        let mut tracker = TitleBarDragTracker::default();
+        assert_eq!(
+            apply_title_bar_pointer(
+                &mut state,
+                &mut tracker,
+                &context,
+                document,
+                &pointer_down(x, y),
+            ),
+            None
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            apply_title_bar_pointer(
+                &mut state,
+                &mut tracker,
+                &context,
+                document,
+                &pointer_move(x + 40.0, y),
+            ),
+            None
+        );
+
         let pressed = apply_title_bar_pointer(
             &mut state,
             &mut tracker,
