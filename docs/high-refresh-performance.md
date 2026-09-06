@@ -1476,6 +1476,10 @@ CSS 级联。注册阶段现在复用已写入的 kind 默认布局；只有存�
 单次索引构建加 O(1) 查找，保持 z-index、文档顺序和可达性过滤合同不变。Overlay 顺序
 回归与 Runtime 严格 Clippy 均通过。
 
+Scene crate 随后完成完整库回归：**95 项通过，0 项失败**。其中包含 10,000 个裁剪文本
+节点的可见集准备、滚动后几何复用、FramePlan 结构/资源失效、透明合成和命中/无障碍
+同步测试；该结果验证增量 Scene 合同，不替代真实 Surface 呈现间隔测量。
+
 ### 2026-09-06：GPU 目标短时 release 复测
 
 重新构建 `nana-gpu-scene-benchmark`（host-owned WGPU）并在 Vulkan 目标运行 5 秒、
