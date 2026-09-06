@@ -34,7 +34,7 @@ use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
     AppearanceEvent, DockWorkspace, DockWorkspaceEvent, GraphCanvasEvent, GraphEdge, GraphEndpoint,
     GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
-    GraphSelection, GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind,
+    GraphSelection, GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind, RoutedInput,
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis,
     SplitPaneAction, SplitPaneController,
 };
@@ -1285,9 +1285,10 @@ impl RuntimeProgram for GalleryApp {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         if id == WindowId::PRIMARY {
             let messages = self.drain_primary_input(event);
             self.absorb_runtime_workspace();

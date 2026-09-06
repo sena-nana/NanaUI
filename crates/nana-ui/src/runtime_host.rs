@@ -434,45 +434,17 @@ pub trait RuntimeProgram: Sized + 'static {
     /// exit; the default ignores the report.
     fn host_failure(&mut self, _failure: HostFailure) {}
 
+    /// Receive raw input after Runtime dispatch. This is the only input hook;
+    /// everything the host learned while dispatching the event travels in
+    /// [`RoutedInput`], so a program never has to pick between overloads and
+    /// silently lose the hit target or the disposition.
     fn input_event(
         &mut self,
         _id: WindowId,
-        _event: &InputEvent,
+        _input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
-    }
-
-    /// Receive an input event together with the topmost interactive node the
-    /// host hit-tested under the pointer. `pointer_hit` is `Some` only for
-    /// [`InputEvent::Pointer`] and [`InputEvent::Wheel`]. Override this
-    /// instead of [`Self::input_event`] when the program routes raw input to
-    /// hosted surfaces; the default forwards unchanged so existing programs
-    /// keep working.
-    fn input_event_routed(
-        &mut self,
-        id: WindowId,
-        event: &InputEvent,
-        _pointer_hit: Option<StableNodeId>,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        self.input_event(id, event, context)
-    }
-
-    /// Receive raw input after Runtime dispatch, including whether a control
-    /// consumed its default action. Hooks still run for consumed events so
-    /// applications can drain pending input; gate application shortcuts with
-    /// `disposition.prevent_default` to avoid handling the same Escape twice.
-    /// The default preserves existing `input_event_routed` implementations.
-    fn input_event_routed_with_disposition(
-        &mut self,
-        id: WindowId,
-        event: &InputEvent,
-        pointer_hit: Option<StableNodeId>,
-        _disposition: nana_ui_platform::InputDisposition,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        self.input_event_routed(id, event, pointer_hit, context)
     }
 
     fn window_event(
@@ -913,6 +885,22 @@ mod tests {
         });
         assert_eq!(calls, 1);
     }
+}
+
+/// One raw input event together with everything the host learned while
+/// dispatching it through the Runtime.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutedInput<'a> {
+    /// The event as the platform delivered it.
+    pub event: &'a InputEvent,
+    /// Topmost interactive node the host hit-tested under the pointer. `Some`
+    /// only for [`InputEvent::Pointer`] and [`InputEvent::Wheel`].
+    pub pointer_hit: Option<StableNodeId>,
+    /// Whether a control consumed the event's default action. The hook still
+    /// runs for consumed events so applications can drain pending input; gate
+    /// application shortcuts with `disposition.prevent_default` to avoid
+    /// handling the same Escape twice.
+    pub disposition: nana_ui_platform::InputDisposition,
 }
 
 /// Per-target demand; ordinary controls need no periodic clock.

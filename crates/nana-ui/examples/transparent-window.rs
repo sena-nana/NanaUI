@@ -6,8 +6,8 @@ use nana_ui::runtime::{
     Activate, Button, DocumentId, Entity, FrameworkError, List, RuntimeDocument, Text,
 };
 use nana_ui::{
-    ButtonKind, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings,
-    ThemeMode, run_runtime,
+    ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeWindowSettings, ThemeMode, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -190,9 +190,10 @@ impl RuntimeProgram for TransparentWindow {
     fn input_event(
         &mut self,
         id: WindowId,
-        _event: &nana_ui_platform::InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let _event = input.event;
         let mut changed = false;
         if self.toggle_theme.swap(false, Ordering::SeqCst) {
             self.apply(Message::ToggleTheme);

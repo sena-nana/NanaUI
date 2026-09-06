@@ -239,8 +239,8 @@ pub use runtime_animation::RuntimeAnimationClock;
 pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
-    FrameDemand, HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeRedraw, RuntimeTaskError, RuntimeWindowSettings, run_runtime,
+    FrameDemand, HostFailure, RoutedInput, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, RuntimeWindowSettings, run_runtime,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]

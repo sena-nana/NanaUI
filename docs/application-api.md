@@ -66,8 +66,8 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | `scene_resource_producers` | 高级。按图离屏；第一次可忽略 |
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
-| `window_event` / `input_event` | 窗口生命周期与原始输入 |
-| `input_event_routed_with_disposition` | 接收命中节点及 Runtime 消费结果；已消费事件仍派发，应用快捷键应检查 `disposition.prevent_default`，默认转发原 `input_event_routed` |
+| `window_event` | 窗口生命周期 |
+| `input_event` | Runtime 派发之后的原始输入，唯一的输入钩子。参数 `RoutedInput` 同时带 `event`、`pointer_hit`（仅指针与滚轮）和 `disposition`；已消费事件仍派发，应用快捷键应检查 `disposition.prevent_default` |
 | `next_wakeup` / `wake` | 与重绘无关的定时工作 |
 | `host_failure` | 宿主已从该错误恢复；默认忽略 |
 

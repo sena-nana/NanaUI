@@ -15,7 +15,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
-    GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, RegionId,
+    GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, RegionId, RoutedInput,
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
     RuntimeWindowSettings, SettingsModel, SettingsState, SettingsTab, SplitAxis, ThemeMode,
     run_runtime_scene,
@@ -163,9 +163,10 @@ impl RuntimeProgram for App {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         self.drain_graph_events();
         let InputEvent::Keyboard {
             pressed: true, key, ..

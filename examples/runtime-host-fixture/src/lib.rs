@@ -11,9 +11,10 @@ use nana_ui::runtime::{
     DocumentId, Entity, FrameworkError, GpuTextureView, List, RuntimeDocument, Text, TextInput,
 };
 use nana_ui::{
-    HostTexture, HostTextureAlphaMode, HostTextureRegistry, RuntimeInputAdapter, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode,
-    dock_workspace_window_id, run_runtime, runtime_dock_window_update,
+    HostTexture, HostTextureAlphaMode, HostTextureRegistry, RoutedInput, RuntimeInputAdapter,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
+    RuntimeWindowSettings, ThemeMode, dock_workspace_window_id, run_runtime,
+    runtime_dock_window_update,
 };
 use nana_ui_platform::{
     ImeEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
@@ -379,9 +380,10 @@ impl RuntimeProgram for Fixture {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &nana_ui_platform::InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         if let Some(document) = self.documents.get_mut(&id) {
             let document_id = document.document();
             let _ = RuntimeInputAdapter::default().dispatch(

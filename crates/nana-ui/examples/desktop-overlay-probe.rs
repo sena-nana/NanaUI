@@ -2,7 +2,7 @@
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
-    DocumentAccessError, MaterialEffect, RuntimeProgram, RuntimeProgramContext,
+    DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode, run_runtime,
 };
 use nana_ui_platform::{
@@ -218,9 +218,10 @@ impl RuntimeProgram for Probe {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        input: RoutedInput<'_>,
         _: &RuntimeProgramContext<Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         if let InputEvent::Pointer {
             phase: PointerPhase::Down,
             x,

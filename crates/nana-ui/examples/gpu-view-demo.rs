@@ -5,8 +5,8 @@ use nana_ui::runtime::{
     List, RuntimeDocument, Text,
 };
 use nana_ui::{
-    ButtonKind, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings,
-    ThemeMode, ThemeModeExt, run_runtime,
+    ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeWindowSettings, ThemeMode, ThemeModeExt, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -202,9 +202,10 @@ impl RuntimeProgram for GpuViewDemo {
     fn input_event(
         &mut self,
         id: WindowId,
-        _event: &nana_ui_platform::InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let _event = input.event;
         Ok(RuntimeProgramUpdate::redraw(id))
     }
 }

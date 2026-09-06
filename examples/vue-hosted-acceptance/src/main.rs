@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use nana_js_engine::probe::{VUE_SFC_COMPAT_CSS, vue_sfc_compat_artifact};
 use nana_js_engine::{HostApiRegistry, HostValue, JsEngine};
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
-    run_runtime,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeWindowSettings, ThemeMode, run_runtime,
 };
 use nana_ui_platform::{ImeEvent, InputEvent, PointerType, WindowEvent, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -238,9 +238,10 @@ impl RuntimeProgram for AcceptanceProgram {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        input: RoutedInput<'_>,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         if let InputEvent::Pointer {
             pointer_type: PointerType::Pen,
             phase,
@@ -261,7 +262,7 @@ impl RuntimeProgram for AcceptanceProgram {
                 id.0
             );
         }
-        self.inner.input_event(id, event, context)
+        self.inner.input_event(id, input, context)
     }
 
     fn window_event(
