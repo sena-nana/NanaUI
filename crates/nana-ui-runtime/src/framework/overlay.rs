@@ -12,6 +12,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeOverlayKind {
     Dialog,
+    /// An interactive nonmodal region; outside pointers and Tab remain free.
+    Panel,
     Menu,
     Tooltip,
     /// A passive announcement such as a toast. It never takes the pointer or
@@ -39,6 +41,7 @@ pub(crate) const fn overlay_kind_for_role(
         crate::AccessibilityRole::Dialog | crate::AccessibilityRole::AlertDialog => {
             Some(RuntimeOverlayKind::Dialog)
         }
+        crate::AccessibilityRole::Region => Some(RuntimeOverlayKind::Panel),
         crate::AccessibilityRole::Menu => Some(RuntimeOverlayKind::Menu),
         crate::AccessibilityRole::Tooltip => Some(RuntimeOverlayKind::Tooltip),
         crate::AccessibilityRole::Status => Some(RuntimeOverlayKind::Status),
@@ -193,7 +196,9 @@ impl AppContext {
                 RuntimeOverlayKind::Menu => {
                     self.dismiss_overlay(Entity::from_stable_id(overlay.host))?
                 }
-                RuntimeOverlayKind::Tooltip | RuntimeOverlayKind::Status => false,
+                RuntimeOverlayKind::Tooltip
+                | RuntimeOverlayKind::Status
+                | RuntimeOverlayKind::Panel => false,
             };
         }
         Ok(OverlayPointerDecision {
@@ -218,6 +223,17 @@ impl AppContext {
                         if self.dialog_allows(overlay.root, DialogCloseTrigger::Escape) {
                             self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
                         }
+                    }
+                    RuntimeOverlayKind::Panel => {
+                        if !self
+                            .views
+                            .get(&overlay.root)
+                            .and_then(|view| view.downcast_ref::<crate::Panel>())
+                            .is_some_and(|panel| panel.close_on_escape)
+                        {
+                            return Ok(false);
+                        }
+                        self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
                     }
                     RuntimeOverlayKind::Menu => {
                         self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
@@ -406,6 +422,23 @@ impl AppContext {
 
     pub(super) fn overlay_focus_candidate(&self, document: DocumentId, id: StableNodeId) -> bool {
         self.sequential_focus_candidate(document, id)
+    }
+
+    /// Focus the first reachable sequential stop inside a mounted subtree.
+    /// Uses the same disabled, hidden and roving-group rules as Tab navigation.
+    pub fn focus_first_in(
+        &mut self,
+        document: DocumentId,
+        root: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        let target = self
+            .sequential_focus_candidates(document)
+            .into_iter()
+            .find(|id| self.overlay_descendant(root, *id));
+        match target {
+            Some(target) => self.focus_node(document, target),
+            None => Ok(false),
+        }
     }
 
     pub(super) fn first_overlay_focusable(

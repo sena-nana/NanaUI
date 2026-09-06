@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use nana_ui_core::{AlignSpec, ControlSize, FlexDirection, LengthSpec, SemanticColorRole};
+use nana_ui_core::{
+    AlignSpec, ControlSize, FlexDirection, LengthSpec, PopoverAlignment, PositionSpec,
+    SemanticColorRole,
+};
 
+use crate::panel::{origin, positive};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox,
+    MutationQueue, NodeKind, NodeStyle, PanelInsets, StableNodeId, TextContent, UiWorld,
 };
 
 const TITLE_SIZE: f32 = 12.0;
@@ -78,6 +82,36 @@ impl Toast {
         self
     }
 
+    /// Pin the toast into the space `insets` leaves free in `viewport`, using
+    /// the same chrome reservation contract as [`crate::Panel::viewport`].
+    /// `align` distributes it across that free width and `max_width` caps it.
+    /// The toast keeps its intrinsic height and rests on the reserved bottom
+    /// edge, so `viewport` must be the positioned host's own box. This updates
+    /// geometry only; authored padding and visual style survive.
+    pub fn place_in(
+        &mut self,
+        viewport: LayoutBox,
+        align: PopoverAlignment,
+        max_width: f32,
+        insets: PanelInsets,
+    ) {
+        let insets = insets.clamp_into(viewport);
+        let free = positive(viewport.width) - insets.left - insets.right;
+        let width = positive(max_width).min(free);
+        let leading = match align {
+            PopoverAlignment::Start => 0.0,
+            PopoverAlignment::Center => (free - width) / 2.0,
+            PopoverAlignment::End => free - width,
+        };
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.position = PositionSpec::Absolute;
+        layout.offset_left = Some(LengthSpec::Px(origin(viewport.x) + insets.left + leading));
+        layout.offset_right = None;
+        layout.offset_top = None;
+        layout.offset_bottom = Some(LengthSpec::Px(insets.bottom));
+        layout.width = Some(LengthSpec::Px(width));
+    }
+
     pub fn tone_role(&self) -> SemanticColorRole {
         crate::components::status_tone_role(self.tone.status())
     }
@@ -108,7 +142,10 @@ impl Toast {
         style.border = Some(SemanticColorRole::Border);
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
+        // A placed toast owns its width; only an unplaced one fills its row.
+        if layout.width.is_none() {
+            layout.width = Some(LengthSpec::Fill);
+        }
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.gap = Some(LengthSpec::Px(INDICATOR_GAP));
@@ -344,5 +381,67 @@ mod tests {
         let _ = context.take_system_work();
         context.update_component(toast, |_, _| {}).unwrap();
         assert!(context.take_system_work().is_empty());
+    }
+
+    #[test]
+    fn place_in_centres_within_reserved_chrome_and_survives_a_tiny_window() {
+        let mut toast = Toast::new("Saved", ToastTone::Info);
+        let insets = crate::PanelInsets {
+            top: 48.0,
+            right: 416.0,
+            bottom: 100.0,
+            left: 16.0,
+        };
+        let viewport = crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+        };
+        toast.place_in(viewport, PopoverAlignment::Center, 360.0, insets);
+        let layout = &toast.style.layout;
+        assert_eq!(layout.position, PositionSpec::Absolute);
+        assert_eq!(layout.width, Some(LengthSpec::Px(360.0)));
+        assert_eq!(layout.offset_left, Some(LengthSpec::Px(120.0)));
+        assert_eq!(layout.offset_bottom, Some(LengthSpec::Px(100.0)));
+        assert_eq!(layout.offset_right, None);
+
+        toast.place_in(viewport, PopoverAlignment::End, 360.0, insets);
+        assert_eq!(
+            toast.style.layout.offset_left,
+            Some(LengthSpec::Px(1000.0 - 416.0 - 360.0))
+        );
+
+        let tiny = crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        toast.place_in(tiny, PopoverAlignment::Center, 360.0, insets);
+        let layout = &toast.style.layout;
+        assert_eq!(layout.width, Some(LengthSpec::Px(0.0)));
+        assert_eq!(layout.offset_left, Some(LengthSpec::Px(16.0)));
+        assert_eq!(layout.offset_bottom, Some(LengthSpec::Px(2.0)));
+    }
+
+    #[test]
+    fn a_placed_toast_keeps_its_width_through_projection() {
+        let mut context = AppContext::new();
+        let mut toast = Toast::new("Saved", ToastTone::Info);
+        toast.place_in(
+            crate::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            PopoverAlignment::Center,
+            360.0,
+            crate::PanelInsets::default(),
+        );
+        let entity = context.create_component(document(), toast).unwrap();
+        let style = context.world().node_style(entity.stable_id()).unwrap();
+        assert_eq!(style.layout.width, Some(LengthSpec::Px(360.0)));
     }
 }

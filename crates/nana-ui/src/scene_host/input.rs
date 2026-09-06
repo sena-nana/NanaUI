@@ -275,11 +275,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .program
             .read_document(id, |document| input_pointer_hit(Some(document), &input))
             .flatten();
-        let program_input = self.program.input_event_routed_with_disposition(
+        let program_input = self.program.input_event(
             id,
-            &input,
-            pointer_hit,
-            disposition,
+            crate::RoutedInput {
+                event: &input,
+                pointer_hit,
+                disposition,
+            },
             &self.context_for(id),
         );
         if let Err(error) = &program_input {

@@ -4214,7 +4214,9 @@ fn builtin_and_plugin_components_share_one_registry() {
         Some("nana.gpu-view")
     );
     assert_eq!(
-        context.resolve_component_tag("chip").map(ComponentTypeId::as_str),
+        context
+            .resolve_component_tag("chip")
+            .map(ComponentTypeId::as_str),
         Some("nana.chip")
     );
     assert_eq!(
@@ -5285,14 +5287,14 @@ fn caret_movement_steps_across_inlays_without_sticking() {
         (TextCaretIntent::WordLeft, [6, 5, 3].as_slice()),
     ] {
         for &start in starts {
-            let expected = crate::text_editing::caret_focus(
-                value,
-                TextSelection::caret(start),
-                intent,
-            )
-            .unwrap_or(start);
+            let expected =
+                crate::text_editing::caret_focus(value, TextSelection::caret(start), intent)
+                    .unwrap_or(start);
             let moved = move_caret_from(&mut context, document, node, start, intent);
-            assert_eq!(moved, expected, "{intent:?} from {start} 越过 inlay 后应与裸文本一致");
+            assert_eq!(
+                moved, expected,
+                "{intent:?} from {start} 越过 inlay 后应与裸文本一致"
+            );
         }
     }
 
@@ -5313,10 +5315,7 @@ fn caret_right_steps_across_fold_summaries() {
     let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
     let fold = TextCodeFold::new(7, 28);
     let area = context
-        .create_component(
-            document,
-            TextArea::new(value).code_folds(Arc::from([fold])),
-        )
+        .create_component(document, TextArea::new(value).code_folds(Arc::from([fold])))
         .unwrap();
     let node = area.stable_id();
     let mut queue = MutationQueue::new();
@@ -5331,4 +5330,104 @@ fn caret_right_steps_across_fold_summaries() {
     assert_eq!(moved, 28, "Right 一次跨过折叠摘要");
     let moved = move_caret_from(&mut context, document, node, moved, TextCaretIntent::Right);
     assert_eq!(moved, 29, "摘要之后继续逐字符前进");
+}
+
+#[test]
+fn framework_dismissed_context_menu_clears_open_state_and_emits_dismiss() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let menu = context
+        .create_component(
+            document,
+            ContextMenu::new(24.0, 36.0).items([crate::ContextMenuItem::new("open", "Open")]),
+        )
+        .unwrap();
+    context.append_child(host, menu).unwrap();
+    context.activate_overlay(host, menu).unwrap();
+    assert!(context.read(menu, |menu| menu.open).unwrap());
+
+    let dismissals = Arc::new(Mutex::new(0usize));
+    let observed = Arc::clone(&dismissals);
+    context
+        .on(menu, move |_menu, event: &ContextMenuEvent, _cx| {
+            if matches!(event, ContextMenuEvent::Dismiss) {
+                *observed.lock().unwrap() += 1;
+            }
+        })
+        .unwrap();
+
+    assert!(
+        context
+            .route_overlay_key(document, OverlayKey::Escape)
+            .unwrap()
+    );
+    assert!(
+        !context.read(menu, |menu| menu.open).unwrap(),
+        "framework dismissal must clear the menu's own presence flag"
+    );
+    assert_eq!(*dismissals.lock().unwrap(), 1);
+}
+
+#[test]
+fn outside_press_dismisses_a_hosted_context_menu_and_reports_it_to_the_view() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let stage = context
+        .create_component(document, Button::new("Stage"))
+        .unwrap();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let menu = context
+        .create_component(
+            document,
+            ContextMenu::new(100.0, 0.0).items([crate::ContextMenuItem::new("open", "Open")]),
+        )
+        .unwrap();
+    context.append_child(host, menu).unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        stage.stable_id(),
+        crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 40.0,
+        },
+    );
+    layout.write_layout(
+        menu.stable_id(),
+        crate::LayoutBox {
+            x: 100.0,
+            y: 0.0,
+            width: 120.0,
+            height: 160.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+    context.activate_overlay(host, menu).unwrap();
+    context.rebuild_hit_test(document);
+
+    let dismissals = Arc::new(Mutex::new(0usize));
+    let observed = Arc::clone(&dismissals);
+    context
+        .on(menu, move |_menu, event: &ContextMenuEvent, _cx| {
+            if matches!(event, ContextMenuEvent::Dismiss) {
+                *observed.lock().unwrap() += 1;
+            }
+        })
+        .unwrap();
+
+    context
+        .route_overlay_pointer(document, 1, OverlayPointerPhase::PrimaryDown, 10.0, 10.0)
+        .unwrap();
+    let up = context
+        .route_overlay_pointer(document, 1, OverlayPointerPhase::PrimaryUp, 10.0, 10.0)
+        .unwrap();
+    assert!(up.dismissed, "a press outside the surface closes the menu");
+    assert!(!context.read(menu, |menu| menu.open).unwrap());
+    assert_eq!(*dismissals.lock().unwrap(), 1);
 }

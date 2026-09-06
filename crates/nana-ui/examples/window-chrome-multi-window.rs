@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use nana_ui::runtime::{Activate, Button, DocumentId, FrameworkError, List, RuntimeDocument, Text};
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
     RuntimeWindowSettings, ThemeMode, run_runtime,
 };
 use nana_ui_platform::{WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings};
@@ -174,9 +174,10 @@ impl RuntimeProgram for Smoke {
     fn input_event(
         &mut self,
         _id: WindowId,
-        _event: &nana_ui_platform::InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let _event = input.event;
         if self.open.swap(false, Ordering::SeqCst) {
             Ok(self.open_next())
         } else {

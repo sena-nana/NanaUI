@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
-    HostTextureRegistry, HostedGpuResources, RuntimeProgram, RuntimeProgramContext,
+    HostTextureRegistry, HostedGpuResources, RoutedInput, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, install_theme_tokens,
     window_material_effect,
 };
@@ -967,9 +967,10 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     fn input_event(
         &mut self,
         id: WindowId,
-        event: &InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let event = input.event;
         self.sync_documents();
         let update = self.runtime.runtime_input(id, event)?;
         self.sync_documents();

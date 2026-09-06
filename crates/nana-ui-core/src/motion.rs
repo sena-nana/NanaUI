@@ -50,6 +50,9 @@ pub const SIDEBAR_COLLAPSE: Duration = Duration::from_millis(260);
 /// Skeleton pulse cycle duration.
 pub const SKELETON_PULSE: Duration = Duration::from_millis(1400);
 
+/// One full turn of an indeterminate busy indicator.
+pub const SPINNER_ROTATION: Duration = Duration::from_millis(900);
+
 /// Bernstein-form cubic bezier over one axis, endpoints pinned to 0 and 1.
 fn bezier_axis(t: f32, p1: f32, p2: f32) -> f32 {
     3.0 * (1.0 - t).powi(2) * t * p1 + 3.0 * (1.0 - t) * t.powi(2) * p2 + t.powi(3)

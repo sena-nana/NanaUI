@@ -7,8 +7,9 @@ use nana_ui::runtime::{
     Text,
 };
 use nana_ui::{
-    ButtonKind, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode, run_runtime,
+    ButtonKind, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
+    run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -263,9 +264,10 @@ impl RuntimeProgram for DemoProgram {
     fn input_event(
         &mut self,
         id: WindowId,
-        _event: &nana_ui_platform::InputEvent,
+        input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        let _event = input.event;
         Ok(RuntimeProgramUpdate::redraw(id))
     }
 
