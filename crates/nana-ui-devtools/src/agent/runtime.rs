@@ -88,6 +88,25 @@ impl RuntimeAgentSession {
         Ok(true)
     }
 
+    /// Secondary-button click (button 2), the way a right-click reaches the
+    /// tree. Context menus open on the press, so both phases are sent with the
+    /// button held then released — a primary [`Self::click_xy`] never routes
+    /// there, and hand-rolling the `InputEvent` is the same boilerplate in
+    /// every consumer that wants to verify a context menu headlessly.
+    pub fn secondary_click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
+        dispatch_runtime_button(
+            &mut self.document,
+            PointerPhase::Down,
+            x,
+            y,
+            2,
+            button_mask(2),
+        )?;
+        dispatch_runtime_button(&mut self.document, PointerPhase::Up, x, y, 2, 0)?;
+        self.flush()?;
+        Ok(true)
+    }
+
     pub fn click_node(&mut self, id: u64) -> Result<bool, AgentError> {
         let target =
             StableNodeId::new(id).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
@@ -231,11 +250,32 @@ impl RuntimeAgentSession {
     }
 }
 
+/// Platform button mask for a button index, matching the hosted adapter.
+const fn button_mask(button: i16) -> u16 {
+    match button {
+        0 => 1,
+        1 => 4,
+        2 => 2,
+        _ => 0,
+    }
+}
+
 fn dispatch_runtime_pointer(
     document: &mut RuntimeDocument,
     phase: PointerPhase,
     x: f32,
     y: f32,
+) -> Result<(), AgentError> {
+    dispatch_runtime_button(document, phase, x, y, 0, 0)
+}
+
+fn dispatch_runtime_button(
+    document: &mut RuntimeDocument,
+    phase: PointerPhase,
+    x: f32,
+    y: f32,
+    button: i16,
+    buttons: u16,
 ) -> Result<(), AgentError> {
     let document_id = document.document();
     RuntimeInputAdapter::default()
@@ -250,8 +290,8 @@ fn dispatch_runtime_pointer(
                 y,
                 screen_x: x,
                 screen_y: y,
-                button: 0,
-                buttons: 0,
+                button,
+                buttons,
                 pressure: 0.5,
                 tangential_pressure: 0.0,
                 tilt_x: 0,

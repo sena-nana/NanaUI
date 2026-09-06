@@ -5,7 +5,7 @@
 
 use nana_ui::runtime::{
     Button, DocumentId, List, MutationQueue, NodeStyle, RuntimeDocument, ScrollAxes, ScrollView,
-    StableNodeId,
+    SecondaryPress, StableNodeId,
 };
 use nana_ui_core::{LayoutStyle, LengthSpec};
 use nana_ui_devtools::agent::RuntimeAgentSession;
@@ -131,5 +131,43 @@ fn scroll_by_changes_painted_pixels() {
     assert_ne!(
         before, after,
         "scrolling must change the painted frame, not only the layout boxes"
+    );
+}
+
+/// Context menus open on a secondary press. `click_xy` is button 0 and never
+/// routes there, so without a secondary entry point every consumer that wants
+/// to verify a right-click menu headlessly hand-rolls the same `InputEvent`.
+#[test]
+fn secondary_click_reaches_handlers_that_a_primary_click_does_not() {
+    let (document, rows) = scrolling_document();
+    let mut session = RuntimeAgentSession::new(document, 360, 240).unwrap();
+
+    let presses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = std::sync::Arc::clone(&presses);
+    let first = rows[0];
+    session
+        .document_mut()
+        .context_mut()
+        .on(
+            nana_ui::runtime::Entity::<Button>::from_stable_id(first),
+            move |_, press: &SecondaryPress, _| {
+                recorder.lock().unwrap().push(press.target);
+            },
+        )
+        .unwrap();
+    session.flush().unwrap();
+
+    let top = row_top(&session, first).expect("the row projects into accessibility") + 4.0;
+    session.click_xy(20.0, top).unwrap();
+    assert!(
+        presses.lock().unwrap().is_empty(),
+        "a primary click must not raise SecondaryPress"
+    );
+
+    session.secondary_click_xy(20.0, top).unwrap();
+    assert_eq!(
+        presses.lock().unwrap().as_slice(),
+        &[first],
+        "a secondary click must reach the handler on the pressed row"
     );
 }
