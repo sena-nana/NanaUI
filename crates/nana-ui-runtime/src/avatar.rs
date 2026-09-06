@@ -67,9 +67,14 @@ impl Avatar {
         self
     }
 
-    /// Records that the host refreshed the slot's pixels in place. Bumping the
-    /// version is what makes the painter re-sample; without it a host-owned
-    /// texture that arrives after mount never reaches the screen.
+    /// Records that the host refreshed the slot's pixels in place.
+    ///
+    /// The packed [`Self::revision`] is the Scene's conflict key for a
+    /// host-texture slot: every view of one slot in a frame must report the
+    /// same revision, or `UiScene::frame_graph` rejects the frame with
+    /// `ConflictingExternalResource` and nothing paints. A control that
+    /// reported a fixed revision could therefore never share a slot with a
+    /// view the host had re-bound.
     pub fn invalidate_content(&mut self) -> u64 {
         self.version = self.version.saturating_add(1);
         self.version
@@ -221,9 +226,10 @@ mod tests {
         }
     }
 
-    /// A host texture that lands after mount only reaches the screen if the
-    /// Scene node's revision moves; a fixed revision silently keeps the stale
-    /// (or empty) sample.
+    /// The revision must move with the binding: it is the Scene's conflict key
+    /// for a slot, so a fixed one makes this control unable to share a slot
+    /// with any re-bound view. Pixel evidence for that is in
+    /// `nana-ui-devtools/tests/host_texture_paint.rs`.
     #[test]
     fn late_host_texture_moves_the_scene_revision() {
         let mut control = Avatar::new("cover:a");
