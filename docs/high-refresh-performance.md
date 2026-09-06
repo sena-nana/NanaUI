@@ -293,8 +293,8 @@ cargo test -p nana-ui-devtools --features agent --test virtual_retention --locke
 cargo clippy -p nana-ui --lib --bin nana-gpu-scene-benchmark --features hosted --locked --no-deps -- -D warnings
 ```
 
-上述命令通过。`cargo check --workspace --all-targets --locked` 仍被 rich-text Markdown
-测试引用已经移除的 `blocks` / `drawing` API 阻塞；未删测试或关闭 feature。
+上述命令通过。这里记录的是当时的工作区状态；rich-text Markdown 测试随后已按当前
+宿主 presenter 合同迁移，最终验证见本文末尾。
 WGPU 逆向依赖检查仍为单一 `wgpu 30.0.1`。
 
 四个 release 基准先完成构建，再串行运行。最新门禁仍失败：
@@ -1480,6 +1480,15 @@ Scene crate 随后完成完整库回归：**95 项通过，0 项失败**。其�
 节点的可见集准备、滚动后几何复用、FramePlan 结构/资源失效、透明合成和命中/无障碍
 同步测试；该结果验证增量 Scene 合同，不替代真实 Surface 呈现间隔测量。
 
+rich-text 组合随后以 `cargo check -p nana-ui-scene --tests --features rich-text --locked` 和
+`cargo test -p nana-ui-scene --features rich-text --lib --locked` 复验：检查通过，库测试
+**97 项通过，0 项失败**。`python scripts/check-component-features.py` 亦通过，验证每个
+可选组件族的 Runtime、Vue 与宿主入口，以及关闭组件族后的 API/依赖隔离。
+
+工作区 `cargo check --workspace --all-targets --locked` 仍没有完成，但不再是 Markdown
+迁移问题：`v8 152.2.0` 构建脚本在此 Windows 环境创建 `gn_root` 符号链接时被系统拒绝。
+这项环境失败不计为工作区全目标验证通过，也不影响上述已完成的 Rust 组合检查。
+
 ### 2026-09-06：GPU 目标短时 release 复测
 
 重新构建 `nana-gpu-scene-benchmark`（host-owned WGPU）并在 Vulkan 目标运行 5 秒、
@@ -1518,3 +1527,13 @@ GPU 测量脚本新增可选 `-Binary` 参数，支持传入独立 release targe
 backend）的窗口算法报告，不是 Nana `UiOnly` Scene 场景。该结果被保留为边界证据，
 避免把无 GPU 的第三方基准误报为 Nana 复杂 UI 呈现通过；复杂表格的 Nana Runtime
 虚拟化数据仍以 Framework 百万项报告为准。
+
+### 2026-09-06：异步图片目标级唤醒
+
+完成 URL 图片通知的目标隔离：`UrlTextureCache` 的唤醒回调携带完成资源键，Scene
+host 为每个窗口维护当前 Scene 的 URL 反向索引，仅将引用该资源的窗口加入重绘集合。
+移除了 `proxy_wake_up` 对所有 painter 的 `has_image_updates` 全局扫描；关闭窗口和设备
+重建会清理/重装索引与回调。`cargo check -p nana-ui --lib --features hosted --locked`
+通过；URL 缓存生命周期测试 2 项通过。71 项 GPU 离屏测试在本机 Vulkan 并行运行时
+长时间无输出，已主动停止，不能将该过滤集记为通过；不影响本次编译和两项直接相关测试
+结果。真实 Surface 120Hz、复杂多窗口与高刷新显示器反馈仍待验收。

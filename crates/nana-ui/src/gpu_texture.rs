@@ -999,6 +999,16 @@ impl GpuTexturePipeline {
     pub(crate) fn poll_images(&mut self) -> bool {
         self.url_cache.poll()
     }
+
+    pub(crate) fn invalidate_image_bindings(&mut self) {
+        self.textures.clear();
+    }
+
+    /// Drop target-local host texture bindings after a URL mask becomes ready.
+    /// The next preparation recreates the bind group with the uploaded mask.
+    pub(crate) fn invalidate_target_image_bindings(target: &mut GpuTextureTarget) {
+        target.textures.clear();
+    }
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

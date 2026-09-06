@@ -215,6 +215,13 @@ impl SceneWgpuPainter {
 
     /// Wake the owning event loop when an asynchronous URL image completes.
     pub fn set_image_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let keyed: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |_| wake());
+        self.set_image_update_waker(keyed);
+    }
+
+    /// Wake the owning host with the URL/resource key that completed.
+    /// Hosts can use this to redraw only targets that reference the resource.
+    pub fn set_image_update_waker(&mut self, wake: Arc<dyn Fn(&str) + Send + Sync>) {
         self.quads.set_image_waker(wake.clone());
         self.host_textures.set_image_waker(wake);
     }
@@ -285,6 +292,8 @@ impl SceneWgpuPainter {
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
+            QuadPipeline::invalidate_target_image_bindings(&mut state.quads);
+            HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }
         self.swap_target_state(&mut state);
         let result = self.paint(
@@ -331,6 +340,11 @@ impl SceneWgpuPainter {
         if quad_images || mask_images {
             self.painted = None;
             self.image_revision = self.image_revision.wrapping_add(1);
+            // The active target is held in the painter fields while `paint`
+            // runs; invalidate its URL-backed bindings immediately. Other
+            // targets are invalidated when their revision is observed above.
+            self.quads.invalidate_image_bindings();
+            self.host_textures.invalidate_image_bindings();
         }
         let instance = scene.instance_id();
         validate_scene(scene, host_textures, gpu_renderers)?;

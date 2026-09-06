@@ -16,7 +16,7 @@ const RETAINED_BYTES: u64 = 64 * 1024 * 1024;
 const RETAINED_ENTRIES: usize = 256;
 const IDLE_FRAMES: u64 = 120;
 
-pub(crate) type ImageWake = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type ImageWake = Arc<dyn Fn(&str) + Send + Sync>;
 type Decoded = Option<(u32, u32, Vec<u8>)>;
 
 pub(crate) struct CachedUrlTexture {
@@ -114,7 +114,7 @@ impl UrlTextureCache {
                     if tx.send(decoded).is_ok() {
                         ready.store(true, Ordering::Release);
                         if let Some(wake) = wake {
-                            wake();
+                            wake(&key);
                         }
                     }
                 });

@@ -160,7 +160,7 @@ cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts -
 - Vue 组件包最终回归：172 项通过；补充了小数索引、非有限 count 与大逻辑窗口的输入边界验证。
 - `cargo check --workspace --lib --bins --examples --locked` 通过。
 - `cargo clippy -p nana-ui --lib --features hosted --locked --no-deps -- -D warnings` 通过。
-- 全目标检查在并行修改的 Markdown 测试处失败：引用当前不存在的 `blocks`、`drawing` 字段和方法；未删除或绕过这些测试。
+- 当时的全目标检查被尚未迁移的 Markdown 测试阻断；该测试随后已按宿主 presenter 合同迁移，见本节后文的最终验证记录。
 - Issue #8 四份 release 报告已生成并检查，首次检查有三项时间门禁失败；具体数字与复测见性能记录。阈值没有调整。
 
 续建验证：Core 174 项通过，新增表格定位测试后最终虚拟化回归 18 项通过；Vue 组件包 174 项、真实 Vue 调度 fixture 7 项通过。
@@ -283,7 +283,6 @@ GraphCanvas 大图元回归发现跨类别 slot 冲突：每类 300 项时，预
 低位保存项序号，保持类别绘制顺序。回归验证 300→2→300→0 的完整数量、ID 唯一性、
 文字数量及删除清理。此修复适用于已有 GraphCanvas，不增加百万二维对象专用接口。
 Scene 控件侧栏集成测试也显式声明 controls 特性依赖；最小构建不再引用未启用控件。
-旧 Markdown Scene 测试仍引用已移除的 blocks/drawing 合同，rich-text 全目标检查尚未通过。
 
 
 GraphCanvas 后续增加真实 GPU 大类别验证：复用一个 painter 和目标，连续渲染
@@ -297,7 +296,7 @@ Markdown Scene 测试迁移已完成：通过 RuntimeDocument 验证 300 段内�
 当前宿主渲染合同；多于 256 个图元的身份和清理由独立 GraphCanvas 1803 图元回归覆盖。
 Scene components 配置 101 项库测试、2 项文档测试、5 项侧栏测试与严格 Clippy 通过。
 两个窗口消费者补齐 focus_on_show=true、constrain_to_work_area=false（与构造器默认
-值相同）。工作区 all-targets check 已通过，此前的构建迁移阻塞已消除。
+值相同）。此前一次工作区 all-targets check 已通过，构建迁移阻塞已消除。
 
 
 消费者迁移后首次 workspace all-targets test 完成：39 个套件、2793 项通过，无失败或
@@ -309,6 +308,23 @@ Scene components 配置 101 项库测试、2 项文档测试、5 项侧栏测试
 样式共享后的 workspace all-targets test 也完成，2794 项通过。性能复测未证明整体收益：
 首次系统处理标准 P95 21.516 ms，仍未达 8 ms，且高于前份报告。保留退化证据并继续
 诊断，不以较好的单独样式阶段耗时替代完整门禁。
+
+### 最终配置复验
+
+当前 `rich-text` 组合执行 `cargo check -p nana-ui-scene --tests --features rich-text --locked`
+与 `cargo test -p nana-ui-scene --features rich-text --lib --locked`，前者通过，后者 **97 项
+通过，0 项失败**。它包含 Markdown 的 300 段文本投影、公式/图表 presenter identity、
+以及 Scene 的可见集、滚动几何复用和 FramePlan 回归；此前移除的 `blocks` / `drawing`
+接口已不再是该组合的构建缺口。
+
+`python scripts/check-component-features.py` 也通过，覆盖 base、calendar、charts、controls、
+image-viewer、rich-text、components 各自的 Runtime 注册表、Vue 声明和宿主适配器，并验证
+关闭组件族后 Rust API 和族专属依赖不可达。
+
+同次 `cargo check --workspace --all-targets --locked` 未能完成，但失败点已不是 NanaUI
+源码：`v8 152.2.0` 的构建脚本在 Windows 上创建 `E:/codex-build/nanaui-high-refresh/debug/gn_root`
+符号链接时收到 `PermissionDenied`。需要启用创建符号链接的系统权限或在具备该权限的
+Windows 环境复跑，不能将这次环境失败计为工作区全目标通过。
 
 同进程交替对照后，5000 节点 shared 总处理 P95 15.151 ms、控制路径 17.459 ms，60 对
 中 46 对共享更快；10000 节点 49/60 对更快。保留共享优化，831 项 benchmark 配置
@@ -422,3 +438,9 @@ Vulkan / DX12 均通过：辅助目标未呈现时仍只有 Window 根，主窗�
 辅助目标恢复后包含全部预期变化，关闭事件到达应用，主窗口保留原值并继续更新。
 单窗口回归、严格 Clippy 及脚本语法检查通过。本轮未修改产品代码，补充的是
 此前缺失的真实多窗口行为证据；尚不等于多次开关后的内存上界或复杂工作区性能验收。
+
+异步 URL 图片完成通知现在携带资源键。Scene host 在每个窗口最近一次提交的 Scene
+上维护 `URL -> WindowId` 反向索引，图片解码完成只将引用该 URL 的目标加入重绘队列；
+不再通过同格式 painter 扫描并唤醒全部窗口。窗口关闭、设备重建和 Scene 更新会同步
+替换/清理索引。`SceneWgpuPainter::set_image_waker` 保留无参兼容入口，宿主使用新的
+`set_image_update_waker` keyed 入口；图片内容仍不制造 Runtime 节点脏工作。

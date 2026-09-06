@@ -152,6 +152,8 @@ struct SceneReady<Program: RuntimeProgram> {
     frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
     texture_subscriptions: HashMap<WindowId, crate::TextureSubscription>,
     texture_redraws: Arc<Mutex<HashSet<WindowId>>>,
+    image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
+    image_window_keys: HashMap<WindowId, HashSet<String>>,
     occluded: HashSet<WindowId>,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
@@ -186,6 +188,90 @@ struct WindowChromeSession {
 struct AppliedIme {
     request: TextInputRequest,
     surrounding: Option<ImeSurroundingSnapshot>,
+}
+
+fn scene_image_keys(scene: &nana_ui_scene::UiScene) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for primitive in scene.primitives() {
+        match &primitive.kind {
+            nana_ui_scene::ScenePrimitiveKind::Quad { surface, .. }
+            | nana_ui_scene::ScenePrimitiveKind::QuadBatch { surface, .. } => {
+                surface_image_keys(surface, &mut keys);
+            }
+            nana_ui_scene::ScenePrimitiveKind::Custom {
+                mask: Some(nana_ui_core::MaskImage::Url(url)),
+                ..
+            } => {
+                keys.insert(url.clone());
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+fn surface_image_keys(surface: &nana_ui_scene::QuadSurfacePaint, keys: &mut HashSet<String>) {
+    if let Some(image) = surface.background_image.as_ref() {
+        add_background_image_key(image, keys);
+    }
+    for image in &surface.background_layers {
+        add_background_image_key(image, keys);
+    }
+    if let Some(image) = surface.content_image.as_ref() {
+        add_background_image_key(image, keys);
+    }
+    if let Some(image) = surface.mask.as_ref()
+        && let nana_ui_core::MaskImage::Url(url) = image
+    {
+        keys.insert(url.clone());
+    }
+    if let Some(border) = surface.border_image.as_ref() {
+        add_background_image_key(&border.source, keys);
+    }
+}
+
+fn add_background_image_key(image: &nana_ui_core::BackgroundImage, keys: &mut HashSet<String>) {
+    if let nana_ui_core::BackgroundImage::Url { url, .. } = image {
+        keys.insert(url.clone());
+    }
+}
+
+fn replace_image_target_index(
+    targets: &mut HashMap<String, HashSet<WindowId>>,
+    window_keys: &mut HashMap<WindowId, HashSet<String>>,
+    id: WindowId,
+    keys: HashSet<String>,
+) {
+    let previous = window_keys.insert(id, keys.clone()).unwrap_or_default();
+    for key in previous {
+        if let Some(ids) = targets.get_mut(&key) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                targets.remove(&key);
+            }
+        }
+    }
+    for key in keys {
+        targets.entry(key).or_default().insert(id);
+    }
+}
+
+fn remove_image_target_index(
+    targets: &mut HashMap<String, HashSet<WindowId>>,
+    window_keys: &mut HashMap<WindowId, HashSet<String>>,
+    id: WindowId,
+) {
+    let Some(previous) = window_keys.remove(&id) else {
+        return;
+    };
+    for key in previous {
+        if let Some(ids) = targets.get_mut(&key) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                targets.remove(&key);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,13 +426,6 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         while let Ok(message) = ready.messages.try_recv() {
             ready.process_message(event_loop, message);
         }
-        if ready
-            .painters
-            .values()
-            .any(SceneWgpuPainter::has_image_updates)
-        {
-            ready.request_redraw_all();
-        }
     }
 
     fn window_event(
@@ -422,10 +501,6 @@ fn initialize<Program: RuntimeProgram>(
             format,
         ),
     );
-    for painter in painters.values_mut() {
-        let proxy = proxy.clone();
-        painter.set_image_waker(Arc::new(move || proxy.wake_up()));
-    }
     let tasks = spawn_task_workers(message_tx.clone(), proxy.clone());
     let geometry = window_geometry(graphics.window().as_ref());
     let context = program_context(
@@ -481,6 +556,8 @@ fn initialize<Program: RuntimeProgram>(
         frame_schedules: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
+        image_targets: Arc::new(Mutex::new(HashMap::new())),
+        image_window_keys: HashMap::new(),
         occluded: HashSet::new(),
         #[cfg(not(target_os = "android"))]
         accessibility,
@@ -508,6 +585,7 @@ fn initialize<Program: RuntimeProgram>(
     ready
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
+    ready.install_image_wakers();
     ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
         WindowEvent::Ready {
@@ -531,6 +609,39 @@ fn initialize<Program: RuntimeProgram>(
 }
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
+    fn install_image_wakers(&mut self) {
+        let targets = Arc::clone(&self.image_targets);
+        let redraws = Arc::clone(&self.texture_redraws);
+        let proxy = self.proxy.clone();
+        for painter in self.painters.values_mut() {
+            let targets = Arc::clone(&targets);
+            let redraws = Arc::clone(&redraws);
+            let proxy = proxy.clone();
+            painter.set_image_update_waker(Arc::new(move |key| {
+                let ids = targets
+                    .lock()
+                    .ok()
+                    .and_then(|targets| targets.get(key).cloned())
+                    .unwrap_or_default();
+                if !ids.is_empty()
+                    && let Ok(mut pending) = redraws.lock()
+                {
+                    pending.extend(ids);
+                }
+                proxy.wake_up();
+            }));
+        }
+    }
+
+    fn update_image_targets(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
+        let keys = scene_image_keys(scene);
+        if let Ok(mut targets) = self.image_targets.lock() {
+            replace_image_target_index(&mut targets, &mut self.image_window_keys, id, keys);
+        } else {
+            self.image_window_keys.insert(id, keys);
+        }
+    }
+
     fn context(&self) -> RuntimeProgramContext<Program::Message> {
         self.context_for(WindowId::PRIMARY)
     }
@@ -1952,7 +2063,8 @@ mod tests {
         scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, suppress_caption_after_create, tablet_pointer_id, window_level,
         window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
-        windows_to_redraw, winit_icon,
+        windows_to_redraw, winit_icon, remove_image_target_index, replace_image_target_index,
+        surface_image_keys,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -3141,6 +3253,92 @@ mod tests {
             windows_to_redraw(RuntimeRedraw::All, &known),
             vec![primary, tool]
         );
+    }
+
+    #[test]
+    fn image_target_index_replaces_and_shares_resource_keys() {
+        use std::collections::{HashMap, HashSet};
+
+        let first = WindowId::PRIMARY;
+        let second = WindowId(2);
+        let mut targets = HashMap::new();
+        let mut window_keys = HashMap::new();
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["shared.png".to_string(), "old.png".to_string()]),
+        );
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            second,
+            HashSet::from(["shared.png".to_string(), "second.png".to_string()]),
+        );
+        assert_eq!(targets["shared.png"], HashSet::from([first, second]));
+
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["new.png".to_string()]),
+        );
+        assert!(!targets.contains_key("old.png"));
+        assert_eq!(targets["shared.png"], HashSet::from([second]));
+        assert_eq!(targets["new.png"], HashSet::from([first]));
+    }
+
+    #[test]
+    fn image_scene_keys_include_all_url_backed_surface_sources() {
+        use std::collections::HashSet;
+
+        let mut surface = nana_ui_scene::QuadSurfacePaint::default();
+        surface.background_image = Some(nana_ui_core::BackgroundImage::url("background.png"));
+        surface.background_layers = vec![nana_ui_core::BackgroundImage::url("layer.png")];
+        surface.content_image = Some(nana_ui_core::BackgroundImage::url("content.png"));
+        surface.mask = Some(nana_ui_core::MaskImage::Url("mask.png".into()));
+        surface.border_image = Some(nana_ui_core::BorderImageSpec::from_source(
+            nana_ui_core::BackgroundImage::url("border.png"),
+        ));
+
+        let mut keys = HashSet::new();
+        surface_image_keys(&surface, &mut keys);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                "background.png".to_string(),
+                "layer.png".to_string(),
+                "content.png".to_string(),
+                "mask.png".to_string(),
+                "border.png".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn image_target_index_removes_closed_window_without_leaking_keys() {
+        use std::collections::{HashMap, HashSet};
+
+        let first = WindowId::PRIMARY;
+        let second = WindowId(2);
+        let mut targets = HashMap::new();
+        let mut window_keys = HashMap::new();
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["shared.png".to_string()]),
+        );
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            second,
+            HashSet::from(["shared.png".to_string(), "only-second.png".to_string()]),
+        );
+        remove_image_target_index(&mut targets, &mut window_keys, second);
+        assert_eq!(targets["shared.png"], HashSet::from([first]));
+        assert!(!targets.contains_key("only-second.png"));
+        assert!(!window_keys.contains_key(&second));
     }
 
     #[test]

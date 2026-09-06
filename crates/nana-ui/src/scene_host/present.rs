@@ -57,6 +57,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .host_failure(HostFailure::MissingDocument { window: id });
             return;
         };
+        self.update_image_targets(id, scene.as_ref());
         let format = if id == WindowId::PRIMARY {
             self.graphics.format()
         } else {
@@ -301,11 +302,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     }
                 }
                 self.graphics = graphics;
-                for painter in painters.values_mut() {
-                    let proxy = self.proxy.clone();
-                    painter.set_image_waker(Arc::new(move || proxy.wake_up()));
-                }
                 self.painters = painters;
+                self.install_image_wakers();
                 self.native_renderers.clear();
                 self.auxiliary = rebuilt;
                 self.refresh_material();
@@ -339,11 +337,25 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
         let resources = self.graphics.resources();
+        let painter = self.painters.entry(format).or_insert_with(|| {
+            SceneWgpuPainter::new(resources.device(), resources.queue(), format)
+        });
+        let targets = Arc::clone(&self.image_targets);
+        let redraws = Arc::clone(&self.texture_redraws);
         let proxy = self.proxy.clone();
-        self.painters.entry(format).or_insert_with(|| {
-            let mut painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
-            painter.set_image_waker(Arc::new(move || proxy.wake_up()));
-            painter
-        })
+        painter.set_image_update_waker(Arc::new(move |key| {
+            let ids = targets
+                .lock()
+                .ok()
+                .and_then(|targets| targets.get(key).cloned())
+                .unwrap_or_default();
+            if !ids.is_empty()
+                && let Ok(mut pending) = redraws.lock()
+            {
+                pending.extend(ids);
+            }
+            proxy.wake_up();
+        }));
+        painter
     }
 }

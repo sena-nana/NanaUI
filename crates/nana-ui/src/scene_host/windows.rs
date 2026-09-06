@@ -258,6 +258,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.chrome.remove(&id);
         self.frame_schedules.remove(&id);
         self.texture_subscriptions.remove(&id);
+        if let Ok(mut targets) = self.image_targets.lock() {
+            remove_image_target_index(&mut targets, &mut self.image_window_keys, id);
+        } else {
+            self.image_window_keys.remove(&id);
+        }
         self.occluded.remove(&id);
         for painter in self.painters.values_mut() {
             painter.remove_target(crate::RenderTargetId(id.0));

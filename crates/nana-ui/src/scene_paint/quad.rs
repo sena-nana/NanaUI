@@ -314,6 +314,21 @@ impl QuadPipeline {
         }
         changed
     }
+
+    pub(super) fn invalidate_image_bindings(&mut self) {
+        self.url_bind_groups.clear();
+    }
+
+    /// Drop target-local URL bindings after the shared cache publishes a new
+    /// image. Bind groups capture a texture view, so retaining them would keep
+    /// a target sampling the fallback or a previous resource generation.
+    pub(super) fn invalidate_target_image_bindings(
+        target: &mut Option<QuadPipelineTarget>,
+    ) {
+        if let Some(target) = target {
+            target.url_bind_groups.clear();
+        }
+    }
     pub(super) fn finish_frame(&mut self) {
         self.url_cache.trim();
         self.url_bind_groups.retain(|key, _| {

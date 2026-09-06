@@ -28,6 +28,16 @@ impl HostTexturePipeline {
     pub(super) fn poll_images(&mut self) -> bool {
         self.pipeline.poll_images()
     }
+
+    pub(super) fn invalidate_image_bindings(&mut self) {
+        self.pipeline.invalidate_image_bindings();
+    }
+
+    pub(super) fn invalidate_target_image_bindings(
+        target: &mut crate::gpu_texture::GpuTextureTarget,
+    ) {
+        GpuTexturePipeline::invalidate_target_image_bindings(target);
+    }
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
