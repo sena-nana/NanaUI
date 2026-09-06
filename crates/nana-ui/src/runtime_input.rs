@@ -192,6 +192,45 @@ impl RuntimeInputAdapter {
                 });
             }
         }
+        if let InputEvent::Keyboard {
+            pressed: true,
+            key,
+            text,
+            modifiers,
+            ..
+        } = event
+            && !keyboard_barrier
+            && context.focused_terminal(document).is_some()
+        {
+            if (modifiers.control && modifiers.shift || modifiers.meta)
+                && key.eq_ignore_ascii_case("c")
+            {
+                if let Some(text) = context
+                    .terminal_selected_text(document)
+                    .filter(|text| !text.is_empty())
+                {
+                    self.write_clipboard(&text);
+                }
+            } else if (modifiers.control && modifiers.shift || modifiers.meta)
+                && key.eq_ignore_ascii_case("v")
+            {
+                if let Some(text) = self.read_clipboard() {
+                    context.paste_terminal(document, &text)?;
+                }
+            } else {
+                context.terminal_key(
+                    document,
+                    key,
+                    text.as_deref(),
+                    modifiers.control,
+                    modifiers.alt,
+                    modifiers.shift,
+                )?;
+            }
+            return Ok(InputDisposition {
+                prevent_default: true,
+            });
+        }
         // Focused plain text editors own their editing keys (caret moves,
         // selection, deletion, indent, pairing) before any generic routing.
         if let InputEvent::Keyboard {
@@ -290,6 +329,22 @@ impl RuntimeInputAdapter {
                 context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
                 context.update_text_diagnostic_hover(document, *x, *y)?;
+                let terminal_phase = match phase {
+                    PointerPhase::Down if *is_primary && *button == 0 => Some(0),
+                    PointerPhase::Move => Some(1),
+                    PointerPhase::Up if *is_primary && *button == 0 => Some(2),
+                    PointerPhase::Cancel => Some(3),
+                    _ => None,
+                };
+                if !overlay.prevent_default
+                    && let Some(phase) = terminal_phase
+                    && context.terminal_pointer(document, target, *pointer_id, phase, *x, *y)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
+
                 #[cfg(feature = "graph-canvas")]
                 let graph_button = match *button {
                     1 => GraphPointerButton::Middle,
@@ -1057,6 +1112,25 @@ impl RuntimeInputAdapter {
         event: &ImeEvent,
     ) -> Result<InputDisposition, FrameworkError> {
         let overlay_blocks = context.has_blocking_runtime_overlay(document);
+        if !overlay_blocks && context.focused_terminal(document).is_some() {
+            match event {
+                ImeEvent::Preedit { text, .. } => {
+                    context.set_terminal_preedit(document, text)?;
+                }
+                ImeEvent::Commit(text) => {
+                    context.set_terminal_preedit(document, "")?;
+                    context.terminal_input(document, text.as_bytes().to_vec())?;
+                }
+                ImeEvent::Disabled => {
+                    context.set_terminal_preedit(document, "")?;
+                }
+                ImeEvent::Enabled | ImeEvent::DeleteSurrounding { .. } => {}
+            }
+            return Ok(InputDisposition {
+                prevent_default: true,
+            });
+        }
+
         let owns_ime = context
             .focused_text_input(document)
             .is_some_and(|(target, _)| {
@@ -1117,7 +1191,10 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
-        // 补全弹层激活时，无修饰的 Up/Down/Enter/Tab 由弹层消费：Up/Down
+        if key == "Tab" && focused.multiline && !modifiers.control && !modifiers.meta && !modifiers.alt
+            && context.advance_focused_text_snippet(document,modifiers.shift)? {
+            return Ok(true);
+        }        // 补全弹层激活时，无修饰的 Up/Down/Enter/Tab 由弹层消费：Up/Down
         // 移动候选选中项（编辑器选区不动），Enter/Tab 接受选中项。其余键
         // 穿透正常编辑（打字触发宿主重喂过滤列表）；任何修饰键组合
         // （Cmd+D、Alt+Up、Shift+Up 等）一律穿透。
@@ -1268,7 +1345,9 @@ impl RuntimeInputAdapter {
             if focused.multiline {
                 return context.insert_focused_text_newline(document);
             }
-            // Single-line fields never accept a newline character.
+            // Single-line fields submit without inserting a newline. IME
+            // confirmation remains exclusively owned by the composition path.
+            context.submit_focused_text_input(document)?;
             return Ok(true);
         }
         if key == "Tab" && !meta {
@@ -1330,16 +1409,19 @@ mod tests {
     };
     use nana_ui_runtime::{
         ActionMenu, ActionMenuItem, Activate, Button, Card, ComponentGeometry, Dialog, Dock,
-        DockAxis, DockNode, Entity, GraphModel, GraphNode, GraphPoint, GraphSize, GraphViewport,
-        LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
-        OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
-        SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
-        TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection,
+        DockAxis, DockNode, Entity, LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue,
+        NodeKind, NodeStyle, OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics,
+        ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table,
+        TableCell, TableRow, Text, TextArea, TextChanged, TextFindScope, TextInput,
+        TextSearchOptions, TextSelection,
     };
     #[cfg(feature = "calendar")]
     use nana_ui_runtime::{CalendarHeatmap, CalendarHeatmapDatum};
     #[cfg(feature = "graph-canvas")]
-    use nana_ui_runtime::{GraphMinimap, GraphMinimapEvent};
+    use nana_ui_runtime::{
+        GraphMinimap, GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphSize,
+        GraphViewport,
+    };
     use std::sync::{Arc, Mutex};
 
     fn wheel(x: f32, y: f32, delta_y: f32) -> InputEvent {
@@ -5328,6 +5410,26 @@ mod tests {
     }
 
     #[test]
+    fn textarea_wheel_scrolls_internal_text_and_survives_projection() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context.create_component(document, TextArea::new("line\n".repeat(120))).unwrap();
+        let node = area.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(node, LayoutBox { x: 0.0, y: 0.0, width: 200.0, height: 80.0 });
+        context.commit_mutations(layout).unwrap();
+        let work = context.take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context.world_mut().shape_text(&work.text, &mut MeasureTextShaper).unwrap();
+        context.rebuild_hit_test(document);
+        let event = InputEvent::Wheel { x: 60.0, y: 40.0, delta_x: 0.0, delta_y: -120.0, line_delta: false, modifiers: Default::default() };
+        assert!(RuntimeInputAdapter::default().dispatch(&mut context, document, &event).unwrap().prevent_default);
+        assert_eq!(context.read(area, |area| area.scroll_offset.y).unwrap(), 120.0);
+        context.update_component(area, |area, _| area.invalid = true).unwrap();
+        assert_eq!(context.world().scroll_offset(node).unwrap().y, 120.0);
+    }
+
+    #[test]
     fn pointer_press_on_fold_gutter_toggles_the_fold() {
         let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
         let fold = nana_ui_runtime::TextCodeFold::new(7, 28);
@@ -6666,5 +6768,62 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(context.world().text_hover_scroll(node), 1);
+    }
+}
+
+#[cfg(test)]
+mod terminal_input_tests {
+    use super::*;
+    use nana_ui_runtime::{TerminalEvent, TerminalScreen, TerminalView};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn terminal_ime_preedit_does_not_send_until_commit_and_focus_is_scoped() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let terminal = context
+            .create_component(document, TerminalView::new(TerminalScreen::blank(4, 2)))
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        context
+            .on(terminal, move |_, event: &TerminalEvent, _| {
+                observed.lock().unwrap().push(event.clone())
+            })
+            .unwrap();
+        context.focus_node(document, terminal.stable_id()).unwrap();
+        let adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch_ime(
+                    &mut context,
+                    document,
+                    &ImeEvent::Preedit {
+                        text: "zhong".into(),
+                        selection: None
+                    }
+                )
+                .unwrap()
+                .prevent_default
+        );
+        assert!(events.lock().unwrap().is_empty());
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Commit("中文".into()))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[TerminalEvent::Input("中文".as_bytes().to_vec())]
+        );
+        let editor = context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        context.focus_node(document, editor.stable_id()).unwrap();
+        adapter
+            .dispatch_ime(&mut context, document, &ImeEvent::Commit("字".into()))
+            .unwrap();
+        assert_eq!(events.lock().unwrap().len(), 1);
     }
 }

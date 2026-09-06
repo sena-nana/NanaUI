@@ -1,0 +1,22 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.18s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-cd0c6e6df9ebb6c8.exe)
+
+running 1 test
+test world::hit_test::build_tests::scoped_hidden_ancestor_updates_match_full_rebuild ... FAILED
+
+failures:
+
+---- world::hit_test::build_tests::scoped_hidden_ancestor_updates_match_full_rebuild stdout ----
+
+thread 'world::hit_test::build_tests::scoped_hidden_ancestor_updates_match_full_rebuild' (28168) panicked at crates\nana-ui-runtime\src\world\hit_test\build_tests.rs:175:13:
+stale hit: root_hidden=false, parent_update=false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    world::hit_test::build_tests::scoped_hidden_ancestor_updates_match_full_rebuild
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 832 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

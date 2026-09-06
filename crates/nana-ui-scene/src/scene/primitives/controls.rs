@@ -53,7 +53,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             for (index, (_, label, _)) in rows.iter().enumerate() {
                 emit(component_text_primitive(
                     id,
-                    40u8.saturating_add(index as u8),
+                    40u64.saturating_add(index as u64),
                     label,
                     TextHorizontalAlignment::Start,
                     true,

@@ -3,8 +3,8 @@
 use super::*;
 
 impl AppContext {
-    /// Publish a numeric value. The field snaps and clamps it, so hosts do not
-    /// have to reimplement the step grid to stay legal.
+    /// Publish a numeric value using the field's bounds and discrete or
+    /// continuous policy; hosts do not reimplement numeric normalization.
     pub fn set_number_value(
         &mut self,
         entity: Entity<NumberInput>,
@@ -24,7 +24,7 @@ impl AppContext {
         })
     }
 
-    /// Move a numeric field by grid positions. Disabled and read-only fields
+    /// Move a numeric field by step increments. Disabled and read-only fields
     /// refuse, so a stepper press cannot bypass either flag.
     pub fn step_number_input(
         &mut self,
@@ -100,7 +100,7 @@ impl AppContext {
             return Ok(false);
         };
         self.update_component(entity, |input, _| {
-            let committed = input.spec.format(input.value());
+            let committed = input.formatted_value();
             if input.state.value == committed {
                 return false;
             }

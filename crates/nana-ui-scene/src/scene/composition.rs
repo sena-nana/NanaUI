@@ -2,6 +2,68 @@
 
 use super::*;
 
+/// Structural frame program. Resource contents and bindings are deliberately
+/// resolved at consumption time, so a texture update does not compile a graph.
+#[derive(Debug)]
+pub struct FramePlan {
+    pub operations: Arc<[RenderOperation]>,
+    pub preparations: Arc<[PrimitiveId]>,
+    pub custom_nodes: Arc<[PrimitiveId]>,
+}
+
+impl UiScene {
+    pub fn frame_plan(&self) -> Result<Arc<FramePlan>, GraphError> {
+        if let Some(plan) = self.frame_plan.get() {
+            self.validate_plan_resources(plan)?;
+            return Ok(Arc::clone(plan));
+        }
+        let graph = self.frame_graph(ResourceId(1))?;
+        let mut preparations = Vec::new();
+        let mut custom_nodes = Vec::new();
+        let mut operations = Vec::new();
+        for operation in graph.passes.into_iter().flat_map(|pass| pass.operations) {
+            match operation {
+                RenderOperation::PrepareExternal(id) => {
+                    preparations.push(id);
+                    continue;
+                }
+                RenderOperation::InvokeCustom(id) => custom_nodes.push(id),
+                RenderOperation::Draw(_) => {}
+            }
+            operations.push(operation);
+        }
+        let plan = Arc::new(FramePlan {
+            operations: operations.into(),
+            preparations: preparations.into(),
+            custom_nodes: custom_nodes.into(),
+        });
+        let _ = self.frame_plan.set(Arc::clone(&plan));
+        Ok(plan)
+    }
+
+    fn validate_plan_resources(&self, plan: &FramePlan) -> Result<(), GraphError> {
+        let mut revisions = HashMap::new();
+        for id in plan.custom_nodes.iter() {
+            let Some(ScenePrimitive {
+                kind: ScenePrimitiveKind::Custom { node, .. },
+                ..
+            }) = self.primitive(*id)
+            else {
+                continue;
+            };
+            if let Some(previous) =
+                revisions.insert(&node.resource, (&node.renderer, node.revision))
+                && previous != (&node.renderer, node.revision)
+            {
+                return Err(GraphError::ConflictingExternalResource(
+                    node.resource.to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl UiScene {
     /// Build the default frame pass. Custom operations remain in exact scene
     /// order and split standard draw segments, allowing a backend extension to

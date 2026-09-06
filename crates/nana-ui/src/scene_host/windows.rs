@@ -10,12 +10,37 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     ) {
         let known = self.known_window_ids();
         match route_window_command(&command, &known) {
+            RoutedWindowCommand::SetMousePassthrough(id) => {
+                let WindowCommand::SetMousePassthrough { enabled, .. } = command else {
+                    return;
+                };
+                let result = self
+                    .window(id)
+                    .ok_or_else(|| "window does not exist".to_string())
+                    .and_then(|window| {
+                        window
+                            .set_cursor_hittest(!enabled)
+                            .map_err(|error| error.to_string())
+                    });
+                let update = self.program.window_event(
+                    WindowEvent::MousePassthroughChanged {
+                        id,
+                        enabled,
+                        result,
+                    },
+                    &self.context_for(id),
+                );
+                self.apply_update(event_loop, update, None);
+            }
             RoutedWindowCommand::Ignore => {}
             RoutedWindowCommand::Open(id) => {
                 let WindowCommand::Open { settings, .. } = command else {
                     return;
                 };
-                if let Ok(event) = self.open_window(event_loop, id, settings) {
+                {
+                    let event = self
+                        .open_window(event_loop, id, settings)
+                        .unwrap_or_else(|error| WindowEvent::OpenFailed { id, error });
                     let update = self.program.window_event(event, &self.context_for(id));
                     self.program
                         .sync_animation_clock(self.animation_clock.epoch());
@@ -157,7 +182,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let attributes = scene_aux_window_attributes(
             &settings,
             parent.as_deref(),
-            &scene_display_bounds(event_loop),
+            &scene_display_bounds_with_work_area(event_loop, settings.constrain_to_work_area),
         )?;
         let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
@@ -174,14 +199,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             window.as_ref(),
             self.last_theme,
             settings.transparent,
-            self.last_material_mode,
-            self.program.appearance_backdrop_opacity(),
+            self.program.window_material_mode_for(id),
+            self.program.appearance_backdrop_opacity_for(id),
         );
         let surface = self
             .graphics
-            .create_surface(
+            .create_surface_with_mode(
                 Arc::clone(&window),
-                window_wants_transparent_surface(settings.transparent, self.last_material_mode),
+                window_wants_transparent_surface(
+                    settings.transparent,
+                    self.program.window_material_mode_for(id),
+                ),
+                Program::surface_mode(),
             )
             .map_err(|error| error.to_string())?;
         let format = surface.format();
@@ -190,8 +219,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let accessibility = {
             Some(HostedAccessibility::new(
                 Arc::clone(&window),
-                accessibility_world_generation(&mut self.program, id),
-                accessibility_snapshot(&mut self.program, id),
                 true,
                 window.scale_factor() as f32,
             ))
@@ -199,6 +226,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let geometry = window_geometry(window.as_ref());
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
+        let size_move = LiveSizeMove::install(window.as_ref())?;
         self.window_ids.insert(window.id(), id);
         self.auxiliary.insert(
             id,
@@ -210,8 +238,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 settings,
                 #[cfg(not(target_os = "android"))]
                 accessibility,
-                accessibility_pending: None,
-                size_move: LiveSizeMove::install(window.as_ref())?,
+                accessibility_pending: PendingAccessibility::default(),
+                size_move,
             },
         );
         #[cfg(target_os = "windows")]
@@ -228,6 +256,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             return;
         }
         self.chrome.remove(&id);
+        self.frame_schedules.remove(&id);
+        self.texture_subscriptions.remove(&id);
+        if let Ok(mut targets) = self.image_targets.lock() {
+            remove_image_target_index(&mut targets, &mut self.image_window_keys, id);
+        } else {
+            self.image_window_keys.remove(&id);
+        }
+        self.occluded.remove(&id);
+        for painter in self.painters.values_mut() {
+            painter.remove_target(crate::RenderTargetId(id.0));
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some((_, live)) = self
             .live_frame_resize
@@ -289,10 +328,25 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
     pub(super) fn sync_appearance(&mut self) {
         let theme = self.program.theme_mode();
-        let mode = self.program.window_material_mode();
-        if theme != self.last_theme || mode != self.last_material_mode {
+        let appearance: HashMap<_, _> = self
+            .known_window_ids()
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    (
+                        self.program.window_material_mode_for(id),
+                        AppearanceSettings::clamp_backdrop_opacity(
+                            self.program.appearance_backdrop_opacity_for(id),
+                        ),
+                    ),
+                )
+            })
+            .collect();
+        if theme != self.last_theme || appearance != self.last_window_appearance {
             self.last_theme = theme;
-            self.last_material_mode = mode;
+            self.last_material_mode = self.program.window_material_mode_for(WindowId::PRIMARY);
+            self.last_window_appearance = appearance;
             self.refresh_material();
             self.request_redraw_all();
         }
@@ -303,33 +357,31 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.graphics.window().as_ref(),
             self.last_theme,
             self.settings.transparent,
-            self.last_material_mode,
-            self.program.appearance_backdrop_opacity(),
+            self.program.window_material_mode_for(WindowId::PRIMARY),
+            self.program
+                .appearance_backdrop_opacity_for(WindowId::PRIMARY),
         );
         let mut alpha_error = self
             .graphics
             .apply_alpha_mode(window_wants_transparent_surface(
                 self.settings.transparent,
-                self.last_material_mode,
+                self.program.window_material_mode_for(WindowId::PRIMARY),
             ))
             .err();
-        for host in self.auxiliary.values_mut() {
+        for (id, host) in &mut self.auxiliary {
+            let mode = self.program.window_material_mode_for(*id);
             clear_system_material(host.surface.window().as_ref());
             host.material = apply_window_surface(
                 host.surface.window().as_ref(),
                 self.last_theme,
                 host.settings.transparent,
-                self.last_material_mode,
-                self.program.appearance_backdrop_opacity(),
+                mode,
+                self.program.appearance_backdrop_opacity_for(*id),
             );
-            let want_transparent = window_wants_transparent_surface(
-                host.settings.transparent,
-                self.last_material_mode,
-            );
-            if let Err(error) = self
-                .graphics
-                .apply_surface_alpha_mode(&mut host.surface, want_transparent)
-            {
+            if let Err(error) = self.graphics.apply_surface_alpha_mode(
+                &mut host.surface,
+                window_wants_transparent_surface(host.settings.transparent, mode),
+            ) {
                 alpha_error = Some(error);
             }
         }

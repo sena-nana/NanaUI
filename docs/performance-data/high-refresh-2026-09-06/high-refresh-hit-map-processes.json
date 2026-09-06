@@ -1,0 +1,102 @@
+[
+  {
+    "Trial": 0,
+    "Variant": "std",
+    "Time": "2026-09-06T02:03:42.6274032+08:00",
+    "Processes": [
+      {
+        "ProcessName": "cargo",
+        "Id": 22944,
+        "CPU": 3.765625,
+        "StartTime": "2026-09-06T02:01:46.1928839+08:00"
+      },
+      {
+        "ProcessName": "cargo",
+        "Id": 35372,
+        "CPU": 0.0625,
+        "StartTime": "2026-09-06T02:01:46.100656+08:00"
+      },
+      {
+        "ProcessName": "rustc",
+        "Id": 36652,
+        "CPU": 1.0625,
+        "StartTime": "2026-09-06T02:03:35.5770229+08:00"
+      }
+    ]
+  },
+  {
+    "Trial": 1,
+    "Variant": "hashbrown",
+    "Time": "2026-09-06T02:03:51.7472695+08:00",
+    "Processes": [
+      {
+        "ProcessName": "cargo",
+        "Id": 22944,
+        "CPU": 3.765625,
+        "StartTime": "2026-09-06T02:01:46.1928839+08:00"
+      },
+      {
+        "ProcessName": "cargo",
+        "Id": 35372,
+        "CPU": 0.0625,
+        "StartTime": "2026-09-06T02:01:46.100656+08:00"
+      },
+      {
+        "ProcessName": "rustc",
+        "Id": 36652,
+        "CPU": 28.53125,
+        "StartTime": "2026-09-06T02:03:35.5770229+08:00"
+      }
+    ]
+  },
+  {
+    "Trial": 2,
+    "Variant": "hashbrown",
+    "Time": "2026-09-06T02:03:59.6371593+08:00",
+    "Processes": [
+      {
+        "ProcessName": "cargo",
+        "Id": 22944,
+        "CPU": 3.796875,
+        "StartTime": "2026-09-06T02:01:46.1928839+08:00"
+      },
+      {
+        "ProcessName": "cargo",
+        "Id": 35372,
+        "CPU": 0.0625,
+        "StartTime": "2026-09-06T02:01:46.100656+08:00"
+      },
+      {
+        "ProcessName": "rustc",
+        "Id": 37344,
+        "CPU": 0.40625,
+        "StartTime": "2026-09-06T02:03:57.1966077+08:00"
+      }
+    ]
+  },
+  {
+    "Trial": 3,
+    "Variant": "std",
+    "Time": "2026-09-06T02:04:06.7792035+08:00",
+    "Processes": [
+      {
+        "ProcessName": "cargo",
+        "Id": 22944,
+        "CPU": 3.796875,
+        "StartTime": "2026-09-06T02:01:46.1928839+08:00"
+      },
+      {
+        "ProcessName": "cargo",
+        "Id": 35372,
+        "CPU": 0.0625,
+        "StartTime": "2026-09-06T02:01:46.100656+08:00"
+      },
+      {
+        "ProcessName": "rustc",
+        "Id": 37344,
+        "CPU": 0.90625,
+        "StartTime": "2026-09-06T02:03:57.1966077+08:00"
+      }
+    ]
+  }
+]

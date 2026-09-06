@@ -1,0 +1,48 @@
+    Blocking waiting for file lock on build directory
+    Checking log v0.4.34
+    Checking once_cell v1.21.4
+    Checking error-code v3.4.0
+    Checking tinyvec_macros v0.1.1
+    Checking libm v0.2.16
+    Checking windows_x86_64_msvc v0.53.1
+    Checking zeno v0.3.3
+    Checking yazi v0.2.1
+    Checking memmap2 v0.9.11
+    Checking slotmap v1.1.1
+    Checking smallvec v1.15.2
+    Checking uuid v1.26.0
+    Checking self_cell v1.3.0
+    Checking rangemap v1.8.0
+    Checking bytemuck v1.25.2
+    Checking serde v1.0.229
+    Checking sys-locale v0.3.2
+    Checking rustc-hash v2.1.3
+    Checking windows-targets v0.53.5
+    Checking smol_str v0.3.6
+    Checking clipboard-win v5.4.1
+    Checking tinyvec v1.12.0
+    Checking linebender_resource_handle v0.1.1
+    Checking unicode-linebreak v0.1.5
+    Checking unicode-bidi v0.3.18
+    Checking unicode-script v0.5.8
+    Checking accesskit v0.25.0
+    Checking core_maths v0.1.1
+    Checking font-types v0.12.4
+    Checking font-types v0.11.3
+    Checking windows-sys v0.60.2
+    Checking nana-ui-core v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-core)
+    Checking ttf-parser v0.25.1
+    Checking read-fonts v0.41.0
+    Checking read-fonts v0.37.0
+    Checking arboard v3.6.1
+    Checking fontdb v0.23.0
+    Checking skrifa v0.44.0
+    Checking harfrust v0.5.2
+    Checking skrifa v0.40.0
+    Checking swash v0.2.10
+    Checking cosmic-text v0.19.0
+    Checking nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Checking nana-ui-platform v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-platform)
+    Checking nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+    Checking nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 13s

@@ -121,6 +121,9 @@ pub enum UiMutation {
         document: DocumentId,
         target: Option<StableNodeId>,
     },
+    RestoreFocusWithin {
+        root: StableNodeId,
+    },
     SetIme {
         id: StableNodeId,
         composition: Option<ImeComposition>,
@@ -376,6 +379,12 @@ impl MutationQueue {
     pub fn request_focus(&mut self, document: DocumentId, target: Option<StableNodeId>) {
         self.mutations
             .push(UiMutation::RequestFocus { document, target });
+    }
+
+    /// Restore the last valid focus in a registered scope after it is mounted.
+    /// Missing, hidden, disabled or reparented targets leave focus unchanged.
+    pub fn restore_focus_within(&mut self, root: StableNodeId) {
+        self.mutations.push(UiMutation::RestoreFocusWithin { root });
     }
 
     pub fn set_ime(&mut self, id: StableNodeId, composition: Option<ImeComposition>) {

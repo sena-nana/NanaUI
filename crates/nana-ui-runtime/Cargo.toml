@@ -19,6 +19,8 @@ benchmark = []
 syntax-highlighting = ["dep:two-face"]
 
 [dependencies]
+fancy-regex = "0.16.2"
+hashbrown = "0.16.1"
 futures-core.workspace = true
 nana-ui-core.workspace = true
 pulldown-cmark = { version = "0.13.4", default-features = false, optional = true }

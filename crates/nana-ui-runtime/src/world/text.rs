@@ -33,6 +33,66 @@ impl<'a, S: TextShaper> CountingShaper<'a, S> {
 }
 
 impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
+    fn with_text_probes<R>(
+        &mut self,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+        consume: impl FnOnce(&mut dyn TextShaper) -> R,
+    ) -> R {
+        let Self {
+            inner,
+            cache,
+            glyphs,
+            runs,
+            wrap_layouts,
+        } = self;
+        inner.with_text_probes(text, style, constraints, |prepared| {
+            let mut adapter = PreparedCountingShaper {
+                inner: prepared,
+                cache,
+                glyphs,
+                runs,
+                wrap_layouts,
+            };
+            consume(&mut adapter)
+        })
+    }
+
+    fn horizontal_offset(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        self.inner.horizontal_offset(id, text, offset, style)
+    }
+
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.inner
+            .text_position(id, text, offset, style, constraints)
+    }
+
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        self.inner
+            .text_highlights(id, text, selection, style, constraints)
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,
@@ -64,6 +124,80 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         _glyphs: &mut crate::GlyphCache,
     ) -> TextMetrics {
         self.shape(id, text, style, constraints)
+    }
+}
+
+// Keep the host's prepared geometry batch while retaining Runtime measurement
+// accounting for any shapes requested by editor decorations inside the batch.
+struct PreparedCountingShaper<'a> {
+    inner: &'a mut dyn TextShaper,
+    cache: &'a mut crate::text_layout_cache::TextLayoutCache,
+    glyphs: &'a mut crate::GlyphCache,
+    runs: &'a mut usize,
+    wrap_layouts: &'a mut usize,
+}
+impl TextShaper for PreparedCountingShaper<'_> {
+    fn shape(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> TextMetrics {
+        let key = crate::text_layout_cache::TextLayoutKey::new(text, style, constraints);
+        if let Some(metrics) = self.cache.lookup(&key) {
+            return metrics;
+        }
+        *self.runs = self.runs.saturating_add(1);
+        if constraints.wrap {
+            *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
+        }
+        let metrics = self
+            .inner
+            .shape_cached(id, text, style, constraints, self.glyphs);
+        self.cache.insert(key, metrics);
+        metrics
+    }
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+        _glyphs: &mut crate::GlyphCache,
+    ) -> TextMetrics {
+        self.shape(id, text, style, constraints)
+    }
+    fn horizontal_offset(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        self.inner.horizontal_offset(id, text, offset, style)
+    }
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.inner
+            .text_position(id, text, offset, style, constraints)
+    }
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        self.inner
+            .text_highlights(id, text, selection, style, constraints)
     }
 }
 
@@ -724,11 +858,15 @@ pub(super) fn remap_snippet_session(
     delta: isize,
 ) -> Option<crate::components::TextSnippetSession> {
     let mut stops = Vec::with_capacity(session.stops.len());
-    for &stop in &session.stops {
+    for (index, &stop) in session.stops.iter().enumerate() {
         if stop > changed_start && stop < changed_end {
             return None;
         }
-        let mapped = if stop >= changed_end {
+        let placeholder_start = session
+            .selection_ends
+            .get(index)
+            .is_some_and(|end| *end > stop);
+        let mapped = if stop >= changed_end && !(placeholder_start && stop == changed_start) {
             (stop as isize + delta).max(0) as usize
         } else {
             stop
@@ -739,9 +877,31 @@ pub(super) fn remap_snippet_session(
         }
         stops.push(mapped);
     }
+    let mut selection_ends = Vec::with_capacity(session.selection_ends.len());
+    for &end in &session.selection_ends {
+        if end > changed_start && end < changed_end {
+            return None;
+        }
+        let mapped = if end >= changed_end {
+            end.checked_add_signed(delta)?
+        } else {
+            end
+        };
+        if !new_value.is_char_boundary(mapped) {
+            return None;
+        }
+        selection_ends.push(mapped);
+    }
     Some(crate::components::TextSnippetSession {
         stops,
+        selection_ends,
         index: session.index,
+        exit_on_last: session.exit_on_last,
+        placeholders: if session.placeholders.is_empty() {
+            Vec::new()
+        } else {
+            return None;
+        },
     })
 }
 
@@ -868,11 +1028,12 @@ pub(super) fn build_text_input_presentation_source(
     use unicode_segmentation::UnicodeSegmentation;
 
     // 浮层是打字态的编辑辅助：占位符与 IME 组合期间一律不弹出。
-    let (completions, hover) = if !placeholder.is_empty() || ime.is_some() {
-        (None, None)
-    } else {
-        (completions, hover)
-    };
+    let (completions, hover) =
+        if (state.value.is_empty() && !placeholder.is_empty()) || ime.is_some() {
+            (None, None)
+        } else {
+            (completions, hover)
+        };
 
     // minimap 行长收集不在源构造内进行：占位符与 IME 组合态的编辑器选项
     // 归默认（不显示 minimap），收集结果只会被丢弃；仅多行且开启选项时
@@ -1346,7 +1507,7 @@ fn derive_diagnostic_decorations(
     style: &ComputedStyle,
     presentation_constraints: crate::TextShapeConstraints,
     line_height: f32,
-    shaper: &mut impl TextShaper,
+    shaper: &mut (impl TextShaper + ?Sized),
 ) -> (
     Vec<TextDiagnosticMark>,
     Vec<TextDiagnosticLabel>,
@@ -1469,6 +1630,26 @@ pub(super) fn shape_text_input_presentation(
         preserve_lines: constraints.preserve_lines,
         wrap_break: constraints.wrap_break,
     };
+    shaper.with_text_probes(&source.text, style, presentation_constraints, |shaper| {
+        shape_text_input_probes(
+            id,
+            &source,
+            style,
+            presentation_constraints,
+            previous_overlays,
+            shaper,
+        )
+    })
+}
+
+fn shape_text_input_probes(
+    id: StableNodeId,
+    source: &TextInputPresentationSource,
+    style: &ComputedStyle,
+    presentation_constraints: crate::TextShapeConstraints,
+    previous_overlays: &crate::components::TextOverlayMetrics,
+    shaper: &mut dyn TextShaper,
+) -> TextInputPresentation {
     let (caret_x, caret_y, line_height) = shaper.text_position(
         id,
         &source.text,
@@ -1499,7 +1680,7 @@ pub(super) fn shape_text_input_presentation(
     let (diagnostic_marks, diagnostic_labels, diagnostic_hits) = if source.multiline {
         derive_diagnostic_decorations(
             id,
-            &source,
+            source,
             style,
             presentation_constraints,
             line_height,
@@ -1939,7 +2120,7 @@ pub(super) fn shape_text_input_presentation(
     // 锚定浮层度量：补全行宽按 items 指针相等短路（列表未变零测量、
     // 零分配）；hover 锚点跟随文档偏移，每次 shape 一探（缓存字形度量）。
     let overlay_metrics = TextOverlayMetrics {
-        completion: completion_popup_metrics(id, &source, previous_overlays, style, shaper),
+        completion: completion_popup_metrics(id, source, previous_overlays, style, shaper),
         hover_anchor: source.hover.as_ref().map(|doc| {
             let (x, y, _) = shaper.text_position(
                 id,
@@ -1952,7 +2133,21 @@ pub(super) fn shape_text_input_presentation(
         }),
     };
 
+    let mut content_size = shaper.shape(id, &source.text, style, presentation_constraints);
+    if source.multiline {
+        // Custom shapers may expose intrinsic single-line metrics while their
+        // position probes describe the full editor. Include its final visual row.
+        let (_, last_y, last_height) = shaper.text_position(
+            id,
+            &source.text,
+            source.text.value.len(),
+            style,
+            presentation_constraints,
+        );
+        content_size.height = content_size.height.max(last_y + last_height);
+    }
     TextInputPresentation {
+        content_size,
         display_value: source.text.value.clone(),
         placeholder: source.placeholder,
         selection: source.selection.map(|(start, end)| {
@@ -2007,7 +2202,7 @@ pub(super) fn shape_text_input_presentation(
         swatch_marks,
         atom_chips,
         bracket_marks,
-        bracket_color_spans: source.bracket_color_spans,
+        bracket_color_spans: source.bracket_color_spans.clone(),
         occurrence_marks,
         whitespace_marks,
         wrap_guides,
@@ -2017,7 +2212,7 @@ pub(super) fn shape_text_input_presentation(
         fold_marks,
         git_marks,
         overlay_metrics,
-        minimap_line_lengths: source.minimap_line_lengths,
+        minimap_line_lengths: source.minimap_line_lengths.clone(),
     }
 }
 
@@ -2568,7 +2763,7 @@ pub(super) fn completion_popup_metrics(
     source: &TextInputPresentationSource,
     previous: &crate::components::TextOverlayMetrics,
     style: &ComputedStyle,
-    shaper: &mut impl TextShaper,
+    shaper: &mut (impl TextShaper + ?Sized),
 ) -> Option<crate::components::TextCompletionPopupMetrics> {
     let items = source.completions.as_ref()?;
     if let Some(previous) = previous
@@ -3674,6 +3869,25 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    pub(crate) fn text_scroll_by_target(
+        &self,
+        id: StableNodeId,
+        delta: ScrollOffset,
+    ) -> Option<ScrollOffset> {
+        let node = self.nodes.get(id)?;
+        let presentation = self.nodes.text_input_presentation(id)?;
+        let padding = self.used_layout_padding(id);
+        let border = node.style.layout.resolved_border_width();
+        let width = (node.layout.width - border * 2.0 - padding.left - padding.right).max(0.0);
+        let height = (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
+        let current = self.record(id).scroll_offset;
+        Some(ScrollOffset {
+            x: (current.x + delta.x).clamp(0.0, (presentation.content_size.width - width).max(0.0)),
+            y: (current.y + delta.y)
+                .clamp(0.0, (presentation.content_size.height - height).max(0.0)),
+        })
+    }
+
     /// minimap 导航换算：条内点击点 → 目标滚动偏移（点击行在视口居中，
     /// 钳到文档范围；横向偏移保持不变）。不在条内或编辑器无 minimap 时
     /// `None`。只读查询：调用方（框架指针路径）负责写回。
@@ -3701,10 +3915,14 @@ impl UiWorld {
         let border = node.style.layout.resolved_border_width();
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
-        // 行数与滚动空间同源（逻辑行数 × 行高，软折行低估为已知限制）。
-        let total_height = minimap.line_count as f32 * line_height;
+        let total_height = presentation.content_size.height;
         let max_scroll = (total_height - content_height).max(0.0);
-        let centered = line as f32 * line_height + line_height * 0.5 - content_height * 0.5;
+        let line_top = presentation
+            .line_tops
+            .get(line)
+            .copied()
+            .unwrap_or(line as f32 * line_height);
+        let centered = line_top + line_height * 0.5 - content_height * 0.5;
         Some(ScrollOffset {
             x: self.record(id).scroll_offset.x,
             y: centered.clamp(0.0, max_scroll),
@@ -3715,7 +3933,7 @@ impl UiWorld {
 impl UiWorld {
     /// 计算使多行文本输入内 `offset` 所在逻辑行进入可视区所需的滚动偏移。
     /// 只读查询：不改世界状态；宿主将返回值写回组件的 `scroll_offset`。
-    /// 行高按逻辑行均匀假设（忽略软折行），定位场景下足够精确。
+    /// 使用排版后的逻辑行起点；当前光标使用精确的软折行位置。
     ///
     /// 折叠感知：存在折叠态区间时按显示视图计算行号与总高；被折叠隐藏
     /// 的偏移钳制到折叠起始行。查找导航到折叠内匹配时的自动展开由框架
@@ -3751,14 +3969,21 @@ impl UiWorld {
             .bytes()
             .filter(|byte| *byte == b'\n')
             .count() as f32;
-        let reveal_y = line_index * line_height;
+        let reveal_y = if offset == state.selection.focus {
+            presentation.caret_y
+        } else {
+            presentation
+                .line_tops
+                .get(line_index as usize)
+                .copied()
+                .unwrap_or(line_index * line_height)
+        };
         let node = self.nodes.get(id)?;
         let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content_height =
             (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
-        // 逻辑行数 × 行高 = 无折行下的内容总高；软折行场景会低估（已知限制）。
-        let total_height = (display_value.matches('\n').count() + 1) as f32 * line_height;
+        let total_height = presentation.content_size.height;
         let max_scroll = (total_height - content_height).max(0.0);
         let mut scroll_y = self.record(id).scroll_offset.y;
         if reveal_y < scroll_y {
@@ -3770,5 +3995,114 @@ impl UiWorld {
             x: self.record(id).scroll_offset.x,
             y: scroll_y.clamp(0.0, max_scroll),
         })
+    }
+}
+
+#[cfg(test)]
+mod counting_probe_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct GeometryShaper {
+        batches: usize,
+        shapes: usize,
+    }
+    impl TextShaper for GeometryShaper {
+        fn shape(
+            &mut self,
+            _: StableNodeId,
+            _: &TextContent,
+            _: &ComputedStyle,
+            _: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            self.shapes += 1;
+            TextMetrics {
+                width: 123.0,
+                height: 72.0,
+                ascent: None,
+            }
+        }
+        fn with_text_probes<R>(
+            &mut self,
+            _: &TextContent,
+            _: &ComputedStyle,
+            _: crate::TextShapeConstraints,
+            consume: impl FnOnce(&mut dyn TextShaper) -> R,
+        ) -> R {
+            self.batches += 1;
+            consume(self)
+        }
+        fn horizontal_offset(
+            &mut self,
+            _: StableNodeId,
+            _: &TextContent,
+            _: usize,
+            _: &ComputedStyle,
+        ) -> f32 {
+            31.0
+        }
+        fn text_position(
+            &mut self,
+            _: StableNodeId,
+            _: &TextContent,
+            _: usize,
+            _: &ComputedStyle,
+            _: crate::TextShapeConstraints,
+        ) -> (f32, f32, f32) {
+            (31.0, 48.0, 24.0)
+        }
+        fn text_highlights(
+            &mut self,
+            _: StableNodeId,
+            _: &TextContent,
+            _: (usize, usize),
+            _: &ComputedStyle,
+            _: crate::TextShapeConstraints,
+        ) -> Vec<LayoutBox> {
+            vec![LayoutBox {
+                x: 31.0,
+                y: 48.0,
+                width: 17.0,
+                height: 24.0,
+            }]
+        }
+    }
+
+    #[test]
+    fn counting_adapter_preserves_host_geometry_batch_and_measurement_cache() {
+        let mut host = GeometryShaper::default();
+        let mut cache = crate::text_layout_cache::TextLayoutCache::default();
+        let mut glyphs = crate::GlyphCache::default();
+        let id = StableNodeId(1);
+        let text = TextContent {
+            value: "first\nsecond".into(),
+        };
+        let style = ComputedStyle::default();
+        let constraints = crate::TextShapeConstraints {
+            wrap: true,
+            ..Default::default()
+        };
+        let mut adapter = CountingShaper::new(&mut host, &mut cache, &mut glyphs);
+        assert_eq!(
+            adapter.text_position(id, &text, 8, &style, constraints),
+            (31.0, 48.0, 24.0)
+        );
+        adapter.with_text_probes(&text, &style, constraints, |prepared| {
+            assert_eq!(
+                prepared.text_position(id, &text, 8, &style, constraints),
+                (31.0, 48.0, 24.0)
+            );
+            assert_eq!(prepared.horizontal_offset(id, &text, 8, &style), 31.0);
+            assert_eq!(
+                prepared.text_highlights(id, &text, (6, 8), &style, constraints)[0].y,
+                48.0
+            );
+            assert_eq!(prepared.shape(id, &text, &style, constraints).height, 72.0);
+            assert_eq!(prepared.shape(id, &text, &style, constraints).height, 72.0);
+        });
+        assert_eq!(adapter.runs, 1);
+        assert_eq!(adapter.wrap_layouts, 1);
+        assert_eq!(host.shapes, 1);
+        assert_eq!(host.batches, 1);
     }
 }

@@ -166,6 +166,20 @@ function writeHostScroll(nid, axis, next) {
  * scrollTop/scrollLeft round-trip through host scroll contract.
  */
 export function defineLayoutMetrics(node, nid) {
+  // One host operation for both axes: separate setters can read the same
+  // committed offset while their writes are still in PendingHostOps.
+  Object.defineProperty(node, "scrollTo", {
+    configurable: true,
+    value(left, top) {
+      if (nid == null || !Number.isFinite(Number(nid))) return;
+      if (left && typeof left === "object") {
+        top = left.top ?? readHostScroll(nid, "y");
+        left = left.left ?? readHostScroll(nid, "x");
+      }
+      const finite = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+      hostCall("setScrollOffset", [Number(nid), finite(left), finite(top)]);
+    },
+  });
   const sizeMetric = (kind, axis) => ({
     configurable: true,
     enumerable: true,

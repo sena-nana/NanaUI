@@ -101,4 +101,4 @@ export { NanaGpu } from "./NanaGpu.js";
 export { NanaVirtualList } from "./NanaVirtualList.js";
 export { NanaVirtualTable } from "./NanaVirtualTable.js";
 export { NanaVirtualTree } from "./NanaVirtualTree.js";
-export { virtualWindow, uniformWindow, variableWindow } from "./virtual-window.js";
+export { virtualWindow, uniformWindow, variableWindow, virtualViewport, createWindowIndex } from "./virtual-window.js";

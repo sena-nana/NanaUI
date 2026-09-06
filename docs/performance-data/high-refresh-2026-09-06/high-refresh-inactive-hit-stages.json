@@ -1,0 +1,102 @@
+{
+  "5000": {
+    "accessibility": {
+      "p50": 4.183,
+      "p95": 12.699,
+      "p99": 13.641,
+      "max": 14.892,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "extraction": {
+      "p50": 3.58,
+      "p95": 7.971,
+      "p99": 8.651,
+      "max": 15.239,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "focus": {
+      "p50": 0.119,
+      "p95": 0.15,
+      "p99": 0.217,
+      "max": 0.258,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "hit_test": {
+      "p50": 4.211,
+      "p95": 9.854,
+      "p99": 10.667,
+      "max": 11.829,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "layout_inputs": {
+      "p50": 1.735,
+      "p95": 4.787,
+      "p99": 7.62,
+      "max": 11.365,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "style": {
+      "p50": 2.53,
+      "p95": 6.293,
+      "p99": 6.539,
+      "max": 8.205,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    }
+  },
+  "10000": {
+    "accessibility": {
+      "p50": 9.396,
+      "p95": 15.411,
+      "p99": 24.114,
+      "max": 28.194,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 3
+    },
+    "extraction": {
+      "p50": 8.181,
+      "p95": 11.713,
+      "p99": 12.246,
+      "max": 13.946,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "focus": {
+      "p50": 0.205,
+      "p95": 0.316,
+      "p99": 0.325,
+      "max": 0.401,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "hit_test": {
+      "p50": 9.059,
+      "p95": 14.157,
+      "p99": 16.816,
+      "max": 20.236,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 2
+    },
+    "layout_inputs": {
+      "p50": 3.602,
+      "p95": 5.294,
+      "p99": 6.068,
+      "max": 7.31,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "style": {
+      "p50": 5.34,
+      "p95": 8.056,
+      "p99": 21.24,
+      "max": 21.592,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 2
+    }
+  }
+}

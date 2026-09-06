@@ -1,0 +1,2 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `release` profile [optimized] target(s) in 1m 24s

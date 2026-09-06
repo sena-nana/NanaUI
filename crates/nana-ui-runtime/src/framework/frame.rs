@@ -161,7 +161,7 @@ impl AppContext {
         viewport: crate::LayoutViewport,
     ) -> Result<crate::CommitReport, FrameworkError> {
         let mut dirty = self.world.document_roots(document);
-        dirty.extend(self.world.viewport_basis_ids());
+        dirty.extend(self.world.viewport_basis_ids_for(document));
         self.layout_document_impl(document, viewport, &dirty, false)
     }
 
@@ -193,6 +193,34 @@ impl AppContext {
         dirty: &[StableNodeId],
         force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        self.layout_document_observed(document, viewport, dirty, force_full, |_| {})
+    }
+
+    /// Diagnostic timings for the canonical full layout path. The production
+    /// entry points use the same operations with no per-stage clock callbacks.
+    #[cfg(feature = "benchmark")]
+    pub fn benchmark_layout_document(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+    ) -> Result<[Duration; 4], FrameworkError> {
+        let mut timings = [Duration::ZERO; 4];
+        let mut started = Instant::now();
+        self.layout_document_observed(document, viewport, &[], true, |stage| {
+            timings[stage] = started.elapsed();
+            started = Instant::now();
+        })?;
+        Ok(timings)
+    }
+
+    fn layout_document_observed(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+        dirty: &[StableNodeId],
+        force_full: bool,
+        mut completed: impl FnMut(usize),
+    ) -> Result<crate::CommitReport, FrameworkError> {
         self.layout_invocations += 1;
         if force_full {
             self.layout_full_invocations += 1;
@@ -203,6 +231,7 @@ impl AppContext {
             .insert(document, viewport);
         let result = (|| {
             self.position_open_tooltips(document)?;
+            completed(0);
             let layouts = crate::RuntimeLayoutEngine.layout_document_scoped(
                 &self.world,
                 document,
@@ -211,23 +240,42 @@ impl AppContext {
                 &mut self.layout_cache,
                 force_full,
             )?;
+            completed(1);
             let mut mutations = MutationQueue::new();
             let mut scope = Vec::with_capacity(layouts.len());
             for (id, layout) in layouts {
                 scope.push(id);
                 let padding_changed = self
                     .layout_cache
-                    .used_padding
-                    .get(&id)
-                    .copied()
+                    .used_padding(document, id)
                     .is_some_and(|padding| self.world.write_layout_padding(id, padding));
                 if padding_changed || self.world.layout_box(id) != Some(layout) {
                     mutations.write_layout(id, layout);
                 }
             }
+            let terminal_sizes = scope
+                .iter()
+                .filter_map(|id| {
+                    self.views
+                        .get(id)
+                        .is_some_and(|view| view.is::<crate::TerminalView>())
+                        .then_some(*id)
+                })
+                .collect::<Vec<_>>();
             self.last_layout_scope = scope;
             let report = self.commit_mutations(mutations)?;
-            self.publish_document_scroll_metrics(document)?;
+            for id in terminal_sizes {
+                if let Some(bounds) = self.world.layout_box(id) {
+                    self.resize_terminal_view(
+                        Entity::from_stable_id(id),
+                        bounds.width,
+                        bounds.height,
+                    )?;
+                }
+            }
+            completed(2);
+            self.publish_document_scroll_metrics(document, force_full)?;
+            completed(3);
             Ok(report)
         })();
         self.record_stage(FrameStage::Layout, started);
@@ -237,22 +285,92 @@ impl AppContext {
     pub(super) fn publish_document_scroll_metrics(
         &mut self,
         document: DocumentId,
+        force_full: bool,
     ) -> Result<(), FrameworkError> {
-        let updates = self
-            .world
-            .document_order(document)
+        let targets = if force_full {
+            self.world
+                .document_order(document)
+                .into_iter()
+                .filter(|id| self.is_scroll_view(*id))
+                .collect()
+        } else {
+            self.scoped_scroll_metric_targets(document)
+        };
+        let updates = targets
             .into_iter()
-            .filter(|id| self.is_scroll_view(*id))
             .filter_map(|id| {
                 let metrics = self.scroll_metrics_from_layout(id)?;
-                (self.world.scroll_metrics(id) != Some(metrics))
-                    .then_some((Entity::<ScrollView>::from_stable_id(id), metrics))
+                Some((Entity::<ScrollView>::from_stable_id(id), metrics))
             })
             .collect::<Vec<_>>();
         for (entity, metrics) in updates {
             self.set_scroll_metrics(entity, metrics)?;
+            self.apply_scroll_retention(entity)?;
         }
         Ok(())
+    }
+
+    pub(super) fn scoped_scroll_metric_targets(&self, document: DocumentId) -> Vec<StableNodeId> {
+        let mut visited = HashSet::new();
+        let mut targets = HashSet::new();
+        for &id in &self.last_layout_scope {
+            if self.world.document_of(id) != Some(document) {
+                continue;
+            }
+            let mut cursor = Some(id);
+            while let Some(id) = cursor {
+                if !visited.insert(id) {
+                    break;
+                }
+                if self.is_scroll_view(id) && self.world.presence_live(id) {
+                    targets.insert(id);
+                }
+                cursor = self.world.parent_id(id);
+            }
+        }
+        if targets.len() <= 1 {
+            return targets.into_iter().collect();
+        }
+        // Preserve document order without descending into unrelated subtrees.
+        let mut branches = HashSet::new();
+        let mut branch_parents = HashSet::new();
+        for &id in &targets {
+            let mut cursor = Some(id);
+            while let Some(id) = cursor {
+                if !branches.insert(id) {
+                    break;
+                }
+                cursor = self.world.parent_id(id);
+                if let Some(parent) = cursor {
+                    branch_parents.insert(parent);
+                }
+            }
+        }
+        let mut ordered = Vec::with_capacity(targets.len());
+        let mut stack = self.world.document_roots(document);
+        stack.reverse();
+        while let Some(id) = stack.pop() {
+            if !branches.contains(&id) {
+                continue;
+            }
+            if targets.contains(&id) {
+                ordered.push(id);
+            }
+            if ordered.len() == targets.len() {
+                break;
+            }
+            if branch_parents.contains(&id)
+                && let Some(node) = self.world.node(id)
+            {
+                stack.extend(
+                    node.children
+                        .into_iter()
+                        .rev()
+                        .filter(|id| branches.contains(id)),
+                );
+            }
+        }
+        ordered
     }
 
     pub(super) fn scroll_metrics_from_layout(&self, id: StableNodeId) -> Option<ScrollMetrics> {
@@ -260,29 +378,9 @@ impl AppContext {
         if viewport.width <= 0.0 || viewport.height <= 0.0 {
             return None;
         }
-        let mut content_width = viewport.width;
-        let mut content_height = viewport.height;
-        let mut stack = self
-            .world
-            .node(id)
-            .map(|node| node.children)
-            .unwrap_or_default();
-        while let Some(child) = stack.pop() {
-            if self
-                .world
-                .node_style(child)
-                .is_some_and(|style| style.layout.omits_box())
-            {
-                continue;
-            }
-            if let Some(bounds) = self.world.layout_box(child) {
-                content_width = content_width.max(bounds.x + bounds.width - viewport.x);
-                content_height = content_height.max(bounds.y + bounds.height - viewport.y);
-            }
-            if let Some(node) = self.world.node(child) {
-                stack.extend(node.children);
-            }
-        }
+        let (right, bottom) = self.world.scroll_content_extent(id);
+        let content_width = viewport.width.max(right - viewport.x);
+        let content_height = viewport.height.max(bottom - viewport.y);
         Some(ScrollMetrics {
             viewport_width: viewport.width,
             viewport_height: viewport.height,
@@ -371,6 +469,13 @@ impl AppContext {
                     .filter(|(target, _)| self.world.is_mounted(**target))
                     .filter_map(|(_, tooltip)| tooltip.show_at),
             )
+            .chain(
+                self.component_lifecycle
+                    .hover_cards
+                    .iter()
+                    .filter(|(target, _)| self.world.is_mounted(**target))
+                    .filter_map(|(_, lifecycle)| lifecycle.show_at.or(lifecycle.close_at)),
+            )
             .min()
     }
 
@@ -415,6 +520,32 @@ impl AppContext {
             .collect::<Vec<_>>();
         for target in tooltip_targets {
             if self.open_tooltip(target).unwrap_or(false) {
+                frame.component_updates.push(target);
+            }
+        }
+        self.sweep_hover_cards();
+        let hover_targets = self
+            .component_lifecycle
+            .hover_cards
+            .iter()
+            .filter(|(target, _)| self.world.is_mounted(**target))
+            .filter_map(|(&target, lifecycle)| {
+                if lifecycle.show_at.is_some_and(|deadline| deadline <= now) {
+                    return Some((target, true));
+                }
+                if lifecycle.close_at.is_some_and(|deadline| deadline <= now) {
+                    return Some((target, false));
+                }
+                None
+            })
+            .collect::<Vec<_>>();
+        for (target, open) in hover_targets {
+            let changed = if open {
+                self.open_hover_card(target).unwrap_or(false)
+            } else {
+                self.close_hover_card(target).unwrap_or(false)
+            };
+            if changed {
                 frame.component_updates.push(target);
             }
         }

@@ -52,6 +52,101 @@ pub struct VirtualTableWindow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct VirtualTableFrozenWindow {
+    pub rows: crate::VirtualFrozenWindow,
+    pub columns: crate::VirtualFrozenWindow,
+}
+
+impl VirtualTableLayout {
+    /// `frozen` is [column count, row count], matching viewport axis order.
+    pub fn window_with_frozen(
+        &self,
+        viewport: crate::VirtualViewport,
+        frozen: [usize; 2],
+    ) -> VirtualTableFrozenWindow {
+        VirtualTableFrozenWindow {
+            rows: self.rows.window_with_frozen(
+                viewport.offset[1],
+                viewport.extent[1],
+                viewport.overscan[1],
+                frozen[1],
+            ),
+            columns: self.column_extents.window_with_frozen(
+                viewport.offset[0],
+                viewport.extent[0],
+                viewport.overscan[0],
+                frozen[0],
+            ),
+        }
+    }
+
+    pub fn reveal_cell_with_frozen(
+        &self,
+        cursor: TableCursor,
+        viewport: &mut crate::VirtualViewport,
+        frozen: [usize; 2],
+        alignment: crate::VirtualAlignment,
+    ) -> bool {
+        let Some(y) = self.rows.offset_for_frozen_index(
+            cursor.row,
+            viewport.offset[1],
+            viewport.extent[1],
+            frozen[1],
+            alignment,
+        ) else {
+            return false;
+        };
+        let Some(x) = self.column_extents.offset_for_frozen_index(
+            cursor.column,
+            viewport.offset[0],
+            viewport.extent[0],
+            frozen[0],
+            alignment,
+        ) else {
+            return false;
+        };
+        viewport.offset = [x, y];
+        true
+    }
+
+    /// Locate both axes atomically. Consumers materialize the resulting window
+    /// before transferring focus to the keyed cell.
+    pub fn reveal_cell(
+        &self,
+        cursor: TableCursor,
+        viewport: &mut crate::VirtualViewport,
+        alignment: crate::VirtualAlignment,
+    ) -> bool {
+        let Some(y) = self.rows.offset_for_index(
+            cursor.row,
+            viewport.offset[1],
+            viewport.extent[1],
+            alignment,
+        ) else {
+            return false;
+        };
+        let Some(x) = self.column_extents.offset_for_index(
+            cursor.column,
+            viewport.offset[0],
+            viewport.extent[0],
+            alignment,
+        ) else {
+            return false;
+        };
+        viewport.offset = [x, y];
+        true
+    }
+
+    pub fn window_for(&self, viewport: crate::VirtualViewport) -> VirtualTableWindow {
+        self.window(
+            (viewport.offset[0], viewport.offset[1]),
+            (viewport.extent[0], viewport.extent[1]),
+            (viewport.overscan[0], viewport.overscan[1]),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct VirtualTableMaterialization<R, C> {
     pub window: VirtualTableWindow,
     pub rows: VirtualListMaterialization<R>,
@@ -86,6 +181,40 @@ where
 
     pub fn mounted_columns(&self) -> &[C] {
         self.columns.mounted()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_retained(
+        &self,
+        layout: &VirtualTableLayout,
+        viewport: crate::VirtualViewport,
+        frozen: [usize; 2],
+        retained_rows: impl IntoIterator<Item = usize>,
+        retained_columns: impl IntoIterator<Item = usize>,
+        row_key_at: impl FnMut(usize) -> R,
+        column_key_at: impl FnMut(usize) -> C,
+    ) -> Result<VirtualTableMaterialization<R, C>, VirtualListMaterializationError> {
+        let pane = layout.window_with_frozen(viewport, frozen);
+        let rows = self.rows.prepare_retained_window(
+            &layout.rows,
+            pane.rows.body.clone(),
+            pane.rows.frozen.chain(retained_rows),
+            row_key_at,
+        )?;
+        let columns = self.columns.prepare_retained_window(
+            &layout.column_extents,
+            pane.columns.body.clone(),
+            pane.columns.frozen.chain(retained_columns),
+            column_key_at,
+        )?;
+        Ok(VirtualTableMaterialization {
+            window: VirtualTableWindow {
+                rows: pane.rows.body,
+                columns: pane.columns.body,
+            },
+            rows,
+            columns,
+        })
     }
 
     pub fn prepare(
@@ -152,6 +281,13 @@ impl VirtualTableLayout {
             columns,
             column_extents,
         }
+    }
+
+    pub fn row_layout(&self) -> &VirtualListLayout {
+        &self.rows
+    }
+    pub fn column_layout(&self) -> &VirtualListLayout {
+        &self.column_extents
     }
 
     pub fn row_count(&self) -> usize {
@@ -263,6 +399,77 @@ fn sanitize_extent(extent: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_table_navigation_reserves_both_headers_and_rejects_partial_updates() {
+        let layout = VirtualTableLayout::new(
+            [20.0; 100],
+            (0..100).map(|index| TableColumn::new(index.to_string(), 40.0)),
+        );
+        let mut viewport = crate::VirtualViewport {
+            offset: [0.0, 0.0],
+            extent: [200.0, 100.0],
+            overscan: [0.0, 0.0],
+        };
+        assert!(layout.reveal_cell_with_frozen(
+            TableCursor {
+                row: 50,
+                column: 80
+            },
+            &mut viewport,
+            [1, 1],
+            crate::VirtualAlignment::Start
+        ));
+        assert_eq!(viewport.offset, [3160.0, 980.0]);
+        let window = layout.window_with_frozen(viewport, [1, 1]);
+        assert_eq!(window.rows.frozen, 0..1);
+        assert_eq!(window.columns.frozen, 0..1);
+        assert_eq!(window.rows.body.range, 50..54);
+        assert_eq!(window.columns.body.range, 80..84);
+        let previous = viewport;
+        assert!(!layout.reveal_cell_with_frozen(
+            TableCursor {
+                row: 2,
+                column: 100
+            },
+            &mut viewport,
+            [1, 1],
+            crate::VirtualAlignment::Start
+        ));
+        assert_eq!(viewport, previous);
+    }
+
+    #[test]
+    fn reveal_cell_updates_both_axes_only_when_both_indices_exist() {
+        let layout = VirtualTableLayout::new(
+            [20.0; 100],
+            (0..100).map(|index| TableColumn::new(index.to_string(), 40.0)),
+        );
+        let mut viewport = crate::VirtualViewport {
+            offset: [0.0, 0.0],
+            extent: [200.0, 100.0],
+            overscan: [0.0, 0.0],
+        };
+        assert!(layout.reveal_cell(
+            TableCursor {
+                row: 50,
+                column: 80
+            },
+            &mut viewport,
+            crate::VirtualAlignment::Start
+        ));
+        assert_eq!(viewport.offset, [3200.0, 1000.0]);
+        let previous = viewport;
+        assert!(!layout.reveal_cell(
+            TableCursor {
+                row: 2,
+                column: 100
+            },
+            &mut viewport,
+            crate::VirtualAlignment::Start
+        ));
+        assert_eq!(viewport, previous);
+    }
 
     #[test]
     fn two_dimensional_window_and_column_resize_are_incremental() {

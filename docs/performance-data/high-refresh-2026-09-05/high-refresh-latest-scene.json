@@ -1,0 +1,208 @@
+{
+  "schema_version": 2,
+  "phase": "issue-8-scale",
+  "profile": "release",
+  "frame_budget_ms": 16.67,
+  "frame_budget_hz": 60,
+  "samples": 200,
+  "rows": [
+    {
+      "nodes": 100,
+      "kind": "full",
+      "primitives": 100,
+      "initial_extraction_ms": {
+        "p50": 0.664,
+        "p95": 0.664,
+        "p99": 0.664,
+        "max": 0.664,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.005,
+        "p95": 0.0061,
+        "p99": 0.0073,
+        "max": 0.0567,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.0,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00009999999999999999,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.0040999999999999995,
+        "p95": 0.0056,
+        "p99": 0.0078,
+        "max": 0.047599999999999996,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 500,
+      "kind": "full",
+      "primitives": 500,
+      "initial_extraction_ms": {
+        "p50": 3.1044,
+        "p95": 3.1044,
+        "p99": 3.1044,
+        "max": 3.1044,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.0026,
+        "p95": 0.0027,
+        "p99": 0.003,
+        "max": 0.0067,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.0,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.0163,
+        "p95": 0.0231,
+        "p99": 0.0298,
+        "max": 0.034999999999999996,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 1000,
+      "kind": "full",
+      "primitives": 1000,
+      "initial_extraction_ms": {
+        "p50": 6.621,
+        "p95": 6.621,
+        "p99": 6.621,
+        "max": 6.621,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.0027,
+        "p95": 0.0028,
+        "p99": 0.0035,
+        "max": 0.0149,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.0,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.0496,
+        "p95": 0.0576,
+        "p99": 0.0614,
+        "max": 0.0995,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 5000,
+      "kind": "full",
+      "primitives": 5000,
+      "initial_extraction_ms": {
+        "p50": 33.553,
+        "p95": 33.553,
+        "p99": 33.553,
+        "max": 33.553,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 1
+      },
+      "local_update_ms": {
+        "p50": 0.0028,
+        "p95": 0.0029000000000000002,
+        "p99": 0.0049,
+        "max": 0.0183,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.0,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.3434,
+        "p95": 0.3976,
+        "p99": 0.4216,
+        "max": 0.7311000000000001,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 10000,
+      "kind": "full",
+      "primitives": 10000,
+      "initial_extraction_ms": {
+        "p50": 72.31609999999999,
+        "p95": 72.31609999999999,
+        "p99": 72.31609999999999,
+        "max": 72.31609999999999,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 1
+      },
+      "local_update_ms": {
+        "p50": 0.0029000000000000002,
+        "p95": 0.0033,
+        "p99": 0.0157,
+        "max": 0.0157,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.0,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00009999999999999999,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.6947,
+        "p95": 0.9041,
+        "p99": 1.2195,
+        "max": 1.2195,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 50000,
+      "kind": "construction",
+      "primitives": 50000,
+      "initial_extraction_ms": {
+        "p50": 378.2497,
+        "p95": 413.12120000000004,
+        "p99": 413.12120000000004,
+        "max": 413.12120000000004,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 8
+      }
+    }
+  ]
+}

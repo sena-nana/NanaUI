@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod bounds;
+use bounds::{Bounds, BoundsTree};
+
 pub(super) fn sort_hit_children(node: &mut HitEntry) {
     // Children were attached last-to-first; (z, order) restores document order
     // within a stacking level so a reverse walk is front-to-back.
@@ -12,143 +15,457 @@ pub(super) fn sort_hit_children(node: &mut HitEntry) {
     }
 }
 
-/// Accumulated transform of `id`'s existing entry, used as the splice point for
-/// a scoped rebuild so the patch never walks up to the document root.
-pub(super) fn find_hit_transform(forest: &[HitEntry], id: StableNodeId) -> Option<[f32; 6]> {
-    for entry in forest {
-        if entry.id == id {
-            return Some(entry.transform);
-        }
-        if let Some(transform) = find_hit_transform(&entry.children, id) {
-            return Some(transform);
-        }
-    }
-    None
+/// Flat, document-local hit projection. Runtime remains the topology authority;
+/// entries are directly addressed and scrolling changes one inherited offset.
+#[derive(Default)]
+pub(super) struct HitIndex {
+    pub(super) roots: Vec<Option<StableNodeId>>,
+    pub(super) entries: hashbrown::HashMap<StableNodeId, IndexedHit>,
+    root_bounds: BoundsTree,
 }
 
-pub(super) fn find_hit_entry_mut(
-    forest: &mut [HitEntry],
-    id: StableNodeId,
-) -> Option<&mut HitEntry> {
-    for entry in forest {
-        if entry.id == id {
-            return Some(entry);
+// Preorder construction data; parents precede their children.
+struct BuiltHit {
+    entry: HitEntry,
+    parent: Option<usize>,
+}
+
+pub(super) struct IndexedHit {
+    pub(super) entry: HitEntry,
+    pub(super) parent: Option<StableNodeId>,
+    pub(super) children: Vec<Option<StableNodeId>>,
+    shift: [f32; 2],
+    bounds: Bounds,
+    child_bounds: BoundsTree,
+    sibling_slot: usize,
+}
+
+fn hit_bounds(entry: &HitEntry) -> Bounds {
+    if !entry.hittable && entry.menu.is_none() {
+        return Bounds::Inactive;
+    }
+    if entry.persp != [0.0, 0.0] {
+        return Bounds::Unknown;
+    }
+    let b = entry
+        .menu
+        .map_or(entry.layout, |menu| union_bounds(entry.layout, menu));
+    let [a, bm, c, d, e, f] = entry.transform;
+    let points = [
+        (b.x, b.y),
+        (b.x + b.width, b.y),
+        (b.x, b.y + b.height),
+        (b.x + b.width, b.y + b.height),
+    ];
+    let mut left = f32::INFINITY;
+    let mut top = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for (x, y) in points {
+        let tx = a * x + c * y + e;
+        let ty = bm * x + d * y + f;
+        left = left.min(tx);
+        top = top.min(ty);
+        right = right.max(tx);
+        bottom = bottom.max(ty);
+    }
+    [left, top, right, bottom]
+        .iter()
+        .all(|v| v.is_finite())
+        .then_some(LayoutBox {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
+        .into()
+}
+
+fn union_bounds(a: LayoutBox, b: LayoutBox) -> LayoutBox {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    LayoutBox {
+        x,
+        y,
+        width: (a.x + a.width).max(b.x + b.width) - x,
+        height: (a.y + a.height).max(b.y + b.height) - y,
+    }
+}
+
+impl HitIndex {
+    #[cfg(test)]
+    fn from_forest(forest: Vec<HitEntry>) -> Self {
+        let mut index = Self::default();
+        for (slot, entry) in forest.into_iter().enumerate() {
+            index.roots.push(Some(entry.id));
+            index.insert_tree(entry, None, [0.0, 0.0], slot);
         }
-        if let Some(found) = find_hit_entry_mut(&mut entry.children, id) {
-            return Some(found);
+        index.reindex_children(None);
+        index
+    }
+
+    fn from_entries(built: Vec<BuiltHit>) -> Self {
+        let ids = built.iter().map(|node| node.entry.id).collect::<Vec<_>>();
+        let mut index = Self {
+            entries: hashbrown::HashMap::with_capacity(built.len()),
+            ..Default::default()
+        };
+        for node in built {
+            let id = node.entry.id;
+            let parent = node.parent.map(|position| ids[position]);
+            index.entries.insert(id, IndexedHit {
+                bounds: hit_bounds(&node.entry),
+                entry: node.entry,
+                parent,
+                children: Vec::new(),
+                shift: [0.0, 0.0],
+                child_bounds: BoundsTree::default(),
+                sibling_slot: 0,
+            });
+            if let Some(parent) = parent {
+                index.entries.get_mut(&parent).expect("preorder parent").children.push(Some(id));
+            } else {
+                index.roots.push(Some(id));
+            }
+        }
+        // Child aggregates are ready before their parent. No temporary recursive
+        // HitEntry tree or ancestor refits are needed during initial construction.
+        for id in ids.into_iter().rev() {
+            index.initialize_children(Some(id));
+        }
+        index.initialize_children(None);
+        index
+    }
+
+    fn initialize_children(&mut self, parent: Option<StableNodeId>) {
+        let mut children = match parent {
+            Some(id) => std::mem::take(&mut self.entries.get_mut(&id).unwrap().children),
+            None => std::mem::take(&mut self.roots),
+        };
+        children.sort_by_key(|id| {
+            let entry = &self.entries[&id.unwrap()].entry;
+            (entry.z_index, entry.order)
+        });
+        let bounds = BoundsTree::new(children.iter().map(|id| self.entries[&id.unwrap()].bounds));
+        for (slot, id) in children.iter().enumerate() {
+            self.entries.get_mut(&id.unwrap()).unwrap().sibling_slot = slot;
+        }
+        if let Some(parent) = parent {
+            let node = self.entries.get_mut(&parent).unwrap();
+            if !children.is_empty() {
+                node.bounds = node.bounds.merge(bounds.bounds());
+            }
+            node.children = children;
+            node.child_bounds = bounds;
+        } else {
+            self.roots = children;
+            self.root_bounds = bounds;
         }
     }
-    None
+
+    fn insert_tree(
+        &mut self,
+        mut entry: HitEntry,
+        parent: Option<StableNodeId>,
+        offset: [f32; 2],
+        sibling_slot: usize,
+    ) {
+        let id = entry.id;
+        let children = std::mem::take(&mut entry.children);
+        entry.transform[4] -= offset[0];
+        entry.transform[5] -= offset[1];
+        for (_, transform) in entry
+            .self_clips
+            .iter_mut()
+            .chain(entry.child_clips.iter_mut())
+        {
+            transform[4] -= offset[0];
+            transform[5] -= offset[1];
+        }
+        let mut bounds = hit_bounds(&entry);
+        let child_ids: Vec<_> = children.iter().map(|child| Some(child.id)).collect();
+        for (slot, child) in children.into_iter().enumerate() {
+            let child_id = child.id;
+            self.insert_tree(child, Some(id), offset, slot);
+            bounds = bounds.merge(self.entries[&child_id].bounds);
+        }
+        let child_bounds =
+            BoundsTree::new(child_ids.iter().map(|id| self.entries[&id.unwrap()].bounds));
+        self.entries.insert(
+            id,
+            IndexedHit {
+                entry,
+                parent,
+                children: child_ids,
+                shift: [0.0, 0.0],
+                bounds,
+                child_bounds,
+                sibling_slot,
+            },
+        );
+    }
+
+    fn inherited_shift(&self, id: StableNodeId) -> [f32; 2] {
+        let mut shift = [0.0, 0.0];
+        let mut cursor = self.entries.get(&id).and_then(|n| n.parent);
+        while let Some(id) = cursor {
+            let Some(node) = self.entries.get(&id) else {
+                break;
+            };
+            shift[0] += node.shift[0];
+            shift[1] += node.shift[1];
+            cursor = node.parent;
+        }
+        shift
+    }
+
+    fn child_shift(&self, parent: Option<StableNodeId>) -> [f32; 2] {
+        parent.map_or([0.0, 0.0], |id| {
+            let mut shift = self.inherited_shift(id);
+            if let Some(node) = self.entries.get(&id) {
+                shift[0] += node.shift[0];
+                shift[1] += node.shift[1];
+            }
+            shift
+        })
+    }
+
+    // Only structural sibling changes rebuild a range index. Geometry and
+    // scrolling update one leaf per ancestor, without scanning siblings.
+    fn reindex_children(&mut self, parent: Option<StableNodeId>) {
+        let mut children = match parent {
+            Some(id) => std::mem::take(&mut self.entries.get_mut(&id).unwrap().children),
+            None => std::mem::take(&mut self.roots),
+        };
+        // Deletions leave empty bound slots, so the stable sibling positions
+        // survive until the next structural insertion/reorder compacts them.
+        children.retain(|id| {
+            id.is_some_and(|id| {
+                self.entries
+                    .get(&id)
+                    .is_some_and(|node| node.parent == parent)
+            })
+        });
+        let bounds = BoundsTree::new(children.iter().map(|id| self.entries[&id.unwrap()].bounds));
+        for (slot, id) in children.iter().enumerate() {
+            self.entries.get_mut(&id.unwrap()).unwrap().sibling_slot = slot;
+        }
+        if let Some(parent) = parent {
+            let node = self.entries.get_mut(&parent).unwrap();
+            node.child_bounds = bounds;
+            node.children = children;
+            self.refresh_bounds(parent);
+        } else {
+            self.root_bounds = bounds;
+            self.roots = children;
+        }
+    }
+
+    fn refresh_bounds(&mut self, mut id: StableNodeId) {
+        loop {
+            let Some(node) = self.entries.get_mut(&id) else {
+                return;
+            };
+            let own = hit_bounds(&node.entry);
+            node.bounds = if node.children.is_empty() {
+                own
+            } else {
+                own.merge(node.child_bounds.bounds().translated(node.shift))
+            };
+            let (parent, slot, bounds) = (node.parent, node.sibling_slot, node.bounds);
+            if let Some(parent) = parent {
+                self.entries
+                    .get_mut(&parent)
+                    .unwrap()
+                    .child_bounds
+                    .set(slot, bounds);
+                id = parent;
+            } else {
+                self.root_bounds.set(slot, bounds);
+                return;
+            }
+        }
+    }
+
+    fn visit_roots(&self, x: f32, y: f32, emit: &mut impl FnMut(StableNodeId) -> bool) -> bool {
+        self.root_bounds.visit(x, y, &mut |slot| {
+            self.visit_hits(self.roots[slot].expect("live root bounds"), x, y, emit)
+        })
+    }
+
+    fn remove_descendants(&mut self, children: Vec<Option<StableNodeId>>, parent: StableNodeId) {
+        let mut pending: Vec<_> = children
+            .into_iter()
+            .flatten()
+            .map(|child| (child, parent))
+            .collect();
+        while let Some((id, parent)) = pending.pop() {
+            // A preceding patch can already have moved this entry elsewhere.
+            // Old sibling slots must never delete the new owner's projection.
+            if !self
+                .entries
+                .get(&id)
+                .is_some_and(|node| node.parent == Some(parent))
+            {
+                continue;
+            }
+            let node = self.entries.remove(&id).unwrap();
+            pending.extend(node.children.into_iter().flatten().map(|child| (child, id)));
+        }
+    }
+
+    fn remove(&mut self, id: StableNodeId) {
+        let Some(node) = self.entries.remove(&id) else {
+            return;
+        };
+        let parent = node.parent;
+        let slot = node.sibling_slot;
+        self.remove_descendants(node.children, id);
+        if let Some(parent) = parent {
+            let node = self.entries.get_mut(&parent).unwrap();
+            node.children[slot] = None;
+            node.child_bounds.clear(slot);
+            if node.child_bounds.is_empty() {
+                node.children = Vec::new();
+                node.child_bounds = BoundsTree::default();
+            }
+            self.refresh_bounds(parent);
+        } else {
+            self.roots[slot] = None;
+            self.root_bounds.clear(slot);
+            if self.root_bounds.is_empty() {
+                self.roots = Vec::new();
+                self.root_bounds = BoundsTree::default();
+            }
+        }
+    }
+
+    fn replace(
+        &mut self,
+        root: StableNodeId,
+        parent: Option<StableNodeId>,
+        entry: Option<HitEntry>,
+    ) {
+        let offset = self.child_shift(parent);
+        // A paint/geometry patch normally preserves this root's sibling slot.
+        // Do not remove, search or sort its unrelated siblings in that case.
+        if let Some(next) = entry.as_ref()
+            && self.entries.get(&root).is_some_and(|old| {
+                old.parent == parent
+                    && old.entry.z_index == next.z_index
+                    && old.entry.order == next.order
+            })
+        {
+            let old = self.entries.remove(&root).unwrap();
+            self.remove_descendants(old.children, root);
+            self.insert_tree(entry.unwrap(), parent, offset, old.sibling_slot);
+            self.refresh_bounds(root);
+            return;
+        }
+        self.remove(root);
+        let Some(entry) = entry else {
+            return;
+        };
+        {
+            let id = entry.id;
+            self.insert_tree(entry, parent, offset, 0);
+            let mut children = if let Some(parent) = parent {
+                std::mem::take(&mut self.entries.get_mut(&parent).unwrap().children)
+            } else {
+                std::mem::take(&mut self.roots)
+            };
+            children.retain(|id| {
+                id.is_some_and(|id| {
+                    self.entries
+                        .get(&id)
+                        .is_some_and(|node| node.parent == parent)
+                })
+            });
+            children.push(Some(id));
+            children.sort_by_key(|id| {
+                let n = &self.entries[&id.unwrap()].entry;
+                (n.z_index, n.order)
+            });
+            if let Some(parent) = parent {
+                self.entries.get_mut(&parent).unwrap().children = children;
+            } else {
+                self.roots = children;
+            }
+        }
+        self.reindex_children(parent);
+    }
+
+    fn visit_hits(
+        &self,
+        id: StableNodeId,
+        x: f32,
+        y: f32,
+        emit: &mut impl FnMut(StableNodeId) -> bool,
+    ) -> bool {
+        let Some(indexed) = self.entries.get(&id) else {
+            return false;
+        };
+        if !indexed.bounds.contains(x, y) {
+            return false;
+        }
+        let node = &indexed.entry;
+        if !node
+            .self_clips
+            .iter()
+            .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y))
+        {
+            return false;
+        }
+        let menu_hit = node
+            .menu
+            .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
+        let children_ok = node
+            .child_clips
+            .iter()
+            .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y));
+        let menu_z = node.z_index.max(1000);
+        let mut emitted_menu = !menu_hit;
+        if children_ok
+            && indexed
+                .child_bounds
+                .visit(x - indexed.shift[0], y - indexed.shift[1], &mut |slot| {
+                    let child = indexed.children[slot].expect("live child bounds");
+                    if !emitted_menu && self.entries[&child].entry.z_index <= menu_z {
+                        emitted_menu = true;
+                        if emit(id) {
+                            return true;
+                        }
+                    }
+                    self.visit_hits(child, x - indexed.shift[0], y - indexed.shift[1], emit)
+                })
+        {
+            return true;
+        }
+
+        if !emitted_menu && emit(id) {
+            return true;
+        }
+        if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
+            return emit(id);
+        }
+        false
+    }
+}
+
+pub(super) fn find_hit_transform(index: &HitIndex, id: StableNodeId) -> Option<[f32; 6]> {
+    let mut transform = index.entries.get(&id)?.entry.transform;
+    let shift = index.inherited_shift(id);
+    transform[4] += shift[0];
+    transform[5] += shift[1];
+    Some(transform)
 }
 
 pub(super) fn count_hit_entries(entry: &HitEntry) -> usize {
     1 + entry.children.iter().map(count_hit_entries).sum::<usize>()
 }
 
-pub(super) fn retain_hit_tree(nodes: &mut Vec<HitEntry>, id: StableNodeId) {
-    nodes.retain_mut(|node| {
-        if node.id == id {
-            false
-        } else {
-            retain_hit_tree(&mut node.children, id);
-            true
-        }
-    });
-}
-
-pub(super) fn patch_hit_scroll(
-    nodes: &mut [HitEntry],
-    scroller: StableNodeId,
-    subtree: &HashSet<StableNodeId>,
-    delta: [f32; 2],
-) {
-    for node in nodes {
-        if node.id != scroller && subtree.contains(&node.id) {
-            node.transform[4] += delta[0];
-            node.transform[5] += delta[1];
-            // Descendant clipping viewports move with the same ancestor scroll.
-            // The scroller's own clip stays fixed because its entry is skipped.
-            for (_, transform) in node.self_clips.iter_mut().chain(&mut node.child_clips) {
-                transform[4] += delta[0];
-                transform[5] += delta[1];
-            }
-        }
-        patch_hit_scroll(&mut node.children, scroller, subtree, delta);
-    }
-}
-
-/// First candidate `collect_hit_candidates` would push for this subtree.
-///
-/// Mirrors that traversal exactly and returns at the first would-be push. Kept
-/// beside it so the two orders stay in step; the pair is pinned by
-/// `hit_test_matches_the_first_collected_candidate`.
-pub(super) fn first_hit_candidate(node: &HitEntry, x: f32, y: f32) -> Option<StableNodeId> {
-    if !node
-        .self_clips
-        .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y))
-    {
-        return None;
-    }
-    let menu_hit = node
-        .menu
-        .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
-    let children_ok = node
-        .child_clips
-        .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y));
-    let menu_z = node.z_index.max(1_000);
-    if children_ok {
-        for child in node.children.iter().rev() {
-            if menu_hit && child.z_index <= menu_z {
-                return Some(node.id);
-            }
-            if let Some(found) = first_hit_candidate(child, x, y) {
-                return Some(found);
-            }
-        }
-    }
-    if menu_hit {
-        return Some(node.id);
-    }
-    if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
-        return Some(node.id);
-    }
-    None
-}
-
-pub(super) fn collect_hit_candidates(node: &HitEntry, x: f32, y: f32, out: &mut Vec<StableNodeId>) {
-    if !node
-        .self_clips
-        .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y))
-    {
-        return;
-    }
-    let menu_hit = node
-        .menu
-        .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
-    let children_ok = node
-        .child_clips
-        .iter()
-        .all(|(bounds, transform)| transformed_contains(*bounds, *transform, [0.0, 0.0], x, y));
-    let menu_z = node.z_index.max(1_000);
-    let mut emitted_menu = !menu_hit;
-    if children_ok {
-        for child in node.children.iter().rev() {
-            if !emitted_menu && child.z_index <= menu_z {
-                out.push(node.id);
-                emitted_menu = true;
-            }
-            collect_hit_candidates(child, x, y, out);
-        }
-    }
-    if !emitted_menu {
-        out.push(node.id);
-    }
-    if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
-        out.push(node.id);
-    }
+pub(super) fn retain_hit_tree(index: &mut HitIndex, id: StableNodeId) {
+    index.remove(id);
 }
 
 pub(super) fn then_affine([a, b, c, d, e, f]: [f32; 6], rhs: [f32; 6]) -> [f32; 6] {
@@ -219,9 +536,10 @@ impl UiWorld {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        for node in forest.iter().rev() {
-            collect_hit_candidates(node, x, y, &mut candidates);
-        }
+        forest.visit_roots(x, y, &mut |id| {
+            candidates.push(id);
+            false
+        });
         candidates.retain(|id| !self.motion_blocks_input(*id));
         candidates
     }
@@ -238,10 +556,12 @@ impl UiWorld {
             return self.hit_test_candidates(document, x, y).into_iter().next();
         }
         let forest = self.hit_test_index.get(&document)?;
-        forest
-            .iter()
-            .rev()
-            .find_map(|node| first_hit_candidate(node, x, y))
+        let mut found = None;
+        forest.visit_roots(x, y, &mut |id| {
+            found = Some(id);
+            true
+        });
+        found
     }
 }
 
@@ -249,38 +569,37 @@ impl UiWorld {
     /// Pre-compose a scroll translation onto descendant hit entries of
     /// `scroller`. The scroller chrome stays un-scrolled — rebuild applies
     /// scroll only when walking children. Equivalent to a rebuild because
-    /// scroll preserves entry membership, order and z-index. Descendant clips
-    /// translate with their entries; the scroller's own clip stays fixed.
+    /// scroll changes nothing else about the entries (membership, order,
+    /// z-index, and clips are scroll-invariant: the scroller's own clip never
+    /// includes its scroll offset).
     pub fn update_hit_test_scroll(
         &mut self,
         document: DocumentId,
         scroller: StableNodeId,
         delta: [f32; 2],
     ) {
-        let mut subtree = vec![scroller];
-        let mut index = 0;
-        while index < subtree.len() {
-            let id = subtree[index];
-            index += 1;
-            subtree.extend(self.record(id).hierarchy.children.iter().copied());
+        let Some(index) = self.hit_test_index.get_mut(&document) else {
+            return;
+        };
+        let Some(node) = index.entries.get_mut(&scroller) else {
+            return;
+        };
+        if node.entry.persp != [0.0, 0.0] {
+            self.rebuild_hit_test(document);
+            return;
         }
-        let subtree = subtree
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let Some(entries) = self.hit_test_index.get_mut(&document) else {
-            return;
-        };
-        let Some([a, b, c, d, _, _]) = find_hit_transform(entries, scroller) else {
-            return;
-        };
-        let viewport_delta = [a * delta[0] + c * delta[1], b * delta[0] + d * delta[1]];
-        patch_hit_scroll(entries, scroller, &subtree, viewport_delta);
+        let [a, b, c, d, _, _] = node.entry.transform;
+        node.shift[0] += a * delta[0] + c * delta[1];
+        node.shift[1] += b * delta[0] + d * delta[1];
+        index.refresh_bounds(scroller);
     }
 }
 
 impl UiWorld {
-    /// Whether every input-dirty node is explained by recorded scroll deltas
-    /// (it is a scroller or descends from one). When true, the frame driver
+    /// Whether every input-dirty node is a recorded scroller. Ordinary scroll
+    /// dirties only that container; descendant dirtiness means additional
+    /// input geometry changed (for example a frozen row's transform).
+    /// When true, the frame driver
     /// can patch the hit index in place instead of rebuilding the document.
     pub fn hit_test_work_is_scroll_only(
         &self,
@@ -288,23 +607,9 @@ impl UiWorld {
         updates: &[(StableNodeId, [f32; 2])],
     ) -> bool {
         !updates.is_empty()
-            && !input
+            && input
                 .iter()
-                .any(|id| self.non_scroll_hit_dirty.contains(id))
-            && input.iter().all(|node| {
-                updates.iter().any(|(scroller, _)| {
-                    *scroller == *node || {
-                        let mut cursor = self.parent_id(*node);
-                        while let Some(ancestor) = cursor {
-                            if ancestor == *scroller {
-                                return true;
-                            }
-                            cursor = self.parent_id(ancestor);
-                        }
-                        false
-                    }
-                })
-            })
+                .all(|node| updates.iter().any(|(scroller, _)| *scroller == *node))
     }
 }
 
@@ -323,11 +628,7 @@ impl UiWorld {
     /// `order` is assigned per sibling group from `Hierarchy` position. It is
     /// only ever compared between siblings, so a spliced subtree stays sortable
     /// against untouched siblings without renumbering the document.
-    pub(super) fn build_hit_forest(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<HitEntry> {
-        struct Built {
-            entry: HitEntry,
-            parent: Option<usize>,
-        }
+    fn build_hit_entries(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<BuiltHit> {
         let mut stack = seeds
             .into_iter()
             .enumerate()
@@ -343,7 +644,7 @@ impl UiWorld {
                 )
             })
             .collect::<Vec<_>>();
-        let mut built: Vec<Built> = Vec::new();
+        let mut built: Vec<BuiltHit> = Vec::new();
         let mut memo = AncestorMemo::default();
         while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
             stack.pop()
@@ -352,6 +653,9 @@ impl UiWorld {
                 continue;
             }
             let style = self.record(id).resolved.0.as_ref();
+            if !self.node_has_hit_box(id) {
+                continue;
+            }
             let layout = self.record(id).layout;
             let motion_layout = self.motion_layout(id, &self.record(id).style.layout);
             let node_style = motion_layout.as_ref();
@@ -372,21 +676,6 @@ impl UiWorld {
             let children = Arc::clone(&self.record(id).hierarchy.children);
             let used_pe =
                 PointerEventsSpec::inherit_from(node_style.pointer_events, parent_used_pe);
-            if !style.visible {
-                // `visibility:hidden` skips this entry but descendants may be
-                // `visibility:visible` and still need the accumulated transform.
-                stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
-                    (
-                        *child,
-                        child_transform,
-                        parent,
-                        position,
-                        used_pe,
-                        child_blocks_3d,
-                    )
-                }));
-                continue;
-            }
             let mut self_clips = Vec::new();
             let mut child_clips = Vec::new();
             if let Some((x, y, w, h)) =
@@ -428,7 +717,8 @@ impl UiWorld {
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
-            let hittable = interaction.pointer_events
+            let hittable = style.visible
+                && interaction.pointer_events
                 && used_pe.hittable()
                 && style.pointer_events.hittable()
                 && !confirm_busy;
@@ -442,9 +732,10 @@ impl UiWorld {
                     _ => None,
                 });
             let index = built.len();
-            built.push(Built {
+            built.push(BuiltHit {
                 entry: HitEntry {
                     id,
+                    source_children: Arc::clone(&children),
                     layout,
                     transform,
                     persp,
@@ -472,6 +763,11 @@ impl UiWorld {
                 )
             }));
         }
+        built
+    }
+
+    pub(super) fn build_hit_forest(&self, seeds: Vec<(StableNodeId, [f32; 6])>) -> Vec<HitEntry> {
+        let built = self.build_hit_entries(seeds);
         let n = built.len();
         let mut parent_of = Vec::with_capacity(n);
         let mut entries = Vec::with_capacity(n);
@@ -503,9 +799,13 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// Whether `id` would contribute an entry to the hit index.
-    pub(super) fn node_hit_visible(&self, id: StableNodeId) -> bool {
-        self.contains(id) && self.record(id).resolved.0.visible
+    /// Hidden containers keep structural entries for descendant clip, scroll and
+    /// sibling order. Hidden leaves and omitted layout subtrees need no entry.
+    pub(super) fn node_has_hit_box(&self, id: StableNodeId) -> bool {
+        self.nodes.get(id).is_some_and(|node| {
+            node.resolved.0.box_visible
+                && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
+        })
     }
 }
 
@@ -520,11 +820,13 @@ impl UiWorld {
             // Document roots: membership is owned by `live_document_roots`, so a
             // root entering or leaving the set is a structural change.
             let roots = self.document_roots(document);
-            let present = self
-                .hit_test_index
-                .get(&document)
-                .is_some_and(|forest| forest.iter().any(|entry| entry.id == root));
-            let expected = roots.contains(&root) && self.node_hit_visible(root);
+            let present = self.hit_test_index.get(&document).is_some_and(|forest| {
+                forest
+                    .entries
+                    .get(&root)
+                    .is_some_and(|entry| entry.parent.is_none())
+            });
+            let expected = roots.contains(&root) && self.node_has_hit_box(root);
             if present != expected {
                 return false;
             }
@@ -542,12 +844,7 @@ impl UiWorld {
             let Some(forest) = self.hit_test_index.get_mut(&document) else {
                 return false;
             };
-            if let Some(slot) = forest.iter_mut().find(|slot| slot.id == root) {
-                *slot = entry;
-            } else {
-                forest.push(entry);
-            }
-            forest.sort_by_key(|entry| (entry.z_index, entry.order));
+            forest.replace(root, None, Some(entry));
             return true;
         };
 
@@ -559,14 +856,24 @@ impl UiWorld {
             .and_then(|forest| find_hit_transform(forest, parent))
         else {
             // Parent is absent from the index. That is correct only when the
-            // parent is itself not hit-visible; otherwise the index is stale.
-            return !self.node_hit_visible(parent);
+            // parent omits its layout subtree; otherwise the index is stale.
+            return !self.node_has_hit_box(parent);
         };
         let scroll = self.record(parent).scroll_offset;
         let child_transform =
             then_affine(parent_transform, [1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y]);
-        let siblings = Arc::clone(&self.record(parent).hierarchy.children);
-        let position = siblings.iter().position(|id| *id == root);
+        let siblings = &self.record(parent).hierarchy.children;
+        let position = self
+            .hit_test_index
+            .get(&document)
+            .and_then(|index| {
+                let entry = index.entries.get(&root)?;
+                let parent_entry = index.entries.get(&parent)?;
+                (entry.parent == Some(parent)
+                    && Arc::ptr_eq(siblings, &parent_entry.entry.source_children))
+                .then_some(entry.entry.order)
+            })
+            .or_else(|| siblings.iter().position(|id| *id == root));
         let Some(position) = position else {
             return false;
         };
@@ -582,27 +889,7 @@ impl UiWorld {
         let Some(forest) = self.hit_test_index.get_mut(&document) else {
             return false;
         };
-        let Some(parent_entry) = find_hit_entry_mut(forest, parent) else {
-            return false;
-        };
-        match entry {
-            Some(entry) => {
-                if let Some(slot) = parent_entry
-                    .children
-                    .iter_mut()
-                    .find(|slot| slot.id == root)
-                {
-                    *slot = entry;
-                } else {
-                    parent_entry.children.push(entry);
-                }
-            }
-            // The subtree turned invisible: drop it from the parent.
-            None => parent_entry.children.retain(|slot| slot.id != root),
-        }
-        parent_entry
-            .children
-            .sort_by_key(|child| (child.z_index, child.order));
+        forest.replace(root, Some(parent), entry);
         true
     }
 }
@@ -669,14 +956,9 @@ impl UiWorld {
         let Some(roots) = self.minimal_hit_patch_roots(document, dirty) else {
             return false;
         };
-        for &root in &roots {
+        for root in roots {
             if !self.patch_hit_subtree(document, root) {
                 return false;
-            }
-        }
-        for root in roots {
-            for id in self.subtree_ids(root) {
-                self.non_scroll_hit_dirty.remove(&id);
             }
         }
         true
@@ -694,24 +976,13 @@ impl UiWorld {
             .copied()
             .map(|id| (id, IDENTITY_AFFINE))
             .collect::<Vec<_>>();
-        let mut forest = self.build_hit_forest(seeds);
-        for root in &mut forest {
-            sort_hit_children(root);
-        }
-        forest.sort_by_key(|entry| (entry.z_index, entry.order));
-        self.note_hit_nodes_built(&forest);
-        self.hit_test_index.insert(document, forest);
-        let covered = self
-            .non_scroll_hit_dirty
-            .iter()
-            .copied()
-            .filter(|id| !self.contains(*id) || self.record(*id).document == document)
-            .collect::<Vec<_>>();
-        for id in covered {
-            self.non_scroll_hit_dirty.remove(&id);
-        }
+        let entries = self.build_hit_entries(seeds);
+        self.bump_last_counters(|counters| counters.record_hit_test_rebuild(entries.len()));
+        self.hit_test_index
+            .insert(document, HitIndex::from_entries(entries));
     }
 }
 
 #[cfg(test)]
-mod scroll_invalidation_tests;
+#[path = "hit_test/build_tests.rs"]
+mod build_tests;

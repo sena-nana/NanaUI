@@ -34,7 +34,10 @@ pub fn rasterize(size: u32) -> Vec<u8> {
             *channel = if alpha == 0 {
                 0
             } else {
-                ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
+                (u32::from(*channel) * 255 + alpha / 2)
+                    .checked_div(alpha)
+                    .unwrap_or(0)
+                    .min(255) as u8
             };
         }
     }
@@ -57,7 +60,7 @@ mod tests {
         for size in [16, 32, 48, 128, 256, 512] {
             let pixels = rasterize(size);
             assert_eq!(pixels.len(), (size * size * 4) as usize);
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] > 245));
+            assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 245));
             for i in 0..size as usize {
                 let side = size as usize;
                 for index in [i, (side - 1) * side + i, i * side, i * side + side - 1] {

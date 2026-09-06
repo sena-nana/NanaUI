@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use std::collections::VecDeque;
 
-#[cfg(all(feature = "hosted", not(target_os = "android")))]
 use accesskit::ActionData;
 use accesskit::{
     Action, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
@@ -27,7 +26,8 @@ use nana_ui_runtime::{
 ))]
 use accesskit::DeactivationHandler;
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
-use accesskit::{ActionHandler, ActionRequest, ActivationHandler};
+use accesskit::{ActionHandler, ActivationHandler};
+use accesskit::ActionRequest;
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use std::sync::{Arc, Mutex};
 
@@ -42,9 +42,15 @@ pub(crate) struct AccessibilityProjector {
     text_runs: BTreeMap<StableNodeId, NodeId>,
     next_text_run_id: u64,
     roots: Vec<StableNodeId>,
+    focused: BTreeSet<StableNodeId>,
     interactive: bool,
     scale_factor: f32,
     generation: Option<u64>,
+    window_root: bool,
+    #[cfg(test)]
+    full_updates: std::cell::Cell<usize>,
+    #[cfg(test)]
+    global_reconciliations: std::cell::Cell<usize>,
 }
 
 impl AccessibilityProjector {
@@ -57,26 +63,45 @@ impl AccessibilityProjector {
         Self::new_at_generation(nodes, interactive, scale_factor, None)
     }
 
-    pub(crate) fn new_at_generation(
+    #[cfg(test)]
+    fn new_at_generation(
         nodes: Vec<AccessibilityNode>,
         interactive: bool,
         scale_factor: f32,
         generation: Option<u64>,
     ) -> (Self, TreeUpdate) {
+        let projector = Self::retain(nodes, interactive, scale_factor, generation, false);
+        let update = projector.full_update();
+        (projector, update)
+    }
+
+    pub(crate) fn retain(
+        nodes: Vec<AccessibilityNode>,
+        interactive: bool,
+        scale_factor: f32,
+        generation: Option<u64>,
+        window_root: bool,
+    ) -> Self {
         let nodes = nodes.into_iter().map(|node| (node.id, node)).collect();
         let roots = runtime_roots(&nodes);
+        let focused = focused_nodes(&nodes);
         let mut projector = Self {
             nodes,
             text_runs: BTreeMap::new(),
             next_text_run_id: u64::MAX,
             roots,
+            focused,
             interactive,
             scale_factor: scale_factor.max(0.01),
             generation,
+            window_root,
+            #[cfg(test)]
+            full_updates: std::cell::Cell::new(0),
+            #[cfg(test)]
+            global_reconciliations: std::cell::Cell::new(0),
         };
         projector.reconcile_text_runs();
-        let update = projector.full_update();
-        (projector, update)
+        projector
     }
 
     pub(crate) fn apply_delta(&mut self, delta: AccessibilityDelta) -> Option<TreeUpdate> {
@@ -111,7 +136,6 @@ impl AccessibilityProjector {
     }
 
     pub(crate) fn apply(&mut self, delta: AccessibilityDelta) -> TreeUpdate {
-        let previous_text_runs = self.text_runs.clone();
         let incoming = delta
             .updated
             .into_iter()
@@ -122,6 +146,20 @@ impl AccessibilityProjector {
             .into_iter()
             .filter(|id| !incoming.contains_key(id))
             .collect::<BTreeSet<_>>();
+        let structure_changed = !removed.is_empty()
+            || incoming.values().any(|node| {
+                self.nodes.get(&node.id).is_none_or(|previous| {
+                    previous.parent != node.parent || previous.children != node.children
+                })
+            });
+        let text_roles_changed = structure_changed
+            || incoming.values().any(|node| {
+                self.nodes.get(&node.id).is_none_or(|previous| {
+                    (previous.role == AccessibilityRole::TextInput)
+                        != (node.role == AccessibilityRole::TextInput)
+                })
+            });
+        let previous_text_runs = text_roles_changed.then(|| self.text_runs.clone());
         let mut changed = incoming.keys().copied().collect::<BTreeSet<_>>();
         changed.extend(
             removed
@@ -136,6 +174,7 @@ impl AccessibilityProjector {
                 parent.children.retain(|child| child != id);
             }
             self.nodes.remove(id);
+            self.focused.remove(id);
             changed.remove(id);
         }
 
@@ -151,31 +190,45 @@ impl AccessibilityProjector {
                 }
                 changed.insert(old_parent);
             }
-            if let Some(parent_id) = node.parent
+            if structure_changed
+                && let Some(parent_id) = node.parent
                 && let Some(parent) = self.nodes.get_mut(&parent_id)
                 && !parent.children.contains(&node.id)
             {
                 parent.children.push(node.id);
                 changed.insert(parent_id);
             }
+            if node.focused {
+                self.focused.insert(node.id);
+            } else {
+                self.focused.remove(&node.id);
+            }
             self.nodes.insert(node.id, node);
         }
 
-        self.drop_unreachable(&mut changed);
-        self.reconcile_text_runs();
-        let roots = runtime_roots(&self.nodes);
-        if roots != self.roots {
-            self.roots = roots;
-            return self.full_update();
+        if structure_changed {
+            self.drop_unreachable(&mut changed);
         }
-        changed.extend(
-            previous_text_runs
-                .iter()
-                .chain(self.text_runs.iter())
-                .filter_map(|(id, _)| {
-                    (previous_text_runs.get(id) != self.text_runs.get(id)).then_some(*id)
-                }),
-        );
+        if text_roles_changed {
+            self.reconcile_text_runs();
+        }
+        if structure_changed {
+            let roots = runtime_roots(&self.nodes);
+            if roots != self.roots {
+                self.roots = roots;
+                return self.full_update();
+            }
+        }
+        if let Some(previous_text_runs) = previous_text_runs {
+            changed.extend(
+                previous_text_runs
+                    .iter()
+                    .chain(self.text_runs.iter())
+                    .filter_map(|(id, _)| {
+                        (previous_text_runs.get(id) != self.text_runs.get(id)).then_some(*id)
+                    }),
+            );
+        }
         changed.retain(|id| self.nodes.contains_key(id));
 
         // Updating a parent removes stale AccessKit subtrees. Do not also ship
@@ -194,6 +247,9 @@ impl AccessibilityProjector {
     }
 
     fn drop_unreachable(&mut self, changed: &mut BTreeSet<StableNodeId>) {
+        #[cfg(test)]
+        self.global_reconciliations
+            .set(self.global_reconciliations.get() + 1);
         let mut keep = BTreeSet::new();
         let mut stack = runtime_roots(&self.nodes);
         while let Some(id) = stack.pop() {
@@ -211,6 +267,7 @@ impl AccessibilityProjector {
         }
         if keep.len() != self.nodes.len() {
             self.nodes.retain(|id, _| keep.contains(id));
+            self.focused.retain(|id| keep.contains(id));
             changed.retain(|id| keep.contains(id));
         }
         for node in self.nodes.values_mut() {
@@ -235,6 +292,7 @@ impl AccessibilityProjector {
         let scale_factor = scale_factor.max(0.01);
         if (scale_factor - self.scale_factor).abs() > f32::EPSILON || roots != self.roots {
             self.nodes = next;
+            self.focused = focused_nodes(&self.nodes);
             self.scale_factor = scale_factor;
             self.roots = roots;
             self.reconcile_text_runs();
@@ -262,13 +320,19 @@ impl AccessibilityProjector {
     }
 
     pub(crate) fn full_update(&self) -> TreeUpdate {
+        #[cfg(test)]
+        self.full_updates.set(self.full_updates.get() + 1);
         let mut nodes = self
             .nodes
             .values()
             .flat_map(|node| self.project_entries(node))
             .collect::<Vec<_>>();
-        if self.roots.len() != 1 {
-            let mut root = Node::new(Role::GenericContainer);
+        if self.window_root || self.roots.len() != 1 {
+            let mut root = Node::new(if self.window_root {
+                Role::Window
+            } else {
+                Role::GenericContainer
+            });
             root.set_children(self.roots.iter().copied().map(node_id).collect::<Vec<_>>());
             nodes.push((FOREST_ROOT_ID, root));
         }
@@ -281,7 +345,7 @@ impl AccessibilityProjector {
     }
 
     fn tree_root_id(&self) -> NodeId {
-        if self.roots.len() == 1 {
+        if !self.window_root && self.roots.len() == 1 {
             node_id(self.roots[0])
         } else {
             FOREST_ROOT_ID
@@ -289,14 +353,23 @@ impl AccessibilityProjector {
     }
 
     fn focused_node_id(&self) -> NodeId {
-        self.nodes
-            .values()
-            .find(|node| node.focused)
-            .map(|node| node_id(node.id))
-            .unwrap_or_else(|| self.roots.first().copied().map_or(FOREST_ROOT_ID, node_id))
+        self.focused
+            .first()
+            .copied()
+            .map(node_id)
+            .unwrap_or_else(|| {
+                if self.window_root {
+                    FOREST_ROOT_ID
+                } else {
+                    self.roots.first().copied().map_or(FOREST_ROOT_ID, node_id)
+                }
+            })
     }
 
     fn reconcile_text_runs(&mut self) {
+        #[cfg(test)]
+        self.global_reconciliations
+            .set(self.global_reconciliations.get() + 1);
         let occupied = self
             .nodes
             .keys()
@@ -339,8 +412,7 @@ impl AccessibilityProjector {
         )
     }
 
-    #[cfg(all(feature = "hosted", not(target_os = "android")))]
-    fn project_action_request(
+    pub(crate) fn project_action_request(
         &self,
         request: ActionRequest,
     ) -> Option<nana_ui_runtime::AccessibilityActionRequest> {
@@ -391,6 +463,14 @@ impl AccessibilityProjector {
 
 const FOREST_ROOT_ID: NodeId = NodeId(0);
 
+fn focused_nodes(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> BTreeSet<StableNodeId> {
+    nodes
+        .values()
+        .filter(|node| node.focused)
+        .map(|node| node.id)
+        .collect()
+}
+
 fn runtime_roots(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> Vec<StableNodeId> {
     nodes
         .values()
@@ -400,12 +480,41 @@ fn runtime_roots(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> Vec<Stabl
 }
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
-struct CurrentTree(Arc<Mutex<TreeUpdate>>);
+#[derive(Clone)]
+struct CurrentTree(Arc<Mutex<AccessibilityProjector>>);
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 impl ActivationHandler for CurrentTree {
     fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
-        Some(self.0.lock().ok()?.clone())
+        Some(self.0.lock().ok()?.full_update())
+    }
+}
+
+#[cfg(all(feature = "hosted", not(target_os = "android")))]
+impl CurrentTree {
+    fn unpublished(interactive: bool, scale_factor: f32) -> Self {
+        Self(Arc::new(Mutex::new(AccessibilityProjector::retain(
+            Vec::new(),
+            interactive,
+            scale_factor,
+            None,
+            true,
+        ))))
+    }
+
+    fn synchronize(&self, update: AccessibilityUpdate, scale_factor: f32) -> Option<TreeUpdate> {
+        let mut projector = self.0.lock().expect("accessibility projector");
+        match update {
+            AccessibilityUpdate::Full { generation, nodes } => {
+                projector.synchronize_full(nodes, scale_factor, generation)
+            }
+            AccessibilityUpdate::Delta(delta) => {
+                debug_assert!(
+                    (projector.scale_factor - scale_factor.max(0.01)).abs() <= f32::EPSILON
+                );
+                projector.apply_delta(delta)
+            }
+        }
     }
 }
 
@@ -692,8 +801,7 @@ pub(crate) struct HostedAccessibility {
         target_os = "openbsd"
     )))]
     adapter: Option<()>,
-    projector: AccessibilityProjector,
-    current_tree: Arc<Mutex<TreeUpdate>>,
+    current_tree: CurrentTree,
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
 }
 
@@ -701,30 +809,34 @@ pub(crate) struct HostedAccessibility {
 impl HostedAccessibility {
     pub(crate) fn new(
         window: Arc<dyn winit::window::Window>,
-        generation: Option<u64>,
-        nodes: Vec<AccessibilityNode>,
         interactive: bool,
         scale_factor: f32,
     ) -> Self {
-        let (projector, initial_tree) =
-            AccessibilityProjector::new_at_generation(nodes, interactive, scale_factor, generation);
-        let current_tree = Arc::new(Mutex::new(initial_tree));
+        // A native window must keep its own exposed root when focus moves into
+        // a child. Generic Runtime roots are otherwise filtered by AccessKit,
+        // and mounting/replacing documents must not replace the HWND provider.
+        // A prepared document is not necessarily a presented document. Keep
+        // activation limited to the native root until the first publication.
+        let current_tree = CurrentTree::unpublished(interactive, scale_factor);
         let requests = Arc::new(Mutex::new(VecDeque::new()));
         let actions = QueuedActions {
             requests: Arc::clone(&requests),
             window: Arc::clone(&window),
         };
-        let adapter = native_adapter(&window, CurrentTree(Arc::clone(&current_tree)), actions);
+        let adapter = native_adapter(&window, current_tree.clone(), actions);
         Self {
             adapter,
-            projector,
             current_tree,
             requests,
         }
     }
 
     pub(crate) fn retained_generation(&self) -> Option<u64> {
-        self.projector.generation
+        self.current_tree
+            .0
+            .lock()
+            .expect("accessibility projector")
+            .generation
     }
 
     pub(crate) fn process_event(
@@ -768,35 +880,36 @@ impl HostedAccessibility {
     }
 
     pub(crate) fn scale_factor_changed(&self, scale_factor: f32) -> bool {
-        (self.projector.scale_factor - scale_factor.max(0.01)).abs() > f32::EPSILON
+        (self
+            .current_tree
+            .0
+            .lock()
+            .expect("accessibility projector")
+            .scale_factor
+            - scale_factor.max(0.01))
+        .abs()
+            > f32::EPSILON
     }
 
     pub(crate) fn synchronize(&mut self, update: AccessibilityUpdate, scale_factor: f32) {
-        let update = match update {
-            AccessibilityUpdate::Full { generation, nodes } => {
-                self.projector
-                    .synchronize_full(nodes, scale_factor, generation)
-            }
-            AccessibilityUpdate::Delta(delta) => {
-                debug_assert!(!self.scale_factor_changed(scale_factor));
-                self.projector.apply_delta(delta)
-            }
-        };
-        if let Some(update) = update {
-            if let Ok(mut current_tree) = self.current_tree.lock() {
-                *current_tree = self.projector.full_update();
-            }
+        // Drop the projector lock before entering native UIA/AccessKit code:
+        // raising events can synchronously request a fresh activation tree.
+        if let Some(update) = self.current_tree.synchronize(update, scale_factor) {
             raise_accesskit_update(&mut self.adapter, update);
         }
     }
 
     pub(crate) fn take_actions(&self) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
-        let Ok(mut requests) = self.requests.lock() else {
-            return Vec::new();
+        let requests = {
+            let Ok(mut requests) = self.requests.lock() else {
+                return Vec::new();
+            };
+            std::mem::take(&mut *requests)
         };
-        std::mem::take(&mut *requests)
+        let projector = self.current_tree.0.lock().expect("accessibility projector");
+        requests
             .into_iter()
-            .filter_map(|request| self.projector.project_action_request(request))
+            .filter_map(|request| projector.project_action_request(request))
             .collect()
     }
 }
@@ -808,10 +921,19 @@ fn project_node(
     scale_factor: f32,
 ) -> Vec<(NodeId, Node)> {
     let mut projected = Node::new(project_role(node.role, node.multiline));
-    if let Some(label) = &node.label {
+    // AccessKit Label nodes expose their text through value (including the
+    // native UIA Name property), unlike controls whose accessible name is label.
+    if node.role != AccessibilityRole::Text
+        && let Some(label) = &node.label
+    {
         projected.set_label(label.to_string());
     }
-    if let Some(value) = &node.value {
+    let value = if node.role == AccessibilityRole::Text {
+        node.label.as_ref().or(node.value.as_ref())
+    } else {
+        node.value.as_ref()
+    };
+    if let Some(value) = value {
         projected.set_value(value.to_string());
     }
     if let Some(description) = &node.description {
@@ -965,7 +1087,6 @@ fn byte_to_character_index(value: &str, byte_offset: usize) -> Option<usize> {
     Some(value[..byte_offset].chars().count())
 }
 
-#[cfg(all(feature = "hosted", not(target_os = "android")))]
 fn character_index_to_byte(value: &str, character_index: usize) -> Option<usize> {
     if character_index == value.chars().count() {
         return Some(value.len());
@@ -1027,6 +1148,72 @@ mod tests {
     use super::*;
     use nana_ui_runtime::LayoutBox;
 
+    #[test]
+    fn static_text_exports_its_content_as_accesskit_value_after_updates() {
+        let mut text = node(1, None, &[]);
+        text.role = AccessibilityRole::Text;
+        text.label = Some("Initial text".into());
+        let (mut projector, initial) = AccessibilityProjector::new(vec![text.clone()], true, 1.0);
+        assert_eq!(initial.nodes[0].1.role(), Role::Label);
+        assert_eq!(initial.nodes[0].1.value(), Some("Initial text"));
+        text.label = Some("Updated text".into());
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![text.clone()],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].1.value(), Some("Updated text"));
+        text.label = None;
+        text.value = Some("Value-only text".into());
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 2,
+                updated: vec![text],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(update.nodes[0].1.value(), Some("Value-only text"));
+    }
+
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
+    #[test]
+    fn unpublished_window_exposes_only_its_root_until_the_first_publication() {
+        let mut current = CurrentTree::unpublished(true, 1.0);
+        let initial = current.request_initial_tree().unwrap();
+        assert_eq!(initial.nodes.len(), 1);
+        assert_eq!(initial.nodes[0].0, FOREST_ROOT_ID);
+        assert_eq!(initial.nodes[0].1.role(), Role::Window);
+        assert!(initial.nodes[0].1.children().is_empty());
+        assert_eq!(initial.focus, FOREST_ROOT_ID);
+        assert_eq!(current.0.lock().unwrap().generation, None);
+
+        let mut control = node(2, Some(1), &[]);
+        control.role = AccessibilityRole::Button;
+        control.label = Some("Published button".into());
+        current
+            .synchronize(
+                AccessibilityUpdate::Full {
+                    generation: Some(7),
+                    nodes: vec![node(1, None, &[2]), control],
+                },
+                1.0,
+            )
+            .unwrap();
+        let published = current.request_initial_tree().unwrap();
+        assert_eq!(published.nodes.len(), 3);
+        assert_eq!(published.tree.unwrap().root, FOREST_ROOT_ID);
+        assert!(
+            published
+                .nodes
+                .iter()
+                .any(|(id, value)| *id == NodeId(2) && value.label() == Some("Published button"))
+        );
+        assert_eq!(current.0.lock().unwrap().generation, Some(7));
+    }
+
     fn node(id: u64, parent: Option<u64>, children: &[u64]) -> AccessibilityNode {
         AccessibilityNode {
             id: StableNodeId::new(id).unwrap(),
@@ -1058,6 +1245,84 @@ mod tests {
             focused: false,
             bounds: LayoutBox::default(),
         }
+    }
+
+    #[test]
+    fn semantic_focus_updates_keep_the_index_in_sync_without_tree_reconciliation() {
+        let mut first = node(2, Some(1), &[]);
+        first.focused = true;
+        let mut second = node(3, Some(1), &[]);
+        let mut projector = AccessibilityProjector::retain(
+            vec![node(1, None, &[2, 3]), first.clone(), second.clone()],
+            true,
+            1.0,
+            Some(0),
+            true,
+        );
+        for generation in 1..=8 {
+            first.focused = generation % 2 == 0;
+            second.focused = !first.focused;
+            let update = projector
+                .apply_delta(AccessibilityDelta {
+                    generation,
+                    updated: vec![first.clone(), second.clone()],
+                    removed: vec![],
+                })
+                .unwrap();
+            assert_eq!(update.focus, NodeId(if first.focused { 2 } else { 3 }));
+            assert!(update.tree.is_none());
+            assert_eq!(update.nodes.len(), 2);
+        }
+        assert_eq!(projector.global_reconciliations.get(), 1);
+        let removed = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 9,
+                updated: vec![],
+                removed: vec![StableNodeId::new(1).unwrap()],
+            })
+            .unwrap();
+        assert_eq!(removed.focus, FOREST_ROOT_ID);
+        assert_eq!(removed.nodes.len(), 1);
+        assert!(projector.focused.is_empty());
+    }
+
+    #[test]
+    fn native_window_root_survives_focus_and_document_replacement() {
+        let (mut projector, _) = AccessibilityProjector::new(Vec::new(), true, 1.0);
+        projector.window_root = true;
+        let initial = projector.full_update();
+        assert_eq!(initial.tree.unwrap().root, FOREST_ROOT_ID);
+        assert_eq!(initial.focus, FOREST_ROOT_ID);
+        assert_eq!(initial.nodes[0].1.role(), Role::Window);
+
+        let root = node(1, None, &[2]);
+        let mut editor = node(2, Some(1), &[]);
+        editor.role = AccessibilityRole::TextInput;
+        editor.editable = true;
+        projector.synchronize(vec![root.clone(), editor.clone()], 1.0);
+        editor.focused = true;
+        editor.value = Some("Edited".into());
+        let focused = projector.synchronize(vec![root, editor], 1.0).unwrap();
+        assert!(focused.tree.is_none());
+        assert_eq!(focused.focus, NodeId(2));
+        let full = projector.full_update();
+        assert_eq!(full.tree.unwrap().root, FOREST_ROOT_ID);
+        let window = &full
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == FOREST_ROOT_ID)
+            .unwrap()
+            .1;
+        assert_eq!(window.role(), Role::Window);
+        assert_eq!(window.children(), &[NodeId(1)]);
+
+        for nodes in [vec![node(3, None, &[]), node(4, None, &[])], vec![]] {
+            let updated = projector.synchronize(nodes, 1.0).unwrap();
+            assert_eq!(updated.tree.unwrap().root, FOREST_ROOT_ID);
+            assert_eq!(updated.focus, FOREST_ROOT_ID);
+            assert_eq!(updated.nodes.last().unwrap().1.role(), Role::Window);
+        }
+        assert_eq!(projector.full_update().nodes.len(), 1);
     }
 
     #[test]
@@ -1687,8 +1952,79 @@ mod tests {
 
     #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
+    fn native_activation_materializes_current_state_only_when_requested() {
+        let children = (2..=10_001).collect::<Vec<_>>();
+        let mut nodes = vec![node(1, None, &children)];
+        nodes.extend(children.iter().map(|id| node(*id, Some(1), &[])));
+        let mut editor = nodes[1].clone();
+        editor.role = AccessibilityRole::TextInput;
+        editor.editable = true;
+        editor.value = Some("Before".into());
+        nodes[1] = editor.clone();
+        let current = CurrentTree(Arc::new(Mutex::new(AccessibilityProjector::retain(
+            nodes,
+            true,
+            1.0,
+            Some(0),
+            true,
+        ))));
+        let mut activation = current.clone();
+        assert_eq!(current.0.lock().unwrap().full_updates.get(), 0);
+        for generation in 1..=4 {
+            editor.value = Some(format!("Edited {generation}").into());
+            editor.focused = true;
+            let update = current
+                .synchronize(
+                    AccessibilityUpdate::Delta(AccessibilityDelta {
+                        generation,
+                        updated: vec![editor.clone()],
+                        removed: vec![],
+                    }),
+                    1.0,
+                )
+                .unwrap();
+            assert_eq!(update.focus, NodeId(2));
+            assert_eq!(update.nodes.len(), 2); // Editor and its text run.
+            assert!(update.tree.is_none());
+            assert!(current.0.try_lock().is_ok()); // Native callbacks may reenter now.
+        }
+        assert_eq!(current.0.lock().unwrap().full_updates.get(), 0);
+        let before = activation.request_initial_tree().unwrap();
+        assert_eq!(current.0.lock().unwrap().global_reconciliations.get(), 1);
+        assert_eq!(before.tree.as_ref().unwrap().root, FOREST_ROOT_ID);
+        assert_eq!(
+            before
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == NodeId(2))
+                .unwrap()
+                .1
+                .value(),
+            Some("Edited 4")
+        );
+        current
+            .synchronize(
+                AccessibilityUpdate::Delta(AccessibilityDelta {
+                    generation: 5,
+                    updated: vec![],
+                    removed: vec![StableNodeId::new(2).unwrap()],
+                }),
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(current.0.lock().unwrap().full_updates.get(), 1);
+        let after = activation.request_initial_tree().unwrap();
+        assert_eq!(after.focus, FOREST_ROOT_ID);
+        assert!(after.nodes.iter().all(|(id, _)| *id != NodeId(2)));
+        assert!(before.nodes.iter().any(|(id, _)| *id == NodeId(2)));
+        assert_eq!(after.nodes.len(), 10_001); // Runtime nodes plus the window, no orphan text run.
+        assert_eq!(current.0.lock().unwrap().full_updates.get(), 2);
+    }
+
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
+    #[test]
     fn activation_always_returns_the_latest_complete_tree() {
-        let (_, initial) = AccessibilityProjector::new(vec![node(1, None, &[])], false, 1.0);
+        let (initial, _) = AccessibilityProjector::new(vec![node(1, None, &[])], false, 1.0);
         let current = Arc::new(Mutex::new(initial));
         let mut activation = CurrentTree(Arc::clone(&current));
 
@@ -1711,7 +2047,7 @@ mod tests {
             NodeId(1)
         );
 
-        let (_, replacement) = AccessibilityProjector::new(vec![node(9, None, &[])], false, 1.0);
+        let (replacement, _) = AccessibilityProjector::new(vec![node(9, None, &[])], false, 1.0);
         *current.lock().unwrap() = replacement;
         assert_eq!(
             activation

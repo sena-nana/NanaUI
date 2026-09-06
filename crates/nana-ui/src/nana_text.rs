@@ -1,8 +1,9 @@
 //! Nana-owned cosmic-text shaper. Layout metrics stay on Runtime.
 
 use cosmic_text::{
-    Affinity, Align, Attrs, Buffer, Cursor, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag,
-    FontFeatures, FontSystem, Metrics, Shaping, Stretch, Style, Weight, Wrap,
+    Affinity, Align, Attrs, AttrsList, Buffer, BufferLine, Cursor, Ellipsize, EllipsizeHeightLimit,
+    Family, FeatureTag, FontFeatures, FontSystem, LineEnding, LineIter, Metrics, Shaping, Stretch,
+    Style, Weight, Wrap,
 };
 use nana_ui_core::{
     DirSpec, FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec,
@@ -94,6 +95,139 @@ impl ShapedLayoutKey {
 struct ShapedLayoutEntry {
     key: ShapedLayoutKey,
     buffer: Buffer,
+    probes: TextProbeIndex,
+}
+
+#[derive(Debug)]
+struct RunIndex {
+    line: usize,
+    layout: usize,
+    top: f32,
+    y: f32,
+    height: f32,
+    width: f32,
+}
+
+#[derive(Debug)]
+struct TextProbeIndex {
+    starts: Vec<usize>,
+    ends: Vec<usize>,
+    boundaries: Vec<usize>,
+    line_runs: Vec<std::ops::Range<usize>>,
+    runs: Vec<RunIndex>,
+}
+
+impl TextProbeIndex {
+    fn new(buffer: &Buffer, text: &str) -> Self {
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        let mut offset = 0;
+        for line in &buffer.lines {
+            starts.push(offset);
+            offset += line.text().len();
+            ends.push(offset);
+            offset += line.ending().as_str().len();
+        }
+        let mut boundaries: Vec<_> = text
+            .grapheme_indices(true)
+            .map(|(offset, _)| offset)
+            .collect();
+        boundaries.push(text.len());
+        let mut line_runs = vec![0..0; starts.len()];
+        let mut runs = Vec::new();
+        for run in buffer.layout_runs() {
+            let line = &mut line_runs[run.line_i];
+            if line.start == line.end {
+                *line = runs.len()..runs.len();
+            }
+            let layout = line.len();
+            line.end += 1;
+            runs.push(RunIndex {
+                line: run.line_i,
+                layout,
+                top: run.line_top,
+                y: run.line_y,
+                height: run.line_height,
+                width: run.line_w,
+            });
+        }
+        Self {
+            starts,
+            ends,
+            boundaries,
+            line_runs,
+            runs,
+        }
+    }
+    fn cursor(&self, offset: usize, affinity: Affinity) -> Option<Cursor> {
+        self.boundaries.binary_search(&offset).ok()?;
+        let line = self.ends.partition_point(|end| *end < offset);
+        let start = *self.starts.get(line)?;
+        (offset >= start).then(|| Cursor::new_with_affinity(line, offset - start, affinity))
+    }
+    fn run<'a>(&self, buffer: &'a Buffer, index: usize) -> cosmic_text::LayoutRun<'a> {
+        let run = &self.runs[index];
+        let line = &buffer.lines[run.line];
+        let layout = &line.layout_opt().unwrap()[run.layout];
+        cosmic_text::LayoutRun {
+            line_i: run.line,
+            text: line.text(),
+            rtl: line.shape_opt().unwrap().rtl,
+            glyphs: &layout.glyphs,
+            decorations: &layout.decorations,
+            line_y: run.y,
+            line_top: run.top,
+            line_height: run.height,
+            line_w: run.width,
+        }
+    }
+    fn position(&self, buffer: &Buffer, offset: usize, fallback_height: f32) -> (f32, f32, f32) {
+        let Some(cursor) = self.cursor(offset, Affinity::After) else {
+            return (0.0, 0.0, 0.0);
+        };
+        let mut position = None;
+        let range = self.line_runs[cursor.line].clone();
+        for index in range.clone() {
+            let run = self.run(buffer, index);
+            if let Some(x) = run.cursor_position(&cursor) {
+                position = Some((x, run.line_top, run.line_height));
+            }
+        }
+        position.unwrap_or_else(|| {
+            range
+                .map(|index| self.run(buffer, index))
+                .find(|run| run.glyphs.is_empty())
+                .map_or((0.0, 0.0, fallback_height), |run| {
+                    (0.0, run.line_top, run.line_height)
+                })
+        })
+    }
+    fn highlights(&self, buffer: &Buffer, selection: (usize, usize)) -> Vec<LayoutBox> {
+        if selection.0 >= selection.1 {
+            return Vec::new();
+        }
+        let (Some(start), Some(end)) = (
+            self.cursor(selection.0, Affinity::After),
+            self.cursor(selection.1, Affinity::Before),
+        ) else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        for line in start.line..=end.line {
+            for index in self.line_runs[line].clone() {
+                let run = self.run(buffer, index);
+                for (x, width) in run.highlight(start, end) {
+                    result.push(LayoutBox {
+                        x,
+                        y: run.line_top,
+                        width,
+                        height: run.line_height,
+                    });
+                }
+            }
+        }
+        result
+    }
 }
 
 /// LRU memo of shaped whole-paragraph layouts, oldest first, newest last.
@@ -578,31 +712,10 @@ impl TextShaper for NanaTextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> (f32, f32, f32) {
-        if byte_offset > text.value.len()
-            || !text.value.is_char_boundary(byte_offset)
-            || !is_grapheme_boundary(&text.value, byte_offset)
-        {
-            return (0.0, 0.0, 0.0);
-        }
-        self.with_shaped_layout(&text.value, style, constraints, |buffer| {
-            let Some(cursor) = cosmic_cursor(buffer, byte_offset, Affinity::After) else {
-                return (0.0, 0.0, 0.0);
-            };
-            let mut position = None;
-            for run in buffer.layout_runs() {
-                if let Some(x) = run.cursor_position(&cursor) {
-                    position = Some((x, run.line_top, run.line_height));
-                }
-            }
-            if let Some(position) = position {
-                return position;
-            }
-            buffer
-                .layout_runs()
-                .find(|run| run.line_i == cursor.line && run.glyphs.is_empty())
-                .map_or((0.0, 0.0, resolved_line_height(style)), |run| {
-                    (0.0, run.line_top, run.line_height)
-                })
+        self.with_indexed_layout(&text.value, style, constraints, |entry| {
+            entry
+                .probes
+                .position(&entry.buffer, byte_offset, resolved_line_height(style))
         })
     }
 
@@ -614,39 +727,121 @@ impl TextShaper for NanaTextShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> Vec<LayoutBox> {
-        let (start, end) = selection;
-        if start >= end
-            || end > text.value.len()
-            || !text.value.is_char_boundary(start)
-            || !text.value.is_char_boundary(end)
-            || !is_grapheme_boundary(&text.value, start)
-            || !is_grapheme_boundary(&text.value, end)
-        {
-            return Vec::new();
-        }
-        self.with_shaped_layout(&text.value, style, constraints, |buffer| {
-            let Some(start) = cosmic_cursor(buffer, start, Affinity::After) else {
-                return Vec::new();
-            };
-            let Some(end) = cosmic_cursor(buffer, end, Affinity::Before) else {
-                return Vec::new();
-            };
-            let mut highlights = Vec::new();
-            for run in buffer.layout_runs() {
-                if run.line_i < start.line || run.line_i > end.line {
-                    continue;
-                }
-                for (x, width) in run.highlight(start, end) {
-                    highlights.push(LayoutBox {
-                        x,
-                        y: run.line_top,
-                        width,
-                        height: run.line_height,
-                    });
-                }
-            }
-            highlights
+        self.with_indexed_layout(&text.value, style, constraints, |entry| {
+            entry.probes.highlights(&entry.buffer, selection)
         })
+    }
+
+    fn with_text_probes<R>(
+        &mut self,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        consume: impl FnOnce(&mut dyn TextShaper) -> R,
+    ) -> R {
+        let entry = self.take_layout(&text.value, style, constraints);
+        let mut prepared = PreparedTextShaper {
+            host: self,
+            entry,
+            text,
+            style,
+            constraints,
+        };
+        let result = consume(&mut prepared);
+        prepared.host.layout_memo.remember(prepared.entry);
+        result
+    }
+}
+
+struct PreparedTextShaper<'a> {
+    host: &'a mut NanaTextShaper,
+    entry: ShapedLayoutEntry,
+    text: &'a TextContent,
+    style: &'a ComputedStyle,
+    constraints: TextShapeConstraints,
+}
+impl PreparedTextShaper<'_> {
+    fn matches(
+        &self,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> bool {
+        std::ptr::eq(text, self.text)
+            && style == self.style
+            && constraints == self.constraints
+            && self.entry.key.font_generation == font_db_generation()
+    }
+}
+impl TextShaper for PreparedTextShaper<'_> {
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut GlyphCache,
+    ) -> TextMetrics {
+        if self.matches(text, style, constraints) {
+            record_shaped_glyphs(&self.entry.buffer, style, glyphs);
+            metrics_of(&self.entry.buffer)
+        } else {
+            self.host.shape_cached(id, text, style, constraints, glyphs)
+        }
+    }
+    fn shape(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> TextMetrics {
+        if self.matches(text, style, constraints) {
+            metrics_of(&self.entry.buffer)
+        } else {
+            self.host.shape(id, text, style, constraints)
+        }
+    }
+    fn horizontal_offset(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        self.host.horizontal_offset(id, text, offset, style)
+    }
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        if self.matches(text, style, constraints) {
+            self.entry
+                .probes
+                .position(&self.entry.buffer, offset, resolved_line_height(style))
+        } else {
+            self.host
+                .text_position(id, text, offset, style, constraints)
+        }
+    }
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        if self.matches(text, style, constraints) {
+            self.entry.probes.highlights(&self.entry.buffer, selection)
+        } else {
+            self.host
+                .text_highlights(id, text, selection, style, constraints)
+        }
     }
 }
 
@@ -660,27 +855,64 @@ impl NanaTextShaper {
         constraints: TextShapeConstraints,
         consume: impl FnOnce(&Buffer) -> R,
     ) -> R {
+        self.with_indexed_layout(text, style, constraints, |entry| consume(&entry.buffer))
+    }
+
+    fn with_indexed_layout<R>(
+        &mut self,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        consume: impl FnOnce(&ShapedLayoutEntry) -> R,
+    ) -> R {
+        let entry = self.take_layout(text, style, constraints);
+        let result = consume(&entry);
+        self.layout_memo.remember(entry);
+        result
+    }
+
+    fn take_layout(
+        &mut self,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> ShapedLayoutEntry {
         let font_generation = font_db_generation();
         if let Some(index) = self
             .layout_memo
             .index_of(text, style, constraints, font_generation)
         {
-            let entry = self.layout_memo.entries.remove(index);
-            let result = consume(&entry.buffer);
-            self.layout_memo.entries.push(entry);
-            return result;
+            return self.layout_memo.entries.remove(index);
         }
-        let buffer = self.shape_buffer(text, style, constraints);
-        let result = consume(&buffer);
+        let reusable = (!constraints.ellipsis
+            && constraints.max_width.is_some()
+            && style.direction == DirSpec::Ltr)
+            .then(|| {
+                self.layout_memo.entries.iter().rposition(|entry| {
+                    entry.key.font_generation == font_generation
+                        && entry.key.style == *style
+                        && entry.key.constraints == constraints
+                })
+            })
+            .flatten();
+        let buffer = if let Some(index) = reusable {
+            let mut buffer = self.layout_memo.entries.remove(index).buffer;
+            refresh_buffer_lines(&mut buffer, text, &text_attrs(style));
+            buffer.shape_until_scroll(&mut lock_font_system(&self.font_system), false);
+            buffer
+        } else {
+            self.shape_buffer(text, style, constraints)
+        };
         #[cfg(test)]
         {
             self.layouts += 1;
         }
-        self.layout_memo.remember(ShapedLayoutEntry {
+        let probes = TextProbeIndex::new(&buffer, text);
+        ShapedLayoutEntry {
             key: ShapedLayoutKey::new(text, style, constraints),
+            probes,
             buffer,
-        });
-        result
+        }
     }
 
     fn shape_buffer(
@@ -743,6 +975,41 @@ impl NanaTextShaper {
 
         buffer
     }
+}
+
+/// Preserve line layout across ordinary edits when font and layout inputs agree.
+/// BufferLine invalidates its own caches only for changed text or attributes.
+fn refresh_buffer_lines(buffer: &mut Buffer, text: &str, attrs: &Attrs<'_>) {
+    let attrs = AttrsList::new(attrs);
+    let mut count = 0;
+    for (range, ending) in LineIter::new(text) {
+        if let Some(line) = buffer.lines.get_mut(count) {
+            line.set_text(&text[range], ending, attrs.clone());
+        } else {
+            buffer.lines.push(BufferLine::new(
+                &text[range],
+                ending,
+                attrs.clone(),
+                Shaping::Advanced,
+            ));
+        }
+        count += 1;
+    }
+    if count == 0 || buffer.lines[count - 1].ending() != LineEnding::None {
+        if let Some(line) = buffer.lines.get_mut(count) {
+            line.set_text("", LineEnding::None, attrs);
+        } else {
+            buffer.lines.push(BufferLine::new(
+                "",
+                LineEnding::None,
+                attrs,
+                Shaping::Advanced,
+            ));
+        }
+        count += 1;
+    }
+    buffer.lines.truncate(count);
+    buffer.set_scroll(Default::default());
 }
 
 fn text_attrs(style: &ComputedStyle) -> Attrs<'_> {
@@ -1045,6 +1312,7 @@ fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
             .any(|(boundary, _)| boundary == offset)
 }
 
+#[cfg(test)]
 fn cosmic_cursor(buffer: &Buffer, byte_offset: usize, affinity: Affinity) -> Option<Cursor> {
     let mut base = 0;
     for (line, content) in buffer.lines.iter().enumerate() {
@@ -1088,6 +1356,152 @@ mod tests {
 
     fn node() -> StableNodeId {
         StableNodeId::new(1).unwrap()
+    }
+
+    #[test]
+    fn edited_buffer_geometry_matches_fresh_layout() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle::default();
+        let constraints = TextShapeConstraints {
+            max_width: Some(74.0),
+            wrap: true,
+            ..Default::default()
+        };
+        for source in [
+            "first line\nsecond line\nlast",
+            "first line\nsecond changed line wraps\nlast",
+            "first line\ninserted\nsecond changed line wraps\nlast",
+            "first line\nlast",
+            "first line\r\nאבג abc\r\n終e\u{301}🙂\r\n",
+            "first line\r\nאבג abc more\r\n終e\u{301}🙂\r\n",
+            "",
+            "\n",
+            "one",
+        ] {
+            let fresh = shaper.shape_buffer(source, &style, constraints);
+            let reference = TextProbeIndex::new(&fresh, source);
+            let reused = shaper.take_layout(source, &style, constraints);
+            assert_eq!(measure(&reused.buffer), measure(&fresh), "{source:?}");
+            for offset in 0..=source.len() {
+                assert_eq!(
+                    reused
+                        .probes
+                        .position(&reused.buffer, offset, resolved_line_height(&style)),
+                    reference.position(&fresh, offset, resolved_line_height(&style)),
+                    "{source:?} offset {offset}"
+                );
+                assert_eq!(
+                    reused.probes.highlights(&reused.buffer, (0, offset)),
+                    reference.highlights(&fresh, (0, offset)),
+                    "{source:?} selection {offset}"
+                );
+            }
+            shaper.layout_memo.remember(reused);
+        }
+    }
+
+    #[test]
+    fn indexed_probes_preserve_wrapped_unicode_and_bidi_geometry() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle::default();
+        for source in [
+            "",
+            "a\r\n\n終e\u{301}🙂",
+            "one two three four five\nאבג abc مرحبا",
+        ] {
+            let constraints = TextShapeConstraints {
+                max_width: Some(45.0),
+                wrap: true,
+                shaping: TextShaping::Advanced,
+                ..Default::default()
+            };
+            let buffer = shaper.shape_buffer(source, &style, constraints);
+            let index = TextProbeIndex::new(&buffer, source);
+            for offset in 0..=source.len() + 1 {
+                let valid = offset <= source.len()
+                    && source.is_char_boundary(offset)
+                    && is_grapheme_boundary(source, offset);
+                let cursor = valid
+                    .then(|| cosmic_cursor(&buffer, offset, Affinity::After))
+                    .flatten();
+                let expected = cursor.map_or((0.0, 0.0, 0.0), |cursor| {
+                    buffer
+                        .layout_runs()
+                        .filter(|run| run.line_i == cursor.line)
+                        .filter_map(|run| {
+                            run.cursor_position(&cursor)
+                                .map(|x| (x, run.line_top, run.line_height))
+                        })
+                        .last()
+                        .unwrap_or_else(|| {
+                            buffer
+                                .layout_runs()
+                                .find(|run| run.line_i == cursor.line && run.glyphs.is_empty())
+                                .map_or((0.0, 0.0, resolved_line_height(&style)), |run| {
+                                    (0.0, run.line_top, run.line_height)
+                                })
+                        })
+                });
+                assert_eq!(
+                    index.position(&buffer, offset, resolved_line_height(&style)),
+                    expected,
+                    "{source:?} offset {offset}"
+                );
+                for end in offset..=source.len() {
+                    let expected: Vec<_> = if offset < end
+                        && valid
+                        && is_grapheme_boundary(source, end)
+                    {
+                        match (
+                            cosmic_cursor(&buffer, offset, Affinity::After),
+                            cosmic_cursor(&buffer, end, Affinity::Before),
+                        ) {
+                            (Some(start), Some(end)) => buffer
+                                .layout_runs()
+                                .filter(|run| run.line_i >= start.line && run.line_i <= end.line)
+                                .flat_map(|run| {
+                                    run.highlight(start, end).map(move |(x, width)| LayoutBox {
+                                        x,
+                                        y: run.line_top,
+                                        width,
+                                        height: run.line_height,
+                                    })
+                                })
+                                .collect(),
+                            _ => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    assert_eq!(index.highlights(&buffer, (offset, end)), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_probes_refresh_after_same_length_source_change() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let style = ComputedStyle::default();
+        let constraints = TextShapeConstraints::default();
+        let mut text = TextContent {
+            value: "WWWW".into(),
+        };
+        let first = shaper.with_text_probes(&text, &style, constraints, |probe| {
+            probe.text_position(node(), &text, 4, &style, constraints)
+        });
+        text.value = "iiii".into();
+        let second = shaper.with_text_probes(&text, &style, constraints, |probe| {
+            probe.text_position(node(), &text, 4, &style, constraints)
+        });
+        assert!(first.0 > second.0);
+        assert_eq!(
+            second,
+            NanaTextShaper::default().text_position(node(), &text, 4, &style, constraints)
+        );
     }
 
     fn assert_positive_finite(metrics: TextMetrics) {

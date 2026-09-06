@@ -1,0 +1,9 @@
+{
+  "logical_items": 1000000,
+  "mounted_before": 5,
+  "mounted_while_focused": 6,
+  "mounted_after_blur": 5,
+  "offscreen_input_preserved": true,
+  "explicit_retained_keys": false,
+  "refresh_rate_measured": false
+}

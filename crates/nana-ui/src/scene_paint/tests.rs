@@ -7,8 +7,10 @@ use nana_ui_runtime::{
     DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
     StableNodeId, StandardVisual, TextContent,
 };
+#[cfg(feature = "graph-canvas")]
+use nana_ui_scene::StrokePattern;
 use nana_ui_scene::{
-    AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, StrokeCap, StrokePattern, UiScene,
+    AffineTransform, ClipRegion, ScenePrimitiveKind, SceneRect, StrokeCap, UiScene,
 };
 
 use super::*;
@@ -417,10 +419,21 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
         .last_dest_pass_counts
         .expect("changed scene encodes again");
     assert!(
-        repainted.msaa > 0,
+        repainted.msaa + repainted.color > 0,
         "a changed scene must give up the reuse and repaint dest, got {repainted:?}"
     );
-    drop(texture);
+    let pixels = readback_rgba(
+        &device,
+        &queue,
+        device.create_command_encoder(&Default::default()),
+        &texture,
+        64,
+        64,
+    );
+    assert!(
+        is_green_slot(pixel(&pixels, 64, 32, 32)),
+        "the new panel covers the earlier label in document order"
+    );
 }
 
 #[test]
@@ -1421,32 +1434,17 @@ fn time_series_stroke_node(value: u64, points: Vec<[f32; 2]>, color: [f32; 4]) -
 fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
-    let fill = encode_scene_gpu_work(
-        &device,
-        &queue,
-        &mut painter,
-        &graph_canvas_scene(Vec::new()),
-    );
-    let work_16 = encode_scene_gpu_work(
-        &device,
-        &queue,
-        &mut painter,
-        &graph_canvas_scene(l_stroke_edges(16)),
-    );
-    let work_32 = encode_scene_gpu_work(
-        &device,
-        &queue,
-        &mut painter,
-        &graph_canvas_scene(l_stroke_edges(32)),
-    );
-    let work_64 = encode_scene_gpu_work(
-        &device,
-        &queue,
-        &mut painter,
-        &graph_canvas_scene(l_stroke_edges(64)),
-    );
-    let _mesh_16 = work_16
+    // Compare cold uploads. Reusing the previous scene's buffers measures only
+    // changed byte ranges, so subtracting a cold fill baseline is not valid.
+    let cold_work = |scene: UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        encode_scene_gpu_work(&device, &queue, &mut painter, &scene)
+    };
+    let fill = cold_work(graph_canvas_scene(Vec::new()));
+    let work_16 = cold_work(graph_canvas_scene(l_stroke_edges(16)));
+    let work_32 = cold_work(graph_canvas_scene(l_stroke_edges(32)));
+    let work_64 = cold_work(graph_canvas_scene(l_stroke_edges(64)));
+    let mesh_16 = work_16
         .gpu_upload_bytes
         .saturating_sub(fill.gpu_upload_bytes);
     let mesh_32 = work_32
@@ -1459,6 +1457,8 @@ fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
     // shares one FragmentClip, so GpuClip bytes stay constant.
     let instance_32 = mesh_32.saturating_sub(super::mesh::GPU_CLIP_BYTES);
     let instance_64 = mesh_64.saturating_sub(super::mesh::GPU_CLIP_BYTES);
+    let instance_16 = mesh_16.saturating_sub(super::mesh::GPU_CLIP_BYTES);
+    assert_eq!(instance_32, instance_16 * 2);
     assert!(instance_32 > 0, "strokes must add mesh instance bytes");
     assert_eq!(
         instance_64,
@@ -3551,7 +3551,7 @@ fn test_target(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn test_device() -> (wgpu::Device, wgpu::Queue) {
+pub(super) fn test_device() -> (wgpu::Device, wgpu::Queue) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -5464,8 +5464,22 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
     let (release, gated) = mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0; 1024];
-        stream.read(&mut request).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 256];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        assert!(
+            request.windows(4).any(|window| window == b"\r\n\r\n"),
+            "HTTP request headers must be complete"
+        );
         gated
             .recv_timeout(Duration::from_secs(10))
             .expect("paint waited for the HTTP response");
@@ -5532,6 +5546,136 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
         "unchanged scene must paint the completed image"
     );
     assert!(!painter.has_pending_images());
+    server.join().unwrap();
+}
+
+#[test]
+fn async_http_image_rebinds_each_render_target_after_shared_completion() {
+    use std::{
+        io::{Read, Write},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (_, path) = blue_tile_fixture_png();
+    let png = std::fs::read(path).unwrap();
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/image.png", listener.local_addr().unwrap());
+    let (release, gated) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 256];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        assert!(request.windows(4).any(|window| window == b"\r\n\r\n"));
+        gated
+            .recv_timeout(Duration::from_secs(10))
+            .expect("paint waited for the HTTP response");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        )
+        .unwrap();
+        stream.write_all(&png).unwrap();
+    });
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (wake, awoken) = mpsc::channel();
+    painter.set_image_waker(Arc::new(move || {
+        let _ = wake.send(());
+    }));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0; 4],
+            nana_ui_scene::QuadSurfacePaint {
+                background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                    url,
+                    nana_ui_core::BackgroundImageFit::Stretch,
+                )),
+                ..Default::default()
+            },
+        )],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0; 2],
+        physical_size: [64; 2],
+        scale_factor: 1.0,
+        scene_origin: [0.0; 2],
+        target_origin: [0.0; 2],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    let (first_texture, first_view) = test_copy_target(&device, format, 64, 64);
+    let (second_texture, second_view) = test_copy_target(&device, format, 64, 64);
+    for (id, target) in [(1, &first_view), (2, &second_view)] {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint_target(
+                RenderTargetId(id),
+                &scene,
+                &mut encoder,
+                target,
+                viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    }
+    assert!(painter.has_pending_images());
+
+    release.send(()).unwrap();
+    awoken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("image completion must wake both target owners");
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint_target(
+            RenderTargetId(1),
+            &scene,
+            &mut encoder,
+            &first_view,
+            viewport,
+            None,
+            None,
+        )
+        .unwrap();
+    let first_pixels = readback_rgba(&device, &queue, encoder, &first_texture, 64, 64);
+    assert!(is_blue_slot(pixel(&first_pixels, 64, 32, 32)));
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint_target(
+            RenderTargetId(2),
+            &scene,
+            &mut encoder,
+            &second_view,
+            viewport,
+            None,
+            None,
+        )
+        .unwrap();
+    let second_pixels = readback_rgba(&device, &queue, encoder, &second_texture, 64, 64);
+    assert!(is_blue_slot(pixel(&second_pixels, 64, 32, 32)));
     server.join().unwrap();
 }
 
@@ -6159,3 +6303,557 @@ fn border_image_linear_gradient_nine_slice_paints() {
         "gradient bottom slice must stay blue, got {bottom:?}"
     );
 }
+
+#[test]
+fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let source = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("live", &source, 64, 64);
+    let mut scene = UiScene::new();
+    let mut node = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "live");
+    node.parent = None;
+    scene.apply_delta([node], []);
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (texture, target) = test_copy_target(&device, format, 64, 64);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let paint = |painter: &mut SceneWgpuPainter| {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        readback_rgba(&device, &queue, encoder, &texture, 64, 64)
+    };
+    assert!(is_green_slot(pixel(&paint(&mut painter), 64, 32, 32)));
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &source,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+    queue.submit([encoder.finish()]);
+    registry.slot("live").invalidate().unwrap();
+    assert!(is_red_slot(pixel(&paint(&mut painter), 64, 32, 32)));
+    let work = painter.last_gpu_work().unwrap();
+    assert_eq!(work.gpu_upload_bytes, 0);
+    assert!(painter.last_gpu_timings().unwrap().batch.is_zero());
+    let replacement = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    registry
+        .get("live")
+        .unwrap()
+        .texture
+        .replace_view(replacement);
+    assert!(is_green_slot(pixel(&paint(&mut painter), 64, 32, 32)));
+    registry.remove("live");
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    assert!(matches!(
+        painter.paint(
+            &scene,
+            &mut encoder,
+            &target,
+            viewport,
+            Some(&registry),
+            None
+        ),
+        Err(ScenePaintError::MissingCustomResource(_))
+    ));
+    assert!(painter.last_gpu_work().is_none());
+    assert!(painter.last_gpu_timings().is_none());
+}
+
+#[test]
+fn same_format_targets_retain_independent_composition() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut red = UiScene::new();
+    red.apply_delta(
+        [colored_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [1.0, 0.0, 0.0, 1.0],
+        )],
+        [],
+    );
+    let mut green = UiScene::new();
+    green.apply_delta(
+        [colored_quad_node(
+            2,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0, 1.0, 0.0, 1.0],
+        )],
+        [],
+    );
+    let (texture, target) = test_copy_target(&device, format, 64, 64);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    for (id, scene, is_red) in [
+        (1, &red, true),
+        (2, &green, false),
+        (1, &red, true),
+        (2, &green, false),
+    ] {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        painter
+            .paint_target(
+                RenderTargetId(id),
+                scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        assert_eq!(is_red_slot(pixel(&pixels, 64, 32, 32)), is_red);
+    }
+    assert!(painter.last_gpu_timings().unwrap().batch.is_zero());
+    painter.remove_target(RenderTargetId(1));
+    painter.remove_target(RenderTargetId(2));
+    assert!(painter.targets.is_empty());
+}
+
+#[test]
+fn local_color_update_uploads_changed_ranges_and_paints_latest_pixels() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        (1..=100).map(|id| colored_quad_node(id, 0.0, 0.0, 64.0, 64.0, [0.0, 1.0, 0.0, 1.0])),
+        [],
+    );
+    let (texture, target) = test_copy_target(&device, format, 64, 64);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    assert!(is_green_slot(pixel(&pixels, 64, 32, 32)));
+    let initial = painter.last_gpu_work().unwrap().gpu_upload_bytes;
+    scene.apply_delta(
+        [colored_quad_node(
+            100,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [1.0, 0.0, 0.0, 1.0],
+        )],
+        [],
+    );
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    assert!(is_red_slot(pixel(&pixels, 64, 32, 32)));
+    assert!(painter.last_gpu_work().unwrap().gpu_upload_bytes < initial / 4);
+}
+
+#[test]
+fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    #[derive(Debug, Default)]
+    struct Renderer {
+        versioned: AtomicBool,
+        version: AtomicU64,
+        prepared: AtomicUsize,
+    }
+    impl SceneGpuRenderer for Renderer {
+        fn preparation_version(&self, _: &CustomRenderNode) -> Option<u64> {
+            self.versioned
+                .load(Ordering::Relaxed)
+                .then(|| self.version.load(Ordering::Relaxed))
+        }
+        fn prepare(&self, _: &SceneGpuNode, _: SceneGpuPrepareContext<'_>) {
+            self.prepared.fetch_add(1, Ordering::Relaxed);
+        }
+        fn render(&self, _: &SceneGpuNode, _: SceneGpuRenderContext<'_>) {}
+    }
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut node = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "resource");
+    node.parent = None;
+    node.custom_render.as_mut().unwrap().renderer = Arc::from("versioned");
+    let mut scene = UiScene::new();
+    scene.apply_delta([node], []);
+    let renderer = Arc::new(Renderer::default());
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("versioned", renderer.clone());
+    let (_, target) = test_copy_target(&device, format, 64, 64);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    let mut paint = || {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    };
+    paint();
+    paint();
+    assert_eq!(renderer.prepared.load(Ordering::Relaxed), 2);
+    renderer.versioned.store(true, Ordering::Relaxed);
+    paint();
+    paint();
+    assert_eq!(renderer.prepared.load(Ordering::Relaxed), 3);
+    renderer.version.store(1, Ordering::Relaxed);
+    paint();
+    assert_eq!(renderer.prepared.load(Ordering::Relaxed), 4);
+}
+
+#[test]
+fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
+    use crate::{SceneResourceEncodeContext, SceneResourceProducer, SceneResourceProducerRegistry};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct Producer {
+        view: wgpu::TextureView,
+        fail: Arc<AtomicBool>,
+        submissions: Arc<AtomicUsize>,
+    }
+    impl SceneResourceProducer for Producer {
+        fn encode(
+            &self,
+            node: &CustomRenderNode,
+            context: SceneResourceEncodeContext<'_>,
+        ) -> Result<(), String> {
+            if node.resource.as_ref() == "second" && self.fail.load(Ordering::Relaxed) {
+                return Err("production failed".into());
+            }
+            let _pass = context
+                .encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            Ok(())
+        }
+        fn submitted(&self, _: &CustomRenderNode, _: &wgpu::Device, _: wgpu::SubmissionIndex) {
+            self.submissions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let (device, queue) = test_device();
+    let (texture, view) = test_copy_target(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64);
+    let fail = Arc::new(AtomicBool::new(true));
+    let submissions = Arc::new(AtomicUsize::new(0));
+    let producer = Arc::new(Producer {
+        view,
+        fail: fail.clone(),
+        submissions: submissions.clone(),
+    });
+    let mut registry = SceneResourceProducerRegistry::new();
+    registry.insert("first", producer.clone());
+    registry.insert("second", producer);
+    let mut first = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "first");
+    let mut second = host_texture_child(2, 99, 0.0, 0.0, 64.0, 64.0, "second");
+    first.parent = None;
+    second.parent = None;
+    let mut scene = UiScene::new();
+    scene.apply_delta([first, second], []);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    assert!(
+        registry
+            .encode_scene(&scene, &device, &queue, &mut encoder)
+            .is_err()
+    );
+    drop(encoder);
+    assert_eq!(submissions.load(Ordering::Relaxed), 0);
+    let encoder = device.create_command_encoder(&Default::default());
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    assert!(!is_red_slot(pixel(&pixels, 64, 32, 32)));
+    fail.store(false, Ordering::Relaxed);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let prepared = registry
+        .encode_scene(&scene, &device, &queue, &mut encoder)
+        .unwrap();
+    assert_eq!(submissions.load(Ordering::Relaxed), 0);
+    prepared.submitted(&device, queue.submit([encoder.finish()]));
+    assert_eq!(submissions.load(Ordering::Relaxed), 2);
+    let encoder = device.create_command_encoder(&Default::default());
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    assert!(is_red_slot(pixel(&pixels, 64, 32, 32)));
+}
+
+#[test]
+fn native_content_opening_preserves_outside_pixels_and_later_overlays_on_gpu() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut native = colored_quad_node(2, 16.0, 16.0, 32.0, 32.0, [0.0; 4]);
+    native.custom_render = Some(CustomRenderNode::new(
+        nana_ui_runtime::NATIVE_CONTENT_RENDERER,
+        "browser",
+        1,
+    ));
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [
+            colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            native.clone(),
+            colored_quad_node(3, 24.0, 24.0, 8.0, 8.0, [0.0, 1.0, 0.0, 1.0]),
+        ],
+        [],
+    );
+    let regions = crate::native_content::native_content_regions(
+        &scene,
+        SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 64.0,
+        },
+    )
+    .unwrap();
+    assert_eq!(regions.len(), 1);
+    let mut renderers = SceneGpuRendererRegistry::new();
+    renderers.insert(
+        nana_ui_runtime::NATIVE_CONTENT_RENDERER,
+        Arc::new(crate::native_content::NativeContentRenderer::default()),
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0; 2],
+        target_origin: [0.0; 2],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    for attached in [false, true, false] {
+        native.custom_render.as_mut().unwrap().params =
+            Some(Arc::from([if attached { 1.0 } else { 0.0 }]));
+        scene.apply_delta([native.clone()], []);
+        let (texture, view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &view,
+                viewport,
+                None,
+                Some(&renderers),
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        assert_eq!(pixel(&pixels, 64, 4, 4), [255, 0, 0, 255]);
+        assert_eq!(
+            pixel(&pixels, 64, 20, 20),
+            if attached {
+                [0, 0, 0, 0]
+            } else {
+                [255, 0, 0, 255]
+            }
+        );
+        assert_eq!(pixel(&pixels, 64, 28, 28), [0, 255, 0, 255]);
+    }
+}
+
+#[test]
+fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (template, registry, _source, _) =
+        runtime_button_over_host_texture_scene(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let scenes = (0..16)
+        .map(|index| {
+            let mut scene = template.clone();
+            scene.apply_delta(
+                [colored_quad_node(
+                    999,
+                    0.0,
+                    56.0,
+                    64.0,
+                    8.0,
+                    [index as f32 / 15.0, 0.3, 1.0 - index as f32 / 15.0, 1.0],
+                )],
+                [],
+            );
+            let mut icon = colored_quad_node(1000, 4.0, 4.0, 16.0, 16.0, [0.0; 4]);
+            icon.standard_visual = Some(StandardVisual::Icon {
+                icon: if index % 2 == 0 {
+                    nana_ui_core::Icon::Search
+                } else {
+                    nana_ui_core::Icon::Close
+                },
+                size: 16.0,
+                tooltip: None,
+            });
+            icon.standard_visual_foreground = Some([1.0; 4]);
+            let mut label = colored_quad_node(1001, 20.0, 2.0, 40.0, 20.0, [0.0; 4]);
+            label.text = Some(TextContent {
+                value: format!("T{index}"),
+            });
+            Arc::make_mut(&mut label.source_style.layout).transform = Some(PaintTransform {
+                a: 0.94,
+                b: 0.34,
+                c: -0.34,
+                d: 0.94,
+                ..PaintTransform::default()
+            });
+            scene.apply_delta(
+                [
+                    icon,
+                    label,
+                    frost_quad_node_with_fill(
+                        1002,
+                        0.0,
+                        40.0,
+                        64.0,
+                        8.0,
+                        [1.0, 1.0, 1.0, 0.2],
+                        nana_ui_core::BackdropFilter {
+                            blur_radius: 2.0 + index as f32 / 8.0,
+                            saturate: 1.0,
+                        },
+                    ),
+                ],
+                [],
+            );
+            #[cfg(feature = "graph-canvas")]
+            scene.apply_delta(
+                [graph_canvas_stroke_node(
+                    1003,
+                    vec![(
+                        vec![[2.0, 52.0], [10.0 + index as f32, 52.0]],
+                        [1.0, 0.0, 0.0, 1.0],
+                    )],
+                    [0.0; 4],
+                )],
+                [],
+            );
+            scene
+        })
+        .collect::<Vec<_>>();
+    let mut reference = Vec::new();
+    for round in 0..3 {
+        for (index, scene) in scenes.iter().enumerate() {
+            let size = 64 + index as u32 * 4;
+            let (texture, view) = test_copy_target(&device, format, size, size);
+            let viewport = ScenePaintViewport {
+                logical_size: [64.0; 2],
+                physical_size: [size; 2],
+                scale_factor: size as f32 / 64.0,
+                scene_origin: [0.0; 2],
+                target_origin: [0.0; 2],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            };
+            let mut encoder = device.create_command_encoder(&Default::default());
+            painter
+                .paint_target(
+                    RenderTargetId(index as u64),
+                    scene,
+                    &mut encoder,
+                    &view,
+                    viewport,
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            let pixels = readback_rgba(&device, &queue, encoder, &texture, size, size);
+            if round == 0 {
+                reference.push(pixels);
+            } else {
+                assert_eq!(
+                    pixels, reference[index],
+                    "target {index} reused different target's GPU storage"
+                );
+                assert!(
+                    painter.last_gpu_timings().unwrap().batch.is_zero(),
+                    "target {index} rebuilt commands"
+                );
+                assert_eq!(
+                    painter.last_gpu_work().unwrap().gpu_upload_bytes,
+                    0,
+                    "target {index} uploaded unchanged geometry"
+                );
+            }
+        }
+    }
+    for index in 0..16 {
+        painter.remove_target(RenderTargetId(index));
+    }
+    assert!(painter.targets.is_empty());
+    assert!(
+        painter.prepared_batch.is_none(),
+        "target commands must not leak into the default painter state"
+    );
+}
+
+#[cfg(feature = "graph-canvas")]
+#[path = "graph_scale_tests.rs"]
+mod graph_scale_tests;

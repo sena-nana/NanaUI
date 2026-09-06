@@ -1,12 +1,104 @@
 //! Shared WGPU context for NanaUI hosted applications.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+static NEXT_DEVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Native presentation mechanism, selected before creating the window surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostedSurfaceMode {
+    #[default]
+    Window,
+    #[cfg(target_os = "windows")]
+    WindowsComposition,
+}
+
+#[derive(Clone)]
+enum HostedSurfaceTarget {
+    Window,
+    #[cfg(target_os = "windows")]
+    WindowsComposition(crate::WindowsComposition),
+}
+
+impl HostedSurfaceTarget {
+    fn new(
+        mode: HostedSurfaceMode,
+        _window: Arc<dyn winit::window::Window>,
+    ) -> Result<Self, HostedGpuError> {
+        match mode {
+            HostedSurfaceMode::Window => Ok(Self::Window),
+            #[cfg(target_os = "windows")]
+            HostedSurfaceMode::WindowsComposition => crate::WindowsComposition::new(_window)
+                .map(Self::WindowsComposition)
+                .map_err(|e| HostedGpuError::SurfaceCreation(e.to_string())),
+        }
+    }
+
+    fn mode(&self) -> HostedSurfaceMode {
+        match self {
+            Self::Window => HostedSurfaceMode::Window,
+            #[cfg(target_os = "windows")]
+            Self::WindowsComposition(_) => HostedSurfaceMode::WindowsComposition,
+        }
+    }
+
+    fn create_surface(
+        &self,
+        instance: &wgpu::Instance,
+        window: Arc<dyn winit::window::Window>,
+    ) -> Result<wgpu::Surface<'static>, HostedGpuError> {
+        let result = match self {
+            Self::Window => instance.create_surface(window),
+            #[cfg(target_os = "windows")]
+            Self::WindowsComposition(composition) => {
+                // The tree retains the COM visual and HWND; WGPU adds its own visual reference.
+                unsafe {
+                    instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(
+                        composition.ui_visual(),
+                    ))
+                }
+            }
+        };
+        result.map_err(|e| HostedGpuError::SurfaceCreation(e.to_string()))
+    }
+
+    fn commit(&self) -> Result<(), HostedGpuError> {
+        match self {
+            Self::Window => Ok(()),
+            #[cfg(target_os = "windows")]
+            Self::WindowsComposition(composition) => composition
+                .commit()
+                .map_err(|e| HostedGpuError::SurfaceCreation(e.to_string())),
+        }
+    }
+}
+
+fn surface_alpha(
+    mode: HostedSurfaceMode,
+    modes: &[wgpu::CompositeAlphaMode],
+    transparent: bool,
+) -> Result<wgpu::CompositeAlphaMode, HostedGpuError> {
+    match mode {
+        HostedSurfaceMode::Window => Ok(preferred_alpha_mode(modes, transparent)),
+        #[cfg(target_os = "windows")]
+        HostedSurfaceMode::WindowsComposition => {
+            if modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                Ok(wgpu::CompositeAlphaMode::PreMultiplied)
+            } else {
+                Err(HostedGpuError::SurfaceCreation(
+                    "DirectComposition requires premultiplied alpha".into(),
+                ))
+            }
+        }
+    }
+}
 
 /// Cloneable access to the host's only device and queue pair.
 #[derive(Clone)]
 pub struct HostedGpuResources {
+    generation: u64,
     adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -23,11 +115,19 @@ impl HostedGpuResources {
     ) -> Self {
         let adapter_info = adapter.get_info();
         Self {
+            generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
             adapter,
             device,
             queue,
             adapter_info,
         }
+    }
+
+    /// Monotonic identity of this host GPU context. Clones share the same
+    /// generation; successful device recreation gets a fresh generation.
+    /// Applications can fence their device-dependent caches in `rebuild_gpu`.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn adapter(&self) -> &wgpu::Adapter {
@@ -49,8 +149,11 @@ impl HostedGpuResources {
 
 /// One window and surface attached to a shared hosted GPU context.
 pub struct HostedGpuSurface {
-    window: Arc<dyn winit::window::Window>,
     surface: wgpu::Surface<'static>,
+    target: HostedSurfaceTarget,
+    window: Arc<dyn winit::window::Window>,
+    needs_target_commit: bool,
+    needs_recovery: bool,
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
     want_transparent: bool,
@@ -61,6 +164,22 @@ pub struct HostedGpuSurface {
 }
 
 impl HostedGpuSurface {
+    #[cfg(target_os = "windows")]
+    pub fn windows_composition(&self) -> Option<&crate::WindowsComposition> {
+        match &self.target {
+            HostedSurfaceTarget::WindowsComposition(composition) => Some(composition),
+            HostedSurfaceTarget::Window => None,
+        }
+    }
+
+    fn commit_target(&mut self) -> Result<(), HostedGpuError> {
+        if self.needs_target_commit {
+            self.target.commit()?;
+            self.needs_target_commit = false;
+        }
+        Ok(())
+    }
+
     pub fn window(&self) -> &Arc<dyn winit::window::Window> {
         &self.window
     }
@@ -128,9 +247,10 @@ impl HostedGpuSurface {
         self.configuration.width > 0 && self.configuration.height > 0
     }
 
-    fn reconfigure(&self, resources: &HostedGpuResources) {
+    fn reconfigure(&mut self, resources: &HostedGpuResources) {
         self.surface
             .configure(resources.device(), &self.configuration);
+        self.needs_target_commit = true;
     }
 
     fn apply_alpha_mode(
@@ -142,14 +262,20 @@ impl HostedGpuSurface {
     ) -> Result<(), HostedGpuError> {
         self.want_transparent = want_transparent;
         let capabilities = self.surface.get_capabilities(adapter);
-        if alpha_mode_needs_surface_recreate(
-            want_transparent,
-            self.configuration.alpha_mode,
-            &capabilities.alpha_modes,
-        ) {
+        if self.target.mode() == HostedSurfaceMode::Window
+            && alpha_mode_needs_surface_recreate(
+                want_transparent,
+                self.configuration.alpha_mode,
+                &capabilities.alpha_modes,
+            )
+        {
             return self.recover(instance, adapter, resources);
         }
-        let alpha_mode = preferred_alpha_mode(&capabilities.alpha_modes, want_transparent);
+        let alpha_mode = surface_alpha(
+            self.target.mode(),
+            &capabilities.alpha_modes,
+            want_transparent,
+        )?;
         if self.configuration.alpha_mode == alpha_mode {
             return Ok(());
         }
@@ -164,20 +290,23 @@ impl HostedGpuSurface {
         adapter: &wgpu::Adapter,
         resources: &HostedGpuResources,
     ) -> Result<(), HostedGpuError> {
-        let surface = instance
-            .create_surface(self.window.clone())
-            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
+        let surface = self.target.create_surface(instance, self.window.clone())?;
         let capabilities = surface.get_capabilities(adapter);
         if !capabilities.formats.contains(&self.format) {
             return Err(HostedGpuError::SurfaceFormatChanged {
                 expected: self.format,
             });
         }
-        self.configuration.alpha_mode =
-            preferred_alpha_mode(&capabilities.alpha_modes, self.want_transparent);
+        self.configuration.alpha_mode = surface_alpha(
+            self.target.mode(),
+            &capabilities.alpha_modes,
+            self.want_transparent,
+        )?;
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
         self.surface = surface;
         self.reconfigure(resources);
+        self.commit_target()?;
+        self.needs_recovery = false;
         Ok(())
     }
 
@@ -190,7 +319,11 @@ impl HostedGpuSurface {
         if !self.is_drawable() {
             return Ok(HostedSurfaceFrame::Skipped);
         }
-        match self.surface.get_current_texture() {
+        if self.needs_recovery {
+            self.recover(instance, adapter, resources)?;
+        }
+        self.commit_target()?;
+        let result = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Ok(HostedSurfaceFrame::Ready(frame)),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 self.reconfigure(resources);
@@ -223,7 +356,9 @@ impl HostedGpuSurface {
                 Ok(HostedSurfaceFrame::Skipped)
             }
             wgpu::CurrentSurfaceTexture::Validation => Err(HostedGpuError::SurfaceValidation),
-        }
+        };
+        self.commit_target()?;
+        result
     }
 }
 
@@ -251,13 +386,61 @@ impl HostedGpuContext {
         required_features: wgpu::Features,
         want_transparent: bool,
     ) -> Result<Self, HostedGpuError> {
+        Self::new_with_surface_mode(
+            window,
+            required_features,
+            want_transparent,
+            HostedSurfaceMode::Window,
+        )
+        .await
+    }
+
+    pub async fn new_with_surface_mode(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        want_transparent: bool,
+        mode: HostedSurfaceMode,
+    ) -> Result<Self, HostedGpuError> {
+        let target = HostedSurfaceTarget::new(mode, window.clone())?;
+        Self::new_with_target(window, required_features, want_transparent, target).await
+    }
+
+    /// Rebuild GPU resources while retaining the primary native visual tree.
+    pub async fn recreate(
+        &self,
+        required_features: wgpu::Features,
+    ) -> Result<Self, HostedGpuError> {
+        Self::new_with_target(
+            self.primary.window.clone(),
+            required_features,
+            self.primary.want_transparent,
+            self.primary.target.clone(),
+        )
+        .await
+    }
+
+    async fn new_with_target(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        want_transparent: bool,
+        target: HostedSurfaceTarget,
+    ) -> Result<Self, HostedGpuError> {
+        #[allow(unused_mut)]
+        let mut backends = wgpu::Backends::from_env().unwrap_or_default();
+        #[cfg(target_os = "windows")]
+        if target.mode() == HostedSurfaceMode::WindowsComposition {
+            backends &= wgpu::Backends::DX12;
+            if backends.is_empty() {
+                return Err(HostedGpuError::Adapter(
+                    "DirectComposition requires the DX12 backend".into(),
+                ));
+            }
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
+        let surface = target.create_surface(&instance, window.clone())?;
         let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
             .await
             .map_err(|error| HostedGpuError::Adapter(error.to_string()))?;
@@ -291,6 +474,7 @@ impl HostedGpuContext {
         });
         let adapter_info = adapter.get_info();
         let resources = HostedGpuResources {
+            generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
             adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
@@ -303,7 +487,8 @@ impl HostedGpuContext {
             &capabilities,
             &resources,
             want_transparent,
-        );
+            target,
+        )?;
 
         Ok(Self {
             instance,
@@ -312,6 +497,11 @@ impl HostedGpuContext {
             device_lost_report,
             primary,
         })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn windows_composition(&self) -> Option<&crate::WindowsComposition> {
+        self.primary.windows_composition()
     }
 
     pub fn window(&self) -> &Arc<dyn winit::window::Window> {
@@ -400,21 +590,58 @@ impl HostedGpuContext {
         window: Arc<dyn winit::window::Window>,
         want_transparent: bool,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
-        let surface = self
-            .instance
-            .create_surface(window.clone())
-            .map_err(|error| HostedGpuError::SurfaceCreation(error.to_string()))?;
+        self.create_surface_with_mode(window, want_transparent, HostedSurfaceMode::Window)
+    }
+
+    pub fn create_surface_with_mode(
+        &self,
+        window: Arc<dyn winit::window::Window>,
+        want_transparent: bool,
+        mode: HostedSurfaceMode,
+    ) -> Result<HostedGpuSurface, HostedGpuError> {
+        let target = HostedSurfaceTarget::new(mode, window.clone())?;
+        self.create_surface_with_target(window, want_transparent, target)
+    }
+
+    /// Attach an auxiliary window's retained visual tree to rebuilt GPU resources.
+    pub fn recreate_surface(
+        &self,
+        previous: &HostedGpuSurface,
+    ) -> Result<HostedGpuSurface, HostedGpuError> {
+        self.create_surface_with_target(
+            previous.window.clone(),
+            previous.want_transparent,
+            previous.target.clone(),
+        )
+    }
+
+    fn create_surface_with_target(
+        &self,
+        window: Arc<dyn winit::window::Window>,
+        want_transparent: bool,
+        target: HostedSurfaceTarget,
+    ) -> Result<HostedGpuSurface, HostedGpuError> {
+        #[cfg(target_os = "windows")]
+        if target.mode() == HostedSurfaceMode::WindowsComposition
+            && self.resources.adapter_info().backend != wgpu::Backend::Dx12
+        {
+            return Err(HostedGpuError::Adapter(
+                "DirectComposition requires the shared DX12 device".into(),
+            ));
+        }
+        let surface = target.create_surface(&self.instance, window.clone())?;
         let capabilities = surface.get_capabilities(self.resources.adapter());
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
-        Ok(configure_surface(
+        configure_surface(
             window,
             surface,
             format,
             &capabilities,
             &self.resources,
             want_transparent,
-        ))
+            target,
+        )
     }
 
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
@@ -436,6 +663,21 @@ impl HostedGpuContext {
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.resources.queue().present(frame);
     }
+
+    /// Abandon an acquired primary frame after encoding fails. Drop all views
+    /// and unfinished encoders referencing it before calling this method.
+    /// The next acquisition recreates only this surface: on DX12, dropping a
+    /// frame does not restore the consumed frame-latency waitable signal.
+    pub fn discard_frame(&mut self, frame: wgpu::SurfaceTexture) {
+        drop(frame);
+        self.primary.needs_recovery = true;
+    }
+
+    /// Auxiliary-target counterpart of [`Self::discard_frame`].
+    pub fn discard_surface_frame(&self, surface: &mut HostedGpuSurface, frame: wgpu::SurfaceTexture) {
+        drop(frame);
+        surface.needs_recovery = true;
+    }
 }
 
 fn configure_surface(
@@ -445,7 +687,8 @@ fn configure_surface(
     capabilities: &wgpu::SurfaceCapabilities,
     resources: &HostedGpuResources,
     want_transparent: bool,
-) -> HostedGpuSurface {
+    target: HostedSurfaceTarget,
+) -> Result<HostedGpuSurface, HostedGpuError> {
     let size = window.surface_size();
     let configuration = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -454,19 +697,23 @@ fn configure_surface(
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::AutoVsync,
-        alpha_mode: preferred_alpha_mode(&capabilities.alpha_modes, want_transparent),
+        alpha_mode: surface_alpha(target.mode(), &capabilities.alpha_modes, want_transparent)?,
         view_formats: vec![],
         desired_maximum_frame_latency: 1,
     };
     surface.configure(resources.device(), &configuration);
-    HostedGpuSurface {
+    target.commit()?;
+    Ok(HostedGpuSurface {
         window,
         surface,
+        target,
+        needs_target_commit: false,
+        needs_recovery: false,
         format,
         configuration,
         want_transparent,
         live_present_mode: preferred_live_present_mode(&capabilities.present_modes),
-    }
+    })
 }
 
 pub enum HostedSurfaceFrame {
@@ -635,6 +882,34 @@ mod tests {
         preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
         surface_size_changed,
     };
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn composition_requires_premultiplied_alpha_even_for_opaque_windows() {
+        use super::{HostedSurfaceMode, surface_alpha};
+        use wgpu::CompositeAlphaMode::{Opaque, PostMultiplied, PreMultiplied};
+        assert_eq!(
+            surface_alpha(
+                HostedSurfaceMode::WindowsComposition,
+                &[Opaque, PreMultiplied],
+                false
+            )
+            .unwrap(),
+            PreMultiplied
+        );
+        assert!(
+            surface_alpha(
+                HostedSurfaceMode::WindowsComposition,
+                &[Opaque, PostMultiplied],
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(
+            surface_alpha(HostedSurfaceMode::Window, &[Opaque, PreMultiplied], false).unwrap(),
+            Opaque
+        );
+    }
 
     #[test]
     fn surface_preferences_preserve_transparency_and_srgb() {

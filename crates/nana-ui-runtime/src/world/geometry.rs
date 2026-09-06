@@ -346,6 +346,19 @@ impl UiWorld {
                 ..
             } => {
                 let presentation = self.nodes.text_input_presentation(id)?;
+                // Fold gutters and sticky headers share the displayed logical-line
+                // index. Counting every prefix separately makes many folds quadratic.
+                let display_newlines: Vec<usize> = match visual {
+                    StandardVisual::TextInput { folds, .. } if !folds.is_empty() => presentation
+                        .display_value
+                        .bytes()
+                        .enumerate()
+                        .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let display_line_of =
+                    |offset: usize| display_newlines.partition_point(|newline| *newline < offset);
                 let accessibility = self.nodes.get(id).map(|n| &n.accessibility);
                 let disabled = accessibility.is_some_and(|state| state.disabled);
                 let steppers = steppers
@@ -405,11 +418,10 @@ impl UiWorld {
                 let metrics = self.text_metrics(id).unwrap_or_default();
                 let multiline = accessibility.is_some_and(|state| state.multiline);
                 let requested_scroll = self.record(id).scroll_offset;
-                // 多行编辑器的内容高度按逻辑行数推导；text_metrics.height
-                // 是单行度量，不能作为滚动上限。
+                // Presentation uses the actual editor wrapping width; intrinsic
+                // metrics are single-line and cannot bound its viewport.
                 let total_text_height = if multiline {
-                    let lines = presentation.display_value.matches('\n').count() + 1;
-                    lines as f32 * presentation.line_height.max(1.0)
+                    presentation.content_size.height
                 } else {
                     metrics.height
                 };
@@ -814,10 +826,7 @@ impl UiWorld {
                             if !collapsed && display_offset != fold_start {
                                 continue;
                             }
-                            let display_line = presentation.display_value.as_str()
-                                [..display_offset]
-                                .matches('\n')
-                                .count();
+                            let display_line = display_line_of(display_offset);
                             if let Some(&top) = presentation.line_tops.get(display_line)
                                 && gutter_width > 0.0
                             {
@@ -879,11 +888,6 @@ impl UiWorld {
                             .display_of(offset)
                             .min(presentation.display_value.len()),
                         None => offset.min(presentation.display_value.len()),
-                    };
-                    let display_line_of = |display_offset: usize| {
-                        presentation.display_value.as_str()[..display_offset]
-                            .matches('\n')
-                            .count()
                     };
                     let value = presentation.display_value.as_str();
                     let mut candidate: Option<(f32, usize)> = None;
@@ -2126,10 +2130,13 @@ impl UiWorld {
             StandardVisual::MenuSurface {
                 trigger,
                 trigger_icon,
+                trigger_image,
                 overlay,
                 ..
             } => {
-                let has_trigger = trigger.is_some() || trigger_icon.is_some();
+                let has_trigger = trigger.is_some()
+                    || trigger_icon.is_some()
+                    || trigger_image.is_some();
                 let surface = if has_trigger {
                     crate::popover::overlay_surface_from_items(self, id, overlay.as_ref())
                 } else {
@@ -2139,6 +2146,7 @@ impl UiWorld {
                     bounds,
                     trigger.as_ref(),
                     *trigger_icon,
+                    trigger_image.as_ref(),
                     style,
                     &self.style_model.palette,
                     surface,
@@ -2239,6 +2247,18 @@ impl UiWorld {
             StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
                 bounds,
                 values,
+                self.style_model.theme_mode,
+            )),
+            #[cfg(feature = "charts")]
+            StandardVisual::TimestampSeriesChart {
+                samples,
+                unit,
+                time_labels,
+            } => Some(timestamp_series_geometry(
+                bounds,
+                samples,
+                unit.as_deref(),
+                time_labels.as_ref(),
                 self.style_model.theme_mode,
             )),
             #[cfg(feature = "controls")]

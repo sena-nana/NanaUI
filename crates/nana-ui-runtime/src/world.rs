@@ -3,7 +3,10 @@ mod animation;
 mod extraction;
 mod geometry;
 mod hit_test;
+mod scroll_bounds;
+mod overlay_index;
 mod input;
+mod focus_scope;
 mod motion;
 mod mutation;
 mod style;
@@ -165,6 +168,9 @@ fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
 #[derive(Debug, Clone)]
 struct HitEntry {
     id: StableNodeId,
+    /// Shared authoritative child sequence at projection time. Pointer identity
+    /// validates cached sibling ordinals without searching a wide parent.
+    source_children: Arc<Vec<StableNodeId>>,
     layout: LayoutBox,
     transform: [f32; 6],
     persp: [f32; 2],
@@ -404,12 +410,13 @@ pub struct UiWorld {
     nodes: NodeStore,
     retired: RetiredIds,
     dirty_entities: HashSet<StableNodeId>,
-    hit_test_index: HashMap<DocumentId, Vec<HitEntry>>,
+    hit_test_index: HashMap<DocumentId, HitIndex>,
     /// Scroll deltas awaiting the in-place hit-index patch (see
     /// `UiMutation::SetScrollOffset`). Drained by the frame driver.
     scroll_hit_updates: Vec<(StableNodeId, [f32; 2])>,
     /// Input changes that cannot be represented by scroll translation alone.
     non_scroll_hit_dirty: HashSet<StableNodeId>,
+    scroll_content_bounds: RefCell<scroll_bounds::ContentBoundsIndex>,
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
@@ -445,7 +452,7 @@ pub struct UiWorld {
     /// `vw` / `vh`). A resize dirties this set together with document roots
     /// instead of discarding the retained layout cache.
     viewport_basis_nodes: usize,
-    viewport_basis: HashSet<StableNodeId>,
+    viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>>,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
     presence_flags: HashMap<StableNodeId, PresenceFlags>,
@@ -458,6 +465,8 @@ pub struct UiWorld {
     /// this index instead of every entity, so clearing references from a removed
     /// node costs the host count rather than the world size.
     overlay_host_nodes: HashSet<StableNodeId>,
+    overlay_hosts_by_document: HashMap<DocumentId, HashSet<StableNodeId>>,
+    overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>>,
     /// Nodes visited by mutation validation since the last drain, summed over
     /// every commit the next frame will consume. Validation must scale with the
     /// batch, not the retained world; this is the sentinel for that invariant.
@@ -493,6 +502,7 @@ impl UiWorld {
             hit_test_index: HashMap::new(),
             scroll_hit_updates: Vec::new(),
             non_scroll_hit_dirty: HashSet::new(),
+            scroll_content_bounds: RefCell::new(scroll_bounds::ContentBoundsIndex::default()),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
@@ -520,11 +530,13 @@ impl UiWorld {
             clip_visuals: 0,
             z_index_nodes: 0,
             viewport_basis_nodes: 0,
-            viewport_basis: HashSet::new(),
+            viewport_basis: HashMap::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
+            overlay_hosts_by_document: HashMap::new(),
+            overlay_dependents: HashMap::new(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
@@ -1111,8 +1123,8 @@ impl UiWorld {
 
     /// Nodes that carry an `OverlayHostState`. Overlay validation iterates this
     /// instead of the entity index so cost tracks host count, not world size.
-    fn overlay_host_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.overlay_host_nodes.iter().copied()
+    fn overlay_host_ids(&self, document: DocumentId) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.overlay_hosts_by_document.get(&document).into_iter().flatten().copied()
     }
 
     /// Drop focus and composition when dirty visual or interaction state makes
@@ -1144,37 +1156,33 @@ impl UiWorld {
         if !ids.is_empty() {
             self.record_hot_path_allocation(1, ids.len().saturating_mul(size_of::<LayoutInput>()));
         }
-        ids.iter()
-            .copied()
-            .map(|id| {
-                if !self.contains(id) {
-                    return Err(UiWorldError::MissingNode(id));
-                }
-                let hierarchy = &self.record(id).hierarchy;
-                let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
-                    || !self.record(id).text.value.is_empty();
-                Ok(LayoutInput {
-                    id,
-                    parent: hierarchy.parent,
-                    children: Arc::clone(&hierarchy.children),
-                    style: self.effective_layout_style(id),
-                    text_metrics: has_text.then(|| self.record(id).text_metrics),
-                    modal: self.nodes.visual(id).and_then(|visual| {
-                        let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
-                            return None;
-                        };
-                        let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
-                        Some(crate::ModalLayoutInput {
-                            kind: *kind,
-                            slots: slots.clone(),
-                            title: presentation.title,
-                            description: presentation.description,
-                            body_text: presentation.body,
-                        })
-                    }),
+        ids.iter().map(|&id| self.layout_input(id)).collect()
+    }
+
+    /// Project a single layout input without allocating a batch container.
+    pub(crate) fn layout_input(&self, id: StableNodeId) -> Result<LayoutInput, UiWorldError> {
+        let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
+        let has_text = matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
+        Ok(LayoutInput {
+            id,
+            parent: record.hierarchy.parent,
+            children: Arc::clone(&record.hierarchy.children),
+            style: self.effective_layout_style(id),
+            text_metrics: has_text.then_some(record.text_metrics),
+            modal: self.nodes.visual(id).and_then(|visual| {
+                let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
+                    return None;
+                };
+                let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
+                Some(crate::ModalLayoutInput {
+                    kind: *kind,
+                    slots: slots.clone(),
+                    title: presentation.title,
+                    description: presentation.description,
+                    body_text: presentation.body,
                 })
-            })
-            .collect()
+            }),
+        })
     }
 
     pub(crate) fn write_layout_padding(
@@ -1328,11 +1336,16 @@ impl UiWorld {
             previous.viewport,
             next.viewport,
         );
-        if let Some(id) = id {
+        if let Some(id) = id
+            && let Some(document) = self.document_of(id)
+        {
             if next.viewport {
-                self.viewport_basis.insert(id);
-            } else {
-                self.viewport_basis.remove(&id);
+                self.viewport_basis.entry(document).or_default().insert(id);
+            } else if let Some(ids) = self.viewport_basis.get_mut(&document) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.viewport_basis.remove(&document);
+                }
             }
         }
         if let Some(id) = id {
@@ -1367,7 +1380,22 @@ impl UiWorld {
     }
 
     pub fn viewport_basis_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.viewport_basis.iter().copied()
+        self.viewport_basis.values().flat_map(|ids| ids.iter().copied())
+    }
+
+    /// Mounted viewport-dependent nodes in one document, without scanning other documents.
+    pub fn viewport_basis_ids_for(
+        &self,
+        document: DocumentId,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.viewport_basis
+            .get(&document)
+            .into_iter()
+            .flat_map(|ids| ids.iter().copied())
+    }
+
+    pub(crate) fn document_of(&self, id: StableNodeId) -> Option<DocumentId> {
+        self.nodes.get(id).map(|node| node.document)
     }
 
     fn note_z_index_presence(&mut self, was_present: bool, now_present: bool) {
@@ -1511,17 +1539,17 @@ impl UiWorld {
         self.clear_overlay_references_for(&[removed]);
     }
 
-    /// Drop `removed` from every overlay host that still points at it. Takes a
-    /// slice so tearing down a subtree walks the host index once instead of
-    /// once per removed node.
+    /// Drop references through the reverse index; unrelated hosts are untouched.
     fn clear_overlay_references_for(&mut self, removed: &[StableNodeId]) {
         if self.overlay_host_nodes.is_empty() || removed.is_empty() {
             return;
         }
-        let updates = self
-            .overlay_host_nodes
-            .iter()
-            .filter_map(|&host| {
+        let removed = removed.iter().copied().collect::<HashSet<_>>();
+        let hosts = removed.iter()
+            .filter_map(|id| self.overlay_dependents.get(id))
+            .flatten().copied().collect::<HashSet<_>>();
+        let updates = hosts.into_iter()
+            .filter_map(|host| {
                 (!removed.contains(&host))
                     .then(|| self.nodes.overlay_host(host).copied())
                     .flatten()
@@ -1547,7 +1575,7 @@ impl UiWorld {
             })
             .collect::<Vec<_>>();
         for (host, state, restore_focus) in updates {
-            self.nodes.set_overlay_host(host, Some(state));
+            self.write_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
             let document = self.record(host).document;
             if let Some(restore_focus) = restore_focus.filter(|id| {
@@ -1638,6 +1666,12 @@ impl UiWorld {
         menu_surface_open(self.nodes.visual(parent)) != Some(false)
     }
 
+    pub(crate) fn has_document_roots(&self, document: DocumentId) -> bool {
+        self.live_document_roots
+            .get(&document)
+            .is_some_and(|roots| !roots.is_empty())
+    }
+
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
         let mut roots = self
             .live_document_roots
@@ -1650,11 +1684,6 @@ impl UiWorld {
 
     fn refresh_root_membership(&mut self, id: StableNodeId) {
         if !self.nodes.contains(id) {
-            for roots in self.live_document_roots.values_mut() {
-                roots.remove(&id);
-            }
-            self.live_document_roots
-                .retain(|_, roots| !roots.is_empty());
             return;
         }
         let node = self.record(id);
@@ -1668,6 +1697,10 @@ impl UiWorld {
                 .insert(id);
             return;
         }
+        self.remove_document_root(document, id);
+    }
+
+    fn remove_document_root(&mut self, document: DocumentId, id: StableNodeId) {
         let empty = self
             .live_document_roots
             .get_mut(&document)
@@ -1828,8 +1861,7 @@ impl UiWorld {
             self.switch_transitions.remove(&id);
             self.hover_transitions.remove(&id);
             if self.overlay_host(id).is_some() {
-                self.nodes
-                    .set_overlay_host(id, Some(OverlayHostState::default()));
+                self.write_overlay_host(id, Some(OverlayHostState::default()));
             }
         }
         self.clear_overlay_references_for(subtree);
@@ -1839,7 +1871,21 @@ impl UiWorld {
         self.pending_accessibility_removals.dedup();
     }
 
-    fn mark_ancestors(&mut self, start: StableNodeId, bits: u16) {
+    pub(crate) fn layout_isolated(&self, id: StableNodeId) -> bool {
+        self.node_style(id).is_some_and(|node| {
+            let style=&node.layout;
+            style.layout_isolation
+                && matches!(style.width, Some(nana_ui_core::LengthSpec::Px(value)) if value.is_finite() && value>=0.0)
+                && matches!(style.height, Some(nana_ui_core::LengthSpec::Px(value)) if value.is_finite() && value>=0.0)
+                && style.position==nana_ui_core::PositionSpec::Static
+                && style.float==nana_ui_core::FloatSpec::None
+                && !style.display.is_some_and(nana_ui_core::DisplaySpec::is_grid_container)
+                && style.min_width.is_none() && style.max_width.is_none()
+                && style.min_height.is_none() && style.max_height.is_none()
+        })
+    }
+
+    fn mark_ancestors(&mut self, start: StableNodeId, mut bits: u16) {
         let mut current = Some(start);
         while let Some(id) = current {
             current = self
@@ -1848,6 +1894,12 @@ impl UiWorld {
                 .1;
             if !self.mark(id, bits) {
                 break;
+            }
+            if self.layout_isolated(id) {
+                bits &= !(DirtyMask::LAYOUT | DirtyMask::RENDER);
+                if bits == 0 {
+                    break;
+                }
             }
         }
     }

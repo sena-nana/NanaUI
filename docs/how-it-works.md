@@ -31,11 +31,15 @@ nana-window
 
 ## 你怎么接到这棵树上
 
-新应用实现 `RuntimeProgram`，调用 `run_runtime`。
+普通 Rust 应用实现 `ApplicationState`，通过 `RuntimeApplication<State>` 调用
+`run_runtime`；容器默认处理文档路由、GPU 注册表和窗口生命周期。
+完整示例是 `crates/nana-ui/examples/application-counter.rs`。
+嵌入式宿主和 Vue 适配继续实现低层 `RuntimeProgram`：
 
 ```text
 initialize     建 RuntimeDocument，build { child / on }
-document()     按 WindowId 交出那棵树
+with_document / with_document_mut
+               按 WindowId 在访问闭包中交出那棵树
 update         只处理宿主级消息（开窗、换 GPU、持久化）
                按钮点击不要走这里，用 on / observe
 host_textures / prepare_window_frame / window_frame_presented
@@ -56,14 +60,18 @@ scene_gpu_renderers / scene_resource_producers
 1. 消化 dispatch_program 的消息 → RuntimeProgram::update
 2. prepare_window_frame          → 你把最新纹理准备好
 3. RuntimeDocument::flush        → 样式、文字、布局、命中、抽取
-4. 外部资源生产（若有）          → 同一 Device/Queue，提交在 Scene 采样之前
-5. SceneWgpuPainter::paint       → 按文档顺序画进 Surface
-6. queue.submit + present
+4. 获取 Surface；外部资源生产    → FramePlan，同一宿主 encoder，失败整帧丢弃
+5. SceneWgpuPainter::paint_target → 可见操作按文档顺序画进目标
+6. queue.submit + submitted + present → 每目标一份 NanaUI 提交
 7. window_frame_presented        → 现在才能丢掉上一帧的纹理
 8. bind_window                   → 需要的话再填内容
 ```
 
 无变更时 flush 是空转，宿主不应空刷。动画、实时 GPU、普通 UI 的唤醒是分开的：一块实时画面在动，不该迫使整棵 Runtime 全量更新。
+
+`FrameDemand` 指定按需、截止时间或持续刷新。纹理内容更新通过
+`HostTextureRegistry::slot` 取得的 `TextureSlot` 通知引用该资源的窗口。
+已落地范围与性能证据见 [高刷新重构](high-refresh-refactor.md)。
 
 应用**不要**自己跑一套布局或把控件坐标写进树。`flush` 会调宿主文字整形（`NanaTextShaper`）和 `RuntimeLayoutEngine`。
 

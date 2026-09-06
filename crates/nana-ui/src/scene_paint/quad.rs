@@ -130,7 +130,9 @@ pub(super) struct QuadPipeline {
     instances: wgpu::Buffer,
     instance_capacity: usize,
     pending: Vec<SolidInstance>,
+    uploaded: Vec<SolidInstance>,
     pending_paint: Vec<QuadPaintData>,
+    uploaded_paint: Vec<QuadPaintData>,
     pending_urls: Vec<Option<String>>,
 }
 
@@ -282,7 +284,9 @@ impl QuadPipeline {
             instances,
             instance_capacity,
             pending: Vec::new(),
+            uploaded: Vec::new(),
             pending_paint: Vec::new(),
+            uploaded_paint: Vec::new(),
             pending_urls: Vec::new(),
         }
     }
@@ -309,6 +313,19 @@ impl QuadPipeline {
             self.url_bind_groups.clear();
         }
         changed
+    }
+
+    pub(super) fn invalidate_image_bindings(&mut self) {
+        self.url_bind_groups.clear();
+    }
+
+    /// Drop target-local URL bindings after the shared cache publishes a new
+    /// image. Bind groups capture a texture view, so retaining them would keep
+    /// a target sampling the fallback or a previous resource generation.
+    pub(super) fn invalidate_target_image_bindings(target: &mut Option<QuadPipelineTarget>) {
+        if let Some(target) = target {
+            target.url_bind_groups.clear();
+        }
     }
     pub(super) fn finish_frame(&mut self) {
         self.url_cache.trim();
@@ -591,6 +608,7 @@ impl QuadPipeline {
             return;
         }
         if self.pending.len() > self.instance_capacity {
+            self.uploaded.clear();
             self.instance_capacity = self.pending.len().next_power_of_two();
             self.instances = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.quad.instances"),
@@ -604,6 +622,7 @@ impl QuadPipeline {
         }
         let paint_reallocated = self.pending_paint.len() > self.paint_capacity;
         if paint_reallocated {
+            self.uploaded_paint.clear();
             self.url_bind_groups.clear();
             self.paint_capacity = self.pending_paint.len().next_power_of_two();
             self.paint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -618,10 +637,22 @@ impl QuadPipeline {
         }
         let upload_bytes = {
             let instance_bytes = bytemuck::cast_slice(&self.pending);
-            queue.write_buffer(&self.instances, 0, instance_bytes);
+            let instances = super::buffer_upload::upload_changed(
+                queue,
+                &self.instances,
+                bytemuck::cast_slice(&self.uploaded),
+                instance_bytes,
+            );
             let paint_bytes = bytemuck::cast_slice(&self.pending_paint);
-            queue.write_buffer(&self.paint_buffer, 0, paint_bytes);
-            instance_bytes.len() + paint_bytes.len()
+            let paint = super::buffer_upload::upload_changed(
+                queue,
+                &self.paint_buffer,
+                bytemuck::cast_slice(&self.uploaded_paint),
+                paint_bytes,
+            );
+            self.uploaded.clone_from(&self.pending);
+            self.uploaded_paint.clone_from(&self.pending_paint);
+            instances + paint
         };
         self.rebuild_url_bind_groups(device);
         if let Some(work) = gpu_work {
@@ -1670,4 +1701,66 @@ fn alpha_split_png_data_url() -> String {
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
+}
+
+pub(super) struct QuadPipelineTarget {
+    uniforms: wgpu::Buffer,
+    paint_buffer: wgpu::Buffer,
+    paint_capacity: usize,
+    url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
+    instances: wgpu::Buffer,
+    instance_capacity: usize,
+    pending: Vec<SolidInstance>,
+    uploaded: Vec<SolidInstance>,
+    pending_paint: Vec<QuadPaintData>,
+    uploaded_paint: Vec<QuadPaintData>,
+    pending_urls: Vec<Option<String>>,
+}
+
+impl QuadPipeline {
+    pub(super) fn swap_target(
+        &mut self,
+        target: &mut Option<QuadPipelineTarget>,
+        device: &wgpu::Device,
+    ) {
+        let target = target.get_or_insert_with(|| QuadPipelineTarget {
+            uniforms: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.quad.uniforms"),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            paint_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.quad.paint"),
+                size: (INITIAL_INSTANCES * std::mem::size_of::<QuadPaintData>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            paint_capacity: INITIAL_INSTANCES,
+            instances: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.quad.instances"),
+                size: (INITIAL_INSTANCES * std::mem::size_of::<SolidInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_capacity: INITIAL_INSTANCES,
+            url_bind_groups: HashMap::new(),
+            pending: Vec::new(),
+            uploaded: Vec::new(),
+            pending_paint: Vec::new(),
+            uploaded_paint: Vec::new(),
+            pending_urls: Vec::new(),
+        });
+        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
+        std::mem::swap(&mut self.paint_buffer, &mut target.paint_buffer);
+        std::mem::swap(&mut self.paint_capacity, &mut target.paint_capacity);
+        std::mem::swap(&mut self.url_bind_groups, &mut target.url_bind_groups);
+        std::mem::swap(&mut self.instances, &mut target.instances);
+        std::mem::swap(&mut self.instance_capacity, &mut target.instance_capacity);
+        std::mem::swap(&mut self.pending, &mut target.pending);
+        std::mem::swap(&mut self.uploaded, &mut target.uploaded);
+        std::mem::swap(&mut self.pending_paint, &mut target.pending_paint);
+        std::mem::swap(&mut self.uploaded_paint, &mut target.uploaded_paint);
+        std::mem::swap(&mut self.pending_urls, &mut target.pending_urls);
+    }
 }

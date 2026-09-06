@@ -4,6 +4,66 @@ use nana_js_engine::HostValue;
 use std::collections::BTreeSet;
 
 #[test]
+fn subject_only_rules_do_not_recascade_unrelated_siblings_on_insert() {
+    let mut bridge = MessageBridge::new();
+    bridge.inject_stylesheet(".item[data-mark] { width: 17px; }");
+    bridge.register(1, WidgetKind::Column, WidgetProps::default());
+    for id in 2..=1001 {
+        bridge.register(id, WidgetKind::Button, WidgetProps {
+            class_names: vec!["item".into()],
+            attrs: BTreeMap::from([("data-mark".into(), "yes".into())]),
+            ..Default::default()
+        });
+        bridge.insert_child(id, 1, None);
+    }
+    bridge.register(1002, WidgetKind::Button, WidgetProps {
+        class_names: vec!["item".into()],
+        attrs: BTreeMap::from([("data-mark".into(), "yes".into())]),
+        ..Default::default()
+    });
+    bridge.take_snapshot_changes();
+    bridge.insert_child(1002, 1, Some(2));
+    let changes = bridge.take_snapshot_changes();
+    assert!(changes.structure_changed);
+    assert_eq!(changes.dirty, BTreeSet::from([1002]));
+    assert_eq!(bridge.get(1002).unwrap().props.layout.width, Some(LengthSpec::Px(17.0)));
+    bridge.unregister(500);
+    assert!(bridge.take_snapshot_changes().dirty.is_empty());
+    assert!(bridge.get(500).is_none());
+    bridge.inject_stylesheet(".item:first-child { height: 23px; }");
+    assert_eq!(bridge.get(1002).unwrap().props.layout.height, Some(LengthSpec::Px(23.0)));
+    bridge.insert_child(3, 1, Some(1002));
+    assert_eq!(bridge.get(1002).unwrap().props.layout.height, None);
+    assert_eq!(bridge.get(3).unwrap().props.layout.height, Some(LengthSpec::Px(23.0)));
+}
+
+#[test]
+fn declaration_only_cascade_keeps_inheritance_and_later_structural_selectors() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(1, WidgetKind::Column, WidgetProps {
+        class_names: vec!["row".into()],
+        inline_style: "--extent:12px;font-size:24px".into(),
+        ..Default::default()
+    });
+    bridge.register(2, WidgetKind::Button, WidgetProps {
+        prop_style: "width:var(--extent);--extent:16px".into(),
+        inline_style: "--extent:18px".into(),
+        ..Default::default()
+    });
+    bridge.register(3, WidgetKind::Button, WidgetProps::default());
+    bridge.insert_child(2, 1, None);
+    bridge.insert_child(3, 1, None);
+    assert_eq!(bridge.get(2).unwrap().props.layout.width, Some(LengthSpec::Px(18.0)));
+    assert_eq!(bridge.get(3).unwrap().props.layout.font_size, Some(24.0));
+    bridge.inject_stylesheet(".row > button:nth-child(2) { width:31px; }");
+    assert_eq!(bridge.get(2).unwrap().props.layout.width, Some(LengthSpec::Px(18.0)));
+    assert_eq!(bridge.get(3).unwrap().props.layout.width, Some(LengthSpec::Px(31.0)));
+    bridge.insert_child(3, 1, Some(2));
+    assert_eq!(bridge.get(3).unwrap().props.layout.width, None);
+    assert_eq!(bridge.get(3).unwrap().props.layout.font_size, Some(24.0));
+}
+
+#[test]
 fn root_font_identity_refreshes_and_computed_size_stays_live() {
     let mut bridge = MessageBridge::new();
     assert_eq!(bridge.document_root_font_px(), 16.0);

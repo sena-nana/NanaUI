@@ -1,6 +1,129 @@
 use super::*;
 use nana_ui_core::PaintTransform;
 
+#[test]
+fn hidden_accessibility_containers_keep_visible_descendants_connected() {
+    for hidden_root in [false, true] {
+        let mut world = fixture();
+        let mut queue = MutationQueue::new();
+        for id in 1..=3 {
+            let mut layout = LayoutStyle::default();
+            layout.paint.visibility = Some(if id == 2 || (id == 1 && hidden_root) {
+                nana_ui_core::VisibilitySpec::Hidden
+            } else {
+                nana_ui_core::VisibilitySpec::Visible
+            });
+            queue.set_style(
+                node(id),
+                NodeStyle {
+                    layout: Arc::new(layout),
+                    ..Default::default()
+                },
+            );
+        }
+        queue.set_accessibility(
+            node(2),
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                label: Some("Hidden container label".into()),
+                description: Some("Hidden description".into()),
+                value: Some("Hidden value".into()),
+                disabled: true,
+                modal: true,
+                busy: true,
+                editable: true,
+                ..Default::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        world
+            .resolve_styles(&world.document_order(document()))
+            .unwrap();
+        world.take_system_work();
+        let snapshot = |world: &UiWorld| {
+            world
+                .project_accessibility(document())
+                .into_iter()
+                .map(|item| (item.id, item))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let mut retained = snapshot(&world);
+        let mut cursor = Some(node(3));
+        while let Some(id) = cursor {
+            let entry = retained
+                .get(&id)
+                .expect("visible control must have a complete path to the accessibility root");
+            if let Some(parent) = entry.parent {
+                assert!(
+                    retained
+                        .get(&parent)
+                        .expect("missing accessible parent")
+                        .children
+                        .contains(&id)
+                );
+            }
+            cursor = entry.parent;
+        }
+        let container = &retained[&node(2)];
+        assert_eq!(container.role, AccessibilityRole::Generic);
+        assert!(
+            container.label.is_none()
+                && container.value.is_none()
+                && container.description.is_none()
+        );
+        assert!(
+            !container.disabled
+                && !container.modal
+                && !container.busy
+                && !container.editable
+                && !container.focused
+        );
+        assert_eq!(container.children, [node(3)]);
+        assert_eq!(retained[&node(3)].role, AccessibilityRole::Button);
+
+        for visibility in [
+            nana_ui_core::VisibilitySpec::Visible,
+            nana_ui_core::VisibilitySpec::Hidden,
+        ] {
+            let mut style = world.record(node(2)).style.clone();
+            Arc::make_mut(&mut style.layout).paint.visibility = Some(visibility);
+            let mut queue = MutationQueue::new();
+            queue.set_style(node(2), style);
+            world.commit(queue).unwrap();
+            let work = world.take_system_work();
+            world.resolve_styles(&work.style).unwrap();
+            let delta = world.project_accessibility_delta(&work);
+            for id in delta.removed {
+                retained.remove(&id);
+            }
+            for entry in delta.updated {
+                retained.insert(entry.id, entry);
+            }
+            assert_eq!(retained, snapshot(&world));
+        }
+        for visibility in [
+            nana_ui_core::VisibilitySpec::Hidden,
+            nana_ui_core::VisibilitySpec::Visible,
+        ] {
+            let mut style = world.record(node(3)).style.clone();
+            Arc::make_mut(&mut style.layout).paint.visibility = Some(visibility);
+            let mut queue = MutationQueue::new();
+            queue.set_style(node(3), style);
+            world.commit(queue).unwrap();
+            let work = world.take_system_work();
+            world.resolve_styles(&work.style).unwrap();
+            let delta = world.project_accessibility_delta(&work);
+            for id in delta.removed {
+                retained.remove(&id);
+            }
+            for entry in delta.updated {
+                retained.insert(entry.id, entry);
+            }
+            assert_eq!(retained, snapshot(&world));
+        }
+    }
+}
+
 fn node(id: u64) -> StableNodeId {
     StableNodeId::new(id).unwrap()
 }
@@ -185,80 +308,67 @@ fn scrolling_publishes_moved_descendants_in_accessibility_delta() {
 }
 
 #[test]
-fn accessible_bounds_follow_the_hit_index_perspective_contract() {
-    let mut world = UiWorld::new();
+fn non_hittable_text_without_a_hit_entry_keeps_scrolled_accessibility_bounds() {
+    let mut world = fixture();
     let mut queue = MutationQueue::new();
-    let bounds = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 200.0,
-        height: 80.0,
-    };
-    let matrix = PaintMat4::perspective(800.0)
-        .unwrap()
-        .then(PaintMat4::rotate_y(30_f32.to_radians()));
-    queue.create(
+    queue.set_accessibility(
         node(3),
-        document(),
-        NodeKind::Element {
-            tag: "button".into(),
-        },
-    );
-    queue.write_layout(node(3), bounds);
-    queue.set_style(
-        node(3),
-        NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                transform_3d: Some(matrix),
-                ..Default::default()
-            }),
+        AccessibilityState {
+            role: AccessibilityRole::Text,
             ..Default::default()
         },
     );
+    queue.set_interaction(
+        node(3),
+        InteractionState {
+            pointer_events: false,
+            focusable: false,
+        },
+    );
     world.commit(queue).unwrap();
-    world.rebuild_hit_test(document());
-    let projected = button_bounds(&world);
-    let corners = matrix
-        .around_origin(0.0, 0.0, 100.0, 40.0)
-        .projected_corners(0.0, 0.0, 200.0, 80.0)
-        .unwrap();
-    let left = corners.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-    let right = corners
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    assert!((projected.x - left).abs() < 0.001);
-    assert!((projected.width - (right - left)).abs() < 0.001);
-    assert_hit_at_accessible_center(&world);
+    let indexed = button_bounds(&world);
+    // Accessible text can be projected before a hit entry is built, and must
+    // still carry all ancestor scroll offsets.
+    world.hit_test_index.clear();
+    let fallback = button_bounds(&world);
+    assert_eq!(fallback.x, 20.0);
+    assert_eq!(fallback.y, 80.0);
+    assert_eq!(fallback, indexed);
 }
 
 #[test]
-fn selective_and_full_projection_share_scroll_geometry_across_documents() {
+fn batched_accessibility_bounds_are_order_independent_and_refresh_after_scroll() {
     let mut world = fixture();
-    let other_document = DocumentId::new(2).unwrap();
+    for offset in [180.0, 120.0] {
+        let mut queue = MutationQueue::new();
+        queue.set_scroll_offset(node(1), ScrollOffset { x: 7.0, y: offset });
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document());
+        let indexed = world.project_accessibility_nodes(&[node(1), node(2), node(3)]);
+        world.hit_test_index.clear();
+        // A descendant queried first must populate its ancestor transforms
+        // without applying an ancestor's own scroll to its own geometry.
+        let mut reverse = world.project_accessibility_nodes(&[node(3), node(2), node(1)]);
+        reverse.reverse();
+        assert_eq!(reverse, indexed);
+        assert_eq!(
+            world.project_accessibility_nodes(&[node(1), node(2), node(3)]),
+            indexed
+        );
+    }
+}
+
+#[test]
+fn accessible_projection_uses_committed_transforms_before_hit_rebuild() {
+    let mut world = fixture();
+    let previous = button_bounds(&world);
     let mut queue = MutationQueue::new();
-    queue.create(
-        node(4),
-        other_document,
-        NodeKind::Element {
-            tag: "button".into(),
-        },
-    );
-    queue.write_layout(
-        node(4),
-        LayoutBox {
-            x: 40.0,
-            y: 50.0,
-            width: 20.0,
-            height: 10.0,
-        },
-    );
     queue.set_style(
-        node(4),
+        node(1),
         NodeStyle {
             layout: Arc::new(LayoutStyle {
                 transform: Some(PaintTransform {
-                    e: 60.0,
+                    e: 100.0,
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -267,13 +377,9 @@ fn selective_and_full_projection_share_scroll_geometry_across_documents() {
         },
     );
     world.commit(queue).unwrap();
-    world.rebuild_hit_test(other_document);
-    let nodes = world.project_accessibility_nodes(&[node(3), node(4)]);
-    assert_eq!(nodes.len(), 2);
-    assert_eq!(nodes[0].bounds, button_bounds(&world));
-    assert_eq!(nodes[1].bounds.x, 100.0);
-    assert_eq!(
-        nodes[1].bounds,
-        world.project_accessibility(other_document)[0].bounds
-    );
+    let before_rebuild = button_bounds(&world);
+    assert_eq!(before_rebuild.x, previous.x + 100.0);
+    world.rebuild_hit_test(document());
+    assert_eq!(before_rebuild, button_bounds(&world));
+    assert_hit_at_accessible_center(&world);
 }

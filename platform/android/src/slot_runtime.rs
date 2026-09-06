@@ -168,6 +168,10 @@ impl SlotRuntime {
         &self.document
     }
 
+    pub(crate) fn document_mut(&mut self) -> &mut RuntimeDocument {
+        &mut self.document
+    }
+
     pub fn flush(&mut self) -> Result<(), FrameworkError> {
         let (logical_w, logical_h) = self.logical_size();
         self.document

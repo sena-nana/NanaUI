@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 46s
+     Running tests\sidebar_row_label_paints_once.rs (E:/codex-build/nanaui-high-refresh\debug\deps\sidebar_row_label_paints_once-7563e4907fe9be0d.exe)
+
+running 5 tests
+test declared_live_rows_never_project_self_painted_rows ... ok
+test self_painted_mode_with_attached_children_still_paints_the_label_once ... ok
+test stale_rows_projected_before_children_attach_never_paint ... ok
+test live_sidebar_rows_paint_their_label_exactly_once ... ok
+test relabeled_and_reflowed_rows_never_keep_stale_label_primitives ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

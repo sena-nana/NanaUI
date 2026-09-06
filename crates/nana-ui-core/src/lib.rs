@@ -117,12 +117,13 @@ pub use url_jail::{
     stylesheet_base_from_href,
 };
 pub use virtual_list::{
-    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
-    VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualAlignment, VirtualFrozenWindow, VirtualListLayout, VirtualListMaterialization,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualScrollAnchor, VirtualViewport,
 };
 pub use virtual_table::{
-    TableColumn, TableCursor, TableNavigation, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow,
+    TableColumn, TableCursor, TableNavigation, VirtualTableFrozenWindow, VirtualTableLayout,
+    VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
 pub use work::{FrameStage, GpuWorkObservation, WorkCounters};

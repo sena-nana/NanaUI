@@ -155,8 +155,7 @@ impl<E: JsEngine> VueAgentSession<E> {
         height: u32,
     ) -> Result<Self, AgentError> {
         let mut host = VueHost::with_viewport(width, height, 1.0);
-        host.attach_engine(&mut engine)?;
-        engine.initialize(artifact)?;
+        host.initialize_with_web_api(&mut engine, artifact)?;
         host.bind_event_bridge(&mut engine)?;
         let mut session = Self {
             host,
@@ -366,6 +365,7 @@ pub struct RuntimeAgentSession {
     document: RuntimeDocument,
     shaper: NanaTextShaper,
     gpu: Option<OffscreenSnapshots>,
+    scale_factor: f32,
     width: u32,
     height: u32,
     clear: [f32; 4],
@@ -373,7 +373,23 @@ pub struct RuntimeAgentSession {
 
 impl RuntimeAgentSession {
     pub fn new(document: RuntimeDocument, width: u32, height: u32) -> Result<Self, AgentError> {
+        Self::new_scaled(document, width, height, 1.0)
+    }
+
+    /// Width and height are logical pixels; PNG dimensions include the scale.
+    pub fn new_scaled(
+        document: RuntimeDocument,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) -> Result<Self, AgentError> {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return Err(AgentError(
+                "snapshot scale must be finite and positive".into(),
+            ));
+        }
         let mut session = Self {
+            scale_factor,
             document,
             shaper: NanaTextShaper::default(),
             gpu: None,
@@ -464,12 +480,16 @@ impl RuntimeAgentSession {
 
     pub fn screenshot_rgba(&mut self) -> Result<(Size<u32>, Vec<u8>), AgentError> {
         self.flush()?;
-        let size = Size::new(self.width, self.height);
+        let size = Size::new(
+            (self.width as f32 * self.scale_factor).round() as u32,
+            (self.height as f32 * self.scale_factor).round() as u32,
+        );
+        let scale = self.scale_factor;
         let clear = self.clear;
         let scene = self.document.scene().clone();
         let gpu = self.gpu_mut()?;
         let pixels = gpu
-            .paint(&scene, size, clear, None, None)
+            .paint_scaled(&scene, size, scale, clear)
             .map_err(|error| AgentError(error.to_string()))?;
         Ok((size, pixels))
     }
@@ -529,7 +549,9 @@ fn node_click_point(host: &VueHost, id: u64) -> Option<(f32, f32)> {
     let handle = NodeHandle(id);
     let document = host.document();
     let guard = document.lock().ok()?;
-    if let Some(bounds) = guard.layout_box(handle)
+    // Runtime LayoutBox deliberately excludes scroll/paint transforms. Use
+    // the same current projection as the painter when synthesizing a pointer.
+    if let Some(bounds) = guard.scene().draw_node_bounds(StableNodeId::try_from(handle).ok()?)
         && (bounds.width > 0.0 || bounds.height > 0.0)
     {
         return Some((

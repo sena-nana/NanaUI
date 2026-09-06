@@ -54,6 +54,13 @@ pub struct SceneGpuPassContext<'a> {
 /// the current frame encoder/target during render. They must not create a
 /// second GPU context or submit the encoder themselves.
 pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
+    /// Opt into reusing prepared UI commands. Change this version whenever
+    /// `prepare` must run again. The default is dynamic; rendering still runs
+    /// on every requested frame even when preparation is reused.
+    fn preparation_version(&self, _node: &CustomRenderNode) -> Option<u64> {
+        None
+    }
+
     fn prepare(&self, node: &SceneGpuNode, context: SceneGpuPrepareContext<'_>);
 
     fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>);
@@ -80,7 +87,7 @@ pub struct SceneResourceEncodeContext<'a> {
 }
 
 /// Advanced graph-scheduled offscreen on the HostTexture path.
-/// Prefer `prepare_window_frame`. NanaUI submits each pass before UI sampling.
+/// Prefer `prepare_window_frame`. The host encodes preparation before UI sampling and submits the frame once.
 pub trait SceneResourceProducer: fmt::Debug + Send + Sync + 'static {
     /// Encode one preparation pass. Returning an error drops this pass without
     /// submission; implementations must not retain a pending submission token
@@ -140,61 +147,48 @@ impl SceneResourceProducerRegistry {
         self.producers.get(resource).cloned()
     }
 
+    /// Encode preparation into the host frame. No submission happens here.
+    /// Discard the encoder if this returns an error.
     pub fn encode_scene(
         &self,
         scene: &UiScene,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Result<Option<wgpu::SubmissionIndex>, SceneResourceProduceError> {
-        let graph = scene
-            .frame_graph(nana_ui_scene::ResourceId(1))
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<PreparedSceneResources, SceneResourceProduceError> {
+        let plan = scene
+            .frame_plan()
             .map_err(|error| SceneResourceProduceError {
                 resource: Arc::from("render-graph"),
                 message: error.to_string(),
             })?;
-        let nodes = graph
-            .passes
-            .iter()
-            .flat_map(|pass| &pass.operations)
-            .filter_map(|operation| {
-                let nana_ui_scene::RenderOperation::PrepareExternal(id) = operation else {
-                    return None;
-                };
-                let primitive = scene.primitive(*id)?;
-                let ScenePrimitiveKind::Custom { node, .. } = &primitive.kind else {
-                    return None;
-                };
-                self.producers
-                    .contains_key(node.resource.as_ref())
-                    .then(|| node.clone())
-            })
-            .collect::<Vec<_>>();
-        if nodes.is_empty() {
-            return Ok(None);
-        }
-        let mut last_submission = None;
-        for node in &nodes {
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("NanaUI Scene external resource producer"),
-            });
-            self.producers[&node.resource]
+        let mut prepared = PreparedSceneResources::default();
+        for id in plan.preparations.iter() {
+            let Some(primitive) = scene.primitive(*id) else {
+                continue;
+            };
+            let ScenePrimitiveKind::Custom { node, .. } = &primitive.kind else {
+                continue;
+            };
+            let Some(producer) = self.producers.get(&node.resource) else {
+                continue;
+            };
+            producer
                 .encode(
                     node,
                     SceneResourceEncodeContext {
                         device,
                         queue,
-                        encoder: &mut encoder,
+                        encoder,
                     },
                 )
                 .map_err(|message| SceneResourceProduceError {
                     resource: node.resource.clone(),
                     message,
                 })?;
-            let submission = queue.submit([encoder.finish()]);
-            self.producers[&node.resource].submitted(node, device, submission.clone());
-            last_submission = Some(submission);
+            prepared.nodes.push((node.clone(), Arc::clone(producer)));
         }
-        Ok(last_submission)
+        Ok(prepared)
     }
 }
 
@@ -244,5 +238,20 @@ mod tests {
         assert!(registry.insert("live2d", Arc::new(NoopRenderer)).is_none());
         assert!(registry.get("live2d").is_some());
         assert!(registry.insert("live2d", Arc::new(NoopRenderer)).is_some());
+    }
+}
+
+/// Submission callbacks for successfully encoded external resources. Dropping
+/// this value without `submitted` does not publish successful production.
+#[derive(Default)]
+pub struct PreparedSceneResources {
+    nodes: Vec<(CustomRenderNode, Arc<dyn SceneResourceProducer>)>,
+}
+
+impl PreparedSceneResources {
+    pub fn submitted(self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) {
+        for (node, producer) in self.nodes {
+            producer.submitted(&node, device, submission.clone());
+        }
     }
 }

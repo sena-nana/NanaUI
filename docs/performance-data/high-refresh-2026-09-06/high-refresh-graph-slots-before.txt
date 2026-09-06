@@ -1,0 +1,25 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 10s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_scene-c1e8e4783971990d.exe)
+
+running 1 test
+test scene::tests::large_graph_primitive_families_do_not_overwrite_each_other ... FAILED
+
+failures:
+
+---- scene::tests::large_graph_primitive_families_do_not_overwrite_each_other stdout ----
+
+thread 'scene::tests::large_graph_primitive_families_do_not_overwrite_each_other' (34776) panicked at crates\nana-ui-scene\src\scene\tests.rs:7251:9:
+assertion `left == right` failed
+  left: 430
+ right: 1803
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scene::tests::large_graph_primitive_families_do_not_overwrite_each_other
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 96 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p nana-ui-scene --lib`

@@ -81,3 +81,67 @@ describe("virtual window geometry", () => {
     assert.equal(window.end, 4);
   });
 });
+
+test("million measured items preserve the visible anchor and bounded window", () => {
+  const index = createWindowIndex({count: 1_000_000, itemExtent: 20});
+  const viewport = {offset: [0, 10_000_003], extent: [0, 400], overscan: [0, 80]};
+  const anchor = index.anchor(viewport.offset[1]);
+  assert.equal(anchor.index, 500_000);
+  assert.equal(index.measure(1, 40, viewport), true);
+  assert.equal(viewport.offset[1], 10_000_023);
+  assert.deepEqual(index.anchor(viewport.offset[1]), anchor);
+  const window = index.windowFor(viewport);
+  assert.ok(window.end - window.start <= 30);
+});
+
+test("public index queries sanitize fractional positions and nonfinite counts", () => {
+  const index = createWindowIndex({extents: [20, 20, 20, 20]});
+  assert.equal(index.prefixAt(2.5), 40);
+  assert.equal(index.prefixAt(-1), 0);
+  assert.equal(index.prefixAt(Number.NaN), 0);
+  assert.equal(index.restoreAnchor({index: 2.7, inset: 3}), 43);
+  assert.deepEqual(createWindowIndex({count: Infinity, itemExtent: 20}).window(0, 400, 80),
+    {start: 0, end: 0, leading: 0, trailing: 0, total: 0});
+  const large = uniformWindow(2 ** 32, 1, 100, 20, 0);
+  assert.equal(large.start, 100);
+  assert.equal(large.end, 120);
+});
+
+
+test("navigation matches Rust nearest-edge and alignment semantics", () => {
+  const sizes = createWindowIndex({ extents: [20, 200, 30, 40] });
+  assert.equal(sizes.offsetForIndex(1, 50, 60), 50);
+  assert.equal(sizes.offsetForIndex(2, 0, 60), 190);
+  assert.equal(sizes.offsetForIndex(0, 190, 60), 0);
+  assert.equal(sizes.offsetForIndex(3, 0, 60, "start"), 230);
+  assert.equal(sizes.offsetForIndex(1, 0, 60, "center"), 90);
+  assert.equal(sizes.offsetForIndex(4, 10, 60, "end"), null);
+  assert.throws(() => sizes.offsetForIndex(0, 0, 60, "bad"), RangeError);
+});
+
+test("a retained editor adds one range without materializing intervening data", () => {
+  const sizes = createWindowIndex({count: 1_000_000, itemExtent: 20});
+  const win = sizes.window(10_000_000, 100, 0);
+  assert.deepEqual(sizes.retainedRanges(win, [2, 2, 500001, 999999, -1, Infinity]), [
+    {start: 2, end: 3}, {start: 500000, end: 500005}, {start: 999999, end: 1000000},
+  ]);
+  assert.deepEqual(sizes.retainedRanges(win), [{start: 500000, end: 500005}]);
+});
+
+
+test("frozen prefix reserves viewport space and remains bounded", () => {
+  const index = createWindowIndex({count: 1000000, itemExtent: 20});
+  assert.equal(index.offsetForFrozenIndex(500000, 0, 100, 1, "start"), 9999980);
+  const pane = index.frozenWindow(9999980, 100, 0, 1);
+  assert.deepEqual(pane.frozen, [0]);
+  assert.equal(pane.body.start, 500000);
+  assert.equal(pane.body.end, 500004);
+  assert.equal(index.offsetForFrozenIndex(0, 9999980, 100, 1), 9999980);
+  const covered = index.frozenWindow(0, 100, 0, 1000000);
+  assert.equal(covered.frozen.length, 5);
+  assert.equal(index.offsetForFrozenIndex(999999, 0, 100, 1000000), null);
+  assert.equal(covered.body.start, covered.body.end);
+  assert.equal(index.offsetForFrozenIndex(10, 0, 100, 8), null);
+  const overlap = index.frozenWindow(0, 100, 200, 2);
+  assert.equal(overlap.body.start, 2);
+});

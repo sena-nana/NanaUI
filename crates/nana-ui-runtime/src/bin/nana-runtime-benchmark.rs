@@ -1,3 +1,6 @@
+#[path = "runtime_benchmark/style_sharing.rs"]
+mod style_sharing;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -168,6 +171,14 @@ struct Distribution {
 
 fn main() {
     let document = DocumentId::new(1).unwrap();
+    if std::env::args().any(|arg| arg == "--profile-style-sharing") {
+        style_sharing::run(document);
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--profile-initial-systems") {
+        profile_initial_systems(document);
+        return;
+    }
     prove_scheduled_ui_frames_are_not_hardcoded_zero(document);
     let mut cases = Vec::new();
     for nodes in [100, 500, 1_000, 5_000] {
@@ -554,12 +565,14 @@ fn bench_construction(
     }
 }
 
+type TimedMutationWork = (Duration, Duration, Duration, WorkSnapshot);
+
 fn measure_single_node_mutations(
     world: &mut UiWorld,
     document: DocumentId,
     nodes: usize,
     iteration: usize,
-) -> Vec<(&'static str, (Duration, Duration, Duration, WorkSnapshot))> {
+) -> Vec<(&'static str, TimedMutationWork)> {
     let text_target = node((nodes / 2).max(2));
     let layout_target = node((nodes / 2 + 1).max(3));
     let visibility_target = node((nodes / 2 + 2).max(4));
@@ -642,7 +655,7 @@ fn drain_mutation(
     world: &mut UiWorld,
     document: DocumentId,
     queue: MutationQueue,
-) -> (Duration, Duration, Duration, WorkSnapshot) {
+) -> TimedMutationWork {
     let started = Instant::now();
     world.commit(queue).unwrap();
     let commit = started.elapsed();
@@ -818,10 +831,35 @@ fn work_snapshot(work: &SystemWork, world: &UiWorld) -> WorkSnapshot {
 }
 
 fn run_systems(world: &mut UiWorld, document: DocumentId, work: &SystemWork) {
-    world.resolve_styles(&work.style).unwrap();
+    run_systems_observed(world, document, work, |_| {});
+}
+
+fn run_systems_observed(
+    world: &mut UiWorld,
+    document: DocumentId,
+    work: &SystemWork,
+    completed: impl FnMut(&'static str),
+) {
+    run_systems_with_style_resolver(world, document, work, completed, |world, ids| {
+        world.resolve_styles(ids).unwrap();
+    });
+}
+
+fn run_systems_with_style_resolver(
+    world: &mut UiWorld,
+    document: DocumentId,
+    work: &SystemWork,
+    mut completed: impl FnMut(&'static str),
+    resolve_styles: impl FnOnce(&mut UiWorld, &[StableNodeId]),
+) {
+    resolve_styles(world, &work.style);
+    completed("style");
     world.reconcile_focus(&work.focus_ime);
+    completed("focus");
     let _ = world.project_accessibility_nodes(&work.accessibility);
+    completed("accessibility");
     let _ = world.layout_inputs(&work.layout).unwrap();
+    completed("layout_inputs");
     // Mirror RuntimeDocument: patch the subtrees whose geometry changed and fall
     // back to a full rebuild only when the change is structural. Always
     // rebuilding the document here would measure a path the product no longer
@@ -831,7 +869,45 @@ fn run_systems(world: &mut UiWorld, document: DocumentId, work: &SystemWork) {
     {
         world.rebuild_hit_test(document);
     }
+    completed("hit_test");
     let _ = world.extract_nodes(&work.render_extraction);
+    completed("extraction");
+}
+
+fn profile_initial_systems(document: DocumentId) {
+    let mut report = BTreeMap::new();
+    for nodes in [5_000, 10_000] {
+        let mut samples: BTreeMap<&str, Vec<Duration>> = BTreeMap::new();
+        for iteration in 0..70 {
+            let mut world = UiWorld::new();
+            world.commit(tree_mutations(nodes, document)).unwrap();
+            let work = world.take_system_work();
+            let mut started = Instant::now();
+            run_systems_observed(&mut world, document, &work, |stage| {
+                let elapsed = started.elapsed();
+                if iteration >= 10 {
+                    samples.entry(stage).or_default().push(elapsed);
+                }
+                started = Instant::now();
+            });
+        }
+        report.insert(
+            nodes,
+            samples
+                .into_iter()
+                .map(|(stage, samples)| (stage, summarize(&samples)))
+                .collect::<BTreeMap<_, _>>(),
+        );
+    }
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    if let Some(path) = std::env::args()
+        .skip_while(|arg| arg != "--output")
+        .nth(1)
+    {
+        std::fs::write(path, json).unwrap();
+    } else {
+        println!("{json}");
+    }
 }
 
 fn prove_scheduled_ui_frames_are_not_hardcoded_zero(document: DocumentId) {

@@ -1,0 +1,127 @@
+{
+    "passed":  true,
+    "platform":  "Windows UI Automation",
+    "mode":  "Semantics",
+    "retry":  false,
+    "executable":  "E:\\codex-build\\nanaui-high-refresh\\debug\\examples\\accessibility-hidden-probe.exe",
+    "initial_failure":  false,
+    "window":  {
+                   "Name":  "NanaUI Accessibility Probe",
+                   "Class":  "Window Class",
+                   "ProcessId":  36004,
+                   "Handle":  10487290
+               },
+    "initial":  [
+                    {
+                        "Name":  "Visible editor",
+                        "Type":  "ControlType.Edit",
+                        "Focused":  false,
+                        "Offscreen":  false,
+                        "Bounds":  "104,104,300,36"
+                    }
+                ],
+    "shown_before_focus":  [
+                               {
+                                   "Name":  "Container metadata",
+                                   "Type":  "ControlType.Window",
+                                   "Focused":  false,
+                                   "Offscreen":  false,
+                                   "Bounds":  "104,104,420,36"
+                               },
+                               {
+                                   "Name":  "Visible editor",
+                                   "Type":  "ControlType.Edit",
+                                   "Focused":  false,
+                                   "Offscreen":  false,
+                                   "Bounds":  "104,104,300,36"
+                               }
+                           ],
+    "edited":  [
+                   {
+                       "Name":  "Visible editor",
+                       "Type":  "ControlType.Edit",
+                       "Focused":  true,
+                       "Offscreen":  false,
+                       "Bounds":  "104,104,300,36"
+                   }
+               ],
+    "edited_root":  {
+                        "Name":  "NanaUI Accessibility Probe",
+                        "Handle":  10487290,
+                        "Type":  "ControlType.Window"
+                    },
+    "shown":  [
+                  {
+                      "Name":  "Container metadata",
+                      "Type":  "ControlType.Window",
+                      "Focused":  false,
+                      "Offscreen":  false,
+                      "Bounds":  "104,104,420,36"
+                  },
+                  {
+                      "Name":  "Visible editor",
+                      "Type":  "ControlType.Edit",
+                      "Focused":  true,
+                      "Offscreen":  false,
+                      "Bounds":  "104,104,300,36"
+                  }
+              ],
+    "hidden_again":  [
+                         {
+                             "Name":  "Visible editor",
+                             "Type":  "ControlType.Edit",
+                             "Focused":  true,
+                             "Offscreen":  false,
+                             "Bounds":  "104,104,300,36"
+                         }
+                     ],
+    "exit_code":  0,
+    "presented_states":  [
+                             {
+                                 "backend":  "Vulkan",
+                                 "event":  "adapter"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Initial value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  false,
+                                 "phase":  0,
+                                 "value":  "Initial value"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Dialog, label: Some(\"Container metadata\"), value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Initial value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  false,
+                                 "phase":  0,
+                                 "value":  "Initial value"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Initial value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  false,
+                                 "phase":  0,
+                                 "value":  "Initial value"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Native UIA value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: true, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  true,
+                                 "phase":  0,
+                                 "value":  "Native UIA value"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Dialog, label: Some(\"Container metadata\"), value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Native UIA value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: true, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  true,
+                                 "phase":  0,
+                                 "value":  "Native UIA value"
+                             },
+                             {
+                                 "accessibility":  "[AccessibilityNode { id: StableNodeId(1), parent: None, children: [StableNodeId(2)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(2), parent: Some(StableNodeId(1)), children: [StableNodeId(3)], role: Generic, label: None, value: None, description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: false, selection: None, modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: false, bounds: LayoutBox { x: 0.0, y: 0.0, width: 420.0, height: 36.0 } }, AccessibilityNode { id: StableNodeId(3), parent: Some(StableNodeId(2)), children: [], role: TextInput, label: Some(\"Visible editor\"), value: Some(\"Native UIA value\"), description: None, disabled: false, checked: None, mixed: false, orientation: None, selected: None, multiline: false, editable: true, selection: Some(TextSelection { anchor: 13, focus: 13 }), modal: false, busy: false, invalid: false, numeric_minimum: None, numeric_maximum: None, numeric_step: None, numeric_value: None, focused: true, bounds: LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 36.0 } }]",
+                                 "event":  "state",
+                                 "focused":  true,
+                                 "phase":  0,
+                                 "value":  "Native UIA value"
+                             }
+                         ]
+}

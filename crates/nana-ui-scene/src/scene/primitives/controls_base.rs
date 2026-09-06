@@ -508,11 +508,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     },
                 });
                 for (index, option) in menu.options.iter().enumerate() {
-                    let index = u8::try_from(index).unwrap_or(u8::MAX);
+                    let index = u64::try_from(index).unwrap_or(u64::MAX);
                     if option.checked {
                         let mut mark = component_text_primitive(
                             id,
-                            70u8.saturating_add(index),
+                            70u64.saturating_add(index),
                             &nana_ui_runtime::ComponentTextRegion {
                                 bounds: nana_ui_runtime::LayoutBox {
                                     x: option.bounds.x,
@@ -546,7 +546,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                 z_index: menu_z,
                                 document_order: node_order,
                             },
-                            10u8.saturating_add(index),
+                            10u64.saturating_add(index),
                             scene_rect(option.bounds),
                             VisualQuadStyle {
                                 background: Some(background),
@@ -558,7 +558,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     }
                     let mut label = component_text_primitive(
                         id,
-                        40u8.saturating_add(index),
+                        40u64.saturating_add(index),
                         &option.label,
                         TextHorizontalAlignment::Start,
                         true,
@@ -575,7 +575,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
         }
         Some(ComponentGeometry::TreeView { rows }) => {
             for (index, row) in rows.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 if let Some(background) = row.background {
                     emit(visual_quad(
                         &VisualPrimitiveContext {
@@ -586,7 +586,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             z_index: node.z_index,
                             document_order: node_order,
                         },
-                        10u8.saturating_add(index),
+                        10u64.saturating_add(index),
                         scene_rect(row.bounds),
                         VisualQuadStyle {
                             background: Some(background),
@@ -599,7 +599,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 if let Some(disclosure) = row.disclosure {
                     emit(component_text_primitive(
                         id,
-                        40u8.saturating_add(index),
+                        40u64.saturating_add(index),
                         &nana_ui_runtime::ComponentTextRegion {
                             bounds: disclosure,
                             content: Arc::from(if row.expanded { "▾" } else { "▸" }),
@@ -620,7 +620,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     emit(ScenePrimitive {
                         id: PrimitiveId {
                             node: id,
-                            slot: 80u8.saturating_add(index),
+                            slot: 80u64.saturating_add(index),
                         },
                         node: id,
                         bounds: scene_rect(icon_bounds),
@@ -637,7 +637,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 }
                 emit(component_text_primitive(
                     id,
-                    110u8.saturating_add(index),
+                    110u64.saturating_add(index),
                     &row.label,
                     TextHorizontalAlignment::Start,
                     true,
@@ -756,7 +756,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 emit(empty_text);
             }
             for (index, row) in rows.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
+                let index = u64::try_from(index).unwrap_or(u64::MAX);
                 if let Some(background) = row.background {
                     emit(visual_quad(
                         &VisualPrimitiveContext {
@@ -767,7 +767,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             z_index: overlay_z,
                             document_order: node_order,
                         },
-                        23u8.saturating_add(index),
+                        23u64.saturating_add(index),
                         scene_rect(row.bounds),
                         VisualQuadStyle {
                             background: Some(background),
@@ -779,7 +779,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 }
                 let mut label = component_text_primitive(
                     id,
-                    40u8.saturating_add(index),
+                    40u64.saturating_add(index),
                     &row.label,
                     TextHorizontalAlignment::Start,
                     true,
@@ -794,7 +794,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 if let Some(category) = &row.category {
                     let mut category = component_text_primitive(
                         id,
-                        70u8.saturating_add(index),
+                        70u64.saturating_add(index),
                         category,
                         TextHorizontalAlignment::Start,
                         true,
@@ -810,7 +810,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 if let Some(shortcut) = &row.shortcut {
                     let mut shortcut = component_text_primitive(
                         id,
-                        100u8.saturating_add(index),
+                        100u64.saturating_add(index),
                         shortcut,
                         TextHorizontalAlignment::End,
                         true,

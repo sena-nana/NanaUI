@@ -46,6 +46,8 @@ impl Smoke {
             parent: (number > 1).then_some(WindowId::PRIMARY),
             system_caption: true,
             icon: None,
+            focus_on_show: true,
+            constrain_to_work_area: false,
         }
     }
 

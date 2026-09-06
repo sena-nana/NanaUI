@@ -2,7 +2,8 @@
 //!
 //! Loads `perf/scenarios/gpu-scene-*.json`. UiOnly materializes that file's
 //! viewport, host-texture slot, and UI nodes, then paints through
-//! `SceneWgpuPainter`. No CPU readback. Missing adapter or Live2D exit 2.
+//! `SceneWgpuPainter`. No pixel readback. Optional GPU timestamp diagnostics
+//! read query results after GPU completion. Missing adapter or Live2D exit 2.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,6 +22,14 @@ use nana_ui::{
 };
 use nana_ui_scene::ScenePrimitiveKind;
 use serde::{Deserialize, Serialize};
+
+#[path = "gpu_scene_benchmark/timestamps.rs"]
+mod timestamps;
+#[path = "gpu_scene_benchmark/allocations.rs"]
+mod allocations;
+
+#[global_allocator]
+static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const WARMUP: usize = 3;
@@ -47,6 +56,12 @@ struct Report {
     frame_stages: Option<BTreeMap<String, StageStatusReport>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stages: Option<StageReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sampling: Option<SamplingReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gpu_timestamps: Option<TimestampReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    framework_thread_allocations: Option<allocations::Report>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -62,6 +77,7 @@ struct Materialization {
     host_texture: HostTextureParams,
     ui_nodes: Vec<String>,
     ui_entity_count: usize,
+    host_texture_resources: usize,
     scene_primitive_kinds: Vec<String>,
 }
 
@@ -100,6 +116,24 @@ struct StageReport {
 }
 
 #[derive(Serialize)]
+struct SamplingReport {
+    elapsed_seconds: f64,
+    warmup_seconds: f64,
+    mode: &'static str,
+    surface_present_measured: bool,
+    framework_cpu_prepare_ms: Distribution,
+    runtime_passes: usize,
+    structure_plan_rebuilds: usize,
+    maximum_gpu_work_per_frame: GpuWorkSnapshot,
+}
+
+#[derive(Serialize)]
+struct TimestampReport {
+    producer_ms: Distribution,
+    ui_composition_ms: Distribution,
+}
+
+#[derive(Serialize)]
 struct Distribution {
     p50: f64,
     p95: f64,
@@ -117,15 +151,27 @@ struct ScenarioFile {
 #[derive(Deserialize)]
 struct ScenarioParams {
     composition: String,
+    #[serde(default)]
+    independent_textures: bool,
     viewport: [u32; 2],
     host_texture: HostTextureParams,
     ui_nodes: Vec<String>,
 }
 
+impl ScenarioParams {
+    fn texture_slot(&self, index: usize) -> String {
+        if self.independent_textures {
+            format!("{}:{index}", self.host_texture.slot)
+        } else {
+            self.host_texture.slot.clone()
+        }
+    }
+}
+
 fn main() {
     let args = Args::parse();
     let report = match load_scenario(args.scenario.as_ref()) {
-        Ok(scenario) => run_scenario(scenario),
+        Ok(scenario) => run_scenario(scenario, &args),
         Err(error) => unsupported(error.scenario_id, &error.composition, error.reason),
     };
     write_report(&args.output, &report);
@@ -151,21 +197,47 @@ fn load_err(scenario_id: Option<String>, composition: &str, reason: String) -> L
 struct Args {
     output: Option<PathBuf>,
     scenario: Option<PathBuf>,
+    sample_seconds: Option<f64>,
+    gpu_timestamps: bool,
+    allocation_counts: bool,
 }
 
 impl Args {
     fn parse() -> Self {
         let mut output = None;
         let mut scenario = None;
+        let mut sample_seconds = None;
+        let mut gpu_timestamps = false;
+        let mut allocation_counts = false;
         let mut argv = std::env::args().skip(1);
         while let Some(arg) = argv.next() {
             match arg.as_str() {
                 "--output" => output = argv.next().map(PathBuf::from),
                 "--scenario" => scenario = argv.next().map(PathBuf::from),
+                "--sample-seconds" => {
+                    let seconds: f64 = argv
+                        .next()
+                        .expect("--sample-seconds needs a value")
+                        .parse()
+                        .expect("invalid sample duration");
+                    assert!(
+                        seconds.is_finite() && seconds > 0.0,
+                        "sample duration must be finite and positive"
+                    );
+                    sample_seconds = Some(seconds);
+                }
+                "--gpu-timestamps" => gpu_timestamps = true,
+                "--allocation-counts" => allocation_counts = true,
                 _ => {}
             }
         }
-        Self { output, scenario }
+        Self {
+            output,
+            scenario,
+            sample_seconds,
+            gpu_timestamps,
+            allocation_counts,
+        }
     }
 }
 
@@ -241,10 +313,13 @@ fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -
         gpu_work: None,
         frame_stages: None,
         stages: None,
+        sampling: None,
+        gpu_timestamps: None,
+        framework_thread_allocations: None,
     }
 }
 
-fn run_scenario(scenario: ScenarioFile) -> Report {
+fn run_scenario(scenario: ScenarioFile, args: &Args) -> Report {
     if scenario.kind != "GpuScene" || scenario.params.composition != "UiOnly" {
         return unsupported(
             Some(scenario.id),
@@ -252,33 +327,47 @@ fn run_scenario(scenario: ScenarioFile) -> Report {
             live2d_reason(&scenario.params.composition),
         );
     }
-    run_ui_only(scenario)
+    run_ui_only(scenario, args)
 }
 
-fn run_ui_only(scenario: ScenarioFile) -> Report {
+fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let params = &scenario.params;
-    let Some((device, queue, adapter)) = request_device() else {
+    let Some((device, queue, adapter)) = request_device(args.gpu_timestamps) else {
         return unsupported(
             Some(scenario.id),
             "UiOnly",
-            "No WGPU adapter for the hosted GPU scene path. Do not invent upload/batch zeros."
+            "No WGPU adapter/device supporting the requested features (GPU timestamps need TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS)."
                 .into(),
         );
     };
     let slot = params.host_texture.slot.as_str();
-    let preview = HostSlotContent::new(
-        &device,
-        &queue,
-        (params.host_texture.width, params.host_texture.height),
-    );
+    let resource_count = if params.independent_textures {
+        params
+            .ui_nodes
+            .iter()
+            .filter(|kind| kind.as_str() == "gpu-texture-view")
+            .count()
+    } else {
+        1
+    };
     let textures = HostTextureRegistry::new();
-    textures.register(
-        slot,
-        preview.texture(),
-        params.host_texture.width,
-        params.host_texture.height,
-        HostTextureAlphaMode::Premultiplied,
-    );
+    let previews = (0..resource_count)
+        .map(|index| {
+            let preview = HostSlotContent::new(
+                &device,
+                &queue,
+                (params.host_texture.width, params.host_texture.height),
+            );
+            textures.register(
+                params.texture_slot(index),
+                preview.texture(),
+                params.host_texture.width,
+                params.host_texture.height,
+                HostTextureAlphaMode::Premultiplied,
+            );
+            preview
+        })
+        .collect::<Vec<_>>();
 
     let mut document = match ui_document(params) {
         Ok(document) => document,
@@ -294,6 +383,7 @@ fn run_ui_only(scenario: ScenarioFile) -> Report {
         viewport: params.viewport,
         host_texture: params.host_texture.clone(),
         ui_nodes: params.ui_nodes.clone(),
+        host_texture_resources: resource_count,
         ui_entity_count: document
             .context()
             .world()
@@ -318,30 +408,66 @@ fn run_ui_only(scenario: ScenarioFile) -> Report {
     let mut upload = Vec::with_capacity(FRAMES);
     let mut encode = Vec::with_capacity(FRAMES);
     let mut submit = Vec::with_capacity(FRAMES);
-    let mut last_work = None;
-    let mut last_stages = None;
-    for frame in 0..(WARMUP + FRAMES) {
-        preview.render(&device, &queue, frame as u32);
-        textures.register(
-            slot,
-            preview.texture(),
-            params.host_texture.width,
-            params.host_texture.height,
-            HostTextureAlphaMode::Premultiplied,
-        );
+    let mut prepare = Vec::new();
+    let mut producer_gpu = Vec::new();
+    let mut ui_gpu = Vec::new();
+    let mut queries = args
+        .gpu_timestamps
+        .then(|| timestamps::TimestampProbe::new(&device));
+    let mut sampled_at = None;
+    let warmup_started = Instant::now();
+    let warmup = Duration::from_secs(if args.sample_seconds.is_some() { 2 } else { 0 });
+    let mut frame = 0usize;
+    let mut runtime_passes = 0;
+    let mut structure_plan_rebuilds = 0;
+    let mut plan = document.scene().frame_plan().expect("valid frame plan");
+    let mut maximum_gpu_work = GpuWorkObservation::default();
+    let mut allocation_report = allocations::Report::default();
+    let (work, last_stages) = loop {
+        let sampling = frame >= WARMUP && warmup_started.elapsed() >= warmup;
+        if sampling && sampled_at.is_none() {
+            sampled_at = Some(Instant::now());
+        }
+        let runtime_started = Instant::now();
+        let (update, runtime_allocations) = allocations::measure(args.allocation_counts, || {
+            document
+                .flush(viewport, &mut shaper)
+                .expect("settled GPU document flush")
+        });
+        let runtime_elapsed = runtime_started.elapsed();
+        for (index, preview) in previews.iter().enumerate() {
+            preview.write_uniform(&queue, frame.wrapping_add(index) as u32);
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-gpu-scene-benchmark"),
         });
-        painter
-            .paint(
-                document.scene(),
-                &mut encoder,
-                &target,
-                paint_viewport,
-                Some(&textures),
-                None,
-            )
-            .expect("gpu-scene-ui paint");
+        if let Some(probe) = &queries {
+            probe.stamp(&mut encoder, 0);
+        }
+        for preview in &previews {
+            preview.encode(&mut encoder);
+        }
+        if let Some(probe) = &queries {
+            probe.stamp(&mut encoder, 1);
+        }
+        let prepare_started = Instant::now();
+        let (_, paint_allocations) = allocations::measure(args.allocation_counts, || {
+            painter
+                .paint(
+                    document.scene(),
+                    &mut encoder,
+                    &target,
+                    paint_viewport,
+                    Some(&textures),
+                    None,
+                )
+                .expect("gpu-scene-ui paint")
+        });
+        let prepare_elapsed = prepare_started.elapsed() + runtime_elapsed;
+        if let Some(probe) = &queries {
+            probe.stamp(&mut encoder, 2);
+            probe.resolve(&mut encoder);
+        }
         let submit_started = Instant::now();
         queue.submit([encoder.finish()]);
         let submit_elapsed = submit_started.elapsed();
@@ -352,18 +478,48 @@ fn run_ui_only(scenario: ScenarioFile) -> Report {
         let work = painter
             .last_gpu_work()
             .expect("encoded GPU scene frame must record counters");
-        let frame_stages = host_frame_stages(document.context().last_frame_profile(), timings);
-        if frame >= WARMUP {
+        let frame_stages = host_frame_stages(
+            document.context().last_frame_profile(),
+            timings,
+            update.is_idle(),
+        );
+        let gpu_sample = queries.as_mut().map(|probe| probe.read(&device, &queue));
+        if sampling {
+            if args.allocation_counts {
+                allocation_report.observe(runtime_allocations, paint_allocations);
+            }
+            runtime_passes += update.passes;
+            let next_plan = document.scene().frame_plan().expect("valid frame plan");
+            structure_plan_rebuilds += usize::from(!Arc::ptr_eq(&plan, &next_plan));
+            plan = next_plan;
+            maximum_gpu_work.batch_rebuilds =
+                maximum_gpu_work.batch_rebuilds.max(work.batch_rebuilds);
+            maximum_gpu_work.gpu_upload_bytes =
+                maximum_gpu_work.gpu_upload_bytes.max(work.gpu_upload_bytes);
+            maximum_gpu_work.gpu_buffer_reallocations = maximum_gpu_work
+                .gpu_buffer_reallocations
+                .max(work.gpu_buffer_reallocations);
+            maximum_gpu_work.draw_batches = maximum_gpu_work.draw_batches.max(work.draw_batches);
+            maximum_gpu_work.draw_calls = maximum_gpu_work.draw_calls.max(work.draw_calls);
+            prepare.push(prepare_elapsed);
+            if let Some([producer, ui]) = gpu_sample {
+                producer_gpu.push(producer);
+                ui_gpu.push(ui);
+            }
             batch.push(timings.batch);
             upload.push(timings.gpu_upload);
             encode.push(timings.encode);
             submit.push(timings.submit);
-            last_work = Some(work);
-            last_stages = Some(frame_stages);
+            let done = match args.sample_seconds {
+                Some(seconds) => sampled_at.unwrap().elapsed().as_secs_f64() >= seconds,
+                None => batch.len() >= FRAMES,
+            };
+            if done {
+                break (work, frame_stages);
+            }
         }
-    }
-
-    let work = last_work.expect("warmup completed");
+        frame += 1;
+    };
     Report {
         schema_version: 1,
         status: "ok",
@@ -372,9 +528,31 @@ fn run_ui_only(scenario: ScenarioFile) -> Report {
         composition: "UiOnly".into(),
         materialization: Some(materialization),
         adapter: Some(adapter),
-        frames: Some(FRAMES),
+        frames: Some(batch.len()),
         gpu_work: Some(GpuWorkSnapshot::from(work)),
-        frame_stages: last_stages,
+        frame_stages: Some(last_stages),
+        sampling: Some(SamplingReport {
+            elapsed_seconds: sampled_at.unwrap().elapsed().as_secs_f64(),
+            warmup_seconds: sampled_at
+                .unwrap()
+                .duration_since(warmup_started)
+                .as_secs_f64(),
+            mode: if args.gpu_timestamps {
+                "offscreen-gpu-completion-serialized"
+            } else {
+                "offscreen-submit"
+            },
+            surface_present_measured: false,
+            framework_cpu_prepare_ms: summarize(&prepare),
+            runtime_passes,
+            structure_plan_rebuilds,
+            maximum_gpu_work_per_frame: GpuWorkSnapshot::from(maximum_gpu_work),
+        }),
+        gpu_timestamps: args.gpu_timestamps.then(|| TimestampReport {
+            producer_ms: summarize(&producer_gpu),
+            ui_composition_ms: summarize(&ui_gpu),
+        }),
+        framework_thread_allocations: args.allocation_counts.then_some(allocation_report),
         stages: Some(StageReport {
             batch_ms: summarize(&batch),
             gpu_upload_ms: summarize(&upload),
@@ -403,6 +581,7 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
         .context_mut()
         .create_component(document_id, List::new().label("gpu-scene-ui"))
         .expect("list");
+    let mut texture_index = 0;
     for kind in &params.ui_nodes {
         match kind.as_str() {
             "list" => {}
@@ -417,11 +596,13 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
                     .expect("text child");
             }
             "gpu-texture-view" => {
+                let slot = params.texture_slot(texture_index);
+                texture_index += 1;
                 let child = document
                     .context_mut()
                     .create_component(
                         document_id,
-                        GpuTextureView::new(params.host_texture.slot.as_str()).style(slot_style(
+                        GpuTextureView::new(slot.as_str()).style(slot_style(
                             params.host_texture.width,
                             params.host_texture.height,
                         )),
@@ -478,7 +659,7 @@ fn scene_primitive_kinds(scene: &nana_ui_scene::UiScene, slot: &str) -> Vec<Stri
     kinds
 }
 
-fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
+fn primitive_kind_name(kind: &ScenePrimitiveKind, _slot: &str) -> &'static str {
     match kind {
         ScenePrimitiveKind::Quad { .. }
         | ScenePrimitiveKind::QuadBatch { .. }
@@ -488,8 +669,7 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
         ScenePrimitiveKind::Spinner { .. } => "spinner",
         ScenePrimitiveKind::Stroke { .. } => "stroke",
         ScenePrimitiveKind::Custom { node: custom, .. }
-            if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER
-                && custom.resource.as_ref() == slot =>
+            if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER =>
         {
             "host-texture"
         }
@@ -500,10 +680,15 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, slot: &str) -> &'static str {
 fn host_frame_stages(
     cpu: &FrameProfile,
     timings: GpuStageTimings,
+    runtime_idle: bool,
 ) -> BTreeMap<String, StageStatusReport> {
     let mut profiler = FrameProfiler::new();
     for timing in &cpu.stages {
         if timing.stage.gpu_host_owned() {
+            continue;
+        }
+        if runtime_idle {
+            profiler.skip(timing.stage);
             continue;
         }
         match timing.status {
@@ -536,7 +721,7 @@ fn stage_status_name(status: StageStatus) -> &'static str {
     }
 }
 
-fn request_device() -> Option<(wgpu::Device, wgpu::Queue, String)> {
+fn request_device(gpu_timestamps: bool) -> Option<(wgpu::Device, wgpu::Queue, String)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -545,11 +730,19 @@ fn request_device() -> Option<(wgpu::Device, wgpu::Queue, String)> {
         &instance, None,
     ))
     .ok()?;
+    let required_features = if gpu_timestamps {
+        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+    } else {
+        wgpu::Features::empty()
+    };
+    if !adapter.features().contains(required_features) {
+        return None;
+    }
     let info = adapter.get_info();
     let label = format!("{} ({:?})", info.name, info.backend);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nana-gpu-scene-benchmark"),
-        required_features: wgpu::Features::empty(),
+        required_features,
         required_limits: wgpu::Limits::default(),
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         trace: wgpu::Trace::Off,
@@ -687,11 +880,7 @@ impl HostSlotContent {
         self.host.invalidate();
     }
 
-    fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: u32) {
-        self.write_uniform(queue, frame);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-gpu-scene-benchmark host slot"),
-        });
+    fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("nana-gpu-scene-benchmark host slot"),
@@ -713,7 +902,6 @@ impl HostSlotContent {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        queue.submit([encoder.finish()]);
     }
 }
 

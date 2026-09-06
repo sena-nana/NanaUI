@@ -1,0 +1,4 @@
+    Checking nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Checking nana-css-parity v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\tools\css-parity)
+    Checking runtime-host-fixture v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\examples\runtime-host-fixture)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.29s

@@ -52,7 +52,6 @@ pub(crate) fn gated_runtime_window_update(
 
 /// Host services that are safe to retain or invoke from application code.
 /// Native window identities intentionally do not cross this boundary.
-#[derive(Clone)]
 pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_id: WindowId,
     geometry: WindowGeometry,
@@ -61,6 +60,22 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     surface_alpha_mode: wgpu::CompositeAlphaMode,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
+}
+
+// Cloning host handles never clones a message. A derived implementation would
+// unnecessarily require Message: Clone, preventing move-only application input.
+impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
+    fn clone(&self) -> Self {
+        Self {
+            window_id: self.window_id,
+            geometry: self.geometry,
+            gpu: self.gpu.clone(),
+            material: self.material,
+            surface_alpha_mode: self.surface_alpha_mode,
+            dispatch: Arc::clone(&self.dispatch),
+            tasks: self.tasks.clone(),
+        }
+    }
 }
 
 impl<Message: Send + 'static> RuntimeProgramContext<Message> {
@@ -293,6 +308,25 @@ pub trait RuntimeProgram: Sized + 'static {
     type Message: Send + 'static;
     type Error: fmt::Display;
 
+    fn surface_mode() -> crate::HostedSurfaceMode {
+        crate::HostedSurfaceMode::Window
+    }
+
+    #[cfg(target_os = "windows")]
+    fn native_content_frame(
+        &mut self,
+        _id: WindowId,
+        _composition: &crate::WindowsComposition,
+        regions: &[crate::NativeContentRegion],
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(), String> {
+        if regions.is_empty() {
+            Ok(())
+        } else {
+            Err("native content backend is unavailable".into())
+        }
+    }
+
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error>;
@@ -329,6 +363,16 @@ pub trait RuntimeProgram: Sized + 'static {
         nana_ui_core::AppearanceSettings::DEFAULT_BACKDROP_OPACITY
     }
 
+    /// Per-window material override. Existing applications retain their global policy.
+    fn window_material_mode_for(&self, _id: WindowId) -> crate::MaterialEffect {
+        self.window_material_mode()
+    }
+
+    /// Per-window backdrop opacity; does not change foreground content alpha.
+    fn appearance_backdrop_opacity_for(&self, _id: WindowId) -> f32 {
+        self.appearance_backdrop_opacity()
+    }
+
     /// Product default: attach an existing sampleable texture to the tree.
     ///
     /// Pair with [`crate::GpuTextureView`] on the same slot, then update the
@@ -337,19 +381,15 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
-    /// Advanced: encode into the current UI pass. Prefer [`Self::host_textures`].
-    ///
-    /// Returning `None` lets the hosted runtime attach a demo `"gpu-view"`
-    /// painter that uses stored host Device/Queue clones. `Some(registry)` is
-    /// used unchanged. [`crate::SceneWgpuPainter`] consumes the resolved
-    /// registry; an explicit empty registry leaves `"gpu-view"` unpaintable.
+    /// Advanced: explicitly register renderers for nodes drawn in the UI pass.
+    /// No demo renderer is installed implicitly.
     fn scene_gpu_renderers(&self, _id: WindowId) -> Option<SceneGpuRendererRegistry> {
         None
     }
 
     /// Advanced: graph-scheduled offscreen on the HostTexture path.
-    /// Prefer [`Self::prepare_window_frame`]. Same Device/Queue; submit before
-    /// Scene samples.
+    /// Same Device/Queue and host encoder; preparation precedes Scene sampling
+    /// within the target's single submission.
     fn scene_resource_producers(
         &self,
         _id: WindowId,
@@ -441,6 +481,11 @@ pub trait RuntimeProgram: Sized + 'static {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         RuntimeProgramUpdate::default()
+    }
+
+    /// Presentation cadence is independent of application task wakeups.
+    fn frame_demand(&self, _id: WindowId) -> FrameDemand {
+        FrameDemand::OnDemand
     }
 
     /// Application-owned wake deadline for sampled state, external runtimes,
@@ -546,6 +591,21 @@ impl<T: RuntimeProgram> HostDocumentAccess for T {}
 pub(crate) fn runtime_text_input_request(
     document: &RuntimeDocument,
 ) -> nana_ui_platform::TextInputRequest {
+    if document
+        .context()
+        .terminal_accepts_input(document.document())
+    {
+        return nana_ui_platform::TextInputRequest {
+            enabled: true,
+            cursor_area: document
+                .context()
+                .terminal_caret_bounds(document.document())
+                .map(|bounds| {
+                    nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height)
+                }),
+            purpose: nana_ui_platform::TextInputPurpose::Normal,
+        };
+    }
     let focused = document
         .context()
         .focused_text_input(document.document())
@@ -645,6 +705,12 @@ pub fn run_runtime<Program: RuntimeProgram>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_clone_accepts_move_only_messages() {
+        fn requires_clone<T: Clone>() {}
+        requires_clone::<super::RuntimeProgramContext<std::sync::mpsc::Receiver<()>>>();
+    }
+
     use super::{
         IME_SURROUNDING_MAX_BYTES, clip_ime_surrounding, gated_runtime_input_update,
         gated_runtime_window_update, runtime_ime_surrounding, runtime_text_input_request,
@@ -846,5 +912,114 @@ mod tests {
             super::RuntimeProgramUpdate::default()
         });
         assert_eq!(calls, 1);
+    }
+}
+
+/// Per-target demand; ordinary controls need no periodic clock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FrameDemand {
+    #[default]
+    OnDemand,
+    At(Instant),
+    Continuous(std::num::NonZeroU32),
+}
+
+#[derive(Default)]
+pub(crate) struct FrameSchedule {
+    demand: FrameDemand,
+    deadline: Option<Instant>,
+}
+
+impl FrameSchedule {
+    pub(crate) fn update(&mut self, demand: FrameDemand, now: Instant) -> (bool, Option<Instant>) {
+        if self.demand != demand {
+            self.demand = demand;
+            self.deadline = match demand {
+                FrameDemand::OnDemand => None,
+                FrameDemand::At(at) => Some(at),
+                FrameDemand::Continuous(_) => Some(now),
+            };
+        }
+        let due = self.deadline.is_some_and(|deadline| deadline <= now);
+        if due {
+            self.deadline = match demand {
+                FrameDemand::Continuous(fps) => now.checked_add(
+                    std::time::Duration::from_secs_f64(1.0 / f64::from(fps.get()))
+                        .max(std::time::Duration::from_nanos(1)),
+                ),
+                _ => None,
+            };
+        }
+        (due, self.deadline)
+    }
+}
+
+#[cfg(test)]
+mod frame_schedule_tests {
+    use super::*;
+    #[test]
+    fn continuous_skips_missed_ticks_and_deadline_fires_once() {
+        let now = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(120).unwrap());
+        assert!(schedule.update(demand, now).0);
+        assert!(!schedule.update(demand, now).0);
+        let later = now + std::time::Duration::from_secs(1);
+        let (due, next) = schedule.update(demand, later);
+        assert!(due);
+        assert!(next.unwrap() > later);
+        assert!(!schedule.update(demand, later).0);
+        assert!(schedule.update(FrameDemand::At(later), later).0);
+        assert!(!schedule.update(FrameDemand::At(later), later).0);
+        assert_eq!(schedule.update(FrameDemand::OnDemand, later), (false, None));
+    }
+}
+
+#[cfg(test)]
+mod terminal_host_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_requests_ime_at_its_grid_cursor() {
+        let id = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let mut document = nana_ui_scene::RuntimeDocument::new(id);
+        let mut screen = nana_ui_runtime::TerminalScreen::blank(10, 4);
+        screen.cursor = Some(nana_ui_runtime::TerminalCursor {
+            position: nana_ui_runtime::TerminalPosition { row: 2, column: 3 },
+            shape: nana_ui_runtime::TerminalCursorShape::Bar,
+            visible: true,
+        });
+        let terminal = document
+            .context_mut()
+            .create_component(id, nana_ui_runtime::TerminalView::new(screen))
+            .unwrap();
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.write_layout(
+            terminal.stable_id(),
+            nana_ui_runtime::LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 72.0,
+            },
+        );
+        document.context_mut().commit_mutations(mutations).unwrap();
+        document
+            .context_mut()
+            .focus_node(id, terminal.stable_id())
+            .unwrap();
+        let request = runtime_text_input_request(&document);
+        assert!(request.enabled);
+        assert_eq!(
+            request.cursor_area,
+            Some(nana_ui_core::LogicalRect::new(34.0, 56.0, 8.0, 18.0))
+        );
+        assert!(runtime_ime_surrounding(&document).is_none());
+        document
+            .context_mut()
+            .update_component(terminal, |view, _| view.read_only = true)
+            .unwrap();
+        assert!(!runtime_text_input_request(&document).enabled);
+        assert!(document.context().focused_terminal(id).is_some());
     }
 }

@@ -193,23 +193,184 @@ impl crate::framework::UiExtension for HighlightPresentation {
         &self,
         registrar: &mut crate::framework::ExtensionRegistrar,
     ) -> Result<(), crate::framework::FrameworkError> {
-        registrar.register_presenter(Box::new(SyntectHighlighter))
+        registrar.register_presenter(Box::new(CachedSyntectHighlighter::default()))
     }
 }
 
 #[cfg(feature = "syntax-highlighting")]
-fn syntect_present(text: &str, language: &str) -> Vec<TextSpan> {
-    use std::sync::LazyLock;
+#[derive(Default)]
+struct CachedSyntectHighlighter {
+    cache: std::cell::RefCell<Vec<SyntaxDocument>>,
+}
 
-    use two_face::re_exports::syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
+#[cfg(feature = "syntax-highlighting")]
+#[derive(Clone)]
+struct SyntaxLine {
+    text: String,
+    spans: Vec<TextSpan>,
+    parse: two_face::re_exports::syntect::parsing::ParseState,
+    stack: two_face::re_exports::syntect::parsing::ScopeStack,
+}
 
-    static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+#[cfg(feature = "syntax-highlighting")]
+struct SyntaxDocument {
+    language: String,
+    lines: Vec<SyntaxLine>,
+    bytes: usize,
+}
 
-    let syntax = SYNTAXES
+#[cfg(feature = "syntax-highlighting")]
+impl TextPresenter for CachedSyntectHighlighter {
+    fn name(&self) -> &'static str {
+        HIGHLIGHT_PRESENTER
+    }
+    fn present(&self, text: &str, request: &HighlightRequest) -> Vec<TextSpan> {
+        self.present_incremental(text, &request.language).0
+    }
+}
+
+#[cfg(feature = "syntax-highlighting")]
+impl CachedSyntectHighlighter {
+    fn present_incremental(&self, text: &str, language: &str) -> (Vec<TextSpan>, usize) {
+        use two_face::re_exports::syntect::parsing::{ParseState, ScopeStack};
+        // Keep a small document working set. Large one-off previews still receive
+        // complete highlighting without retaining their parse snapshots.
+        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_LINES: usize = 16_384;
+        let syntax = syntax_for(language);
+        if syntax.name == "Plain Text" {
+            return (Vec::new(), 0);
+        }
+        let lines: Vec<_> = text.split_inclusive('\n').collect();
+        if text.len() > MAX_BYTES / 2 || lines.len() > MAX_LINES / 2 {
+            return (syntect_present(text, language), lines.len());
+        }
+        let mut cache = self.cache.borrow_mut();
+        let candidate = cache
+            .iter()
+            .enumerate()
+            .filter(|(_, document)| document.language == language)
+            .max_by_key(|(_, document)| {
+                document
+                    .lines
+                    .iter()
+                    .zip(&lines)
+                    .take_while(|(old, new)| old.text == **new)
+                    .count()
+            })
+            .map(|(index, _)| index);
+        let old = candidate.map(|index| cache.remove(index));
+        let old_lines = old
+            .as_ref()
+            .map(|document| document.lines.as_slice())
+            .unwrap_or(&[]);
+        let prefix = old_lines
+            .iter()
+            .zip(&lines)
+            .take_while(|(old, new)| old.text == **new)
+            .count();
+        let suffix = old_lines[prefix..]
+            .iter()
+            .rev()
+            .zip(lines[prefix..].iter().rev())
+            .take_while(|(old, new)| old.text == **new)
+            .count();
+        let mut result = old_lines[..prefix].to_vec();
+        let (mut parse, mut stack) = result
+            .last()
+            .map(|line| (line.parse.clone(), line.stack.clone()))
+            .unwrap_or_else(|| (ParseState::new(syntax), ScopeStack::new()));
+        let mut parsed = 0;
+        let mut index = prefix;
+        while index < lines.len() {
+            if index >= lines.len() - suffix {
+                let old_index = old_lines.len() - (lines.len() - index);
+                let old_start = if old_index == 0 {
+                    (ParseState::new(syntax), ScopeStack::new())
+                } else {
+                    (
+                        old_lines[old_index - 1].parse.clone(),
+                        old_lines[old_index - 1].stack.clone(),
+                    )
+                };
+                if parse == old_start.0 && stack == old_start.1 {
+                    result.extend_from_slice(&old_lines[old_index..]);
+                    break;
+                }
+            }
+            let line = lines[index];
+            let operations = parse.parse_line(line, syntax_set()).unwrap_or_default();
+            let mut spans = Vec::new();
+            let mut last = 0;
+            for (offset, operation) in operations {
+                if offset > last {
+                    push_scope_span(&mut spans, 0, last, offset, &stack);
+                }
+                let _ = stack.apply(&operation);
+                last = offset;
+            }
+            if last < line.len() {
+                push_scope_span(&mut spans, 0, last, line.len(), &stack);
+            }
+            result.push(SyntaxLine {
+                text: line.to_owned(),
+                spans,
+                parse: parse.clone(),
+                stack: stack.clone(),
+            });
+            parsed += 1;
+            index += 1;
+        }
+        let mut offset = 0;
+        let mut spans = Vec::new();
+        for line in &result {
+            spans.extend(line.spans.iter().map(|span| TextSpan {
+                start: offset + span.start,
+                end: offset + span.end,
+                color: span.color,
+            }));
+            offset += line.text.len();
+        }
+        cache.push(SyntaxDocument {
+            language: language.to_owned(),
+            lines: result,
+            bytes: text.len(),
+        });
+        while cache.len() > 4
+            || cache.iter().map(|document| document.bytes).sum::<usize>() > MAX_BYTES
+            || cache
+                .iter()
+                .map(|document| document.lines.len())
+                .sum::<usize>()
+                > MAX_LINES
+        {
+            cache.remove(0);
+        }
+        (sanitize_spans(text, spans), parsed)
+    }
+}
+
+#[cfg(feature = "syntax-highlighting")]
+fn syntax_set() -> &'static two_face::re_exports::syntect::parsing::SyntaxSet {
+    static SYNTAXES: std::sync::LazyLock<two_face::re_exports::syntect::parsing::SyntaxSet> =
+        std::sync::LazyLock::new(two_face::syntax::extra_newlines);
+    &SYNTAXES
+}
+
+#[cfg(feature = "syntax-highlighting")]
+fn syntax_for(language: &str) -> &'static two_face::re_exports::syntect::parsing::SyntaxReference {
+    let syntaxes = syntax_set();
+    syntaxes
         .find_syntax_by_token(language)
-        .or_else(|| SYNTAXES.find_syntax_by_extension(language))
-        .or_else(|| SYNTAXES.find_syntax_by_name(language))
-        .unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
+        .or_else(|| syntaxes.find_syntax_by_extension(language))
+        .or_else(|| syntaxes.find_syntax_by_name(language))
+        .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
+}
+
+#[cfg(feature = "syntax-highlighting")]
+fn syntect_present(text: &str, language: &str) -> Vec<TextSpan> {
+    use two_face::re_exports::syntect::parsing::{ParseState, ScopeStack};
+    let syntax = syntax_for(language);
     if syntax.name == "Plain Text" {
         return Vec::new();
     }
@@ -219,7 +380,7 @@ fn syntect_present(text: &str, language: &str) -> Vec<TextSpan> {
     let mut spans = Vec::new();
     let mut offset = 0usize;
     for line in text.split_inclusive('\n') {
-        let ops = parse.parse_line(line, &SYNTAXES).unwrap_or_default();
+        let ops = parse.parse_line(line, syntax_set()).unwrap_or_default();
         let mut last = 0usize;
         for (index, op) in ops {
             if index > last {
@@ -574,7 +735,10 @@ mod tests {
     #[test]
     fn merge_overlay_spans_prioritizes_overlay_and_cuts_base() {
         let merged = merge_overlay_spans(
-            vec![span(0, 10, SemanticColorRole::Accent), span(20, 30, SemanticColorRole::Muted)],
+            vec![
+                span(0, 10, SemanticColorRole::Accent),
+                span(20, 30, SemanticColorRole::Muted),
+            ],
             &[span(5, 8, SemanticColorRole::Danger)],
         );
         assert_eq!(
@@ -596,14 +760,20 @@ mod tests {
         let plain = presentation_source(text, &HighlightRequest::highlight("rs"));
         let with_overlay = presentation_source(
             text,
-            &HighlightRequest::highlight("rs")
-                .with_overlay(Arc::from([span(0, 2, SemanticColorRole::Danger)])),
+            &HighlightRequest::highlight("rs").with_overlay(Arc::from([span(
+                0,
+                2,
+                SemanticColorRole::Danger,
+            )])),
         );
         assert_ne!(plain, with_overlay, "overlay 变更必须失效缓存");
         let same_content = presentation_source(
             text,
-            &HighlightRequest::highlight("rs")
-                .with_overlay(Arc::from([span(0, 2, SemanticColorRole::Danger)])),
+            &HighlightRequest::highlight("rs").with_overlay(Arc::from([span(
+                0,
+                2,
+                SemanticColorRole::Danger,
+            )])),
         );
         assert_eq!(with_overlay, same_content, "同内容 overlay 不无谓失效");
     }
@@ -627,12 +797,10 @@ mod tests {
         );
         queue.set_highlight_request(
             id(1),
-            Some(
-                HighlightRequest::highlight("rs").with_overlay(Arc::from([
-                    span(0, 7, SemanticColorRole::Danger),
-                    span(9, 99, SemanticColorRole::Success),
-                ])),
-            ),
+            Some(HighlightRequest::highlight("rs").with_overlay(Arc::from([
+                span(0, 7, SemanticColorRole::Danger),
+                span(9, 99, SemanticColorRole::Success),
+            ]))),
         );
         world.commit(queue).unwrap();
         let work = world.take_system_work();
@@ -655,5 +823,52 @@ mod tests {
             world.text_presentation(id(1)).unwrap().spans,
             vec![span(0, 2, SemanticColorRole::Accent)]
         );
+    }
+}
+
+#[cfg(all(test, feature = "syntax-highlighting"))]
+mod incremental_syntax_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_highlighting_matches_fresh_parse_after_edits_and_undo() {
+        let presenter = CachedSyntectHighlighter::default();
+        let original = "fn main() {\n    let α = 1;\n    /* first\n       second */\n    let text = \"hello\";\n}\n";
+        let variants = [
+            original.to_owned(),
+            original.replace("α = 1", "α = 12"),
+            format!("// inserted\n{original}"),
+            original.replace("/* first", "// first"),
+            original.replace("second */", "second"),
+            original.replace("\n", "\r\n"),
+            original.replace("    let α = 1;\n", ""),
+            original.to_owned(),
+        ];
+        for value in variants {
+            let (actual, _) = presenter.present_incremental(&value, "rs");
+            assert_eq!(actual, syntect_present(&value, "rs"), "{value}");
+        }
+        for language in ["wgsl", "js", "rs", "plain-unknown"] {
+            let (actual, _) = presenter.present_incremental(original, language);
+            assert_eq!(actual, syntect_present(original, language));
+        }
+    }
+
+    #[test]
+    fn end_edit_reuses_prefix_and_middle_edit_reuses_converged_suffix() {
+        let presenter = CachedSyntectHighlighter::default();
+        let source = (0..750)
+            .map(|index| format!("fn sample_{index}() {{ let color = 0.5; }}\n"))
+            .collect::<String>();
+        let (_, initial) = presenter.present_incremental(&source, "rs");
+        assert_eq!(initial, 750);
+        let edited = format!("{source}// input");
+        let (actual, parsed) = presenter.present_incremental(&edited, "rs");
+        assert_eq!(actual, syntect_present(&edited, "rs"));
+        assert_eq!(parsed, 1);
+        let middle = edited.replacen("sample_375", "renamed_375", 1);
+        let (actual, parsed) = presenter.present_incremental(&middle, "rs");
+        assert_eq!(actual, syntect_present(&middle, "rs"));
+        assert_eq!(parsed, 1);
     }
 }

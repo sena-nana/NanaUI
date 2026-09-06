@@ -27,3 +27,8 @@ serde_json = { workspace = true, optional = true }
 name = "nana-scene-benchmark"
 path = "src/bin/nana-scene-benchmark.rs"
 required-features = ["benchmark"]
+
+[[test]]
+name = "sidebar_row_label_paints_once"
+path = "tests/sidebar_row_label_paints_once.rs"
+required-features = ["controls"]

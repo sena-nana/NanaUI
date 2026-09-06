@@ -3,6 +3,135 @@
 use super::*;
 
 impl AppContext {
+    /// Change follow mode and immediately move to the current end when enabled.
+    /// Later layout passes also follow any newly measured content extent.
+    pub fn set_scroll_follow_end(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        enabled: bool,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(scroll, |view, _| {
+            view.follow_end = enabled;
+            if enabled {
+                // An explicit return-to-latest command supersedes a deferred
+                // reading anchor, even if no subsequent layout is necessary.
+                view.pending_anchor = None;
+            }
+        })?;
+        if enabled {
+            self.apply_scroll_retention(scroll)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Capture a retained descendant row's position before changing list data.
+    pub fn capture_scroll_anchor(
+        &self,
+        scroll: Entity<ScrollView>,
+        row: StableNodeId,
+    ) -> Result<Option<crate::ScrollAnchor>, FrameworkError> {
+        self.read(scroll, |_| ())?;
+        if !self.scroll_contains_row(scroll.id, row) {
+            return Ok(None);
+        }
+        let Some(viewport) = self.world.layout_box(scroll.id) else {
+            return Ok(None);
+        };
+        let Some(bounds) = self.world.layout_box(row) else {
+            return Ok(None);
+        };
+        let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        Ok(Some(crate::ScrollAnchor {
+            row,
+            viewport_y: bounds.y - viewport.y - offset.y,
+        }))
+    }
+
+    /// Restore after the next layout. Removed rows retain the clamped current
+    /// offset. An explicit anchor takes precedence over following the end once.
+    pub fn restore_scroll_anchor(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        anchor: crate::ScrollAnchor,
+    ) -> Result<(), FrameworkError> {
+        if !anchor.viewport_y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
+        }
+        self.update_component(scroll, |view, _| view.pending_anchor = Some(anchor))?;
+        // Anchor restoration depends on measured geometry. Include this
+        // container in the next scoped layout even when its style is unchanged.
+        self.world.mark_layout(scroll.id);
+        Ok(())
+    }
+
+    fn scroll_contains_row(&self, scroll: StableNodeId, row: StableNodeId) -> bool {
+        let mut parent = self.world.node(row).and_then(|node| node.parent);
+        while let Some(id) = parent {
+            if id == scroll {
+                return true;
+            }
+            parent = self.world.node(id).and_then(|node| node.parent);
+        }
+        false
+    }
+
+    pub(super) fn apply_scroll_retention(
+        &mut self,
+        scroll: Entity<ScrollView>,
+    ) -> Result<bool, FrameworkError> {
+        let (follow, anchor, dragging) = self.read(scroll, |view| {
+            (
+                view.follow_end,
+                view.pending_anchor,
+                view.dragging.is_some(),
+            )
+        })?;
+        if dragging {
+            return Ok(false);
+        }
+        let current = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        if let Some(anchor) = anchor {
+            self.update_component(scroll, |view, _| view.pending_anchor = None)?;
+            if self.scroll_contains_row(scroll.id, anchor.row)
+                && let (Some(viewport), Some(row)) = (
+                    self.world.layout_box(scroll.id),
+                    self.world.layout_box(anchor.row),
+                )
+            {
+                return self.scroll_to(
+                    scroll,
+                    ScrollOffset {
+                        x: current.x,
+                        y: (row.y - viewport.y - anchor.viewport_y).max(0.0),
+                    },
+                );
+            }
+            return Ok(false);
+        }
+        if follow && let Some(metrics) = self.world.scroll_metrics(scroll.id) {
+            return self.scroll_to(
+                scroll,
+                ScrollOffset {
+                    x: current.x,
+                    y: metrics.max_offset().y,
+                },
+            );
+        }
+        Ok(false)
+    }
+
+    fn emit_user_scroll(&mut self, scroll: Entity<ScrollView>) -> Result<(), FrameworkError> {
+        let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        let at_end = self
+            .world
+            .scroll_metrics(scroll.id)
+            .is_some_and(|metrics| offset.y >= metrics.max_offset().y - 2.0);
+        self.update(scroll, |_, cx| {
+            cx.emit(crate::UserScroll { offset, at_end })
+        })
+    }
+
     pub fn scroll_to(
         &mut self,
         entity: Entity<ScrollView>,
@@ -168,8 +297,24 @@ impl AppContext {
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
+        if self.views.get(&id).is_some_and(|view| view.is::<TextArea>()) {
+            let Some(next) = self.world.text_scroll_by_target(id, delta) else { return Ok(false); };
+            if self.world.scroll_offset(id).unwrap_or_default() == next { return Ok(false); }
+            let mut mutations = MutationQueue::new();
+            mutations.set_scroll_offset(id, next);
+            self.world.commit(mutations)?;
+            let applied = self.world.scroll_offset(id).unwrap_or(next);
+            self.world.set_text_viewport_pin(id, Some(applied));
+            self.update_component(Entity::<TextArea>::from_stable_id(id), |area, _| { area.scroll_offset = applied; })?;
+            return Ok(true);
+        }
         if self.is_scroll_view(id) {
-            return self.scroll_by(Entity::from_stable_id(id), delta);
+            let scroll = Entity::from_stable_id(id);
+            let changed = self.scroll_by(scroll, delta)?;
+            if changed {
+                self.emit_user_scroll(scroll)?;
+            }
+            return Ok(changed);
         }
         let Some((scrolls_x, scrolls_y)) = self.overflow_axes(id) else {
             return Ok(false);
@@ -282,7 +427,9 @@ impl AppContext {
             // Centre the thumb on the press, then keep dragging from there.
             let hold = self.axis_hold(target, axis);
             let offset = track.offset_for_position(position);
-            self.scroll_to(entity, scroll_offset_on(axis, offset, hold))?;
+            if self.scroll_to(entity, scroll_offset_on(axis, offset, hold))? {
+                self.emit_user_scroll(entity)?;
+            }
             track.thumb_length / 2.0
         };
         self.update_component(entity, |scroll, cx| {
@@ -333,7 +480,11 @@ impl AppContext {
         let offset =
             track.offset_for_thumb_origin(bar.axis_position(drag.axis, x, y) - drag.grab_offset);
         let hold = self.axis_hold(target, drag.axis);
-        self.scroll_to(entity, scroll_offset_on(drag.axis, offset, hold))
+        let changed = self.scroll_to(entity, scroll_offset_on(drag.axis, offset, hold))?;
+        if changed {
+            self.emit_user_scroll(entity)?;
+        }
+        Ok(changed)
     }
 
     pub fn end_scrollbar_drag(

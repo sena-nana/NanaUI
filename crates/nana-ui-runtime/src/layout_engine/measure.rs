@@ -43,10 +43,14 @@ pub(super) fn intrinsic_size_scoped(
     // intrinsic size under the same constraints is unchanged.
     if let Some(scope) = scope
         && !scope.affected.contains(&id)
-        && let Some(size) = scope.retained.intrinsics.get(&cache_key)
+        && let Some(size) = scope
+            .retained
+            .intrinsics
+            .get(&id)
+            .and_then(|memo| memo.get(cache_key.1, cache_key.2))
     {
-        cache.insert(cache_key, *size);
-        return Ok(*size);
+        cache.insert(cache_key, size);
+        return Ok(size);
     }
     let Some(node) = nodes.get(id)? else {
         return Ok(Size::default());

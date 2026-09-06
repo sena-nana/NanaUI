@@ -180,6 +180,10 @@ impl RuntimeProgram for GpuViewDemo {
         RuntimeProgramUpdate::redraw_all()
     }
 
+    fn scene_gpu_renderers(&self, _id: WindowId) -> Option<nana_ui::SceneGpuRendererRegistry> {
+        Some(nana_ui::default_scene_gpu_renderers())
+    }
+
     fn theme_mode(&self) -> ThemeMode {
         self.theme
     }

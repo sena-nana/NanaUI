@@ -28,8 +28,8 @@ pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, Poin
 pub use window::{
     DisplayBounds, TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry,
     WindowIcon, WindowIconError, WindowId, WindowResizeEdge, WindowRole, WindowSettings,
-    clamp_position_to_displays, clear_registered_application_icon, register_application_icon,
-    resolve_window_icon, window_resize_edge,
+    clamp_position_to_displays, clear_registered_application_icon, fit_window_to_displays,
+    register_application_icon, resolve_window_icon, window_resize_edge,
 };
 #[cfg(feature = "ws")]
 pub use ws::{

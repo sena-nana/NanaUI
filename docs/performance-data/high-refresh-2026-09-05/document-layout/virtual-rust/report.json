@@ -1,0 +1,11 @@
+{
+  "conservative_visible_operations_with_editor": 10,
+  "gpu_screenshot_and_click": true,
+  "logical_items": 1000000,
+  "mounted_active": 6,
+  "mounted_after_release": 5,
+  "mounted_before": 5,
+  "refresh_rate_measured": false,
+  "retained_nodes_with_editor": 14,
+  "scene_primitives_with_editor": 15
+}

@@ -176,6 +176,7 @@ impl UiWorld {
 #[derive(Default)]
 pub(super) struct WorldInputState {
     pub(super) focused: HashMap<DocumentId, StableNodeId>,
+    pub(super) focus_scopes: HashMap<StableNodeId, Option<StableNodeId>>,
     pub(super) pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pointer_hover: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pointer_press: HashMap<(DocumentId, u64), StableNodeId>,

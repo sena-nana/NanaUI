@@ -38,10 +38,22 @@ mod gpu_work;
 pub mod graph;
 #[cfg(feature = "hosted")]
 mod hosted_context;
+#[cfg(all(feature = "hosted", target_os = "windows"))]
+mod windows_composition;
+#[cfg(all(feature = "hosted", target_os = "windows"))]
+pub use windows_composition::{
+    WindowsComposition, WindowsCompositionError, WindowsCompositionRect, WindowsNativeVisual,
+};
+#[cfg(feature = "hosted")]
+mod application;
+#[cfg(feature = "hosted")]
+pub use application::{ApplicationState, ApplicationWindow, RuntimeApplication};
 pub mod icons;
 pub mod layout;
 pub mod menu;
 mod nana_text;
+#[cfg(feature = "gpu")]
+mod native_content;
 pub mod overlay;
 pub mod pane;
 mod runtime_animation;
@@ -52,6 +64,8 @@ mod runtime_host;
 mod runtime_input;
 #[cfg(feature = "gpu")]
 mod scene_gpu;
+#[cfg(feature = "gpu")]
+pub use native_content::{NativeContentRegion, native_content_regions};
 #[cfg(feature = "hosted")]
 mod scene_host;
 #[cfg(feature = "gpu")]
@@ -133,7 +147,10 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
-pub use gpu_texture::{HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry};
+pub use gpu_texture::{
+    HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry, TextureSlot,
+    TextureSubscription,
+};
 #[cfg(feature = "gpu")]
 pub use gpu_view::RenderSlot;
 #[cfg(feature = "gpu")]
@@ -150,7 +167,7 @@ pub use graph::{
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
     HostedDeviceLost, HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface,
-    HostedRunError, HostedSurfaceFrame,
+    HostedRunError, HostedSurfaceFrame, HostedSurfaceMode,
 };
 pub use icons::Icon;
 pub use layout::{
@@ -222,22 +239,22 @@ pub use runtime_animation::RuntimeAnimationClock;
 pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
-    HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeTaskError, RuntimeWindowSettings, run_runtime,
+    FrameDemand, HostFailure, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    RuntimeRedraw, RuntimeTaskError, RuntimeWindowSettings, run_runtime,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]
 pub use scene_gpu::{
-    SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
-    SceneGpuRenderer, SceneGpuRendererRegistry, SceneResourceEncodeContext,
+    PreparedSceneResources, SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext,
+    SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry, SceneResourceEncodeContext,
     SceneResourceProduceError, SceneResourceProducer, SceneResourceProducerRegistry,
 };
 #[cfg(feature = "hosted")]
 pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
-    HostTextureSceneResolver, ScenePaintError, ScenePaintViewport, SceneWgpuPainter,
-    resolve_background_image_url, set_background_image_url_base,
+    HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
+    SceneWgpuPainter, resolve_background_image_url, set_background_image_url_base,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

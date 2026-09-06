@@ -8,6 +8,8 @@ mod present;
 mod schedule;
 mod windows;
 
+use accessibility::PendingAccessibility;
+
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
@@ -68,9 +70,8 @@ use crate::runtime_host::{
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
     HostTextureRegistry, HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError,
-    HostedSurfaceFrame, RuntimeAnimationClock, RuntimeInputAdapter, SceneGpuRendererRegistry,
-    TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
-    apply_title_bar_pointer, default_scene_gpu_renderers_with_host, resolve_scene_gpu_renderers,
+    HostedSurfaceFrame, RuntimeAnimationClock, RuntimeInputAdapter, TitleBarDragTracker,
+    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
     title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
@@ -126,7 +127,7 @@ struct SceneAuxiliary {
     settings: RuntimeWindowSettings,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
-    accessibility_pending: Option<AccessibilityUpdate>,
+    accessibility_pending: PendingAccessibility,
     size_move: LiveSizeMove,
 }
 
@@ -140,6 +141,7 @@ struct SceneReady<Program: RuntimeProgram> {
     program: Program,
     graphics: HostedGpuContext,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
+    native_renderers: HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
@@ -147,10 +149,15 @@ struct SceneReady<Program: RuntimeProgram> {
     tasks: SyncSender<Task<Program::Message>>,
     geometry: WindowGeometry,
     animation_clock: RuntimeAnimationClock,
-    default_scene_gpu_renderers: Option<SceneGpuRendererRegistry>,
+    frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
+    texture_subscriptions: HashMap<WindowId, crate::TextureSubscription>,
+    texture_redraws: Arc<Mutex<HashSet<WindowId>>>,
+    image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
+    image_window_keys: HashMap<WindowId, HashSet<String>>,
+    occluded: HashSet<WindowId>,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
-    accessibility_pending: Option<AccessibilityUpdate>,
+    accessibility_pending: PendingAccessibility,
     input: InputTracker,
     material: MaterialOutcome,
     auxiliary: HashMap<WindowId, SceneAuxiliary>,
@@ -159,6 +166,7 @@ struct SceneReady<Program: RuntimeProgram> {
     render_suspended: bool,
     last_theme: crate::ThemeMode,
     last_material_mode: nana_window::MaterialEffect,
+    last_window_appearance: HashMap<WindowId, (nana_window::MaterialEffect, f32)>,
     settings: RuntimeWindowSettings,
     ime: HashMap<WindowId, AppliedIme>,
     chrome: HashMap<WindowId, WindowChromeSession>,
@@ -180,6 +188,90 @@ struct WindowChromeSession {
 struct AppliedIme {
     request: TextInputRequest,
     surrounding: Option<ImeSurroundingSnapshot>,
+}
+
+fn scene_image_keys(scene: &nana_ui_scene::UiScene) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    for primitive in scene.primitives() {
+        match &primitive.kind {
+            nana_ui_scene::ScenePrimitiveKind::Quad { surface, .. }
+            | nana_ui_scene::ScenePrimitiveKind::QuadBatch { surface, .. } => {
+                surface_image_keys(surface, &mut keys);
+            }
+            nana_ui_scene::ScenePrimitiveKind::Custom {
+                mask: Some(nana_ui_core::MaskImage::Url(url)),
+                ..
+            } => {
+                keys.insert(url.clone());
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+fn surface_image_keys(surface: &nana_ui_scene::QuadSurfacePaint, keys: &mut HashSet<String>) {
+    if let Some(image) = surface.background_image.as_ref() {
+        add_background_image_key(image, keys);
+    }
+    for image in &surface.background_layers {
+        add_background_image_key(image, keys);
+    }
+    if let Some(image) = surface.content_image.as_ref() {
+        add_background_image_key(image, keys);
+    }
+    if let Some(image) = surface.mask.as_ref()
+        && let nana_ui_core::MaskImage::Url(url) = image
+    {
+        keys.insert(url.clone());
+    }
+    if let Some(border) = surface.border_image.as_ref() {
+        add_background_image_key(&border.source, keys);
+    }
+}
+
+fn add_background_image_key(image: &nana_ui_core::BackgroundImage, keys: &mut HashSet<String>) {
+    if let nana_ui_core::BackgroundImage::Url { url, .. } = image {
+        keys.insert(url.clone());
+    }
+}
+
+fn replace_image_target_index(
+    targets: &mut HashMap<String, HashSet<WindowId>>,
+    window_keys: &mut HashMap<WindowId, HashSet<String>>,
+    id: WindowId,
+    keys: HashSet<String>,
+) {
+    let previous = window_keys.insert(id, keys.clone()).unwrap_or_default();
+    for key in previous {
+        if let Some(ids) = targets.get_mut(&key) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                targets.remove(&key);
+            }
+        }
+    }
+    for key in keys {
+        targets.entry(key).or_default().insert(id);
+    }
+}
+
+fn remove_image_target_index(
+    targets: &mut HashMap<String, HashSet<WindowId>>,
+    window_keys: &mut HashMap<WindowId, HashSet<String>>,
+    id: WindowId,
+) {
+    let Some(previous) = window_keys.remove(&id) else {
+        return;
+    };
+    for key in previous {
+        if let Some(ids) = targets.get_mut(&key) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                targets.remove(&key);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,13 +426,6 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         while let Ok(message) = ready.messages.try_recv() {
             ready.process_message(event_loop, message);
         }
-        if ready
-            .painters
-            .values()
-            .any(SceneWgpuPainter::has_image_updates)
-        {
-            ready.request_redraw_all();
-        }
     }
 
     fn window_event(
@@ -377,8 +462,14 @@ fn initialize<Program: RuntimeProgram>(
     let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
             .create_window(
-                scene_window_attributes(&settings, &scene_display_bounds(event_loop))
-                    .with_visible(false),
+                scene_window_attributes(
+                    &settings,
+                    &scene_display_bounds_with_work_area(
+                        event_loop,
+                        settings.constrain_to_work_area,
+                    ),
+                )
+                .with_visible(false),
             )
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
@@ -393,10 +484,11 @@ fn initialize<Program: RuntimeProgram>(
         last_material_mode,
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
     );
-    let mut graphics = pollster::block_on(HostedGpuContext::new(
+    let mut graphics = pollster::block_on(HostedGpuContext::new_with_surface_mode(
         Arc::clone(&window),
         wgpu::Features::empty(),
         window_wants_transparent_surface(settings.transparent, last_material_mode),
+        Program::surface_mode(),
     ))
     .map_err(|error| error.to_string())?;
     let format = graphics.format();
@@ -409,10 +501,6 @@ fn initialize<Program: RuntimeProgram>(
             format,
         ),
     );
-    for painter in painters.values_mut() {
-        let proxy = proxy.clone();
-        painter.set_image_waker(Arc::new(move || proxy.wake_up()));
-    }
     let tasks = spawn_task_workers(message_tx.clone(), proxy.clone());
     let geometry = window_geometry(graphics.window().as_ref());
     let context = program_context(
@@ -425,20 +513,16 @@ fn initialize<Program: RuntimeProgram>(
         material,
         graphics.alpha_mode(),
     );
-    let (mut program, startup) =
+    let (program, startup) =
         Program::initialize(&context).map_err(|error| error.to_string())?;
-    let default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
-        Arc::clone(graphics.resources().device()),
-        Arc::clone(graphics.resources().queue()),
-    ));
     last_theme = program.theme_mode();
-    last_material_mode = program.window_material_mode();
+    last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     material = apply_window_surface(
         graphics.window().as_ref(),
         last_theme,
         settings.transparent,
         last_material_mode,
-        program.appearance_backdrop_opacity(),
+        program.appearance_backdrop_opacity_for(WindowId::PRIMARY),
     );
     graphics
         .apply_alpha_mode(window_wants_transparent_surface(
@@ -450,8 +534,6 @@ fn initialize<Program: RuntimeProgram>(
     let accessibility = {
         Some(HostedAccessibility::new(
             Arc::clone(graphics.window()),
-            accessibility_world_generation(&mut program, WindowId::PRIMARY),
-            accessibility_snapshot(&mut program, WindowId::PRIMARY),
             true,
             window.scale_factor() as f32,
         ))
@@ -463,6 +545,7 @@ fn initialize<Program: RuntimeProgram>(
         program,
         graphics,
         painters,
+        native_renderers: HashMap::new(),
         text: NanaTextShaper::default(),
         proxy,
         message_tx,
@@ -470,10 +553,15 @@ fn initialize<Program: RuntimeProgram>(
         tasks,
         geometry,
         animation_clock,
-        default_scene_gpu_renderers,
+        frame_schedules: HashMap::new(),
+        texture_subscriptions: HashMap::new(),
+        texture_redraws: Arc::new(Mutex::new(HashSet::new())),
+        image_targets: Arc::new(Mutex::new(HashMap::new())),
+        image_window_keys: HashMap::new(),
+        occluded: HashSet::new(),
         #[cfg(not(target_os = "android"))]
         accessibility,
-        accessibility_pending: None,
+        accessibility_pending: PendingAccessibility::default(),
         input: InputTracker::default(),
         material,
         auxiliary: HashMap::new(),
@@ -482,6 +570,7 @@ fn initialize<Program: RuntimeProgram>(
         render_suspended: false,
         last_theme,
         last_material_mode,
+        last_window_appearance: HashMap::new(),
         settings,
         ime: HashMap::new(),
         chrome: HashMap::new(),
@@ -496,6 +585,7 @@ fn initialize<Program: RuntimeProgram>(
     ready
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
+    ready.install_image_wakers();
     ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
     let update = ready.program.window_event(
         WindowEvent::Ready {
@@ -519,6 +609,39 @@ fn initialize<Program: RuntimeProgram>(
 }
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
+    fn install_image_wakers(&mut self) {
+        let targets = Arc::clone(&self.image_targets);
+        let redraws = Arc::clone(&self.texture_redraws);
+        let proxy = self.proxy.clone();
+        for painter in self.painters.values_mut() {
+            let targets = Arc::clone(&targets);
+            let redraws = Arc::clone(&redraws);
+            let proxy = proxy.clone();
+            painter.set_image_update_waker(Arc::new(move |key| {
+                let ids = targets
+                    .lock()
+                    .ok()
+                    .and_then(|targets| targets.get(key).cloned())
+                    .unwrap_or_default();
+                if !ids.is_empty()
+                    && let Ok(mut pending) = redraws.lock()
+                {
+                    pending.extend(ids);
+                }
+                proxy.wake_up();
+            }));
+        }
+    }
+
+    fn update_image_targets(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
+        let keys = scene_image_keys(scene);
+        if let Ok(mut targets) = self.image_targets.lock() {
+            replace_image_target_index(&mut targets, &mut self.image_window_keys, id, keys);
+        } else {
+            self.image_window_keys.insert(id, keys);
+        }
+    }
+
     fn context(&self) -> RuntimeProgramContext<Program::Message> {
         self.context_for(WindowId::PRIMARY)
     }
@@ -735,7 +858,11 @@ fn next_accessibility_update(
             AccessibilityUpdate::Full { generation, .. } => *generation,
             AccessibilityUpdate::Delta(delta) => Some(delta.generation),
         };
-        if world_generation.is_some_and(|world| queued.is_some_and(|queued| queued < world)) {
+        if (projector_generation.is_none() && matches!(&update, AccessibilityUpdate::Delta(_)))
+            || world_generation.is_some_and(|world| queued.is_some_and(|queued| queued < world))
+        {
+            // A cold adapter has no base tree. The application may already
+            // have drained initial work, leaving only a partial frame delta.
             return Some(AccessibilityUpdate::Full {
                 generation: world_generation,
                 nodes: snapshot(),
@@ -951,9 +1078,26 @@ fn scene_window_attributes(
     settings: &RuntimeWindowSettings,
     displays: &[DisplayBounds],
 ) -> winit::window::WindowAttributes {
+    let mut settings = settings.clone();
+    if settings.constrain_to_work_area {
+        let position = settings.initial_position.unwrap_or_else(|| {
+            displays
+                .first()
+                .map_or((0.0, 0.0), |display| display.position)
+        });
+        let (position, size) =
+            nana_ui_platform::fit_window_to_displays(position, settings.initial_size, displays);
+        settings.initial_position = Some(position);
+        settings.initial_size = size;
+        settings.minimum_size = (
+            settings.minimum_size.0.min(size.0),
+            settings.minimum_size.1.min(size.1),
+        );
+    }
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent)
+        .with_active(settings.focus_on_show)
         .with_resizable(settings.resizable)
         .with_window_level(window_level(settings.always_on_top))
         .with_surface_size(winit::dpi::LogicalSize::new(
@@ -973,12 +1117,15 @@ fn scene_window_attributes(
         attributes = attributes.with_window_icon(Some(icon));
     }
 
-    apply_scene_window_chrome(attributes, settings)
+    apply_scene_window_chrome(attributes, &settings)
 }
 
 /// Live display bounds in the global logical coordinate space, matching the
 /// coordinate space of `WindowSettings::initial_position`.
-fn scene_display_bounds(event_loop: &dyn ActiveEventLoop) -> Vec<DisplayBounds> {
+fn scene_display_bounds_with_work_area(
+    event_loop: &dyn ActiveEventLoop,
+    work_area: bool,
+) -> Vec<DisplayBounds> {
     event_loop
         .available_monitors()
         .filter_map(|monitor| {
@@ -988,6 +1135,18 @@ fn scene_display_bounds(event_loop: &dyn ActiveEventLoop) -> Vec<DisplayBounds> 
             if !scale.is_finite() || scale <= 0.0 {
                 return None;
             }
+            let (position, size) = if work_area {
+                nana_window::display_work_area((position.x, position.y))
+                    .map(|(p, s)| {
+                        (
+                            winit::dpi::PhysicalPosition::new(p.0, p.1),
+                            winit::dpi::PhysicalSize::new(s.0, s.1),
+                        )
+                    })
+                    .unwrap_or((position, size))
+            } else {
+                (position, size)
+            };
             Some(DisplayBounds {
                 position: (f64::from(position.x) / scale, f64::from(position.y) / scale),
                 size: (
@@ -1173,6 +1332,7 @@ fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutedWindowCommand {
+    SetMousePassthrough(WindowId),
     Open(WindowId),
     Focus(WindowId),
     Close(WindowId),
@@ -1193,6 +1353,9 @@ enum RoutedWindowCommand {
 fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWindowCommand {
     let known = |id: WindowId| known.contains(&id);
     match command {
+        WindowCommand::SetMousePassthrough { id, .. } => {
+            RoutedWindowCommand::SetMousePassthrough(*id)
+        }
         WindowCommand::Open { id, .. } if known(*id) => RoutedWindowCommand::Focus(*id),
         WindowCommand::Open { id, .. } => RoutedWindowCommand::Open(*id),
         WindowCommand::Close(id) if *id == WindowId::PRIMARY || !known(*id) => {
@@ -1900,7 +2063,8 @@ mod tests {
         scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, suppress_caption_after_create, tablet_pointer_id, window_level,
         window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
-        windows_to_redraw, winit_icon,
+        windows_to_redraw, winit_icon, remove_image_target_index, replace_image_target_index,
+        surface_image_keys,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -2017,7 +2181,7 @@ mod tests {
             removed: Vec::new(),
         });
         assert_eq!(
-            next_accessibility_update(None, Some(queued.clone()), false, None, Some(2), || panic!(
+            next_accessibility_update(None, Some(queued.clone()), false, Some(1), Some(2), || panic!(
                 "queued deltas must not force a world snapshot"
             ),),
             Some(queued)
@@ -3092,6 +3256,92 @@ mod tests {
     }
 
     #[test]
+    fn image_target_index_replaces_and_shares_resource_keys() {
+        use std::collections::{HashMap, HashSet};
+
+        let first = WindowId::PRIMARY;
+        let second = WindowId(2);
+        let mut targets = HashMap::new();
+        let mut window_keys = HashMap::new();
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["shared.png".to_string(), "old.png".to_string()]),
+        );
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            second,
+            HashSet::from(["shared.png".to_string(), "second.png".to_string()]),
+        );
+        assert_eq!(targets["shared.png"], HashSet::from([first, second]));
+
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["new.png".to_string()]),
+        );
+        assert!(!targets.contains_key("old.png"));
+        assert_eq!(targets["shared.png"], HashSet::from([second]));
+        assert_eq!(targets["new.png"], HashSet::from([first]));
+    }
+
+    #[test]
+    fn image_scene_keys_include_all_url_backed_surface_sources() {
+        use std::collections::HashSet;
+
+        let mut surface = nana_ui_scene::QuadSurfacePaint::default();
+        surface.background_image = Some(nana_ui_core::BackgroundImage::url("background.png"));
+        surface.background_layers = vec![nana_ui_core::BackgroundImage::url("layer.png")];
+        surface.content_image = Some(nana_ui_core::BackgroundImage::url("content.png"));
+        surface.mask = Some(nana_ui_core::MaskImage::Url("mask.png".into()));
+        surface.border_image = Some(nana_ui_core::BorderImageSpec::from_source(
+            nana_ui_core::BackgroundImage::url("border.png"),
+        ));
+
+        let mut keys = HashSet::new();
+        surface_image_keys(&surface, &mut keys);
+        assert_eq!(
+            keys,
+            HashSet::from([
+                "background.png".to_string(),
+                "layer.png".to_string(),
+                "content.png".to_string(),
+                "mask.png".to_string(),
+                "border.png".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn image_target_index_removes_closed_window_without_leaking_keys() {
+        use std::collections::{HashMap, HashSet};
+
+        let first = WindowId::PRIMARY;
+        let second = WindowId(2);
+        let mut targets = HashMap::new();
+        let mut window_keys = HashMap::new();
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            first,
+            HashSet::from(["shared.png".to_string()]),
+        );
+        replace_image_target_index(
+            &mut targets,
+            &mut window_keys,
+            second,
+            HashSet::from(["shared.png".to_string(), "only-second.png".to_string()]),
+        );
+        remove_image_target_index(&mut targets, &mut window_keys, second);
+        assert_eq!(targets["shared.png"], HashSet::from([first]));
+        assert!(!targets.contains_key("only-second.png"));
+        assert!(!window_keys.contains_key(&second));
+    }
+
+    #[test]
     fn runtime_ime_ownership_does_not_drop_program_notification() {
         assert!(should_deliver_program_ime(false));
         assert!(!should_deliver_program_ime(true));
@@ -3225,5 +3475,17 @@ mod tests {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("scene host recovery test requires a WGPU device")
+    }
+    #[test]
+    fn passthrough_command_routes_missing_windows_for_failure_acknowledgement() {
+        for id in [WindowId::PRIMARY, WindowId(20)] {
+            assert_eq!(
+                route_window_command(
+                    &WindowCommand::SetMousePassthrough { id, enabled: true },
+                    &[WindowId::PRIMARY]
+                ),
+                RoutedWindowCommand::SetMousePassthrough(id)
+            );
+        }
     }
 }

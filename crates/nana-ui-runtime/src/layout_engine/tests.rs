@@ -18,6 +18,159 @@ fn id(value: u64) -> StableNodeId {
     StableNodeId::new(value).unwrap()
 }
 
+#[test]
+fn isolated_leaf_preserves_relative_position_and_resolved_padding() {
+    use crate::{AppContext, Stack};
+    let document = DocumentId::new(42).unwrap();
+    let mut context = AppContext::new();
+    let root = context
+        .create_component(document, Stack::column(0.0).width(LengthSpec::Px(200.0)))
+        .unwrap();
+    let leaf = context
+        .create_detached_component(
+            document,
+            Stack::from_layout(LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                padding: Some(LengthSpec::Percent(10.0)),
+                position: PositionSpec::Relative,
+                offset_left: Some(LengthSpec::Px(7.0)),
+                layout_isolation: true,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    context.append_child(root, leaf).unwrap();
+    let viewport = LayoutViewport::new(400.0, 300.0);
+    context.layout_document(document, viewport).unwrap();
+    let before = context.world().layout_box(leaf.stable_id()).unwrap();
+    assert_eq!((before.x, before.width, before.height), (7.0, 100.0, 80.0));
+    context
+        .layout_document_scoped(document, viewport, &[leaf.stable_id()])
+        .unwrap();
+    assert_eq!(
+        context.world().layout_box(leaf.stable_id()).unwrap(),
+        before
+    );
+    let extracted = context.world().extract_nodes(&[leaf.stable_id()]);
+    assert_eq!(
+        extracted[0].source_style.layout.resolved_padding().left,
+        20.0
+    );
+    context
+        .update_component(root, |root, _| {
+            *root = root.clone().width(LengthSpec::Px(300.0))
+        })
+        .unwrap();
+    context
+        .layout_document_scoped(document, viewport, &[root.stable_id()])
+        .unwrap();
+    assert_eq!(
+        context.world().layout_box(leaf.stable_id()).unwrap(),
+        before
+    );
+    let extracted = context.world().extract_nodes(&[leaf.stable_id()]);
+    assert_eq!(
+        extracted[0].source_style.layout.resolved_padding().left,
+        30.0
+    );
+}
+
+#[test]
+fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
+    let first = DocumentId::new(1).unwrap();
+    let second = DocumentId::new(2).unwrap();
+    let mut world = UiWorld::new();
+    let mut mutations = MutationQueue::new();
+    mutations.create(id(1), first, NodeKind::Document);
+    mutations.create(id(10), second, NodeKind::Document);
+    mutations.create(id(11), second, NodeKind::Element { tag: "div".into() });
+    mutations.insert(id(10), id(11), None);
+    mutations.set_style(
+        id(11),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                position: PositionSpec::Static,
+                layout_isolation: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(mutations).unwrap();
+    let engine = RuntimeLayoutEngine;
+    let mut cache = RetainedLayoutCache::default();
+    engine
+        .layout_document_scoped(
+            &world,
+            second,
+            LayoutViewport::new(800.0, 600.0),
+            &[],
+            &mut cache,
+            true,
+        )
+        .unwrap();
+    let previous = cache.documents[&second].boxes[&id(11)];
+    let emitted = engine
+        .layout_document_scoped(
+            &world,
+            first,
+            LayoutViewport::new(320.0, 240.0),
+            &[id(11)],
+            &mut cache,
+            false,
+        )
+        .unwrap();
+    assert!(
+        emitted
+            .iter()
+            .all(|(node, _)| world.document_of(*node) == Some(first))
+    );
+    assert_eq!(cache.documents[&second].boxes[&id(11)], previous);
+    engine
+        .layout_document_scoped(
+            &world,
+            first,
+            LayoutViewport::new(320.0, 240.0),
+            &[],
+            &mut cache,
+            true,
+        )
+        .unwrap();
+    assert_eq!(cache.documents[&second].boxes[&id(11)], previous);
+    let isolated = engine
+        .layout_document_scoped(
+            &world,
+            second,
+            LayoutViewport::new(800.0, 600.0),
+            &[id(11)],
+            &mut cache,
+            false,
+        )
+        .unwrap();
+    assert_eq!(isolated, vec![(id(11), previous)]);
+    cache.remove_document(first);
+    assert!(!cache.documents.contains_key(&first));
+    assert_eq!(cache.documents[&second].boxes[&id(11)], previous);
+    let empty = DocumentId::new(3).unwrap();
+    assert!(
+        engine
+            .layout_document_scoped(
+                &world,
+                empty,
+                LayoutViewport::new(800.0, 600.0),
+                &[],
+                &mut cache,
+                true,
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!cache.documents.contains_key(&empty));
+}
+
 /// Column of `rows` fixed-height rows, each with one fixed-height label,
 /// under document(1) → column(2). Row `r` is id(3 + r*2), label id(4 + r*2).
 fn column_tree(rows: u64) -> (UiWorld, DocumentId) {
@@ -97,6 +250,75 @@ fn resize_row(world: &mut UiWorld, row: u64, height: f32) {
     world.commit(queue).unwrap();
 }
 
+#[test]
+fn returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change() {
+    let (mut world, document) = column_tree(4);
+    let mut root_style = NodeStyle::default();
+    Arc::make_mut(&mut root_style.layout).height = Some(LengthSpec::Fill);
+    let mut mutations = MutationQueue::new();
+    mutations.set_style(id(1), root_style);
+    let mut row_style = world.node_style(id(3)).unwrap().clone();
+    Arc::make_mut(&mut row_style.layout).height = None;
+    mutations.set_style(id(3), row_style);
+    world.commit(mutations).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    let original = LayoutViewport::new(300.0, 800.0);
+    let smaller = LayoutViewport::new(300.0, 600.0);
+    let engine = RuntimeLayoutEngine;
+    let boxes = engine
+        .layout_document_scoped(&world, document, original, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &boxes);
+    let mut label_style = world.node_style(id(4)).unwrap().clone();
+    Arc::make_mut(&mut label_style.layout).height = Some(LengthSpec::Px(35.0));
+    let mut mutations = MutationQueue::new();
+    mutations.set_style(id(4), label_style);
+    world.commit(mutations).unwrap();
+    let boxes = engine
+        .layout_document_scoped(&world, document, smaller, &[id(4)], &mut retained, false)
+        .unwrap();
+    write_changed_boxes(&mut world, &boxes);
+    engine
+        .layout_document_scoped(&world, document, original, &[id(1)], &mut retained, false)
+        .unwrap();
+    assert_eq!(
+        retained.documents[&document].boxes,
+        full_boxes(&world, document, original)
+    );
+}
+
+#[test]
+fn repeated_viewport_resize_keeps_intrinsic_history_bounded() {
+    let (world, document) = column_tree(4);
+    let engine = RuntimeLayoutEngine;
+    let mut retained = RetainedLayoutCache::default();
+    for step in 0..256 {
+        let viewport = LayoutViewport::new(300.0 + step as f32, 800.0 + step as f32);
+        engine
+            .layout_document_scoped(
+                &world,
+                document,
+                viewport,
+                &[id(1)],
+                &mut retained,
+                step == 0,
+            )
+            .unwrap();
+        assert_eq!(
+            retained.documents[&document].boxes,
+            full_boxes(&world, document, viewport)
+        );
+    }
+    let memo = &retained.documents[&document];
+    assert!(memo.intrinsics.len() <= world.len());
+    let variants = memo
+        .intrinsics
+        .values()
+        .map(|node| node.measurements.iter().flatten().count())
+        .sum::<usize>();
+    assert!(variants <= world.len() * 2);
+}
+
 fn full_boxes(
     world: &UiWorld,
     document: DocumentId,
@@ -125,6 +347,117 @@ fn write_changed_boxes(
         world.commit(queue).unwrap();
     }
     written
+}
+
+#[test]
+fn fixed_layout_island_reuses_outer_layout_and_resizing_reaches_siblings() {
+    let (mut world, document) = column_tree(400);
+    let viewport = LayoutViewport::new(300.0, 800.0);
+    let island = id(203);
+    let label = id(204);
+    let mut style = world.node_style(island).unwrap().clone();
+    Arc::make_mut(&mut style.layout).layout_isolation = true;
+    let mut queue = MutationQueue::new();
+    queue.set_style(island, style.clone());
+    world.commit(queue).unwrap();
+    world.take_system_work();
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    world.take_system_work();
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        label,
+        TextContent {
+            value: "changed text".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    assert!(!work.layout.contains(&id(2)));
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(
+            &world,
+            document,
+            viewport,
+            &work.layout,
+            &mut retained,
+            false,
+        )
+        .unwrap();
+    assert!(emitted.len() <= 2);
+    assert_eq!(
+        retained.documents[&document].boxes,
+        full_boxes(&world, document, viewport)
+    );
+    write_changed_boxes(&mut world, &emitted);
+    world.take_system_work();
+    Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(35.0));
+    let mut queue = MutationQueue::new();
+    queue.set_style(island, style);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    assert!(work.layout.contains(&id(2)));
+    RuntimeLayoutEngine
+        .layout_document_scoped(
+            &world,
+            document,
+            viewport,
+            &work.layout,
+            &mut retained,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        retained.documents[&document].boxes,
+        full_boxes(&world, document, viewport)
+    );
+}
+
+#[test]
+fn auto_sized_isolation_request_preserves_parent_layout_dependency() {
+    let (mut world, document) = column_tree(8);
+    let viewport = LayoutViewport::new(300.0, 800.0);
+    let mut style = world.node_style(id(3)).unwrap().clone();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.layout_isolation = true;
+    layout.height = None;
+    let mut queue = MutationQueue::new();
+    queue.set_style(id(3), style);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    world.take_system_work();
+    let mut style = world.node_style(id(4)).unwrap().clone();
+    Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(60.0));
+    let mut queue = MutationQueue::new();
+    queue.set_style(id(4), style);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    assert!(
+        work.layout.contains(&id(2)),
+        "auto size must reach its parent"
+    );
+    RuntimeLayoutEngine
+        .layout_document_scoped(
+            &world,
+            document,
+            viewport,
+            &work.layout,
+            &mut retained,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        retained.documents[&document].boxes,
+        full_boxes(&world, document, viewport)
+    );
 }
 
 #[test]
@@ -167,7 +500,7 @@ fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
     );
     for (node, box_) in full_boxes(&world, document, viewport) {
         assert_eq!(
-            retained.boxes.get(&node),
+            retained.documents[&document].boxes.get(&node),
             Some(&box_),
             "scoped layout diverged from full recompute at {node:?}"
         );
@@ -200,7 +533,7 @@ fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
     );
     for (node, box_) in full_boxes(&world, document, viewport) {
         assert_eq!(
-            retained.boxes.get(&node),
+            retained.documents[&document].boxes.get(&node),
             Some(&box_),
             "shifted scoped layout diverged from full recompute at {node:?}"
         );
@@ -240,7 +573,7 @@ fn scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row(
         .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     assert_eq!(emitted.len(), 802);
-    assert_eq!(retained.materialized_inputs, 802);
+    assert_eq!(retained.documents[&document].materialized_inputs, 802);
     write_changed_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
 
@@ -264,13 +597,13 @@ fn scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row(
     // Document + column + dirty row (+ label / path ancestors). Unshifted
     // siblings are classified from layout style, not full LayoutInput.
     assert!(
-        retained.materialized_inputs <= 16,
+        retained.documents[&document].materialized_inputs <= 16,
         "tail row must not assemble unshifted siblings, materialized {} of 802",
-        retained.materialized_inputs
+        retained.documents[&document].materialized_inputs
     );
     for (node, box_) in full_boxes(&world, document, viewport) {
         assert_eq!(
-            retained.boxes.get(&node),
+            retained.documents[&document].boxes.get(&node),
             Some(&box_),
             "on-demand scoped layout diverged from full recompute at {node:?}"
         );
@@ -3077,4 +3410,21 @@ fn spacing_grid_content_box_keeps_padding_in_border_size() {
     ]);
     assert_eq!((boxes[&id(3)].x, boxes[&id(3)].y), (5.0, 5.0));
     assert_eq!((boxes[&id(3)].width, boxes[&id(3)].height), (60.0, 40.0));
+}
+
+#[test]
+fn lazy_layout_input_avoids_a_single_item_projection_batch() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), DocumentId::new(1).unwrap(), NodeKind::Text);
+    world.commit(queue).unwrap();
+    let expected = world.layout_inputs(&[id(1)]).unwrap().pop().unwrap();
+    let before = world.last_work_counters().allocations;
+    let mut inputs = LayoutInputMap::new(&world);
+    assert_eq!(inputs.get(id(1)).unwrap(), Some(&expected));
+    assert_eq!(inputs.get(id(1)).unwrap(), Some(&expected));
+    assert!(inputs.get(id(2)).unwrap().is_none());
+    assert_eq!(inputs.materialized, 1);
+    // This counter covers projection output batches, not the map's own storage.
+    assert_eq!(world.last_work_counters().allocations, before);
 }

@@ -2,10 +2,38 @@
 
 use super::*;
 
+fn selector_needs_topology(selector: &crate::css_cascade::Selector) -> bool {
+    !selector.ancestors.is_empty() || compound_needs_topology(&selector.subject)
+}
+
+fn compound_needs_topology(subject: &crate::css_cascade::CompoundSelector) -> bool {
+    subject.root
+        || subject.first_child
+        || subject.last_child
+        || subject.only_child
+        || subject.first_of_type
+        || subject.last_of_type
+        || subject.nth_child.is_some()
+        || subject.nth_last_child.is_some()
+        || subject.nth_of_type.is_some()
+        || subject.empty
+        || subject.focus_within
+        || !subject.has_queries.is_empty()
+        || subject
+            .not_alts
+            .iter()
+            .chain(&subject.is_alts)
+            .chain(&subject.where_alts)
+            .any(|alternative| alternative.empty)
+}
+
 #[derive(Debug, Default)]
 pub(super) struct State {
     /// Root identity only; its computed font size is always read live.
     pub(super) font_root: Cell<Option<Option<WidgetId>>>,
+    /// Active rules can inspect ancestors, siblings or child content. Rebuilt
+    /// with media/theme activation, never inferred from selector text.
+    pub(super) selector_topology: bool,
     /// Parsed author stylesheet rules (source order across inject calls).
     /// Declaration entries are cached on each [`StyleRule`] at parse time.
     pub(super) stylesheet_rules: Vec<StyleRule>,
@@ -252,10 +280,19 @@ impl MessageBridge {
         if self.is_generated_pseudo_widget(id) {
             return;
         }
-        let Some(ancestry) = self.match_ancestry(id) else {
-            return;
+        // Selector topology is irrelevant to inline declarations, class hints
+        // and inherited typography. In particular, do not enumerate a wide
+        // sibling list when no rule could inspect it.
+        let selectors = self.cascade.selector_topology;
+        let ancestry = if selectors {
+            let Some(ancestry) = self.match_ancestry(id) else {
+                return;
+            };
+            ancestry
+        } else {
+            Vec::new()
         };
-        let is_empty = self.widget_is_empty(id);
+        let is_empty = selectors && self.widget_is_empty(id);
         let Some(widget) = self.widgets.get(&id) else {
             return;
         };
@@ -281,11 +318,27 @@ impl MessageBridge {
         let leaf_tag = element_tag;
         let leaf_id = element_id;
 
-        let (sibling_index, sibling_count) = self.sibling_position(id);
-        let (of_type_index, of_type_count) = self.of_type_position(id);
-        let prev_snaps = self.prev_sibling_snaps(id);
-        self.ensure_relative_pass();
-        let forest = self.cascade.relative_pass.clone();
+        let (sibling_index, sibling_count) = if selectors {
+            self.sibling_position(id)
+        } else {
+            (0, 1)
+        };
+        let (of_type_index, of_type_count) = if selectors {
+            self.of_type_position(id)
+        } else {
+            (0, 1)
+        };
+        let prev_snaps = if selectors {
+            self.prev_sibling_snaps(id)
+        } else {
+            Vec::new()
+        };
+        let forest = if selectors {
+            self.ensure_relative_pass();
+            self.cascade.relative_pass.clone()
+        } else {
+            None
+        };
         let sibling_snaps = if forest.is_some() {
             self.all_sibling_snaps(id)
         } else {
@@ -556,10 +609,28 @@ impl MessageBridge {
 
 impl MessageBridge {
     pub(super) fn authored_custom_properties_on(&self, id: WidgetId) -> BTreeMap<String, String> {
-        let Some(ancestry) = self.match_ancestry(id) else {
-            return BTreeMap::new();
+        if self.cascade.stylesheet_rules.is_empty() {
+            let Some(widget) = self.widgets.get(&id) else {
+                return BTreeMap::new();
+            };
+            // Direct declarations need parsing but never selector matching.
+            let mut map =
+                crate::css_map::extract_css_custom_properties_from_decls(&widget.props.prop_style);
+            map.extend(crate::css_map::extract_css_custom_properties_from_decls(
+                &widget.props.inline_style,
+            ));
+            return map;
+        }
+        let topology = self.cascade.selector_topology;
+        let ancestry = if topology {
+            let Some(ancestry) = self.match_ancestry(id) else {
+                return BTreeMap::new();
+            };
+            ancestry
+        } else {
+            Vec::new()
         };
-        let is_empty = self.widget_is_empty(id);
+        let is_empty = topology && self.widget_is_empty(id);
         let Some(widget) = self.widgets.get(&id) else {
             return BTreeMap::new();
         };
@@ -569,9 +640,21 @@ impl MessageBridge {
         let leaf_id = widget.props.element_id.clone();
         let prop_style = widget.props.prop_style.clone();
         let inline_style = widget.props.inline_style.clone();
-        let (sibling_index, sibling_count) = self.sibling_position(id);
-        let (of_type_index, of_type_count) = self.of_type_position(id);
-        let prev_snaps = self.prev_sibling_snaps(id);
+        let (sibling_index, sibling_count) = if topology {
+            self.sibling_position(id)
+        } else {
+            (0, 1)
+        };
+        let (of_type_index, of_type_count) = if topology {
+            self.of_type_position(id)
+        } else {
+            (0, 1)
+        };
+        let prev_snaps = if topology {
+            self.prev_sibling_snaps(id)
+        } else {
+            Vec::new()
+        };
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
@@ -763,9 +846,18 @@ impl MessageBridge {
         if !stylesheet_may_match_subject(rules, &tag, element_id.as_str(), &class_names) {
             return false;
         }
-        let is_empty = self.widget_is_empty(id);
-        let Some(ancestry) = self.match_ancestry(id) else {
-            return false;
+        let topology = rules
+            .iter()
+            .flat_map(|rule| &rule.selectors)
+            .any(selector_needs_topology);
+        let is_empty = topology && self.widget_is_empty(id);
+        let ancestry = if topology {
+            let Some(ancestry) = self.match_ancestry(id) else {
+                return false;
+            };
+            ancestry
+        } else {
+            Vec::new()
         };
         let Some(widget) = self.widgets.get(&id) else {
             return false;
@@ -773,9 +865,21 @@ impl MessageBridge {
         let leaf_classes = widget.props.class_names.clone();
         let leaf_attrs = cascade_attrs_from_widget(widget);
         let leaf_id = widget.props.element_id.clone();
-        let (sibling_index, sibling_count) = self.sibling_position(id);
-        let (of_type_index, of_type_count) = self.of_type_position(id);
-        let prev_snaps = self.prev_sibling_snaps(id);
+        let (sibling_index, sibling_count) = if topology {
+            self.sibling_position(id)
+        } else {
+            (0, 1)
+        };
+        let (of_type_index, of_type_count) = if topology {
+            self.of_type_position(id)
+        } else {
+            (0, 1)
+        };
+        let prev_snaps = if topology {
+            self.prev_sibling_snaps(id)
+        } else {
+            Vec::new()
+        };
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
@@ -1011,6 +1115,32 @@ impl MessageBridge {
         self.cascade.generated_pseudo_rules = combined.generated_pseudo_rules;
         self.cascade.scrollbar_pseudo_rules = combined.scrollbar_pseudo_rules;
         self.cascade.motion_rules = combined.motion_rules;
+        self.cascade.selector_topology = self
+            .cascade
+            .stylesheet_rules
+            .iter()
+            .flat_map(|rule| &rule.selectors)
+            .any(selector_needs_topology)
+            || self
+                .cascade
+                .motion_rules
+                .iter()
+                .flat_map(|rule| &rule.selectors)
+                .any(selector_needs_topology)
+            || self
+                .cascade
+                .generated_pseudo_rules
+                .iter()
+                .any(|rule| selector_needs_topology(&rule.originating_selector))
+            || self
+                .cascade
+                .scrollbar_pseudo_rules
+                .iter()
+                .any(|rule| selector_needs_topology(&rule.originating_selector))
+            || self.cascade.interactive_rules.iter().any(|rule| {
+                !rule.selector.ancestors.is_empty()
+                    || compound_needs_topology(&rule.selector.subject)
+            });
         self.cascade.keyframes = combined.keyframes;
         self.cascade.uses_focus_within = stylesheet_uses_focus_within(
             &self.cascade.stylesheet_rules,

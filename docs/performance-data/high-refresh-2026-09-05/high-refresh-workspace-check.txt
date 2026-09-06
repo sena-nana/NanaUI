@@ -1,0 +1,76 @@
+    Checking nana-ui-core v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-core)
+    Checking windows v0.62.2
+    Checking nana-window v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-window)
+    Checking nana-ui-platform v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-platform)
+    Checking nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Checking nana-ui-devtools v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-devtools)
+    Checking nana-app-icon v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-app-icon)
+    Checking nana-ui-web-api v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-web-api)
+    Checking nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+error[E0559]: variant `nana_ui_runtime::StandardVisual::NativeMarkdown` has no field named `blocks`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6928:9
+     |
+6928 |         blocks: view.blocks().to_vec().into(),
+     |         ^^^^^^ `nana_ui_runtime::StandardVisual::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0559]: variant `nana_ui_runtime::ComponentGeometry::NativeMarkdown` has no field named `drawing`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6933:9
+     |
+6933 |         drawing: view.drawing(markdown.layout),
+     |         ^^^^^^^ `nana_ui_runtime::ComponentGeometry::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0599]: no method named `drawing` found for struct `nana_ui_runtime::NativeMarkdown` in the current scope
+    --> crates\nana-ui-scene\src\scene\tests.rs:6933:23
+     |
+6933 |         drawing: view.drawing(markdown.layout),
+     |                       ^^^^^^^ method not found in `nana_ui_runtime::NativeMarkdown`
+
+error[E0559]: variant `nana_ui_runtime::StandardVisual::NativeMarkdown` has no field named `blocks`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6976:9
+     |
+6976 |         blocks: view.blocks().to_vec().into(),
+     |         ^^^^^^ `nana_ui_runtime::StandardVisual::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0559]: variant `nana_ui_runtime::ComponentGeometry::NativeMarkdown` has no field named `drawing`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6981:9
+     |
+6981 |         drawing: view.drawing(markdown.layout),
+     |         ^^^^^^^ `nana_ui_runtime::ComponentGeometry::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0599]: no method named `drawing` found for struct `nana_ui_runtime::NativeMarkdown` in the current scope
+    --> crates\nana-ui-scene\src\scene\tests.rs:6981:23
+     |
+6981 |         drawing: view.drawing(markdown.layout),
+     |                       ^^^^^^^ method not found in `nana_ui_runtime::NativeMarkdown`
+
+Some errors have detailed explanations: E0559, E0599.
+For more information about an error, try `rustc --explain E0559`.
+error: could not compile `nana-ui-scene` (lib test) due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: constant of non-structural type `nana_ui_core::Icon` in a pattern
+    --> crates\nana-ui-runtime\src\pane.rs:834:101
+     |
+ 834 |         assert!(matches!(context.world().standard_visual(action), Some(StandardVisual::Icon { icon: Icon::Close, .. })));
+     |                                                                                                     ^^^^^^^^^^^ constant of non-structural type
+     |
+    ::: crates\nana-ui-core\src\icon.rs:57:1
+     |
+  57 | pub struct Icon(pub(crate) &'static IconData);
+     | --------------- `nana_ui_core::Icon` is not usable in patterns
+     |
+    ::: crates\nana-ui-core\src\icon_data.rs:2873:5
+     |
+2873 |     pub const Close: Self = Self(&CLOSE);
+     |     --------------------- constant defined here
+     |
+     = note: see https://doc.rust-lang.org/stable/std/marker/trait.StructuralPartialEq.html for details
+
+error: could not compile `nana-ui-runtime` (lib test) due to 1 previous error

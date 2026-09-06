@@ -1,0 +1,9 @@
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.22s
+     Running unittests src\lib.rs (target\debug\deps\nana_ui-abccba63edee1cfd.exe)
+
+running 1 test
+test scene_paint::tests::graph_scale_tests::graph_canvas_large_families_survive_gpu_updates_and_shrink ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 357 filtered out; finished in 1.25s
+

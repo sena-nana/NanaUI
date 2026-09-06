@@ -7,6 +7,18 @@ import { syncClassList, isSvgElement } from "./props.js";
 export function createNodeStore(events, releaseNodeResources) {
 const { createEventPayload, invokeNanaListenerPhase, addNanaListener, removeNanaListener } = events;
 const nodeCache = new Map();
+// Host focus remains authoritative; dispatch its actual transition through the
+// same ancestor capture path as native pointer/keyboard focus and IME events.
+function dispatchFocusChange(change, windowId) {
+  if (!change || change.previous === change.current) return;
+  const fire = (id, type) => {
+    if (id == null) return;
+    globalThis.__nanaFireWindowEvent?.(windowId, id, type, {});
+  };
+  fire(change.previous, "blur");
+  fire(change.current, "focus");
+}
+
 function parentCacheFresh(node) {
   return !!node && node.__parentId !== undefined;
 }
@@ -199,17 +211,12 @@ function wrapNode(id, kind, tag) {
       return r.width > 0 || r.height > 0 ? [r] : [];
     },
     focus() {
-      try {
-        hostCall("setFocus", [nid]);
-      } catch (_err) {}
-      const payload = createEventPayload("focus", this, null);
-      invokeNanaListenerPhase(nid, "focus", payload, true);
-      if (!payload._immediateStopped) invokeNanaListenerPhase(nid, "focus", payload, false);
+      const change = withNanaWindowContext(windowId, () => hostCall("setFocus", [nid]));
+      dispatchFocusChange(change, windowId);
     },
     blur() {
-      try {
-        withNanaWindowContext(windowId, () => hostCall("clearFocus", []));
-      } catch (_err) {}
+      const change = withNanaWindowContext(windowId, () => hostCall("clearFocus", [nid]));
+      dispatchFocusChange(change, windowId);
     },
     setPointerCapture(pointerId) {
       hostCall("setPointerCapture", [nid, Number(pointerId)]);

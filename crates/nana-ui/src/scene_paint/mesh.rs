@@ -394,6 +394,7 @@ impl MeshPipeline {
             return;
         }
         if self.pending_instances.len() > self.instance_capacity {
+            self.uploaded_instances.clear();
             self.instance_capacity = self.pending_instances.len().next_power_of_two();
             self.instances = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.triangle.instances"),
@@ -406,6 +407,7 @@ impl MeshPipeline {
             }
         }
         if self.pending_clips.len() > self.clip_capacity {
+            self.uploaded_clips.clear();
             self.clip_capacity = self.pending_clips.len().next_power_of_two();
             self.clips = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.triangle.clips"),
@@ -420,13 +422,23 @@ impl MeshPipeline {
             }
         }
         let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
-        queue.write_buffer(&self.instances, 0, instance_bytes);
+        let instances = super::buffer_upload::upload_changed(
+            queue,
+            &self.instances,
+            bytemuck::cast_slice(&self.uploaded_instances),
+            instance_bytes,
+        );
         let clip_bytes = bytemuck::cast_slice(&self.pending_clips);
-        queue.write_buffer(&self.clips, 0, clip_bytes);
+        let clips = super::buffer_upload::upload_changed(
+            queue,
+            &self.clips,
+            bytemuck::cast_slice(&self.uploaded_clips),
+            clip_bytes,
+        );
         self.uploaded_instances.clone_from(&self.pending_instances);
         self.uploaded_clips.clone_from(&self.pending_clips);
         if let Some(work) = gpu_work {
-            work.record_upload(instance_bytes.len() + clip_bytes.len());
+            work.record_upload(instances + clips);
             work.record_batch_rebuild();
         }
     }
@@ -1202,6 +1214,7 @@ fn sd_stroke(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::super::clip::{IDENTITY_AFFINE, invert_affine, transform_point};
     use super::*;
@@ -2576,5 +2589,71 @@ mod tests {
         assert_eq!(intern_clip(&mut clips, &mut intern, nan_a), 2);
         assert_eq!(intern_clip(&mut clips, &mut intern, nan_b), 3);
         assert_eq!(clips.len(), 4);
+    }
+}
+
+pub(super) struct MeshPipelineTarget {
+    bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
+    clips: wgpu::Buffer,
+    clip_capacity: usize,
+    instances: wgpu::Buffer,
+    instance_capacity: usize,
+    pending_instances: Vec<MeshInstance>,
+    uploaded_instances: Vec<MeshInstance>,
+    pending_clips: Vec<GpuClip>,
+    clip_intern: HashMap<ClipInternKey, u32>,
+    uploaded_clips: Vec<GpuClip>,
+}
+
+impl MeshPipeline {
+    pub(super) fn swap_target(
+        &mut self,
+        target: &mut Option<MeshPipelineTarget>,
+        device: &wgpu::Device,
+    ) {
+        let target = target.get_or_insert_with(|| {
+            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.mesh.uniforms"),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let clips = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.mesh.clips"),
+                size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            MeshPipelineTarget {
+                bind_group: mesh_bind_group(device, &self.bind_layout, &uniforms, &clips),
+                uniforms,
+                clips,
+                clip_capacity: INITIAL_CLIPS,
+                instances: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana.target.mesh.instances"),
+                    size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                instance_capacity: INITIAL_INSTANCES,
+                pending_instances: Vec::new(),
+                uploaded_instances: Vec::new(),
+                pending_clips: Vec::new(),
+                uploaded_clips: Vec::new(),
+                clip_intern: HashMap::new(),
+            }
+        });
+        std::mem::swap(&mut self.bind_group, &mut target.bind_group);
+        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
+        std::mem::swap(&mut self.clips, &mut target.clips);
+        std::mem::swap(&mut self.clip_capacity, &mut target.clip_capacity);
+        std::mem::swap(&mut self.instances, &mut target.instances);
+        std::mem::swap(&mut self.instance_capacity, &mut target.instance_capacity);
+        std::mem::swap(&mut self.pending_instances, &mut target.pending_instances);
+        std::mem::swap(&mut self.uploaded_instances, &mut target.uploaded_instances);
+        std::mem::swap(&mut self.pending_clips, &mut target.pending_clips);
+        std::mem::swap(&mut self.clip_intern, &mut target.clip_intern);
+        std::mem::swap(&mut self.uploaded_clips, &mut target.uploaded_clips);
     }
 }

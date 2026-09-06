@@ -281,3 +281,21 @@ describe("shim Element.prototype layout metrics", () => {
     assert.equal(detached.clientHeight, 0);
   });
 });
+
+
+test("scrollTo updates both axes in one queued host operation", () => {
+  const previous = globalThis.__nanaHost;
+  const writes = [];
+  globalThis.__nanaHost = {call(name, args) {
+    if (name === "getScrollOffset") return {x: 3, y: 4};
+    if (name === "setScrollOffset") writes.push(args);
+  }};
+  try {
+    const node = {};
+    defineLayoutMetrics(node, 7);
+    node.scrollTo(100, 200);
+    assert.deepEqual(writes, [[7, 100, 200]]);
+    node.scrollTo({top: 80});
+    assert.deepEqual(writes[1], [7, 3, 80]);
+  } finally { globalThis.__nanaHost = previous; }
+});

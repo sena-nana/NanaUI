@@ -1,5 +1,13 @@
 //! Geometry-to-primitive projection; has no Scene index or Runtime access.
 use super::*;
+
+// Keep each variable-length family disjoint and in painter order. The low
+// word is the item index; fixed background/grid slots remain below all families.
+#[cfg(feature = "graph-canvas")]
+fn graph_slot(family: u64, index: usize) -> u64 {
+    (family << 32) | u64::from(u32::try_from(index).expect("graph primitive family exceeds u32"))
+}
+
 pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(ScenePrimitive)) {
     let node = context.node;
     let bounds = context.bounds;
@@ -50,7 +58,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 }
                 emit(visual_stroke(
                     &context,
-                    12u8.saturating_add(index as u8),
+                    graph_slot(1, index),
                     bounds,
                     points.clone(),
                     1.6,
@@ -58,10 +66,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, (node_bounds, label, fill, border)) in graph_nodes.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
                 emit(visual_quad(
                     &context,
-                    20u8.saturating_add(index),
+                    graph_slot(2, index),
                     scene_rect(*node_bounds),
                     VisualQuadStyle {
                         background: Some(*fill),
@@ -72,7 +79,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
                 emit(component_text_primitive(
                     id,
-                    50u8.saturating_add(index),
+                    graph_slot(4, index),
                     label,
                     TextHorizontalAlignment::Start,
                     true,
@@ -86,16 +93,15 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             if !separators.is_empty() {
                 emit(visual_quad_batch(
                     &context,
-                    40,
+                    graph_slot(3, 0),
                     separators.iter().copied().map(scene_rect),
                     VisualQuadStyle::solid(*separator_color),
                 ));
             }
             for (index, (port, fill, border, border_width)) in ports.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
                 emit(visual_quad(
                     &context,
-                    80u8.saturating_add(index),
+                    graph_slot(5, index),
                     scene_rect(*port),
                     VisualQuadStyle {
                         background: Some(*fill),
@@ -106,10 +112,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, (label, alignment)) in port_labels.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
                 emit(component_text_primitive(
                     id,
-                    110u8.saturating_add(index),
+                    graph_slot(6, index),
                     label,
                     *alignment,
                     true,
@@ -121,10 +126,9 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             for (index, label) in edge_labels.iter().enumerate() {
-                let index = u8::try_from(index).unwrap_or(u8::MAX);
                 emit(component_text_primitive(
                     id,
-                    140u8.saturating_add(index),
+                    graph_slot(7, index),
                     label,
                     TextHorizontalAlignment::Center,
                     true,

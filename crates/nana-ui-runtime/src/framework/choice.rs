@@ -632,9 +632,26 @@ impl AppContext {
         self.close_open_popovers(inside, |popover| popover.close_on_outside)
     }
 
-    /// Escape closes every open popover that allows it.
+    /// Escape closes every open popover and hover card that allows it.
     pub fn dismiss_popovers_on_escape(&mut self) -> Result<bool, FrameworkError> {
-        self.close_open_popovers(None, |popover| popover.close_on_escape)
+        let mut dismissed = self.close_open_popovers(None, |popover| popover.close_on_escape)?;
+        let targets = self
+            .component_lifecycle
+            .hover_cards
+            .iter()
+            .filter(|(_, lifecycle)| lifecycle.open)
+            .map(|(&target, _)| target)
+            .collect::<Vec<_>>();
+        for target in targets {
+            let allows_escape = self
+                .view_entity::<crate::HoverCard>(target)
+                .and_then(|entity| self.read(entity, |card| card.close_on_escape).ok())
+                .unwrap_or(false);
+            if allows_escape && self.close_hover_card(target)? {
+                dismissed = true;
+            }
+        }
+        Ok(dismissed)
     }
 
     pub fn toggle_popover(&mut self, entity: Entity<Popover>) -> Result<bool, FrameworkError> {

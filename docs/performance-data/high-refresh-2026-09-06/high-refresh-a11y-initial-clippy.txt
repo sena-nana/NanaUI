@@ -1,0 +1,5 @@
+    Blocking waiting for file lock on build directory
+    Checking nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Checking nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+    Checking nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 36s

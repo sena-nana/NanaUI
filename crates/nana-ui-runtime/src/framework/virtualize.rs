@@ -3,6 +3,85 @@
 use super::*;
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
+    pub fn materialize_virtual_table_in<R, C>(
+        &mut self,
+        table: Entity<Table>,
+        items: &mut VirtualTableItems<R, C>,
+        layout: &VirtualTableLayout,
+        viewport: nana_ui_core::VirtualViewport,
+        row_key_at: impl FnMut(usize) -> R,
+        column_key_at: impl FnMut(usize) -> C,
+        build_row: impl FnMut(usize, &R) -> TableRow,
+        build_cell: impl FnMut(usize, &R, usize, &C) -> TableCell,
+    ) -> Result<VirtualTableWindow, FrameworkError>
+    where
+        R: Clone + Eq + Hash,
+        C: Clone + Eq + Hash,
+    {
+        self.materialize_virtual_table(
+            table,
+            items,
+            layout,
+            (viewport.offset[0], viewport.offset[1]),
+            (viewport.extent[0], viewport.extent[1]),
+            (viewport.overscan[0], viewport.overscan[1]),
+            row_key_at,
+            column_key_at,
+            build_row,
+            build_cell,
+        )
+    }
+
+    pub fn materialize_virtual_tree_in<K, C>(
+        &mut self,
+        tree: Entity<List>,
+        items: &mut VirtualTreeItems<K, C>,
+        layout: &VirtualTreeLayout,
+        viewport: nana_ui_core::VirtualViewport,
+        key_at: impl FnMut(usize) -> K,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.materialize_virtual_list_in(
+            tree,
+            &mut items.items,
+            layout.row_layout(),
+            viewport,
+            key_at,
+            build,
+        )
+    }
+
+    /// Materialize a list using the shared viewport contract.
+    pub fn materialize_virtual_list_in<K, C>(
+        &mut self,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        viewport: nana_ui_core::VirtualViewport,
+        key_at: impl FnMut(usize) -> K,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.materialize_virtual_list(
+            list,
+            items,
+            layout,
+            viewport.offset[1],
+            viewport.extent[1],
+            viewport.overscan[1],
+            key_at,
+            build,
+        )
+    }
+
     /// Reconcile a virtual List to one visible keyed window. Creation,
     /// removal, and final child order share one Runtime commit; the external
     /// materializer is published only after that commit succeeds.
@@ -175,8 +254,8 @@ impl AppContext {
         overscan: (f32, f32),
         row_key_at: impl FnMut(usize) -> R,
         column_key_at: impl FnMut(usize) -> C,
-        mut build_row: impl FnMut(usize, &R) -> TableRow,
-        mut build_cell: impl FnMut(usize, &R, usize, &C) -> TableCell,
+        build_row: impl FnMut(usize, &R) -> TableRow,
+        build_cell: impl FnMut(usize, &R, usize, &C) -> TableCell,
     ) -> Result<VirtualTableWindow, FrameworkError>
     where
         R: Clone + Eq + Hash,
@@ -194,6 +273,42 @@ impl AppContext {
                 column_key_at,
             )
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
+        // `VirtualTableItems` keeps its row/cell maps private and every
+        // mutation goes through this reconciler. When both axes are unchanged,
+        // the retained tree invariants were established by the previous commit;
+        // avoid rebuilding validation HashSets on steady scroll ticks.
+        if plan.rows.mounts.is_empty()
+            && plan.rows.unmounts.is_empty()
+            && plan.columns.mounts.is_empty()
+            && plan.columns.unmounts.is_empty()
+        {
+            let window = plan.window.clone();
+            items
+                .materializer
+                .commit(plan)
+                .map_err(|_| FrameworkError::InvalidVirtualization)?;
+            return Ok(window);
+        }
+        self.commit_virtual_table(table, items, plan, None, build_row, build_cell)
+    }
+
+    pub(super) fn commit_virtual_table<R, C>(
+        &mut self,
+        table: Entity<Table>,
+        items: &mut VirtualTableItems<R, C>,
+        plan: nana_ui_core::VirtualTableMaterialization<R, C>,
+        placement: Option<(
+            &VirtualTableLayout,
+            nana_ui_core::VirtualViewport,
+            [usize; 2],
+        )>,
+        mut build_row: impl FnMut(usize, &R) -> TableRow,
+        mut build_cell: impl FnMut(usize, &R, usize, &C) -> TableCell,
+    ) -> Result<VirtualTableWindow, FrameworkError>
+    where
+        R: Clone + Eq + Hash,
+        C: Clone + Eq + Hash,
+    {
         let table_node = self
             .world
             .node(table.id)
@@ -287,7 +402,8 @@ impl AppContext {
                     .ok_or(FrameworkError::InvalidVirtualization)
             })
             .collect::<Result<Vec<_>, _>>();
-        if plan.rows.mounts.is_empty()
+        if placement.is_none()
+            && plan.rows.mounts.is_empty()
             && plan.rows.unmounts.is_empty()
             && plan.columns.mounts.is_empty()
             && plan.columns.unmounts.is_empty()
@@ -337,7 +453,15 @@ impl AppContext {
                     .cells
                     .get(&(row.clone(), column.clone()))
                     .ok_or(FrameworkError::InvalidVirtualization)?;
-                removed_nodes.insert(cell.id);
+                let mut stack = vec![cell.id];
+                while let Some(id) = stack.pop() {
+                    let node = self
+                        .world
+                        .node(id)
+                        .ok_or(FrameworkError::InvalidVirtualization)?;
+                    stack.extend(node.children);
+                    removed_nodes.insert(id);
+                }
             }
         }
 
@@ -352,18 +476,18 @@ impl AppContext {
         }
 
         let row_indices = plan
-            .window
             .rows
-            .range
-            .clone()
+            .indices
+            .iter()
+            .copied()
             .zip(plan.rows.order.iter().cloned())
             .map(|(index, key)| (key, index))
             .collect::<HashMap<_, _>>();
         let column_indices = plan
-            .window
             .columns
-            .range
-            .clone()
+            .indices
+            .iter()
+            .copied()
             .zip(plan.columns.order.iter().cloned())
             .map(|(index, key)| (key, index))
             .collect::<HashMap<_, _>>();
@@ -417,19 +541,101 @@ impl AppContext {
                 staged_cells.push((entity, component));
             }
         }
+        let desired_rows = plan
+            .rows
+            .order
+            .iter()
+            .map(|row| next_rows[row].id)
+            .collect::<Vec<_>>();
+        if desired_rows != table_node.children {
+            for id in desired_rows {
+                mutations.insert(table.id, id, None);
+            }
+        }
         for row in &plan.rows.order {
-            let row_entity = next_rows
-                .get(row)
-                .ok_or(FrameworkError::InvalidVirtualization)?;
-            mutations.insert(table.id, row_entity.id, None);
-            for column in &plan.columns.order {
-                let cell = next_cells
-                    .get(&(row.clone(), column.clone()))
-                    .ok_or(FrameworkError::InvalidVirtualization)?;
-                mutations.insert(row_entity.id, cell.id, None);
+            let row_entity = next_rows[row];
+            let desired = plan
+                .columns
+                .order
+                .iter()
+                .map(|column| next_cells[&(row.clone(), column.clone())].id)
+                .collect::<Vec<_>>();
+            if self
+                .world
+                .node(row_entity.id)
+                .is_none_or(|node| node.children != desired)
+            {
+                for id in desired {
+                    mutations.insert(row_entity.id, id, None);
+                }
             }
         }
 
+        let mut positioned_rows = Vec::new();
+        let mut positioned_cells = Vec::new();
+        let mut positioned_table = None;
+        if let Some((layout, viewport, frozen)) = placement {
+            let fresh_rows = staged_rows
+                .iter()
+                .map(|(entity, value)| (entity.id, value))
+                .collect::<HashMap<_, _>>();
+            let fresh_cells = staged_cells
+                .iter()
+                .map(|(entity, value)| (entity.id, value))
+                .collect::<HashMap<_, _>>();
+            for row in &plan.rows.order {
+                let entity = next_rows[row];
+                let index = row_indices[row];
+                let mut component = match fresh_rows.get(&entity.id) {
+                    Some(value) => (*value).clone(),
+                    None => self.read(entity, Clone::clone)?,
+                };
+                let old = component.clone();
+                super::virtualize_retained::position_table_row(
+                    &mut component,
+                    layout,
+                    viewport,
+                    frozen,
+                    index,
+                );
+                if component != old || new_rows.contains(row) {
+                    component.project(entity.id, &self.world, &mut mutations);
+                    positioned_rows.push((entity, component));
+                }
+                for column in &plan.columns.order {
+                    let cell = next_cells[&(row.clone(), column.clone())];
+                    let column_index = column_indices[column];
+                    let mut component = match fresh_cells.get(&cell.id) {
+                        Some(value) => (*value).clone(),
+                        None => self.read(cell, Clone::clone)?,
+                    };
+                    let old = component.clone();
+                    super::virtualize_retained::position_table_cell(
+                        &mut component,
+                        layout,
+                        viewport,
+                        frozen,
+                        index,
+                        column_index,
+                    );
+                    if component != old || new_rows.contains(row) || new_columns.contains(column) {
+                        component.project(cell.id, &self.world, &mut mutations);
+                        positioned_cells.push((cell, component));
+                    }
+                }
+            }
+            let mut component = self.read(table, Clone::clone)?;
+            let old = component.clone();
+            let style = Arc::make_mut(&mut component.style.layout);
+            style.width = Some(LengthSpec::Px(layout.column_layout().total_extent()));
+            style.height = Some(LengthSpec::Px(layout.row_layout().total_extent()));
+            style.min_height = style.height;
+            style.flex_shrink = Some(0.0);
+            if component != old {
+                component.project(table.id, &self.world, &mut mutations);
+                positioned_table = Some(component);
+            }
+        }
         self.world.commit(mutations)?;
         self.remove_event_handlers_for(&removed_nodes);
         for id in &removed_nodes {
@@ -440,6 +646,15 @@ impl AppContext {
         }
         for (entity, component) in staged_cells {
             self.views.insert(entity.id, Box::new(component));
+        }
+        for (entity, component) in positioned_rows {
+            self.views.insert(entity.id, Box::new(component));
+        }
+        for (entity, component) in positioned_cells {
+            self.views.insert(entity.id, Box::new(component));
+        }
+        if let Some(component) = positioned_table {
+            self.views.insert(table.id, Box::new(component));
         }
         items.rows = next_rows;
         items.cells = next_cells;

@@ -102,6 +102,10 @@ impl SlotPainter {
         &self.runtime
     }
 
+    pub(crate) fn runtime_mut(&mut self) -> &mut SlotRuntime {
+        &mut self.runtime
+    }
+
     /// Draw the flushed Runtime scene over chrome already encoded on `view`.
     pub fn paint_slot(&mut self, encoder: &mut CommandEncoder, view: &TextureView) {
         if let Err(error) = self.runtime.flush() {

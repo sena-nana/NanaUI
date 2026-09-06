@@ -56,6 +56,10 @@ struct Distribution {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--profile-construction") {
+        profile_construction();
+        return;
+    }
     let mut cases = Vec::new();
     for nodes in [100, 500, 1_000, 5_000] {
         cases.push(bench_full(nodes, SMALL_WARMUP, SMALL_ITERATIONS));
@@ -177,6 +181,17 @@ fn build_tree(
     MessageBridge,
     Vec<(NodeHandle, LayoutBox)>,
 ) {
+    build_tree_observed(nodes, |_| {})
+}
+
+fn build_tree_observed(
+    nodes: usize,
+    mut completed: impl FnMut(usize),
+) -> (
+    NanaTreeDocument,
+    MessageBridge,
+    Vec<(NodeHandle, LayoutBox)>,
+) {
     let mut document = NanaTreeDocument::with_id(DocumentId(1), 1280, 720, 1.0);
     let mut bridge = MessageBridge::new();
     bridge.register(
@@ -185,10 +200,14 @@ fn build_tree(
         WidgetProps::default(),
     );
     let mut boxes = Vec::with_capacity(nodes);
+    completed(0);
     for index in 0..nodes {
         let handle = document.create_element("button");
+        completed(1);
         document.insert(handle, document.mount_root(), None);
+        completed(2);
         bridge.register(handle.0, WidgetKind::Button, WidgetProps::default());
+        completed(3);
         boxes.push((
             handle,
             LayoutBox {
@@ -199,8 +218,53 @@ fn build_tree(
                 height: 18.0,
             },
         ));
+        completed(4);
     }
     (document, bridge, boxes)
+}
+
+fn profile_construction() {
+    eprintln!("storage bytes: LayoutStyle={}, WidgetProps={}, SemanticWidget={}",
+        std::mem::size_of::<nana_ui_core::LayoutStyle>(),
+        std::mem::size_of::<WidgetProps>(),
+        std::mem::size_of::<nana_ui_vue::SemanticWidget>());
+    let mut report = std::collections::BTreeMap::new();
+    for count in [5_000, 10_000] {
+        let mut samples: [Vec<Duration>; 5] = std::array::from_fn(|_| Vec::new());
+        for iteration in 0..70 {
+            let mut durations = [Duration::ZERO; 5];
+            let mut started = Instant::now();
+            let tree = build_tree_observed(count, |stage| {
+                durations[stage] += started.elapsed();
+                started = Instant::now();
+            });
+            if iteration >= 10 {
+                for (samples, elapsed) in samples.iter_mut().zip(durations) {
+                    samples.push(elapsed);
+                }
+            }
+            drop(tree);
+        }
+        report.insert(
+            count,
+            [
+                "initialize",
+                "create",
+                "insert",
+                "register",
+                "layout_fixture",
+            ]
+            .into_iter()
+            .zip(samples.iter().map(|samples| summarize(samples)))
+            .collect::<std::collections::BTreeMap<_, _>>(),
+        );
+    }
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    if let Some(path) = std::env::args().skip_while(|arg| arg != "--output").nth(1) {
+        std::fs::write(path, json).unwrap();
+    } else {
+        println!("{json}");
+    }
 }
 
 fn elapsed_ms(duration: Duration) -> f64 {

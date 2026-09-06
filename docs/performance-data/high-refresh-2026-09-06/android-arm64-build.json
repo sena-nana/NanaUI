@@ -1,0 +1,12 @@
+{
+  "target": "aarch64-linux-android",
+  "mode": "debug",
+  "features": "--no-default-features",
+  "path": "target/aarch64-linux-android/debug/libnana_android_host.so",
+  "bytes": 470374192,
+  "sha256": "D590D326C3C504FBFC204554D53B787F183E10124132309DED31934A704EAF49",
+  "ndk": "28.2.13676358",
+  "elf_class": "ELF64",
+  "elf_type": "DYN",
+  "elf_machine": "AArch64"
+}

@@ -1,3 +1,4 @@
+#[cfg(feature = "graph-canvas")]
 use super::geometry::*;
 use super::*;
 use crate::{Easing, MeasureTextShaper};
@@ -169,23 +170,16 @@ fn hit_entries_built(world: &UiWorld) -> usize {
 /// Flatten the hit forest into a comparable projection. `HitEntry` has no
 /// `PartialEq`, and this captures everything pointer dispatch reads.
 fn hit_shape(world: &UiWorld, document: DocumentId) -> Vec<(Vec<u64>, [u32; 6], bool, i32)> {
-    fn walk(entry: &HitEntry, path: &mut Vec<u64>, out: &mut Vec<(Vec<u64>, [u32; 6], bool, i32)>) {
-        path.push(entry.id.get());
-        out.push((
-            path.clone(),
-            entry.transform.map(f32::to_bits),
-            entry.hittable,
-            entry.z_index,
-        ));
-        for child in &entry.children {
-            walk(child, path, out);
-        }
+    fn walk(index: &HitIndex, id: StableNodeId, path: &mut Vec<u64>, out: &mut Vec<(Vec<u64>, [u32;6],bool,i32)>) {
+        let node=&index.entries[&id];
+        path.push(id.get());
+        out.push((path.clone(),find_hit_transform(index,id).unwrap().map(f32::to_bits),node.entry.hittable,node.entry.z_index));
+        for child in node.children.iter().flatten() {walk(index,*child,path,out);}
         path.pop();
     }
-    let mut out = Vec::new();
-    for root in &world.hit_test_index[&document] {
-        walk(root, &mut Vec::new(), &mut out);
-    }
+    let mut out=Vec::new();
+    let index=&world.hit_test_index[&document];
+    for root in index.roots.iter().flatten() {walk(index,*root,&mut Vec::new(),&mut out);}
     out
 }
 
@@ -521,6 +515,26 @@ fn scoped_hit_patch_matches_a_full_rebuild_for_a_leaf_layout_change() {
 }
 
 #[test]
+fn scoped_hit_reparent_keeps_new_owner_in_both_patch_orders() {
+    for (source, destination) in [(10, 110), (110, 10)] {
+        let mut world = hit_fixture(2, 4);
+        let target = node(source + 1);
+        let mut mutation = MutationQueue::new();
+        mutation.insert(node(destination), target, None);
+        mutation.write_layout(target, box_at(21.0, 11.0, 8.0, 6.0));
+        world.commit(mutation).unwrap();
+        let work = world.take_system_work();
+        assert!(world.rebuild_hit_test_scoped(document(1), &work.input_hit_test));
+        let patched = hit_probe_grid(&world, document(1));
+        let shape = hit_shape(&world, document(1));
+        assert!(world.hit_test_index[&document(1)].entries.contains_key(&target));
+        world.rebuild_hit_test(document(1));
+        assert_eq!(patched, hit_probe_grid(&world, document(1)));
+        assert_eq!(shape, hit_shape(&world, document(1)));
+    }
+}
+
+#[test]
 fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
     let mut world = hit_fixture(4, 6);
     let column = node(10 + 100);
@@ -636,12 +650,12 @@ fn overlay_validation_walks_hosts_not_every_entity() {
     // overlay-aware batch alone.
     validation_scanned(&mut world);
 
-    // Host-only bookkeeping: one host, so the walk is one node wide.
+    // Text cannot change overlay references or roles: no host validation walk.
     let mut touch = MutationQueue::new();
     touch.set_text(node(4), TextContent { value: "a".into() });
     touch.set_text(node(5), TextContent { value: "b".into() });
     world.commit(touch).unwrap();
-    assert_eq!(validation_scanned(&mut world), 1);
+    assert_eq!(validation_scanned(&mut world), 0);
 
     // Despawning the surface clears host references without a world scan.
     let mut close = MutationQueue::new();
@@ -3294,7 +3308,10 @@ fn text_input_edit_shifts_snippet_stops_outside_and_ends_session_inside() {
     queue.set_text_input_snippet(
         node(1),
         Some(crate::components::TextSnippetSession {
+            exit_on_last: false,
+            placeholders: Vec::new(),
             stops: vec![10, 20],
+            selection_ends: Vec::new(),
             index: 0,
         }),
     );
@@ -3314,7 +3331,10 @@ fn text_input_edit_shifts_snippet_stops_outside_and_ends_session_inside() {
     assert_eq!(
         world.text_snippet_session(node(1)),
         Some(crate::components::TextSnippetSession {
+            exit_on_last: false,
+            placeholders: Vec::new(),
             stops: vec![16, 26],
+            selection_ends: Vec::new(),
             index: 0,
         })
     );
@@ -4549,10 +4569,9 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
 }
 
 #[test]
-fn occurrence_derivation_probes_again_only_when_inputs_change() {
-    // 派生量级锁定：同一布局输入下第二次派生不再产生任何 shape（每处
-    // 出现的高亮探针全部命中缓存）；选区移到另一行的另一个词时，派生
-    // 才重新探测。计数走 CountingShaper（= world 文本布局缓存未命中）。
+fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
+    // Caret movement changes occurrence geometry, but must reuse the same text
+    // layout. Geometry probes are delegated to the host, not counted as shapes.
     let style = ComputedStyle {
         font_size: 10.0,
         line_height: Some(nana_ui_core::LineHeightSpec::Absolute(14.0)),
@@ -4614,7 +4633,7 @@ fn occurrence_derivation_probes_again_only_when_inputs_change() {
         &mut cache,
     );
     let (_, moved_misses, _) = cache.take_counters();
-    assert!(moved_misses > 0, "changed selection must re-probe");
+    assert_eq!(moved_misses, 0, "moving the caret must reuse unchanged text layout");
     assert_ne!(moved.occurrence_marks, first.occurrence_marks);
 }
 
@@ -8122,6 +8141,7 @@ fn max_polyline_chord(points: &[[f32; 2]]) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
+#[cfg(feature = "graph-canvas")]
 fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
     let abx = end[0] - start[0];
     let aby = end[1] - start[1];
@@ -8839,4 +8859,76 @@ fn inlay_glyph_merge_lets_inlay_color_win_on_overlap() {
             },
         ]
     );
+}
+#[test]
+fn viewport_dependency_index_is_document_local_and_releases_removed_entries() {
+    let first = DocumentId::new(1).unwrap();
+    let second = DocumentId::new(2).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for (id, document) in [(node(1), first), (node(2), second)] {
+        queue.create(id, document, NodeKind::Element { tag: "div".into() });
+        queue.set_style(
+            id,
+            NodeStyle {
+                layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                    position: nana_ui_core::PositionSpec::Fixed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    }
+    world.commit(queue).unwrap();
+    assert_eq!(
+        world.viewport_basis_ids_for(first).collect::<Vec<_>>(),
+        vec![node(1)]
+    );
+    assert_eq!(
+        world.viewport_basis_ids_for(second).collect::<Vec<_>>(),
+        vec![node(2)]
+    );
+    let mut queue = MutationQueue::new();
+    queue.park_subtree(node(1));
+    queue.despawn_subtree(node(2));
+    world.commit(queue).unwrap();
+    assert_eq!(world.viewport_basis_ids_for(first).count(), 0);
+    assert_eq!(world.viewport_basis_ids_for(second).count(), 0);
+    assert!(!world.uses_viewport_basis());
+    assert!(world.viewport_basis.is_empty());
+}
+
+#[test]
+fn indexed_sticky_headers_preserve_crlf_utf8_and_nested_scrolling() {
+    let value = STICKY_VALUE.replace("x();", "工作();").replace('\n', "\r\n");
+    let folds = Arc::from([
+        crate::TextCodeFold::new(0, value.find("\r\n// tail").unwrap()),
+        crate::TextCodeFold::new(value.find("    fn inner").unwrap(), value.find("    z();").unwrap()),
+    ]);
+    let mut world = UiWorld::default();
+    sticky_editor_world(&mut world, &value, folds, 35.0);
+    world.shape_text(&[node(1)], &mut FunctionalShaper::default()).unwrap();
+    let crate::ComponentGeometry::TextInput { sticky_line, .. } = world.component_geometry(node(1)).unwrap() else { panic!("text input") };
+    let sticky = sticky_line.expect("nested header remains pinned");
+    assert_eq!(sticky.text.content.trim_end(), "    fn inner() {");
+    assert_eq!(sticky.panel.y, 0.0);
+}
+
+#[test]
+fn modal_accessibility_bounds_keep_surface_and_descendant_clipping() {
+    let mut world = UiWorld::default();
+    let mut queue = MutationQueue::new();
+    for id in [node(1), node(2)] {
+        queue.create(id, document(1), NodeKind::Element { tag: "div".into() });
+        queue.write_layout(id, LayoutBox { x: 0.0, y: 0.0, width: 800.0, height: 600.0 });
+    }
+    queue.insert(node(1), node(2), None);
+    queue.set_standard_visual(node(1), Some(confirm_modal_visual()));
+    world.commit(queue).unwrap();
+    world.resolve_styles(&[node(1), node(2)]).unwrap();
+    let crate::ComponentGeometry::ModalFrame { surface, .. } = world.component_geometry(node(1)).unwrap() else { panic!("modal") };
+    let accessible = world.project_accessibility(document(1));
+    assert_eq!(accessible.len(), 2);
+    assert_eq!(accessible[0].bounds, surface);
+    assert_eq!(accessible[1].bounds, surface, "descendant remains clipped to the modal surface");
 }

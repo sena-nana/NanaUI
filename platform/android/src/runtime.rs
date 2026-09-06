@@ -148,9 +148,10 @@ impl HostState {
         let Some(ax) = self.ax.as_mut() else {
             return;
         };
-        let Some(painter) = self.slot.as_ref() else {
+        let Some(painter) = self.slot.as_mut() else {
             return;
         };
+        ax.drain_actions(painter.runtime_mut());
         ax.push(painter.runtime());
     }
 

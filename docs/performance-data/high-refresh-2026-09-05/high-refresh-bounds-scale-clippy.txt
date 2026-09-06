@@ -1,0 +1,12 @@
+    Checking itoa v1.0.18
+    Checking memchr v2.8.3
+    Checking qrcode v0.14.1
+    Checking futures-core v0.3.34
+    Checking unicode-segmentation v1.13.3
+    Checking serde_core v1.0.229
+    Checking zmij v1.0.23
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking nana-ui-core v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-core)
+    Checking nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 27.22s

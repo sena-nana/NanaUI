@@ -105,7 +105,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     self.request_redraw(id);
                 }
             }
-            WinitWindowEvent::Occluded(_) => {
+            WinitWindowEvent::Occluded(occluded) => {
+                if *occluded {
+                    self.occluded.insert(id);
+                } else {
+                    self.occluded.remove(&id);
+                    self.request_redraw(id);
+                }
                 self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::Focused(focused) => {

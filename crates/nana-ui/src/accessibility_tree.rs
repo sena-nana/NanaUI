@@ -4,7 +4,7 @@
 //! same projector desktop hosts use. macOS/Windows/Unix hosts should prefer
 //! the bundled `hosted` adapters.
 
-use accesskit::TreeUpdate;
+use accesskit::{ActionRequest, TreeUpdate};
 use nana_ui_runtime::{AccessibilityDelta, AccessibilityNode};
 
 use crate::accessibility::AccessibilityProjector;
@@ -13,11 +13,15 @@ use crate::accessibility::AccessibilityProjector;
 pub struct AccessTreeProjector(AccessibilityProjector);
 
 impl AccessTreeProjector {
-    /// Start projecting `nodes` as a full tree.
+    /// Retain `nodes`; call `full_update` when the adapter needs its initial tree.
     pub fn new(nodes: Vec<AccessibilityNode>, interactive: bool, scale_factor: f32) -> Self {
-        let (inner, _) =
-            AccessibilityProjector::new_at_generation(nodes, interactive, scale_factor, None);
-        Self(inner)
+        Self(AccessibilityProjector::retain(
+            nodes,
+            interactive,
+            scale_factor,
+            None,
+            false,
+        ))
     }
 
     /// Replace the cached tree with `nodes` and produce a full update.
@@ -37,5 +41,16 @@ impl AccessTreeProjector {
     /// Rebuild the full tree update from the cached nodes.
     pub fn full_update(&self) -> TreeUpdate {
         self.0.full_update()
+    }
+
+    /// Translate a platform AccessKit action into Nana's backend-neutral
+    /// request using the same capability and text-selection validation as the
+    /// desktop adapter. Hosts that own their AccessKit integration (Android,
+    /// embedded shells) can enqueue the returned request for Runtime.
+    pub fn project_action(
+        &self,
+        request: ActionRequest,
+    ) -> Option<nana_ui_runtime::AccessibilityActionRequest> {
+        self.0.project_action_request(request)
     }
 }

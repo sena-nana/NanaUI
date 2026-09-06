@@ -1,8 +1,14 @@
+mod attributes;
 mod composition;
+use attributes::DrawAttributes;
+pub use attributes::SceneDraw;
+mod visibility;
+pub use composition::FramePlan;
+use visibility::VisibilityIndex;
 mod order;
 mod primitives;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use nana_ui_core::{
     BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DirSpec, DrawerSide,
@@ -128,8 +134,22 @@ impl ClipRegion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PrimitiveId {
     pub node: StableNodeId,
-    pub slot: u8,
+    /// Fixed component slots occupy 0..=255. Unbounded component collections
+    /// use a separate namespace and a checked collection index.
+    pub slot: u64,
 }
+
+fn collection_slot(namespace: u32, index: usize) -> u64 {
+    debug_assert!(namespace != 0);
+    (u64::from(namespace) << 32)
+        | u64::from(u32::try_from(index).expect("primitive collection exceeds u32::MAX items"))
+}
+
+const TEXT_LINE_LABELS: u32 = 1;
+const TEXT_DIAGNOSTIC_MARKERS: u32 = 2;
+const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
+const TEXT_ATOM_ICONS: u32 = 4;
+const TEXT_ATOM_LABELS: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuadSurfacePaint {
@@ -372,12 +392,34 @@ struct SceneOrderKey {
     /// `isolation: isolate`, and positioned + `z-index` keep a subtree
     /// contiguous against siblings. Not full CSS Appendix E.
     stack: Vec<(i32, usize)>,
-    slot: u8,
+    /// Collection identity must not lift scrolling text above sticky bands,
+    /// minimaps or popup surfaces owned by the same component.
+    paint_layer: u64,
+    slot: u64,
     node: StableNodeId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SceneDelta {
+    pub added: Vec<StableNodeId>,
+    pub removed: Vec<StableNodeId>,
+    pub paint: Vec<StableNodeId>,
+    pub transforms: Vec<StableNodeId>,
+    pub clips: Vec<StableNodeId>,
+    pub order_changed: bool,
+    pub stats: SceneDeltaStats,
+}
+
+impl std::ops::Deref for SceneDelta {
+    type Target = SceneDeltaStats;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stats
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneDeltaStats {
     pub updated_nodes: usize,
     pub removed_nodes: usize,
     pub rebuilt_primitives: usize,
@@ -387,6 +429,11 @@ pub struct SceneDelta {
 
 #[derive(Debug)]
 pub struct UiScene {
+    frame_plan: OnceLock<Arc<FramePlan>>,
+    visibility: OnceLock<VisibilityIndex>,
+    attribute_epoch: u64,
+    projections: HashMap<StableNodeId, (u64, AffineTransform, usize)>,
+    draw_attributes: std::sync::Mutex<HashMap<StableNodeId, DrawAttributes>>,
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
@@ -403,6 +450,11 @@ pub struct UiScene {
 impl Default for UiScene {
     fn default() -> Self {
         Self {
+            frame_plan: OnceLock::new(),
+            visibility: OnceLock::new(),
+            attribute_epoch: 0,
+            projections: HashMap::new(),
+            draw_attributes: std::sync::Mutex::new(HashMap::new()),
             nodes: HashMap::new(),
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
@@ -415,6 +467,16 @@ impl Default for UiScene {
 impl Clone for UiScene {
     fn clone(&self) -> Self {
         Self {
+            frame_plan: self.frame_plan.clone(),
+            visibility: self.visibility.clone(),
+            attribute_epoch: self.attribute_epoch,
+            projections: self.projections.clone(),
+            draw_attributes: std::sync::Mutex::new(
+                self.draw_attributes
+                    .lock()
+                    .expect("scene attributes")
+                    .clone(),
+            ),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
@@ -428,6 +490,9 @@ fn next_scene_instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
+
+// Structural identity includes custom renderer/resource bindings, not content versions.
+type PrimitiveStructure = (PrimitiveId, Option<(Arc<str>, Arc<str>)>);
 
 impl UiScene {
     pub fn new() -> Self {
@@ -447,6 +512,10 @@ impl UiScene {
 
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn primitive_count(&self) -> usize {
+        self.primitives.len()
     }
 
     pub fn primitives(&self) -> impl Iterator<Item = &ScenePrimitive> {
@@ -497,11 +566,19 @@ impl UiScene {
         extracted: impl IntoIterator<Item = ExtractedNode>,
         removals: impl IntoIterator<Item = StableNodeId>,
     ) -> SceneDelta {
+        let mut delta = SceneDelta::default();
+        let mut previous_structure = HashMap::new();
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
+                delta.removed.push(id);
+                self.projections.remove(&id);
+                self.draw_attributes
+                    .get_mut()
+                    .expect("scene attributes")
+                    .remove(&id);
                 removed_nodes += 1;
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
@@ -509,9 +586,27 @@ impl UiScene {
         }
         let mut updated_nodes = 0;
         let mut scroll_rebuild = Vec::new();
+        let mut scroll_translations = Vec::new();
         let mut stacking_changed = false;
         for node in extracted {
+            previous_structure.insert(node.id, self.node_structure(node.id));
             let previous = self.nodes.get(&node.id);
+            if previous.is_none() {
+                delta.added.push(node.id);
+            }
+            if previous.is_none_or(|old| {
+                old.layout != node.layout || old.scroll_offset != node.scroll_offset
+            }) {
+                delta.transforms.push(node.id);
+            }
+            // Layout/style can affect inherited clips; consumers resolve the
+            // changed attribute roots rather than guessing from paint counts.
+            if previous.is_none_or(|old| {
+                old.layout != node.layout || old.source_style.layout != node.source_style.layout
+            }) {
+                delta.clips.push(node.id);
+            }
+            delta.paint.push(node.id);
             hierarchy_changed |= previous
                 .is_none_or(|old| old.parent != node.parent || old.children != node.children);
             let scroll_changed =
@@ -530,7 +625,23 @@ impl UiScene {
             });
             changed.push(node.id);
             if scroll_changed {
-                scroll_rebuild.push(node.id);
+                let old = self.nodes.get(&node.id).expect("scrolling retained node");
+                let (parent, _, _, blocks_3d) = self.ancestor_state(old);
+                let transform = parent.then(node_scene_transform(
+                    &old.source_style.layout,
+                    old.layout,
+                    blocks_3d,
+                ));
+                if transform.is_projective() {
+                    scroll_rebuild.push(node.id);
+                    self.visibility.take();
+                } else {
+                    let dx = old.scroll_offset.x - node.scroll_offset.x;
+                    let dy = old.scroll_offset.y - node.scroll_offset.y;
+                    let [a, b, c, d, _, _] = transform.0;
+                    scroll_translations.push((node.id, [a * dx + c * dy, b * dx + d * dy]));
+                }
+                self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             }
             // Drop the retained primitives while the old node is still in
             // place: their order keys are derived from it, and a key computed
@@ -559,6 +670,9 @@ impl UiScene {
                 }
             }
             for &id in &rebuild {
+                previous_structure
+                    .entry(id)
+                    .or_insert_with(|| self.node_structure(id));
                 rebuilt_primitives += self.rebuild_node_primitives(id);
             }
             // Rebuilt nodes re-enter `ordered` at their own key, so a reorder is
@@ -566,15 +680,59 @@ impl UiScene {
             if order_rebuilt || stacking_changed {
                 self.sort_primitives();
             }
+            if order_rebuilt
+                || stacking_changed
+                || removed_nodes != 0
+                || previous_structure
+                    .iter()
+                    .any(|(id, before)| *before != self.node_structure(*id))
+            {
+                self.frame_plan.take();
+                self.visibility.take();
+            }
+            if let Some(mut visibility) = self.visibility.take() {
+                for (root, offset) in scroll_translations {
+                    visibility.translate_subtree(root, offset);
+                }
+                visibility.update(self, &rebuild);
+                let _ = self.visibility.set(visibility);
+            }
             self.instance = next_scene_instance();
         }
-        SceneDelta {
+        delta.order_changed = order_rebuilt || stacking_changed;
+        delta.stats = SceneDeltaStats {
             updated_nodes,
             removed_nodes,
             rebuilt_primitives,
             order_rebuilt,
             primitive_count: self.primitives.len(),
-        }
+        };
+        delta
+    }
+
+    fn node_structure(
+        &self,
+        node: StableNodeId,
+    ) -> Vec<PrimitiveStructure> {
+        self.primitives
+            .range(
+                PrimitiveId { node, slot: 0 }..=PrimitiveId {
+                    node,
+                    slot: u64::MAX,
+                },
+            )
+            .map(|(id, primitive)| {
+                (
+                    *id,
+                    match &primitive.kind {
+                        ScenePrimitiveKind::Custom { node, .. } => {
+                            Some((node.renderer.clone(), node.resource.clone()))
+                        }
+                        _ => None,
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
@@ -590,6 +748,8 @@ impl UiScene {
             return false;
         };
         primitive.kind = kind;
+        self.frame_plan.take();
+        self.visibility.take();
         self.instance = next_scene_instance();
         true
     }
@@ -604,6 +764,11 @@ impl UiScene {
         let Some(parent) = node.parent.and_then(|id| self.nodes.get(&id)) else {
             return false;
         };
+        if let Some(ComponentGeometry::Card { title, .. }) = parent.component_geometry.as_ref() {
+            return title.as_ref().is_some_and(|title| {
+                node.text.as_ref().is_some_and(|text| text.value == title.content.as_ref())
+            });
+        }
         component_geometry_owns_text(parent.component_geometry.as_ref())
             || parent
                 .text
@@ -812,7 +977,7 @@ impl UiScene {
             .range(
                 PrimitiveId { node, slot: 0 }..=PrimitiveId {
                     node,
-                    slot: u8::MAX,
+                    slot: u64::MAX,
                 },
             )
             .map(|(_, primitive)| primitive)
@@ -1145,6 +1310,17 @@ fn group_prefix(
     stack
 }
 
+fn primitive_paint_layer(slot: u64) -> u64 {
+    match slot >> 32 {
+        namespace if namespace == u64::from(TEXT_LINE_LABELS) => 40,
+        namespace if namespace == u64::from(TEXT_DIAGNOSTIC_MARKERS) => 20,
+        namespace if namespace == u64::from(TEXT_DIAGNOSTIC_LABELS) => 58,
+        namespace if namespace == u64::from(TEXT_ATOM_ICONS) => 27,
+        namespace if namespace == u64::from(TEXT_ATOM_LABELS) => 32,
+        _ => slot,
+    }
+}
+
 fn order_key(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node_order: &HashMap<StableNodeId, usize>,
@@ -1174,6 +1350,7 @@ fn order_key_from_prefix(
     }
     SceneOrderKey {
         stack,
+        paint_layer: primitive_paint_layer(primitive.id.slot),
         slot: primitive.id.slot,
         node: primitive.node,
     }
@@ -1214,7 +1391,7 @@ fn paint_select_handle(
                 z_index,
                 document_order,
             },
-            3 + index as u8,
+            3 + index as u64,
             SceneRect {
                 x: center_x - width / 2.0,
                 y: center_y - 1.5 + index as f32,
@@ -1263,7 +1440,7 @@ fn component_geometry_owns_text(geometry: Option<&ComponentGeometry>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn component_text_primitive(
     id: StableNodeId,
-    slot: u8,
+    slot: u64,
     region: &ComponentTextRegion,
     horizontal_alignment: TextHorizontalAlignment,
     ellipsis: bool,
@@ -1429,7 +1606,7 @@ impl VisualQuadStyle {
 
 fn visual_quad(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1510,7 +1687,7 @@ fn quad_surface_from_style(
 #[cfg(any(feature = "charts", feature = "graph-canvas"))]
 fn visual_stroke(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     points: Vec<[f32; 2]>,
     width: f32,
@@ -1548,7 +1725,7 @@ fn insert_text_decoration_strokes(
     mut sink: impl FnMut(ScenePrimitive),
 ) {
     let width = 1.0_f32.max(bounds.height * 0.06);
-    let mut emit = |slot: u8, y: f32| {
+    let mut emit = |slot: u64, y: f32| {
         sink(ScenePrimitive {
             id: PrimitiveId {
                 node: context.node,
@@ -1588,7 +1765,7 @@ fn insert_text_decoration_strokes(
 /// 调用方给出（QuadBatch / QuadColorBatch / IconBatch）。
 fn batch_primitive(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     quad_bounds: Vec<SceneRect>,
     kind: impl FnOnce(Vec<SceneRect>) -> ScenePrimitiveKind,
 ) -> ScenePrimitive {
@@ -1627,7 +1804,7 @@ fn batch_primitive(
 
 fn visual_quad_batch(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: impl IntoIterator<Item = SceneRect>,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1647,7 +1824,7 @@ fn visual_quad_batch(
 
 fn visual_quad_color_batch(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     items: impl IntoIterator<Item = (SceneRect, [f32; 4])>,
     style: VisualQuadStyle,
 ) -> ScenePrimitive {
@@ -1668,7 +1845,7 @@ fn visual_quad_color_batch(
 /// 共用）：圆角面板底 + 1px 边框，浮在编辑器内容之上。
 fn overlay_panel_primitive(
     context: &VisualPrimitiveContext<'_>,
-    slot: u8,
+    slot: u64,
     bounds: SceneRect,
     background: [f32; 4],
     border: [f32; 4],
@@ -1691,7 +1868,7 @@ fn overlay_panel_primitive(
 #[allow(clippy::too_many_arguments)]
 fn overlay_text_primitive(
     id: StableNodeId,
-    slot: u8,
+    slot: u64,
     region: &ComponentTextRegion,
     horizontal_alignment: TextHorizontalAlignment,
     node: &ExtractedNode,

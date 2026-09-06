@@ -80,7 +80,9 @@ pub struct MessageBridge {
     cascade: cascade::State,
     resources: resources::State,
     motion: motion::State,
-    widgets: HashMap<WidgetId, SemanticWidget>,
+    // SemanticWidget includes a large LayoutStyle. Keep hash buckets compact
+    // so growing the identity index does not relocate every widget's payload.
+    widgets: HashMap<WidgetId, Box<SemanticWidget>>,
     roots: Vec<WidgetId>,
     pending: VecDeque<BridgeEvent>,
     revision: u64,
@@ -997,16 +999,16 @@ impl MessageBridge {
     }
 
     pub fn get(&self, id: WidgetId) -> Option<&SemanticWidget> {
-        self.widgets.get(&id)
+        self.widgets.get(&id).map(Box::as_ref)
     }
 
     pub fn get_mut(&mut self, id: WidgetId) -> Option<&mut SemanticWidget> {
         self.cascade.font_root.set(None);
-        self.widgets.get_mut(&id)
+        self.widgets.get_mut(&id).map(Box::as_mut)
     }
 
     pub fn widgets(&self) -> impl Iterator<Item = &SemanticWidget> {
-        self.widgets.values()
+        self.widgets.values().map(Box::as_ref)
     }
 
     pub(crate) fn root_ids(&self) -> &[WidgetId] {
@@ -1029,13 +1031,13 @@ impl MessageBridge {
             props.class_names = vec!["nana-html-root".into()];
             props.element_tag = "html".into();
             props.attrs.insert("data-theme".into(), theme_label);
-            SemanticWidget {
+            Box::new(SemanticWidget {
                 id: html_id,
                 kind: WidgetKind::Column,
                 props,
                 children: vec![body_id],
                 parent: None,
-            }
+            })
         });
         self.sync_document_theme_attr();
         self.widgets.entry(body_id).or_insert_with(|| {
@@ -1044,13 +1046,13 @@ impl MessageBridge {
             props.layout.height = Some(LengthSpec::Fill);
             props.layout.direction = Some(FlexDirection::Column);
             props.class_names = vec!["nana-mount-root".into()];
-            SemanticWidget {
+            Box::new(SemanticWidget {
                 id: body_id,
                 kind: WidgetKind::Column,
                 props,
                 children: Vec::new(),
                 parent: Some(html_id),
-            }
+            })
         });
         if let Some(body) = self.widgets.get_mut(&body_id) {
             body.parent = Some(html_id);
@@ -1155,35 +1157,56 @@ impl MessageBridge {
         };
         if props.element_tag.eq_ignore_ascii_case("html")
             || props.element_tag.eq_ignore_ascii_case("body")
-            || self.widgets.get(&id).is_some_and(is_font_root)
+            || self.widgets.get(&id).is_some_and(|widget| is_font_root(widget))
         {
             self.cascade.font_root.set(None);
         }
         let previous = self.widgets.insert(
             id,
-            SemanticWidget {
+            Box::new(SemanticWidget {
                 id,
                 kind,
                 props,
                 children: Vec::new(),
                 parent: None,
-            },
+            }),
         );
         // With document scaffold, only html is a root — insert parents under body.
         // Without scaffold (unit tests), keep legacy "register ⇒ root" behavior.
         if !self.scaffolded && (previous.is_none() || !self.roots.contains(&id)) {
             self.roots.push(id);
         }
-        self.reapply_layout_for(id);
-        self.bump();
+        // Registering a fresh, currently unparented widget cannot change any
+        // descendant `:has()` result. Keep the prepared topology index hot
+        // during bulk mounts; replacement of an existing widget still
+        // invalidates it because its subject flags may have changed.
+        self.revision = self.revision.saturating_add(1);
+        if previous.is_some() {
+            self.cascade.has_index_ready = false;
+        }
+        // A stylesheet-free registration with no inline declarations already
+        // has its complete layout seed from `default_layout_for_kind` above.
+        // Avoid entering the selector/cascade machinery for this common bulk
+        // mount path; explicit styles and authored sheets still take the full
+        // route below.
+        let needs_cascade = !self.cascade.stylesheet_rules.is_empty()
+            || !self.cascade.authored_sheets.is_empty()
+            || !self.cascade.interactive_rules.is_empty()
+            || self.widgets.get(&id).is_some_and(|w| {
+                !w.props.inline_style.trim().is_empty() || !w.props.prop_style.trim().is_empty()
+            });
+        self.changes.dirty.insert(id);
+        if needs_cascade {
+            self.reapply_layout_for(id);
+        }
     }
 
     /// Copy kind+props from `src` onto `dst` (no parenting). Returns false if `src` missing.
     pub fn clone_register(&mut self, src: WidgetId, dst: WidgetId) -> bool {
-        let Some(widget) = self.widgets.get(&src).cloned() else {
+        let Some(widget) = self.widgets.get(&src) else {
             return false;
         };
-        self.register(dst, widget.kind, widget.props);
+        self.register(dst, widget.kind, widget.props.clone());
         true
     }
 
@@ -1284,7 +1307,9 @@ impl MessageBridge {
             self.recascade_inline_svg(parent);
         }
         // Subject `:has()` / `:empty` / sibling nth on remaining parent.
-        if let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid)) {
+        if self.cascade.selector_topology
+            && let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid))
+        {
             self.cascade.has_index_ready = false;
             self.reapply_parent_and_children(parent);
             let mut walk = Some(parent);
@@ -1371,7 +1396,9 @@ impl MessageBridge {
         self.sync_containing_block_from_parent(child);
         // Parent combinators / `:empty` / sibling nth match on insert.
         self.cascade.has_index_ready = false;
-        self.reapply_parent_and_children(parent);
+        if self.cascade.selector_topology {
+            self.reapply_parent_and_children(parent);
+        }
         if !self.cascade.has_args.is_empty() {
             let mut walk = Some(parent);
             while let Some(pid) = walk {
@@ -1846,7 +1873,7 @@ impl MessageBridge {
             let parent_ok = w
                 .parent
                 .and_then(|p| self.widgets.get(&p))
-                .is_some_and(is_resources_shell);
+                .is_some_and(|widget| is_resources_shell(widget));
             parent_ok.then_some(id)
         }) {
             return Some(id);
@@ -2255,7 +2282,7 @@ impl MessageBridge {
         }
         for (&id, widget) in &self.widgets {
             if seen.insert(id) {
-                widgets.push(widget.clone());
+                widgets.push(widget.as_ref().clone());
             }
         }
         SemanticSnapshot {
@@ -2282,11 +2309,11 @@ impl MessageBridge {
         if !seen.insert(id) {
             return;
         }
-        let Some(widget) = self.widgets.get(&id).cloned() else {
+        let Some(widget) = self.widgets.get(&id) else {
             return;
         };
         let children = widget.children.clone();
-        out.push(widget);
+        out.push(widget.as_ref().clone());
         for child in children {
             self.collect_preorder(child, out, seen);
         }
@@ -2398,7 +2425,7 @@ fn is_sidebar_footer_slot(props: &WidgetProps) -> bool {
 
 fn hosts_sidebar_footer_content(
     w: &SemanticWidget,
-    widgets: &std::collections::HashMap<WidgetId, SemanticWidget>,
+    widgets: &std::collections::HashMap<WidgetId, Box<SemanticWidget>>,
 ) -> bool {
     w.props.class_names.iter().any(|c| c == "sb-footer")
         || w.props.agent_id.starts_with("sidebar.footer.")

@@ -193,7 +193,10 @@ impl UiWorld {
             #[cfg(feature = "calendar")]
             StandardVisual::CalendarHeatmap { .. } => self.style_model.palette.text.as_rgba_array(),
             #[cfg(feature = "charts")]
-            StandardVisual::TimeSeriesChart { .. } => self.style_model.palette.text.as_rgba_array(),
+            StandardVisual::TimeSeriesChart { .. }
+            | StandardVisual::TimestampSeriesChart { .. } => {
+                self.style_model.palette.text.as_rgba_array()
+            }
             #[cfg(feature = "controls")]
             StandardVisual::ReorderList { .. } => self.style_model.palette.text.as_rgba_array(),
             #[cfg(feature = "rich-text")]
@@ -217,7 +220,11 @@ impl UiWorld {
         // Scene receives the layout-resolved padding; it must not resolve %
         // against the painted node's own width. Authored world style stays intact.
         let padding = self.used_layout_padding(id);
-        if source_style.layout.resolved_padding_against(Some(layout.width)) != padding {
+        if source_style
+            .layout
+            .resolved_padding_against(Some(layout.width))
+            != padding
+        {
             let layout = Arc::make_mut(&mut source_style.layout);
             layout.padding = None;
             layout.logical_padding = Default::default();
@@ -283,7 +290,10 @@ impl UiWorld {
         // 与 shape 路径同门（`text_input_presentation_source` 仅多行态构
         // 视图）：单行输入不构折叠/inlay 显示视图，两条路径对单行喂入
         // 的 inlay 一致不呈现。
-        let display_view = if self.nodes.get(id).is_some_and(|node| node.accessibility.multiline)
+        let display_view = if self
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.accessibility.multiline)
             && (self.nodes.text_inlays(id).is_some()
                 || self
                     .nodes
@@ -370,9 +380,12 @@ impl UiWorld {
     /// so an incremental renderer can remove their previous primitives.
     pub fn extract_nodes(&self, ids: &[StableNodeId]) -> Vec<ExtractedNode> {
         let mut memo = AncestorMemo::default();
-        ids.iter()
-            .filter_map(|&id| self.extract_node_memo(id, &mut memo))
-            .collect()
+        let mut extracted = Vec::with_capacity(ids.len());
+        extracted.extend(
+            ids.iter()
+                .filter_map(|&id| self.extract_node_memo(id, &mut memo)),
+        );
+        extracted
     }
 }
 

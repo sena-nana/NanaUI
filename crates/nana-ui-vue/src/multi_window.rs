@@ -1077,6 +1077,8 @@ impl VueRuntime {
                         maximized: false,
                         transparent: options.transparent,
                         always_on_top: options.always_on_top,
+                        focus_on_show: true,
+                        constrain_to_work_area: false,
                         resizable: options.resizable,
                         role: match options.role {
                             VueWindowRole::Main => WindowRole::Main,
