@@ -47,6 +47,7 @@ mod overlay_surfaces;
 mod overlay_visibility;
 mod pane;
 mod pane_section;
+mod panel;
 mod path_field;
 mod placeholders;
 mod popover;
@@ -289,3 +290,4 @@ pub use xy_pad::{
 };
 
 pub use native_content::{NATIVE_CONTENT_RENDERER, NativeContent};
+pub use panel::{Panel, PanelEdge, PanelInsets};

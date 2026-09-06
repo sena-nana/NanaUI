@@ -94,6 +94,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Dropdown>()?;
         registrar.register_component::<SearchDropdown>()?;
         registrar.register_component::<Drawer>()?;
+        registrar.register_component::<crate::Panel>()?;
         registrar.register_component::<Popover>()?;
         registrar.register_component::<ContextMenu>()?;
         registrar.register_component::<Toast>()?;
@@ -3616,5 +3617,13 @@ mod tests {
                 .map(ComponentTypeId::as_str),
             Some("nana.video")
         );
+    }
+}
+
+impl RegisterableComponent for crate::Panel {
+    const TYPE_ID: &'static str = crate::component_descriptors::PANEL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::PANEL.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        Self::new(spec.display_label())
     }
 }
