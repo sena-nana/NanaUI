@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use nana_ui_core::DialogCloseTrigger;
 
@@ -424,6 +425,14 @@ impl AppContext {
 
     fn active_runtime_overlays(&self, document: DocumentId) -> Vec<ActiveRuntimeOverlay> {
         let order = self.world.document_order(document);
+        // Hosts and their active roots are both entries in document order. Build
+        // the reverse lookup once so several overlays do not each rescan the
+        // complete document with `position`.
+        let order_index = order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect::<HashMap<_, _>>();
         let mut overlays = order
             .iter()
             .enumerate()
@@ -442,10 +451,7 @@ impl AppContext {
                     return None;
                 }
                 let kind = self.runtime_overlay_kind(root)?;
-                let root_order = order
-                    .iter()
-                    .position(|candidate| *candidate == root)
-                    .unwrap_or(document_order);
+                let root_order = order_index.get(&root).copied().unwrap_or(document_order);
                 let z = self
                     .world
                     .node_style(root)

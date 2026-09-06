@@ -188,6 +188,14 @@ impl Default for HoverCard {
 }
 
 impl ComponentView for HoverCard {
+    /// `open` is framework-owned (hover lifecycle); app-driven updates must
+    /// not snap it shut while the pointer rests on the card.
+    fn reconcile(&mut self, next: Self) {
+        let open = self.open;
+        *self = next;
+        self.open = open;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "hover-card".into(),
@@ -386,6 +394,26 @@ mod tests {
         tick(&mut context, 400);
         assert!(!context.read(card, |card| card.open).unwrap());
         assert_eq!(context.next_animation_deadline(), None);
+    }
+
+    /// App-driven data updates re-enter through `reconcile` (the mount
+    /// upsert path) and must keep the framework-owned `open` state, so a
+    /// session refresh cannot snap the card shut under a resting pointer.
+    #[test]
+    fn reconcile_preserves_the_framework_open_state() {
+        let (mut context, card, _) = card_with_button();
+        hover_at(&mut context, document(), Some(card.stable_id()), 0);
+        tick(&mut context, 400);
+        assert!(context.read(card, |card| card.open).unwrap());
+        context
+            .update_component(card, |card, _| {
+                card.reconcile(HoverCard::new().trigger("账户"));
+            })
+            .unwrap();
+        assert!(
+            context.read(card, |card| card.open).unwrap(),
+            "reconcile must preserve the framework-driven open state"
+        );
     }
 
     /// Escape closes an open hover card that allows it.
