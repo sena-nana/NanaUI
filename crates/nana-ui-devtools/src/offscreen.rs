@@ -100,7 +100,10 @@ impl OffscreenSnapshots {
         self.paint_layers_scaled(layers, size, 1.0, clear, host_textures, gpu_renderers)
     }
 
-    fn paint_layers_scaled(
+    /// Physical-scale paint that keeps host textures and GPU renderers.
+    /// [`Self::paint_scaled`] drops both, so a product screenshotting real
+    /// cover art above 1x needs this entry point rather than its own painter.
+    pub fn paint_layers_scaled(
         &mut self,
         layers: &[(&UiScene, bool)],
         size: Size<u32>,
@@ -229,118 +232,6 @@ impl OffscreenSnapshots {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nana_ui::runtime::{DocumentId, LayoutViewport, RuntimeDocument, Stack};
-    use nana_ui_core::{BackgroundImage, BackgroundImageFit, LayoutStyle, LengthSpec};
-
-    #[test]
-    fn first_layered_snapshot_waits_for_http_images_and_repaints_overlays() {
-        check_layered_snapshot(false);
-    }
-
-    #[test]
-    fn no_clear_translucent_layers_do_not_accumulate_across_retries() {
-        check_layered_snapshot(true);
-    }
-
-    fn check_layered_snapshot(no_clear: bool) {
-        use std::io::{Read, Write};
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::RgbaImage::from_pixel(
-            8,
-            8,
-            image::Rgba([0, 0, 255, if no_clear { 128 } else { 255 }]),
-        )
-        .write_to(&mut png, image::ImageFormat::Png)
-        .unwrap();
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let url = format!("http://{}/blue.png", listener.local_addr().unwrap());
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            stream.read(&mut request).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let bytes = png.into_inner();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                bytes.len()
-            )
-            .unwrap();
-            stream.write_all(&bytes).unwrap();
-        });
-        let mut background = RuntimeDocument::new(DocumentId::new(1).unwrap());
-        let mut layout = LayoutStyle {
-            width: Some(LengthSpec::Px(64.0)),
-            height: Some(LengthSpec::Px(64.0)),
-            ..Default::default()
-        };
-        layout.paint.background_image = Some(BackgroundImage::url_with_fit(
-            url,
-            BackgroundImageFit::Stretch,
-        ));
-        background
-            .context_mut()
-            .create_component(DocumentId::new(1).unwrap(), Stack::from_layout(layout))
-            .unwrap();
-        let mut overlay = RuntimeDocument::new(DocumentId::new(2).unwrap());
-        overlay
-            .context_mut()
-            .create_component(
-                DocumentId::new(2).unwrap(),
-                Stack::from_layout(LayoutStyle {
-                    width: Some(LengthSpec::Px(16.0)),
-                    height: Some(LengthSpec::Px(16.0)),
-                    background: Some([1.0, 0.0, 0.0, if no_clear { 0.5 } else { 1.0 }]),
-                    ..Default::default()
-                }),
-            )
-            .unwrap();
-        let mut shaper = nana_ui::NanaTextShaper::default();
-        for document in [&mut background, &mut overlay] {
-            document
-                .flush(LayoutViewport::new(64.0, 64.0), &mut shaper)
-                .unwrap();
-        }
-        let mut gpu = OffscreenSnapshots::new().unwrap();
-        let pixels = gpu
-            .paint_layers(
-                &[(background.scene(), !no_clear), (overlay.scene(), false)],
-                Size::new(64, 64),
-                [0.0; 4],
-                None,
-                None,
-            )
-            .unwrap();
-        let at = |x: usize, y: usize| &pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
-        if no_clear {
-            assert!(
-                (127..=129).contains(&at(40, 40)[3]),
-                "background alpha accumulates: {:?}",
-                at(40, 40)
-            );
-            assert!(
-                (190..=193).contains(&at(8, 8)[3]),
-                "overlay alpha accumulates: {:?}",
-                at(8, 8)
-            );
-        } else {
-            assert!(
-                at(40, 40)[2] > 200 && at(40, 40)[0] < 40,
-                "first returned snapshot must include the image: {:?}",
-                at(40, 40)
-            );
-            assert!(
-                at(8, 8)[0] > 200 && at(8, 8)[2] < 40,
-                "overlay must stay above the loaded background"
-            );
-        }
-        server.join().unwrap();
-    }
-}
-
 pub fn readback(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -460,5 +351,119 @@ fn srgb_to_linear(u: f32) -> f32 {
         u / 12.92
     } else {
         ((u + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nana_ui::runtime::{DocumentId, LayoutViewport, RuntimeDocument, Stack};
+    use nana_ui_core::{BackgroundImage, BackgroundImageFit, LayoutStyle, LengthSpec};
+
+    #[test]
+    fn first_layered_snapshot_waits_for_http_images_and_repaints_overlays() {
+        check_layered_snapshot(false);
+    }
+
+    #[test]
+    fn no_clear_translucent_layers_do_not_accumulate_across_retries() {
+        check_layered_snapshot(true);
+    }
+
+    fn check_layered_snapshot(no_clear: bool) {
+        use std::io::{Read, Write};
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(
+            8,
+            8,
+            image::Rgba([0, 0, 255, if no_clear { 128 } else { 255 }]),
+        )
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let url = format!("http://{}/blue.png", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            // The stub answers every request identically; the byte count and a
+            // client that closes early are both uninteresting here.
+            let _ = stream.read(&mut request);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let bytes = png.into_inner();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let mut background = RuntimeDocument::new(DocumentId::new(1).unwrap());
+        let mut layout = LayoutStyle {
+            width: Some(LengthSpec::Px(64.0)),
+            height: Some(LengthSpec::Px(64.0)),
+            ..Default::default()
+        };
+        layout.paint.background_image = Some(BackgroundImage::url_with_fit(
+            url,
+            BackgroundImageFit::Stretch,
+        ));
+        background
+            .context_mut()
+            .create_component(DocumentId::new(1).unwrap(), Stack::from_layout(layout))
+            .unwrap();
+        let mut overlay = RuntimeDocument::new(DocumentId::new(2).unwrap());
+        overlay
+            .context_mut()
+            .create_component(
+                DocumentId::new(2).unwrap(),
+                Stack::from_layout(LayoutStyle {
+                    width: Some(LengthSpec::Px(16.0)),
+                    height: Some(LengthSpec::Px(16.0)),
+                    background: Some([1.0, 0.0, 0.0, if no_clear { 0.5 } else { 1.0 }]),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let mut shaper = nana_ui::NanaTextShaper::default();
+        for document in [&mut background, &mut overlay] {
+            document
+                .flush(LayoutViewport::new(64.0, 64.0), &mut shaper)
+                .unwrap();
+        }
+        let mut gpu = OffscreenSnapshots::new().unwrap();
+        let pixels = gpu
+            .paint_layers(
+                &[(background.scene(), !no_clear), (overlay.scene(), false)],
+                Size::new(64, 64),
+                [0.0; 4],
+                None,
+                None,
+            )
+            .unwrap();
+        let at = |x: usize, y: usize| &pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
+        if no_clear {
+            assert!(
+                (127..=129).contains(&at(40, 40)[3]),
+                "background alpha accumulates: {:?}",
+                at(40, 40)
+            );
+            assert!(
+                (190..=193).contains(&at(8, 8)[3]),
+                "overlay alpha accumulates: {:?}",
+                at(8, 8)
+            );
+        } else {
+            assert!(
+                at(40, 40)[2] > 200 && at(40, 40)[0] < 40,
+                "first returned snapshot must include the image: {:?}",
+                at(40, 40)
+            );
+            assert!(
+                at(8, 8)[0] > 200 && at(8, 8)[2] < 40,
+                "overlay must stay above the loaded background"
+            );
+        }
+        server.join().unwrap();
     }
 }

@@ -75,7 +75,7 @@ pub use graph::{
     GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport, cubic_point,
     graph_node_fitted_height, port_tangent,
 };
-pub use icon::{Icon, IconGeometry, IconPathCommand, IconShape};
+pub use icon::{Icon, IconData, IconGeometry, IconPathCommand, IconShape};
 pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,

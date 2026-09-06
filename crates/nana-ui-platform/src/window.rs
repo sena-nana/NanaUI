@@ -158,6 +158,23 @@ pub enum WindowEvent {
     FileHoverCancelled {
         id: WindowId,
     },
+    /// The operating system switched between light and dark appearance.
+    /// Only delivered on platforms that report it; see [`SystemAppearance`].
+    AppearanceChanged {
+        id: WindowId,
+        appearance: SystemAppearance,
+    },
+}
+
+/// Operating-system light/dark preference.
+///
+/// Platforms that do not report a preference yield `None` from
+/// `system_appearance` queries and never emit
+/// [`WindowEvent::AppearanceChanged`]; consumers keep their stored choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SystemAppearance {
+    Light,
+    Dark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

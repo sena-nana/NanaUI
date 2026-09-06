@@ -38,6 +38,11 @@ accesskit-tree = ["dep:accesskit"]
 graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas"]
 image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer"]
 rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text"]
+# Full generated Tabler catalog as typed `Icon` constants. Off by default:
+# the built-in catalog covers shell chrome only, and products that need
+# product glyphs (user, keyboard, message, play …) should not have to
+# hand-author `IconData`. Unreferenced constants are dropped by the linker.
+icons-tabler = ["dep:nana-icons-tabler"]
 gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "nana-ui-platform/fetch", "dep:wgpu"]
 hosted = [
     "gpu",
@@ -63,6 +68,7 @@ image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts"] }
 nana-ui-core.workspace = true
+nana-icons-tabler = { workspace = true, optional = true }
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
 nana-ui-platform = { workspace = true, features = ["clipboard"] }

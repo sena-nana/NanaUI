@@ -31,11 +31,11 @@ mod form_surfaces;
 mod framework;
 mod glyph_cache;
 mod gpu_slots;
-mod hover_card;
 #[cfg(feature = "graph-canvas")]
 mod graph_canvas;
 #[cfg(feature = "graph-canvas")]
 mod graph_minimap;
+mod hover_card;
 #[cfg(feature = "image-viewer")]
 mod image_viewer;
 mod key_layers;
@@ -65,9 +65,12 @@ mod selection;
 mod settings;
 mod shell;
 mod sidebar;
-mod split_pane;
 mod snippet;
-pub use snippet::{expand_text_snippet, expand_text_snippet_with_variables, SnippetExpansion, SnippetPlaceholder, SnippetTransform};
+mod split_pane;
+pub use snippet::{
+    SnippetExpansion, SnippetPlaceholder, SnippetTransform, expand_text_snippet,
+    expand_text_snippet_with_variables,
+};
 mod store;
 mod tabs;
 mod terminal;
@@ -153,7 +156,6 @@ pub use framework::{
     VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
-pub use hover_card::HoverCard;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, HOST_TEXTURE_RENDERER, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
@@ -166,6 +168,7 @@ pub use graph_canvas::{
 };
 #[cfg(feature = "graph-canvas")]
 pub use graph_minimap::{GraphMinimap, GraphMinimapDrag, GraphMinimapEvent};
+pub use hover_card::HoverCard;
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
@@ -186,14 +189,15 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection,
+    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FlexWrap,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
     GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
     GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
     GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
     GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
-    JustifySpec, KeyContext, LayoutStyle, LengthSpec, LineBreakSpec, PopoverAlignment,
+    IconData, IconPathCommand, IconShape, JustifySpec, KeyContext, LayoutStyle, LengthSpec,
+    LineBreakSpec, LineHeightSpec, OverflowSpec, PointerEventsSpec, PopoverAlignment,
     PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone, TITLE_BAR_HEIGHT, TabDragGroup,
     TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor,
     TableNavigation, TextAlignSpec, TextShadowSpec, ThemeMode, TreeNavigation, TreeNode,
@@ -202,8 +206,8 @@ pub use nana_ui_core::{
     VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
     VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, WINDOW_CONTROL_GAP,
-    WINDOW_CONTROL_WIDTH, WordBreakSpec, WorkCounters, custom_window_controls_width,
-    graph_node_fitted_height, port_tangent, tree_navigation_event,
+    WINDOW_CONTROL_WIDTH, WhiteSpaceSpec, WordBreakSpec, WorkCounters,
+    custom_window_controls_width, graph_node_fitted_height, port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,

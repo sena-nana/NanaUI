@@ -1946,6 +1946,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-icons-tabler"
+version = "0.1.0"
+dependencies = [
+ "nana-ui-core",
+]
+
+[[package]]
 name = "nana-js-engine"
 version = "0.1.0"
 dependencies = [
@@ -1988,6 +1995,7 @@ dependencies = [
  "cryoglyph",
  "image",
  "nana-app-icon",
+ "nana-icons-tabler",
  "nana-svg-raster",
  "nana-ui-core",
  "nana-ui-platform",
