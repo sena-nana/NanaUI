@@ -113,6 +113,9 @@ pub(super) struct TextPipeline {
     /// the host's observed GPU work so a cache regression shows up as per-frame
     /// resource creation instead of only as a slower frame.
     frame_gpu_allocations: usize,
+    /// Physical viewport size used for the affine text projection uniform.
+    /// Stable 120Hz frames keep this write out of the queue entirely.
+    affine_uniform_size: Option<[u32; 2]>,
 }
 
 struct AffineGlyphPipeline {
@@ -532,6 +535,7 @@ impl TextPipeline {
             frame_affines: 0,
             prev_frame_affines: 0,
             frame_gpu_allocations: 0,
+            affine_uniform_size: None,
         }
     }
 
@@ -555,10 +559,13 @@ impl TextPipeline {
                 height: physical_size[1].max(1),
             },
         );
-        let uniforms = AffineUniforms {
-            transform: orthographic(physical_size[0], physical_size[1]),
-        };
-        queue.write_buffer(&self.affine.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        if self.affine_uniform_size != Some(physical_size) {
+            let uniforms = AffineUniforms {
+                transform: orthographic(physical_size[0], physical_size[1]),
+            };
+            queue.write_buffer(&self.affine.uniforms, 0, bytemuck::bytes_of(&uniforms));
+            self.affine_uniform_size = Some(physical_size);
+        }
     }
 
     /// Shape-cache counters for tests: (hits, misses, evictions). None until
@@ -1440,6 +1447,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn affine_projection_uniform_is_cached_until_viewport_resizes() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+
+        pipeline.begin_frame(&queue, [128, 64]);
+        assert_eq!(pipeline.affine_uniform_size, Some([128, 64]));
+
+        // A stable repaint keeps the same projection version, so begin_frame
+        // can skip the redundant queue write used by the affine text path.
+        pipeline.begin_frame(&queue, [128, 64]);
+        assert_eq!(pipeline.affine_uniform_size, Some([128, 64]));
+
+        pipeline.begin_frame(&queue, [256, 64]);
+        assert_eq!(pipeline.affine_uniform_size, Some([256, 64]));
+    }
+
+    #[test]
     fn ellipsis_paint_keeps_exact_fit_and_truncates_only_narrow_boxes() {
         use nana_ui_runtime::{
             ComputedStyle, StableNodeId, TextContent, TextShapeConstraints, TextShaper,
@@ -2150,6 +2174,7 @@ pub(super) struct TextPipelineTarget {
     frame_affines: usize,
     prev_frame_affines: usize,
     frame_gpu_allocations: usize,
+    affine_uniform_size: Option<[u32; 2]>,
     affine_uniforms: wgpu::Buffer,
     affine_bind_group: wgpu::BindGroup,
 }
@@ -2184,6 +2209,7 @@ impl TextPipeline {
                 frame_affines: 0,
                 prev_frame_affines: 0,
                 frame_gpu_allocations: 0,
+                affine_uniform_size: None,
                 affine_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("nana.target.text.affine.bind"),
                     layout: &self.affine.pipeline.get_bind_group_layout(0),
@@ -2206,6 +2232,10 @@ impl TextPipeline {
         std::mem::swap(
             &mut self.frame_gpu_allocations,
             &mut target.frame_gpu_allocations,
+        );
+        std::mem::swap(
+            &mut self.affine_uniform_size,
+            &mut target.affine_uniform_size,
         );
         std::mem::swap(&mut self.affine.uniforms, &mut target.affine_uniforms);
         std::mem::swap(

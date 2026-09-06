@@ -6499,6 +6499,104 @@ fn local_color_update_uploads_changed_ranges_and_paints_latest_pixels() {
 }
 
 #[test]
+fn quad_color_batch_uploads_only_changed_instances() {
+    use crate::gpu_work::GpuWorkSink;
+    use nana_ui_scene::QuadSurfacePaint;
+
+    let (device, queue) = test_device();
+    let mut pipeline = super::quad::QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let clip = super::clip::FragmentClip::PASS;
+    let bounds =
+        |index: usize| super::clip::LogicalRect::from_xywh(index as f32 * 8.0, 0.0, 6.0, 6.0);
+    let push_batch = |pipeline: &mut super::quad::QuadPipeline, colors: &[[f32; 4]]| {
+        pipeline.begin_frame();
+        for (index, color) in colors.iter().enumerate() {
+            pipeline.push(
+                &device,
+                &queue,
+                bounds(index),
+                super::clip::LogicalRect::from_xywh(0.0, 0.0, 128.0, 64.0),
+                clip,
+                super::clip::IDENTITY_AFFINE,
+                [0.0, 0.0],
+                Some(*color),
+                None,
+                0.0,
+                [0.0; 4],
+                None,
+                1.0,
+                &QuadSurfacePaint::default(),
+            );
+        }
+        let sink = GpuWorkSink::new();
+        pipeline.upload(&device, &queue, [128, 64], 1.0, Some(&sink));
+        sink.snapshot()
+    };
+
+    let colors = vec![[0.1, 0.2, 0.3, 1.0]; 32];
+    let initial = push_batch(&mut pipeline, &colors);
+    let unchanged = push_batch(&mut pipeline, &colors);
+    assert!(
+        unchanged.gpu_upload_bytes < initial.gpu_upload_bytes,
+        "a stable QuadColorBatch must only upload its fixed frame uniform"
+    );
+
+    let mut changed_colors = colors;
+    changed_colors[5] = [0.9, 0.1, 0.2, 1.0];
+    let changed = push_batch(&mut pipeline, &changed_colors);
+    assert!(
+        changed.gpu_upload_bytes > unchanged.gpu_upload_bytes,
+        "initial={}, unchanged={}, changed={}",
+        initial.gpu_upload_bytes,
+        unchanged.gpu_upload_bytes,
+        changed.gpu_upload_bytes
+    );
+    assert!(
+        changed.gpu_upload_bytes < initial.gpu_upload_bytes,
+        "changing one batch item should upload less than the cold batch: {} vs {}",
+        changed.gpu_upload_bytes,
+        initial.gpu_upload_bytes
+    );
+}
+
+#[test]
+fn icon_batch_reuses_atlas_and_vertex_uploads() {
+    use crate::gpu_work::GpuWorkSink;
+    use nana_ui_core::Icon;
+
+    let (device, queue) = test_device();
+    let mut pipeline = super::icon::IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let push_batch = |pipeline: &mut super::icon::IconPipeline| {
+        pipeline.begin_frame([128, 64]);
+        for index in 0..24 {
+            pipeline.prepare(
+                &device,
+                &queue,
+                super::clip::LogicalRect::from_xywh(index as f32 * 5.0, 4.0, 4.0, 4.0),
+                super::clip::IDENTITY_AFFINE,
+                [0.0, 0.0],
+                1.0,
+                Icon::Close,
+                [0.2, 0.4, 0.8, 1.0],
+                1.0,
+                super::clip::FragmentClip::PASS,
+            );
+        }
+        let sink = GpuWorkSink::new();
+        pipeline.upload(&device, &queue, Some(&sink));
+        sink.snapshot()
+    };
+
+    let first = push_batch(&mut pipeline);
+    let second = push_batch(&mut pipeline);
+    assert!(first.gpu_upload_bytes > 0);
+    assert_eq!(
+        second.gpu_upload_bytes, 0,
+        "a stable IconBatch must reuse its atlas and vertex buffer"
+    );
+}
+
+#[test]
 fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     #[derive(Debug, Default)]
