@@ -24,8 +24,8 @@ description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPain
   Frames without GPU nodes may keep 4x MSAA for Quad/Mesh; Text paints after
   resolve with Load. Do not resolve around custom nodes, and do not put
   HostTexture after MSAA resolve.
-- `RuntimeProgram::scene_gpu_renderers(None)` installs the demo `"gpu-view"`
-  painter. `Some(empty registry)` leaves `"gpu-view"` unpaintable.
+- `RuntimeProgram::scene_gpu_renderers(None)` and an empty registry leave
+  `"gpu-view"` unpaintable. Examples explicitly register their demo painter.
 - `<video data-nana-video>` samples `video:{id}` HostTexture. Do not also paint
   `poster` as `content_image` on a slotted surface.
 - Keep CPU readback and PNG encoding inside snapshot tooling. Never use a second Device/Queue or

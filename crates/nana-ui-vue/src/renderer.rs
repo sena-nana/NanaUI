@@ -1043,11 +1043,11 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         let host = host.clone();
         api.register("setFocus", move |args| {
             let el = arg_handle(args, 0)?;
-            let previous = {
+            let (previous, current) = {
                 let mut guard = lock_doc(&host.document)?;
                 let previous = guard.focused();
                 guard.set_focus(el);
-                previous
+                (previous, guard.focused())
             };
             {
                 let mut bridge = lock_bridge(&host.bridge)?;
@@ -1056,34 +1056,59 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                     bridge.on_runtime_focus_change(
                         &mut doc,
                         previous.map(|node| node.0),
-                        Some(el.0),
+                        current.map(|node| node.0),
                     );
                     bridge.sync_cascaded_layout_into_runtime(&mut doc);
                     doc.flush_host_frame();
                 }
             }
-            Ok(HostValue::Null)
+            Ok(HostValue::Object(std::collections::BTreeMap::from([
+                (
+                    "previous".into(),
+                    previous.map_or(HostValue::Null, |node| HostValue::Number(node.0 as f64)),
+                ),
+                (
+                    "current".into(),
+                    current.map_or(HostValue::Null, |node| HostValue::Number(node.0 as f64)),
+                ),
+            ])))
         });
     }
     {
         let host = host.clone();
-        api.register("clearFocus", move |_args| {
-            let previous = {
+        api.register("clearFocus", move |args| {
+            let (previous, current) = {
                 let mut guard = lock_doc(&host.document)?;
                 let previous = guard.focused();
-                guard.clear_focus();
-                previous
+                // Element.blur() must not clear a different element's focus.
+                if args.is_empty() || previous == Some(arg_handle(args, 0)?) {
+                    guard.clear_focus();
+                }
+                (previous, guard.focused())
             };
             {
                 let mut bridge = lock_bridge(&host.bridge)?;
                 if bridge.has_interactive_css() || bridge.has_focus_within_css() {
                     let mut doc = lock_doc(&host.document)?;
-                    bridge.on_runtime_focus_change(&mut doc, previous.map(|node| node.0), None);
+                    bridge.on_runtime_focus_change(
+                        &mut doc,
+                        previous.map(|node| node.0),
+                        current.map(|node| node.0),
+                    );
                     bridge.sync_cascaded_layout_into_runtime(&mut doc);
                     doc.flush_host_frame();
                 }
             }
-            Ok(HostValue::Null)
+            Ok(HostValue::Object(std::collections::BTreeMap::from([
+                (
+                    "previous".into(),
+                    previous.map_or(HostValue::Null, |node| HostValue::Number(node.0 as f64)),
+                ),
+                (
+                    "current".into(),
+                    current.map_or(HostValue::Null, |node| HostValue::Number(node.0 as f64)),
+                ),
+            ])))
         });
     }
 }
@@ -4305,6 +4330,56 @@ mod tests {
 #[cfg(test)]
 mod feature_tests {
     use super::*;
+    #[test]
+    fn focus_ops_report_actual_transitions_and_blur_only_the_owner() {
+        let host = crate::VueHost::new();
+        let api = host.host_api_registry();
+        let body = api.call("mountRoot", &[]).unwrap();
+        let mut inputs = Vec::new();
+        for _ in 0..2 {
+            let input = api
+                .call("createElement", &[HostValue::string("input")])
+                .unwrap();
+            api.call("insert", &[input.clone(), body.clone(), HostValue::Null])
+                .unwrap();
+            inputs.push(input);
+        }
+        let change =
+            |operation: &str, args: &[HostValue], previous: HostValue, current: HostValue| {
+                let HostValue::Object(value) = api.call(operation, args).unwrap() else {
+                    panic!("focus transition");
+                };
+                assert_eq!(value.get("previous"), Some(&previous));
+                assert_eq!(value.get("current"), Some(&current));
+            };
+        change("setFocus", &inputs[..1], HostValue::Null, inputs[0].clone());
+        change(
+            "setFocus",
+            &inputs[1..],
+            inputs[0].clone(),
+            inputs[1].clone(),
+        );
+        change(
+            "clearFocus",
+            &inputs[..1],
+            inputs[1].clone(),
+            inputs[1].clone(),
+        );
+        change(
+            "setFocus",
+            &[HostValue::Number(999999.0)],
+            inputs[1].clone(),
+            inputs[1].clone(),
+        );
+        change(
+            "clearFocus",
+            &inputs[1..],
+            inputs[1].clone(),
+            HostValue::Null,
+        );
+        assert!(host.document().lock().unwrap().focused().is_none());
+    }
+
     #[test]
     fn optional_tags_report_missing_features_before_allocating_nodes() {
         for descriptor in nana_ui_runtime::component_descriptors::BUILTIN_COMPONENTS

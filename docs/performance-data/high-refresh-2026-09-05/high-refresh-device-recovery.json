@@ -1,0 +1,24 @@
+{
+  "adapter": "NVIDIA GeForce RTX 5060",
+  "backend": "Vulkan",
+  "destroyed_generation": 1,
+  "interval_gate_passed": null,
+  "interval_ms": {
+    "max": null,
+    "p50": null,
+    "p95": null,
+    "p99": null
+  },
+  "interval_samples": 0,
+  "kind": "hosted-gpu-demo-present-probe",
+  "note": "Surface present callback intervals; no display scanout feedback, no pixel readback. Device probe explicitly destroys only this application's Device.",
+  "over_8_33ms_ratio": null,
+  "physical_size": [
+    1650,
+    1080
+  ],
+  "recovered_generation": 2,
+  "requested_hz": 120,
+  "sample_seconds": null,
+  "surface_alpha": "PreMultiplied"
+}

@@ -263,6 +263,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::StartAnimation { .. } => "StartAnimation",
         UiMutation::StopAnimation { .. } => "StopAnimation",
         UiMutation::RequestFocus { .. } => "RequestFocus",
+        UiMutation::RestoreFocusWithin { .. } => "RestoreFocusWithin",
         UiMutation::SetIme { .. } => "SetIme",
         UiMutation::SetTextInput { .. } => "SetTextInput",
         UiMutation::SetTextSelection { .. } => "SetTextSelection",

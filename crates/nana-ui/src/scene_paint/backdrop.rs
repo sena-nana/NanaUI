@@ -781,3 +781,46 @@ impl BackdropPipeline {
         self.pending.get(index as usize)
     }
 }
+
+pub(super) struct BackdropPipelineTarget {
+    ping: Option<PingPong>,
+    pong: Option<PingPong>,
+    width: u32,
+    height: u32,
+    uniform_slab: wgpu::Buffer,
+    uniform_slab_passes: u64,
+    pending: Vec<BackdropRequest>,
+}
+
+impl BackdropPipeline {
+    pub(super) fn swap_target(
+        &mut self,
+        target: &mut Option<BackdropPipelineTarget>,
+        device: &wgpu::Device,
+    ) {
+        let target = target.get_or_insert_with(|| BackdropPipelineTarget {
+            ping: None,
+            pong: None,
+            width: 0,
+            height: 0,
+            uniform_slab: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.backdrop.uniforms"),
+                size: INITIAL_FROST_SLOTS * PASSES_PER_FROST * UNIFORM_STRIDE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            uniform_slab_passes: INITIAL_FROST_SLOTS * PASSES_PER_FROST,
+            pending: Vec::new(),
+        });
+        std::mem::swap(&mut self.ping, &mut target.ping);
+        std::mem::swap(&mut self.pong, &mut target.pong);
+        std::mem::swap(&mut self.width, &mut target.width);
+        std::mem::swap(&mut self.height, &mut target.height);
+        std::mem::swap(&mut self.uniform_slab, &mut target.uniform_slab);
+        std::mem::swap(
+            &mut self.uniform_slab_passes,
+            &mut target.uniform_slab_passes,
+        );
+        std::mem::swap(&mut self.pending, &mut target.pending);
+    }
+}

@@ -18,7 +18,7 @@ const POPOVER_GAP: f32 = 6.0;
 const ACTION_MENU_WIDTH: f32 = 200.0;
 const ACTION_MENU_PADDING: f32 = 4.0;
 const ACTION_MENU_GAP: f32 = 4.0;
-const MENU_MIN_WIDTH: f32 = 120.0;
+pub(crate) const MENU_MIN_WIDTH: f32 = 120.0;
 pub(crate) const MENU_ITEM_GAP: f32 = 1.0;
 pub(crate) const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 /// The trigger is a real button, so it matches the compact control height
@@ -266,6 +266,7 @@ pub(crate) fn project_menu_surface(
             open,
             trigger: trigger.clone(),
             trigger_icon,
+            trigger_image: None,
             gap,
             overlay: has_trigger.then_some(TriggeredMenuOverlay {
                 placement,
@@ -413,7 +414,7 @@ fn triggered_menu_style(
 /// (`Button`), so a standalone menu button and an in-place action-menu trigger
 /// read as one control; hover and press colours resolve through the usual
 /// interaction overlay.
-fn trigger_button_style() -> NodeStyle {
+pub(crate) fn trigger_button_style() -> NodeStyle {
     let mut style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             // A button hugs its label. Without this the surrounding stack
@@ -439,7 +440,7 @@ fn trigger_button_style() -> NodeStyle {
 
 /// Icon triggers share the text trigger's chrome but take a square min box, so
 /// the glyph centers geometrically instead of riding text metrics.
-fn trigger_icon_button_style() -> NodeStyle {
+pub(crate) fn trigger_icon_button_style() -> NodeStyle {
     let mut style = trigger_button_style();
     let layout = Arc::make_mut(&mut style.layout);
     layout.min_width = Some(LengthSpec::Px(TRIGGER_HEIGHT));
@@ -486,6 +487,7 @@ pub(crate) fn project_anchored_menu(
             open,
             trigger: None,
             trigger_icon: None,
+            trigger_image: None,
             gap: 0.0,
             overlay: None,
             query: None,
@@ -521,16 +523,27 @@ pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
     trigger_icon: Option<Icon>,
+    trigger_image: Option<&Arc<str>>,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
     surface: LayoutBox,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
-    let has_trigger = trigger.is_some() || trigger_icon.is_some();
-    let trigger_h = if has_trigger { TRIGGER_HEIGHT } else { 0.0 };
-    // In icon mode the trigger text is only the accessible name, so no text
-    // region is emitted and the glyph owns the chrome.
-    let label = if trigger_icon.is_none() {
+    let has_trigger = trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some();
+    // An image trigger's chrome is the avatar element itself, so the surface
+    // region rides the real element box instead of the compact control height.
+    let trigger_h = if has_trigger {
+        if trigger_image.is_some() {
+            bounds.height
+        } else {
+            TRIGGER_HEIGHT
+        }
+    } else {
+        0.0
+    };
+    // In icon and image modes the trigger text is only the accessible name, so
+    // no text region is emitted and the chrome owns the visuals.
+    let label = if trigger_icon.is_none() && trigger_image.is_none() {
         trigger.filter(|value| !value.is_empty())
     } else {
         None
@@ -567,6 +580,7 @@ pub(crate) fn menu_surface_geometry(
                 },
             )
         }),
+        trigger_image: trigger_image.cloned(),
         // Hover and press already resolved into the computed style, so the
         // trigger reads its chrome from there rather than the raw palette.
         trigger_surface: has_trigger.then_some(crate::ComponentTriggerSurface {
@@ -681,6 +695,7 @@ mod tests {
                 open: false,
                 trigger: Some(Arc::from("Actions")),
                 trigger_icon: None,
+                trigger_image: None,
                 gap: 0.0,
                 overlay: None,
                 query: None,
@@ -839,6 +854,7 @@ mod tests {
                 open: false,
                 trigger: None,
                 trigger_icon: Some(Icon::Add),
+                trigger_image: None,
                 gap: 0.0,
                 overlay: None,
                 query: None,

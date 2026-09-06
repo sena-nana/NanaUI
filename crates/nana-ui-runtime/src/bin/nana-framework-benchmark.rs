@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "framework_benchmark/scroll_bounds.rs"]
+mod scroll_bounds;
+
 use nana_ui_core::{
     LengthSpec, TableColumn, VirtualListLayout, VirtualTableLayout, VirtualTreeLayout,
     VirtualTreeRow,
@@ -417,6 +420,14 @@ struct Distribution {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--profile-scroll-bounds") {
+        scroll_bounds::run();
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--profile-layout") {
+        profile_layout();
+        return;
+    }
     let args = parse_args();
     let list = args.list;
     let table = args.table;
@@ -497,17 +508,7 @@ fn main() {
         std::iter::repeat_n(table.row_extent, 10_000),
         (0..100).map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
     );
-    let layout_document = DocumentId::new(2).unwrap();
-    let mut layout_context = AppContext::new();
-    let layout_root = layout_context
-        .create_component(layout_document, List::new())
-        .unwrap();
-    for index in 0..4_999 {
-        let child = layout_context
-            .create_component(layout_document, Text::new(format!("row {index}")))
-            .unwrap();
-        layout_context.append_child(layout_root, child).unwrap();
-    }
+    let (mut layout_context, layout_document) = layout_fixture();
     let _ = layout_context.take_system_work();
     let mut last_list_visible = 0;
     let mut last_list_overscan = 0;
@@ -909,6 +910,51 @@ fn main() {
         },
         args.output,
     );
+}
+
+fn layout_fixture() -> (AppContext, DocumentId) {
+    let document = DocumentId::new(2).unwrap();
+    let mut context = AppContext::new();
+    let root = context.create_component(document, List::new()).unwrap();
+    for index in 0..4_999 {
+        let child = context
+            .create_component(document, Text::new(format!("row {index}")))
+            .unwrap();
+        context.append_child(root, child).unwrap();
+    }
+    (context, document)
+}
+
+fn profile_layout() {
+    let (mut context, document) = layout_fixture();
+    context.take_system_work();
+    let mut samples: [Vec<Duration>; 4] = std::array::from_fn(|_| Vec::new());
+    for iteration in 0..(WARMUP_ITERATIONS + ITERATIONS) {
+        let width = if iteration.is_multiple_of(2) {
+            1_280.0
+        } else {
+            1_024.0
+        };
+        let timings = context
+            .benchmark_layout_document(document, LayoutViewport::new(width, 800.0))
+            .unwrap();
+        context.take_system_work();
+        if iteration >= WARMUP_ITERATIONS {
+            for (samples, elapsed) in samples.iter_mut().zip(timings) {
+                samples.push(elapsed);
+            }
+        }
+    }
+    let report = ["tooltips", "layout_engine", "writeback", "scroll_metrics"]
+        .into_iter()
+        .zip(samples.iter().map(|samples| summarize(samples)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    if let Some(path) = std::env::args().skip_while(|arg| arg != "--output").nth(1) {
+        std::fs::write(path, json).unwrap();
+    } else {
+        println!("{json}");
+    }
 }
 
 fn parse_args() -> BenchArgs {
@@ -1380,7 +1426,7 @@ fn bench_virtual_table_scale(
 /// Remainder rows are leaves. This is a real disclosure walk, not a list of zeros.
 fn expanded_forest_descendant_count(index: usize, len: usize) -> usize {
     let remaining = len.saturating_sub(index);
-    if index % 3 == 0 && remaining >= 3 {
+    if index.is_multiple_of(3) && remaining >= 3 {
         2
     } else {
         0

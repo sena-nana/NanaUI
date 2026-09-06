@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on build directory
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 11s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui-096323ab10acf04d.exe)
+
+running 24 tests
+test accessibility::tests::action_queue_is_bounded_and_preserves_accepted_fifo_order ... ok
+test accessibility::tests::landmark_roles_project_to_accesskit_landmarks ... ok
+test accessibility::tests::scale_change_reprojects_logical_bounds_in_physical_pixels ... ok
+test accessibility::tests::activation_always_returns_the_latest_complete_tree ... ok
+test accessibility::tests::actions_are_only_advertised_for_enabled_interactive_nodes ... ok
+test accessibility::tests::range_set_value_accepts_only_finite_numeric_payloads ... ok
+test accessibility::tests::empty_snapshot_uses_platform_forest_until_a_new_root_arrives ... ok
+test accessibility::tests::set_value_action_requires_a_text_payload ... ok
+test accessibility::tests::full_projection_uses_stable_ids_and_runtime_focus ... ok
+test accessibility::tests::stale_delta_cannot_roll_back_the_platform_tree ... ok
+test accessibility::tests::explicitly_enabled_empty_projector_accepts_the_first_async_root ... ok
+test accessibility::tests::new_child_delta_reattaches_through_the_cached_parent ... ok
+test accessibility::tests::focus_delta_moves_accesskit_focus_from_generic_root_to_text_input ... ok
+test accessibility::tests::synchronize_emits_only_changed_nodes ... ok
+test accessibility::tests::multiple_runtime_roots_use_a_collision_free_platform_forest_root ... ok
+test accessibility::tests::native_window_root_survives_focus_and_document_replacement ... ok
+test accessibility::tests::semantic_focus_updates_keep_the_index_in_sync_without_tree_reconciliation ... ok
+test accessibility::tests::synthetic_text_run_rekeys_if_a_runtime_id_collides ... ok
+test accessibility::tests::text_run_lifecycle_tracks_input_role_and_removal ... ok
+test accessibility::tests::tombstone_parent_can_reparent_a_child_onto_a_surviving_uncle ... ok
+test accessibility::tests::tombstone_reprojects_parent_without_retaining_ghost_child ... ok
+test accessibility::tests::tombstone_parent_drops_cached_descendants_from_incremental_update ... ok
+test accessibility::tests::unicode_text_run_selection_round_trips_without_byte_index_loss ... ok
+test accessibility::tests::native_activation_materializes_current_state_only_when_requested ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 404 filtered out; finished in 0.05s
+

@@ -1,0 +1,12 @@
+[
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-runtime-benchmark-std-projection.exe",
+    "Algorithm": "SHA256",
+    "Hash": "3BCFCA1FF7E5FEB530AF8A513565B9C2A115B921D9E253FCD8948CB099BCC495"
+  },
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-runtime-benchmark.exe",
+    "Algorithm": "SHA256",
+    "Hash": "9D2512F502380DFAF1535D0EACD8D2C0027C47C077B49BB04DFCD80A6D6F4DF7"
+  }
+]

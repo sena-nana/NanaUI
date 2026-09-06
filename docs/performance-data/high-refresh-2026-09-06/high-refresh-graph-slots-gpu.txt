@@ -1,0 +1,16 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.17s
+     Running unittests src\lib.rs (target\debug\deps\nana_ui-abccba63edee1cfd.exe)
+
+running 6 tests
+test scene_paint::tests::graph_canvas_stroke_antialiases_silhouette_on_msaa_dest ... ok
+test scene_paint::tests::graph_canvas_stroke_gpu_upload_scales_with_segment_count ... ok
+test scene_paint::tests::graph_canvas_stroke_paints_capsule_coverage_on_gpu ... ok
+test scene_paint::tests::graph_canvas_stroke_paints_round_end_caps_on_gpu ... ok
+test scene_paint::tests::graph_canvas_stroke_respects_ancestor_overflow_clip_on_gpu ... ok
+test scene_paint::tests::graph_canvas_stroke_skips_identical_instance_upload ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 351 filtered out; finished in 6.57s
+

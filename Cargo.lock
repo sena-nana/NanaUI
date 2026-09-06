@@ -2000,6 +2000,7 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "wgpu",
+ "windows",
  "winit",
 ]
 
@@ -2043,7 +2044,9 @@ dependencies = [
 name = "nana-ui-runtime"
 version = "0.1.0"
 dependencies = [
+ "fancy-regex",
  "futures-core",
+ "hashbrown 0.16.1",
  "nana-ui-core",
  "pulldown-cmark",
  "qrcode",

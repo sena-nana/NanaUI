@@ -1,0 +1,26 @@
+[
+  {
+    "Trial": 0,
+    "Variant": "std",
+    "Time": "2026-09-06T02:09:06.6734645+08:00",
+    "Processes": []
+  },
+  {
+    "Trial": 1,
+    "Variant": "hashbrown",
+    "Time": "2026-09-06T02:09:14.5769072+08:00",
+    "Processes": []
+  },
+  {
+    "Trial": 2,
+    "Variant": "hashbrown",
+    "Time": "2026-09-06T02:09:22.6698574+08:00",
+    "Processes": []
+  },
+  {
+    "Trial": 3,
+    "Variant": "std",
+    "Time": "2026-09-06T02:09:30.3972622+08:00",
+    "Processes": []
+  }
+]

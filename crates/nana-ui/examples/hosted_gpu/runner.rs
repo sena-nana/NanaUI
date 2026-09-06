@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use nana_ui::runtime::{
@@ -21,6 +21,28 @@ const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
 static STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
+struct PreviewProducer(Arc<Mutex<SharedScene>>);
+
+impl std::fmt::Debug for PreviewProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreviewProducer")
+    }
+}
+
+impl nana_ui::SceneResourceProducer for PreviewProducer {
+    fn encode(
+        &self,
+        _: &nana_ui::runtime::CustomRenderNode,
+        context: nana_ui::SceneResourceEncodeContext<'_>,
+    ) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|error| error.to_string())?
+            .render(context.encoder);
+        Ok(())
+    }
+}
+
 pub fn run(started_at: Instant) -> Result<(), HostedRunError> {
     let _ = STARTED_AT.set(started_at);
     let mut settings = RuntimeWindowSettings::new("NanaUI Hosted GPU Demo")
@@ -33,12 +55,12 @@ pub fn run(started_at: Instant) -> Result<(), HostedRunError> {
 
 struct DemoProgram {
     panel: DemoPanel,
-    scene: SharedScene,
+    scene: Arc<Mutex<SharedScene>>,
     document: RuntimeDocument,
-    preview: Entity<GpuTextureView>,
     version: Entity<Text>,
     theme_button: Entity<Button>,
     textures: HostTextureRegistry,
+    producers: nana_ui::SceneResourceProducerRegistry,
     startup: StartupProbe,
 }
 
@@ -51,14 +73,14 @@ impl DemoProgram {
     ) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("hosted gpu document");
         let mut document = RuntimeDocument::new(document_id);
-        let (preview, version, theme_button) = document.context_mut().build(document_id, |ui| {
+        let (version, theme_button) = document.context_mut().build(document_id, |ui| {
             ui.with("root", List::new().label("Hosted GPU"), |ui| {
                 ui.child("title", Text::new("NANA 实时预览"));
                 let theme_button = ui.child(
                     "theme",
                     Button::new(panel.theme_label()).kind(ButtonKind::Text),
                 );
-                let preview = ui.child("preview", GpuTextureView::new(PREVIEW_SLOT));
+                ui.child("preview", GpuTextureView::new(PREVIEW_SLOT));
                 let version = ui.child("version", Text::new(panel.version_label()));
                 let refresh =
                     ui.child("refresh", Button::new("刷新预览").kind(ButtonKind::Primary));
@@ -68,7 +90,7 @@ impl DemoProgram {
                 ui.on(theme_button, move |_button, _event: &Activate, cx| {
                     cx.dispatch_program(Message::ToggleTheme);
                 });
-                (preview, version, theme_button)
+                (version, theme_button)
             })
         })?;
 
@@ -82,14 +104,17 @@ impl DemoProgram {
             HostTextureAlphaMode::Opaque,
         );
         let _ = context;
+        let scene = Arc::new(Mutex::new(scene));
+        let mut producers = nana_ui::SceneResourceProducerRegistry::new();
+        producers.insert(PREVIEW_SLOT, Arc::new(PreviewProducer(Arc::clone(&scene))));
         Ok(Self {
             panel,
             scene,
             document,
-            preview,
             version,
             theme_button,
             textures,
+            producers,
             startup,
         })
     }
@@ -97,7 +122,7 @@ impl DemoProgram {
     fn apply(&mut self, message: Message, context: &RuntimeProgramContext<Message>) {
         self.panel.update(message);
         let colors = self.panel.colors();
-        self.scene.update(
+        self.scene.lock().expect("preview scene").update(
             context.gpu().queue(),
             colors.background,
             colors.accent_strong,
@@ -115,21 +140,15 @@ impl DemoProgram {
             .update_component(self.theme_button, |button, _| {
                 button.label = self.panel.theme_label().to_owned();
             });
-        let generation = self.scene.texture().generation();
-        let _ = self
-            .document
-            .context_mut()
-            .update_component(self.preview, |view, _| {
-                view.replace_view(generation);
-                view.invalidate_content();
-            });
+        let _ = self.textures.slot(PREVIEW_SLOT).invalidate();
     }
 
     fn register_texture(&self) {
-        let (width, height) = self.scene.size();
+        let scene = self.scene.lock().expect("preview scene");
+        let (width, height) = scene.size();
         self.textures.register(
             PREVIEW_SLOT,
-            self.scene.texture(),
+            scene.texture(),
             width,
             height,
             HostTextureAlphaMode::Opaque,
@@ -188,12 +207,23 @@ impl RuntimeProgram for DemoProgram {
         RuntimeProgramUpdate::redraw_all()
     }
 
+    fn frame_demand(&self, _id: WindowId) -> nana_ui::FrameDemand {
+        self.startup.demand()
+    }
+
     fn theme_mode(&self) -> ThemeMode {
         self.panel.theme_mode()
     }
 
     fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {
         Some(self.textures.clone())
+    }
+
+    fn scene_resource_producers(
+        &self,
+        _id: WindowId,
+    ) -> Option<nana_ui::SceneResourceProducerRegistry> {
+        Some(self.producers.clone())
     }
 
     fn window_event(
@@ -203,20 +233,13 @@ impl RuntimeProgram for DemoProgram {
     ) -> RuntimeProgramUpdate {
         match event {
             WindowEvent::Ready { geometry, .. } | WindowEvent::Resized { geometry, .. } => {
-                self.scene.resize(
+                self.scene.lock().expect("preview scene").resize(
                     context.gpu().device(),
                     SURFACE_FORMAT,
                     geometry.physical_size.0,
                     geometry.physical_size.1,
                 );
                 self.register_texture();
-                let generation = self.scene.texture().generation();
-                let _ = self
-                    .document
-                    .context_mut()
-                    .update_component(self.preview, |view, _| {
-                        view.replace_view(generation);
-                    });
                 RuntimeProgramUpdate::redraw_all()
             }
             WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
@@ -224,27 +247,9 @@ impl RuntimeProgram for DemoProgram {
         }
     }
 
-    fn prepare_window_frame(
-        &mut self,
-        _id: WindowId,
-        context: &RuntimeProgramContext<Self::Message>,
-    ) {
-        let mut encoder =
-            context
-                .gpu()
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("nana-ui host scene encoder"),
-                });
-        self.scene.render(&mut encoder);
-        context.gpu().queue().submit([encoder.finish()]);
-        self.scene.texture().invalidate();
-        self.register_texture();
-    }
-
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         let colors = self.panel.colors();
-        self.scene = SharedScene::new(
+        *self.scene.lock().expect("preview scene") = SharedScene::new(
             context.gpu().device(),
             context.gpu().queue(),
             SURFACE_FORMAT,
@@ -269,7 +274,7 @@ impl RuntimeProgram for DemoProgram {
         _id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        if self.startup.record_first_frame(context.material()) {
+        if self.startup.record_frame(context) {
             RuntimeProgramUpdate::exit()
         } else {
             RuntimeProgramUpdate::default()

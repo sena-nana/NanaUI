@@ -122,3 +122,9 @@ impl HostTexturePipeline {
         self.pipeline.trim();
     }
 }
+
+impl HostTexturePipeline {
+    pub(super) fn swap_target(&mut self, target: &mut crate::gpu_texture::GpuTextureTarget) {
+        self.pipeline.swap_target(target);
+    }
+}

@@ -56,6 +56,12 @@ impl UiScene {
         let local_transform =
             node_scene_transform(node.source_style.layout.as_ref(), layout, parent_blocks_3d);
         let transform = parent_transform.then(local_transform);
+        self.projections
+            .insert(id, (self.attribute_epoch, transform, parent_clips.len()));
+        self.draw_attributes
+            .get_mut()
+            .expect("scene attributes")
+            .remove(&id);
         let local_opacity = local_opacity(&node);
         let opacity = if is_opacity_group(&self.nodes, &node) {
             parent_opacity
@@ -419,7 +425,8 @@ impl UiScene {
                     calendar::build(&context, &mut emit)
                 }
                 #[cfg(feature = "charts")]
-                Some(ComponentGeometry::TimeSeriesChart { .. }) => {
+                Some(ComponentGeometry::TimeSeriesChart { .. })
+                | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {
                     charts::build(&context, &mut emit)
                 }
                 #[cfg(feature = "controls")]
@@ -453,7 +460,8 @@ impl UiScene {
                 #[cfg(not(feature = "calendar"))]
                 Some(ComponentGeometry::CalendarHeatmap { .. }) => {}
                 #[cfg(not(feature = "charts"))]
-                Some(ComponentGeometry::TimeSeriesChart { .. }) => {}
+                Some(ComponentGeometry::TimeSeriesChart { .. })
+                | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {}
                 #[cfg(not(feature = "controls"))]
                 Some(ComponentGeometry::ReorderList { .. }) => {}
                 #[cfg(not(feature = "rich-text"))]
@@ -1608,7 +1616,8 @@ impl UiScene {
                 #[cfg(feature = "calendar")]
                 Some(StandardVisual::CalendarHeatmap { .. }) => {}
                 #[cfg(feature = "charts")]
-                Some(StandardVisual::TimeSeriesChart { .. }) => {}
+                Some(StandardVisual::TimeSeriesChart { .. })
+                | Some(StandardVisual::TimestampSeriesChart { .. }) => {}
                 #[cfg(feature = "controls")]
                 Some(StandardVisual::ReorderList { .. }) => {}
                 #[cfg(feature = "rich-text")]

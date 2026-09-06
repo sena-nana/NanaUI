@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "scenario_id": "high-refresh-independent-gpu-1",
+  "composition": "UiOnly",
+  "materialization": {
+    "viewport": [
+      1920,
+      1080
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 32
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view",
+      "button"
+    ],
+    "ui_entity_count": 4,
+    "host_texture_resources": 1,
+    "scene_primitive_kinds": [
+      "host-texture",
+      "quad",
+      "text"
+    ]
+  },
+  "adapter": "NVIDIA GeForce RTX 5060 (Vulkan)",
+  "frames": 234572,
+  "gpu_work": {
+    "batch_rebuilds": 0,
+    "draw_batches": 5,
+    "draw_calls": 5,
+    "gpu_upload_bytes": 0,
+    "gpu_buffer_reallocations": 0
+  },
+  "frame_stages": {
+    "Accessibility": {
+      "status": "skipped"
+    },
+    "Animation": {
+      "status": "skipped"
+    },
+    "Batch": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Extract": {
+      "status": "skipped"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "HitTest": {
+      "status": "skipped"
+    },
+    "Input": {
+      "status": "skipped"
+    },
+    "Layout": {
+      "status": "skipped"
+    },
+    "Reconcile": {
+      "status": "skipped"
+    },
+    "Style": {
+      "status": "skipped"
+    },
+    "Submit": {
+      "status": "ran"
+    },
+    "TextShape": {
+      "status": "skipped"
+    }
+  },
+  "stages": {
+    "batch_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "gpu_upload_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "max": 0.0
+    },
+    "encode_ms": {
+      "p50": 0.0035,
+      "p95": 0.005699999999999999,
+      "p99": 0.0089,
+      "max": 1.9232
+    },
+    "submit_ms": {
+      "p50": 0.09899999999999999,
+      "p95": 0.1618,
+      "p99": 0.2546,
+      "max": 7.1932
+    }
+  },
+  "sampling": {
+    "elapsed_seconds": 60.0000542,
+    "warmup_seconds": 2.0000091,
+    "mode": "offscreen-gpu-completion-serialized",
+    "surface_present_measured": false,
+    "framework_cpu_prepare_ms": {
+      "p50": 0.006,
+      "p95": 0.0094,
+      "p99": 0.0158,
+      "max": 1.9899000000000002
+    },
+    "runtime_passes": 0,
+    "structure_plan_rebuilds": 0,
+    "maximum_gpu_work_per_frame": {
+      "batch_rebuilds": 0,
+      "draw_batches": 5,
+      "draw_calls": 5,
+      "gpu_upload_bytes": 0,
+      "gpu_buffer_reallocations": 0
+    }
+  },
+  "gpu_timestamps": {
+    "producer_ms": {
+      "p50": 0.003712,
+      "p95": 0.00432,
+      "p99": 0.004928,
+      "max": 0.3944
+    },
+    "ui_composition_ms": {
+      "p50": 0.022368,
+      "p95": 0.02448,
+      "p99": 0.029952,
+      "max": 0.341824
+    }
+  },
+  "framework_thread_allocations": {
+    "samples": 234572,
+    "total": {
+      "calls": 4691440,
+      "requested_bytes": 1587583296
+    },
+    "maximum_per_frame": {
+      "calls": 20,
+      "requested_bytes": 6768
+    }
+  }
+}

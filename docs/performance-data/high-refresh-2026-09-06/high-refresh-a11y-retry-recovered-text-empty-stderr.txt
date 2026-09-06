@@ -1,0 +1,3 @@
+NanaUI host failure: ResourceProduction { window: WindowId(0), error: "scene resource producer `777` failed: injected resource encoding failure" }
+NanaUI host failure: ResourceProduction { window: WindowId(0), error: "scene resource producer `777` failed: injected resource encoding failure" }
+probe command: "\u{feff}quit"

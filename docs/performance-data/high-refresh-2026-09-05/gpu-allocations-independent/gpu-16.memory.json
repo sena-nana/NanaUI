@@ -1,0 +1,31 @@
+{
+  "sample_period_ms": 100,
+  "observation_count": 550,
+  "machine": {
+    "source_dirty": true,
+    "note": "Offscreen GPU completion serialized. Monitor modes are enumeration, not measured Surface intervals.",
+    "source_commit": "a870271aeae8bb513d9f321d4cf30d797b4f7ec0",
+    "video": [
+      {
+        "Name": "Virtual Desktop Monitor",
+        "CurrentHorizontalResolution": 1920,
+        "CurrentVerticalResolution": 1080,
+        "CurrentRefreshRate": 143
+      },
+      {
+        "Name": "NVIDIA GeForce RTX 5060",
+        "CurrentHorizontalResolution": 3840,
+        "CurrentVerticalResolution": 2160,
+        "CurrentRefreshRate": 60
+      }
+    ],
+    "cpu": [
+      "AMD Ryzen 7 5800X 8-Core Processor             "
+    ],
+    "os": "Microsoft Windows NT 10.0.26300.0"
+  },
+  "note": "Whole benchmark process including warmup and diagnostic sample storage; excludes separate GPU memory. Private bytes are a sampled maximum, not an allocation count.",
+  "process_peak_working_set_bytes": 137621504,
+  "started_utc": "2026-09-05T12:14:07.0362278Z",
+  "maximum_sampled_private_bytes": 195125248
+}

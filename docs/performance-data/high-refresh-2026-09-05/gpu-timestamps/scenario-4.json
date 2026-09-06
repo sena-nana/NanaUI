@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "high-refresh-gpu-4",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [
+      1920,
+      1080
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 32
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view",
+      "text",
+      "gpu-texture-view",
+      "text",
+      "gpu-texture-view",
+      "text",
+      "gpu-texture-view",
+      "button"
+    ]
+  },
+  "notes": "1080p offscreen diagnostic: 4 HostTexture nodes referencing one independently timed producer resource, with interleaved static text and a button. Does not measure Surface intervals or 4 independent producers."
+}

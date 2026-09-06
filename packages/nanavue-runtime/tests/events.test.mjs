@@ -536,3 +536,31 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     assert.equal(eventCount, 0);
   });
 });
+
+
+test("programmatic focus dispatches actual host transitions through ancestor capture", async () => {
+  const sandbox = await loadRuntime();
+  let focused = null;
+  sandbox.__nanaHost.call = (name, args) => {
+    if (name === "parentNode" && [71, 72].includes(args[0])) return 70;
+    if (name === "setFocus" || name === "clearFocus") {
+      const previous = focused;
+      if (name === "setFocus") focused = args[0];
+      else if (focused === args[0]) focused = null;
+      return {previous, current: focused};
+    }
+    return null;
+  };
+  const parent = sandbox.wrapNode(70, "element", "div");
+  const first = sandbox.wrapNode(71, "element", "input");
+  const second = sandbox.wrapNode(72, "element", "input");
+  const events = [];
+  for (const type of ["focus", "blur"]) parent.addEventListener(type, e => events.push([type, e.target.__nid]), true);
+  first.focus();
+  first.focus();
+  second.focus();
+  first.blur();
+  assert.equal(focused, 72, "inactive blur must not steal focus");
+  second.blur();
+  assert.deepEqual(events, [["focus", 71], ["blur", 71], ["focus", 72], ["blur", 72]]);
+});

@@ -25,12 +25,49 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
-        let next_wakeup = [self.next_gpu_retry, self.next_wakeup()]
+        let frame_deadline = self.schedule_presentations(now);
+        let next_wakeup = [self.next_gpu_retry, self.next_wakeup(), frame_deadline]
             .into_iter()
             .flatten()
             .min();
         event_loop.set_control_flow(next_wakeup.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
+    pub(super) fn can_present(&self, id: WindowId) -> bool {
+        !self.occluded.contains(&id)
+            && self.window(id).is_some_and(|window| {
+                window.is_visible() != Some(false) && window.is_minimized() != Some(true)
+            })
+    }
+
+    fn schedule_presentations(&mut self, now: Instant) -> Option<Instant> {
+        let changed = std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
+        for id in changed {
+            if self.can_present(id) {
+                self.request_redraw(id);
+            }
+        }
+        let mut next = None;
+        for id in self.known_window_ids() {
+            if self.render_suspended || !self.can_present(id) {
+                self.frame_schedules.remove(&id);
+                continue;
+            }
+            let demand = self.program.frame_demand(id);
+            let (due, deadline) = self
+                .frame_schedules
+                .entry(id)
+                .or_default()
+                .update(demand, now);
+            if due {
+                self.request_redraw(id);
+            }
+            if let Some(deadline) = deadline {
+                next = Some(next.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        }
+        next
+    }
+
     pub(super) fn animation_deadline(&mut self) -> Option<Instant> {
         self.known_window_ids()
             .into_iter()

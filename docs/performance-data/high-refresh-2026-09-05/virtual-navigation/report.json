@@ -1,0 +1,9 @@
+{
+  "logical_items": 1000000,
+  "mounted_before": 5,
+  "mounted_with_editor": 6,
+  "mounted_after_release": 5,
+  "a11y_nodes_with_editor": 29,
+  "jump_click_and_release": "passed",
+  "refresh_rate_measured": false
+}

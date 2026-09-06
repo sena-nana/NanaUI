@@ -1,0 +1,63 @@
+{
+    "passed":  false,
+    "platform":  "Windows UI Automation",
+    "mode":  "Semantics",
+    "retry":  true,
+    "executable":  "E:\\codex-build\\nanaui-high-refresh\\debug\\examples\\accessibility-hidden-probe.exe",
+    "initial_failure":  true,
+    "window":  {
+                   "Name":  "NanaUI Accessibility Probe",
+                   "Class":  "Window Class",
+                   "ProcessId":  32812,
+                   "Handle":  13369664
+               },
+    "before_first_present_root":  "ControlType.Window",
+    "before_first_present":  [
+                                 {
+                                     "Name":  "Visible editor",
+                                     "Type":  "ControlType.Edit",
+                                     "Focused":  false,
+                                     "Offscreen":  false,
+                                     "Bounds":  "78,78,300,36"
+                                 },
+                                 {
+                                     "Name":  "",
+                                     "Type":  "ControlType.Image",
+                                     "Focused":  false,
+                                     "Offscreen":  false,
+                                     "Bounds":  "78,114,16,16"
+                                 }
+                             ],
+    "error":  "Unpresented document leaked into native accessibility",
+    "failure_tree":  [
+                         {
+                             "Name":  "Visible editor",
+                             "Type":  "ControlType.Edit",
+                             "Focused":  false,
+                             "Offscreen":  false,
+                             "Bounds":  "78,78,300,36"
+                         },
+                         {
+                             "Name":  "",
+                             "Type":  "ControlType.Image",
+                             "Focused":  false,
+                             "Offscreen":  false,
+                             "Bounds":  "78,114,16,16"
+                         }
+                     ],
+    "exit_code":  0,
+    "presented_states":  [
+                             {
+                                 "backend":  "Vulkan",
+                                 "event":  "adapter"
+                             },
+                             {
+                                 "event":  "retry_prepare",
+                                 "phase":  4
+                             },
+                             {
+                                 "event":  "producer_failed",
+                                 "phase":  4
+                             }
+                         ]
+}

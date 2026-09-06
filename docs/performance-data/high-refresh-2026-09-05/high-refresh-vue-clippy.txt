@@ -1,0 +1,2 @@
+    Checking nana-ui-vue v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-vue)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.78s

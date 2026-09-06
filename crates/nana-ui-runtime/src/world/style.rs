@@ -3,7 +3,7 @@
 use super::*;
 
 impl UiWorld {
-    pub(super) fn resolve_style(
+    fn resolve_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
         resolved: &mut HashSet<StableNodeId>,
@@ -16,7 +16,7 @@ impl UiWorld {
         }
         let parent = self.record(id).hierarchy.parent;
         if let Some(parent) = parent {
-            self.resolve_style(parent, resolved)?;
+            self.resolve_style::<SHARE>(parent, resolved)?;
         }
         let layout = self.motion_layout(id, &self.record(id).style.layout);
         let inherited = parent
@@ -72,7 +72,18 @@ impl UiWorld {
                 return Ok(());
             }
         }
-        self.record_mut(id).resolved = ResolvedStyle(Arc::new(next), self.palette_epoch);
+        // Identical inherited results can share immutable paint state. Local
+        // authored style remains on the node; future changes publish a new Arc.
+        let next = if SHARE {
+            parent
+                .map(|parent| &self.record(parent).resolved.0)
+                .filter(|inherited| inherited.as_ref() == &next)
+                .map(Arc::clone)
+                .unwrap_or_else(|| Arc::new(next))
+        } else {
+            Arc::new(next)
+        };
+        self.record_mut(id).resolved = ResolvedStyle(next, self.palette_epoch);
         Ok(())
     }
 }
@@ -224,9 +235,12 @@ impl UiWorld {
     /// Resolve inherited visual state for dirty nodes. Parent state is always
     /// resolved before its descendants, independent of stable ID order.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
-        let mut resolved = HashSet::new();
+        // Most frame batches already contain the full dirty frontier. Reserve
+        // once so parent-chain deduplication does not repeatedly rehash large
+        // initial documents.
+        let mut resolved = HashSet::with_capacity(ids.len());
         for &id in ids {
-            self.resolve_style(id, &mut resolved)?;
+            self.resolve_style::<true>(id, &mut resolved)?;
         }
         self.reconcile_focus(ids);
         Ok(())
@@ -234,6 +248,17 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Diagnostic control path for paired sharing measurements; product resolution shares.
+    #[cfg(feature = "benchmark")]
+    pub fn benchmark_resolve_styles_unshared(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+        let mut resolved = HashSet::new();
+        for &id in ids {
+            self.resolve_style::<false>(id, &mut resolved)?;
+        }
+        self.reconcile_focus(ids);
+        Ok(())
+    }
+
     pub(super) fn apply_style_model(&mut self, next: StyleModelRef) {
         if self.style_model == next {
             return;
@@ -356,3 +381,7 @@ impl UiWorld {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "style_sharing_tests.rs"]
+mod sharing_tests;

@@ -15,9 +15,11 @@ pub(super) struct ValidationPlan<'a> {
     pub(super) newly_retired: HashSet<StableNodeId>,
     /// Mount overrides staged by this batch. Absent means "ask `source`".
     pub(super) parked: HashMap<StableNodeId, bool>,
+    detached: HashMap<StableNodeId, bool>,
     pub(super) interactions: HashMap<StableNodeId, InteractionState>,
     pub(super) styles: HashMap<StableNodeId, NodeStyle>,
     pub(super) focus: HashMap<DocumentId, Option<StableNodeId>>,
+    pub(super) scope_focus: HashMap<StableNodeId, StableNodeId>,
     /// Cloned from `source` on first pointer-capture mutation. Batches that do
     /// not touch capture never pay for it.
     pub(super) pointer_captures: Option<HashMap<(DocumentId, u64), StableNodeId>>,
@@ -27,6 +29,8 @@ pub(super) struct ValidationPlan<'a> {
     pub(super) surface_open: HashMap<StableNodeId, bool>,
     pub(super) overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
     pub(super) accessibility: HashMap<StableNodeId, AccessibilityState>,
+    overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>>,
+    affected_overlay_hosts: HashSet<StableNodeId>,
     /// Nodes visited by whole-set walks during this validation. Reported through
     /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
     /// test instead of silently costing a frame.
@@ -41,15 +45,19 @@ impl<'a> ValidationPlan<'a> {
             removed: HashSet::new(),
             newly_retired: HashSet::new(),
             parked: HashMap::new(),
+            detached: HashMap::new(),
             interactions: HashMap::new(),
             styles: HashMap::new(),
             focus: HashMap::new(),
+            scope_focus: HashMap::new(),
             pointer_captures: None,
             animations: None,
             text_inputs: HashMap::new(),
             surface_open: HashMap::new(),
             overlay_hosts: HashMap::new(),
             accessibility: HashMap::new(),
+            overlay_dependents: HashMap::new(),
+            affected_overlay_hosts: HashSet::new(),
             scanned: 0,
         }
     }
@@ -61,6 +69,10 @@ impl<'a> ValidationPlan<'a> {
             return parked;
         }
         self.source.mount_state(id) == Some(MountState::Parked)
+    }
+
+    fn is_detached(&self, id: StableNodeId) -> bool {
+        self.detached.get(&id).copied().unwrap_or_else(|| self.source.detached.contains(&id))
     }
 
     pub(super) fn set_parked(&mut self, id: StableNodeId, parked: bool) {
@@ -103,15 +115,61 @@ impl<'a> ValidationPlan<'a> {
     }
 
     /// Overlay hosts staged by this batch plus those already in `source`.
-    pub(super) fn overlay_host_candidates(&mut self) -> Vec<StableNodeId> {
-        let mut hosts = self.overlay_hosts.keys().copied().collect::<HashSet<_>>();
-        hosts.extend(self.source.overlay_host_ids());
+    pub(super) fn overlay_host_candidates(&mut self, document: DocumentId) -> Vec<StableNodeId> {
+        let mut hosts = self.overlay_hosts.keys().copied()
+            .filter(|id| self.planned_identity(*id).is_ok_and(|(doc, _)| doc == document))
+            .collect::<HashSet<_>>();
+        hosts.extend(self.source.overlay_host_ids(document));
         self.scanned = self.scanned.saturating_add(hosts.len());
         hosts.into_iter().collect()
     }
 
+    fn planned_identity(&self, id: StableNodeId) -> Result<(DocumentId, Option<StableNodeId>), UiWorldError> {
+        self.require_exists(id)?;
+        if let Some(node) = self.nodes.get(&id) {
+            Ok((node.document, node.parent))
+        } else {
+            self.source.identity_and_parent(id)
+        }
+    }
+
+    fn overlay_referencing(&mut self, target: StableNodeId) -> Vec<StableNodeId> {
+        let mut hosts = self.source.overlay_dependents.get(&target)
+            .into_iter().flatten().copied().collect::<HashSet<_>>();
+        hosts.extend(self.overlay_dependents.get(&target).into_iter().flatten().copied());
+        self.scanned += hosts.len();
+        hosts.into_iter().filter(|host| {
+            self.exists(*host) && self.overlay_hosts.get(host).copied()
+                .or_else(|| self.source.overlay_host(*host))
+                .is_some_and(|state| state.active == Some(target) || state.restore_focus == Some(target))
+        }).collect()
+    }
+
+    fn stage_overlay_host(&mut self, host: StableNodeId, state: OverlayHostState) {
+        if let Some(previous) = self.overlay_hosts.insert(host, state) {
+            for target in [previous.active, previous.restore_focus].into_iter().flatten() {
+                if let Some(hosts) = self.overlay_dependents.get_mut(&target) {
+                    hosts.remove(&host);
+                    if hosts.is_empty() { self.overlay_dependents.remove(&target); }
+                }
+            }
+        }
+        for target in [state.active, state.restore_focus].into_iter().flatten() {
+            self.overlay_dependents.entry(target).or_default().insert(host);
+        }
+        self.affected_overlay_hosts.insert(host);
+    }
+
     pub(super) fn validate(&mut self, mutations: &[UiMutation]) -> Result<(), UiWorldError> {
         for mutation in mutations {
+            match mutation {
+                UiMutation::Insert { child: id, .. } | UiMutation::Detach { id }
+                | UiMutation::SetAccessibility { id, .. } => {
+                    let hosts = self.overlay_referencing(*id);
+                    self.affected_overlay_hosts.extend(hosts);
+                }
+                _ => {}
+            }
             match mutation {
                 UiMutation::Create { id, document, .. } => self.create(*id, *document)?,
                 UiMutation::Insert {
@@ -125,7 +183,7 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::ParkSubtree { root } => self.park(*root)?,
                 UiMutation::DespawnSubtree { root } => self.despawn_subtree(*root)?,
                 UiMutation::SetStyle { id, style } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     let layout = style.layout.as_ref();
                     if layout.opacity.is_some_and(|opacity| {
                         !opacity.is_finite() || !(0.0..=1.0).contains(&opacity)
@@ -160,10 +218,10 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetTheme { .. } | UiMutation::SetStyleTokens { .. } => {}
                 UiMutation::SetText { id, .. } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                 }
                 UiMutation::WriteLayout { id, layout } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if !layout.x.is_finite()
                         || !layout.y.is_finite()
                         || !layout.width.is_finite()
@@ -175,7 +233,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetScrollOffset { id, offset } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if !offset.x.is_finite()
                         || !offset.y.is_finite()
                         || offset.x < 0.0
@@ -185,7 +243,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetScrollMetrics { id, metrics } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if metrics.is_some_and(|metrics| {
                         [
                             metrics.viewport_width,
@@ -200,11 +258,11 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetInteraction { id, interaction } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     self.interactions.insert(*id, *interaction);
                 }
                 UiMutation::SetCustomRender { id, content } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if content.as_ref().is_some_and(|content| {
                         content.renderer.trim().is_empty() || content.resource.trim().is_empty()
                     }) {
@@ -212,16 +270,16 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetEventListener { id, event, .. } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if event.trim().is_empty() {
                         return Err(UiWorldError::InvalidEventListener(*id));
                     }
                 }
                 UiMutation::SetComponentType { id, .. } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                 }
                 UiMutation::SetStandardVisual { id, visual } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     let invalid_ratio = match visual {
                         Some(StandardVisual::Range { ratio, .. })
                         | Some(StandardVisual::Progress {
@@ -237,30 +295,29 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetAccessibility { id, accessibility } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     self.accessibility.insert(*id, accessibility.clone());
                 }
                 UiMutation::SetSurfaceOpen { id, open, .. } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     self.surface_open.insert(*id, *open);
                 }
                 UiMutation::SetOverlayHost { host, state } => {
-                    let host_document = self.node(*host)?.document;
-                    if let Some(active) = state.active {
-                        let active_node = self.node(active)?;
-                        if active_node.parent != Some(*host) {
-                            return Err(UiWorldError::InvalidOverlayHost(*host));
-                        }
+                    let host_document = self.planned_identity(*host)?.0;
+                    if let Some(active) = state.active
+                        && self.planned_identity(active)?.1 != Some(*host)
+                    {
+                        return Err(UiWorldError::InvalidOverlayHost(*host));
                     }
                     if let Some(restore_focus) = state.restore_focus
-                        && self.node(restore_focus)?.document != host_document
+                        && self.planned_identity(restore_focus)?.0 != host_document
                     {
                         return Err(UiWorldError::FocusDocument {
                             document: host_document,
                             target: restore_focus,
                         });
                     }
-                    self.overlay_hosts.insert(*host, *state);
+                    self.stage_overlay_host(*host, *state);
                 }
                 UiMutation::CapturePointer { pointer_id, target } => {
                     let document = self.node(*target)?.document;
@@ -318,6 +375,15 @@ impl<'a> ValidationPlan<'a> {
                         }
                     }
                     self.focus.insert(*document, *target);
+                    if let Some(target) = target {
+                        self.remember_scope_focus(*target)?;
+                    }
+                }
+                UiMutation::RestoreFocusWithin { root } => {
+                    if let Some((document, target)) = self.restorable_scope_focus(*root)? {
+                        self.focus.insert(document, Some(target));
+                        self.remember_scope_focus(target)?;
+                    }
                 }
                 UiMutation::SetIme { id, composition } => {
                     let document = self.node(*id)?.document;
@@ -353,7 +419,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                 }
                 UiMutation::SetTextInput { id, state } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if state
                         .as_ref()
                         .is_some_and(|state| !state.selection.is_valid_for(&state.value))
@@ -378,7 +444,7 @@ impl<'a> ValidationPlan<'a> {
                     self.text_inputs.insert(*id, Some(state));
                 }
                 UiMutation::SetHighlightRequest { id, request } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                     if request
                         .as_ref()
                         .is_some_and(|request| request.presenter.trim().is_empty())
@@ -397,7 +463,7 @@ impl<'a> ValidationPlan<'a> {
                 | UiMutation::SetTextInputDiagnosticHover { id, .. }
                 | UiMutation::SetTextInputHoverScroll { id, .. }
                 | UiMutation::SetTextInputSignature { id, .. } => {
-                    self.node(*id)?;
+                    self.require_exists(*id)?;
                 }
             }
         }
@@ -468,6 +534,7 @@ impl<'a> ValidationPlan<'a> {
             .unwrap_or(siblings.len());
         siblings.insert(index, child);
         self.node_mut(child)?.parent = Some(parent);
+        self.detached.insert(child, false);
         let parked = self.is_parked(parent);
         self.set_parked_subtree(child, parked)?;
         Ok(())
@@ -568,6 +635,7 @@ impl<'a> ValidationPlan<'a> {
 
     pub(super) fn detach(&mut self, id: StableNodeId) -> Result<(), UiWorldError> {
         let parent = self.node(id)?.parent;
+        self.detached.insert(id, true);
         if let Some(parent) = parent {
             self.node_mut(parent)?.children.retain(|child| *child != id);
             self.node_mut(id)?.parent = None;
@@ -616,7 +684,7 @@ impl<'a> ValidationPlan<'a> {
     }
 
     pub(super) fn clear_overlay_references(&mut self, removed: StableNodeId) {
-        for host in self.overlay_host_candidates() {
+        for host in self.overlay_referencing(removed) {
             if host == removed || !self.exists(host) {
                 continue;
             }
@@ -635,12 +703,14 @@ impl<'a> ValidationPlan<'a> {
             if state.restore_focus == Some(removed) {
                 state.restore_focus = None;
             }
-            self.overlay_hosts.insert(host, state);
+            self.stage_overlay_host(host, state);
         }
     }
 
     pub(super) fn validate_overlay_hosts(&mut self) -> Result<(), UiWorldError> {
-        for host in self.overlay_host_candidates() {
+        let hosts = self.affected_overlay_hosts.iter().copied().collect::<Vec<_>>();
+        self.scanned += hosts.len();
+        for host in hosts {
             if !self.exists(host) {
                 continue;
             }
@@ -652,9 +722,9 @@ impl<'a> ValidationPlan<'a> {
             else {
                 continue;
             };
-            let host_document = self.node(host)?.document;
+            let host_document = self.planned_identity(host)?.0;
             if let Some(active) = state.active
-                && (!self.exists(active) || self.node(active)?.parent != Some(host))
+                && (!self.exists(active) || self.planned_identity(active)?.1 != Some(host))
             {
                 return Err(UiWorldError::InvalidOverlayHost(host));
             }
@@ -705,6 +775,11 @@ impl<'a> ValidationPlan<'a> {
         }
     }
 
+    fn require_exists(&self, id: StableNodeId) -> Result<(), UiWorldError> {
+        // Scalar writes need staged identity, not a cloned child list.
+        self.exists(id).then_some(()).ok_or(UiWorldError::MissingNode(id))
+    }
+
     pub(super) fn exists(&self, id: StableNodeId) -> bool {
         !self.removed.contains(&id) && (self.nodes.contains_key(&id) || self.source.contains(id))
     }
@@ -737,7 +812,7 @@ impl<'a> ValidationPlan<'a> {
         mut id: StableNodeId,
     ) -> Result<bool, UiWorldError> {
         loop {
-            if self.is_parked(id) {
+            if self.is_parked(id) || self.is_detached(id) {
                 return Ok(false);
             }
             let layout = self
@@ -773,7 +848,7 @@ impl<'a> ValidationPlan<'a> {
         document: DocumentId,
         target: StableNodeId,
     ) -> Result<bool, UiWorldError> {
-        let hosts = self.overlay_host_candidates();
+        let hosts = self.overlay_host_candidates(document);
         if hosts.is_empty() {
             return Ok(true);
         }
@@ -851,15 +926,16 @@ impl<'a> ValidationPlan<'a> {
     ) -> Result<Vec<StableNodeId>, UiWorldError> {
         let ids = self
             .source
-            .nodes
-            .keys()
-            .chain(self.nodes.keys().copied())
+            .document_roots(document)
+            .into_iter()
+            .chain(self.nodes.iter().filter_map(|(id, node)| (node.document == document).then_some(*id)))
             .collect::<HashSet<_>>();
         self.scanned = self.scanned.saturating_add(ids.len());
         let mut roots = Vec::new();
         for id in ids {
             if self.exists(id)
                 && !self.is_parked(id)
+                && !self.is_detached(id)
                 && self.node(id)?.document == document
                 && self.node(id)?.parent.is_none()
             {
@@ -870,7 +946,7 @@ impl<'a> ValidationPlan<'a> {
         let mut order = Vec::new();
         let mut stack = roots.into_iter().rev().collect::<Vec<_>>();
         while let Some(id) = stack.pop() {
-            if !self.exists(id) || self.is_parked(id) {
+            if !self.exists(id) || self.is_parked(id) || self.is_detached(id) {
                 continue;
             }
             order.push(id);
@@ -926,6 +1002,23 @@ fn select_menu_hit_shape(visual: Option<&StandardVisual>) -> Option<(ControlSize
 
 impl UiWorld {
     pub(super) fn apply(&mut self, mutation: &UiMutation, report: &mut CommitReport) {
+        // Invalidate before topology writes so old ancestors also lose stale
+        // maxima. Insert's new parent is invalidated independently below.
+        match mutation {
+            UiMutation::WriteLayout { id, .. } => {
+                self.invalidate_scroll_content(*id);
+            }
+            UiMutation::Detach { id } | UiMutation::ParkSubtree { root: id }
+            | UiMutation::DespawnSubtree { root: id } => self.invalidate_scroll_topology(*id, None),
+            UiMutation::Insert { parent, child, .. } => {
+                self.invalidate_scroll_topology(*child, Some(*parent));
+            }
+            UiMutation::SetStyle { id, style }
+                if self.record(*id).style.layout.omits_box() != style.layout.omits_box() => {
+                self.invalidate_scroll_content(*id);
+            }
+            _ => {}
+        }
         match mutation {
             UiMutation::Create { id, document, kind } => {
                 self.nodes.insert(
@@ -1031,9 +1124,15 @@ impl UiWorld {
                     let snapshot = self.node(id).expect("validated subtree must exist");
                     stack.extend(snapshot.children.iter().rev().copied());
                     self.forget_visual_presence(id);
+                    self.scroll_content_bounds.get_mut().remove(id, snapshot.parent);
+                    self.write_overlay_host(id, None);
                     let _removed = self.nodes.remove(id);
+                    self.input.focus_scopes.retain(|root, target| {
+                        if *target == Some(id) { *target = None; }
+                        *root != id
+                    });
                     self.dirty_entities.remove(&id);
-                    self.refresh_root_membership(id);
+                    self.remove_document_root(snapshot.document, id);
                     if self.input.focused.get(&snapshot.document) == Some(&id) {
                         self.input.focused.remove(&snapshot.document);
                     }
@@ -1085,7 +1184,6 @@ impl UiWorld {
                     self.despawned_since_drain += 1;
                     report.despawned += 1;
                 }
-                self.refresh_root_membership(*root);
             }
             UiMutation::SetStyle { id, style } => {
                 let previous = self.record(*id).style.clone();
@@ -1429,8 +1527,7 @@ impl UiWorld {
                 if previous == Some(*state) {
                     return;
                 }
-                self.nodes.set_overlay_host(*host, Some(*state));
-                self.overlay_host_nodes.insert(*host);
+                self.write_overlay_host(*host, Some(*state));
                 self.mark(*host, DirtyMask::ACCESSIBILITY);
                 if let Some(inactive) = previous
                     .and_then(|previous| previous.active)
@@ -1509,6 +1606,9 @@ impl UiWorld {
                 }
             }
             UiMutation::RequestFocus { document, target } => {
+                if let Some(target) = target {
+                    self.remember_scope_focus(*target);
+                }
                 let old = match target {
                     Some(target) => self.input.focused.insert(*document, *target),
                     None => self.input.focused.remove(document),
@@ -1533,6 +1633,12 @@ impl UiWorld {
                         *target,
                         DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
+                }
+            }
+            UiMutation::RestoreFocusWithin { root } => {
+                let target = ValidationPlan::new(self).restorable_scope_focus(*root).ok().flatten();
+                if let Some((document, target)) = target {
+                    self.apply(&UiMutation::RequestFocus { document, target: Some(target) }, report);
                 }
             }
             UiMutation::SetIme { id, composition } => {
@@ -1682,7 +1788,13 @@ impl UiWorld {
             }
             UiMutation::SetTextInputSnippet { id, session } => {
                 if self.nodes.text_snippet_session(*id) != session.as_ref() {
+                    let previous_choices=self.nodes.text_snippet_session(*id).and_then(|s|s.choice_items());
+                    let next_choices=session.as_ref().and_then(|s|s.choice_items());
+                    if let Some(items)=next_choices {
+                        self.nodes.set_text_completion_view(*id,Some(crate::store::TextCompletionViewState {items,selected:0,scroll:0,dismissed:false}));
+                    } else if previous_choices.is_some() {self.nodes.set_text_completion_view(*id,None);}
                     self.nodes.set_text_snippet_session(*id, session.clone());
+                    self.mark(*id, DirtyMask::TEXT | DirtyMask::RENDER);
                 }
             }
             UiMutation::SetTextInputCompletions { id, items } => {

@@ -1,0 +1,134 @@
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.81s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_scene-9090ea7563390733.exe)
+
+running 101 tests
+test graph::tests::transient_resource_must_be_written_before_read ... ok
+test graph::tests::explicit_cycle_is_rejected ... ok
+test graph::tests::resource_hazards_preserve_pass_order ... ok
+test scene::tests::ancestor_clip_transform_and_opacity_are_composed ... ok
+test scene::tests::border_image_travels_on_quad ... ok
+test scene::tests::an_icon_trigger_paints_a_centered_glyph_instead_of_label_text ... ok
+test scene::tests::action_menu_item_label_and_hint_text_primitives_enable_ellipsis ... ok
+test scene::tests::a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched ... ok
+test scene::tests::apply_delta_refreshes_instance_on_node_changes_not_idle ... ok
+test scene::tests::compact_leading_icon_centers_on_the_parent_text_line ... ok
+test scene::tests::command_palette_title_and_query_sort_above_surface_quads ... ok
+test scene::tests::completion_and_hover_overlays_paint_above_editor_layers ... ok
+test scene::tests::card_child_list_item_keeps_its_label ... ok
+test scene::tests::completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes ... ok
+test scene::tests::css_backdrop_filter_travels_on_quad_surface ... ok
+test scene::tests::card_body_text_is_painted_independently_of_its_optional_title ... ok
+test scene::tests::confirm_action_scene_restores_label_after_busy_spinner_clears ... ok
+test scene::tests::css_box_shadow_layers_outline_and_line_clamp_travel ... ok
+test scene::tests::css_drop_shadow_isolates_dest_group_not_box_shadow ... ok
+test scene::tests::css_clip_path_inset_clips_text_child ... ok
+test scene::tests::css_clip_path_inset_round_applies_surface_corner_radius ... ok
+test runtime_document::tests::scroll_and_frozen_transform_publish_matching_hit_and_accessibility_in_one_flush ... ok
+test scene::tests::css_filter_group_omits_leaf_shader_on_parent_quad ... ok
+test scene::tests::css_gradient_and_clip_path_surface_paint_travels_on_quad ... ok
+test runtime_document::tests::viewport_resize_and_wrapped_text_reflow_without_application_geometry ... ok
+test runtime_document::tests::frame_driver_is_incremental_and_static_documents_are_idle ... ok
+test runtime_document::tests::failed_frame_restores_dirty_work_and_does_not_publish_a_partial_scene ... ok
+test runtime_document::tests::empty_state_keeps_its_text_block_across_reprojection ... ok
+test runtime_document::tests::a_fixed_overlay_follows_a_resize_without_a_full_layout ... ok
+test scene::tests::css_mask_and_gradient_both_travel_on_quad ... ok
+test runtime_document::tests::a_viewport_relative_box_follows_a_resize_without_discarding_the_cache ... ok
+test runtime_document::tests::focused_textarea_typing_settles_the_frame ... ok
+test scene::tests::css_mask_url_travels_on_quad_and_host_texture ... ok
+test scene::tests::extracted_text_spans_travel_on_the_text_primitive ... ok
+test scene::tests::docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side ... ok
+test scene::tests::fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap ... ok
+test scene::tests::feedback_geometry_emits_semantic_quad_text_and_icon_primitives ... ok
+test scene::tests::empty_state_separates_intrinsic_clip_from_focused_action_root_clip ... ok
+test scene::tests::focused_icon_does_not_paint_an_external_ring ... ok
+test scene::tests::css_mix_blend_and_element_blur_isolate_dest_groups ... ok
+test scene::tests::extraction_preserves_custom_interleaving_and_removals ... ok
+test scene::tests::hidden_nodes_skip_scene_primitives ... ok
+test scene::tests::generic_text_em_padding_uses_computed_font_size ... ok
+test scene::tests::host_texture_custom_carries_css_mask ... ok
+test scene::tests::frame_graph_rejects_conflicting_revisions_of_one_external_resource ... ok
+test scene::tests::host_and_child_text_extract_one_visible_text_primitive ... ok
+test scene::tests::graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates ... ok
+test scene::tests::inset_box_shadow_on_a_leaf_is_not_an_outset_elevation ... ok
+test scene::tests::img_content_image_and_two_background_layers_travel_on_quad ... ok
+test scene::tests::icon_visual_skips_vector_children ... ok
+test scene::tests::frame_plan_survives_paint_changes_but_tracks_structure_and_resource_conflicts ... ok
+test scene::tests::inset_box_shadow_with_children_is_a_dest_group_not_parent_quad ... ok
+test scene::tests::isolation_keeps_high_z_child_contiguous ... ok
+test scene::tests::leaf_opacity_stays_on_the_primitive ... ok
+test scene::tests::losing_group_isolation_reorders_descendants_that_were_not_reextracted ... ok
+test scene::tests::labeled_value_and_card_text_primitives_enable_ellipsis ... ok
+test scene::tests::modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots ... ok
+test scene::tests::menu_surface_paints_row_icon_and_iconless_labels ... ok
+test scene::tests::new_component_geometry_paints_owned_quads_and_skips_generic_text ... ok
+test scene::tests::migrated_components_consume_runtime_subregion_geometry ... ok
+test runtime_document::tests::multi_pass_flush_updates_the_hit_index_once ... ok
+test scene::tests::occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots ... ok
+test scene::tests::parent_perspective_fail_closes_child_3d ... ok
+test scene::tests::parent_preserve_3d_fail_closes_child_3d ... ok
+test scene::tests::perspective_rotate_y_stores_projective_on_the_primitive ... ok
+test scene::tests::rasterized_svg_host_texture_skips_vector_children ... ok
+test scene::tests::positioned_z_index_keeps_high_z_child_contiguous ... ok
+test scene::tests::rotate_pivot_follows_transform_origin ... ok
+test scene::tests::opacity_group_keeps_high_z_child_contiguous ... ok
+test scene::tests::scroll_offset_transforms_descendants_but_not_viewport_clip ... ok
+test scene::tests::scrollbar_chrome_paints_ordinary_quads_over_the_scrollport ... ok
+test scene::tests::selection_option_emits_surface_text_icon_and_focus_slots ... ok
+test scene::tests::standard_control_visuals_expand_without_backend_tag_matching ... ok
+test scene::tests::scrollbar_skin_thickness_still_paints_ordinary_quads ... ok
+test scene::tests::stroke_visibility_uses_points_and_caps_beyond_the_nominal_node_box ... ok
+test scene::tests::scroll_offset_delta_updates_attributes_without_rebuilding_descendant_geometry ... ok
+test scene::tests::subtree_membership_follows_retained_parent_links ... ok
+test scene::tests::tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap ... ok
+test scene::tests::markdown_contract_tests::markdown_fences_keep_host_presenter_identity_without_duplicate_scene_text ... ok
+test scene::tests::text_input_clip_em_padding_uses_computed_font_size ... ok
+test scene::tests::text_input_editor_markers_and_line_labels_paint ... ok
+test scene::tests::text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_feed ... ok
+test scene::tests::text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides ... ok
+test scene::tests::text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots ... ok
+test scene::tests::text_input_main_text_region_keeps_display_space_spans_but_labels_do_not ... ok
+test scene::tests::text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order ... ok
+test scene::tests::text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret ... ok
+test scene::tests::text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slots ... ok
+test scene::tests::text_input_minimap_paints_panel_bars_and_indicator_batches ... ok
+test scene::tests::text_input_sticky_line_paints_panel_divider_and_head_text ... ok
+test scene::tests::text_input_match_markers_paint_as_batches_and_current_match_emphasizes ... ok
+test scene::tests::text_primitive_preserves_content_box_and_paint_semantics ... ok
+test scene::tests::unsupported_border_image_does_not_travel_on_quad ... ok
+test scene::tests::workspace_resize_handle_is_not_clipped_by_its_region ... ok
+test scene::tests::timestamp_chart_gap_segments_share_one_stroke_without_visible_bridges ... ok
+test runtime_document::tests::switching_inspector_slot_settles_within_frame_budget ... ok
+test scene::tests::markdown_contract_tests::markdown_preserves_large_plain_text_projection_and_removes_it ... ok
+test scene::tests::long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions ... ok
+test scene::tests::large_graph_primitive_families_do_not_overwrite_each_other ... ok
+test scene::tests::large_scrolling_scene_reuses_geometry_and_queries_visible_order ... ok
+test scene::tests::ten_thousand_clipped_text_nodes_cull_before_preparation_and_survive_scroll ... ok
+
+test result: ok. 101 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running tests\select_popup_hit.rs (E:/codex-build/nanaui-high-refresh\debug\deps\select_popup_hit-7585893a8ec96116.exe)
+
+running 2 tests
+test opening_and_closing_select_updates_hit_region_in_the_same_frame ... ok
+test option_count_and_size_refresh_menu_hits_but_highlighting_does_not ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\sidebar_row_label_paints_once.rs (E:/codex-build/nanaui-high-refresh\debug\deps\sidebar_row_label_paints_once-26dffe4d99bee4e8.exe)
+
+running 5 tests
+test declared_live_rows_never_project_self_painted_rows ... ok
+test stale_rows_projected_before_children_attach_never_paint ... ok
+test self_painted_mode_with_attached_children_still_paints_the_label_once ... ok
+test live_sidebar_rows_paint_their_label_exactly_once ... ok
+test relabeled_and_reflowed_rows_never_keep_stale_label_primitives ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests nana_ui_scene
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

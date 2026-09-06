@@ -1,0 +1,24 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.34s
+     Running unittests src\lib.rs (target\debug\deps\nana_ui_runtime-9c6573386c549525.exe)
+
+running 1 test
+test layout_engine::tests::returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change ... FAILED
+
+failures:
+
+---- layout_engine::tests::returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change stdout ----
+
+thread 'layout_engine::tests::returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change' (30656) panicked at crates\nana-ui-runtime\src\layout_engine\tests.rs:284:5:
+assertion `left == right` failed
+  left: {StableNodeId(2): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 800.0 }, StableNodeId(10): LayoutBox { x: 0.0, y: 60.0, width: 40.0, height: 20.0 }, StableNodeId(7): LayoutBox { x: 0.0, y: 40.0, width: 300.0, height: 20.0 }, StableNodeId(6): LayoutBox { x: 0.0, y: 20.0, width: 40.0, height: 20.0 }, StableNodeId(8): LayoutBox { x: 0.0, y: 40.0, width: 40.0, height: 20.0 }, StableNodeId(9): LayoutBox { x: 0.0, y: 60.0, width: 300.0, height: 20.0 }, StableNodeId(4): LayoutBox { x: 0.0, y: 0.0, width: 40.0, height: 20.0 }, StableNodeId(1): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 800.0 }, StableNodeId(3): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 20.0 }, StableNodeId(5): LayoutBox { x: 0.0, y: 20.0, width: 300.0, height: 20.0 }}
+ right: {StableNodeId(3): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 35.0 }, StableNodeId(5): LayoutBox { x: 0.0, y: 35.0, width: 300.0, height: 20.0 }, StableNodeId(7): LayoutBox { x: 0.0, y: 55.0, width: 300.0, height: 20.0 }, StableNodeId(9): LayoutBox { x: 0.0, y: 75.0, width: 300.0, height: 20.0 }, StableNodeId(10): LayoutBox { x: 0.0, y: 75.0, width: 40.0, height: 20.0 }, StableNodeId(4): LayoutBox { x: 0.0, y: 0.0, width: 40.0, height: 35.0 }, StableNodeId(8): LayoutBox { x: 0.0, y: 55.0, width: 40.0, height: 20.0 }, StableNodeId(6): LayoutBox { x: 0.0, y: 35.0, width: 40.0, height: 20.0 }, StableNodeId(2): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 800.0 }, StableNodeId(1): LayoutBox { x: 0.0, y: 0.0, width: 300.0, height: 800.0 }}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    layout_engine::tests::returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 812 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

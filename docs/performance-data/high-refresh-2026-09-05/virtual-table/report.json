@@ -1,0 +1,10 @@
+{
+  "logical_rows": 1000000,
+  "logical_columns": 10000,
+  "mounted_before": 20,
+  "mounted_with_retained_axes": 30,
+  "mounted_after_release": 20,
+  "a11y_nodes_with_retained_axes": 125,
+  "frozen_corner_header_column_body_clicks": "passed",
+  "refresh_rate_measured": false
+}

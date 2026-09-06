@@ -58,6 +58,13 @@ pub(super) fn place_node_scoped(
     let style = node.style.clone();
     let child_ids = node.children.clone();
     let modal = node.modal.clone();
+    // Only explicit boundaries need a saved placement for independent reflow.
+    // Ordinary nodes must not allocate another per-node cache on full layout.
+    if style.layout_isolation {
+        nodes
+            .placements
+            .insert(id, (origin, containing, parent_font_px));
+    }
     let style = style.as_ref();
     if style.omits_box() {
         output.insert(
@@ -105,6 +112,12 @@ pub(super) fn place_node_scoped(
             output,
             scope,
         )?;
+        return Ok(());
+    }
+
+    // Leaf geometry and used padding are complete. Modal slots above can have
+    // their own placement contract; ordinary leaves have no child work.
+    if child_ids.is_empty() {
         return Ok(());
     }
 

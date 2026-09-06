@@ -1,0 +1,15 @@
+NanaUI host failure: ResourceProduction { window: WindowId(1), error: "scene resource producer `777` failed: injected resource encoding failure" }
+NanaUI host failure: ResourceProduction { window: WindowId(1), error: "scene resource producer `777` failed: injected resource encoding failure" }
+probe command: "\u{feff}recover-initial"
+NanaUI host failure: ResourceProduction { window: WindowId(1), error: "scene resource producer `777` failed: injected resource encoding failure" }
+NanaUI host failure: ResourceProduction { window: WindowId(1), error: "scene resource producer `777` failed: injected resource encoding failure" }
+probe command: "show"
+probe visibility: true
+probe command: "hide"
+probe visibility: false
+probe command: "show"
+probe visibility: true
+probe command: "hide"
+probe visibility: false
+probe command: "close-auxiliary"
+probe command: "quit"

@@ -1,0 +1,11 @@
+{
+  "frozen_corner_header_column_body_clicks": true,
+  "logical_columns": 10000,
+  "logical_rows": 1000000,
+  "mounted_active": 30,
+  "mounted_after_release": 20,
+  "mounted_before": 20,
+  "refresh_rate_measured": false,
+  "retained_nodes_with_editor": 39,
+  "scene_primitives_with_editor": 65
+}

@@ -31,6 +31,7 @@ mod form_surfaces;
 mod framework;
 mod glyph_cache;
 mod gpu_slots;
+mod hover_card;
 #[cfg(feature = "graph-canvas")]
 mod graph_canvas;
 #[cfg(feature = "graph-canvas")]
@@ -41,6 +42,7 @@ mod key_layers;
 mod layout_engine;
 mod menus;
 mod mutation;
+mod native_content;
 mod overlay_surfaces;
 mod overlay_visibility;
 mod pane;
@@ -64,8 +66,11 @@ mod settings;
 mod shell;
 mod sidebar;
 mod split_pane;
+mod snippet;
+pub use snippet::{expand_text_snippet, expand_text_snippet_with_variables, SnippetExpansion, SnippetPlaceholder, SnippetTransform};
 mod store;
 mod tabs;
+mod terminal;
 mod text_editing;
 mod text_layout_cache;
 mod thumbnail;
@@ -117,13 +122,14 @@ pub use components::{
     OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
     ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
     StandardVisual, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
-    TextCompletion, TextCompletionPopup, TextCompletionRow, TextCompletionSnapshot, TextContent,
-    TextDiagnosticSeverity, TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry,
-    TextFoldGutter, TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment,
-    TextHover, TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan,
-    TextMetrics, TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
-    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
+    TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
+    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
+    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
+    TextGitMarkKind, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay, TextInputState,
+    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
+    TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
+    TextSnippet, TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
+    TriggeredMenuOverlay,
 };
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
@@ -147,6 +153,7 @@ pub use framework::{
     VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
+pub use hover_card::HoverCard;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, HOST_TEXTURE_RENDERER, gpu_view_params, pack_gpu_revision, unpack_gpu_revision,
@@ -189,13 +196,14 @@ pub use nana_ui_core::{
     JustifySpec, KeyContext, LayoutStyle, LengthSpec, LineBreakSpec, PopoverAlignment,
     PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone, TITLE_BAR_HEIGHT, TabDragGroup,
     TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor,
-    TableNavigation, TextAlignSpec, ThemeMode, TreeNavigation, TreeNode, TreeViewEvent,
-    ValidationIntent, VirtualListLayout, VirtualListMaterialization,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    TableNavigation, TextAlignSpec, TextShadowSpec, ThemeMode, TreeNavigation, TreeNode,
+    TreeViewEvent, ValidationIntent, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
+    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
+    VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
-    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
-    WordBreakSpec, WorkCounters, custom_window_controls_width, graph_node_fitted_height,
-    port_tangent, tree_navigation_event,
+    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, WINDOW_CONTROL_GAP,
+    WINDOW_CONTROL_WIDTH, WordBreakSpec, WorkCounters, custom_window_controls_width,
+    graph_node_fitted_height, port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,
@@ -249,6 +257,10 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
+pub use terminal::{
+    MAX_TERMINAL_CELLS, TerminalCell, TerminalCursor, TerminalCursorShape, TerminalEvent,
+    TerminalPosition, TerminalScreen, TerminalSelection, TerminalView,
+};
 pub use text_editing::{
     TextCaretIntent, TextLineDirection, TextSearchOptions, expanded_selection, find_matches,
     find_matches_capped, find_matches_in_range, find_next_match, find_previous_match,
@@ -263,9 +275,10 @@ pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, HostedTextarea,
     IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged,
     NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment, RangeChanged,
-    RangeDragState, RangeField, ScrollAxes, ScrollChanged, ScrollView, ScrollbarDragState,
-    SecondaryPress, SliderError, Stack, Switch, Table, TableCell, TableCellFocused, TableRow, Text,
-    TextArea, TextChanged, TextInput, ToggleChanged, Tooltip,
+    RangeDragState, RangeField, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollView,
+    ScrollbarDragState, SecondaryPress, SliderError, Stack, Switch, Table, TableCell,
+    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted,
+    ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
@@ -274,3 +287,5 @@ pub use world::{
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,
 };
+
+pub use native_content::{NATIVE_CONTENT_RENDERER, NativeContent};

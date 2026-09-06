@@ -1,0 +1,23 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+warning: struct `NativeContentRenderer` is never constructed
+  --> crates\nana-ui\src\native_content.rs:99:19
+   |
+99 | pub(crate) struct NativeContentRenderer {
+   |                   ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling nana-ui-vue v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-vue)
+warning: `nana-ui` (lib) generated 1 warning
+   Compiling nana-ui-devtools v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-devtools)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.88s
+     Running tests\virtual_retention.rs (target\debug\deps\virtual_retention-c9615bf1b7798d21.exe)
+
+running 2 tests
+test rust_virtual_list_retains_editor_and_matches_scroll_hit_geometry ... ok
+test rust_virtual_table_frozen_regions_match_real_clicks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s
+

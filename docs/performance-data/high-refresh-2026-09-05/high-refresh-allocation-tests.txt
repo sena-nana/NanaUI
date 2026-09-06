@@ -1,0 +1,14 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-platform v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-platform)
+   Compiling nana-app-icon v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-app-icon)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.46s
+     Running unittests src\bin\nana-gpu-scene-benchmark.rs (target\debug\deps\nana_gpu_scene_benchmark-08f4c35ce233e2e0.exe)
+
+running 2 tests
+test allocations::tests::allocation_scope_counts_successful_requests_and_resets ... ok
+test allocations::tests::allocation_scope_is_disabled_after_unwind ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

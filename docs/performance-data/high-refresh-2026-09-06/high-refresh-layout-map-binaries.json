@@ -1,0 +1,12 @@
+[
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-framework-benchmark-std-map.exe",
+    "Algorithm": "SHA256",
+    "Hash": "1340526E15551E6F45CC4BA2282B1803618BCDCF0FD6A0CBB1D1496F7ABE9488"
+  },
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-framework-benchmark.exe",
+    "Algorithm": "SHA256",
+    "Hash": "D33902F84507EB6565EA22B271F1F137A07A5F21081E0DD8A1057C282A8FDDB4"
+  }
+]

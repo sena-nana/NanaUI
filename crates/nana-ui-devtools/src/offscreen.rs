@@ -386,7 +386,7 @@ pub fn readback(
         .expect("snapshot readback buffer must be mapped");
     let mut pixels = Vec::with_capacity(unpadded * size.height as usize);
     for row in mapped.chunks(padded) {
-        for pixel in row[..unpadded].chunks_exact(4) {
+        for pixel in row[..unpadded].as_chunks::<4>().0 {
             pixels.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
     }

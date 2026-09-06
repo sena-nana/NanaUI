@@ -1,0 +1,46 @@
+
+running 41 tests
+test scene_host::accessibility::pending_tests::idle_retries_preserve_a_single_delta_and_targets_remain_independent ... ok
+test scene_host::accessibility::pending_tests::retries_publish_all_committed_changes_from_one_final_snapshot ... ok
+test scene_host::tests::client_frame_resize_hits_edges_unless_caption_or_maximized ... ok
+test scene_host::tests::cursor_sync_is_throttled_to_one_per_frame_interval ... ok
+test scene_host::tests::device_recovery_invalidates_cloned_program_host_textures_before_rebuild ... ok
+test scene_host::tests::empty_flush_reprojects_when_the_program_already_drained_runtime_work ... ok
+test scene_host::tests::failed_program_input_degrades_without_panicking ... ok
+test scene_host::tests::file_drag_batches_hover_paths_and_emits_one_drop ... ok
+test scene_host::tests::file_drag_ingests_fetched_paths_before_and_after_drop ... ok
+test scene_host::tests::first_touch_is_primary_and_uses_hosted_pointer_id ... ok
+test scene_host::tests::flush_and_program_deltas_reproject_the_world_instead_of_dropping_one ... ok
+test scene_host::tests::ime_and_window_lifecycle_mapping_is_backend_neutral ... ok
+test scene_host::tests::ime_apply_disables_when_leaving_the_field ... ok
+test scene_host::tests::ime_apply_enables_once_then_updates_caret ... ok
+test scene_host::tests::ime_apply_replaces_when_cursor_area_capability_appears ... ok
+test scene_host::tests::input_key_uses_named_debug_and_character_text ... ok
+test scene_host::tests::input_pointer_hit_reports_the_topmost_node ... ok
+test scene_host::tests::matching_generations_do_not_rebuild_an_idle_tree ... ok
+test scene_host::tests::modifiers_map_control_alt_shift_and_meta ... ok
+test scene_host::tests::mouse_buttons_use_the_hosted_mask_contract ... ok
+test scene_host::tests::native_and_transparent_materials_clear_the_surface_to_zero_alpha ... ok
+test scene_host::tests::passthrough_command_routes_missing_windows_for_failure_acknowledgement ... ok
+test scene_host::tests::pointer_enter_emits_move_without_a_followup_moved ... ok
+test scene_host::tests::pointer_leave_uses_event_position_when_present ... ok
+test scene_host::tests::pointer_move_down_and_leave_match_hosted_coordinates ... ok
+test scene_host::tests::program_accessibility_queue_is_the_host_source_when_flush_is_empty ... ok
+test scene_host::tests::redraw_requests_ignore_unknown_ids_and_cover_every_known_window ... ok
+test scene_host::tests::runtime_ime_ownership_does_not_drop_program_notification ... ok
+test scene_host::tests::runtime_prevent_default_still_invokes_the_program_input_hook ... ok
+test scene_host::tests::scale_change_reprojects_even_when_generations_match ... ok
+test scene_host::tests::scene_ime_follows_focused_text_input_without_window_key_status ... ok
+test scene_host::tests::scene_windows_reclamp_offscreen_initial_positions_to_live_displays ... ok
+test scene_host::tests::scene_windows_use_client_chrome_and_runtime_settings ... ok
+test scene_host::tests::screen_position_falls_back_to_client_without_origin ... ok
+test scene_host::tests::stale_program_queue_yields_to_the_current_world_snapshot ... ok
+test scene_host::tests::tablet_pointer_ids_split_device_and_tool_kind ... ok
+test scene_host::tests::transparent_aux_keeps_transparent_when_primary_appearance_is_solid ... ok
+test scene_host::tests::transparent_surface_picks_non_opaque_alpha_before_surface_lock ... ok
+test scene_host::tests::wheel_preserves_line_delta_and_converts_pixels ... ok
+test scene_host::tests::window_and_taskbar_icons_convert_independent_buffers ... ok
+test scene_host::tests::window_commands_route_by_known_ids_without_a_surface ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 393 filtered out; finished in 2.39s
+

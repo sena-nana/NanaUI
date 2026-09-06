@@ -21,6 +21,206 @@ struct Increment(usize);
 struct Cascade;
 
 #[test]
+fn scoped_layout_shrink_clamps_scroll_and_anchor_restore_requests_layout() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let scroll = overflowing_scroll_view(
+        &mut context,
+        document,
+        nana_ui_core::ScrollbarVisibility::Always,
+    );
+    let viewport = crate::LayoutViewport::new(200.0, 120.0);
+    context.layout_document(document, viewport).unwrap();
+    context
+        .scroll_to(scroll, ScrollOffset { x: 0.0, y: 80.0 })
+        .unwrap();
+    let rows = context.world.node(scroll.id).unwrap().children;
+    let mut mutations = MutationQueue::new();
+    for &row in &rows {
+        let mut style = context.world.node_style(row).unwrap().clone();
+        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(10.0));
+        mutations.set_style(row, style);
+    }
+    context.commit_mutations(mutations).unwrap();
+    context
+        .layout_document_scoped(document, viewport, &rows)
+        .unwrap();
+    assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 0.0);
+    assert_eq!(
+        context
+            .world
+            .scroll_metrics(scroll.id)
+            .unwrap()
+            .content_height,
+        120.0
+    );
+    context.take_system_work();
+    let anchor = context
+        .capture_scroll_anchor(scroll, rows[0])
+        .unwrap()
+        .unwrap();
+    context.restore_scroll_anchor(scroll, anchor).unwrap();
+    let work = context.take_system_work();
+    assert!(work.layout.contains(&scroll.id));
+    context
+        .layout_document_scoped(document, viewport, &work.layout)
+        .unwrap();
+    assert!(
+        context
+            .read(scroll, |view| view.pending_anchor.is_none())
+            .unwrap()
+    );
+}
+
+#[test]
+fn scoped_scroll_targets_follow_document_order_and_skip_unrelated_branches() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let other = DocumentId::new(2).unwrap();
+    let root = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let first = context
+        .create_component(document, ScrollView::new(ScrollAxes::Vertical))
+        .unwrap();
+    let second = context
+        .create_component(document, ScrollView::new(ScrollAxes::Vertical))
+        .unwrap();
+    context.append_child(root, second).unwrap();
+    context.append_child(root, first).unwrap();
+    let inner = context
+        .create_component(document, ScrollView::new(ScrollAxes::Vertical))
+        .unwrap();
+    context.append_child(first, inner).unwrap();
+    let leaf = context
+        .create_component(document, Text::new("changed"))
+        .unwrap();
+    context.append_child(inner, leaf).unwrap();
+    for _ in 0..1000 {
+        let unrelated = context
+            .create_detached_component(document, Text::new("unrelated"))
+            .unwrap();
+        context.append_child(second, unrelated).unwrap();
+    }
+    let foreign = context
+        .create_component(other, ScrollView::new(ScrollAxes::Vertical))
+        .unwrap();
+    context.last_layout_scope = vec![leaf.id, leaf.id, foreign.id];
+    assert_eq!(
+        context.scoped_scroll_metric_targets(document),
+        vec![first.id, inner.id]
+    );
+    context.last_layout_scope.push(second.id);
+    assert_eq!(
+        context.scoped_scroll_metric_targets(document),
+        vec![second.id, first.id, inner.id]
+    );
+    context.last_layout_scope = vec![root.id];
+    assert!(context.scoped_scroll_metric_targets(document).is_empty());
+    let mut mutations = MutationQueue::new();
+    mutations.park_subtree(first.id);
+    context.commit_mutations(mutations).unwrap();
+    context.last_layout_scope = vec![leaf.id];
+    assert!(context.scoped_scroll_metric_targets(document).is_empty());
+}
+
+#[test]
+fn deleting_a_child_releases_its_layout_cache_before_another_frame() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let child = context
+        .create_detached_component(document, Text::new("child"))
+        .unwrap();
+    context.append_child(root, child).unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 200.0))
+        .unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(document, child.id)
+            .is_some()
+    );
+    let mut mutations = MutationQueue::new();
+    mutations.despawn_subtree(child.id);
+    context.commit_mutations(mutations).unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(document, child.id)
+            .is_none()
+    );
+    assert!(
+        context
+            .layout_cache
+            .used_padding(document, root.id)
+            .is_some()
+    );
+}
+
+#[test]
+fn closing_one_document_releases_its_layout_without_invalidating_another() {
+    let mut context = AppContext::new();
+    let first = DocumentId::new(1).unwrap();
+    let second = DocumentId::new(2).unwrap();
+    let first_root = context.create_component(first, Stack::column(0.0)).unwrap();
+    let second_root = context
+        .create_component(second, Stack::column(0.0))
+        .unwrap();
+    let viewport = crate::LayoutViewport::new(320.0, 200.0);
+    context.layout_document(first, viewport).unwrap();
+    context.layout_document(second, viewport).unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(first, first_root.id)
+            .is_some()
+    );
+    assert!(
+        context
+            .layout_cache
+            .used_padding(second, second_root.id)
+            .is_some()
+    );
+    context.remove_view(first_root).unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(first, first_root.id)
+            .is_none()
+    );
+    assert!(
+        context
+            .layout_cache
+            .used_padding(second, second_root.id)
+            .is_some()
+    );
+    let mut mutations = MutationQueue::new();
+    mutations.park_subtree(second_root.id);
+    context.commit_mutations(mutations).unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(second, second_root.id)
+            .is_none()
+    );
+    let replacement_root = context
+        .create_component(second, Stack::column(0.0))
+        .unwrap();
+    context.append_child(replacement_root, second_root).unwrap();
+    context.layout_document(second, viewport).unwrap();
+    assert!(
+        context
+            .layout_cache
+            .used_padding(second, second_root.id)
+            .is_some()
+    );
+}
+
+#[test]
 fn bind_component_requires_an_existing_node_then_enables_read() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -4014,9 +4214,8 @@ fn builtin_and_plugin_components_share_one_registry() {
         Some("nana.gpu-view")
     );
     assert_eq!(
-        context.resolve_component_tag("chip"),
-        None,
-        "chip is a Button variant, not a registry tag"
+        context.resolve_component_tag("chip").map(ComponentTypeId::as_str),
+        Some("nana.chip")
     );
     assert_eq!(
         context.resolve_component_tag("virtual-list"),

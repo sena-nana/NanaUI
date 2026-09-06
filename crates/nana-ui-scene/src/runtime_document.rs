@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use nana_ui_runtime::{
@@ -131,16 +131,15 @@ impl RuntimeDocument {
         mut run_text_and_layout: impl FnMut(&mut AppContext, &SystemWork) -> Result<(), FrameworkError>,
     ) -> Result<RuntimeFrameUpdate, FrameworkError> {
         let mut passes = 0;
-        let mut scene_updated = 0;
-        let mut scene_removed = 0;
-        let mut rebuilt_primitives = 0;
-        let mut order_rebuilt = false;
-        let mut accessibility_updated = BTreeMap::new();
+        let mut accessibility_dirty = BTreeSet::new();
         let mut accessibility_removed = BTreeSet::new();
         let mut consumed = Vec::new();
-        let mut scene_batches = Vec::new();
+        let mut render_dirty = BTreeSet::new();
+        let mut render_removed = BTreeSet::new();
         let mut hit_dirty: Vec<StableNodeId> = Vec::new();
         let mut hit_scroll_updates: Vec<(StableNodeId, [f32; 2])> = Vec::new();
+        let mut hit_geometry_changed = false;
+        let mut accessibility_subtrees = BTreeSet::new();
 
         self.context.begin_frame_profile();
         loop {
@@ -175,54 +174,74 @@ impl RuntimeDocument {
             // only the last result was ever observable.
             hit_scroll_updates.extend(self.context.take_scroll_hit_updates());
             hit_dirty.extend(work.input_hit_test.iter().copied());
+            hit_geometry_changed |= !work.style.is_empty()
+                || !work.layout.is_empty()
+                || !work.transform.is_empty()
+                || !work.state.is_empty();
+            accessibility_subtrees.extend(
+                work.input_hit_test
+                    .iter()
+                    .chain(&work.transform)
+                    .chain(&work.layout)
+                    .copied(),
+            );
 
+            accessibility_dirty.extend(work.accessibility.iter().copied());
+            accessibility_removed.extend(work.accessibility_removals.iter().copied());
+            render_dirty.extend(work.render_extraction.iter().copied());
+            render_removed.extend(work.render_removals.iter().copied());
+            consumed.push(work);
+        }
+        self.apply_hit_test_work(hit_dirty, hit_scroll_updates, hit_geometry_changed);
+        let generation = self.context.world().generation();
+        let mut accessibility = AccessibilityDelta {
+            generation,
+            updated: Vec::new(),
+            removed: Vec::new(),
+        };
+        if !accessibility_dirty.is_empty()
+            || !accessibility_removed.is_empty()
+            || !accessibility_subtrees.is_empty()
+        {
             let started = std::time::Instant::now();
-            let accessibility = self.context.world().project_accessibility_delta(&work);
+            let work = SystemWork {
+                generation,
+                accessibility: accessibility_dirty.into_iter().collect(),
+                accessibility_removals: accessibility_removed.into_iter().collect(),
+                input_hit_test: accessibility_subtrees.into_iter().collect(),
+                ..Default::default()
+            };
+            accessibility = self.context.world().project_accessibility_delta(&work);
             self.context
                 .time_stage_duration(FrameStage::Accessibility, started.elapsed());
-            for removed in accessibility.removed {
-                accessibility_updated.remove(&removed);
-                accessibility_removed.insert(removed);
+        }
+        // Project only the final retained state, once per node. In particular,
+        // do not clone the scene or walk its primitive stream on an idle flush.
+        let scene = if render_dirty.is_empty() && render_removed.is_empty() {
+            SceneDelta {
+                stats: crate::SceneDeltaStats {
+                    primitive_count: self.scene.primitive_count(),
+                    ..Default::default()
+                },
+                ..Default::default()
             }
-            for node in accessibility.updated {
-                accessibility_removed.remove(&node.id);
-                accessibility_updated.insert(node.id, node);
-            }
+        } else {
             let started = std::time::Instant::now();
-            let extracted = self.context.world().extract_nodes(&work.render_extraction);
+            let extracted = self
+                .context
+                .world()
+                .extract_nodes(&render_dirty.into_iter().collect::<Vec<_>>());
             self.context.record_extract(&extracted);
             self.context
                 .time_stage_duration(FrameStage::Extract, started.elapsed());
-            scene_batches.push((extracted, work.render_removals.clone()));
-            consumed.push(work);
-        }
-        self.apply_hit_test_work(hit_dirty, hit_scroll_updates);
+            Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed)
+        };
         self.context.finish_frame_profile();
-
-        for (extracted, removals) in scene_batches {
-            let scene = Arc::make_mut(&mut self.scene).apply_delta(extracted, removals);
-            scene_updated += scene.updated_nodes;
-            scene_removed += scene.removed_nodes;
-            rebuilt_primitives += scene.rebuilt_primitives;
-            order_rebuilt |= scene.order_rebuilt;
-        }
-
-        let generation = self.context.world().generation();
         Ok(RuntimeFrameUpdate {
             generation,
             passes,
-            scene: SceneDelta {
-                updated_nodes: scene_updated,
-                removed_nodes: scene_removed,
-                rebuilt_primitives,
-                order_rebuilt,
-                primitive_count: self.scene.primitives().count(),
-            },
-            accessibility: AccessibilityDelta {
-                generation,
-                updated: accessibility_updated.into_values().collect(),
-                removed: accessibility_removed.into_iter().collect(),
-            },
+            scene,
+            accessibility,
         })
     }
 
@@ -240,15 +259,17 @@ impl RuntimeDocument {
         &mut self,
         mut dirty: Vec<StableNodeId>,
         scroll_updates: Vec<(StableNodeId, [f32; 2])>,
+        geometry_changed: bool,
     ) {
         if dirty.is_empty() {
             return;
         }
         dirty.sort_unstable();
         dirty.dedup();
-        if self
-            .context
-            .hit_test_work_is_scroll_only(&dirty, &scroll_updates)
+        if !geometry_changed
+            && self
+                .context
+                .hit_test_work_is_scroll_only(&dirty, &scroll_updates)
         {
             for (scroller, delta) in scroll_updates {
                 self.context
@@ -274,6 +295,91 @@ mod tests {
     use nana_ui_runtime::{Button, ComputedStyle, StableNodeId, TextContent, TextMetrics};
 
     use super::*;
+
+    #[test]
+    fn scroll_and_frozen_transform_publish_matching_hit_and_accessibility_in_one_flush() {
+        use nana_ui_core::{OverflowSpec, PaintTransform};
+        use nana_ui_runtime::{
+            AccessibilityRole, AccessibilityState, InteractionState, LayoutBox, MutationQueue,
+            NodeKind, NodeStyle, ScrollOffset,
+        };
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let ids = [1, 2, 3].map(|id| StableNodeId::new(id).unwrap());
+        let mut queue = MutationQueue::new();
+        for id in ids {
+            queue.create(id, document, NodeKind::Element { tag: "div".into() });
+            queue.write_layout(
+                id,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: if id == ids[0] { 100.0 } else { 20.0 },
+                },
+            );
+        }
+        queue.insert(ids[0], ids[1], None);
+        queue.insert(ids[1], ids[2], None);
+        queue.set_style(
+            ids[0],
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    overflow_y: OverflowSpec::Scroll,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        queue.set_interaction(
+            ids[2],
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        queue.set_accessibility(
+            ids[2],
+            AccessibilityState {
+                role: AccessibilityRole::Button,
+                ..Default::default()
+            },
+        );
+        runtime.context_mut().world_mut().commit(queue).unwrap();
+        runtime.flush_with(|_, _| Ok(())).unwrap();
+        let mut change = MutationQueue::new();
+        change.set_scroll_offset(ids[0], ScrollOffset { x: 0.0, y: 60.0 });
+        change.set_style(
+            ids[1],
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    transform: Some(PaintTransform {
+                        f: 60.0,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        runtime.context_mut().world_mut().commit(change).unwrap();
+        let update = runtime.flush_with(|_, _| Ok(())).unwrap();
+        assert_eq!(
+            runtime.context().world().hit_test(document, 10.0, 10.0),
+            Some(ids[2])
+        );
+        let accessible = update
+            .accessibility
+            .updated
+            .iter()
+            .find(|node| node.id == ids[2])
+            .unwrap();
+        assert_eq!(accessible.bounds.y, 0.0);
+        assert_eq!(
+            runtime.scene().draw_node_bounds(ids[2]).unwrap().y,
+            accessible.bounds.y
+        );
+    }
 
     #[test]
     fn focused_textarea_typing_settles_the_frame() {
@@ -809,6 +915,11 @@ mod tests {
         // once per pass while only the last result was ever observable, so the
         // frame's total must stay within a single document's worth of entries.
         assert!(first.passes > 1, "expected a multi-pass settle");
+        assert_eq!(first.scene.updated_nodes, runtime.scene().node_count());
+        assert_eq!(
+            first.scene.rebuilt_primitives,
+            runtime.scene().primitive_count()
+        );
         assert!(
             built <= live,
             "{} passes built {built} hit entries for {live} nodes",

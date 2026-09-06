@@ -1,0 +1,129 @@
+{
+  "cases": [
+    {
+      "geometry": {
+        "commit_ms": {
+          "max": 0.13699999999999998,
+          "p50": 0.0023,
+          "p95": 0.0036,
+          "p99": 0.0062
+        },
+        "max_range_updates": 15,
+        "max_refreshed_nodes": 2,
+        "query_ms": {
+          "max": 0.13349999999999998,
+          "p50": 0.0009,
+          "p95": 0.0019,
+          "p99": 0.0034000000000000002
+        },
+        "samples": 19776
+      },
+      "initial_index_ms": 3.3539,
+      "initial_refreshed_nodes": 10000,
+      "retained_nodes": 10000,
+      "sample_seconds": 60.0006022,
+      "scroll_only": {
+        "commit_ms": {
+          "max": 0.1348,
+          "p50": 0.002,
+          "p95": 0.0031,
+          "p99": 0.0054
+        },
+        "max_range_updates": 0,
+        "max_refreshed_nodes": 0,
+        "query_ms": {
+          "max": 0.0277,
+          "p50": 0.0003,
+          "p95": 0.00039999999999999996,
+          "p99": 0.0007
+        },
+        "samples": 19775
+      }
+    },
+    {
+      "geometry": {
+        "commit_ms": {
+          "max": 0.245,
+          "p50": 0.0023,
+          "p95": 0.0035,
+          "p99": 0.0072
+        },
+        "max_range_updates": 17,
+        "max_refreshed_nodes": 2,
+        "query_ms": {
+          "max": 0.0522,
+          "p50": 0.0009,
+          "p95": 0.0019,
+          "p99": 0.004
+        },
+        "samples": 19475
+      },
+      "initial_index_ms": 31.8648,
+      "initial_refreshed_nodes": 50000,
+      "retained_nodes": 50000,
+      "sample_seconds": 60.0014084,
+      "scroll_only": {
+        "commit_ms": {
+          "max": 0.6011000000000001,
+          "p50": 0.002,
+          "p95": 0.003,
+          "p99": 0.0063
+        },
+        "max_range_updates": 0,
+        "max_refreshed_nodes": 0,
+        "query_ms": {
+          "max": 0.0222,
+          "p50": 0.0003,
+          "p95": 0.00039999999999999996,
+          "p99": 0.0009
+        },
+        "samples": 19475
+      }
+    },
+    {
+      "geometry": {
+        "commit_ms": {
+          "max": 0.9089,
+          "p50": 0.0023,
+          "p95": 0.0038,
+          "p99": 0.007
+        },
+        "max_range_updates": 18,
+        "max_refreshed_nodes": 2,
+        "query_ms": {
+          "max": 0.0882,
+          "p50": 0.001,
+          "p95": 0.002,
+          "p99": 0.0044
+        },
+        "samples": 19790
+      },
+      "initial_index_ms": 50.700500000000005,
+      "initial_refreshed_nodes": 100000,
+      "retained_nodes": 100000,
+      "sample_seconds": 60.0001333,
+      "scroll_only": {
+        "commit_ms": {
+          "max": 0.4037,
+          "p50": 0.002,
+          "p95": 0.003,
+          "p99": 0.006
+        },
+        "max_range_updates": 0,
+        "max_refreshed_nodes": 0,
+        "query_ms": {
+          "max": 0.13970000000000002,
+          "p50": 0.0003,
+          "p95": 0.0005,
+          "p99": 0.0007999999999999999
+        },
+        "samples": 19790
+      }
+    }
+  ],
+  "drains_scroll_hit_updates": true,
+  "sample_pause_ms": 1,
+  "scope": "CPU layout content index; no shaping, Scene, GPU or presentation",
+  "warmup_seconds_per_case": 2,
+  "work_counters_enabled": true
+}

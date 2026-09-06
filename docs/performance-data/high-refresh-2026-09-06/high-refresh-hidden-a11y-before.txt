@@ -1,0 +1,22 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 55.41s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-cd0c6e6df9ebb6c8.exe)
+
+running 1 test
+test world::accessibility::viewport_tests::hidden_accessibility_containers_keep_visible_descendants_connected ... FAILED
+
+failures:
+
+---- world::accessibility::viewport_tests::hidden_accessibility_containers_keep_visible_descendants_connected stdout ----
+
+thread 'world::accessibility::viewport_tests::hidden_accessibility_containers_keep_visible_descendants_connected' (37112) panicked at crates\nana-ui-runtime\src\world\accessibility_viewport_tests.rs:60:26:
+missing accessible parent
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    world::accessibility::viewport_tests::hidden_accessibility_containers_keep_visible_descendants_connected
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 836 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

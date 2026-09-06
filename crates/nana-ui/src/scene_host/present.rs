@@ -1,10 +1,11 @@
 //! Scene host present coordination.
 
 use super::*;
+use crate::SceneGpuRendererRegistry;
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
     pub(super) fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
-        if self.render_suspended {
+        if self.render_suspended || !self.can_present(id) {
             return;
         }
         if self.graphics.take_device_lost() {
@@ -44,13 +45,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         };
-        let pending = if !update.accessibility.updated.is_empty()
-            || !update.accessibility.removed.is_empty()
-        {
-            Some(AccessibilityUpdate::Delta(update.accessibility))
-        } else {
-            None
+        let Some(pending) = self.accessibility_pending_mut(id) else {
+            return;
         };
+        pending.stage(update.accessibility);
         let Some(scene) = self
             .program
             .write_document(id, |document| document.shared_scene())
@@ -59,22 +57,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .host_failure(HostFailure::MissingDocument { window: id });
             return;
         };
-        if let Some(pending) = pending {
-            *self.accessibility_pending_mut(id) = Some(pending);
-        }
-        if let Some(producers) = self.program.scene_resource_producers(id)
-            && let Err(error) = producers.encode_scene(
-                scene.as_ref(),
-                self.graphics.resources().device(),
-                self.graphics.resources().queue(),
-            )
-        {
-            self.program.host_failure(HostFailure::ResourceProduction {
-                window: id,
-                error: error.to_string(),
-            });
-            return;
-        }
         let format = if id == WindowId::PRIMARY {
             self.graphics.format()
         } else {
@@ -107,13 +89,90 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 label: Some("NanaUI scene host frame"),
             },
         );
+        let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
+            match producers.encode_scene(
+                scene.as_ref(),
+                self.graphics.resources().device(),
+                self.graphics.resources().queue(),
+                &mut encoder,
+            ) {
+                Ok(prepared) => Some(prepared),
+                Err(error) => {
+                    drop(encoder);
+                    drop(target);
+                    self.discard_frame(id, frame);
+                    self.program.host_failure(HostFailure::ResourceProduction {
+                        window: id,
+                        error: error.to_string(),
+                    });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let host_textures = self.program.host_textures(id);
-        let gpu_renderers = resolve_scene_gpu_renderers(
-            self.program.scene_gpu_renderers(id),
-            self.default_scene_gpu_renderers.clone(),
-        );
+        if let Some(registry) = host_textures.as_ref() {
+            if let Ok(plan) = scene.frame_plan() {
+                let slots = plan
+                    .custom_nodes
+                    .iter()
+                    .filter_map(|node| {
+                        let primitive = scene.primitive(*node)?;
+                        match &primitive.kind {
+                            nana_ui_scene::ScenePrimitiveKind::Custom { node, .. }
+                                if node.renderer.as_ref() == "nana.host-texture" =>
+                            {
+                                Some(Arc::clone(&node.resource))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect::<HashSet<_>>();
+                let pending = Arc::clone(&self.texture_redraws);
+                let proxy = self.proxy.clone();
+                self.texture_subscriptions.insert(
+                    id,
+                    registry.subscribe(move |slot| {
+                        if slot.is_empty() || slots.contains(slot) {
+                            pending.lock().expect("texture redraws").insert(id);
+                            proxy.wake_up();
+                        }
+                    }),
+                );
+            }
+        } else {
+            self.texture_subscriptions.remove(&id);
+        }
+        let mut gpu_renderers = self.program.scene_gpu_renderers(id);
+        #[cfg(target_os = "windows")]
+        let composition = if id == WindowId::PRIMARY {
+            self.graphics.windows_composition().cloned()
+        } else {
+            self.auxiliary.get(&id).and_then(|host| host.surface.windows_composition()).cloned()
+        };
+        #[cfg(target_os = "windows")]
+        if let Some(composition) = composition.as_ref() {
+            let regions = crate::native_content_regions(&scene, nana_ui_scene::SceneRect {
+                x: 0.0, y: 0.0, width: geometry.logical_size.0, height: geometry.logical_size.1,
+            });
+            let result = regions.and_then(|regions| {
+                self.program.native_content_frame(id, composition, &regions, &self.context_for(id))
+            });
+            if let Err(error) = result {
+                drop(encoder);
+                drop(target);
+                self.discard_frame(id, frame);
+                self.program.host_failure(HostFailure::ResourceProduction { window: id, error });
+                return;
+            }
+            let renderer = self.native_renderers.entry(format).or_default().clone();
+            gpu_renderers.get_or_insert_with(SceneGpuRendererRegistry::new)
+                .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
+        }
         let theme = self.program.theme_mode();
-        let paint = self.painter_mut(format).paint(
+        let paint = self.painter_mut(format).paint_target(
+            crate::RenderTargetId(id.0),
             scene.as_ref(),
             &mut encoder,
             &target,
@@ -122,6 +181,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             gpu_renderers.as_ref(),
         );
         if let Err(error) = paint {
+            drop(encoder);
+            drop(target);
+            self.discard_frame(id, frame);
             self.program.host_failure(HostFailure::UnpaintableScene {
                 window: id,
                 error: error.to_string(),
@@ -130,10 +192,30 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             return;
         }
         let submit_started = std::time::Instant::now();
-        self.graphics.resources().queue().submit([encoder.finish()]);
+        let submission = self.graphics.resources().queue().submit([encoder.finish()]);
+        if let Some(prepared) = prepared {
+            prepared.submitted(self.graphics.resources().device(), submission);
+        }
         self.painter_mut(format)
             .record_submit(submit_started.elapsed());
         self.graphics.present(frame);
+        #[cfg(target_os = "windows")]
+        if let Some(composition) = composition
+            && let Err(error) = composition.commit()
+        {
+            self.program.host_failure(HostFailure::ResourceProduction {
+                window: id,
+                error: error.to_string(),
+            });
+            self.request_redraw(id);
+            return;
+        }
+        // Publish semantics for the frame just presented. Application callbacks
+        // below may commit new work intended for the next frame.
+        #[cfg(not(target_os = "android"))]
+        if !self.is_live_resize(id) {
+            self.synchronize_accessibility(id);
+        }
         self.apply_ime_request(id);
         let mut update = self
             .program
@@ -143,11 +225,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
-        #[cfg(not(target_os = "android"))]
-        if !self.is_live_resize(id) {
-            self.synchronize_accessibility(id);
+    }
+    fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
+        if id == WindowId::PRIMARY {
+            self.graphics.discard_frame(frame);
+        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+            self.graphics.discard_surface_frame(&mut host.surface, frame);
         }
     }
+
     pub(super) fn acquire_frame(
         &mut self,
         id: WindowId,
@@ -169,13 +255,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.last_theme,
             self.settings.transparent,
             self.last_material_mode,
-            self.program.appearance_backdrop_opacity(),
+            self.program
+                .appearance_backdrop_opacity_for(WindowId::PRIMARY),
         );
-        match pollster::block_on(HostedGpuContext::new(
-            window,
-            wgpu::Features::empty(),
-            window_wants_transparent_surface(self.settings.transparent, self.last_material_mode),
-        )) {
+        match pollster::block_on(self.graphics.recreate(wgpu::Features::empty())) {
             Ok(graphics) => {
                 let mut painters = HashMap::new();
                 painters.insert(
@@ -198,16 +281,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                         window.as_ref(),
                         self.last_theme,
                         host.settings.transparent,
-                        self.last_material_mode,
-                        self.program.appearance_backdrop_opacity(),
+                        self.program.window_material_mode_for(id),
+                        self.program.appearance_backdrop_opacity_for(id),
                     );
-                    match graphics.create_surface(
-                        window,
-                        window_wants_transparent_surface(
-                            host.settings.transparent,
-                            self.last_material_mode,
-                        ),
-                    ) {
+                    match graphics.recreate_surface(&host.surface) {
                         Ok(surface) => {
                             let format = surface.format();
                             painters.entry(format).or_insert_with(|| {
@@ -229,11 +306,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     painter.set_image_waker(Arc::new(move || proxy.wake_up()));
                 }
                 self.painters = painters;
+                self.native_renderers.clear();
                 self.auxiliary = rebuilt;
-                self.default_scene_gpu_renderers = Some(default_scene_gpu_renderers_with_host(
-                    Arc::clone(self.graphics.resources().device()),
-                    Arc::clone(self.graphics.resources().queue()),
-                ));
                 self.refresh_material();
                 self.next_gpu_retry = None;
                 self.render_suspended = false;

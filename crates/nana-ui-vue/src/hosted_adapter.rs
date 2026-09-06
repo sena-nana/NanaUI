@@ -480,6 +480,10 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
                     .emit_native_ime_from_runtime(&mut self.engine, &event)?;
             }
+            WindowEvent::OpenFailed { id, .. } => {
+                self.vue.notify_window_closed(VueWindowId(id.0))?;
+            }
+            WindowEvent::MousePassthroughChanged { .. } => {}
             WindowEvent::Closed { id } => {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }

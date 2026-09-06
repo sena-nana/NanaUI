@@ -268,6 +268,18 @@ impl Select {
 }
 
 impl crate::ComponentView for Select {
+    fn reconcile(&mut self, mut next: Self) {
+        // Value/options are application state; the open menu and its keyboard
+        // highlight belong to the current interaction while those props agree.
+        if next.inactive() {
+            next.close();
+        } else if self.value == next.value && self.options == next.options {
+            next.opened = self.opened;
+            next.highlighted = self.highlighted;
+        }
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "select".into(),
@@ -510,6 +522,53 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn background_props_refresh_preserves_open_select_and_keyboard_highlight() {
+        let options = [SelectOption::new("a", "A"), SelectOption::new("b", "B")];
+        let mut select = Select::new(Some("a")).options(options.clone()).opened(true);
+        select.highlight_delta(1);
+        crate::ComponentView::reconcile(
+            &mut select,
+            Select::new(Some("a")).options(options).invalid(true),
+        );
+        assert!(select.opened);
+        assert_eq!(select.highlighted, Some(1));
+        assert!(select.invalid);
+    }
+
+    #[test]
+    fn application_selection_or_options_change_replaces_menu_state() {
+        let options = [SelectOption::new("a", "A"), SelectOption::new("b", "B")];
+        let mut select = Select::new(Some("a")).options(options.clone()).opened(true);
+        crate::ComponentView::reconcile(
+            &mut select,
+            Select::new(Some("b")).options(options.clone()),
+        );
+        assert!(!select.opened);
+        assert_eq!(select.highlighted, None);
+        assert_eq!(select.value.as_deref(), Some("b"));
+        select.toggle_open();
+        crate::ComponentView::reconcile(
+            &mut select,
+            Select::new(Some("b")).options([options[1].clone()]),
+        );
+        assert!(!select.opened);
+        assert_eq!(select.highlighted, None);
+    }
+
+    #[test]
+    fn disabling_or_loading_select_closes_its_open_menu() {
+        for loading in [false, true] {
+            let mut select = Select::new(Some("a"))
+                .options([SelectOption::new("a", "A")])
+                .opened(true);
+            let next = select.clone().disabled(!loading).loading(loading);
+            crate::ComponentView::reconcile(&mut select, next);
+            assert!(!select.opened);
+            assert_eq!(select.highlighted, None);
+        }
+    }
+
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;

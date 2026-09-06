@@ -1,0 +1,24 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 11s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-9c6573386c549525.exe)
+
+running 1 test
+test layout_engine::tests::lazy_layout_input_avoids_a_single_item_projection_batch ... FAILED
+
+failures:
+
+---- layout_engine::tests::lazy_layout_input_avoids_a_single_item_projection_batch stdout ----
+
+thread 'layout_engine::tests::lazy_layout_input_avoids_a_single_item_projection_batch' (36376) panicked at crates\nana-ui-runtime\src\layout_engine\tests.rs:3421:5:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    layout_engine::tests::lazy_layout_input_avoids_a_single_item_projection_batch
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 830 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

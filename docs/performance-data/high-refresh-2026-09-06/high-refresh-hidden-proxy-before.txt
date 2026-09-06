@@ -1,0 +1,22 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.77s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-cd0c6e6df9ebb6c8.exe)
+
+running 1 test
+test world::hit_test::build_tests::hidden_container_keeps_clip_order_and_constant_work_scroll ... FAILED
+
+failures:
+
+---- world::hit_test::build_tests::hidden_container_keeps_clip_order_and_constant_work_scroll stdout ----
+
+thread 'world::hit_test::build_tests::hidden_container_keeps_clip_order_and_constant_work_scroll' (5780) panicked at crates\nana-ui-runtime\src\world\hit_test\build_tests.rs:54:5:
+assertion failed: !world.hit_test_candidates(document, 10.0, 55.0).contains(&node(3))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    world::hit_test::build_tests::hidden_container_keeps_clip_order_and_constant_work_scroll
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 833 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

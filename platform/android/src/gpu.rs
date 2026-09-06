@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use android_activity::AndroidApp;
-use raw_window_handle::{DisplayHandle, HasWindowHandle};
+use raw_window_handle::{AndroidNdkWindowHandle, DisplayHandle, RawWindowHandle, WindowHandle};
 use wgpu::{
     BindGroup, BindGroupLayout, Buffer, BufferUsages, ColorTargetState, CompositeAlphaMode,
     CurrentSurfaceTexture, Device, FragmentState, Instance, MultisampleState, PipelineLayout,
@@ -164,9 +164,10 @@ impl GpuSurface {
         // the activity holds the window; runtime drops Surface on Destroyed.
         let surface = unsafe {
             let display = DisplayHandle::android();
-            let window = native
-                .window_handle()
-                .map_err(|e| format!("window handle: {e}"))?;
+            let window = AndroidNdkWindowHandle::new(native.ptr().cast());
+            // SAFETY: the ANativeWindow is retained by `native` for this
+            // surface creation call and remains alive for the Surface.
+            let window = WindowHandle::borrow_raw(RawWindowHandle::AndroidNdk(window));
             instance.create_surface_unsafe(SurfaceTargetUnsafe::RawHandle {
                 raw_display_handle: Some(display.as_raw()),
                 raw_window_handle: window.as_raw(),

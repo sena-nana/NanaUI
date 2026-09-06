@@ -1435,6 +1435,7 @@ fn quad_aabb(corners: &[[f32; 2]]) -> LogicalRect {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -2136,5 +2137,80 @@ mod tests {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("text affine test requires a WGPU device")
+    }
+}
+
+pub(super) struct TextPipelineTarget {
+    atlas: cryoglyph::TextAtlas,
+    viewport: cryoglyph::Viewport,
+    renderers: Vec<cryoglyph::TextRenderer>,
+    affine_cache: AffineCache,
+    frame_texts: usize,
+    prev_frame_texts: usize,
+    frame_affines: usize,
+    prev_frame_affines: usize,
+    frame_gpu_allocations: usize,
+    affine_uniforms: wgpu::Buffer,
+    affine_bind_group: wgpu::BindGroup,
+}
+impl TextPipeline {
+    pub(super) fn swap_target(
+        &mut self,
+        target: &mut Option<TextPipelineTarget>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) {
+        let target = target.get_or_insert_with(|| {
+            let affine_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.text.affine.uniforms"),
+                size: std::mem::size_of::<AffineUniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            TextPipelineTarget {
+                atlas: cryoglyph::TextAtlas::with_color_mode(
+                    device,
+                    queue,
+                    &self.cache,
+                    format,
+                    cryoglyph::ColorMode::Accurate,
+                ),
+                viewport: cryoglyph::Viewport::new(device, &self.cache),
+                renderers: Vec::new(),
+                affine_cache: AffineCache::default(),
+                frame_texts: 0,
+                prev_frame_texts: 0,
+                frame_affines: 0,
+                prev_frame_affines: 0,
+                frame_gpu_allocations: 0,
+                affine_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("nana.target.text.affine.bind"),
+                    layout: &self.affine.pipeline.get_bind_group_layout(0),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: affine_uniforms.as_entire_binding(),
+                    }],
+                }),
+                affine_uniforms,
+            }
+        });
+        std::mem::swap(&mut self.atlas, &mut target.atlas);
+        std::mem::swap(&mut self.viewport, &mut target.viewport);
+        std::mem::swap(&mut self.renderers, &mut target.renderers);
+        std::mem::swap(&mut self.affine_cache, &mut target.affine_cache);
+        std::mem::swap(&mut self.frame_texts, &mut target.frame_texts);
+        std::mem::swap(&mut self.prev_frame_texts, &mut target.prev_frame_texts);
+        std::mem::swap(&mut self.frame_affines, &mut target.frame_affines);
+        std::mem::swap(&mut self.prev_frame_affines, &mut target.prev_frame_affines);
+        std::mem::swap(
+            &mut self.frame_gpu_allocations,
+            &mut target.frame_gpu_allocations,
+        );
+        std::mem::swap(&mut self.affine.uniforms, &mut target.affine_uniforms);
+        std::mem::swap(
+            &mut self.affine.uniform_bind_group,
+            &mut target.affine_bind_group,
+        );
     }
 }

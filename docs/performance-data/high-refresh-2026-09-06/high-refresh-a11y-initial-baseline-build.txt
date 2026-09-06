@@ -1,0 +1,4 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+   Compiling nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+   Compiling nana-ui v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 42s

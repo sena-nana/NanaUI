@@ -155,8 +155,7 @@ impl<E: JsEngine> VueAgentSession<E> {
         height: u32,
     ) -> Result<Self, AgentError> {
         let mut host = VueHost::with_viewport(width, height, 1.0);
-        host.attach_engine(&mut engine)?;
-        engine.initialize(artifact)?;
+        host.initialize_with_web_api(&mut engine, artifact)?;
         host.bind_event_bridge(&mut engine)?;
         let mut session = Self {
             host,
@@ -550,7 +549,9 @@ fn node_click_point(host: &VueHost, id: u64) -> Option<(f32, f32)> {
     let handle = NodeHandle(id);
     let document = host.document();
     let guard = document.lock().ok()?;
-    if let Some(bounds) = guard.layout_box(handle)
+    // Runtime LayoutBox deliberately excludes scroll/paint transforms. Use
+    // the same current projection as the painter when synthesizing a pointer.
+    if let Some(bounds) = guard.scene().draw_node_bounds(StableNodeId::try_from(handle).ok()?)
         && (bounds.width > 0.0 || bounds.height > 0.0)
     {
         return Some((

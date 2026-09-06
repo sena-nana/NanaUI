@@ -1,0 +1,11 @@
+
+running 6 tests
+test hosted_context::tests::alpha_mode_needs_surface_recreate_when_opaque_only ... ok
+test hosted_context::tests::composition_requires_premultiplied_alpha_even_for_opaque_windows ... ok
+test hosted_context::tests::identical_drawable_sizes_do_not_need_a_new_swapchain ... ok
+test hosted_context::tests::live_resize_policy_reconfigures_once_per_session_and_back ... ok
+test hosted_context::tests::live_resize_prefers_unblocked_present_when_the_surface_advertises_it ... ok
+test hosted_context::tests::surface_preferences_preserve_transparency_and_srgb ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 428 filtered out; finished in 0.00s
+

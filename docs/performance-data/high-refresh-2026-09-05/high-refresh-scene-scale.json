@@ -1,0 +1,89 @@
+{
+  "profile": "release",
+  "samples": [
+    {
+      "frames": 5879,
+      "initial_scene_ms": 163.726,
+      "local_update_cpu_ms": {
+        "max": 33.4265,
+        "p50": 0.0414,
+        "p95": 0.0868,
+        "p99": 0.4052
+      },
+      "rebuilt_descendant_primitives_on_scroll": 0,
+      "retained_nodes": 10001,
+      "sampling_seconds": 60.0048678,
+      "scroll_cpu_ms": {
+        "max": 7.588,
+        "p50": 0.0094,
+        "p95": 0.015400000000000002,
+        "p99": 0.0531
+      },
+      "structural_plan_recompiles": 0,
+      "visible_operations": 540,
+      "visible_query_cpu_ms": {
+        "max": 9.5179,
+        "p50": 0.023200000000000002,
+        "p95": 0.0382,
+        "p99": 0.1234
+      }
+    },
+    {
+      "frames": 6938,
+      "initial_scene_ms": 621.8912,
+      "local_update_cpu_ms": {
+        "max": 10.356499999999999,
+        "p50": 0.036199999999999996,
+        "p95": 0.06160000000000001,
+        "p99": 0.1226
+      },
+      "rebuilt_descendant_primitives_on_scroll": 0,
+      "retained_nodes": 50001,
+      "sampling_seconds": 60.0074365,
+      "scroll_cpu_ms": {
+        "max": 0.5569999999999999,
+        "p50": 0.0086,
+        "p95": 0.0132,
+        "p99": 0.024300000000000002
+      },
+      "structural_plan_recompiles": 0,
+      "visible_operations": 540,
+      "visible_query_cpu_ms": {
+        "max": 1.2248999999999999,
+        "p50": 0.0229,
+        "p95": 0.032100000000000004,
+        "p99": 0.06160000000000001
+      }
+    },
+    {
+      "frames": 6831,
+      "initial_scene_ms": 1111.7250999999999,
+      "local_update_cpu_ms": {
+        "max": 11.4654,
+        "p50": 0.045399999999999996,
+        "p95": 0.0782,
+        "p99": 0.3135
+      },
+      "rebuilt_descendant_primitives_on_scroll": 0,
+      "retained_nodes": 100001,
+      "sampling_seconds": 60.0013908,
+      "scroll_cpu_ms": {
+        "max": 1.1961000000000002,
+        "p50": 0.0102,
+        "p95": 0.0153,
+        "p99": 0.0343
+      },
+      "structural_plan_recompiles": 0,
+      "visible_operations": 540,
+      "visible_query_cpu_ms": {
+        "max": 13.0315,
+        "p50": 0.033800000000000004,
+        "p95": 0.0505,
+        "p99": 0.1282
+      }
+    }
+  ],
+  "sampling": "60 seconds per scale, serial, requested cadence 120 Hz; sleep is not presentation",
+  "schema_version": 1,
+  "scope": "scene-only affine quads; no text, Runtime, GPU or Surface timing"
+}

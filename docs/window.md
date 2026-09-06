@@ -103,3 +103,23 @@ RuntimeProgramUpdate {
 每扇窗一份 `RuntimeDocument`，用 `document` / `document_mut` 按 `WindowId` 交出。完整例子：`window-chrome-multi-window.rs`、`examples/runtime-host-fixture`。
 
 窗口位置、最大化、上次开在哪块屏幕，由应用自己记。框架在创建窗口前按当前显示器工作区约束位置（原屏断开则主屏居中，DPI 变则按逻辑尺寸重算），但不替你选配置目录，也不写盘。
+
+
+### 独立透明工具窗
+
+`WindowSettings::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。不需要 `DesktopShell` 才能使用边缘缩放。
+
+`WindowCommand::Open` 成功发出 `WindowEvent::Ready`；创建失败发出 `OpenFailed { id, error }`，应用应撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
+
+`RuntimeProgram::window_material_mode_for(id)` 与 `appearance_backdrop_opacity_for(id)` 默认调用现有全局方法，允许主窗和透明工具窗分别配置。宿主在创建、外观变化、Surface 恢复时都按目标窗口调用；背景透明不改变前景文字的不透明度。纯透明窗口的内容背景由应用 Runtime 节点绘制。
+
+`WindowSettings::constrain_to_work_area = true` 用于完整恢复工具窗：部分出屏的位置也会校正，尺寸超出屏幕时会缩小。Windows 使用扣除任务栏的原生工作区；其他平台当前回退显示器边界。默认 `false` 保留原有“与任意屏幕有交集即保留位置”的行为。
+
+原生验收探针（会短暂移动鼠标到探针自身窗口）：
+
+```powershell
+cargo build -p nana-ui --example desktop-overlay-probe --features hosted,bundled-fonts --locked
+python scripts/validate-desktop-overlay.py
+```
+
+探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。

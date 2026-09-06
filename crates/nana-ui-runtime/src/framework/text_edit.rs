@@ -80,6 +80,7 @@ pub struct FocusedTextEditor {
     pub node: StableNodeId,
     pub multiline: bool,
     pub accepts_input: bool,
+    pub accepts_selection: bool,
     pub code_editing: Option<CodeEditing>,
     kind: TextEditorKind,
 }
@@ -303,6 +304,7 @@ impl AppContext {
             node,
             multiline: editable.is_multiline(),
             accepts_input: editable.accepts_input(),
+            accepts_selection: editable.accepts_selection(),
             code_editing: editable.code_editing().cloned(),
             kind,
         })
@@ -390,7 +392,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.accepts_input {
+        if !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -883,7 +885,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.accepts_input {
+        if !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -969,7 +971,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.multiline || !focused.accepts_input {
+        if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1061,7 +1063,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.multiline || !focused.accepts_input {
+        if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1095,7 +1097,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.multiline || !focused.accepts_input {
+        if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1150,7 +1152,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.accepts_input {
+        if !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1238,7 +1240,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.accepts_input {
+        if !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1271,7 +1273,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.accepts_input {
+        if !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -1431,7 +1433,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if focused.node != node || !focused.accepts_input {
+        if focused.node != node || !focused.accepts_selection {
             self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }
@@ -1516,6 +1518,7 @@ impl AppContext {
         if count == 1
             && !extend
             && focused.multiline
+            && focused.accepts_input
             && state.additional_selections.is_empty()
             && self.world.ime(node).is_none()
             && self.begin_text_selection_drag(
@@ -1839,7 +1842,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if focused.node != drag.node {
+        if focused.node != drag.node || !focused.accepts_input {
             return Ok(false);
         }
         if !drag.active {
@@ -2249,6 +2252,15 @@ impl AppContext {
         selection: TextSelection,
         additional: Vec<TextSelection>,
     ) -> Result<bool, FrameworkError> {
+        let linked = self.world.text_snippet_session(node).and_then(|session| {
+            let old = self.editor_state(node, kind).ok()?;
+            session.linked_edit(&old.value, &value, selection)
+        });
+        let (value, selection, linked_session) = if let Some((value, selection, session)) = linked {
+            (value, selection, Some(session))
+        } else {
+            (value, selection, None)
+        };
         let mut next = TextInputState {
             value,
             selection,
@@ -2257,11 +2269,11 @@ impl AppContext {
         next.normalize_selections();
         let (value, selection, additional) =
             (next.value, next.selection, next.additional_selections);
-        match kind {
+        let changed = match kind {
             TextEditorKind::Area => {
                 let entity = Entity::<TextArea>::from_stable_id(node);
                 self.update_component(entity, |area: &mut TextArea, cx| {
-                    if area.state.value == value {
+                    if !area.accepts_input() || area.state.value == value {
                         return false;
                     }
                     area.state.value = value;
@@ -2274,7 +2286,7 @@ impl AppContext {
             TextEditorKind::Field => {
                 let entity = Entity::<TextInput>::from_stable_id(node);
                 self.update_component(entity, |field: &mut TextInput, cx| {
-                    if field.state.value == value {
+                    if !field.accepts_input() || field.state.value == value {
                         return false;
                     }
                     field.state.value = value;
@@ -2284,10 +2296,15 @@ impl AppContext {
                     true
                 })
             }
+        }?;
+        if changed && let Some(session) = linked_session {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(node, Some(session));
+            self.world.commit(mutations)?;
         }
+        Ok(changed)
     }
 }
-
 /// 展开 snippet body：`$N` 占位从文本移除，`$1..$N` 按序号记录跳位偏移，
 /// `$0` 记录初始光标位置（缺省为插入文本末尾）。`$` 后不跟数字时保持
 /// 字面量。
@@ -2416,6 +2433,150 @@ impl AppContext {
             .focused_text_editor(document)
             .expect("session implies editor");
         self.text_edit.caret_goal_x = None;
+        if let Some(session) = self.world.text_snippet_session(focused.node)
+            && let Some(group) = session
+                .index
+                .checked_sub(1)
+                .and_then(|i| session.placeholders.get(i))
+            && group.choices.iter().any(|choice| choice == &label)
+            && let Some(range) = group.ranges.first()
+        {
+            let mut next = self.editor_state(focused.node, focused.kind)?;
+            next.selection = TextSelection {
+                anchor: range.start,
+                focus: range.end,
+            };
+            next.replace_primary_selection(&label);
+            let changed = self.commit_editor_value(
+                focused.node,
+                focused.kind,
+                next.value,
+                next.selection,
+                Vec::new(),
+            )?;
+            self.dismiss_focused_text_completion(document)?;
+            return Ok(changed);
+        }
+        if let Some(raw_edit) = &item.edit {
+            let mut edit = raw_edit.clone();
+            let expansion = if let Some(body) = &edit.snippet {
+                let variables = crate::snippet::context_variables(
+                    &edit.source,
+                    TextSelection::caret(edit.caret),
+                    &edit.variables,
+                );
+                let Some(expansion) = crate::expand_text_snippet_with_variables(body, &variables)
+                else {
+                    return Ok(false);
+                };
+                edit.text = expansion.text.clone();
+                edit.stops = expansion
+                    .placeholders
+                    .iter()
+                    .map(|g| g.ranges[0].clone())
+                    .collect();
+                Some(expansion)
+            } else {
+                None
+            };
+            let current = self.editor_state(focused.node, focused.kind)?;
+            if current.value != edit.source.as_ref()
+                || current.selection != TextSelection::caret(edit.caret)
+            {
+                return Ok(false);
+            }
+            let mut replacements = edit.additional.clone();
+            replacements.push((edit.range.clone(), edit.text.clone()));
+            replacements.sort_by_key(|(range, _)| (range.start, range.end));
+            if replacements.iter().any(|(range, _)| {
+                range.start > range.end
+                    || range.end > current.value.len()
+                    || !current.value.is_char_boundary(range.start)
+                    || !current.value.is_char_boundary(range.end)
+            }) || replacements
+                .windows(2)
+                .any(|pair| pair[0].0.end > pair[1].0.start || pair[0].0.start == pair[1].0.start)
+                || edit.stops.iter().any(|stop| {
+                    stop.start > stop.end
+                        || !edit.text.is_char_boundary(stop.start)
+                        || !edit.text.is_char_boundary(stop.end)
+                })
+            {
+                return Ok(false);
+            }
+            let shift: isize = edit
+                .additional
+                .iter()
+                .filter(|(range, _)| range.end <= edit.range.start)
+                .map(|(range, text)| text.len() as isize - range.len() as isize)
+                .sum();
+            let base = edit
+                .range
+                .start
+                .checked_add_signed(shift)
+                .expect("validated disjoint edits");
+            let mut next = current;
+            for (range, text) in replacements.into_iter().rev() {
+                next.selection = TextSelection {
+                    anchor: range.start,
+                    focus: range.end,
+                };
+                next.replace_primary_selection(&text);
+            }
+            next.selection = edit
+                .stops
+                .first()
+                .map(|stop| TextSelection {
+                    anchor: base + stop.start,
+                    focus: base + stop.end,
+                })
+                .unwrap_or_else(|| TextSelection::caret(base + edit.text.len()));
+            let changed = self.commit_editor_value(
+                focused.node,
+                focused.kind,
+                next.value,
+                next.selection,
+                next.additional_selections,
+            )?;
+            if changed {
+                let stops = edit
+                    .stops
+                    .iter()
+                    .map(|range| base + range.start)
+                    .collect::<Vec<_>>();
+                let selection_ends = edit.stops.iter().map(|range| base + range.end).collect();
+                let session = (!stops.is_empty()
+                    && expansion.as_ref().is_none_or(|e| e.placeholders.len() > 1))
+                .then_some(TextSnippetSession {
+                    exit_on_last: true,
+                    stops,
+                    selection_ends,
+                    placeholders: expansion
+                        .map(|e| {
+                            e.placeholders
+                                .into_iter()
+                                .map(|mut g| {
+                                    for r in &mut g.ranges {
+                                        r.start += base;
+                                        r.end += base;
+                                    }
+                                    for (r, _) in &mut g.transforms {
+                                        r.start += base;
+                                        r.end += base;
+                                    }
+                                    g
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    index: 1,
+                });
+                let mut mutations = MutationQueue::new();
+                mutations.set_text_input_snippet(focused.node, session);
+                self.world.commit(mutations)?;
+            }
+            return Ok(changed);
+        }
         self.edit_editor_multi(
             focused.node,
             focused.kind,
@@ -2684,7 +2845,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.multiline || !focused.accepts_input {
+        if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
         let state = self.editor_state(focused.node, focused.kind)?;
@@ -2765,7 +2926,13 @@ impl AppContext {
         if !next.replace_primary_selection(&insert) {
             return Ok(false);
         }
-        let session = (!stops.is_empty()).then_some(TextSnippetSession { stops, index: 0 });
+        let session = (!stops.is_empty()).then_some(TextSnippetSession {
+            exit_on_last: false,
+            stops,
+            selection_ends: Vec::new(),
+            placeholders: Vec::new(),
+            index: 0,
+        });
         // 选区落在 $0（缺省为插入文本末尾）。
         next.selection = TextSelection::caret(final_caret);
         match focused.kind {
@@ -2804,7 +2971,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        if !focused.multiline || !focused.accepts_input {
+        if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
         let node = focused.node;
@@ -2839,8 +3006,23 @@ impl AppContext {
                 // 跳位失效（文本边界已不在字符边界上）：结束会话。
                 ended = true;
             } else {
-                self.write_editor_selection(node, focused.kind, TextSelection::caret(caret))?;
+                let end = session
+                    .selection_ends
+                    .get(session.index.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(caret);
+                self.write_editor_selection(
+                    node,
+                    focused.kind,
+                    TextSelection {
+                        anchor: caret,
+                        focus: end,
+                    },
+                )?;
             }
+        }
+        if session.exit_on_last && session.index == session.stops.len() {
+            ended = true;
         }
         let session = (!ended).then_some(session);
         let mut mutations = crate::MutationQueue::new();
@@ -3734,6 +3916,173 @@ mod completion_tests {
             vec![crate::TextSelection::caret(7)]
         );
     }
+
+    #[test]
+    fn completion_transaction_inserts_server_text_and_additions_once_with_placeholder_selection() {
+        let source = "// header\nfo_tail";
+        let edit = crate::TextCompletionEdit {
+            snippet: None,
+            variables: Default::default(),
+            source: Arc::from(source),
+            caret: 12,
+            range: 10..source.len(),
+            text: "foo(value, other)".into(),
+            additional: vec![(0..0, "// added\n".into())],
+            stops: vec![4..9, 11..16, 17..17],
+        };
+        let candidate = TextCompletion::new("display label", "fn").edit(edit);
+        let (mut context, document, area, node) = completion_editor(source, Arc::from([candidate]));
+        caret_to(&mut context, area, 12);
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&changes);
+        context
+            .on(area, move |_, event: &crate::TextChanged, _| {
+                emitted.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+        assert!(
+            context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "// added\n// header\nfoo(value, other)"
+        );
+        assert_eq!(
+            changes.lock().unwrap().len(),
+            1,
+            "one change produces one host undo transaction"
+        );
+        assert_eq!(selection_of(&context, node), (23, 28));
+        assert!(context.replace_focused_text(document, "x").unwrap());
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (26, 31));
+    }
+
+    #[test]
+    fn snippet_completion_links_utf8_edits_and_choices_with_tab_navigation() {
+        let candidate = TextCompletion::new("linked", "snippet").edit(crate::TextCompletionEdit {
+            snippet: Some("${1:颜色} + $1 + ${2|red,blue|} + $2$0".into()),
+            variables: Default::default(),
+            source: Arc::from("fo"),
+            caret: 2,
+            range: 0..2,
+            text: String::new(),
+            additional: vec![],
+            stops: vec![],
+        });
+        let (mut context, document, area, node) = completion_editor("fo", Arc::from([candidate]));
+        caret_to(&mut context, area, 2);
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let emitted = Arc::clone(&changes);
+        context
+            .on(area, move |_, event: &crate::TextChanged, _| {
+                emitted.lock().unwrap().push(event.value.clone());
+            })
+            .unwrap();
+        assert!(
+            context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "颜色 + 颜色 + red + red"
+        );
+        assert_eq!(changes.lock().unwrap().len(), 1);
+        assert!(context.replace_focused_text(document, "蓝").unwrap());
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "蓝 + 蓝 + red + red"
+        );
+        assert!(context.commit_ime(document, "色").unwrap());
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "蓝色 + 蓝色 + red + red"
+        );
+        assert_eq!(
+            changes.lock().unwrap().len(),
+            3,
+            "one event per linked edit"
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        context.update_component(area, |_, _| {}).unwrap();
+        assert!(context.focused_text_completion_active(document));
+        assert!(
+            context
+                .move_focused_text_completion(document, true)
+                .unwrap()
+        );
+        assert!(
+            context
+                .accept_focused_text_completion(document, None)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "蓝色 + 蓝色 + blue + blue"
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, true)
+                .unwrap()
+        );
+        assert_eq!(selection_of(&context, node), (0, 6));
+        assert!(context.replace_focused_text(document, "x").unwrap());
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "x + x + blue + blue"
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        assert!(
+            context
+                .advance_focused_text_snippet(document, false)
+                .unwrap()
+        );
+        let end = context.world().text_input(node).unwrap().value.len();
+        assert_eq!(selection_of(&context, node), (end, end));
+    }
+    #[test]
+    fn completion_transaction_rejects_stale_source_caret_and_overlapping_edits() {
+        for (source, caret, additional) in [
+            ("old", 2, vec![]),
+            ("fo", 1, vec![]),
+            ("fo", 2, vec![(0..1, "x".into())]),
+        ] {
+            let candidate = TextCompletion::new("label", "fn").edit(crate::TextCompletionEdit {
+                snippet: None,
+                variables: Default::default(),
+                source: Arc::from(source),
+                caret,
+                range: 0..2,
+                text: "foo()".into(),
+                additional,
+                stops: vec![],
+            });
+            let (mut context, document, area, node) =
+                completion_editor("fo", Arc::from([candidate]));
+            caret_to(&mut context, area, 2);
+            assert!(
+                !context
+                    .accept_focused_text_completion(document, None)
+                    .unwrap()
+            );
+            assert_eq!(context.world().text_input(node).unwrap().value, "fo");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4315,4 +4664,208 @@ pub(super) struct TextEditSession {
         Vec<(crate::TextSelection, Vec<crate::TextSelection>)>,
         String,
     )>,
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+    fn editor(value: &str) -> (AppContext, DocumentId, Entity<TextArea>) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).code_editor(true))
+            .unwrap();
+        context.focus_node(document, area.stable_id()).unwrap();
+        (context, document, area)
+    }
+    #[test]
+    fn read_only_text_area_keeps_focus_find_selection_copy_and_other_view_independence() {
+        let (mut context, document, area) = editor("猫 and 猫");
+        let other = context
+            .create_component(document, TextArea::new("猫 and 猫").read_only(true))
+            .unwrap();
+        context
+            .update_component(area, |area, _| area.read_only = true)
+            .unwrap();
+        assert_eq!(context.world().focused(document), Some(area.stable_id()));
+        assert!(
+            !context
+                .world()
+                .accessibility(area.stable_id())
+                .unwrap()
+                .editable
+        );
+        assert!(
+            !context
+                .world()
+                .accessibility(area.stable_id())
+                .unwrap()
+                .disabled
+        );
+        context
+            .move_focused_text_caret(document, TextCaretIntent::DocStart, false, None)
+            .unwrap();
+        assert!(
+            context
+                .find_next_focused_text_match(
+                    document,
+                    "猫",
+                    TextSearchOptions::default(),
+                    TextFindScope::Document
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.focused_selected_text(document).as_deref(),
+            Some("猫")
+        );
+        assert_eq!(
+            context.read(area, |area| area.state.selection).unwrap(),
+            TextSelection {
+                anchor: 0,
+                focus: 3
+            }
+        );
+        assert_eq!(
+            context.read(other, |area| area.state.selection).unwrap(),
+            TextSelection::caret("猫 and 猫".len())
+        );
+        assert!(
+            context
+                .find_previous_focused_text_match(
+                    document,
+                    "猫",
+                    TextSearchOptions::default(),
+                    TextFindScope::Document
+                )
+                .unwrap()
+        );
+        assert!(context.select_all_focused_text(document).unwrap());
+        assert_eq!(
+            context.focused_selected_text(document).as_deref(),
+            Some("猫 and 猫")
+        );
+        assert!(!context.replace_text_area_selection(area, "new").unwrap());
+        assert!(
+            !context
+                .delete_focused_text(document, TextDeleteKind::Backward)
+                .unwrap()
+        );
+        assert!(!context.insert_focused_text_newline(document).unwrap());
+        assert!(context.cut_focused_text(document).unwrap().is_none());
+        assert!(
+            !context
+                .replace_focused_text_match(
+                    document,
+                    "猫",
+                    TextSearchOptions::default(),
+                    "dog",
+                    false
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .replace_all_focused_text_matches(
+                    document,
+                    "猫",
+                    TextSearchOptions::default(),
+                    "dog",
+                    TextFindScope::Document,
+                    false
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            context.read(area, |area| area.state.value.clone()).unwrap(),
+            "猫 and 猫"
+        );
+        context.focus_node(document, other.stable_id()).unwrap();
+        assert_eq!(
+            context.read(area, |area| area.state.selection).unwrap(),
+            TextSelection {
+                anchor: 0,
+                focus: "猫 and 猫".len()
+            }
+        );
+    }
+    #[test]
+    fn entering_read_only_cancels_preedit_and_pending_text_drop_without_changing_value() {
+        let (mut context, document, area) = editor("alpha beta");
+        assert!(
+            context
+                .set_ime_preedit(document, "候選".into(), Some((0, 6)))
+                .unwrap()
+        );
+        context.text_edit.text_selection_drag = Some(TextSelectionDrag {
+            pointer_id: 1,
+            node: area.stable_id(),
+            kind: TextEditorKind::Area,
+            press: (0.0, 0.0),
+            source: (0, 5),
+            active: true,
+            copy: false,
+            target: Some(10),
+        });
+        context
+            .update_component(area, |area, _| area.read_only = true)
+            .unwrap();
+        assert!(context.world().ime(area.stable_id()).is_none());
+        assert_eq!(context.world().focused(document), Some(area.stable_id()));
+        assert!(
+            !context
+                .set_ime_preedit(document, "new".into(), None)
+                .unwrap()
+        );
+        assert!(!context.commit_ime(document, "候選").unwrap());
+        assert!(!context.delete_ime_surrounding(document, 1, 1).unwrap());
+        assert!(
+            !context
+                .text_editor_selection_drop(document, 1, 100.0, 10.0, &mut crate::MeasureTextShaper)
+                .unwrap()
+        );
+        assert!(context.text_edit.text_selection_drag.is_none());
+        assert_eq!(
+            context.read(area, |area| area.state.value.clone()).unwrap(),
+            "alpha beta"
+        );
+        context
+            .update_component(area, |area, _| area.read_only = false)
+            .unwrap();
+        assert!(context.commit_ime(document, "!").unwrap());
+        assert_eq!(
+            context.read(area, |area| area.state.value.clone()).unwrap(),
+            "alpha beta!"
+        );
+    }
+    #[test]
+    fn disabled_text_area_still_loses_focus_and_rejects_selection_and_input() {
+        let (mut context, document, area) = editor("alpha");
+        context
+            .update_component(area, |area, _| {
+                area.read_only = true;
+                area.disabled = true;
+            })
+            .unwrap();
+        assert_ne!(context.world().focused(document), Some(area.stable_id()));
+        context.focus_node(document, area.stable_id()).unwrap();
+        assert_ne!(context.world().focused(document), Some(area.stable_id()));
+        assert!(
+            !context
+                .find_next_focused_text_match(
+                    document,
+                    "alpha",
+                    TextSearchOptions::default(),
+                    TextFindScope::Document
+                )
+                .unwrap()
+        );
+        assert!(!context.select_all_focused_text(document).unwrap());
+        assert!(!context.replace_text_area_selection(area, "new").unwrap());
+        assert_eq!(
+            context.read(area, |area| area.state.value.clone()).unwrap(),
+            "alpha"
+        );
+    }
 }

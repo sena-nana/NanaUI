@@ -10,6 +10,9 @@ use serde::Serialize;
 
 const FRAME_BUDGET_MS: f64 = 16.67;
 
+#[path = "scene_benchmark/high_refresh.rs"]
+mod high_refresh;
+
 #[derive(Serialize)]
 struct Report {
     schema_version: u32,
@@ -47,6 +50,10 @@ struct Distribution {
 
 fn main() {
     let output = std::env::args().skip_while(|arg| arg != "--output").nth(1);
+    if std::env::args().any(|arg| arg == "--high-refresh") {
+        high_refresh::run(output);
+        return;
+    }
     let mut rows = [100, 500, 1000, 5000]
         .into_iter()
         .map(|nodes| benchmark_full(nodes, 200, 60))

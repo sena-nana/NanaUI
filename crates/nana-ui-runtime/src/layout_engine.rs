@@ -10,7 +10,9 @@ mod inline;
 use inline::*;
 mod flex;
 use flex::*;
-use std::collections::{HashMap, HashSet};
+// These caches use internal numeric identities/constraint bits, not external text keys.
+use hashbrown::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nana_ui_core::box_layout::text_line_box_height_px;
@@ -128,6 +130,12 @@ impl RuntimeLayoutEngine {
         retained: &mut RetainedLayoutCache,
         force_full: bool,
     ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
+        let roots = world.document_roots(document);
+        if roots.is_empty() {
+            retained.remove_document(document);
+            return Ok(Vec::new());
+        }
+        let retained = retained.documents.entry(document).or_default();
         if force_full {
             retained.clear();
         }
@@ -139,7 +147,7 @@ impl RuntimeLayoutEngine {
         let mut affected = HashSet::new();
         if !force_full {
             for &id in dirty {
-                if !world.contains(id) {
+                if world.document_of(id) != Some(document) {
                     continue;
                 }
                 let mut cursor = Some(id);
@@ -147,20 +155,63 @@ impl RuntimeLayoutEngine {
                     if !affected.insert(id) {
                         break;
                     }
+                    if world.layout_isolated(id) && retained.boxes.contains_key(&id) {
+                        break;
+                    }
                     cursor = world.parent_id(id);
                 }
             }
+        }
+        // A content/style change invalidates every previous constraint for
+        // the node, including constraints that are not measured this frame.
+        for id in &affected {
+            retained.intrinsics.remove(id);
         }
         let scope = ScopeContext {
             affected: &affected,
             retained: &*retained,
         };
         let scope_ref = (!force_full).then_some(&scope);
-        let roots = world.document_roots(document);
         let mut output = HashMap::with_capacity(nodes.len());
         let mut intrinsic = HashMap::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
+        let islands = if force_full {
+            Vec::new()
+        } else {
+            affected
+                .iter()
+                .copied()
+                .filter(|id| {
+                    world.layout_isolated(*id)
+                        && world
+                            .parent_id(*id)
+                            .is_some_and(|parent| !affected.contains(&parent))
+                        && retained.placements.contains_key(id)
+                        && retained.boxes.contains_key(id)
+                })
+                .collect::<Vec<_>>()
+        };
+        for &root in &islands {
+            let (origin, containing, font) = retained.placements[&root];
+            let box_ = retained.boxes[&root];
+            place_node_scoped(
+                root,
+                origin,
+                Size::new(box_.width, box_.height),
+                containing,
+                viewport,
+                font,
+                &mut nodes,
+                &mut intrinsic,
+                &mut output,
+                scope_ref,
+                None,
+            )?;
+        }
         for root in roots {
+            if !force_full && !islands.is_empty() && !affected.contains(&root) {
+                continue;
+            }
             let root_size = intrinsic_size_scoped(
                 root,
                 available,
@@ -192,7 +243,14 @@ impl RuntimeLayoutEngine {
             retained.boxes.insert(*id, *box_);
         }
         retained.used_padding.extend(nodes.used_padding.drain());
-        retained.intrinsics.extend(intrinsic);
+        retained.placements.extend(nodes.placements.drain());
+        for ((id, width, height), size) in intrinsic {
+            retained
+                .intrinsics
+                .entry(id)
+                .or_default()
+                .insert(width, height, size);
+        }
         retained.materialized_inputs = nodes.materialized;
         // Despawned ids linger in the retained maps; keep them bounded.
         // Scoped passes only materialize a subset, so membership is the live
@@ -200,12 +258,11 @@ impl RuntimeLayoutEngine {
         let universe = if force_full { nodes.len() } else { world.len() };
         if retained.boxes.len() > universe.saturating_mul(2) {
             retained.boxes.retain(|id, _| world.contains(*id));
+            retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
         }
-        if retained.intrinsics.len() > universe.saturating_mul(4) {
-            retained
-                .intrinsics
-                .retain(|(id, _, _), _| world.contains(*id));
+        if retained.intrinsics.len() > universe.saturating_mul(2) {
+            retained.intrinsics.retain(|id, _| world.contains(*id));
         }
         Ok(emitted)
     }
@@ -308,18 +365,83 @@ impl RuntimeLayoutEngine {
 }
 
 /// Cross-frame layout memo for scoped relayout: last published boxes and
-/// intrinsic sizes keyed like the per-pass intrinsic cache.
+/// intrinsic sizes keyed like the per-pass intrinsic cache. Each document owns
+/// its entries, so a full pass cannot invalidate another window's layout.
 #[derive(Default)]
 pub struct RetainedLayoutCache {
-    intrinsics: HashMap<(StableNodeId, u32, u32), Size>,
-    boxes: HashMap<StableNodeId, LayoutBox>,
-    materialized_inputs: usize,
-    pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    documents: HashMap<DocumentId, DocumentLayoutCache>,
 }
 
 impl RetainedLayoutCache {
+    /// Release all layout state owned by a closed document.
+    pub fn remove_document(&mut self, document: DocumentId) {
+        self.documents.remove(&document);
+    }
+
+    /// Release one deleted node without scanning cached nodes or constraints.
+    pub fn remove_node(&mut self, document: DocumentId, id: StableNodeId) {
+        if let Some(cache) = self.documents.get_mut(&document) {
+            cache.intrinsics.remove(&id);
+            cache.boxes.remove(&id);
+            cache.placements.remove(&id);
+            cache.used_padding.remove(&id);
+        }
+    }
+
+    pub(crate) fn used_padding(
+        &self,
+        document: DocumentId,
+        id: StableNodeId,
+    ) -> Option<nana_ui_core::PaddingSpec> {
+        self.documents
+            .get(&document)?
+            .used_padding
+            .get(&id)
+            .copied()
+    }
+}
+
+/// Two constraint variants per node allow measure/place reuse without
+/// accumulating a new entry for every pixel of an interactive resize. Eviction
+/// only causes remeasurement; the per-pass cache still keeps every constraint.
+#[derive(Default)]
+struct RetainedIntrinsic {
+    measurements: [Option<(u32, u32, Size)>; 2],
+}
+
+impl RetainedIntrinsic {
+    fn get(&self, width: u32, height: u32) -> Option<Size> {
+        self.measurements
+            .iter()
+            .flatten()
+            .find(|(w, h, _)| *w == width && *h == height)
+            .map(|(_, _, size)| *size)
+    }
+
+    fn insert(&mut self, width: u32, height: u32, size: Size) {
+        let next = Some((width, height, size));
+        if self.measurements[0].is_some_and(|(w, h, _)| w == width && h == height) {
+            self.measurements[0] = next;
+            return;
+        }
+        self.measurements[1] = self.measurements[0];
+        self.measurements[0] = next;
+    }
+}
+
+#[derive(Default)]
+struct DocumentLayoutCache {
+    intrinsics: HashMap<StableNodeId, RetainedIntrinsic>,
+    boxes: HashMap<StableNodeId, LayoutBox>,
+    materialized_inputs: usize,
+    placements: HashMap<StableNodeId, (Point, Size, f32)>,
+    pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+}
+
+impl DocumentLayoutCache {
     fn clear(&mut self) {
         self.intrinsics.clear();
+        self.placements.clear();
         self.boxes.clear();
         self.used_padding.clear();
         self.materialized_inputs = 0;
@@ -331,6 +453,7 @@ struct LayoutInputMap<'a> {
     world: &'a UiWorld,
     nodes: HashMap<StableNodeId, LayoutInput>,
     materialized: usize,
+    placements: HashMap<StableNodeId, (Point, Size, f32)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
 }
 
@@ -340,6 +463,7 @@ impl<'a> LayoutInputMap<'a> {
             world,
             nodes: HashMap::new(),
             materialized: 0,
+            placements: HashMap::new(),
             used_padding: HashMap::new(),
         }
     }
@@ -349,26 +473,32 @@ impl<'a> LayoutInputMap<'a> {
     }
 
     fn prefetch(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
-        let missing = ids
-            .iter()
-            .copied()
-            .filter(|id| !self.nodes.contains_key(id))
-            .collect::<Vec<_>>();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        let inputs = self.world.layout_inputs(&missing)?;
-        self.materialized = self.materialized.saturating_add(inputs.len());
-        self.nodes
-            .extend(inputs.into_iter().map(|input| (input.id, input)));
+        // Full passes prefetch once, immediately after constructing this map.
+        debug_assert!(self.nodes.is_empty());
+        let inputs = self.world.layout_inputs(ids)?;
+        self.materialized = inputs.len();
+        // `layout_inputs` already materializes the complete frontier. Reserve
+        // the exact size before collecting so a large full pass does not grow
+        // the hash table through several rehashes.
+        let mut nodes = HashMap::with_capacity(inputs.len());
+        nodes.extend(inputs.into_iter().map(|input| (input.id, input)));
+        self.nodes = nodes;
         Ok(())
     }
 
     fn get(&mut self, id: StableNodeId) -> Result<Option<&LayoutInput>, UiWorldError> {
-        if !self.load(id)? {
-            return Ok(None);
+        match self.nodes.entry(id) {
+            hashbrown::hash_map::Entry::Occupied(entry) => Ok(Some(entry.into_mut())),
+            hashbrown::hash_map::Entry::Vacant(entry) => {
+                let input = match self.world.layout_input(id) {
+                    Ok(input) => input,
+                    Err(UiWorldError::MissingNode(_)) => return Ok(None),
+                    Err(error) => return Err(error),
+                };
+                self.materialized = self.materialized.saturating_add(1);
+                Ok(Some(entry.insert(input)))
+            }
         }
-        Ok(self.nodes.get(&id))
     }
 
     /// Style for classifying / measuring siblings without assembling `LayoutInput`.
@@ -385,29 +515,11 @@ impl<'a> LayoutInputMap<'a> {
             .and_then(|node| node.text_metrics)
             .and_then(|metrics| metrics.ascent)
     }
-
-    fn load(&mut self, id: StableNodeId) -> Result<bool, UiWorldError> {
-        if self.nodes.contains_key(&id) {
-            return Ok(true);
-        }
-        if !self.world.contains(id) {
-            return Ok(false);
-        }
-        let mut batch = self.world.layout_inputs(&[id])?;
-        match batch.pop() {
-            Some(input) => {
-                self.materialized = self.materialized.saturating_add(1);
-                self.nodes.insert(id, input);
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
 }
 
 struct ScopeContext<'a> {
     affected: &'a HashSet<StableNodeId>,
-    retained: &'a RetainedLayoutCache,
+    retained: &'a DocumentLayoutCache,
 }
 
 /// Prune a child recursion when the child is outside the affected closure and

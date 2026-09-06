@@ -1,0 +1,531 @@
+{
+  "schema_version": 9,
+  "profile": "release",
+  "frame_budget_ms": 16.67,
+  "frame_budget_hz": 60,
+  "warmup_iterations": 100,
+  "iterations": 1000,
+  "view_event_update_ms": {
+    "p50": 0.004,
+    "p95": 0.007,
+    "p99": 0.008,
+    "max": 0.021,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "action_dispatch_ms": {
+    "p50": 0.001,
+    "p95": 0.002,
+    "p99": 0.003,
+    "max": 0.033,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "component_activate_ms": {
+    "p50": 0.019,
+    "p95": 0.027,
+    "p99": 0.036,
+    "max": 0.055,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "component_noop_ms": {
+    "p50": 0.003,
+    "p95": 0.004,
+    "p99": 0.006,
+    "max": 0.013,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_list_10k_window_ms": {
+    "p50": 0.001,
+    "p95": 0.002,
+    "p99": 0.002,
+    "max": 0.166,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_list_10k_update_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.001,
+    "max": 0.006,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_list_10k_materialize_ms": {
+    "p50": 0.136,
+    "p95": 0.195,
+    "p99": 0.28,
+    "max": 0.436,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_table_10k_x_100_window_ms": {
+    "p50": 0.001,
+    "p95": 0.002,
+    "p99": 0.002,
+    "max": 0.003,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_table_10k_x_100_materialize_ms": {
+    "p50": 3.204,
+    "p95": 3.861,
+    "p99": 4.909,
+    "max": 6.498,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_table_column_resize_ms": {
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.001,
+    "max": 0.001,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "virtual_scroll_40_visible_nodes_ms": {
+    "p50": 0.004,
+    "p95": 0.01,
+    "p99": 0.159,
+    "max": 0.264,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "canonical_layout_5000_nodes_ms": {
+    "p50": 6.968,
+    "p95": 8.167,
+    "p99": 9.55,
+    "max": 17.01,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 2
+  },
+  "virtual_scales": [
+    {
+      "kind": "list",
+      "logical_rows": 10000,
+      "status": "ok",
+      "visible_rows": 40,
+      "overscan_rows": 17,
+      "cache_rows": 0,
+      "live_ui_entities": 57,
+      "live_ui_entities_bound": 62,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 200.0,
+      "list_item_extent_px": 20.0,
+      "window_ms": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.002,
+        "max": 0.166,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 0.136,
+        "p95": 0.195,
+        "p99": 0.28,
+        "max": 0.436,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "kind": "table",
+      "logical_rows": 10000,
+      "logical_columns": 100,
+      "status": "ok",
+      "visible_rows": 40,
+      "overscan_rows": 17,
+      "cache_rows": 0,
+      "live_ui_entities": 1140,
+      "live_ui_entities_bound": 1426,
+      "table_viewport_width_px": 1280.0,
+      "table_viewport_height_px": 800.0,
+      "table_overscan_x_px": 160.0,
+      "table_overscan_y_px": 200.0,
+      "table_column_extent_px": 80.0,
+      "table_row_extent_px": 20.0,
+      "window_ms": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.002,
+        "max": 0.003,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 3.204,
+        "p95": 3.861,
+        "p99": 4.909,
+        "max": 6.498,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 951,
+        "entities_changed": 951,
+        "entities_spawned": 950,
+        "entities_despawned": 0,
+        "style_processed": 950,
+        "text_shaped": 900,
+        "layout_nodes": 951,
+        "hit_test_candidates": 950,
+        "input_targets": 0,
+        "accessibility_nodes_updated": 951,
+        "render_nodes_changed": 951,
+        "render_nodes_extracted": 951,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 1800,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 1800,
+        "text_wrap_layouts": 1800,
+        "glyph_cache_hits": 18351,
+        "glyph_cache_misses": 17,
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 0
+      }
+    },
+    {
+      "kind": "list",
+      "logical_rows": 100000,
+      "status": "ok",
+      "visible_rows": 41,
+      "overscan_rows": 20,
+      "cache_rows": 0,
+      "live_ui_entities": 61,
+      "live_ui_entities_bound": 62,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 200.0,
+      "list_item_extent_px": 20.0,
+      "construction_ms": 0.259,
+      "window_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 0.108,
+        "p95": 0.111,
+        "p99": 0.118,
+        "max": 0.118,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "kind": "table",
+      "logical_rows": 100000,
+      "logical_columns": 100,
+      "status": "ok",
+      "visible_rows": 41,
+      "overscan_rows": 20,
+      "cache_rows": 0,
+      "live_ui_entities": 1342,
+      "live_ui_entities_bound": 1426,
+      "table_viewport_width_px": 1280.0,
+      "table_viewport_height_px": 800.0,
+      "table_overscan_x_px": 160.0,
+      "table_overscan_y_px": 200.0,
+      "table_column_extent_px": 80.0,
+      "table_row_extent_px": 20.0,
+      "construction_ms": 0.203,
+      "window_ms": {
+        "p50": 0.002,
+        "p95": 0.003,
+        "p99": 0.004,
+        "max": 0.004,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 2.433,
+        "p95": 4.858,
+        "p99": 10.232,
+        "max": 10.232,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 1343,
+        "entities_changed": 1343,
+        "entities_spawned": 132,
+        "entities_despawned": 132,
+        "style_processed": 132,
+        "text_shaped": 126,
+        "layout_nodes": 383,
+        "hit_test_candidates": 1343,
+        "input_targets": 0,
+        "accessibility_nodes_updated": 1343,
+        "render_nodes_changed": 1343,
+        "render_nodes_extracted": 1343,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 252,
+        "text_layout_cache_hits": 1155,
+        "text_layout_cache_misses": 252,
+        "text_wrap_layouts": 252,
+        "glyph_cache_hits": 2016,
+        "glyph_cache_misses": 0,
+        "cache_eviction": 252,
+        "validation_nodes_scanned": 0
+      }
+    },
+    {
+      "kind": "tree",
+      "logical_rows": 10000,
+      "status": "ok",
+      "visible_rows": 41,
+      "overscan_rows": 20,
+      "cache_rows": 0,
+      "live_ui_entities": 61,
+      "live_ui_entities_bound": 62,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 200.0,
+      "list_item_extent_px": 20.0,
+      "construction_ms": 2.197,
+      "window_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 0.108,
+        "p95": 0.11,
+        "p99": 0.113,
+        "max": 0.113,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "kind": "tree",
+      "logical_rows": 100000,
+      "status": "ok",
+      "visible_rows": 41,
+      "overscan_rows": 20,
+      "cache_rows": 0,
+      "live_ui_entities": 61,
+      "live_ui_entities_bound": 62,
+      "list_viewport_px": 800.0,
+      "list_overscan_px": 200.0,
+      "list_item_extent_px": 20.0,
+      "construction_ms": 1.087,
+      "window_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "max": 0.0,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "materialize_ms": {
+        "p50": 0.108,
+        "p95": 0.11,
+        "p99": 0.112,
+        "max": 0.112,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "kind": "list",
+      "logical_rows": 1000000,
+      "status": "skipped",
+      "skip_reason": "NANA_PERF_SCALE!=large",
+      "cache_rows": 0
+    },
+    {
+      "kind": "table",
+      "logical_rows": 1000000,
+      "logical_columns": 100,
+      "status": "skipped",
+      "skip_reason": "NANA_PERF_SCALE!=large",
+      "cache_rows": 0
+    },
+    {
+      "kind": "tree",
+      "logical_rows": 1000000,
+      "status": "skipped",
+      "skip_reason": "NANA_PERF_SCALE!=large",
+      "cache_rows": 0
+    }
+  ],
+  "catalog_workloads": [
+    {
+      "id": "ime",
+      "kind": "Ime",
+      "status": "ok",
+      "scripts": [
+        "latin",
+        "zh",
+        "ja",
+        "ko"
+      ],
+      "live_ui_entities": 1,
+      "ime_script_count": 4,
+      "preedit_ms": {
+        "p50": 0.001,
+        "p95": 0.002,
+        "p99": 0.002,
+        "max": 0.002,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "commit_ms": {
+        "p50": 0.004,
+        "p95": 0.007,
+        "p99": 0.007,
+        "max": 0.007,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 1,
+        "entities_changed": 1,
+        "entities_spawned": 0,
+        "entities_despawned": 0,
+        "style_processed": 0,
+        "text_shaped": 1,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "input_targets": 1,
+        "accessibility_nodes_updated": 1,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 1,
+        "text_layout_cache_hits": 1,
+        "text_layout_cache_misses": 1,
+        "text_wrap_layouts": 0,
+        "glyph_cache_hits": 151,
+        "glyph_cache_misses": 0,
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 0
+      }
+    },
+    {
+      "id": "dock-workspace",
+      "kind": "DockWorkspace",
+      "status": "ok",
+      "panes": 8,
+      "live_ui_entities": 45,
+      "resize_ms": {
+        "p50": 0.203,
+        "p95": 0.238,
+        "p99": 0.35,
+        "max": 0.35,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 45,
+        "entities_changed": 33,
+        "entities_spawned": 0,
+        "entities_despawned": 0,
+        "style_processed": 10,
+        "text_shaped": 8,
+        "layout_nodes": 25,
+        "hit_test_candidates": 20,
+        "input_targets": 1,
+        "accessibility_nodes_updated": 32,
+        "render_nodes_changed": 33,
+        "render_nodes_extracted": 33,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 8,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 0
+      }
+    },
+    {
+      "id": "overlay",
+      "kind": "Overlay",
+      "status": "ok",
+      "overlay_kinds": [
+        "tooltip",
+        "context_menu",
+        "modal",
+        "popup"
+      ],
+      "live_ui_entities": 5,
+      "overlay_kind_count": 4,
+      "activate_ms": {
+        "p50": 0.005,
+        "p95": 0.007,
+        "p99": 0.008,
+        "max": 0.008,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 5,
+        "entities_changed": 2,
+        "entities_spawned": 0,
+        "entities_despawned": 0,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 1,
+        "hit_test_candidates": 2,
+        "input_targets": 0,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 2,
+        "render_nodes_extracted": 2,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 1
+      }
+    },
+    {
+      "id": "text-editor",
+      "kind": "TextEditor",
+      "status": "ok",
+      "document_chars": 100000,
+      "visible_lines": 40,
+      "live_ui_entities": 1,
+      "local_edit_ms": {
+        "p50": 0.054,
+        "p95": 0.089,
+        "p99": 0.114,
+        "max": 0.114,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "work": {
+        "entities_total": 1,
+        "entities_changed": 1,
+        "entities_spawned": 0,
+        "entities_despawned": 0,
+        "style_processed": 0,
+        "text_shaped": 1,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "input_targets": 1,
+        "accessibility_nodes_updated": 1,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1,
+        "extracted_text_spans": 0,
+        "text_shaped_runs": 1,
+        "text_layout_cache_hits": 1,
+        "text_layout_cache_misses": 1,
+        "text_wrap_layouts": 1,
+        "glyph_cache_hits": 100050,
+        "glyph_cache_misses": 0,
+        "cache_eviction": 0,
+        "validation_nodes_scanned": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 21s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-3ae3367c447e3962.exe)
+
+running 73 tests
+test layout_engine::tests::absolute_panel_children_resolve_fill_against_the_panel_content_box ... ok
+test layout_engine::tests::align_content_center_and_space_between_on_wrapped_row ... ok
+test layout_engine::tests::align_items_baseline_uses_shaped_ascent_not_approx_em ... ok
+test layout_engine::tests::aspect_ratio_auto_width_uses_containing_block ... ok
+test layout_engine::tests::aspect_ratio_column_stretch_fills_auto_height ... ok
+test layout_engine::tests::aspect_ratio_row_stretch_does_not_overwrite_transferred_height ... ok
+test layout_engine::tests::aspect_ratio_square_from_definite_width ... ok
+test layout_engine::tests::auto_fill_nth_named_line_uses_expanded_copies ... ok
+test layout_engine::tests::auto_sized_isolation_request_preserves_parent_layout_dependency ... ok
+test layout_engine::tests::child_em_absolute_inset_uses_parent_computed_font_size ... ok
+test layout_engine::tests::child_em_min_height_uses_parent_computed_font_size ... ok
+test layout_engine::tests::child_em_padding_uses_parent_computed_font_size ... ok
+test layout_engine::tests::child_em_width_uses_parent_computed_font_size ... ok
+test layout_engine::tests::column_fill_width_subtracts_negative_margins_symmetrically ... ok
+test layout_engine::tests::demote_fill_spec_treats_full_percent_calc_as_indefinite ... ok
+test layout_engine::tests::display_contents_hoists_children_into_flex_row_gap ... ok
+test layout_engine::tests::display_none_child_does_not_take_a_gap_slot ... ok
+test layout_engine::tests::empty_grid_item_stretches_into_track ... ok
+test layout_engine::tests::fixed_content_shrink_accounts_for_flow_chrome_nesting_and_constraints ... ok
+test layout_engine::tests::fixed_layout_island_reuses_outer_layout_and_resizing_reaches_siblings ... ok
+test layout_engine::tests::flex_item_float_is_blockified_not_floated ... ok
+test layout_engine::tests::flex_item_inline_with_block_is_not_unboxed ... ok
+test layout_engine::tests::float_own_clear_starts_below_packed_same_side ... ok
+test layout_engine::tests::grid_2d_auto_flow_wraps_fourth_item_to_second_row ... ok
+test layout_engine::tests::grid_auto_fit_fills_two_minmax_tracks_in_500px ... ok
+test layout_engine::tests::grid_auto_slot_overflow_does_not_reuse_origin ... ok
+test layout_engine::tests::grid_cell_resolves_unsimplified_calc_against_cell ... ok
+test layout_engine::tests::grid_column_span_two_on_three_columns ... ok
+test layout_engine::tests::grid_justify_self_end_in_definite_column ... ok
+test layout_engine::tests::grid_percent_and_fill_resolve_against_final_cell ... ok
+test layout_engine::tests::grid_template_columns_split_free_space ... ok
+test layout_engine::tests::ifc_block_in_inline_unboxes_like_block_siblings ... ok
+test layout_engine::tests::ifc_block_sibling_starts_new_line ... ok
+test layout_engine::tests::ifc_inlines_wrap_in_width_beside_float ... ok
+test layout_engine::tests::ifc_line_box_shrinks_around_float_left ... ok
+test layout_engine::tests::ifc_line_box_shrinks_between_left_and_right_floats ... ok
+test layout_engine::tests::ifc_oversized_inline_drops_below_float ... ok
+test layout_engine::tests::ifc_rtl_places_first_tree_item_at_inline_start ... ok
+test layout_engine::tests::ifc_text_align_start_packs_to_right_in_rtl ... ok
+test layout_engine::tests::ifc_uses_full_width_below_float ... ok
+test layout_engine::tests::ifc_wraps_inline_around_left_float ... ok
+test layout_engine::tests::in_flow_block_does_not_shrink_beside_float ... ok
+test layout_engine::tests::isolated_leaf_preserves_relative_position_and_resolved_padding ... ok
+test layout_engine::tests::lays_out_shaped_controls_without_application_geometry ... ok
+test layout_engine::tests::lazy_layout_input_avoids_a_single_item_projection_batch ... ok
+test layout_engine::tests::measure_text_pre_wrap_wraps_long_line_against_max_width ... ok
+test layout_engine::tests::named_line_nth_uses_second_foo ... ok
+test layout_engine::tests::repeated_viewport_resize_keeps_intrinsic_history_bounded ... ok
+test layout_engine::tests::returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change ... ok
+test layout_engine::tests::row_fill_uses_remaining_content_width ... ok
+test layout_engine::tests::row_space_between_auto_children_keep_the_trailing_control_inside ... ok
+test layout_engine::tests::row_wrap_breaks_to_the_next_line ... ok
+test layout_engine::tests::same_side_floats_do_not_overlap ... ok
+test layout_engine::tests::scoped_layout_ignores_isolated_dirty_nodes_from_another_document ... ok
+test layout_engine::tests::scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row ... ok
+test layout_engine::tests::scoped_layout_touches_only_the_change_closure_and_matches_full_recompute ... ok
+test layout_engine::tests::spacing_center_aligns_asymmetric_margin_box ... ok
+test layout_engine::tests::spacing_fixed_box_reflows_percent_padding_when_parent_resizes ... ok
+test layout_engine::tests::spacing_grid_content_box_keeps_padding_in_border_size ... ok
+test layout_engine::tests::spacing_grid_padding_and_margin_use_final_cell ... ok
+test layout_engine::tests::spacing_hug_includes_child_margins_on_both_axes ... ok
+test layout_engine::tests::spacing_negative_margin_extends_flex_fill_budget ... ok
+test layout_engine::tests::spacing_percent_padding_uses_containing_width ... ok
+test layout_engine::tests::style_tree_matches_document_layout_for_row_gap ... ok
+test layout_engine::tests::subgrid_inherits_parent_column_track_sizes ... ok
+test layout_engine::tests::unspecified_flex_shrink_keeps_overflowing_definite_row ... ok
+test layout_engine::tests::white_space_pre_measures_explicit_newlines ... ok
+test layout_engine::tests::white_space_pre_wrap_keeps_newlines_and_wraps_long_lines ... ok
+test layout_engine::tests::writing_mode_vertical_flex_row_uses_inline_axis ... ok
+test layout_engine::tests::writing_mode_vertical_lr_ifc_places_first_line_on_the_left ... ok
+test layout_engine::tests::writing_mode_vertical_rl_ifc_advances_inline_down_block_from_right ... ok
+test layout_engine::tests::writing_mode_vertical_rtl_skips_inline_reverse ... ok
+test layout_engine::tests::writing_mode_vertical_shaper_keeps_horizontal_metrics ... ok
+
+test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 774 filtered out; finished in 0.38s
+

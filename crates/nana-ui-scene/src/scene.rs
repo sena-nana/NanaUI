@@ -1,8 +1,14 @@
+mod attributes;
 mod composition;
+use attributes::DrawAttributes;
+pub use attributes::SceneDraw;
+mod visibility;
+pub use composition::FramePlan;
+use visibility::VisibilityIndex;
 mod order;
 mod primitives;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use nana_ui_core::{
     BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DirSpec, DrawerSide,
@@ -393,8 +399,27 @@ struct SceneOrderKey {
     node: StableNodeId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SceneDelta {
+    pub added: Vec<StableNodeId>,
+    pub removed: Vec<StableNodeId>,
+    pub paint: Vec<StableNodeId>,
+    pub transforms: Vec<StableNodeId>,
+    pub clips: Vec<StableNodeId>,
+    pub order_changed: bool,
+    pub stats: SceneDeltaStats,
+}
+
+impl std::ops::Deref for SceneDelta {
+    type Target = SceneDeltaStats;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stats
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneDeltaStats {
     pub updated_nodes: usize,
     pub removed_nodes: usize,
     pub rebuilt_primitives: usize,
@@ -404,6 +429,11 @@ pub struct SceneDelta {
 
 #[derive(Debug)]
 pub struct UiScene {
+    frame_plan: OnceLock<Arc<FramePlan>>,
+    visibility: OnceLock<VisibilityIndex>,
+    attribute_epoch: u64,
+    projections: HashMap<StableNodeId, (u64, AffineTransform, usize)>,
+    draw_attributes: std::sync::Mutex<HashMap<StableNodeId, DrawAttributes>>,
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
@@ -420,6 +450,11 @@ pub struct UiScene {
 impl Default for UiScene {
     fn default() -> Self {
         Self {
+            frame_plan: OnceLock::new(),
+            visibility: OnceLock::new(),
+            attribute_epoch: 0,
+            projections: HashMap::new(),
+            draw_attributes: std::sync::Mutex::new(HashMap::new()),
             nodes: HashMap::new(),
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
@@ -432,6 +467,16 @@ impl Default for UiScene {
 impl Clone for UiScene {
     fn clone(&self) -> Self {
         Self {
+            frame_plan: self.frame_plan.clone(),
+            visibility: self.visibility.clone(),
+            attribute_epoch: self.attribute_epoch,
+            projections: self.projections.clone(),
+            draw_attributes: std::sync::Mutex::new(
+                self.draw_attributes
+                    .lock()
+                    .expect("scene attributes")
+                    .clone(),
+            ),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
@@ -445,6 +490,9 @@ fn next_scene_instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
+
+// Structural identity includes custom renderer/resource bindings, not content versions.
+type PrimitiveStructure = (PrimitiveId, Option<(Arc<str>, Arc<str>)>);
 
 impl UiScene {
     pub fn new() -> Self {
@@ -464,6 +512,10 @@ impl UiScene {
 
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn primitive_count(&self) -> usize {
+        self.primitives.len()
     }
 
     pub fn primitives(&self) -> impl Iterator<Item = &ScenePrimitive> {
@@ -514,11 +566,19 @@ impl UiScene {
         extracted: impl IntoIterator<Item = ExtractedNode>,
         removals: impl IntoIterator<Item = StableNodeId>,
     ) -> SceneDelta {
+        let mut delta = SceneDelta::default();
+        let mut previous_structure = HashMap::new();
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
+                delta.removed.push(id);
+                self.projections.remove(&id);
+                self.draw_attributes
+                    .get_mut()
+                    .expect("scene attributes")
+                    .remove(&id);
                 removed_nodes += 1;
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
@@ -526,9 +586,27 @@ impl UiScene {
         }
         let mut updated_nodes = 0;
         let mut scroll_rebuild = Vec::new();
+        let mut scroll_translations = Vec::new();
         let mut stacking_changed = false;
         for node in extracted {
+            previous_structure.insert(node.id, self.node_structure(node.id));
             let previous = self.nodes.get(&node.id);
+            if previous.is_none() {
+                delta.added.push(node.id);
+            }
+            if previous.is_none_or(|old| {
+                old.layout != node.layout || old.scroll_offset != node.scroll_offset
+            }) {
+                delta.transforms.push(node.id);
+            }
+            // Layout/style can affect inherited clips; consumers resolve the
+            // changed attribute roots rather than guessing from paint counts.
+            if previous.is_none_or(|old| {
+                old.layout != node.layout || old.source_style.layout != node.source_style.layout
+            }) {
+                delta.clips.push(node.id);
+            }
+            delta.paint.push(node.id);
             hierarchy_changed |= previous
                 .is_none_or(|old| old.parent != node.parent || old.children != node.children);
             let scroll_changed =
@@ -547,7 +625,23 @@ impl UiScene {
             });
             changed.push(node.id);
             if scroll_changed {
-                scroll_rebuild.push(node.id);
+                let old = self.nodes.get(&node.id).expect("scrolling retained node");
+                let (parent, _, _, blocks_3d) = self.ancestor_state(old);
+                let transform = parent.then(node_scene_transform(
+                    &old.source_style.layout,
+                    old.layout,
+                    blocks_3d,
+                ));
+                if transform.is_projective() {
+                    scroll_rebuild.push(node.id);
+                    self.visibility.take();
+                } else {
+                    let dx = old.scroll_offset.x - node.scroll_offset.x;
+                    let dy = old.scroll_offset.y - node.scroll_offset.y;
+                    let [a, b, c, d, _, _] = transform.0;
+                    scroll_translations.push((node.id, [a * dx + c * dy, b * dx + d * dy]));
+                }
+                self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             }
             // Drop the retained primitives while the old node is still in
             // place: their order keys are derived from it, and a key computed
@@ -576,6 +670,9 @@ impl UiScene {
                 }
             }
             for &id in &rebuild {
+                previous_structure
+                    .entry(id)
+                    .or_insert_with(|| self.node_structure(id));
                 rebuilt_primitives += self.rebuild_node_primitives(id);
             }
             // Rebuilt nodes re-enter `ordered` at their own key, so a reorder is
@@ -583,15 +680,59 @@ impl UiScene {
             if order_rebuilt || stacking_changed {
                 self.sort_primitives();
             }
+            if order_rebuilt
+                || stacking_changed
+                || removed_nodes != 0
+                || previous_structure
+                    .iter()
+                    .any(|(id, before)| *before != self.node_structure(*id))
+            {
+                self.frame_plan.take();
+                self.visibility.take();
+            }
+            if let Some(mut visibility) = self.visibility.take() {
+                for (root, offset) in scroll_translations {
+                    visibility.translate_subtree(root, offset);
+                }
+                visibility.update(self, &rebuild);
+                let _ = self.visibility.set(visibility);
+            }
             self.instance = next_scene_instance();
         }
-        SceneDelta {
+        delta.order_changed = order_rebuilt || stacking_changed;
+        delta.stats = SceneDeltaStats {
             updated_nodes,
             removed_nodes,
             rebuilt_primitives,
             order_rebuilt,
             primitive_count: self.primitives.len(),
-        }
+        };
+        delta
+    }
+
+    fn node_structure(
+        &self,
+        node: StableNodeId,
+    ) -> Vec<PrimitiveStructure> {
+        self.primitives
+            .range(
+                PrimitiveId { node, slot: 0 }..=PrimitiveId {
+                    node,
+                    slot: u64::MAX,
+                },
+            )
+            .map(|(id, primitive)| {
+                (
+                    *id,
+                    match &primitive.kind {
+                        ScenePrimitiveKind::Custom { node, .. } => {
+                            Some((node.renderer.clone(), node.resource.clone()))
+                        }
+                        _ => None,
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
@@ -607,6 +748,8 @@ impl UiScene {
             return false;
         };
         primitive.kind = kind;
+        self.frame_plan.take();
+        self.visibility.take();
         self.instance = next_scene_instance();
         true
     }
@@ -621,6 +764,11 @@ impl UiScene {
         let Some(parent) = node.parent.and_then(|id| self.nodes.get(&id)) else {
             return false;
         };
+        if let Some(ComponentGeometry::Card { title, .. }) = parent.component_geometry.as_ref() {
+            return title.as_ref().is_some_and(|title| {
+                node.text.as_ref().is_some_and(|text| text.value == title.content.as_ref())
+            });
+        }
         component_geometry_owns_text(parent.component_geometry.as_ref())
             || parent
                 .text

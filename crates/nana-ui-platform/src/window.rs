@@ -82,8 +82,39 @@ pub fn clamp_position_to_displays(
     nearest.clamp_position(position, size)
 }
 
+/// Fits a tool window into one available display, including partially offscreen frames.
+pub fn fit_window_to_displays(
+    position: (f64, f64),
+    size: (f64, f64),
+    displays: &[DisplayBounds],
+) -> ((f64, f64), (f64, f64)) {
+    let center = (position.0 + size.0 / 2.0, position.1 + size.1 / 2.0);
+    let Some(display) = displays.iter().min_by(|a, b| {
+        a.distance_squared(center, (0.0, 0.0))
+            .total_cmp(&b.distance_squared(center, (0.0, 0.0)))
+    }) else {
+        return (position, size);
+    };
+    let size = (
+        size.0.min(display.size.0).max(1.0),
+        size.1.min(display.size.1).max(1.0),
+    );
+    (display.clamp_position(position, size), size)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
+    /// Auxiliary creation failed; no window is retained for this id.
+    OpenFailed {
+        id: WindowId,
+        error: String,
+    },
+    /// Acknowledges the requested hit-testing change, including failures.
+    MousePassthroughChanged {
+        id: WindowId,
+        enabled: bool,
+        result: Result<(), String>,
+    },
     Ready {
         id: WindowId,
         geometry: WindowGeometry,
@@ -283,6 +314,10 @@ pub struct WindowSettings {
     pub maximized: bool,
     pub transparent: bool,
     pub always_on_top: bool,
+    /// Whether initially showing this window may activate it.
+    pub focus_on_show: bool,
+    /// Keep the complete restored frame inside the nearest display work area.
+    pub constrain_to_work_area: bool,
     pub resizable: bool,
     pub role: WindowRole,
     pub modal: bool,
@@ -308,6 +343,8 @@ impl WindowSettings {
             maximized: false,
             transparent: false,
             always_on_top: false,
+            focus_on_show: true,
+            constrain_to_work_area: false,
             resizable: true,
             role: WindowRole::Main,
             modal: false,
@@ -340,6 +377,11 @@ impl WindowSettings {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowCommand {
+    /// Disable native pointer hit testing. Always emits MousePassthroughChanged.
+    SetMousePassthrough {
+        id: WindowId,
+        enabled: bool,
+    },
     Open {
         id: WindowId,
         settings: WindowSettings,
@@ -583,6 +625,25 @@ mod tests {
         assert_eq!(
             clamp_position_to_displays((5000.0, 5000.0), (888.0, 586.0), &[]),
             (5000.0, 5000.0)
+        );
+    }
+    #[test]
+    fn strict_restore_keeps_controls_reachable_and_resizes_oversized_frames() {
+        let screens = [DisplayBounds {
+            position: (0.0, 40.0),
+            size: (1920.0, 1000.0),
+        }];
+        assert_eq!(
+            fit_window_to_displays((1800.0, -100.0), (420.0, 640.0), &screens),
+            ((1500.0, 40.0), (420.0, 640.0))
+        );
+        assert_eq!(
+            fit_window_to_displays((5000.0, 2000.0), (3000.0, 2000.0), &screens),
+            ((0.0, 40.0), (1920.0, 1000.0))
+        );
+        assert_eq!(
+            fit_window_to_displays((500.0, 100.0), (420.0, 640.0), &screens),
+            ((500.0, 100.0), (420.0, 640.0))
         );
     }
 }

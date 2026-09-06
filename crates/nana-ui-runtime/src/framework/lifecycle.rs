@@ -428,6 +428,16 @@ impl AppContext {
         if self.views.get(&id).is_some_and(|view| view.is::<Tabs>()) {
             self.sync_tabs_options(Entity::from_stable_id(id))?;
         }
+        if self
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<crate::TerminalView>())
+        {
+            self.refresh_terminal_view(Entity::from_stable_id(id))?;
+            if let Some(bounds) = self.world.layout_box(id) {
+                self.resize_terminal_view(Entity::from_stable_id(id), bounds.width, bounds.height)?;
+            }
+        }
         self.sync_sidebar_section_body_port(id);
         let tooltip = self
             .views
@@ -718,6 +728,111 @@ impl AppContext {
             },
         )?;
         Ok(true)
+    }
+
+    /// Pointer entered a hover-card subtree: dismiss any other open card and
+    /// schedule the delayed open.
+    pub(super) fn enter_hover_card(
+        &mut self,
+        target: StableNodeId,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        let delay = self
+            .read(Entity::<crate::HoverCard>::from_stable_id(target), |card| {
+                card.open_delay_ms
+            })
+            .unwrap_or_default();
+        let others = self
+            .component_lifecycle
+            .hover_cards
+            .iter()
+            .filter(|(id, lifecycle)| lifecycle.open && **id != target)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in others {
+            self.close_hover_card(id)?;
+        }
+        let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) else {
+            return Ok(());
+        };
+        lifecycle.close_at = None;
+        if delay == 0 {
+            lifecycle.show_at = None;
+            self.open_hover_card(target)?;
+            return Ok(());
+        }
+        lifecycle.show_at = now.checked_add(Duration::from_millis(delay));
+        Ok(())
+    }
+
+    /// Pointer left the hover-card subtree: cancel a pending open and start
+    /// the grace close for an open card.
+    pub(super) fn leave_hover_card(
+        &mut self,
+        target: StableNodeId,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        let close_delay = self
+            .read(
+                Entity::<crate::HoverCard>::from_stable_id(target),
+                |card| card.close_delay_ms,
+            )
+            .unwrap_or_default();
+        let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) else {
+            return Ok(());
+        };
+        lifecycle.show_at = None;
+        if !lifecycle.open {
+            return Ok(());
+        }
+        lifecycle.close_at = now.checked_add(Duration::from_millis(close_delay));
+        Ok(())
+    }
+
+    pub(super) fn open_hover_card(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
+        if self
+            .component_lifecycle
+            .hover_cards
+            .get(&target)
+            .is_none_or(|lifecycle| lifecycle.open)
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<crate::HoverCard>::from_stable_id(target), |card, _| {
+            card.open = true;
+        })?;
+        if let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) {
+            lifecycle.open = true;
+            lifecycle.show_at = None;
+        }
+        Ok(true)
+    }
+
+    pub(super) fn close_hover_card(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
+        if !self
+            .component_lifecycle
+            .hover_cards
+            .get(&target)
+            .is_some_and(|lifecycle| lifecycle.open)
+        {
+            return Ok(false);
+        }
+        self.update_component(Entity::<crate::HoverCard>::from_stable_id(target), |card, _| {
+            card.open = false;
+        })?;
+        if let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) {
+            lifecycle.open = false;
+            lifecycle.show_at = None;
+            lifecycle.close_at = None;
+        }
+        Ok(true)
+    }
+
+    /// Drop lifecycle entries whose component is gone.
+    pub(super) fn sweep_hover_cards(&mut self) {
+        self.component_lifecycle
+            .hover_cards
+            .retain(|target, _| self.views.contains_key(target));
     }
 
     pub(super) fn position_open_tooltips(

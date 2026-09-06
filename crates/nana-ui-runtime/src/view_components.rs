@@ -206,6 +206,13 @@ fn project_text_field(
 /// backend consumes the resulting UiWorld/UiScene data; no renderer type is
 /// part of this contract.
 pub trait ComponentView: Clone + Send + 'static {
+    /// Apply declarative properties to a retained component. Stateful controls
+    /// override this to preserve interaction state; explicit `update_component`
+    /// remains available when the caller intends to replace that state.
+    fn reconcile(&mut self, next: Self) {
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind;
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue);
 
@@ -217,6 +224,17 @@ pub trait ComponentView: Clone + Send + 'static {
     /// were attached. Defaults to `false`; existing components keep their
     /// data-change-only reprojection schedule.
     fn wants_child_reproject() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
+    /// Opt in to pointer-hover lifecycle tracking (enter/leave timers that
+    /// drive `open`). Hover-triggered surfaces like [`crate::HoverCard`] use
+    /// this so the framework can schedule their delayed open and grace close
+    /// from pointer movement alone. Defaults to `false`.
+    fn wants_hover_tracking() -> bool
     where
         Self: Sized,
     {
@@ -290,6 +308,7 @@ impl Button {
     pub fn new(label: impl Into<String>) -> Self {
         let mut layout = (*control_layout(nana_ui_core::UI_METRICS.control_padding_x)).clone();
         layout.font_weight = Some(500);
+        layout.white_space_nowrap = true;
         Self {
             label: label.into(),
             kind: nana_ui_core::ButtonKind::Ghost,
@@ -645,6 +664,9 @@ impl ComponentView for IconButton {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        if world.text(id).is_some_and(|text| !text.is_empty()) {
+            mutations.set_text(id, TextContent { value: String::new() });
+        }
         if self.tooltip.is_some() && world.overlay_host(id).is_none() {
             mutations.set_overlay_host(id, OverlayHostState::default());
         }
@@ -1219,6 +1241,12 @@ pub struct SecondaryPress {
     pub y: f32,
 }
 
+/// Enter submission from an editable single-line input, excluding IME preedit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSubmitted {
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChanged {
     pub value: String,
@@ -1401,6 +1429,15 @@ impl TextInput {
 }
 
 impl ComponentView for TextInput {
+    /// Equal host values preserve the editing selection. A different value uses
+    /// the supplied selection (`TextInput::new` places its caret at the end).
+    fn reconcile(&mut self, mut next: Self) {
+        if self.state.value == next.state.value {
+            next.state = self.state.clone();
+        }
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "input".into(),
@@ -1474,6 +1511,7 @@ pub struct NumberInput {
     pub invalid: bool,
     pub style: NodeStyle,
     pub(crate) value: f64,
+    pub(crate) continuous: bool,
     pub(crate) style_override: bool,
 }
 
@@ -1492,8 +1530,20 @@ impl NumberInput {
             invalid: false,
             style: text_field_style(false),
             value,
+            continuous: false,
             style_override: false,
         }
+    }
+
+    /// A continuous numeric field. Committed values are clamped to bounds but
+    /// never rounded to the step grid; `step` only controls spinner/arrow
+    /// increments. Text uses the shortest round-tripping representation, so
+    /// `precision` does not discard fractional values in this mode.
+    pub fn continuous(value: f64) -> Self {
+        let mut field = Self::new(0.0);
+        field.continuous = true;
+        field.assign(value);
+        field
     }
 
     pub fn range(mut self, minimum: f64, maximum: f64) -> Self {
@@ -1578,29 +1628,36 @@ impl NumberInput {
         !self.disabled && !self.read_only
     }
 
-    /// Publish a value from the application. Rejects nothing: the value is
-    /// snapped and clamped into the field's own rules.
+    /// Publish a value from the application. Values are clamped to bounds;
+    /// discrete fields also snap them to their precision and step grid.
     pub fn assign(&mut self, value: f64) -> bool {
-        let next = self.spec.snap(value);
-        if next == self.value && self.state.value == self.spec.format(next) {
+        let next = if self.continuous { self.spec.clamp(value) } else { self.spec.snap(value) };
+        let text = if self.continuous { next.to_string() } else { self.spec.format(next) };
+        if next == self.value && self.state.value == text {
             return false;
         }
         self.value = next;
-        self.state.replace_value(self.spec.format(next));
+        self.state.replace_value(text);
         true
     }
 
     /// Move by grid positions from the committed value.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
-        self.assign(self.spec.step_by(self.value, steps))
+        let next = if self.continuous {
+            self.value + f64::from(steps) * self.spec.effective_step()
+        } else { self.spec.step_by(self.value, steps) };
+        self.assign(next)
     }
 
     /// Parse the draft. An unparseable draft restores the committed value.
     pub(crate) fn commit_draft(&mut self) -> bool {
-        match self.spec.parse(&self.state.value) {
+        let parsed = if self.continuous {
+            self.state.value.trim().parse::<f64>().ok().filter(|value| value.is_finite())
+        } else { self.spec.parse(&self.state.value) };
+        match parsed {
             Some(parsed) => self.assign(parsed),
             None => {
-                let restored = self.spec.format(self.value);
+                let restored = self.formatted_value();
                 if self.state.value == restored {
                     return false;
                 }
@@ -1611,8 +1668,11 @@ impl NumberInput {
     }
 
     fn resync(&mut self) {
-        self.value = self.spec.snap(self.value);
-        self.state.replace_value(self.spec.format(self.value));
+        self.assign(self.value);
+    }
+
+    pub(crate) fn formatted_value(&self) -> String {
+        if self.continuous { self.value.to_string() } else { self.spec.format(self.value) }
     }
 }
 
@@ -1710,6 +1770,8 @@ pub struct TextArea {
     pub label: Option<Arc<str>>,
     pub placeholder: Arc<str>,
     pub disabled: bool,
+    /// Keeps focus, selection and copying available while rejecting user edits.
+    pub read_only: bool,
     pub invalid: bool,
     pub scroll_offset: ScrollOffset,
     pub style: NodeStyle,
@@ -1798,6 +1860,7 @@ impl TextArea {
             label: None,
             placeholder: Arc::from(""),
             disabled: false,
+            read_only: false,
             invalid: false,
             scroll_offset: ScrollOffset::default(),
             style: text_field_style(true),
@@ -1999,7 +2062,13 @@ impl TextArea {
         self
     }
 
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
     pub fn replace_selection(&mut self, text: &str) -> bool {
+        if self.disabled || self.read_only { return false; }
         let normalized = crate::text_editing::normalize_newlines(text);
         self.state.replace_selection(&normalized)
     }
@@ -2046,14 +2115,16 @@ impl ComponentView for TextArea {
         if world.scroll_offset(id) != Some(self.scroll_offset) {
             mutations.set_scroll_offset(id, self.scroll_offset);
         }
+        let snippet_choices=world.text_snippet_session(id).and_then(|s|s.choice_items());
+        let offered_completions=snippet_choices.as_ref().unwrap_or(&self.completions);
         // 补全候选喂入：列表未变（指针或内容相等）时不下发变更，会话的
         // 键盘选中/滚动原样保留；空列表由世界侧移除会话（弹层关闭）。
         {
             let fed_unchanged = world
                 .text_completion_items(id)
-                .is_some_and(|fed| Arc::ptr_eq(fed, &self.completions) || *fed == self.completions);
+                .is_some_and(|fed| Arc::ptr_eq(fed, offered_completions) || fed == offered_completions);
             if !fed_unchanged {
-                mutations.set_text_input_completions(id, Arc::clone(&self.completions));
+                mutations.set_text_input_completions(id, Arc::clone(offered_completions));
             }
         }
         // hover 浮窗喂入：内容未变时不下发变更。
@@ -2130,7 +2201,7 @@ impl ComponentView for TextArea {
                 label: &self.label,
                 disabled: self.disabled,
                 busy: false,
-                editable: !self.disabled,
+                editable: !self.disabled && !self.read_only,
                 invalid: self.invalid,
                 multiline: true,
                 style: &effective_style,
@@ -2184,6 +2255,11 @@ impl HostedTextarea {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.inner = self.inner.disabled(disabled);
+        self
+    }
+
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.inner = self.inner.read_only(read_only);
         self
     }
 
@@ -2242,6 +2318,36 @@ impl ComponentView for HostedTextarea {
 mod hosted_textarea_tests {
     use super::*;
     use crate::{DocumentId, MutationQueue, UiWorld};
+
+    #[test]
+    fn continuous_number_input_preserves_fractions_through_commit_step_and_revert() {
+        let mut context = crate::AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context.create_component(document,
+            NumberInput::continuous(0.5).range(-1.0, 1.0).step(0.25).precision(0)).unwrap();
+        assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.5);
+        assert!(context.set_number_value(input, 0.123456789123).unwrap());
+        assert_eq!(context.read(input, |field| field.state.value.clone()).unwrap(), "0.123456789123");
+        assert!(!context.step_number_input(input, 0).unwrap());
+        assert!(context.step_number_input(input, 1).unwrap());
+        assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.373456789123);
+        assert_eq!(context.world().accessibility(input.stable_id()).unwrap().numeric_step, Some(0.25));
+        context.update_component(input, |field, _| { field.state.replace_value("0.000000123456789"); }).unwrap();
+        assert!(context.commit_number_input(input).unwrap());
+        assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.000000123456789);
+        context.update_component(input, |field, _| { field.state.replace_value("-"); }).unwrap();
+        context.commit_number_input(input).unwrap();
+        assert_eq!(context.read(input, |field| field.state.value.parse::<f64>().unwrap()).unwrap(), 0.000000123456789);
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document, Some(input.stable_id()));
+        context.commit_mutations(focus).unwrap();
+        context.update_component(input, |field, _| { field.state.replace_value("uncommitted"); }).unwrap();
+        assert!(context.revert_focused_number_input(document).unwrap());
+        assert_eq!(context.read(input, |field| field.state.value.parse::<f64>().unwrap()).unwrap(), 0.000000123456789);
+        context.set_number_value(input, 2.0).unwrap();
+        assert_eq!(context.read(input, NumberInput::value).unwrap(), 1.0);
+        assert_eq!(NumberInput::new(0.5).value(), 1.0, "discrete defaults remain compatible");
+    }
 
     #[test]
     fn number_input_steps_from_the_value_published_by_the_application() {
@@ -3216,8 +3322,27 @@ impl ComponentView for RangeField {
     }
 }
 
+/// A scroll offset changed through wheel or scrollbar input, never layout
+/// clamping, anchoring, or programmatic scrolling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UserScroll {
+    pub offset: ScrollOffset,
+    /// Within two logical pixels of the vertical end in the current layout.
+    pub at_end: bool,
+}
+
+/// A retained row's vertical position relative to its scroll viewport.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollAnchor {
+    pub row: StableNodeId,
+    pub viewport_y: f32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollView {
+    /// Follow the vertical end whenever layout publishes new scroll geometry.
+    pub follow_end: bool,
+    pub(crate) pending_anchor: Option<ScrollAnchor>,
     pub axes: ScrollAxes,
     pub label: Option<Arc<str>>,
     pub scrollbars: nana_ui_core::ScrollbarVisibility,
@@ -3239,8 +3364,17 @@ pub struct ScrollbarDragState {
 }
 
 impl ScrollView {
+    /// Keep the newest content visible after layout. Applications turn this
+    /// off while the user reads older content.
+    pub fn follow_end(mut self, enabled: bool) -> Self {
+        self.follow_end = enabled;
+        self
+    }
+
     pub fn new(axes: ScrollAxes) -> Self {
         Self {
+            follow_end: false,
+            pending_anchor: None,
             axes,
             label: None,
             scrollbars: nana_ui_core::ScrollbarVisibility::default(),
@@ -3320,6 +3454,13 @@ impl ScrollView {
 }
 
 impl ComponentView for ScrollView {
+    fn reconcile(&mut self, mut next: Self) {
+        next.hovered = self.hovered;
+        next.dragging = self.dragging;
+        next.pending_anchor = self.pending_anchor;
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "scroll".into(),
@@ -3522,6 +3663,15 @@ impl Stack {
     pub fn gap(mut self, gap: f32) -> Self {
         Arc::make_mut(&mut self.style.layout).gap =
             Some(nana_ui_core::LengthSpec::Px(gap.max(0.0)));
+        self
+    }
+
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).flex_wrap = if wrap {
+            nana_ui_core::FlexWrap::Wrap
+        } else {
+            nana_ui_core::FlexWrap::NoWrap
+        };
         self
     }
 
@@ -3980,6 +4130,35 @@ mod tests {
 mod spacing_tests {
     use super::*;
     use nana_ui_core::{DirSpec, LengthSpec, PaddingSpec};
+
+    #[test]
+    fn wrapping_stack_reflows_controls_when_the_viewport_narrows() {
+        let mut context = crate::AppContext::new();
+        let document = crate::DocumentId::new(1).unwrap();
+        let root = context
+            .create_component(document, Stack::bar(8.0).wrap(true))
+            .unwrap();
+        let control = || Stack::row(0.0)
+            .width(LengthSpec::Px(100.0))
+            .height(LengthSpec::Px(30.0));
+        let first = context.create_detached_component(document, control()).unwrap();
+        let second = context.create_detached_component(document, control()).unwrap();
+        context.append_child(root, first).unwrap();
+        context.append_child(root, second).unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(240.0, 200.0))
+            .unwrap();
+        let first_box = context.world().layout_box(first.stable_id()).unwrap();
+        let second_box = context.world().layout_box(second.stable_id()).unwrap();
+        assert_eq!(first_box.y, second_box.y);
+        context
+            .layout_document(document, crate::LayoutViewport::new(160.0, 200.0))
+            .unwrap();
+        let first_box = context.world().layout_box(first.stable_id()).unwrap();
+        let second_box = context.world().layout_box(second.stable_id()).unwrap();
+        assert!(second_box.y >= first_box.y + first_box.height + 7.9);
+        assert!((second_box.x - first_box.x).abs() < 0.1);
+    }
 
     #[test]
     fn spacing_stack_last_padding_setter_wins_after_direction_change() {

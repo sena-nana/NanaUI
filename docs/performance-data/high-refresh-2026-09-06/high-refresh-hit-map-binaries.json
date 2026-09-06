@@ -1,0 +1,12 @@
+[
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-runtime-benchmark-inactive-std-hit.exe",
+    "Algorithm": "SHA256",
+    "Hash": "4D98E032F462E6B5B857B4EB02F0F6FC30728BDD38A155DD3F5EE25107023138"
+  },
+  {
+    "Path": "E:\\codex-build\\nanaui-high-refresh\\release\\nana-runtime-benchmark.exe",
+    "Algorithm": "SHA256",
+    "Hash": "3BCFCA1FF7E5FEB530AF8A513565B9C2A115B921D9E253FCD8948CB099BCC495"
+  }
+]

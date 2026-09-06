@@ -50,6 +50,7 @@ hosted = [
     "dep:nana-window",
     "dep:raw-window-handle",
     "dep:winit",
+    "dep:windows",
 ]
 
 [dependencies]
@@ -82,6 +83,7 @@ accesskit_unix = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 accesskit_windows = { workspace = true, optional = true }
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi"] }
 
 [[example]]
 name = "hosted-gpu-demo"
@@ -89,6 +91,14 @@ required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "gpu-view-demo"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "application-counter"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "accessibility-hidden-probe"
 required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
@@ -100,7 +110,20 @@ name = "window-chrome-multi-window"
 required-features = ["hosted", "bundled-fonts"]
 
 [[bin]]
+name = "nana-a11y-benchmark"
+path = "src/bin/nana-a11y-benchmark.rs"
+required-features = ["accesskit-tree"]
+
+[[bin]]
 name = "nana-gpu-scene-benchmark"
 path = "src/bin/nana-gpu-scene-benchmark.rs"
 required-features = ["gpu"]
 
+
+[[example]]
+name = "desktop-overlay-probe"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "native-content-probe"
+required-features = ["hosted", "bundled-fonts"]

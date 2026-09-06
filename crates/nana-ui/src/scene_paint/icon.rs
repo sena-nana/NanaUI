@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bytemuck::{Pod, Zeroable};
 
@@ -130,9 +130,15 @@ pub(super) struct IconPipeline {
     vertices: wgpu::Buffer,
     vertex_capacity: usize,
     pending_vertices: Vec<IconVertex>,
+    uploaded_vertices: Vec<IconVertex>,
+    physical_size: [u32; 2],
+    uploaded_size: Option<[u32; 2]>,
     frame_slots: Vec<FrameSlot>,
     atlas: HashMap<AtlasKey, AtlasSlot>,
     atlas_order: VecDeque<AtlasKey>,
+    frame_keys: HashSet<AtlasKey>,
+    eviction_candidates: usize,
+    pending_texture_bytes: usize,
 }
 
 impl IconPipeline {
@@ -254,19 +260,33 @@ impl IconPipeline {
             }),
             vertex_capacity: INITIAL_VERTICES,
             pending_vertices: Vec::new(),
+            uploaded_vertices: Vec::new(),
+            physical_size: [0; 2],
+            uploaded_size: None,
             frame_slots: Vec::new(),
             atlas: HashMap::new(),
             atlas_order: VecDeque::new(),
+            frame_keys: HashSet::new(),
+            eviction_candidates: 0,
+            pending_texture_bytes: 0,
         }
     }
 
-    pub(super) fn begin_frame(&mut self, queue: &wgpu::Queue, physical_size: [u32; 2]) {
+    pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
         self.pending_vertices.clear();
         self.frame_slots.clear();
-        let uniforms = Uniforms {
-            transform: orthographic(physical_size[0], physical_size[1]),
-        };
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        self.frame_keys.clear();
+        self.pending_texture_bytes = 0;
+        // A previous frame can exceed the idle budget because all entries were
+        // in use. Its commands have now been invalidated, so trim that peak.
+        while self.atlas.len() > ATLAS_CAP {
+            let Some(oldest) = self.atlas_order.pop_front() else {
+                break;
+            };
+            self.atlas.remove(&oldest);
+        }
+        self.eviction_candidates = self.atlas_order.len();
+        self.physical_size = physical_size;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -297,6 +317,7 @@ impl IconPipeline {
             let rgba = rasterize_icon(icon.svg(), px)?;
             self.insert_atlas(device, queue, key, px, &rgba);
         }
+        self.frame_keys.insert(key);
         let color = pack_linear(with_opacity(color, opacity));
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
@@ -328,11 +349,34 @@ impl IconPipeline {
         Some(PreparedIcon { index })
     }
 
-    pub(super) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub(super) fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if let Some(work) = work {
+            work.record_upload(self.pending_texture_bytes);
+        }
+        self.pending_texture_bytes = 0;
         if self.pending_vertices.is_empty() {
             return;
         }
+        if self.uploaded_size != Some(self.physical_size) {
+            let uniforms = Uniforms {
+                transform: orthographic(self.physical_size[0], self.physical_size[1]),
+            };
+            queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+            self.uploaded_size = Some(self.physical_size);
+            if let Some(work) = work {
+                work.record_upload(std::mem::size_of::<Uniforms>());
+            }
+        }
         if self.pending_vertices.len() > self.vertex_capacity {
+            self.uploaded_vertices.clear();
+            if let Some(work) = work {
+                work.record_realloc();
+            }
             self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
             self.vertices = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.icon.vertices"),
@@ -341,11 +385,16 @@ impl IconPipeline {
                 mapped_at_creation: false,
             });
         }
-        queue.write_buffer(
+        let bytes = super::buffer_upload::upload_changed(
+            queue,
             &self.vertices,
-            0,
+            bytemuck::cast_slice(&self.uploaded_vertices),
             bytemuck::cast_slice(&self.pending_vertices),
         );
+        self.uploaded_vertices.clone_from(&self.pending_vertices);
+        if let Some(work) = work {
+            work.record_upload(bytes);
+        }
     }
 
     pub(super) fn draw(
@@ -387,13 +436,16 @@ impl IconPipeline {
         px: u32,
         rgba: &[u8],
     ) {
-        while self.atlas.len() >= ATLAS_CAP {
+        // Examine each old candidate at most once per frame. A live oldest
+        // entry must not hide other unused entries, nor trigger repeated scans.
+        while self.atlas.len() >= ATLAS_CAP && self.eviction_candidates > 0 {
+            self.eviction_candidates -= 1;
             let Some(oldest) = self.atlas_order.pop_front() else {
                 break;
             };
-            if self.frame_slots.iter().any(|slot| slot.key == oldest) {
+            if self.frame_keys.contains(&oldest) {
                 self.atlas_order.push_back(oldest);
-                break;
+                continue;
             }
             self.atlas.remove(&oldest);
         }
@@ -430,6 +482,7 @@ impl IconPipeline {
                 depth_or_array_layers: 1,
             },
         );
+        self.pending_texture_bytes += rgba.len();
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nana-ui.scene.icon.atlas.bind"),
@@ -485,6 +538,7 @@ fn rasterize_icon(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -523,6 +577,44 @@ mod tests {
     }
 
     #[test]
+    fn live_oldest_icon_does_not_hide_idle_entries_or_retain_frame_peaks() {
+        let (device, queue) = crate::scene_paint::tests::test_device();
+        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let key = |icon| AtlasKey { icon, px: 1 };
+        for icon in 0..ATLAS_CAP {
+            pipeline.insert_atlas(&device, &queue, key(icon), 1, &[255; 4]);
+        }
+        for frame in 0..32 {
+            pipeline.begin_frame([64; 2]);
+            pipeline.frame_keys.insert(key(0));
+            for offset in 0..8 {
+                let next = key(ATLAS_CAP + frame * 8 + offset);
+                pipeline.insert_atlas(&device, &queue, next, 1, &[255; 4]);
+                pipeline.frame_keys.insert(next);
+            }
+            assert!(pipeline.atlas.contains_key(&key(0)));
+            assert_eq!(pipeline.atlas.len(), ATLAS_CAP);
+        }
+        pipeline.begin_frame([64; 2]);
+        pipeline.frame_keys.extend(pipeline.atlas.keys().copied());
+        for icon in 1000..1000 + ATLAS_CAP {
+            let next = key(icon);
+            pipeline.insert_atlas(&device, &queue, next, 1, &[255; 4]);
+            pipeline.frame_keys.insert(next);
+        }
+        assert_eq!(pipeline.atlas.len(), ATLAS_CAP * 2);
+        assert!(
+            pipeline
+                .frame_keys
+                .iter()
+                .all(|key| pipeline.atlas.contains_key(key))
+        );
+        pipeline.begin_frame([64; 2]);
+        assert_eq!(pipeline.atlas.len(), ATLAS_CAP);
+        assert_eq!(pipeline.atlas_order.len(), ATLAS_CAP);
+    }
+
+    #[test]
     fn symmetric_icons_are_centered_in_the_atlas() {
         let px = 48;
         for icon in [Icon::Add, Icon::Settings, Icon::Close] {
@@ -540,5 +632,87 @@ mod tests {
                 "{icon:?} vertical center {cy} vs {mid}"
             );
         }
+    }
+}
+
+pub(super) struct IconPipelineTarget {
+    uniform_bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
+    vertices: wgpu::Buffer,
+    vertex_capacity: usize,
+    pending_vertices: Vec<IconVertex>,
+    uploaded_vertices: Vec<IconVertex>,
+    physical_size: [u32; 2],
+    uploaded_size: Option<[u32; 2]>,
+    frame_slots: Vec<FrameSlot>,
+    atlas: HashMap<AtlasKey, AtlasSlot>,
+    atlas_order: VecDeque<AtlasKey>,
+    frame_keys: HashSet<AtlasKey>,
+    eviction_candidates: usize,
+    pending_texture_bytes: usize,
+}
+
+impl IconPipeline {
+    pub(super) fn swap_target(
+        &mut self,
+        target: &mut Option<IconPipelineTarget>,
+        device: &wgpu::Device,
+    ) {
+        let target = target.get_or_insert_with(|| {
+            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana.target.icon.uniforms"),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            IconPipelineTarget {
+                uniform_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("nana.target.icon.bind"),
+                    layout: &self.pipeline.get_bind_group_layout(0),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.as_entire_binding(),
+                    }],
+                }),
+                uniforms,
+                vertices: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana.target.icon.vertices"),
+                    size: (INITIAL_VERTICES * std::mem::size_of::<IconVertex>()) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                vertex_capacity: INITIAL_VERTICES,
+                pending_vertices: Vec::new(),
+                uploaded_vertices: Vec::new(),
+                physical_size: [0; 2],
+                uploaded_size: None,
+                frame_slots: Vec::new(),
+                atlas: HashMap::new(),
+                atlas_order: VecDeque::new(),
+                frame_keys: HashSet::new(),
+                eviction_candidates: 0,
+                pending_texture_bytes: 0,
+            }
+        });
+        std::mem::swap(&mut self.uniform_bind_group, &mut target.uniform_bind_group);
+        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
+        std::mem::swap(&mut self.vertices, &mut target.vertices);
+        std::mem::swap(&mut self.vertex_capacity, &mut target.vertex_capacity);
+        std::mem::swap(&mut self.pending_vertices, &mut target.pending_vertices);
+        std::mem::swap(&mut self.uploaded_vertices, &mut target.uploaded_vertices);
+        std::mem::swap(&mut self.physical_size, &mut target.physical_size);
+        std::mem::swap(&mut self.uploaded_size, &mut target.uploaded_size);
+        std::mem::swap(&mut self.frame_slots, &mut target.frame_slots);
+        std::mem::swap(&mut self.atlas, &mut target.atlas);
+        std::mem::swap(&mut self.atlas_order, &mut target.atlas_order);
+        std::mem::swap(&mut self.frame_keys, &mut target.frame_keys);
+        std::mem::swap(
+            &mut self.eviction_candidates,
+            &mut target.eviction_candidates,
+        );
+        std::mem::swap(
+            &mut self.pending_texture_bytes,
+            &mut target.pending_texture_bytes,
+        );
     }
 }

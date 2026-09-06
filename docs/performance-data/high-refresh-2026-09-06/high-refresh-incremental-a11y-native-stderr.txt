@@ -1,0 +1,9 @@
+probe command: "\u{feff}show"
+probe visibility: true
+probe command: "hide"
+probe visibility: false
+probe command: "show"
+probe visibility: true
+probe command: "hide"
+probe visibility: false
+probe command: "quit"

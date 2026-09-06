@@ -59,6 +59,8 @@ import "@nanaui/nanavue-components/controls.css";
 
 `TextInput` / `TextArea` 持有已提交的 UTF-8、选区和 IME preedit。它们是视图侧编辑模型：文档 revision、撤销、冲突、持久化仍由应用拥有。可选 feature `syntax-highlighting` 在同一 `TextArea` 上启用名为 `"highlight"` 的 presenter，不另造一套编辑器。
 
+Rust `TextArea::read_only(true)` 保留焦点、光标/选区、查找和复制，拒绝修改、替换、剪切及粘贴。它与 `disabled(true)` 不同：禁用控件不参与这些交互。运行时切换为只读会结束未提交的 IME 组合，并拒绝此前开始的文本拖放写入；程序仍可通过组件更新提供新的权威文本。`HostedTextarea` 转发同一属性，语义构造属性为 `readOnly`。应用显示只读文档时应使用此属性，而不是以禁用样式替代只读状态。
+
 剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。
 
 大列表、表格、树：Rust 用 `AppContext::materialize_virtual_*`；Vue 用 `NanaVirtualList` / `NanaVirtualTable` / `NanaVirtualTree`（host tag 是唯一的 `nana-scroll-view`）。两边同一份窗口几何（`VirtualListLayout::window`），可见窗口外不建 live 节点；滚动不重排整棵布局。GPU 节点走同一张 `ComponentRegistry`：`nana-gpu` → `nana.gpu`，`nana-gpu-view` → `nana.gpu-view`。每个控件只保留一个 tag，等于 `ComponentTypeId` 去掉 `nana.` 前缀。

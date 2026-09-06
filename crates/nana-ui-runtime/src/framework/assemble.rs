@@ -97,7 +97,7 @@ impl AssemblyScope<'_> {
             if existing.type_id == type_id {
                 let entity = Entity::from_stable_id(existing.id);
                 self.context
-                    .update_component(entity, |view, _| *view = component)?;
+                    .update_component(entity, |view: &mut C, _| view.reconcile(component))?;
                 return Ok(entity);
             }
             self.context.despawn_node(existing.id)?;

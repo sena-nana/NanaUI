@@ -76,6 +76,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<Avatar>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
+        registrar.register_component::<crate::TerminalView>()?;
+        registrar.register_component::<crate::NativeContent>()?;
         registrar.register_component::<HostedTextarea>()?;
         registrar.register_component::<RangeField>()?;
         registrar.register_component::<Progress>()?;
@@ -436,6 +438,7 @@ impl RegisterableComponent for TextArea {
         let mut component = TextArea::new("")
             .placeholder(Arc::<str>::from(placeholder))
             .disabled(spec.disabled)
+            .read_only(spec.read_only)
             .invalid(spec.invalid);
         if let Some(language) = highlight_language_from_spec(spec) {
             component = component.highlight(language);
@@ -460,6 +463,7 @@ impl RegisterableComponent for HostedTextarea {
         let mut component = HostedTextarea::new("", language)
             .placeholder(Arc::<str>::from(textarea_placeholder(spec)))
             .disabled(spec.disabled)
+            .read_only(spec.read_only)
             .invalid(spec.invalid);
         if let Some(LengthSpec::Px(height)) = spec.layout.height {
             component = component.height(height);

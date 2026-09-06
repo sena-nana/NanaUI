@@ -176,6 +176,12 @@ impl AppContext {
                 context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
             });
         }
+        if C::wants_hover_tracking() {
+            self.component_lifecycle
+                .hover_cards
+                .entry(id)
+                .or_default();
+        }
         self.secondary_presses
             .entry(TypeId::of::<C>())
             .or_insert_with(|| {

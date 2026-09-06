@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use nana_ui_runtime::StableNodeId;
-use nana_ui_scene::{PrimitiveId, RenderOperation, ResourceId, ScenePrimitiveKind, UiScene};
+use nana_ui_scene::{PrimitiveId, RenderOperation, ScenePrimitiveKind, UiScene};
 
 use crate::scene_gpu::SceneGpuRendererRegistry;
 use crate::{HostTextureBinding, HostTextureRegistry};
@@ -36,8 +36,7 @@ impl fmt::Display for ScenePaintError {
             Self::UnsupportedCustomRenderer(id) => write!(
                 formatter,
                 "scene primitive {}:{} names an unsupported custom renderer; \
-                 scene_gpu_renderers(None) installs the demo \"gpu-view\" painter, \
-                 an empty registry does not",
+                 register its renderer explicitly with scene_gpu_renderers",
                 id.node.get(),
                 id.slot
             ),
@@ -68,10 +67,10 @@ impl HostTextureSceneResolver {
         host_textures: &HostTextureRegistry,
     ) -> Result<Self, ScenePaintError> {
         let graph = scene
-            .frame_graph(ResourceId(1))
+            .frame_plan()
             .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
         let mut bindings = HashMap::new();
-        for operation in graph.passes.iter().flat_map(|pass| &pass.operations) {
+        for operation in graph.operations.iter() {
             let RenderOperation::InvokeCustom(id) = operation else {
                 continue;
             };
@@ -104,10 +103,13 @@ pub(crate) fn validate_scene(
     host_textures: Option<&HostTextureRegistry>,
     gpu_renderers: Option<&SceneGpuRendererRegistry>,
 ) -> Result<Arc<[RenderOperation]>, ScenePaintError> {
-    let graph = scene
-        .frame_graph(ResourceId(1))
+    let plan = scene
+        .frame_plan()
         .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
-    for primitive in scene.primitives() {
+    for id in plan.custom_nodes.iter() {
+        let primitive = scene
+            .primitive(*id)
+            .ok_or(ScenePaintError::MissingNode(id.node))?;
         if let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind {
             if custom.renderer.as_ref() == "nana.host-texture" {
                 let Some(host_textures) = host_textures else {
@@ -124,13 +126,7 @@ pub(crate) fn validate_scene(
             }
         }
     }
-    Ok(graph
-        .passes
-        .into_iter()
-        .flat_map(|pass| pass.operations)
-        .filter(|operation| !matches!(operation, RenderOperation::PrepareExternal(_)))
-        .collect::<Vec<_>>()
-        .into())
+    Ok(Arc::clone(&plan.operations))
 }
 
 #[cfg(test)]
@@ -423,11 +419,6 @@ mod tests {
         let err = validate_scene(&scene, None, Some(&SceneGpuRendererRegistry::new()))
             .expect_err("empty registry must not paint gpu-view");
         assert!(matches!(err, ScenePaintError::UnsupportedCustomRenderer(_)));
-        let message = err.to_string();
-        assert!(
-            message.contains("empty registry"),
-            "error must distinguish None from an empty registry, got {message}"
-        );
     }
 
     #[test]

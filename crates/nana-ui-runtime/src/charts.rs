@@ -16,6 +16,10 @@ const DEFAULT_LABEL: &str = "Time series";
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimeSeriesChart {
     pub values: Vec<f64>,
+    /// Unix milliseconds and optional samples. None and non-finite samples leave gaps.
+    pub samples: Option<Vec<(i64, Option<f64>)>>,
+    pub unit: Option<Arc<str>>,
+    pub time_labels: Option<(Arc<str>, Arc<str>)>,
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
 }
@@ -37,9 +41,83 @@ impl TimeSeriesChart {
     pub fn new(values: impl IntoIterator<Item = f64>) -> Self {
         Self {
             values: values.into_iter().map(sanitize_value).collect(),
+            samples: None,
+            unit: None,
+            time_labels: None,
             label: None,
             style: NodeStyle::default(),
         }
+    }
+
+    /// Creates a time-proportional series, ordered by Unix milliseconds.
+    /// Missing/non-finite values interrupt the line; repeated timestamps retain input order.
+    pub fn from_samples(samples: impl IntoIterator<Item = (i64, Option<f64>)>) -> Self {
+        let mut samples: Vec<_> = samples
+            .into_iter()
+            .map(|(time, value)| {
+                (
+                    time,
+                    value
+                        .filter(|value| value.is_finite())
+                        .map(|value| value.max(0.0)),
+                )
+            })
+            .collect();
+        samples.sort_by_key(|sample| sample.0);
+        Self {
+            samples: Some(samples),
+            ..Self::new([])
+        }
+    }
+
+    pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    /// Localized endpoint labels; formatting/timezone remains the consumer's responsibility.
+    pub fn time_labels(mut self, start: impl Into<Arc<str>>, end: impl Into<Arc<str>>) -> Self {
+        self.time_labels = Some((start.into(), end.into()));
+        self
+    }
+
+    /// Independent contiguous runs. Unlike `points`, this preserves missing-data gaps.
+    pub fn segments(&self, bounds: LayoutBox) -> Vec<Vec<(f32, f32)>> {
+        let Some(samples) = &self.samples else {
+            let points = self.points(bounds);
+            return if points.is_empty() {
+                Vec::new()
+            } else {
+                vec![points]
+            };
+        };
+        let Some(first) = samples.first() else {
+            return Vec::new();
+        };
+        let span = (samples.last().unwrap().0 as i128 - first.0 as i128).max(1) as f64;
+        let maximum = samples
+            .iter()
+            .filter_map(|sample| sample.1)
+            .fold(1.0_f64, f64::max);
+        let width = (bounds.width - Self::INSET_X * 2.0).max(1.0);
+        let height = (bounds.height - Self::INSET_Y * 2.0).max(1.0);
+        let mut runs = Vec::new();
+        let mut run = Vec::new();
+        for (time, value) in samples {
+            if let Some(value) = value.filter(|value| value.is_finite()) {
+                let elapsed = (*time as i128 - first.0 as i128) as f64;
+                run.push((
+                    Self::INSET_X + width * (elapsed / span) as f32,
+                    Self::INSET_Y + height * (1.0 - (value / maximum).clamp(0.0, 1.0) as f32),
+                ));
+            } else if !run.is_empty() {
+                runs.push(std::mem::take(&mut run));
+            }
+        }
+        if !run.is_empty() {
+            runs.push(run);
+        }
+        runs
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
@@ -58,7 +136,11 @@ impl TimeSeriesChart {
     }
 
     /// Local points using inset (`INSET_X=8`, `INSET_Y=10`).
+    /// Use `segments` when drawing timestamp samples to retain missing-data gaps.
     pub fn points(&self, bounds: LayoutBox) -> Vec<(f32, f32)> {
+        if self.samples.is_some() {
+            return self.segments(bounds).into_iter().flatten().collect();
+        }
         let values: Vec<f64> = self.values.iter().copied().map(sanitize_value).collect();
         if values.is_empty() {
             return Vec::new();
@@ -140,8 +222,16 @@ impl ComponentView for TimeSeriesChart {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = StandardVisual::TimeSeriesChart {
-            values: self.values.clone().into(),
+        let visual = if let Some(samples) = &self.samples {
+            StandardVisual::TimestampSeriesChart {
+                samples: samples.clone().into(),
+                unit: self.unit.clone(),
+                time_labels: self.time_labels.clone(),
+            }
+        } else {
+            StandardVisual::TimeSeriesChart {
+                values: self.values.clone().into(),
+            }
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -178,6 +268,64 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[test]
+    fn timestamps_control_spacing_and_missing_values_split_runs() {
+        let chart = TimeSeriesChart::from_samples([
+            (10_000, Some(10.0)),
+            (0, Some(0.0)),
+            (1_000, Some(5.0)),
+            (2_000, None),
+            (9_000, Some(8.0)),
+        ]);
+        let segments = chart.segments(bounds(116.0, 120.0));
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0], vec![(8.0, 110.0), (18.0, 60.0)]);
+        assert_eq!(segments[1].len(), 2);
+        assert_eq!(segments[1][0].0, 98.0);
+        assert_eq!(segments[1][1], (108.0, 10.0));
+    }
+
+    #[test]
+    fn missing_samples_are_not_zero_and_extreme_timestamps_do_not_overflow() {
+        let chart = TimeSeriesChart::from_samples([
+            (i64::MIN, Some(3.0)),
+            (0, Some(f64::NAN)),
+            (i64::MAX, Some(3.0)),
+        ]);
+        let segments = chart.segments(bounds(116.0, 120.0));
+        assert_eq!(segments, vec![vec![(8.0, 10.0)], vec![(108.0, 10.0)]]);
+        assert!(
+            TimeSeriesChart::from_samples([(0, None), (1, None)])
+                .segments(bounds(116.0, 120.0))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn timestamp_chart_projects_samples_and_localized_axis_metadata() {
+        let mut context = AppContext::new();
+        let chart = context
+            .create_component(
+                document(),
+                TimeSeriesChart::from_samples([(0, Some(1.0)), (1000, None), (5000, Some(2.0))])
+                    .unit("people")
+                    .time_labels("10:00", "10:05"),
+            )
+            .unwrap();
+        let Some(StandardVisual::TimestampSeriesChart {
+            samples,
+            unit,
+            time_labels,
+        }) = context.world().standard_visual(chart.stable_id())
+        else {
+            panic!("timestamp visual");
+        };
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[1].1, None);
+        assert_eq!(unit.as_deref(), Some("people"));
+        assert!(time_labels.is_some());
     }
 
     #[test]

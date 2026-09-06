@@ -1,0 +1,24 @@
+   Compiling nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.38s
+     Running unittests src\lib.rs (E:/codex-build/nanaui-high-refresh\debug\deps\nana_ui_runtime-cd0c6e6df9ebb6c8.exe)
+
+running 1 test
+test world::hit_test::build_tests::inactive_retained_roots_prune_and_reactivate_without_losing_siblings ... FAILED
+
+failures:
+
+---- world::hit_test::build_tests::inactive_retained_roots_prune_and_reactivate_without_losing_siblings stdout ----
+
+thread 'world::hit_test::build_tests::inactive_retained_roots_prune_and_reactivate_without_losing_siblings' (8356) panicked at crates\nana-ui-runtime\src\world\hit_test\build_tests.rs:39:5:
+assertion `left == right` failed: inactive sibling ranges reached the hit query
+  left: 10000
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    world::hit_test::build_tests::inactive_retained_roots_prune_and_reactivate_without_losing_siblings
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 834 filtered out; finished in 0.18s
+
+error: test failed, to rerun pass `-p nana-ui-runtime --lib`

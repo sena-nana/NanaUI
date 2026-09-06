@@ -1,0 +1,3 @@
+Runtime performance gate failed:
+- runtime 5000-node initial systems P95 exceeds 8 ms
+- canonical Runtime 5000-node layout P95 exceeds 8 ms

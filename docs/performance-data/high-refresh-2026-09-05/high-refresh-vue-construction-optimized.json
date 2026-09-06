@@ -1,0 +1,86 @@
+{
+  "5000": {
+    "create": {
+      "p50": 3.654,
+      "p95": 4.752,
+      "p99": 5.005,
+      "max": 5.347,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "initialize": {
+      "p50": 0.157,
+      "p95": 0.239,
+      "p99": 0.288,
+      "max": 0.374,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "insert": {
+      "p50": 2.502,
+      "p95": 3.347,
+      "p99": 3.473,
+      "max": 3.948,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "layout_fixture": {
+      "p50": 0.215,
+      "p95": 0.244,
+      "p99": 0.246,
+      "max": 0.249,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "register": {
+      "p50": 42.364,
+      "p95": 52.501,
+      "p99": 55.96,
+      "max": 71.356,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 60
+    }
+  },
+  "10000": {
+    "create": {
+      "p50": 8.871,
+      "p95": 11.345,
+      "p99": 11.59,
+      "max": 11.911,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "initialize": {
+      "p50": 0.232,
+      "p95": 0.448,
+      "p99": 0.544,
+      "max": 1.319,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "insert": {
+      "p50": 6.222,
+      "p95": 7.35,
+      "p99": 7.955,
+      "max": 8.671,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "layout_fixture": {
+      "p50": 0.419,
+      "p95": 0.449,
+      "p99": 0.486,
+      "max": 0.488,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 0
+    },
+    "register": {
+      "p50": 98.501,
+      "p95": 118.443,
+      "p99": 126.182,
+      "max": 127.058,
+      "frame_budget_ms": 16.67,
+      "frame_budget_misses": 60
+    }
+  }
+}

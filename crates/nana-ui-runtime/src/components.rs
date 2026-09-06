@@ -372,7 +372,11 @@ impl TextSnippet {
 /// 编辑时跳位按最小变更区间重映射，失效即结束会话。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextSnippetSession {
+    pub exit_on_last: bool,
+    pub placeholders: Vec<crate::SnippetPlaceholder>,
     pub stops: Vec<usize>,
+    /// Selection ends for placeholder defaults; empty means all stops are carets.
+    pub selection_ends: Vec<usize>,
     pub index: usize,
 }
 
@@ -438,6 +442,23 @@ pub struct TextCompletion {
     pub kind_label: String,
     pub detail: String,
     pub doc: String,
+    /// Atomic host-provided edit, anchored to the source and caret which produced it.
+    /// Absent for ordinary word-prefix completions.
+    pub edit: Option<TextCompletionEdit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextCompletionEdit {
+    pub snippet: Option<String>,
+    pub variables: std::collections::BTreeMap<String,String>,
+    pub source: std::sync::Arc<str>,
+    pub caret: usize,
+    pub range: std::ops::Range<usize>,
+    pub text: String,
+    /// Additional replacements use offsets in `source`, not the edited result.
+    pub additional: Vec<(std::ops::Range<usize>, String)>,
+    /// Tab stops relative to `text`, in navigation order; first is selected on acceptance.
+    pub stops: Vec<std::ops::Range<usize>>,
 }
 
 impl TextCompletion {
@@ -447,11 +468,17 @@ impl TextCompletion {
             kind_label: kind_label.into(),
             detail: String::new(),
             doc: String::new(),
+            edit: None,
         }
     }
 
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
+        self
+    }
+
+    pub fn edit(mut self, edit: TextCompletionEdit) -> Self {
+        self.edit = Some(edit);
         self
     }
 
@@ -804,6 +831,9 @@ pub enum StandardVisual {
         open: bool,
         trigger: Option<Arc<str>>,
         trigger_icon: Option<Icon>,
+        /// Host-texture trigger (hover-card avatar). Painted by the node's own
+        /// custom render slot; the label never becomes a text region.
+        trigger_image: Option<Arc<str>>,
         gap: f32,
         /// Present when this node is an in-flow trigger; the menu items layout
         /// as a separate overlay column and must not share this node's box.
@@ -846,6 +876,12 @@ pub enum StandardVisual {
     #[cfg(feature = "charts")]
     TimeSeriesChart {
         values: Arc<[f64]>,
+    },
+    #[cfg(feature = "charts")]
+    TimestampSeriesChart {
+        samples: Arc<[(i64, Option<f64>)]>,
+        unit: Option<Arc<str>>,
+        time_labels: Option<(Arc<str>, Arc<str>)>,
     },
     #[cfg(feature = "controls")]
     ReorderList {
@@ -913,6 +949,7 @@ pub enum MenuSurfaceKind {
     Popover,
     ActionMenu,
     ContextMenu,
+    HoverCard,
 }
 
 /// Anchor for an in-flow trigger's overlay panel. The trigger node stays in
@@ -1303,6 +1340,9 @@ pub enum ComponentGeometry {
     MenuSurface {
         trigger: Option<ComponentTextRegion>,
         trigger_icon: Option<(Icon, LayoutBox)>,
+        /// Image trigger (hover-card avatar): the chrome is circular and the
+        /// texture rides the node's own custom render slot.
+        trigger_image: Option<Arc<str>>,
         trigger_surface: Option<ComponentTriggerSurface>,
         surface: LayoutBox,
         search: Option<ComponentTextRegion>,
@@ -1342,6 +1382,15 @@ pub enum ComponentGeometry {
         grid: Vec<LayoutBox>,
         area: Vec<LayoutBox>,
         line: Vec<[f32; 2]>,
+        grid_color: [f32; 4],
+        area_color: [f32; 4],
+        line_color: [f32; 4],
+    },
+    TimestampSeriesChart {
+        grid: Vec<LayoutBox>,
+        area: Vec<LayoutBox>,
+        segments: Vec<Vec<[f32; 2]>>,
+        labels: Vec<ComponentTextRegion>,
         grid_color: [f32; 4],
         area_color: [f32; 4],
         line_color: [f32; 4],
@@ -1604,6 +1653,19 @@ pub enum TextShaping {
 }
 
 pub trait TextShaper {
+    /// Run related probes against one immutable text snapshot. Backends may keep
+    /// its validated layout resident for the callback; individual probe results
+    /// and probes of other text must retain their normal semantics.
+    fn with_text_probes<R>(
+        &mut self,
+        _text: &TextContent,
+        _style: &ComputedStyle,
+        _constraints: TextShapeConstraints,
+        consume: impl FnOnce(&mut dyn TextShaper) -> R,
+    ) -> R where Self: Sized {
+        consume(self)
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,
@@ -2017,6 +2079,8 @@ pub struct LineLabel {
 /// [`TextInputState`]; this derived component only carries renderer geometry.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextInputPresentation {
+    /// Full shaped text extent, including visual soft-wrapped rows.
+    pub content_size: TextMetrics,
     pub display_value: String,
     pub placeholder: bool,
     pub selection: Option<(f32, f32)>,
@@ -2881,7 +2945,7 @@ impl StandardVisual {
             #[cfg(feature = "calendar")]
             Self::CalendarHeatmap { .. } => Some("calendar"),
             #[cfg(feature = "charts")]
-            Self::TimeSeriesChart { .. } => Some("charts"),
+            Self::TimeSeriesChart { .. } | Self::TimestampSeriesChart { .. } => Some("charts"),
             #[cfg(feature = "controls")]
             Self::ReorderList { .. } => Some("controls"),
             #[cfg(feature = "rich-text")]

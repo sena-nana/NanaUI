@@ -446,6 +446,7 @@ impl HostTextureBinding {
 pub struct HostTextureRegistry {
     bindings: Arc<RwLock<HashMap<String, RegisteredHostTextureBinding>>>,
     revision: Arc<AtomicU64>,
+    observers: Arc<TextureObservers>,
 }
 
 #[derive(Debug, Clone)]
@@ -476,7 +477,97 @@ impl RegisteredHostTextureBinding {
     }
 }
 
+type TextureObserver = Arc<dyn Fn(&str) + Send + Sync>;
+#[derive(Default)]
+struct TextureObservers {
+    next: AtomicU64,
+    callbacks: RwLock<HashMap<u64, TextureObserver>>,
+}
+impl std::fmt::Debug for TextureObservers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureObservers").finish_non_exhaustive()
+    }
+}
+
+/// Dropping a subscription disconnects its host notification.
+pub struct TextureSubscription {
+    observers: Arc<TextureObservers>,
+    id: u64,
+}
+impl Drop for TextureSubscription {
+    fn drop(&mut self) {
+        if let Ok(mut callbacks) = self.observers.callbacks.write() {
+            callbacks.remove(&self.id);
+        }
+    }
+}
+
+/// Stable named texture slot. Clones address the same current registration.
+#[derive(Debug, Clone)]
+pub struct TextureSlot {
+    registry: HostTextureRegistry,
+    name: Arc<str>,
+}
+impl TextureSlot {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn invalidate(&self) -> Option<u64> {
+        self.registry.invalidate(&self.name)
+    }
+    pub fn replace(
+        &self,
+        texture: HostTexture,
+        width: u32,
+        height: u32,
+        alpha: HostTextureAlphaMode,
+    ) -> HostTextureBinding {
+        self.registry
+            .register(self.name.to_string(), texture, width, height, alpha)
+    }
+    pub fn remove(&self) -> Option<HostTextureBinding> {
+        self.registry.remove(&self.name)
+    }
+}
+
 impl HostTextureRegistry {
+    pub fn slot(&self, name: impl Into<Arc<str>>) -> TextureSlot {
+        TextureSlot {
+            registry: self.clone(),
+            name: name.into(),
+        }
+    }
+
+    pub fn subscribe(
+        &self,
+        callback: impl Fn(&str) + Send + Sync + 'static,
+    ) -> TextureSubscription {
+        let id = self.observers.next.fetch_add(1, Ordering::Relaxed);
+        self.observers
+            .callbacks
+            .write()
+            .expect("texture observers")
+            .insert(id, Arc::new(callback));
+        TextureSubscription {
+            observers: Arc::clone(&self.observers),
+            id,
+        }
+    }
+
+    fn notify(&self, slot: &str) {
+        let callbacks = self
+            .observers
+            .callbacks
+            .read()
+            .expect("texture observers")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for callback in callbacks {
+            callback(slot);
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -505,6 +596,8 @@ impl HostTextureRegistry {
         }
         bindings.insert(slot, RegisteredHostTextureBinding::new(binding.clone()));
         self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(bindings);
+        self.notify(&binding.slot);
         binding
     }
 
@@ -524,6 +617,7 @@ impl HostTextureRegistry {
             .map(|entry| entry.binding);
         if removed.is_some() {
             self.revision.fetch_add(1, Ordering::AcqRel);
+            self.notify(slot);
         }
         removed
     }
@@ -537,6 +631,8 @@ impl HostTextureRegistry {
         binding.generation = binding.binding.texture.generation();
         binding.version = version;
         self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(bindings);
+        self.notify(slot);
         Some(version)
     }
 
@@ -547,8 +643,10 @@ impl HostTextureRegistry {
         };
         let count = bindings.len();
         bindings.clear();
+        drop(bindings);
         if count > 0 {
             self.revision.fetch_add(1, Ordering::AcqRel);
+            self.notify("");
         }
         count
     }
@@ -1719,5 +1817,16 @@ mod tests {
         }))
         .expect("GPU texture lifecycle test requires a WGPU device");
         (device, queue)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct GpuTextureTarget {
+    textures: HashMap<TextureKey, PreparedTexture>,
+}
+
+impl GpuTexturePipeline {
+    pub(crate) fn swap_target(&mut self, target: &mut GpuTextureTarget) {
+        std::mem::swap(&mut self.textures, &mut target.textures);
     }
 }

@@ -1,0 +1,208 @@
+{
+  "schema_version": 2,
+  "phase": "issue-8-scale",
+  "profile": "release",
+  "frame_budget_ms": 16.67,
+  "frame_budget_hz": 60,
+  "samples": 200,
+  "rows": [
+    {
+      "nodes": 100,
+      "kind": "full",
+      "primitives": 100,
+      "initial_extraction_ms": {
+        "p50": 1.1950999999999998,
+        "p95": 1.1950999999999998,
+        "p99": 1.1950999999999998,
+        "max": 1.1950999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.0049,
+        "p95": 0.005699999999999999,
+        "p99": 0.0073,
+        "max": 0.0354,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.00009999999999999999,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.007700000000000001,
+        "p95": 0.0109,
+        "p99": 0.0131,
+        "max": 0.0413,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 500,
+      "kind": "full",
+      "primitives": 500,
+      "initial_extraction_ms": {
+        "p50": 6.0104,
+        "p95": 6.0104,
+        "p99": 6.0104,
+        "max": 6.0104,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.0049,
+        "p95": 0.005699999999999999,
+        "p99": 0.0207,
+        "max": 0.1806,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.00009999999999999999,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.0178,
+        "p95": 0.0443,
+        "p99": 0.05,
+        "max": 0.0785,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 1000,
+      "kind": "full",
+      "primitives": 1000,
+      "initial_extraction_ms": {
+        "p50": 14.6363,
+        "p95": 14.6363,
+        "p99": 14.6363,
+        "max": 14.6363,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "local_update_ms": {
+        "p50": 0.0040999999999999995,
+        "p95": 0.0043,
+        "p99": 0.0047,
+        "max": 0.0214,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.00009999999999999999,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.0003,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.09000000000000001,
+        "p95": 0.1875,
+        "p99": 0.2915,
+        "max": 2.5185,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 5000,
+      "kind": "full",
+      "primitives": 5000,
+      "initial_extraction_ms": {
+        "p50": 48.4777,
+        "p95": 48.4777,
+        "p99": 48.4777,
+        "max": 48.4777,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 1
+      },
+      "local_update_ms": {
+        "p50": 0.0046,
+        "p95": 0.0049,
+        "p99": 0.0067,
+        "max": 0.028399999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.00009999999999999999,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00009999999999999999,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 0.42519999999999997,
+        "p95": 0.5716,
+        "p99": 0.9039,
+        "max": 1.0785,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 10000,
+      "kind": "full",
+      "primitives": 10000,
+      "initial_extraction_ms": {
+        "p50": 144.9681,
+        "p95": 144.9681,
+        "p99": 144.9681,
+        "max": 144.9681,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 1
+      },
+      "local_update_ms": {
+        "p50": 0.0049,
+        "p95": 0.0061,
+        "p99": 0.0493,
+        "max": 0.0493,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "idle_update_ms": {
+        "p50": 0.00009999999999999999,
+        "p95": 0.00009999999999999999,
+        "p99": 0.00019999999999999998,
+        "max": 0.00019999999999999998,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      },
+      "frame_graph_ms": {
+        "p50": 2.5043,
+        "p95": 3.6448,
+        "p99": 4.7974000000000006,
+        "max": 4.7974000000000006,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 0
+      }
+    },
+    {
+      "nodes": 50000,
+      "kind": "construction",
+      "primitives": 50000,
+      "initial_extraction_ms": {
+        "p50": 606.0877,
+        "p95": 822.711,
+        "p99": 822.711,
+        "max": 822.711,
+        "frame_budget_ms": 16.67,
+        "frame_budget_misses": 8
+      }
+    }
+  ]
+}

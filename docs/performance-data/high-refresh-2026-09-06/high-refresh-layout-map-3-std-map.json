@@ -1,0 +1,34 @@
+{
+  "layout_engine": {
+    "p50": 10.202,
+    "p95": 14.157,
+    "p99": 19.078,
+    "max": 33.191,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 17
+  },
+  "scroll_metrics": {
+    "p50": 0.311,
+    "p95": 0.632,
+    "p99": 0.909,
+    "max": 3.81,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "tooltips": {
+    "p50": 0.001,
+    "p95": 0.001,
+    "p99": 0.002,
+    "max": 0.003,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  },
+  "writeback": {
+    "p50": 1.042,
+    "p95": 1.65,
+    "p99": 2.553,
+    "max": 6.299,
+    "frame_budget_ms": 16.67,
+    "frame_budget_misses": 0
+  }
+}

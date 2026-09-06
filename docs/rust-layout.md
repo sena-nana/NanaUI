@@ -14,6 +14,9 @@ use nana_ui::runtime::{JustifySpec, SemanticColorRole, Stack};
 // 工具条：水平、随内容收缩、子项垂直居中；默认起点对齐，右对齐写 justify
 let toolbar = Stack::row(8.0).justify(JustifySpec::End);
 
+// 窄宽度下自动换行的操作区
+let actions = Stack::bar(8.0).wrap(true);
+
 // 主内容区：占满剩余高度
 let body = Stack::fill_column(12.0);
 
@@ -61,6 +64,8 @@ let style = NodeStyle::default()
 - 永远用 `NodeStyle::outline(role, width)` / `Stack::outline(role, width)` 一次写全，不要分别设置 `border` 和 `border_width`。
 - 只想关掉边框时写 `border_width: Some(0.0)`，并清掉 `border` 与交互态（hover/focus）的边框角色。
 - `Card` 这类自带视觉的控件走另一条路：用 `kind(CardKind::Outlined)` 拿 1px 描边，不要手动叠加。用户 `.style(...)` 显式给出的背景、边框、圆角优先于 `kind` 默认值。
+
+Card 的可选标题与其正文子节点分别绘制。可以直接挂载独立的 `Text` 标题、说明和动作行；无标题卡片不会吞掉正文文字。长说明需要按内容区宽度测量，纵向布局应明确拉伸文本的横向尺寸，使换行高度参与后续动作行的位置计算。
 
 ## 与网页 CSS 的默认值差异
 

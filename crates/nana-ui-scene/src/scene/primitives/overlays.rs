@@ -238,6 +238,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
         Some(ComponentGeometry::MenuSurface {
             trigger,
             trigger_icon,
+            trigger_image,
             trigger_surface,
             surface,
             search,
@@ -246,10 +247,19 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             elevation,
             background,
             border,
+            ..
         }) => {
             if let Some(chrome) = trigger_surface
                 && (chrome.background.is_some() || chrome.border.is_some())
             {
+                // An avatar trigger's chrome is the circular placeholder the
+                // host texture rides on; text triggers keep the compact
+                // control radius.
+                let radius = if trigger_image.is_some() {
+                    chrome.bounds.width.min(chrome.bounds.height) * 0.5
+                } else {
+                    UI_METRICS.radius_sm
+                };
                 emit(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 1 },
                     node: id,
@@ -263,7 +273,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: chrome.background,
                         border_color: chrome.border,
                         border_width: 1.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_sm),
+                        corner_radius: corner_radii(radius),
                         shadow: None,
                         surface: QuadSurfacePaint::default(),
                     },

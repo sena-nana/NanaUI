@@ -2924,6 +2924,11 @@ impl LogicalInlineEdges {
 /// 可测布局意图（Style Model Layout 盒切片）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutStyle {
+    /// Isolate descendant layout invalidation when both authored dimensions
+    /// are fixed pixels and the box is in normal flow. Other boxes retain
+    /// normal dependency propagation.
+    #[serde(default)]
+    pub layout_isolation: bool,
     pub direction: Option<FlexDirection>,
     /// CSS `direction` (`ltr` / `rtl`). `None` = inherit / initial `ltr`.
     /// Not [`Self::direction`] (`flex-direction`). Remaps logical box edges
@@ -3244,6 +3249,7 @@ pub struct LayoutStyle {
 impl Default for LayoutStyle {
     fn default() -> Self {
         Self {
+            layout_isolation: false,
             direction: None,
             dir: None,
             writing_mode: None,

@@ -1,0 +1,90 @@
+    Checking memchr v2.8.3
+   Compiling pulldown-cmark v0.13.4
+    Checking bitflags v2.13.1
+    Checking unicase v2.9.0
+    Checking serde_json v1.0.151
+    Checking nana-ui-core v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-core)
+    Checking nana-ui-runtime v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-runtime)
+    Checking nana-ui-scene v0.1.0 (D:\PROJECT\workspace\sena-nana\NanaUI\crates\nana-ui-scene)
+error[E0559]: variant `nana_ui_runtime::StandardVisual::NativeMarkdown` has no field named `blocks`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6955:9
+     |
+6955 |         blocks: view.blocks().to_vec().into(),
+     |         ^^^^^^ `nana_ui_runtime::StandardVisual::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0559]: variant `nana_ui_runtime::ComponentGeometry::NativeMarkdown` has no field named `drawing`
+    --> crates\nana-ui-scene\src\scene\tests.rs:6960:9
+     |
+6960 |         drawing: view.drawing(markdown.layout),
+     |         ^^^^^^^ `nana_ui_runtime::ComponentGeometry::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0599]: no method named `drawing` found for struct `nana_ui_runtime::NativeMarkdown` in the current scope
+    --> crates\nana-ui-scene\src\scene\tests.rs:6960:23
+     |
+6960 |         drawing: view.drawing(markdown.layout),
+     |                       ^^^^^^^ method not found in `nana_ui_runtime::NativeMarkdown`
+
+error[E0559]: variant `nana_ui_runtime::StandardVisual::NativeMarkdown` has no field named `blocks`
+    --> crates\nana-ui-scene\src\scene\tests.rs:7003:9
+     |
+7003 |         blocks: view.blocks().to_vec().into(),
+     |         ^^^^^^ `nana_ui_runtime::StandardVisual::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0559]: variant `nana_ui_runtime::ComponentGeometry::NativeMarkdown` has no field named `drawing`
+    --> crates\nana-ui-scene\src\scene\tests.rs:7008:9
+     |
+7008 |         drawing: view.drawing(markdown.layout),
+     |         ^^^^^^^ `nana_ui_runtime::ComponentGeometry::NativeMarkdown` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0599]: no method named `drawing` found for struct `nana_ui_runtime::NativeMarkdown` in the current scope
+    --> crates\nana-ui-scene\src\scene\tests.rs:7008:23
+     |
+7008 |         drawing: view.drawing(markdown.layout),
+     |                       ^^^^^^^ method not found in `nana_ui_runtime::NativeMarkdown`
+
+Some errors have detailed explanations: E0559, E0599.
+For more information about an error, try `rustc --explain E0559`.
+error: could not compile `nana-ui-scene` (lib test) due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error[E0432]: unresolved imports `nana_ui_runtime::ReorderItem`, `nana_ui_runtime::ReorderList`
+   --> crates\nana-ui-scene\tests\sidebar_row_label_paints_once.rs:8:48
+    |
+  8 |     ComponentView, DocumentId, LayoutViewport, ReorderItem, ReorderList, SidebarRow,
+    |                                                ^^^^^^^^^^^  ^^^^^^^^^^^ no `ReorderList` in the root
+    |                                                |
+    |                                                no `ReorderItem` in the root
+    |
+note: found an item that was configured out
+   --> crates\nana-ui-runtime\src\lib.rs:224:5
+    |
+222 | #[cfg(feature = "controls")]
+    |       -------------------- the item is gated behind the `controls` feature
+223 | pub use reorder_list::{
+224 |     ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
+    |     ^^^^^^^^^^^
+note: found an item that was configured out
+   --> crates\nana-ui-runtime\src\lib.rs:224:18
+    |
+222 | #[cfg(feature = "controls")]
+    |       -------------------- the item is gated behind the `controls` feature
+223 | pub use reorder_list::{
+224 |     ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
+    |                  ^^^^^^^^^^^
+
+error[E0599]: no variant named `ReorderList` found for enum `StandardVisual`
+   --> crates\nana-ui-scene\tests\sidebar_row_label_paints_once.rs:273:47
+    |
+273 |         Some(nana_ui_runtime::StandardVisual::ReorderList { rows, .. }) => {
+    |                                               ^^^^^^^^^^^ variant not found in `StandardVisual`
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `nana-ui-scene` (test "sidebar_row_label_paints_once") due to 2 previous errors

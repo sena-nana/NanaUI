@@ -3,6 +3,26 @@
 use super::*;
 
 impl AppContext {
+    /// Submit only a focused native single-line input. IME confirmation never
+    /// submits a form; non-input editors retain their existing Enter behavior.
+    pub fn submit_focused_text_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_editor::<TextInput>(document) else {
+            return Ok(false);
+        };
+        if self.world.ime(entity.id).is_some() || !self.read(entity, EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        self.update(entity, |input, cx| {
+            cx.emit(crate::TextSubmitted {
+                value: input.state.value.clone(),
+            });
+        })?;
+        Ok(true)
+    }
+
     pub fn set_ime_preedit(
         &mut self,
         document: DocumentId,
@@ -150,13 +170,23 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let snippet=self.world.text_snippet_session(entity.stable_id());
+        let old=self.read(entity,|editable|editable.state().value.clone())?;
+        let mut linked=None;
+        let changed=self.update_component(entity, |editable, cx| {
             if !editable.delete_surrounding(before_bytes, after_bytes) {
                 return false;
             }
+            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
+                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            }
             cx.emit(editable.change());
             true
-        })
+        })?;
+        if changed && let Some(session)=linked {
+            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        }
+        Ok(changed)
     }
 
     pub fn replace_focused_text(
@@ -331,6 +361,9 @@ impl AppContext {
         &mut self,
         entity: Entity<C>,
     ) -> Result<bool, FrameworkError> {
+        if !self.read(entity, EditableText::accepts_selection)? {
+            return Ok(false);
+        }
         self.update_component(entity, |editable, cx| {
             let selection = TextSelection {
                 anchor: 0,
@@ -362,7 +395,10 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let snippet=self.world.text_snippet_session(entity.stable_id());
+        let old=self.read(entity,|editable|editable.state().value.clone())?;
+        let mut linked=None;
+        let changed=self.update_component(entity, |editable, cx| {
             {
                 let state = editable.state_mut();
                 if state.selection.anchor == state.selection.focus {
@@ -383,9 +419,16 @@ impl AppContext {
             if !editable.replace_selection("") {
                 return false;
             }
+            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
+                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            }
             cx.emit(editable.change());
             true
-        })
+        })?;
+        if changed && let Some(session)=linked {
+            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        }
+        Ok(changed)
     }
 
     pub(super) fn commit_editable_ime<C: EditableText>(
@@ -396,14 +439,24 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let snippet=self.world.text_snippet_session(entity.stable_id());
+        let old=self.read(entity,|editable|editable.state().value.clone())?;
+        let mut linked=None;
+        let changed=self.update_component(entity, |editable, cx| {
             cx.mutations().set_ime(entity.stable_id(), None);
             if !editable.commit_ime_text(text) {
                 return false;
             }
+            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
+                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            }
             cx.emit(editable.change());
             true
-        })
+        })?;
+        if changed && let Some(session)=linked {
+            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        }
+        Ok(changed)
     }
 
     pub(super) fn set_editable_value<C: EditableText>(
@@ -428,7 +481,7 @@ impl AppContext {
         entity: Entity<C>,
         selection: TextSelection,
     ) -> Result<bool, FrameworkError> {
-        if !self.read(entity, EditableText::accepts_input)? {
+        if !self.read(entity, EditableText::accepts_selection)? {
             return Ok(false);
         }
         self.update_component(entity, |editable, cx| {
@@ -472,7 +525,10 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let snippet=self.world.text_snippet_session(entity.stable_id());
+        let old=self.read(entity,|editable|editable.state().value.clone())?;
+        let mut linked=None;
+        let changed=self.update_component(entity, |editable, cx| {
             let atoms =
                 crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
             if !atoms.is_empty() {
@@ -488,8 +544,15 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
+            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
+                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            }
             cx.emit(editable.change());
             true
-        })
+        })?;
+        if changed && let Some(session)=linked {
+            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        }
+        Ok(changed)
     }
 }

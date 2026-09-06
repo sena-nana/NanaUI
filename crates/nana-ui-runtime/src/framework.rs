@@ -9,6 +9,7 @@ mod selection;
 mod text_input;
 mod value_input;
 mod virtualize;
+mod virtualize_retained;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -74,6 +75,7 @@ impl<T: Send + 'static> View for T {}
 trait EditableText: ComponentView {
     type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
+    fn accepts_selection(&self) -> bool { self.accepts_input() }
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
@@ -129,9 +131,8 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 impl EditableText for TextInput {
     type Change = TextChanged;
 
-    fn accepts_input(&self) -> bool {
-        !self.disabled && !self.loading && !self.read_only
-    }
+    fn accepts_input(&self) -> bool { !self.disabled && !self.loading && !self.read_only }
+    fn accepts_selection(&self) -> bool { !self.disabled && !self.loading }
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
@@ -177,9 +178,8 @@ impl EditableText for NumberInput {
 impl EditableText for TextArea {
     type Change = TextChanged;
 
-    fn accepts_input(&self) -> bool {
-        !self.disabled
-    }
+    fn accepts_input(&self) -> bool { !self.disabled && !self.read_only }
+    fn accepts_selection(&self) -> bool { !self.disabled }
 
     fn is_multiline(&self) -> bool {
         true
@@ -383,6 +383,7 @@ type ErasedEventHandler = Box<
         ) + Send,
 >;
 struct EventHandler {
+    key: Option<String>,
     observer: StableNodeId,
     callback: ErasedEventHandler,
 }
@@ -407,12 +408,23 @@ struct TooltipLifecycle {
     open: bool,
 }
 
+/// Timer state for a hover-triggered surface ([`crate::HoverCard`]). The
+/// surface's own node is the lifecycle key; no overlay node is allocated —
+/// the card content rides the trigger's subtree.
+#[derive(Debug, Clone, Copy, Default)]
+struct HoverCardLifecycle {
+    show_at: Option<Duration>,
+    close_at: Option<Duration>,
+    open: bool,
+}
+
 #[derive(Default)]
 struct ComponentLifecycle {
     now: Duration,
     viewports: HashMap<DocumentId, crate::LayoutViewport>,
     pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
+    hover_cards: HashMap<StableNodeId, HoverCardLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
     workspace_transitions: HashMap<StableNodeId, ()>,
@@ -750,6 +762,7 @@ pub struct AppContext {
     /// Guards reentrant drains while a reproject commits its own mutations.
     draining_child_reprojects: bool,
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
+    event_dependencies: HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
     components: ComponentRegistry,
@@ -785,11 +798,14 @@ pub(crate) struct TextPointerClick {
 }
 
 /// Application-owned mapping between visible data keys and retained component
-/// entities. Only the visible window is kept in the Runtime tree.
+/// entities. Positioned materialization also keeps explicitly retained and active
+/// editing items, each under a bounded placement container.
 #[derive(Debug)]
 pub struct VirtualListItems<K, C: ComponentView> {
     materializer: VirtualListMaterializer<K>,
     entities: HashMap<K, Entity<C>>,
+    containers: HashMap<K, Entity<crate::Stack>>,
+    ime_owner: Option<StableNodeId>,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -800,6 +816,7 @@ pub struct VirtualTableItems<R, C> {
     materializer: VirtualTableMaterializer<R, C>,
     rows: HashMap<R, Entity<TableRow>>,
     cells: HashMap<(R, C), Entity<TableCell>>,
+    ime_owner: Option<StableNodeId>,
 }
 
 impl<R, C> Default for VirtualTableItems<R, C> {
@@ -808,6 +825,7 @@ impl<R, C> Default for VirtualTableItems<R, C> {
             materializer: VirtualTableMaterializer::default(),
             rows: HashMap::new(),
             cells: HashMap::new(),
+            ime_owner: None,
         }
     }
 }
@@ -868,6 +886,8 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
         Self {
             materializer: VirtualListMaterializer::default(),
             entities: HashMap::new(),
+            containers: HashMap::new(),
+            ime_owner: None,
         }
     }
 }
@@ -911,6 +931,7 @@ impl AppContext {
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             event_handlers: HashMap::new(),
+            event_dependencies: HashMap::new(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
             components: ComponentRegistry::default(),
@@ -982,6 +1003,26 @@ impl AppContext {
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
         self.prepare_surface_closing(&mut mutations);
+        let retired_documents = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::ParkSubtree { root }
+                | crate::UiMutation::DespawnSubtree { root }
+                | crate::UiMutation::Detach { id: root } => self.world.document_of(*root),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let deleted_layout_nodes = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::DespawnSubtree { root } => Some(*root),
+                _ => None,
+            })
+            .flat_map(|root| self.retained_subtree(root))
+            .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
+            .collect::<HashSet<_>>();
         let parked = mutations
             .as_slice()
             .iter()
@@ -1022,6 +1063,12 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .collect::<HashSet<_>>();
         let report = self.world.commit(mutations).map_err(FrameworkError::from)?;
+        for (document, id) in deleted_layout_nodes {
+            self.layout_cache.remove_node(document, id);
+        }
+        for document in retired_documents {
+            self.release_empty_document_layout(document);
+        }
         for id in parked {
             self.suspend_component_lifecycle(id);
         }
@@ -1283,6 +1330,23 @@ impl AppContext {
             row.hovered = hovered;
         })?;
         Ok(())
+    }
+
+    /// Nearest hover-card ancestor: the trigger, its open card content, and
+    /// any node in between all resolve to the same card.
+    fn enclosing_hover_card(&self, id: StableNodeId) -> Option<StableNodeId> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<crate::HoverCard>())
+            {
+                return Some(id);
+            }
+            current = self.world.node(id).and_then(|node| node.parent);
+        }
+        None
     }
 
     fn enclosing_sidebar_section(&self, id: StableNodeId) -> Option<Entity<SidebarSection>> {
@@ -1553,6 +1617,26 @@ impl AppContext {
             }
             if let Some(target) = target {
                 self.enter_tooltip(target, now)?;
+            }
+            // Hover cards track the pointer across their whole subtree: the
+            // trigger and the open card content resolve to the same card, so
+            // moving between them never closes it.
+            let previous_card = previous.and_then(|id| self.enclosing_hover_card(id));
+            let next_card = target.and_then(|id| self.enclosing_hover_card(id));
+            match (previous_card, next_card) {
+                (Some(card), Some(same)) if card == same => {
+                    if let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&card) {
+                        lifecycle.close_at = None;
+                    }
+                }
+                (previous_card, next_card) => {
+                    if let Some(card) = previous_card {
+                        self.leave_hover_card(card, now)?;
+                    }
+                    if let Some(card) = next_card {
+                        self.enter_hover_card(card, now)?;
+                    }
+                }
             }
             let previous_section = previous
                 .and_then(|id| self.enclosing_sidebar_section(id))
@@ -2090,6 +2174,7 @@ impl AppContext {
         if !self.world.contains(id) {
             return Err(FrameworkError::MissingView(id));
         }
+        let document = self.world.document_of(id).expect("node was checked above");
         let mut subtree = Vec::new();
         let mut stack = vec![id];
         while let Some(current) = stack.pop() {
@@ -2103,9 +2188,20 @@ impl AppContext {
         let mut queue = MutationQueue::new();
         queue.despawn_subtree(id);
         self.world.commit(queue)?;
+        self.release_empty_document_layout(document);
+        for &id in &subtree {
+            self.layout_cache.remove_node(document, id);
+        }
         let removed = subtree.iter().copied().collect::<HashSet<_>>();
         self.forget_subtree(&removed);
         Ok(())
+    }
+
+    fn release_empty_document_layout(&mut self, document: DocumentId) {
+        if !self.world.has_document_roots(document) {
+            self.layout_cache.remove_document(document);
+            self.component_lifecycle.viewports.remove(&document);
+        }
     }
 
     fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {
@@ -2228,3 +2324,6 @@ impl<T> Subscription<T> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod retained_interaction_tests;

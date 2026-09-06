@@ -69,8 +69,8 @@ Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4
 
 `GpuView::new(slot_id)` 投影 `CustomRenderNode`，renderer 键是 `"gpu-view"`。
 
-- `scene_gpu_renderers()` 返回 `None`：宿主装上默认演示 painter。
-- 返回 `Some(空 registry)`：`"gpu-view"` **画不出来**。要自定义就登记自己的 `SceneGpuRenderer`，不要交空表。
+- `scene_gpu_renderers()` 返回 `None` 或空 registry：未注册的 renderer 会报错。
+- 示例自行注册演示 painter；应用显式登记自己的 `SceneGpuRenderer`。
 
 `GpuViewMode::Inline` 复用当前 dest pass；`Standalone` 在同一 encoder / 目标上另开 pass。Renderer 不得 `request_device`，也不得 submit 宿主正在用的 encoder。
 
@@ -89,7 +89,7 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 | 节点 | 槽位合同 | L1 行为 |
 | --- | --- | --- |
 | `<nana-gpu>` / `data-nana-gpu` | `"nana.host-texture"` + 宿主登记的 slot 名 | `GpuTextureView` |
-| `<nana-gpu-view>` | `"gpu-view"` + 十进制 `slot_id` | `GpuView`。`scene_gpu_renderers(None)` 装演示 painter；空表则不画 |
+| `<nana-gpu-view>` | `"gpu-view"` + 十进制 `slot_id` | `GpuView`。宿主必须显式注册对应 painter |
 | `<canvas data-nana-canvas="{id}">` | `"nana.host-texture"` + `canvas:{id}` | 2D 像素来自 `nana-ui-web-api`（tiny-skia），hosted 路径由 `CanvasGpuBridge` dirty upload。`getContext("2d")` 只在 web-api shim 里存在，不是 Chromium 2D |
 | `getContext("webgpu")` | `"nana.host-texture"` + `webgpu-canvas:{id}` | 同一套 HostTexture，不是第二套 Device |
 | `<video>` / `nana-video` + `data-nana-video="{id}"` | `"nana.host-texture"` + `video:{id}` | Runtime `Video`。宿主推帧。有槽时不画 `poster` |
@@ -119,7 +119,30 @@ URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 
 
 ## 按图离屏
 
-离屏必须按 Scene 图、在采样**之前**编码时，仍挂 `GpuTextureView`，再实现 `SceneResourceProducer`。第一次接入用 `prepare_window_frame` 即可。
+离屏必须按 Scene 图、在采样**之前**编码时，仍挂 `GpuTextureView`，再实现
+`SceneResourceProducer`。`encode_scene` 使用宿主在获取 Surface 后建立的 encoder；
+生产与 UI 绘制合并提交，成功后才调用 `PreparedSceneResources::submitted`。
+编码或绘制失败时整份 encoder 丢弃，生产者不能自行提交或提前报告完成。
+标准宿主同时将已获取但未呈现的目标标记为需要 Surface 恢复，下一次获取使用原有
+Device / Queue 重建该目标，避免 DX12 的帧延迟等待信号在丢帧后阻止后续获取。
+低层 `HostedGpuContext` 消费者应先释放帧的 view 和 encoder，再调用 `discard_frame`
+或 `discard_surface_frame`；这些方法不会提交 GPU 工作或请求重绘，重试需求由应用决定。
+`hosted-gpu-demo` 展示了这条路径。
+
+Rust 可以保存 `registry.slot("preview")` 返回的 `TextureSlot`。
+内容已更新时调用 `invalidate()`，替换纹理时调用 `replace()`；通知只唤醒引用该
+slot 的目标。不要为纹理内容更新改写 Runtime 节点。
+
+多目标宿主使用 `SceneWgpuPainter::paint_target(RenderTargetId, ...)`，为每个目标保存
+准备好的绘制批次、投影、可写 GPU 缓冲、文字 atlas/renderers 和纹理绑定。着色器、
+管线、字体系统及文字整形缓存仍在同一 Device 上共享。目标关闭时调用 `remove_target`；
+普通 `paint` 对应单独的缺省目标状态，不能借它复用多个窗口的目标缓存。
+`HostedGpuResources::generation()` 标识宿主 Device 代次：克隆上下文不改变代次，
+重建设备会改变代次。生产者应随新上下文重建资源，并通过宿主 encoder 编码；
+提交成功后的通知才确认该帧生产完成。
+
+自定义 renderer 默认每帧重新准备；显式实现 `preparation_version` 后才允许复用。
+版本变化或 renderer 实例替换会重新准备，实际 `render` 仍在需要呈现的帧执行。
 
 ## 不要做的
 
