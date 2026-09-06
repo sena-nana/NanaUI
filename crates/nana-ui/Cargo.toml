@@ -83,7 +83,7 @@ accesskit_unix = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 accesskit_windows = { workspace = true, optional = true }
-windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi"] }
+windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi"] }
 
 [[example]]
 name = "hosted-gpu-demo"
