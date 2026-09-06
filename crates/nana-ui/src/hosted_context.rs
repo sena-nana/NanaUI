@@ -674,7 +674,11 @@ impl HostedGpuContext {
     }
 
     /// Auxiliary-target counterpart of [`Self::discard_frame`].
-    pub fn discard_surface_frame(&self, surface: &mut HostedGpuSurface, frame: wgpu::SurfaceTexture) {
+    pub fn discard_surface_frame(
+        &self,
+        surface: &mut HostedGpuSurface,
+        frame: wgpu::SurfaceTexture,
+    ) {
         drop(frame);
         surface.needs_recovery = true;
     }

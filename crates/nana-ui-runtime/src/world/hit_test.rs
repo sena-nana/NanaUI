@@ -113,17 +113,25 @@ impl HitIndex {
         for node in built {
             let id = node.entry.id;
             let parent = node.parent.map(|position| ids[position]);
-            index.entries.insert(id, IndexedHit {
-                bounds: hit_bounds(&node.entry),
-                entry: node.entry,
-                parent,
-                children: Vec::new(),
-                shift: [0.0, 0.0],
-                child_bounds: BoundsTree::default(),
-                sibling_slot: 0,
-            });
+            index.entries.insert(
+                id,
+                IndexedHit {
+                    bounds: hit_bounds(&node.entry),
+                    entry: node.entry,
+                    parent,
+                    children: Vec::new(),
+                    shift: [0.0, 0.0],
+                    child_bounds: BoundsTree::default(),
+                    sibling_slot: 0,
+                },
+            );
             if let Some(parent) = parent {
-                index.entries.get_mut(&parent).expect("preorder parent").children.push(Some(id));
+                index
+                    .entries
+                    .get_mut(&parent)
+                    .expect("preorder parent")
+                    .children
+                    .push(Some(id));
             } else {
                 index.roots.push(Some(id));
             }

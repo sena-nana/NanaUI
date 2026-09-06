@@ -84,7 +84,10 @@ fn retained_virtual_list_keeps_offscreen_editor_and_sparse_geometry() {
         materialize(&mut cx, &mut items, step as f32 * 20_000.0);
         peak = peak.max(items.mounted_keys().len());
     }
-    assert!(peak <= 8, "virtual list retained {peak} rows after scrolling");
+    assert!(
+        peak <= 8,
+        "virtual list retained {peak} rows after scrolling"
+    );
     let mut mutations = MutationQueue::new();
     mutations.request_focus(document(), None);
     cx.commit_mutations(mutations).unwrap();

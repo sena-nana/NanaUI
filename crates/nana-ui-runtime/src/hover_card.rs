@@ -15,13 +15,13 @@ use nana_ui_core::{
 };
 
 use crate::gpu_slots::HOST_TEXTURE_RENDERER;
+use crate::popover::{trigger_button_style, trigger_icon_button_style};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    MenuSurfaceKind, MutationQueue, NodeKind, NodeStyle, StandardVisual, StableNodeId,
+    MenuSurfaceKind, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
     TriggeredMenuOverlay, UiWorld,
 };
-use crate::popover::{trigger_button_style, trigger_icon_button_style};
 
 const HOVER_CARD_WIDTH: f32 = 240.0;
 const HOVER_CARD_GAP: f32 = 6.0;
@@ -84,7 +84,11 @@ impl HoverCard {
 
     /// Avatar trigger backed by a host-texture resource; the label is the
     /// accessible name.
-    pub fn trigger_image(mut self, resource: impl Into<Arc<str>>, label: impl Into<Arc<str>>) -> Self {
+    pub fn trigger_image(
+        mut self,
+        resource: impl Into<Arc<str>>,
+        label: impl Into<Arc<str>>,
+    ) -> Self {
         self.trigger = label.into();
         self.trigger_image = Some(resource.into());
         self
@@ -304,18 +308,30 @@ mod tests {
         context.advance_animations(std::time::Duration::from_millis(at_ms));
     }
 
-    fn hover_at(context: &mut AppContext, document: DocumentId, target: Option<StableNodeId>, at_ms: u64) {
+    fn hover_at(
+        context: &mut AppContext,
+        document: DocumentId,
+        target: Option<StableNodeId>,
+        at_ms: u64,
+    ) {
         context
             .set_pointer_hover_at(document, 1, target, std::time::Duration::from_millis(at_ms))
             .unwrap();
     }
 
-    fn card_with_button() -> (AppContext, crate::Entity<HoverCard>, crate::Entity<crate::Button>) {
+    fn card_with_button() -> (
+        AppContext,
+        crate::Entity<HoverCard>,
+        crate::Entity<crate::Button>,
+    ) {
         let mut context = AppContext::new();
         let card = context
             .create_component(
                 document(),
-                HoverCard::new().trigger("账户").open_delay(0).close_delay(120),
+                HoverCard::new()
+                    .trigger("账户")
+                    .open_delay(0)
+                    .close_delay(120),
             )
             .unwrap();
         let button = context
@@ -445,18 +461,22 @@ mod tests {
         let style = context.world().node_style(id).unwrap();
         assert!(style.background.is_none(), "loaded avatars paint no chrome");
         assert_eq!(
-            context.read(card, |card| card.trigger.as_ref().to_owned()).unwrap(),
+            context
+                .read(card, |card| card.trigger.as_ref().to_owned())
+                .unwrap(),
             "账户"
         );
 
         let placeholder = context
             .create_component(document(), HoverCard::new().trigger_image("", "账户"))
             .unwrap();
-        assert!(context.world().custom_render(placeholder.stable_id()).is_none());
-        let placeholder_style = context
-            .world()
-            .node_style(placeholder.stable_id())
-            .unwrap();
+        assert!(
+            context
+                .world()
+                .custom_render(placeholder.stable_id())
+                .is_none()
+        );
+        let placeholder_style = context.world().node_style(placeholder.stable_id()).unwrap();
         assert_eq!(
             placeholder_style.background,
             Some(SemanticColorRole::Subtle)

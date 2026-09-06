@@ -224,10 +224,12 @@ fn build_tree_observed(
 }
 
 fn profile_construction() {
-    eprintln!("storage bytes: LayoutStyle={}, WidgetProps={}, SemanticWidget={}",
+    eprintln!(
+        "storage bytes: LayoutStyle={}, WidgetProps={}, SemanticWidget={}",
         std::mem::size_of::<nana_ui_core::LayoutStyle>(),
         std::mem::size_of::<WidgetProps>(),
-        std::mem::size_of::<nana_ui_vue::SemanticWidget>());
+        std::mem::size_of::<nana_ui_vue::SemanticWidget>()
+    );
     let mut report = std::collections::BTreeMap::new();
     for count in [5_000, 10_000] {
         let mut samples: [Vec<Duration>; 5] = std::array::from_fn(|_| Vec::new());

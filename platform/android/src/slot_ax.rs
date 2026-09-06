@@ -89,7 +89,11 @@ impl SlotAccessibility {
             InitialTree(Some(initial)),
             actions.clone(),
         );
-        Ok(Self { adapter, projector, actions })
+        Ok(Self {
+            adapter,
+            projector,
+            actions,
+        })
     }
 
     /// Publish the current slot tree. Cheap no-op while TalkBack has not

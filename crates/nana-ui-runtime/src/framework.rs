@@ -75,7 +75,9 @@ impl<T: Send + 'static> View for T {}
 trait EditableText: ComponentView {
     type Change: Send + 'static;
     fn accepts_input(&self) -> bool;
-    fn accepts_selection(&self) -> bool { self.accepts_input() }
+    fn accepts_selection(&self) -> bool {
+        self.accepts_input()
+    }
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
@@ -131,8 +133,12 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 impl EditableText for TextInput {
     type Change = TextChanged;
 
-    fn accepts_input(&self) -> bool { !self.disabled && !self.loading && !self.read_only }
-    fn accepts_selection(&self) -> bool { !self.disabled && !self.loading }
+    fn accepts_input(&self) -> bool {
+        !self.disabled && !self.loading && !self.read_only
+    }
+    fn accepts_selection(&self) -> bool {
+        !self.disabled && !self.loading
+    }
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
@@ -178,8 +184,12 @@ impl EditableText for NumberInput {
 impl EditableText for TextArea {
     type Change = TextChanged;
 
-    fn accepts_input(&self) -> bool { !self.disabled && !self.read_only }
-    fn accepts_selection(&self) -> bool { !self.disabled }
+    fn accepts_input(&self) -> bool {
+        !self.disabled && !self.read_only
+    }
+    fn accepts_selection(&self) -> bool {
+        !self.disabled
+    }
 
     fn is_multiline(&self) -> bool {
         true

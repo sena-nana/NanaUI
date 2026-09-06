@@ -900,10 +900,7 @@ fn profile_initial_systems(document: DocumentId) {
         );
     }
     let json = serde_json::to_string_pretty(&report).unwrap();
-    if let Some(path) = std::env::args()
-        .skip_while(|arg| arg != "--output")
-        .nth(1)
-    {
+    if let Some(path) = std::env::args().skip_while(|arg| arg != "--output").nth(1) {
         std::fs::write(path, json).unwrap();
     } else {
         println!("{json}");

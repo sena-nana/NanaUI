@@ -823,19 +823,40 @@ mod tests {
     fn changing_a_text_action_to_an_icon_removes_its_visible_label() {
         let mut context = AppContext::new();
         let action = slot(&mut context, "action");
-        let chrome = context.create_component(document(), PaneChrome::new().actions([
-            PaneChromeAction::new(PaneChromeActionKind::ClosePane, "Close this pane").target(action),
-        ])).unwrap();
+        let chrome = context
+            .create_component(
+                document(),
+                PaneChrome::new().actions([PaneChromeAction::new(
+                    PaneChromeActionKind::ClosePane,
+                    "Close this pane",
+                )
+                .target(action)]),
+            )
+            .unwrap();
         assert_eq!(context.world().text(action), Some("Close this pane"));
-        context.update_component(chrome, |chrome, _| {
-            chrome.actions[0].icon = Some(Icon::Close);
-        }).unwrap();
+        context
+            .update_component(chrome, |chrome, _| {
+                chrome.actions[0].icon = Some(Icon::Close);
+            })
+            .unwrap();
         assert_eq!(context.world().text(action), Some(""));
-        assert!(matches!(context.world().standard_visual(action), Some(StandardVisual::Icon { icon, .. }) if icon == Icon::Close));
-        assert_eq!(context.world().accessibility(action).unwrap().label.as_deref(), Some("Close this pane"));
-        context.update_component(chrome, |chrome, _| {
-            chrome.actions[0].icon = None;
-        }).unwrap();
+        assert!(
+            matches!(context.world().standard_visual(action), Some(StandardVisual::Icon { icon, .. }) if icon == Icon::Close)
+        );
+        assert_eq!(
+            context
+                .world()
+                .accessibility(action)
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("Close this pane")
+        );
+        context
+            .update_component(chrome, |chrome, _| {
+                chrome.actions[0].icon = None;
+            })
+            .unwrap();
         assert_eq!(context.world().text(action), Some("Close this pane"));
         assert!(context.world().standard_visual(action).is_none());
     }

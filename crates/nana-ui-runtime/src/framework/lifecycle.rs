@@ -786,10 +786,9 @@ impl AppContext {
         now: Duration,
     ) -> Result<(), FrameworkError> {
         let close_delay = self
-            .read(
-                Entity::<crate::HoverCard>::from_stable_id(target),
-                |card| card.close_delay_ms,
-            )
+            .read(Entity::<crate::HoverCard>::from_stable_id(target), |card| {
+                card.close_delay_ms
+            })
             .unwrap_or_default();
         let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) else {
             return Ok(());
@@ -811,9 +810,12 @@ impl AppContext {
         {
             return Ok(false);
         }
-        self.update_component(Entity::<crate::HoverCard>::from_stable_id(target), |card, _| {
-            card.open = true;
-        })?;
+        self.update_component(
+            Entity::<crate::HoverCard>::from_stable_id(target),
+            |card, _| {
+                card.open = true;
+            },
+        )?;
         if let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) {
             lifecycle.open = true;
             lifecycle.show_at = None;
@@ -821,7 +823,10 @@ impl AppContext {
         Ok(true)
     }
 
-    pub(super) fn close_hover_card(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
+    pub(super) fn close_hover_card(
+        &mut self,
+        target: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
         if !self
             .component_lifecycle
             .hover_cards
@@ -830,9 +835,12 @@ impl AppContext {
         {
             return Ok(false);
         }
-        self.update_component(Entity::<crate::HoverCard>::from_stable_id(target), |card, _| {
-            card.open = false;
-        })?;
+        self.update_component(
+            Entity::<crate::HoverCard>::from_stable_id(target),
+            |card, _| {
+                card.open = false;
+            },
+        )?;
         if let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) {
             lifecycle.open = false;
             lifecycle.show_at = None;

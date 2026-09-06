@@ -450,7 +450,7 @@ pub struct TextCompletion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextCompletionEdit {
     pub snippet: Option<String>,
-    pub variables: std::collections::BTreeMap<String,String>,
+    pub variables: std::collections::BTreeMap<String, String>,
     pub source: std::sync::Arc<str>,
     pub caret: usize,
     pub range: std::ops::Range<usize>,
@@ -1663,7 +1663,10 @@ pub trait TextShaper {
         _style: &ComputedStyle,
         _constraints: TextShapeConstraints,
         consume: impl FnOnce(&mut dyn TextShaper) -> R,
-    ) -> R where Self: Sized {
+    ) -> R
+    where
+        Self: Sized,
+    {
         consume(self)
     }
 

@@ -150,25 +150,37 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let composition = if id == WindowId::PRIMARY {
             self.graphics.windows_composition().cloned()
         } else {
-            self.auxiliary.get(&id).and_then(|host| host.surface.windows_composition()).cloned()
+            self.auxiliary
+                .get(&id)
+                .and_then(|host| host.surface.windows_composition())
+                .cloned()
         };
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition.as_ref() {
-            let regions = crate::native_content_regions(&scene, nana_ui_scene::SceneRect {
-                x: 0.0, y: 0.0, width: geometry.logical_size.0, height: geometry.logical_size.1,
-            });
+            let regions = crate::native_content_regions(
+                &scene,
+                nana_ui_scene::SceneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: geometry.logical_size.0,
+                    height: geometry.logical_size.1,
+                },
+            );
             let result = regions.and_then(|regions| {
-                self.program.native_content_frame(id, composition, &regions, &self.context_for(id))
+                self.program
+                    .native_content_frame(id, composition, &regions, &self.context_for(id))
             });
             if let Err(error) = result {
                 drop(encoder);
                 drop(target);
                 self.discard_frame(id, frame);
-                self.program.host_failure(HostFailure::ResourceProduction { window: id, error });
+                self.program
+                    .host_failure(HostFailure::ResourceProduction { window: id, error });
                 return;
             }
             let renderer = self.native_renderers.entry(format).or_default().clone();
-            gpu_renderers.get_or_insert_with(SceneGpuRendererRegistry::new)
+            gpu_renderers
+                .get_or_insert_with(SceneGpuRendererRegistry::new)
                 .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
         }
         let theme = self.program.theme_mode();
@@ -231,7 +243,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if id == WindowId::PRIMARY {
             self.graphics.discard_frame(frame);
         } else if let Some(host) = self.auxiliary.get_mut(&id) {
-            self.graphics.discard_surface_frame(&mut host.surface, frame);
+            self.graphics
+                .discard_surface_frame(&mut host.surface, frame);
         }
     }
 

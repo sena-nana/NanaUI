@@ -1191,10 +1191,15 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
-        if key == "Tab" && focused.multiline && !modifiers.control && !modifiers.meta && !modifiers.alt
-            && context.advance_focused_text_snippet(document,modifiers.shift)? {
+        if key == "Tab"
+            && focused.multiline
+            && !modifiers.control
+            && !modifiers.meta
+            && !modifiers.alt
+            && context.advance_focused_text_snippet(document, modifiers.shift)?
+        {
             return Ok(true);
-        }        // 补全弹层激活时，无修饰的 Up/Down/Enter/Tab 由弹层消费：Up/Down
+        } // 补全弹层激活时，无修饰的 Up/Down/Enter/Tab 由弹层消费：Up/Down
         // 移动候选选中项（编辑器选区不动），Enter/Tab 接受选中项。其余键
         // 穿透正常编辑（打字触发宿主重喂过滤列表）；任何修饰键组合
         // （Cmd+D、Alt+Up、Shift+Up 等）一律穿透。
@@ -5413,19 +5418,49 @@ mod tests {
     fn textarea_wheel_scrolls_internal_text_and_survives_projection() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
-        let area = context.create_component(document, TextArea::new("line\n".repeat(120))).unwrap();
+        let area = context
+            .create_component(document, TextArea::new("line\n".repeat(120)))
+            .unwrap();
         let node = area.stable_id();
         let mut layout = MutationQueue::new();
-        layout.write_layout(node, LayoutBox { x: 0.0, y: 0.0, width: 200.0, height: 80.0 });
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 80.0,
+            },
+        );
         context.commit_mutations(layout).unwrap();
         let work = context.take_system_work();
         context.world_mut().resolve_styles(&work.style).unwrap();
-        context.world_mut().shape_text(&work.text, &mut MeasureTextShaper).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut MeasureTextShaper)
+            .unwrap();
         context.rebuild_hit_test(document);
-        let event = InputEvent::Wheel { x: 60.0, y: 40.0, delta_x: 0.0, delta_y: -120.0, line_delta: false, modifiers: Default::default() };
-        assert!(RuntimeInputAdapter::default().dispatch(&mut context, document, &event).unwrap().prevent_default);
-        assert_eq!(context.read(area, |area| area.scroll_offset.y).unwrap(), 120.0);
-        context.update_component(area, |area, _| area.invalid = true).unwrap();
+        let event = InputEvent::Wheel {
+            x: 60.0,
+            y: 40.0,
+            delta_x: 0.0,
+            delta_y: -120.0,
+            line_delta: false,
+            modifiers: Default::default(),
+        };
+        assert!(
+            RuntimeInputAdapter::default()
+                .dispatch(&mut context, document, &event)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.read(area, |area| area.scroll_offset.y).unwrap(),
+            120.0
+        );
+        context
+            .update_component(area, |area, _| area.invalid = true)
+            .unwrap();
         assert_eq!(context.world().scroll_offset(node).unwrap().y, 120.0);
     }
 

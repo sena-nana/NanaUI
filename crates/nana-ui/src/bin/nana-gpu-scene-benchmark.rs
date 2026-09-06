@@ -23,10 +23,10 @@ use nana_ui::{
 use nana_ui_scene::ScenePrimitiveKind;
 use serde::{Deserialize, Serialize};
 
-#[path = "gpu_scene_benchmark/timestamps.rs"]
-mod timestamps;
 #[path = "gpu_scene_benchmark/allocations.rs"]
 mod allocations;
+#[path = "gpu_scene_benchmark/timestamps.rs"]
+mod timestamps;
 
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;

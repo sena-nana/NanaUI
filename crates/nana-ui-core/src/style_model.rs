@@ -509,7 +509,10 @@ mod tests {
     #[test]
     fn code_token_roles_default_to_conservative_theme_colors() {
         for palette in [SemanticPalette::dark(), SemanticPalette::light()] {
-            assert_eq!(palette.get(SemanticColorRole::Keyword), palette.accent_strong);
+            assert_eq!(
+                palette.get(SemanticColorRole::Keyword),
+                palette.accent_strong
+            );
             assert_eq!(palette.get(SemanticColorRole::Function), palette.accent);
             assert_eq!(palette.get(SemanticColorRole::Builtin), palette.accent);
             assert_eq!(palette.get(SemanticColorRole::Type), palette.accent_on_soft);

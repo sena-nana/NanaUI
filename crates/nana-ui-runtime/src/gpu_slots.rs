@@ -222,16 +222,31 @@ impl GpuTextureView {
         texture_size: [u32; 2],
         point: nana_ui_core::LogicalPoint,
     ) -> Option<[f32; 2]> {
-        if texture_size.contains(&0) || !point.x.is_finite() || !point.y.is_finite()
-            || bounds.width <= 0.0 || bounds.height <= 0.0
-            || point.x < bounds.x || point.y < bounds.y
-            || point.x >= bounds.x + bounds.width || point.y >= bounds.y + bounds.height {
+        if texture_size.contains(&0)
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || bounds.width <= 0.0
+            || bounds.height <= 0.0
+            || point.x < bounds.x
+            || point.y < bounds.y
+            || point.x >= bounds.x + bounds.width
+            || point.y >= bounds.y + bounds.height
+        {
             return None;
         }
         let fitted = bounds.fitted(texture_size[0] as f32, texture_size[1] as f32, self.fit);
-        let uv = [(point.x - fitted.x) / fitted.width, (point.y - fitted.y) / fitted.height];
-        if uv.iter().any(|v| !v.is_finite() || !(0.0..1.0).contains(v)) { return None; }
-        let zoom = if self.zoom.is_finite() { self.zoom.max(1.0) } else { 1.0 };
+        let uv = [
+            (point.x - fitted.x) / fitted.width,
+            (point.y - fitted.y) / fitted.height,
+        ];
+        if uv.iter().any(|v| !v.is_finite() || !(0.0..1.0).contains(v)) {
+            return None;
+        }
+        let zoom = if self.zoom.is_finite() {
+            self.zoom.max(1.0)
+        } else {
+            1.0
+        };
         Some(uv.map(|v| (v - 0.5) / zoom + 0.5))
     }
 
@@ -537,18 +552,44 @@ mod tests {
 
     #[test]
     fn texture_uv_mapping_matches_fit_zoom_and_rejects_bars_and_nonfinite_points() {
-        use nana_ui_core::{LogicalRect, LogicalPoint};
+        use nana_ui_core::{LogicalPoint, LogicalRect};
         let bounds = LogicalRect::new(10.0, 20.0, 200.0, 200.0);
         let view = GpuTextureView::new("preview").contain();
-        assert_eq!(view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(110.0, 120.0)), Some([0.5, 0.5]));
-        assert_eq!(view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 95.0)), Some([0.25, 0.25]));
-        assert!(view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(110.0, 30.0)).is_none());
-        assert_eq!(view.clone().zoom(2.0).texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 95.0)), Some([0.375, 0.375]));
-        assert!(view.texture_uv_at(bounds, [0, 200], LogicalPoint::new(110.0, 120.0)).is_none());
-        assert!(view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(f32::NAN, 120.0)).is_none());
-        assert!(view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(210.0, 120.0)).is_none());
+        assert_eq!(
+            view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(110.0, 120.0)),
+            Some([0.5, 0.5])
+        );
+        assert_eq!(
+            view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 95.0)),
+            Some([0.25, 0.25])
+        );
+        assert!(
+            view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(110.0, 30.0))
+                .is_none()
+        );
+        assert_eq!(
+            view.clone()
+                .zoom(2.0)
+                .texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 95.0)),
+            Some([0.375, 0.375])
+        );
+        assert!(
+            view.texture_uv_at(bounds, [0, 200], LogicalPoint::new(110.0, 120.0))
+                .is_none()
+        );
+        assert!(
+            view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(f32::NAN, 120.0))
+                .is_none()
+        );
+        assert!(
+            view.texture_uv_at(bounds, [400, 200], LogicalPoint::new(210.0, 120.0))
+                .is_none()
+        );
         let fill = GpuTextureView::new("preview");
-        assert_eq!(fill.texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 70.0)), Some([0.25, 0.25]));
+        assert_eq!(
+            fill.texture_uv_at(bounds, [400, 200], LogicalPoint::new(60.0, 70.0)),
+            Some([0.25, 0.25])
+        );
     }
 
     #[test]

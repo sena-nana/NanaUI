@@ -297,15 +297,25 @@ impl AppContext {
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        if self.views.get(&id).is_some_and(|view| view.is::<TextArea>()) {
-            let Some(next) = self.world.text_scroll_by_target(id, delta) else { return Ok(false); };
-            if self.world.scroll_offset(id).unwrap_or_default() == next { return Ok(false); }
+        if self
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<TextArea>())
+        {
+            let Some(next) = self.world.text_scroll_by_target(id, delta) else {
+                return Ok(false);
+            };
+            if self.world.scroll_offset(id).unwrap_or_default() == next {
+                return Ok(false);
+            }
             let mut mutations = MutationQueue::new();
             mutations.set_scroll_offset(id, next);
             self.world.commit(mutations)?;
             let applied = self.world.scroll_offset(id).unwrap_or(next);
             self.world.set_text_viewport_pin(id, Some(applied));
-            self.update_component(Entity::<TextArea>::from_stable_id(id), |area, _| { area.scroll_offset = applied; })?;
+            self.update_component(Entity::<TextArea>::from_stable_id(id), |area, _| {
+                area.scroll_offset = applied;
+            })?;
             return Ok(true);
         }
         if self.is_scroll_view(id) {

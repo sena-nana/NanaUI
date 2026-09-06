@@ -256,7 +256,10 @@ impl UiWorld {
 impl UiWorld {
     /// Diagnostic control path for paired sharing measurements; product resolution shares.
     #[cfg(feature = "benchmark")]
-    pub fn benchmark_resolve_styles_unshared(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
+    pub fn benchmark_resolve_styles_unshared(
+        &mut self,
+        ids: &[StableNodeId],
+    ) -> Result<(), UiWorldError> {
         let mut resolved = HashSet::new();
         for &id in ids {
             self.resolve_style::<false>(id, &mut resolved)?;

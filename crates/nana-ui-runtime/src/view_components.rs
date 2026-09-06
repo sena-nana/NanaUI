@@ -665,7 +665,12 @@ impl ComponentView for IconButton {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         if world.text(id).is_some_and(|text| !text.is_empty()) {
-            mutations.set_text(id, TextContent { value: String::new() });
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: String::new(),
+                },
+            );
         }
         if self.tooltip.is_some() && world.overlay_host(id).is_none() {
             mutations.set_overlay_host(id, OverlayHostState::default());
@@ -1631,8 +1636,16 @@ impl NumberInput {
     /// Publish a value from the application. Values are clamped to bounds;
     /// discrete fields also snap them to their precision and step grid.
     pub fn assign(&mut self, value: f64) -> bool {
-        let next = if self.continuous { self.spec.clamp(value) } else { self.spec.snap(value) };
-        let text = if self.continuous { next.to_string() } else { self.spec.format(next) };
+        let next = if self.continuous {
+            self.spec.clamp(value)
+        } else {
+            self.spec.snap(value)
+        };
+        let text = if self.continuous {
+            next.to_string()
+        } else {
+            self.spec.format(next)
+        };
         if next == self.value && self.state.value == text {
             return false;
         }
@@ -1645,15 +1658,24 @@ impl NumberInput {
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
         let next = if self.continuous {
             self.value + f64::from(steps) * self.spec.effective_step()
-        } else { self.spec.step_by(self.value, steps) };
+        } else {
+            self.spec.step_by(self.value, steps)
+        };
         self.assign(next)
     }
 
     /// Parse the draft. An unparseable draft restores the committed value.
     pub(crate) fn commit_draft(&mut self) -> bool {
         let parsed = if self.continuous {
-            self.state.value.trim().parse::<f64>().ok().filter(|value| value.is_finite())
-        } else { self.spec.parse(&self.state.value) };
+            self.state
+                .value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+        } else {
+            self.spec.parse(&self.state.value)
+        };
         match parsed {
             Some(parsed) => self.assign(parsed),
             None => {
@@ -1672,7 +1694,11 @@ impl NumberInput {
     }
 
     pub(crate) fn formatted_value(&self) -> String {
-        if self.continuous { self.value.to_string() } else { self.spec.format(self.value) }
+        if self.continuous {
+            self.value.to_string()
+        } else {
+            self.spec.format(self.value)
+        }
     }
 }
 
@@ -2068,7 +2094,9 @@ impl TextArea {
     }
 
     pub fn replace_selection(&mut self, text: &str) -> bool {
-        if self.disabled || self.read_only { return false; }
+        if self.disabled || self.read_only {
+            return false;
+        }
         let normalized = crate::text_editing::normalize_newlines(text);
         self.state.replace_selection(&normalized)
     }
@@ -2115,14 +2143,16 @@ impl ComponentView for TextArea {
         if world.scroll_offset(id) != Some(self.scroll_offset) {
             mutations.set_scroll_offset(id, self.scroll_offset);
         }
-        let snippet_choices=world.text_snippet_session(id).and_then(|s|s.choice_items());
-        let offered_completions=snippet_choices.as_ref().unwrap_or(&self.completions);
+        let snippet_choices = world
+            .text_snippet_session(id)
+            .and_then(|s| s.choice_items());
+        let offered_completions = snippet_choices.as_ref().unwrap_or(&self.completions);
         // 补全候选喂入：列表未变（指针或内容相等）时不下发变更，会话的
         // 键盘选中/滚动原样保留；空列表由世界侧移除会话（弹层关闭）。
         {
-            let fed_unchanged = world
-                .text_completion_items(id)
-                .is_some_and(|fed| Arc::ptr_eq(fed, offered_completions) || fed == offered_completions);
+            let fed_unchanged = world.text_completion_items(id).is_some_and(|fed| {
+                Arc::ptr_eq(fed, offered_completions) || fed == offered_completions
+            });
             if !fed_unchanged {
                 mutations.set_text_input_completions(id, Arc::clone(offered_completions));
             }
@@ -2323,30 +2353,81 @@ mod hosted_textarea_tests {
     fn continuous_number_input_preserves_fractions_through_commit_step_and_revert() {
         let mut context = crate::AppContext::new();
         let document = DocumentId::new(1).unwrap();
-        let input = context.create_component(document,
-            NumberInput::continuous(0.5).range(-1.0, 1.0).step(0.25).precision(0)).unwrap();
+        let input = context
+            .create_component(
+                document,
+                NumberInput::continuous(0.5)
+                    .range(-1.0, 1.0)
+                    .step(0.25)
+                    .precision(0),
+            )
+            .unwrap();
         assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.5);
         assert!(context.set_number_value(input, 0.123456789123).unwrap());
-        assert_eq!(context.read(input, |field| field.state.value.clone()).unwrap(), "0.123456789123");
+        assert_eq!(
+            context
+                .read(input, |field| field.state.value.clone())
+                .unwrap(),
+            "0.123456789123"
+        );
         assert!(!context.step_number_input(input, 0).unwrap());
         assert!(context.step_number_input(input, 1).unwrap());
-        assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.373456789123);
-        assert_eq!(context.world().accessibility(input.stable_id()).unwrap().numeric_step, Some(0.25));
-        context.update_component(input, |field, _| { field.state.replace_value("0.000000123456789"); }).unwrap();
+        assert_eq!(
+            context.read(input, NumberInput::value).unwrap(),
+            0.373456789123
+        );
+        assert_eq!(
+            context
+                .world()
+                .accessibility(input.stable_id())
+                .unwrap()
+                .numeric_step,
+            Some(0.25)
+        );
+        context
+            .update_component(input, |field, _| {
+                field.state.replace_value("0.000000123456789");
+            })
+            .unwrap();
         assert!(context.commit_number_input(input).unwrap());
-        assert_eq!(context.read(input, NumberInput::value).unwrap(), 0.000000123456789);
-        context.update_component(input, |field, _| { field.state.replace_value("-"); }).unwrap();
+        assert_eq!(
+            context.read(input, NumberInput::value).unwrap(),
+            0.000000123456789
+        );
+        context
+            .update_component(input, |field, _| {
+                field.state.replace_value("-");
+            })
+            .unwrap();
         context.commit_number_input(input).unwrap();
-        assert_eq!(context.read(input, |field| field.state.value.parse::<f64>().unwrap()).unwrap(), 0.000000123456789);
+        assert_eq!(
+            context
+                .read(input, |field| field.state.value.parse::<f64>().unwrap())
+                .unwrap(),
+            0.000000123456789
+        );
         let mut focus = MutationQueue::new();
         focus.request_focus(document, Some(input.stable_id()));
         context.commit_mutations(focus).unwrap();
-        context.update_component(input, |field, _| { field.state.replace_value("uncommitted"); }).unwrap();
+        context
+            .update_component(input, |field, _| {
+                field.state.replace_value("uncommitted");
+            })
+            .unwrap();
         assert!(context.revert_focused_number_input(document).unwrap());
-        assert_eq!(context.read(input, |field| field.state.value.parse::<f64>().unwrap()).unwrap(), 0.000000123456789);
+        assert_eq!(
+            context
+                .read(input, |field| field.state.value.parse::<f64>().unwrap())
+                .unwrap(),
+            0.000000123456789
+        );
         context.set_number_value(input, 2.0).unwrap();
         assert_eq!(context.read(input, NumberInput::value).unwrap(), 1.0);
-        assert_eq!(NumberInput::new(0.5).value(), 1.0, "discrete defaults remain compatible");
+        assert_eq!(
+            NumberInput::new(0.5).value(),
+            1.0,
+            "discrete defaults remain compatible"
+        );
     }
 
     #[test]
@@ -2356,7 +2437,10 @@ mod hosted_textarea_tests {
         let input = context
             .create_component(
                 document,
-                NumberInput::new(1.0).range(0.0, 10.0).step(0.5).precision(1),
+                NumberInput::new(1.0)
+                    .range(0.0, 10.0)
+                    .step(0.5)
+                    .precision(1),
             )
             .unwrap();
         context
@@ -4138,11 +4222,17 @@ mod spacing_tests {
         let root = context
             .create_component(document, Stack::bar(8.0).wrap(true))
             .unwrap();
-        let control = || Stack::row(0.0)
-            .width(LengthSpec::Px(100.0))
-            .height(LengthSpec::Px(30.0));
-        let first = context.create_detached_component(document, control()).unwrap();
-        let second = context.create_detached_component(document, control()).unwrap();
+        let control = || {
+            Stack::row(0.0)
+                .width(LengthSpec::Px(100.0))
+                .height(LengthSpec::Px(30.0))
+        };
+        let first = context
+            .create_detached_component(document, control())
+            .unwrap();
+        let second = context
+            .create_detached_component(document, control())
+            .unwrap();
         context.append_child(root, first).unwrap();
         context.append_child(root, second).unwrap();
         context

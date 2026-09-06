@@ -38,10 +38,7 @@ fn markdown_preserves_large_plain_text_projection_and_removes_it() {
         })
         .collect::<Vec<_>>();
     assert_eq!(content, vec![expected.as_str()]);
-    runtime
-        .context_mut()
-        .remove_view(markdown)
-        .unwrap();
+    runtime.context_mut().remove_view(markdown).unwrap();
     flush(&mut runtime);
     assert!(
         runtime

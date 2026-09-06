@@ -179,21 +179,28 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let snippet=self.world.text_snippet_session(entity.stable_id());
-        let old=self.read(entity,|editable|editable.state().value.clone())?;
-        let mut linked=None;
-        let changed=self.update_component(entity, |editable, cx| {
+        let snippet = self.world.text_snippet_session(entity.stable_id());
+        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        let mut linked = None;
+        let changed = self.update_component(entity, |editable, cx| {
             if !editable.delete_surrounding(before_bytes, after_bytes) {
                 return false;
             }
-            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
-                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            if let Some(session) = &snippet
+                && let Some((value, selection, session)) =
+                    session.linked_edit(&old, &editable.state().value, editable.state().selection)
+            {
+                editable.state_mut().value = value;
+                editable.state_mut().selection = selection;
+                linked = Some(session);
             }
             cx.emit(editable.change());
             true
         })?;
-        if changed && let Some(session)=linked {
-            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        if changed && let Some(session) = linked {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(entity.stable_id(), Some(session));
+            self.world.commit(mutations)?;
         }
         Ok(changed)
     }
@@ -410,10 +417,10 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let snippet=self.world.text_snippet_session(entity.stable_id());
-        let old=self.read(entity,|editable|editable.state().value.clone())?;
-        let mut linked=None;
-        let changed=self.update_component(entity, |editable, cx| {
+        let snippet = self.world.text_snippet_session(entity.stable_id());
+        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        let mut linked = None;
+        let changed = self.update_component(entity, |editable, cx| {
             {
                 let state = editable.state_mut();
                 if state.selection.anchor == state.selection.focus {
@@ -434,14 +441,21 @@ impl AppContext {
             if !editable.replace_selection("") {
                 return false;
             }
-            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
-                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            if let Some(session) = &snippet
+                && let Some((value, selection, session)) =
+                    session.linked_edit(&old, &editable.state().value, editable.state().selection)
+            {
+                editable.state_mut().value = value;
+                editable.state_mut().selection = selection;
+                linked = Some(session);
             }
             cx.emit(editable.change());
             true
         })?;
-        if changed && let Some(session)=linked {
-            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        if changed && let Some(session) = linked {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(entity.stable_id(), Some(session));
+            self.world.commit(mutations)?;
         }
         Ok(changed)
     }
@@ -454,22 +468,29 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let snippet=self.world.text_snippet_session(entity.stable_id());
-        let old=self.read(entity,|editable|editable.state().value.clone())?;
-        let mut linked=None;
-        let changed=self.update_component(entity, |editable, cx| {
+        let snippet = self.world.text_snippet_session(entity.stable_id());
+        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        let mut linked = None;
+        let changed = self.update_component(entity, |editable, cx| {
             cx.mutations().set_ime(entity.stable_id(), None);
             if !editable.commit_ime_text(text) {
                 return false;
             }
-            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
-                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            if let Some(session) = &snippet
+                && let Some((value, selection, session)) =
+                    session.linked_edit(&old, &editable.state().value, editable.state().selection)
+            {
+                editable.state_mut().value = value;
+                editable.state_mut().selection = selection;
+                linked = Some(session);
             }
             cx.emit(editable.change());
             true
         })?;
-        if changed && let Some(session)=linked {
-            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        if changed && let Some(session) = linked {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(entity.stable_id(), Some(session));
+            self.world.commit(mutations)?;
         }
         Ok(changed)
     }
@@ -540,10 +561,10 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let snippet=self.world.text_snippet_session(entity.stable_id());
-        let old=self.read(entity,|editable|editable.state().value.clone())?;
-        let mut linked=None;
-        let changed=self.update_component(entity, |editable, cx| {
+        let snippet = self.world.text_snippet_session(entity.stable_id());
+        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        let mut linked = None;
+        let changed = self.update_component(entity, |editable, cx| {
             let atoms =
                 crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
             if !atoms.is_empty() {
@@ -559,14 +580,21 @@ impl AppContext {
             if !editable.replace_selection(text) {
                 return false;
             }
-            if let Some(session)=&snippet && let Some((value,selection,session))=session.linked_edit(&old,&editable.state().value,editable.state().selection) {
-                editable.state_mut().value=value;editable.state_mut().selection=selection;linked=Some(session);
+            if let Some(session) = &snippet
+                && let Some((value, selection, session)) =
+                    session.linked_edit(&old, &editable.state().value, editable.state().selection)
+            {
+                editable.state_mut().value = value;
+                editable.state_mut().selection = selection;
+                linked = Some(session);
             }
             cx.emit(editable.change());
             true
         })?;
-        if changed && let Some(session)=linked {
-            let mut mutations=MutationQueue::new();mutations.set_text_input_snippet(entity.stable_id(),Some(session));self.world.commit(mutations)?;
+        if changed && let Some(session) = linked {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(entity.stable_id(), Some(session));
+            self.world.commit(mutations)?;
         }
         Ok(changed)
     }

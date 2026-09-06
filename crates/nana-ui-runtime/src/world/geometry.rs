@@ -2134,9 +2134,8 @@ impl UiWorld {
                 overlay,
                 ..
             } => {
-                let has_trigger = trigger.is_some()
-                    || trigger_icon.is_some()
-                    || trigger_image.is_some();
+                let has_trigger =
+                    trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some();
                 let surface = if has_trigger {
                     crate::popover::overlay_surface_from_items(self, id, overlay.as_ref())
                 } else {

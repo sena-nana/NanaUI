@@ -710,10 +710,7 @@ impl UiScene {
         delta
     }
 
-    fn node_structure(
-        &self,
-        node: StableNodeId,
-    ) -> Vec<PrimitiveStructure> {
+    fn node_structure(&self, node: StableNodeId) -> Vec<PrimitiveStructure> {
         self.primitives
             .range(
                 PrimitiveId { node, slot: 0 }..=PrimitiveId {
@@ -766,7 +763,9 @@ impl UiScene {
         };
         if let Some(ComponentGeometry::Card { title, .. }) = parent.component_geometry.as_ref() {
             return title.as_ref().is_some_and(|title| {
-                node.text.as_ref().is_some_and(|text| text.value == title.content.as_ref())
+                node.text
+                    .as_ref()
+                    .is_some_and(|text| text.value == title.content.as_ref())
             });
         }
         component_geometry_owns_text(parent.component_geometry.as_ref())

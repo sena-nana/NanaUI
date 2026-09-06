@@ -14,6 +14,7 @@ use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId,
 };
 
+use accesskit::ActionRequest;
 #[cfg(all(
     feature = "hosted",
     any(
@@ -27,7 +28,6 @@ use nana_ui_runtime::{
 use accesskit::DeactivationHandler;
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use accesskit::{ActionHandler, ActivationHandler};
-use accesskit::ActionRequest;
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use std::sync::{Arc, Mutex};
 

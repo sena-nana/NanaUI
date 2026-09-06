@@ -1,14 +1,14 @@
 mod accessibility;
 mod animation;
 mod extraction;
+mod focus_scope;
 mod geometry;
 mod hit_test;
-mod scroll_bounds;
-mod overlay_index;
 mod input;
-mod focus_scope;
 mod motion;
 mod mutation;
+mod overlay_index;
+mod scroll_bounds;
 mod style;
 mod text;
 use hit_test::*;
@@ -1124,7 +1124,11 @@ impl UiWorld {
     /// Nodes that carry an `OverlayHostState`. Overlay validation iterates this
     /// instead of the entity index so cost tracks host count, not world size.
     fn overlay_host_ids(&self, document: DocumentId) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.overlay_hosts_by_document.get(&document).into_iter().flatten().copied()
+        self.overlay_hosts_by_document
+            .get(&document)
+            .into_iter()
+            .flatten()
+            .copied()
     }
 
     /// Drop focus and composition when dirty visual or interaction state makes
@@ -1162,7 +1166,8 @@ impl UiWorld {
     /// Project a single layout input without allocating a batch container.
     pub(crate) fn layout_input(&self, id: StableNodeId) -> Result<LayoutInput, UiWorldError> {
         let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
-        let has_text = matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
+        let has_text =
+            matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
         Ok(LayoutInput {
             id,
             parent: record.hierarchy.parent,
@@ -1380,7 +1385,9 @@ impl UiWorld {
     }
 
     pub fn viewport_basis_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.viewport_basis.values().flat_map(|ids| ids.iter().copied())
+        self.viewport_basis
+            .values()
+            .flat_map(|ids| ids.iter().copied())
     }
 
     /// Mounted viewport-dependent nodes in one document, without scanning other documents.
@@ -1545,10 +1552,14 @@ impl UiWorld {
             return;
         }
         let removed = removed.iter().copied().collect::<HashSet<_>>();
-        let hosts = removed.iter()
+        let hosts = removed
+            .iter()
             .filter_map(|id| self.overlay_dependents.get(id))
-            .flatten().copied().collect::<HashSet<_>>();
-        let updates = hosts.into_iter()
+            .flatten()
+            .copied()
+            .collect::<HashSet<_>>();
+        let updates = hosts
+            .into_iter()
             .filter_map(|host| {
                 (!removed.contains(&host))
                     .then(|| self.nodes.overlay_host(host).copied())

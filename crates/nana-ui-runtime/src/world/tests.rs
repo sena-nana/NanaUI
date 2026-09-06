@@ -170,16 +170,30 @@ fn hit_entries_built(world: &UiWorld) -> usize {
 /// Flatten the hit forest into a comparable projection. `HitEntry` has no
 /// `PartialEq`, and this captures everything pointer dispatch reads.
 fn hit_shape(world: &UiWorld, document: DocumentId) -> Vec<(Vec<u64>, [u32; 6], bool, i32)> {
-    fn walk(index: &HitIndex, id: StableNodeId, path: &mut Vec<u64>, out: &mut Vec<(Vec<u64>, [u32;6],bool,i32)>) {
-        let node=&index.entries[&id];
+    fn walk(
+        index: &HitIndex,
+        id: StableNodeId,
+        path: &mut Vec<u64>,
+        out: &mut Vec<(Vec<u64>, [u32; 6], bool, i32)>,
+    ) {
+        let node = &index.entries[&id];
         path.push(id.get());
-        out.push((path.clone(),find_hit_transform(index,id).unwrap().map(f32::to_bits),node.entry.hittable,node.entry.z_index));
-        for child in node.children.iter().flatten() {walk(index,*child,path,out);}
+        out.push((
+            path.clone(),
+            find_hit_transform(index, id).unwrap().map(f32::to_bits),
+            node.entry.hittable,
+            node.entry.z_index,
+        ));
+        for child in node.children.iter().flatten() {
+            walk(index, *child, path, out);
+        }
         path.pop();
     }
-    let mut out=Vec::new();
-    let index=&world.hit_test_index[&document];
-    for root in index.roots.iter().flatten() {walk(index,*root,&mut Vec::new(),&mut out);}
+    let mut out = Vec::new();
+    let index = &world.hit_test_index[&document];
+    for root in index.roots.iter().flatten() {
+        walk(index, *root, &mut Vec::new(), &mut out);
+    }
     out
 }
 
@@ -527,7 +541,11 @@ fn scoped_hit_reparent_keeps_new_owner_in_both_patch_orders() {
         assert!(world.rebuild_hit_test_scoped(document(1), &work.input_hit_test));
         let patched = hit_probe_grid(&world, document(1));
         let shape = hit_shape(&world, document(1));
-        assert!(world.hit_test_index[&document(1)].entries.contains_key(&target));
+        assert!(
+            world.hit_test_index[&document(1)]
+                .entries
+                .contains_key(&target)
+        );
         world.rebuild_hit_test(document(1));
         assert_eq!(patched, hit_probe_grid(&world, document(1)));
         assert_eq!(shape, hit_shape(&world, document(1)));
@@ -4633,7 +4651,10 @@ fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
         &mut cache,
     );
     let (_, moved_misses, _) = cache.take_counters();
-    assert_eq!(moved_misses, 0, "moving the caret must reuse unchanged text layout");
+    assert_eq!(
+        moved_misses, 0,
+        "moving the caret must reuse unchanged text layout"
+    );
     assert_ne!(moved.occurrence_marks, first.occurrence_marks);
 }
 
@@ -8900,15 +8921,26 @@ fn viewport_dependency_index_is_document_local_and_releases_removed_entries() {
 
 #[test]
 fn indexed_sticky_headers_preserve_crlf_utf8_and_nested_scrolling() {
-    let value = STICKY_VALUE.replace("x();", "工作();").replace('\n', "\r\n");
+    let value = STICKY_VALUE
+        .replace("x();", "工作();")
+        .replace('\n', "\r\n");
     let folds = Arc::from([
         crate::TextCodeFold::new(0, value.find("\r\n// tail").unwrap()),
-        crate::TextCodeFold::new(value.find("    fn inner").unwrap(), value.find("    z();").unwrap()),
+        crate::TextCodeFold::new(
+            value.find("    fn inner").unwrap(),
+            value.find("    z();").unwrap(),
+        ),
     ]);
     let mut world = UiWorld::default();
     sticky_editor_world(&mut world, &value, folds, 35.0);
-    world.shape_text(&[node(1)], &mut FunctionalShaper::default()).unwrap();
-    let crate::ComponentGeometry::TextInput { sticky_line, .. } = world.component_geometry(node(1)).unwrap() else { panic!("text input") };
+    world
+        .shape_text(&[node(1)], &mut FunctionalShaper::default())
+        .unwrap();
+    let crate::ComponentGeometry::TextInput { sticky_line, .. } =
+        world.component_geometry(node(1)).unwrap()
+    else {
+        panic!("text input")
+    };
     let sticky = sticky_line.expect("nested header remains pinned");
     assert_eq!(sticky.text.content.trim_end(), "    fn inner() {");
     assert_eq!(sticky.panel.y, 0.0);
@@ -8920,15 +8952,30 @@ fn modal_accessibility_bounds_keep_surface_and_descendant_clipping() {
     let mut queue = MutationQueue::new();
     for id in [node(1), node(2)] {
         queue.create(id, document(1), NodeKind::Element { tag: "div".into() });
-        queue.write_layout(id, LayoutBox { x: 0.0, y: 0.0, width: 800.0, height: 600.0 });
+        queue.write_layout(
+            id,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+        );
     }
     queue.insert(node(1), node(2), None);
     queue.set_standard_visual(node(1), Some(confirm_modal_visual()));
     world.commit(queue).unwrap();
     world.resolve_styles(&[node(1), node(2)]).unwrap();
-    let crate::ComponentGeometry::ModalFrame { surface, .. } = world.component_geometry(node(1)).unwrap() else { panic!("modal") };
+    let crate::ComponentGeometry::ModalFrame { surface, .. } =
+        world.component_geometry(node(1)).unwrap()
+    else {
+        panic!("modal")
+    };
     let accessible = world.project_accessibility(document(1));
     assert_eq!(accessible.len(), 2);
     assert_eq!(accessible[0].bounds, surface);
-    assert_eq!(accessible[1].bounds, surface, "descendant remains clipped to the modal surface");
+    assert_eq!(
+        accessible[1].bounds, surface,
+        "descendant remains clipped to the modal surface"
+    );
 }

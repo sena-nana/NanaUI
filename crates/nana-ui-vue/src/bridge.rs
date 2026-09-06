@@ -1157,7 +1157,10 @@ impl MessageBridge {
         };
         if props.element_tag.eq_ignore_ascii_case("html")
             || props.element_tag.eq_ignore_ascii_case("body")
-            || self.widgets.get(&id).is_some_and(|widget| is_font_root(widget))
+            || self
+                .widgets
+                .get(&id)
+                .is_some_and(|widget| is_font_root(widget))
         {
             self.cascade.font_root.set(None);
         }

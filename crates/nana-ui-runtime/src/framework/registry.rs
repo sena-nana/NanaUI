@@ -177,10 +177,7 @@ impl AppContext {
             });
         }
         if C::wants_hover_tracking() {
-            self.component_lifecycle
-                .hover_cards
-                .entry(id)
-                .or_default();
+            self.component_lifecycle.hover_cards.entry(id).or_default();
         }
         self.secondary_presses
             .entry(TypeId::of::<C>())
