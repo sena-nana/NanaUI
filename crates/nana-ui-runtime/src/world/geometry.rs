@@ -1121,19 +1121,13 @@ impl UiWorld {
                         } else {
                             0.0
                         };
-                        if multiline && focused && *invalid {
+                        if focused && *invalid {
                             width.max(2.0)
                         } else {
                             width
                         }
                     },
-                    focus_ring: (!multiline && focused).then(|| {
-                        if *invalid {
-                            self.style_model.palette.danger.as_rgba_array()
-                        } else {
-                            self.style_model.palette.accent.as_rgba_array()
-                        }
-                    }),
+                    focus_ring: None,
                     selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
                     caret_color,
                     additional_caret_color,
