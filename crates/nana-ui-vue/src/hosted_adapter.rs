@@ -484,6 +484,10 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
             WindowEvent::MousePassthroughChanged { .. } => {}
+            // The Vue host has no appearance channel: theme reaches JS through
+            // the application's own state, not a lifecycle event. Rust programs
+            // read it from `RuntimeProgram::window_event`.
+            WindowEvent::AppearanceChanged { .. } => {}
             WindowEvent::Closed { id } => {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
