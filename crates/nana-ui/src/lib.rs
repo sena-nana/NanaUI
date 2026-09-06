@@ -177,6 +177,12 @@ pub use layout::{
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
 pub use nana_app_icon::{default_window_icon, window_icon_from_png};
+/// Full generated Tabler catalog (`icons_tabler::USER`, `::KEYBOARD`, …) as
+/// typed [`Icon`] constants, behind the `icons-tabler` feature. The built-in
+/// catalog only covers shell chrome; reach here before hand-authoring
+/// [`IconData`]. The linker drops every constant the product never names.
+#[cfg(feature = "icons-tabler")]
+pub use nana_icons_tabler as icons_tabler;
 pub use nana_text::{
     HostFontError, HostFontStyle, NanaTextShaper, alias_host_font_face_local,
     register_host_font_bytes, register_host_font_face, register_host_font_file,
@@ -272,10 +278,19 @@ pub use theme::{
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
 pub use virtual_list::{
-    TableColumn, TableCursor, TableNavigation, VirtualListLayout, VirtualListMaterialization,
-    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
-    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    TableColumn, TableCursor, TableNavigation, VirtualAlignment, VirtualFrozenWindow,
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
+    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
+    VirtualTreeWindow, VirtualViewport,
 };
+/// The exact `wgpu` the framework links. Hosts that upload their own textures
+/// into the shared Device/Queue must import through this re-export: a direct
+/// `wgpu` dependency silently resolves to a second copy when the framework
+/// moves to a new major version.
+#[cfg(feature = "gpu")]
+pub use wgpu;
 pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
     TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,

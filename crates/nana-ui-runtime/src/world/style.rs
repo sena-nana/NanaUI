@@ -26,9 +26,12 @@ impl UiWorld {
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
-        // Inactive retained branches omit their whole subtree just like
-        // display:none. Keeping this only in `visible` would let descendants
-        // inherit a live box and leave their paint primitives behind on close.
+        // Overlay/menu presence is structural: descendants cannot make a closed
+        // branch paintable again by resolving their own local visibility.
+        // An inactive retained branch therefore omits its whole subtree just
+        // like display:none. Keeping this only in `visible` would let
+        // descendants inherit a live box and leave their paint primitives
+        // behind on close.
         let box_visible = !layout.omits_box()
             && inherited.box_visible
             && self.overlay_branch_active(id)

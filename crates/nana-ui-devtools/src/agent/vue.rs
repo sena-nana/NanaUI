@@ -1,0 +1,590 @@
+//! Vue/JS agent session. Requires the Vue renderer and a JS engine.
+
+use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
+use std::path::Path;
+
+use nana_js_engine::{JsEngine, RuntimeArtifact};
+use nana_ui::runtime::StableNodeId;
+use nana_ui_vue::{BridgeEvent, NodeHandle, SemanticSnapshot, VueHost};
+use serde::{Deserialize, Serialize};
+
+use super::{AccessibilityDumpNode, AgentError, DEFAULT_CLEAR, dump_accessibility_node};
+use crate::offscreen::{self, OffscreenSnapshots, Size};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum AgentCommand {
+    Screenshot {
+        path: String,
+    },
+    A11y,
+    Semantic,
+    Click {
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+        #[serde(default)]
+        node: Option<u64>,
+        #[serde(default)]
+        agent_id: Option<String>,
+    },
+    Type {
+        text: String,
+    },
+    Pump,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentReply {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<AccessibilityDumpNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widgets: Option<Vec<SemanticDumpWidget>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handled: Option<bool>,
+}
+
+impl AgentReply {
+    fn ok() -> Self {
+        Self {
+            ok: true,
+            error: None,
+            path: None,
+            nodes: None,
+            widgets: None,
+            handled: None,
+        }
+    }
+
+    fn err(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(message.into()),
+            path: None,
+            nodes: None,
+            widgets: None,
+            handled: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticDumpWidget {
+    pub id: u64,
+    pub kind: String,
+    pub label: String,
+    pub agent_id: String,
+}
+
+/// Vue document driven without a winit window.
+pub struct VueAgentSession<E: JsEngine> {
+    host: VueHost,
+    engine: E,
+    gpu: Option<OffscreenSnapshots>,
+    width: u32,
+    height: u32,
+    clear: [f32; 4],
+}
+
+impl<E: JsEngine> VueAgentSession<E> {
+    pub fn new(
+        mut engine: E,
+        artifact: RuntimeArtifact,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, AgentError> {
+        let mut host = VueHost::with_viewport(width, height, 1.0);
+        host.initialize_with_web_api(&mut engine, artifact)?;
+        host.bind_event_bridge(&mut engine)?;
+        let mut session = Self {
+            host,
+            engine,
+            gpu: None,
+            width,
+            height,
+            clear: DEFAULT_CLEAR,
+        };
+        session.pump()?;
+        Ok(session)
+    }
+
+    pub fn host(&self) -> &VueHost {
+        &self.host
+    }
+
+    pub fn host_mut(&mut self) -> &mut VueHost {
+        &mut self.host
+    }
+
+    pub fn engine_mut(&mut self) -> &mut E {
+        &mut self.engine
+    }
+
+    pub fn pump(&mut self) -> Result<(), AgentError> {
+        self.engine.run_microtasks()?;
+        self.host.pump_frame(&mut self.engine)?;
+        let _ = self.host.semantic_snapshot();
+        self.host
+            .flush_scene_frame(self.width as f32, self.height as f32)
+            .map_err(|error| AgentError(error.to_string()))?;
+        Ok(())
+    }
+
+    pub fn accessibility_dump(&self) -> Vec<AccessibilityDumpNode> {
+        let agent_ids = agent_ids_from_snapshot(&self.host.semantic_snapshot());
+        let document = self.host.document();
+        let Ok(guard) = document.lock() else {
+            return Vec::new();
+        };
+        guard
+            .accessibility_snapshot()
+            .into_iter()
+            .map(|node| dump_accessibility_node(node, &agent_ids))
+            .collect()
+    }
+
+    pub fn semantic_dump(&self) -> Vec<SemanticDumpWidget> {
+        semantic_dump_from_snapshot(&self.host.semantic_snapshot())
+    }
+
+    pub fn click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
+        let handled = self.host.pointer_click(&mut self.engine, x, y)?;
+        self.pump()?;
+        Ok(handled)
+    }
+
+    pub fn click_node(&mut self, id: u64) -> Result<bool, AgentError> {
+        if let Some((x, y)) = node_click_point(&self.host, id) {
+            return self.click_xy(x, y);
+        }
+        let handled = self
+            .host
+            .dispatch_bridge_event(&mut self.engine, BridgeEvent::Press { id })?;
+        self.pump()?;
+        Ok(handled)
+    }
+
+    pub fn click_agent_id(&mut self, agent_id: &str) -> Result<bool, AgentError> {
+        let id = self
+            .host
+            .semantic_snapshot()
+            .widgets
+            .iter()
+            .find(|widget| widget.props.agent_id == agent_id)
+            .map(|widget| widget.id)
+            .ok_or_else(|| AgentError(format!("unknown agent_id {agent_id}")))?;
+        self.click_node(id)
+    }
+
+    pub fn type_text(&mut self, text: &str) -> Result<(), AgentError> {
+        for character in text.chars() {
+            let key = character.to_string();
+            self.host
+                .dispatch_key(&mut self.engine, &key, "Unidentified", None)?;
+        }
+        self.pump()?;
+        Ok(())
+    }
+
+    pub fn screenshot_rgba(&mut self) -> Result<(Size<u32>, Vec<u8>), AgentError> {
+        self.pump()?;
+        let size = Size::new(self.width, self.height);
+        let clear = self.clear;
+        let scene = {
+            let document = self.host.document();
+            let guard = document
+                .lock()
+                .map_err(|_| AgentError("vue document poisoned".into()))?;
+            guard.scene().clone()
+        };
+        let gpu = self.gpu_mut()?;
+        let pixels = gpu
+            .paint(&scene, size, clear, None, None)
+            .map_err(|error| AgentError(error.to_string()))?;
+        Ok((size, pixels))
+    }
+
+    pub fn screenshot_png(&mut self, path: impl AsRef<Path>) -> Result<(), AgentError> {
+        let (size, pixels) = self.screenshot_rgba()?;
+        offscreen::write_png(path.as_ref(), size, &pixels)
+            .map_err(|error| AgentError(error.to_string()))?;
+        Ok(())
+    }
+
+    pub fn execute(&mut self, command: AgentCommand) -> AgentReply {
+        match command {
+            AgentCommand::Screenshot { path } => match self.screenshot_png(&path) {
+                Ok(()) => {
+                    let mut reply = AgentReply::ok();
+                    reply.path = Some(path);
+                    reply
+                }
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::A11y => {
+                let mut reply = AgentReply::ok();
+                reply.nodes = Some(self.accessibility_dump());
+                reply
+            }
+            AgentCommand::Semantic => {
+                let mut reply = AgentReply::ok();
+                reply.widgets = Some(self.semantic_dump());
+                reply
+            }
+            AgentCommand::Click {
+                x,
+                y,
+                node,
+                agent_id,
+            } => {
+                let result = if let Some(agent_id) = agent_id {
+                    self.click_agent_id(&agent_id)
+                } else if let Some(node) = node {
+                    self.click_node(node)
+                } else if let (Some(x), Some(y)) = (x, y) {
+                    self.click_xy(x, y)
+                } else {
+                    return AgentReply::err("click requires x/y, node, or agent_id");
+                };
+                match result {
+                    Ok(handled) => {
+                        let mut reply = AgentReply::ok();
+                        reply.handled = Some(handled);
+                        reply
+                    }
+                    Err(error) => AgentReply::err(error.0),
+                }
+            }
+            AgentCommand::Type { text } => match self.type_text(&text) {
+                Ok(()) => AgentReply::ok(),
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::Pump => match self.pump() {
+                Ok(()) => AgentReply::ok(),
+                Err(error) => AgentReply::err(error.0),
+            },
+        }
+    }
+
+    pub fn run_stdio(
+        &mut self,
+        input: impl BufRead,
+        mut output: impl Write,
+    ) -> Result<(), AgentError> {
+        for line in input.lines() {
+            let line = line.map_err(|error| AgentError(error.to_string()))?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let command: AgentCommand =
+                serde_json::from_str(trimmed).map_err(|error| AgentError(error.to_string()))?;
+            let reply = self.execute(command);
+            writeln!(
+                output,
+                "{}",
+                serde_json::to_string(&reply).map_err(|error| AgentError(error.to_string()))?
+            )
+            .map_err(|error| AgentError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn gpu_mut(&mut self) -> Result<&mut OffscreenSnapshots, AgentError> {
+        if self.gpu.is_none() {
+            self.gpu =
+                Some(OffscreenSnapshots::new().map_err(|error| AgentError(error.to_string()))?);
+        }
+        Ok(self.gpu.as_mut().expect("gpu initialized"))
+    }
+}
+fn node_click_point(host: &VueHost, id: u64) -> Option<(f32, f32)> {
+    let handle = NodeHandle(id);
+    let document = host.document();
+    let guard = document.lock().ok()?;
+    // Runtime LayoutBox deliberately excludes scroll/paint transforms. Use
+    // the same current projection as the painter when synthesizing a pointer.
+    if let Some(bounds) = guard
+        .scene()
+        .draw_node_bounds(StableNodeId::try_from(handle).ok()?)
+        && (bounds.width > 0.0 || bounds.height > 0.0)
+    {
+        return Some((
+            bounds.x + bounds.width * 0.5,
+            bounds.y + bounds.height * 0.5,
+        ));
+    }
+    let bounds = guard
+        .accessibility_snapshot()
+        .into_iter()
+        .find(|node| node.id.get() == id)?
+        .bounds;
+    if bounds.width <= 0.0 && bounds.height <= 0.0 {
+        return None;
+    }
+    Some((
+        bounds.x + bounds.width * 0.5,
+        bounds.y + bounds.height * 0.5,
+    ))
+}
+
+fn agent_ids_from_snapshot(snapshot: &SemanticSnapshot) -> BTreeMap<u64, String> {
+    snapshot
+        .widgets
+        .iter()
+        .filter(|widget| !widget.props.agent_id.is_empty())
+        .map(|widget| (widget.id, widget.props.agent_id.clone()))
+        .collect()
+}
+
+fn semantic_dump_from_snapshot(snapshot: &SemanticSnapshot) -> Vec<SemanticDumpWidget> {
+    snapshot
+        .widgets
+        .iter()
+        .map(|widget| SemanticDumpWidget {
+            id: widget.id,
+            kind: format!("{:?}", widget.kind),
+            label: widget.props.label.clone(),
+            agent_id: widget.props.agent_id.clone(),
+        })
+        .collect()
+}
+/// Semantic counter fixture used by tests and the stdio binary.
+pub fn semantic_counter_source() -> &'static str {
+    r#"
+(function () {
+  let count = 0;
+  const host = globalThis.__nanaHost;
+  const root = host.call("mountRoot", []);
+  const col = host.call("createWidget", ["column", { style: "width:100%;height:100%;gap:8px;padding:12px;align-items:flex-start" }]);
+  const title = host.call("createWidget", ["text", { label: "Agent session counter", style: "white-space:nowrap" }]);
+  const text = host.call("createWidget", ["text", { label: "count = 0", "data-agent-id": "count", style: "white-space:nowrap" }]);
+  const btn = host.call("createWidget", ["button", { label: "Increment", kind: "primary", "data-agent-id": "increment" }]);
+  host.call("insert", [col, root, null]);
+  host.call("insert", [title, col, null]);
+  host.call("insert", [text, col, null]);
+  host.call("insert", [btn, col, null]);
+  host.call("patchProp", [btn, "onPress", true]);
+
+  const listeners = new Map();
+  function key(nid, event) { return Number(nid) + ":" + String(event).toLowerCase(); }
+  function sync() {
+    host.call("patchProp", [text, "label", "count = " + count]);
+  }
+  listeners.set(key(btn, "press"), function () { count += 1; sync(); });
+
+  globalThis.__nanaFireEvent = function (nid, event, detail) {
+    const fn = listeners.get(key(nid, event));
+    if (typeof fn === "function") fn(detail || {});
+    return true;
+  };
+  return { ok: true, app: "agent-counter", buttonId: btn, textId: text };
+})();
+"#
+}
+
+pub fn semantic_counter_artifact() -> RuntimeArtifact {
+    RuntimeArtifact::from_source("agent-counter.js", semantic_counter_source())
+}
+// The Vue session can only be exercised with a real JS engine, so these tests
+// live behind `agent-bin`. Keeping them off `agent` lets the Vue-free
+// `runtime-agent` tier build and test without V8.
+#[cfg(all(test, feature = "agent-bin"))]
+mod tests {
+    use super::*;
+    use nana_js_v8::V8Engine;
+    use nana_ui::runtime::{Button, DocumentId, List, Text};
+
+    fn count_label(session: &VueAgentSession<V8Engine>) -> String {
+        session
+            .semantic_dump()
+            .into_iter()
+            .find(|widget| widget.agent_id == "count")
+            .map(|widget| widget.label)
+            .unwrap_or_default()
+    }
+
+    /// The counter as the Runtime projects it, which is what a screen reader
+    /// reads. [`count_label`] reads the JS-side bridge props instead, so the two
+    /// together separate a dropped press from a stale projection.
+    fn count_a11y_label(session: &VueAgentSession<V8Engine>) -> String {
+        session
+            .accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some("count"))
+            .and_then(|node| node.label)
+            .unwrap_or_default()
+    }
+
+    /// GPU-less environments skip pixel evidence, and the skip must stay observable.
+    fn offscreen_gpu() -> Option<OffscreenSnapshots> {
+        match OffscreenSnapshots::new() {
+            Ok(gpu) => Some(gpu),
+            Err(error) => {
+                eprintln!("skipping offscreen GPU evidence: {error}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn a_widget_keeps_its_projected_geometry_across_a_bare_pump() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        let button = session
+            .accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some("increment"))
+            .expect("increment in a11y dump");
+        let handle = NodeHandle(button.id);
+        let projected = {
+            let document = session.host().document();
+            let guard = document.lock().expect("doc");
+            guard.layout_box(handle).expect("projected button box")
+        };
+
+        // A pump runs the CSS cascade writeback without a semantic sync. The
+        // button's padding and min-height come from its Runtime component, so
+        // the cascade must leave them alone; otherwise the box collapses to the
+        // bare text and the pointer falls through to the column behind it.
+        session.host_mut().resolve_layout();
+
+        let document = session.host().document();
+        let guard = document.lock().expect("doc");
+        assert_eq!(
+            guard.layout_box(handle),
+            Some(projected),
+            "cascade writeback must not overwrite component-projected geometry"
+        );
+    }
+
+    /// `createWidget` seeds the label as an attribute only. A `#text` child
+    /// would announce a second copy that `patchProp` never refreshes, so every
+    /// label the mounted app exposes must belong to exactly one a11y node.
+    #[test]
+    fn mounted_widgets_announce_each_label_once() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        session.click_agent_id("increment").expect("click");
+
+        let labels: Vec<_> = session
+            .accessibility_dump()
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        let mut unique = labels.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            labels.len(),
+            unique.len(),
+            "each label must come from one retained node, got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "count = 1"),
+            "the counter label must track the click, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_clicks_advance_the_counter_in_both_projections() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        assert_eq!(count_label(&session), "count = 0");
+        assert_eq!(count_a11y_label(&session), "count = 0");
+
+        for expected in 1..=3 {
+            session.click_agent_id("increment").expect("click");
+            let expected = format!("count = {expected}");
+            assert_eq!(
+                count_label(&session),
+                expected,
+                "bridge props must record every press"
+            );
+            assert_eq!(
+                count_a11y_label(&session),
+                expected,
+                "a11y projection must not lag the press it already handled"
+            );
+        }
+    }
+
+    #[test]
+    fn vue_session_click_updates_semantic_and_a11y() {
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+                .expect("session");
+        assert_eq!(count_label(&session), "count = 0");
+        let increment = session
+            .accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some("increment"))
+            .expect("increment in a11y dump");
+        assert!(
+            increment.bounds.width > 8.0 && increment.bounds.height > 8.0,
+            "headless layout must size the increment button, got {:?}",
+            increment.bounds
+        );
+        let handled = session
+            .click_xy(
+                increment.bounds.x + increment.bounds.width * 0.5,
+                increment.bounds.y + increment.bounds.height * 0.5,
+            )
+            .expect("click");
+        assert!(handled);
+        assert_eq!(count_label(&session), "count = 1");
+        assert!(
+            session
+                .semantic_dump()
+                .iter()
+                .any(|widget| widget.agent_id == "increment"),
+            "increment agent_id remains after click"
+        );
+    }
+
+    #[test]
+    fn vue_session_screenshot_matches_semantic_after_click() {
+        if offscreen_gpu().is_none() {
+            return;
+        }
+        let mut session =
+            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 240, 160)
+                .expect("session");
+        session.click_agent_id("increment").expect("click");
+        let (size, pixels) = session.screenshot_rgba().expect("screenshot");
+        assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
+        let unique = pixels
+            .chunks_exact(4)
+            .map(|pixel| u32::from_be_bytes([pixel[0], pixel[1], pixel[2], 0]))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            unique.len() > 8,
+            "offscreen preview must paint UI chrome, not only a clear color ({})",
+            unique.len()
+        );
+        assert_eq!(count_label(&session), "count = 1");
+    }
+    #[test]
+    fn command_json_roundtrip() {
+        let click =
+            serde_json::from_str::<AgentCommand>(r#"{"cmd":"click","agent_id":"increment"}"#)
+                .expect("parse");
+        assert!(matches!(
+            click,
+            AgentCommand::Click {
+                agent_id: Some(ref id),
+                ..
+            } if id == "increment"
+        ));
+    }
+}

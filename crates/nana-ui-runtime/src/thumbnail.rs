@@ -11,6 +11,7 @@ use nana_ui_core::{
     ContentFit, ControlSize, LengthSpec, OverflowSpec, SemanticColorRole, ThemeMetrics,
 };
 
+use crate::gpu_slots::pack_gpu_revision;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
@@ -39,6 +40,10 @@ pub enum ThumbnailState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Thumbnail {
     pub resource: Arc<str>,
+    /// Host texture generation and in-place content version. Together they form
+    /// the Scene revision, so a slot filled after mount is actually re-sampled.
+    pub generation: u64,
+    pub version: u64,
     pub state: ThumbnailState,
     pub size: ControlSize,
     pub aspect: f32,
@@ -57,6 +62,8 @@ impl Thumbnail {
         };
         Self {
             resource,
+            generation: 0,
+            version: 0,
             state,
             size: ControlSize::Small,
             aspect: DEFAULT_ASPECT,
@@ -102,6 +109,25 @@ impl Thumbnail {
         self
     }
 
+    /// Records that the host refreshed the slot's pixels in place. Bumping the
+    /// version is what makes the painter re-sample; without it a host-owned
+    /// texture that arrives after mount never reaches the screen.
+    pub fn invalidate_content(&mut self) -> u64 {
+        self.version = self.version.saturating_add(1);
+        self.version
+    }
+
+    /// Records that the host replaced the underlying view. Does not touch
+    /// [`Self::version`].
+    pub fn replace_view(&mut self, generation: u64) -> u64 {
+        self.generation = generation;
+        self.generation
+    }
+
+    pub const fn revision(&self) -> u64 {
+        pack_gpu_revision(self.generation, self.version)
+    }
+
     /// Logical box: control height × host aspect (default 1:1).
     pub fn box_extent(&self, metrics: ThemeMetrics) -> (f32, f32) {
         let height = self.size.height_in(metrics);
@@ -114,8 +140,12 @@ impl Thumbnail {
             return None;
         }
         Some(
-            CustomRenderNode::new(HOST_TEXTURE_RENDERER, Arc::clone(&self.resource), 0)
-                .with_fit(ContentFit::Contain),
+            CustomRenderNode::new(
+                HOST_TEXTURE_RENDERER,
+                Arc::clone(&self.resource),
+                self.revision(),
+            )
+            .with_fit(ContentFit::Contain),
         )
     }
 
@@ -326,5 +356,23 @@ mod tests {
             context.world().node(item.stable_id()).unwrap().children,
             vec![leading.stable_id()]
         );
+    }
+
+    /// A host texture that lands after mount only reaches the screen if the
+    /// Scene node's revision moves; a fixed revision silently keeps the stale
+    /// (or empty) sample.
+    #[test]
+    fn late_host_texture_moves_the_scene_revision() {
+        let mut control = Thumbnail::new("cover:a");
+        let first = control.custom_render().expect("ready slot").revision;
+
+        control.replace_view(1);
+        let replaced = control.custom_render().expect("ready slot").revision;
+        assert_ne!(first, replaced, "a replaced view is a new revision");
+
+        control.invalidate_content();
+        let refreshed = control.custom_render().expect("ready slot").revision;
+        assert_ne!(replaced, refreshed, "in-place pixels are a new revision");
+        assert_eq!(refreshed, pack_gpu_revision(1, 1));
     }
 }

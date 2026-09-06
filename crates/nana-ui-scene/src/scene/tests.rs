@@ -64,6 +64,34 @@ fn hidden_nodes_skip_scene_primitives() {
 }
 
 #[test]
+fn stacking_group_backplates_paint_before_nested_lower_z_controls() {
+    let paint = |id, parent, children: &[u64], z| {
+        let mut node = node(id, parent, children);
+        node.z_index = z;
+        node.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Relative,
+            z_index: Some(z),
+            background: Some([0.2, 0.3, 0.4, 1.0]),
+            ..Default::default()
+        });
+        node
+    };
+    let mut backplate = paint(1, None, &[2], 30);
+    let anchor = paint(2, Some(1), &[3], 1);
+    let content = paint(3, Some(2), &[], 0);
+    let sibling = paint(4, None, &[], 50);
+    let mut scene = UiScene::new();
+    scene.apply_delta([backplate.clone(), anchor, content, sibling], []);
+    let order = |scene: &UiScene| scene.primitives().map(|p| p.node.get()).collect::<Vec<_>>();
+    assert_eq!(order(&scene), vec![1, 2, 3, 4]);
+    // Retained descendants must follow a group-only stacking update as well.
+    backplate.z_index = 60;
+    Arc::make_mut(&mut backplate.source_style.layout).z_index = Some(60);
+    scene.apply_delta([backplate], []);
+    assert_eq!(order(&scene), vec![4, 1, 2, 3]);
+}
+
+#[test]
 fn frame_plan_survives_paint_changes_but_tracks_structure_and_resource_conflicts() {
     let mut first = node(1, None, &[]);
     style_mut(&mut first).background = Some([1.0, 0.0, 0.0, 1.0]);

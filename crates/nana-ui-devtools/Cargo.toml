@@ -25,16 +25,22 @@ offscreen = [
     "dep:pollster",
     "dep:wgpu",
 ]
-agent = [
+# Vue-free headless session for plain Rust Runtime products: offscreen pixels,
+# a11y dump, pointer/keyboard/scroll. Deliberately does NOT pull the Vue
+# renderer or a JS engine.
+runtime-agent = [
     "offscreen",
+    "dep:nana-ui-platform",
+    "dep:serde",
+    "dep:serde_json",
+]
+agent = [
+    "runtime-agent",
     "dep:nana-ui-vue",
     "nana-ui-vue/scene-view",
     "nana-ui-vue/components",
     "nana-ui/components",
     "nana-ui/syntax-highlighting",
-    "dep:nana-ui-platform",
-    "dep:serde",
-    "dep:serde_json",
 ]
 agent-bin = ["agent", "dep:nana-js-v8", "nana-js-v8/engine"]
 
@@ -51,8 +57,6 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 
-[dev-dependencies]
-nana-js-v8 = { workspace = true, features = ["engine"] }
 
 [[example]]
 name = "spacing-layout"

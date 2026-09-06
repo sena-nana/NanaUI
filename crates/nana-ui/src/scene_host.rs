@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use nana_ui_platform::{
     DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
-    TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon,
-    WindowId, WindowResizeEdge, clamp_position_to_displays, clear_registered_application_icon,
-    register_application_icon, window_resize_edge,
+    SystemAppearance, TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent,
+    WindowGeometry, WindowIcon, WindowId, WindowResizeEdge, clamp_position_to_displays,
+    clear_registered_application_icon, register_application_icon, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -54,6 +54,7 @@ use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::Theme as WinitTheme;
 use winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
     ImeRequestError, ImeSurroundingText,
@@ -141,7 +142,8 @@ struct SceneReady<Program: RuntimeProgram> {
     program: Program,
     graphics: HostedGpuContext,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
-    native_renderers: HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
+    native_renderers:
+        HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
@@ -513,8 +515,7 @@ fn initialize<Program: RuntimeProgram>(
         material,
         graphics.alpha_mode(),
     );
-    let (program, startup) =
-        Program::initialize(&context).map_err(|error| error.to_string())?;
+    let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     last_theme = program.theme_mode();
     last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     material = apply_window_surface(
@@ -775,6 +776,9 @@ fn program_context<Message: Send + 'static>(
             }
         }),
         tasks,
+        // System-wide preference: sampling the primary window is enough, and
+        // the window handle itself never crosses this boundary.
+        graphics.window().theme().map(system_appearance_from_winit),
     )
 }
 
@@ -2047,8 +2051,21 @@ fn platform_window_event(
             WindowEvent::Resized { id, geometry }
         }
         WinitWindowEvent::Moved(_) => WindowEvent::Moved { id, geometry },
+        WinitWindowEvent::ThemeChanged(theme) => WindowEvent::AppearanceChanged {
+            id,
+            appearance: system_appearance_from_winit(*theme),
+        },
         _ => return None,
     })
+}
+
+/// winit reports light/dark on macOS, Windows, Android and web; the remaining
+/// platforms never emit `ThemeChanged`, so no appearance event is synthesised.
+pub(crate) const fn system_appearance_from_winit(theme: WinitTheme) -> SystemAppearance {
+    match theme {
+        WinitTheme::Light => SystemAppearance::Light,
+        WinitTheme::Dark => SystemAppearance::Dark,
+    }
 }
 
 #[cfg(test)]
@@ -2059,12 +2076,12 @@ mod tests {
         DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply, input_pointer_hit,
         invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
         platform_input_key, platform_input_modifiers, platform_window_event,
-        resolved_scene_ime_request, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, suppress_caption_after_create, tablet_pointer_id, window_level,
+        remove_image_target_index, replace_image_target_index, resolved_scene_ime_request,
+        route_window_command, scene_clear_color, scene_runtime_input_update,
+        scene_window_attributes, screen_position, should_deliver_program_ime,
+        suppress_caption_after_create, surface_image_keys, tablet_pointer_id, window_level,
         window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
-        windows_to_redraw, winit_icon, remove_image_target_index, replace_image_target_index,
-        surface_image_keys,
+        windows_to_redraw, winit_icon,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -2181,9 +2198,14 @@ mod tests {
             removed: Vec::new(),
         });
         assert_eq!(
-            next_accessibility_update(None, Some(queued.clone()), false, Some(1), Some(2), || panic!(
-                "queued deltas must not force a world snapshot"
-            ),),
+            next_accessibility_update(
+                None,
+                Some(queued.clone()),
+                false,
+                Some(1),
+                Some(2),
+                || panic!("queued deltas must not force a world snapshot"),
+            ),
             Some(queued)
         );
     }
@@ -3292,14 +3314,16 @@ mod tests {
     fn image_scene_keys_include_all_url_backed_surface_sources() {
         use std::collections::HashSet;
 
-        let mut surface = nana_ui_scene::QuadSurfacePaint::default();
-        surface.background_image = Some(nana_ui_core::BackgroundImage::url("background.png"));
-        surface.background_layers = vec![nana_ui_core::BackgroundImage::url("layer.png")];
-        surface.content_image = Some(nana_ui_core::BackgroundImage::url("content.png"));
-        surface.mask = Some(nana_ui_core::MaskImage::Url("mask.png".into()));
-        surface.border_image = Some(nana_ui_core::BorderImageSpec::from_source(
-            nana_ui_core::BackgroundImage::url("border.png"),
-        ));
+        let surface = nana_ui_scene::QuadSurfacePaint {
+            background_image: Some(nana_ui_core::BackgroundImage::url("background.png")),
+            background_layers: vec![nana_ui_core::BackgroundImage::url("layer.png")],
+            content_image: Some(nana_ui_core::BackgroundImage::url("content.png")),
+            mask: Some(nana_ui_core::MaskImage::Url("mask.png".into())),
+            border_image: Some(nana_ui_core::BorderImageSpec::from_source(
+                nana_ui_core::BackgroundImage::url("border.png"),
+            )),
+            ..Default::default()
+        };
 
         let mut keys = HashSet::new();
         surface_image_keys(&surface, &mut keys);

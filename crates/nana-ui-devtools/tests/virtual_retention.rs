@@ -1,4 +1,4 @@
-#![cfg(feature = "agent")]
+#![cfg(feature = "runtime-agent")]
 
 use nana_ui::runtime::{
     DocumentId, List, MutationQueue, NodeStyle, RuntimeDocument, ScrollAxes, ScrollOffset,

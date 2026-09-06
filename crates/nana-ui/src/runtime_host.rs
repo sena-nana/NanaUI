@@ -10,7 +10,8 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
 use nana_ui_platform::{
-    InputEvent, WindowCommand, WindowEvent, WindowGeometry, WindowId, WindowSettings,
+    InputEvent, SystemAppearance, WindowCommand, WindowEvent, WindowGeometry, WindowId,
+    WindowSettings,
 };
 use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, StableNodeId,
@@ -60,6 +61,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     surface_alpha_mode: wgpu::CompositeAlphaMode,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
+    system_appearance: Option<SystemAppearance>,
 }
 
 // Cloning host handles never clones a message. A derived implementation would
@@ -74,11 +76,16 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             surface_alpha_mode: self.surface_alpha_mode,
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
+            system_appearance: self.system_appearance,
         }
     }
 }
 
 impl<Message: Send + 'static> RuntimeProgramContext<Message> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Host-owned resources form one callback context"
+    )]
     pub(crate) fn new(
         window_id: WindowId,
         geometry: WindowGeometry,
@@ -87,6 +94,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         surface_alpha_mode: wgpu::CompositeAlphaMode,
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
         tasks: SyncSender<Task<Message>>,
+        system_appearance: Option<SystemAppearance>,
     ) -> Self {
         Self {
             window_id,
@@ -96,6 +104,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             surface_alpha_mode,
             dispatch,
             tasks,
+            system_appearance,
         }
     }
 
@@ -113,6 +122,16 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub const fn material(&self) -> MaterialOutcome {
         self.material
+    }
+
+    /// The operating system's light/dark preference when this context was
+    /// built, or `None` on platforms that do not report one. Follow later
+    /// changes through [`WindowEvent::AppearanceChanged`]; do not shell out to
+    /// `defaults` or the registry.
+    ///
+    /// [`WindowEvent::AppearanceChanged`]: nana_ui_platform::WindowEvent::AppearanceChanged
+    pub const fn system_appearance(&self) -> Option<SystemAppearance> {
+        self.system_appearance
     }
 
     pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {

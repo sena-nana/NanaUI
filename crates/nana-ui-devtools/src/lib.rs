@@ -2,11 +2,12 @@
 //! stack. The crate stores bounded structured records and deliberately does not
 //! provide product-facing UI.
 //!
-//! Optional `offscreen` / `agent` features add snapshot CPU readback and a
-//! headless Agent session. Those paths are tooling-only and must not be wired
-//! into product Surface present.
+//! Optional `offscreen` / `runtime-agent` / `agent` features add snapshot CPU
+//! readback and a headless Agent session. Those paths are tooling-only and must
+//! not be wired into product Surface present. `runtime-agent` is the Vue-free
+//! tier for plain Rust Runtime products; `agent` adds the Vue/JS session.
 
-#[cfg(feature = "agent")]
+#[cfg(feature = "runtime-agent")]
 pub mod agent;
 #[cfg(feature = "offscreen")]
 pub mod offscreen;

@@ -3051,6 +3051,14 @@ fn fallback_settings_model(spec: &SemanticSpec<'_>) -> SettingsModel {
         .expect("fallback settings model has one tab")
 }
 
+impl RegisterableComponent for crate::Panel {
+    const TYPE_ID: &'static str = crate::component_descriptors::PANEL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::PANEL.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        Self::new(spec.display_label())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3617,13 +3625,5 @@ mod tests {
                 .map(ComponentTypeId::as_str),
             Some("nana.video")
         );
-    }
-}
-
-impl RegisterableComponent for crate::Panel {
-    const TYPE_ID: &'static str = crate::component_descriptors::PANEL.type_id;
-    const TAGS: &'static [&'static str] = crate::component_descriptors::PANEL.tags;
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Self::new(spec.display_label())
     }
 }

@@ -27,6 +27,7 @@ exclude = ["tools/css-parity-webview", "crates/nana-icons-tabler"]
 
 [workspace.dependencies]
 nana-ui-core = { path = "crates/nana-ui-core" }
+nana-icons-tabler = { path = "crates/nana-icons-tabler" }
 nana-ui-runtime = { path = "crates/nana-ui-runtime" }
 nana-ui-scene = { path = "crates/nana-ui-scene" }
 nana-js-engine = { path = "crates/nana-js-engine" }

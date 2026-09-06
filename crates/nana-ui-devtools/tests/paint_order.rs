@@ -1,4 +1,4 @@
-#![cfg(feature = "agent")]
+#![cfg(feature = "runtime-agent")]
 use nana_ui::runtime::{DocumentId, NodeStyle, RuntimeDocument, Stack, Text};
 use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec, SemanticColorRole};
 use nana_ui_devtools::agent::RuntimeAgentSession;
