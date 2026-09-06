@@ -135,6 +135,14 @@ impl Default for MessageBridge {
     }
 }
 
+/// Tags whose painted content is decided by the replaced-element rules rather
+/// than by any stylesheet. Kept next to the cascade fast path it guards.
+fn is_replaced_element_tag(tag: &str) -> bool {
+    ["canvas", "video", "iframe", "img"]
+        .iter()
+        .any(|known| tag.eq_ignore_ascii_case(known))
+}
+
 impl MessageBridge {
     pub fn new() -> Self {
         Self {
@@ -1196,7 +1204,19 @@ impl MessageBridge {
             || !self.cascade.authored_sheets.is_empty()
             || !self.cascade.interactive_rules.is_empty()
             || self.widgets.get(&id).is_some_and(|w| {
-                !w.props.inline_style.trim().is_empty() || !w.props.prop_style.trim().is_empty()
+                !w.props.inline_style.trim().is_empty()
+                    || !w.props.prop_style.trim().is_empty()
+                    // Replaced elements decide their paint in the cascade
+                    // (`apply_canvas_skip` / `apply_video_poster` /
+                    // `apply_iframe_skip`), and that decision does not depend on
+                    // any stylesheet. Skipping the cascade for a bare <canvas>
+                    // would leave `skipped_replaced` unset, so the host cannot
+                    // tell "deliberately not painted" from "nothing here".
+                    || is_replaced_element_tag(&w.props.element_tag)
+                    // `nana-*` custom-element tags carry the public class
+                    // contract (`cascade.rs` applies the class layout hints),
+                    // which likewise does not need a stylesheet to exist.
+                    || w.props.element_tag.starts_with("nana-")
             });
         self.changes.dirty.insert(id);
         if needs_cascade {

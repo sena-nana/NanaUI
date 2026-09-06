@@ -381,7 +381,7 @@ pub(super) fn write_evidence(
             action,
         }) if fixture.component == Component::EmptyState => {
             let expects_content = fixture.state != "title-only";
-            let intrinsic_scene_clipped = [2_u8, 3, 4].into_iter().all(|slot| {
+            let intrinsic_scene_clipped = [2_u64, 3, 4].into_iter().all(|slot| {
                 primitive(slot).is_none_or(|primitive| has_clip(primitive, *content_clip))
             });
             let action_scene_clipped = world

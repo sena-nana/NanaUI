@@ -948,7 +948,9 @@ fn runtime_fixture(
         }
         Component::Spinner => document
             .context_mut()
-            .create_component(document_id, RuntimeSpinner::new("Loading").phase(0.25))?
+            // 相位归组件自持(38bd29c47):挂载后由动画时钟驱动自转,
+            // 宿主不再写回。快照取时间线起点,与其它组件同一口径。
+            .create_component(document_id, RuntimeSpinner::new("Loading"))?
             .stable_id(),
         Component::Tabs => create_tabs_fixture(&mut document, fixture)?.stable_id(),
         Component::Skeleton => document
