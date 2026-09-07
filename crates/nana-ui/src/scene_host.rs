@@ -52,8 +52,12 @@ use winit::monitor::Fullscreen;
 use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 #[cfg(target_os = "windows")]
 use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
+// `apply_client_chrome_after_create` is called from the un-gated `initialize`,
+// so the trait bound is needed on every platform; only `RawWindowHandle` is
+// Windows-only.
+use winit::raw_window_handle::HasWindowHandle;
 #[cfg(target_os = "windows")]
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::raw_window_handle::RawWindowHandle;
 use winit::window::Theme as WinitTheme;
 use winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
