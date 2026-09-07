@@ -1842,13 +1842,29 @@ mod tests {
                 "#,
             );
             engine.initialize(artifact).unwrap();
-            for _ in 0..32 {
+            // A software rasterizer (lavapipe on the Linux runner) settles the
+            // submitted-work, mapAsync and async-pipeline promises far slower
+            // than a real adapter, so poll until the probe reports a result
+            // instead of assuming a fixed frame count is enough. Every
+            // assertion below is unchanged: a timeout still fails the test.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let result = loop {
                 host.pump_frame(&mut engine).unwrap();
                 engine.run_microtasks().unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            let run = engine.resolve_function("__webGpuProbe.run").unwrap();
-            let result = engine.invoke(run, &[]).unwrap();
+                let run = engine.resolve_function("__webGpuProbe.run").unwrap();
+                let state = engine.invoke(run, &[]).unwrap();
+                let settled = state.as_object().is_some_and(|object| {
+                    object.get("done").and_then(HostValue::as_bool) == Some(true)
+                        || object
+                            .get("error")
+                            .and_then(HostValue::as_str)
+                            .is_some_and(|error| !error.is_empty())
+                });
+                if settled || std::time::Instant::now() >= deadline {
+                    break state;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            };
             let object = result.as_object().unwrap();
             assert_eq!(
                 object.get("error").and_then(HostValue::as_str),
