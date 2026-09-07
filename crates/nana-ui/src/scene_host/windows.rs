@@ -516,6 +516,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         id: WindowId,
         input: &InputEvent,
     ) -> bool {
+        // The live frame-resize session exists only on macOS and Windows; the
+        // rest of this function never touches the event loop.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = event_loop;
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some((session, live)) = self.live_frame_resize
             && session == id
