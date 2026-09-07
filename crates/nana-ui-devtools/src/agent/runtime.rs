@@ -6,10 +6,15 @@ use std::path::Path;
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument, StableNodeId,
 };
-use nana_ui::{NanaTextShaper, RuntimeInputAdapter};
+use nana_ui::{HostTextureRegistry, NanaTextShaper, RuntimeInputAdapter, ThemeMode};
+use nana_ui_core::SemanticColorRole;
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
-use super::{AccessibilityDumpNode, AgentError, DEFAULT_CLEAR, dump_accessibility_node};
+use super::protocol::{
+    HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo, ThemeName,
+};
+use super::session::AgentSession;
+use super::{AccessibilityDumpNode, AgentError, dump_accessibility_node_with, scene_probe};
 use crate::offscreen::{self, OffscreenSnapshots, Size};
 
 /// L3 Runtime document driven without a winit window.
@@ -20,7 +25,10 @@ pub struct RuntimeAgentSession {
     scale_factor: f32,
     width: u32,
     height: u32,
-    clear: [f32; 4],
+    /// `None` follows the document's active theme. A fixed light clear made
+    /// every dark-theme screenshot lie about its background.
+    clear: Option<[f32; 4]>,
+    host_textures: HostTextureRegistry,
 }
 
 impl RuntimeAgentSession {
@@ -47,10 +55,31 @@ impl RuntimeAgentSession {
             gpu: None,
             width,
             height,
-            clear: DEFAULT_CLEAR,
+            clear: None,
+            host_textures: HostTextureRegistry::new(),
         };
         session.flush()?;
         Ok(session)
+    }
+
+    /// Host textures sampled by `nana.host-texture` nodes during a screenshot.
+    /// Without a registry every Avatar, Thumbnail and video node paints its
+    /// placeholder, which is indistinguishable from a binding that never landed.
+    pub fn host_textures(&self) -> &HostTextureRegistry {
+        &self.host_textures
+    }
+
+    /// Background actually used for the next screenshot.
+    pub fn clear_color(&self) -> [f32; 4] {
+        self.clear.unwrap_or_else(|| {
+            let color = self
+                .document
+                .context()
+                .world()
+                .style_model()
+                .color(SemanticColorRole::Background);
+            [color.r, color.g, color.b, color.a]
+        })
     }
 
     pub fn document(&self) -> &RuntimeDocument {
@@ -72,12 +101,17 @@ impl RuntimeAgentSession {
     }
 
     pub fn accessibility_dump(&self) -> Vec<AccessibilityDumpNode> {
-        self.document
-            .context()
+        let context = self.document.context();
+        let nodes = context
             .world()
-            .project_accessibility(self.document.document())
+            .project_accessibility(self.document.document());
+        let paths: BTreeMap<u64, String> = nodes
+            .iter()
+            .filter_map(|node| Some((node.id.get(), context.assembly_path(node.id)?)))
+            .collect();
+        nodes
             .into_iter()
-            .map(|node| dump_accessibility_node(node, &BTreeMap::new()))
+            .map(|node| dump_accessibility_node_with(node, &BTreeMap::new(), &paths))
             .collect()
     }
 
@@ -225,20 +259,32 @@ impl RuntimeAgentSession {
             (self.height as f32 * self.scale_factor).round() as u32,
         );
         let scale = self.scale_factor;
-        let clear = self.clear;
+        let clear = self.clear_color();
         let scene = self.document.scene().clone();
+        let textures = self.host_textures.clone();
         let gpu = self.gpu_mut()?;
+        let renderers = gpu.default_gpu_renderers();
         let pixels = gpu
-            .paint_scaled(&scene, size, scale, clear)
+            .paint_layers_scaled(
+                &[(&scene, true)],
+                size,
+                scale,
+                clear,
+                Some(&textures),
+                Some(&renderers),
+            )
             .map_err(|error| AgentError(error.to_string()))?;
         Ok((size, pixels))
     }
 
-    pub fn screenshot_png(&mut self, path: impl AsRef<Path>) -> Result<(), AgentError> {
+    /// Returns the frame's own verdict, so a caller never has to decide by eye
+    /// whether anything painted.
+    pub fn screenshot_png(&mut self, path: impl AsRef<Path>) -> Result<PixelStats, AgentError> {
+        let clear = self.clear_color();
         let (size, pixels) = self.screenshot_rgba()?;
         offscreen::write_png(path.as_ref(), size, &pixels)
             .map_err(|error| AgentError(error.to_string()))?;
-        Ok(())
+        Ok(super::pixels::pixel_stats(size, &pixels, clear))
     }
 
     fn gpu_mut(&mut self) -> Result<&mut OffscreenSnapshots, AgentError> {
@@ -247,6 +293,141 @@ impl RuntimeAgentSession {
                 Some(OffscreenSnapshots::new().map_err(|error| AgentError(error.to_string()))?);
         }
         Ok(self.gpu.as_mut().expect("gpu initialized"))
+    }
+}
+
+impl AgentSession for RuntimeAgentSession {
+    fn describe(&self) -> SessionInfo {
+        SessionInfo {
+            kind: "runtime".into(),
+            width: self.width,
+            height: self.height,
+            scale: self.scale_factor,
+            clear: self.clear_color(),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), AgentError> {
+        Self::flush(self)
+    }
+
+    fn accessibility_nodes(&self) -> Vec<AccessibilityDumpNode> {
+        self.accessibility_dump()
+    }
+
+    fn set_viewport(&mut self, width: u32, height: u32, scale: f32) -> Result<(), AgentError> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(AgentError("scale must be finite and positive".into()));
+        }
+        if width == 0 || height == 0 {
+            return Err(AgentError("viewport must be non-zero".into()));
+        }
+        self.width = width;
+        self.height = height;
+        self.scale_factor = scale;
+        Self::flush(self)
+    }
+
+    fn set_theme(&mut self, mode: ThemeName) -> Result<(), AgentError> {
+        let mode = match mode {
+            ThemeName::Light => ThemeMode::Light,
+            ThemeName::Dark => ThemeMode::Dark,
+        };
+        self.document
+            .context_mut()
+            .set_theme(mode)
+            .map_err(|error| AgentError(error.to_string()))?;
+        Self::flush(self)
+    }
+
+    fn set_clear(&mut self, clear: Option<[f32; 4]>) {
+        self.clear = clear;
+    }
+
+    fn pointer(&mut self, gesture: PointerGesture) -> Result<bool, AgentError> {
+        match gesture {
+            PointerGesture::Click { x, y, button: 0 } => self.click_xy(x, y),
+            PointerGesture::Click { x, y, .. } => self.secondary_click_xy(x, y),
+            PointerGesture::Hover { x, y } => self.hover_xy(x, y).map(|()| true),
+            PointerGesture::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            } => self.scroll_by(x, y, delta_x, delta_y).map(|()| true),
+        }
+    }
+
+    fn activate(&mut self, node: u64) -> Result<bool, AgentError> {
+        self.click_node(node)
+    }
+
+    fn keyboard(&mut self, stroke: KeyStroke) -> Result<(), AgentError> {
+        self.key_press(&stroke.key, &stroke.code, modifiers(&stroke))
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), AgentError> {
+        Self::type_text(self, text)
+    }
+
+    fn set_value(&mut self, node: u64, value: &str) -> Result<bool, AgentError> {
+        let target =
+            StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+        let document_id = self.document.document();
+        let handled = self
+            .document
+            .context_mut()
+            .apply_accessibility_action(
+                document_id,
+                AccessibilityActionRequest {
+                    target,
+                    action: AccessibilityAction::SetValue(value.to_owned()),
+                },
+            )
+            .map_err(|error| AgentError(error.to_string()))?;
+        Self::flush(self)?;
+        Ok(handled)
+    }
+
+    fn hit_test(&self, x: f32, y: f32) -> Vec<HitDump> {
+        let candidates =
+            self.document
+                .context()
+                .world()
+                .hit_test_candidates(self.document.document(), x, y);
+        scene_probe::hits(&self.accessibility_dump(), &candidates)
+    }
+
+    fn scene_probe(&self, node: u64) -> Option<SceneProbeDump> {
+        let id = StableNodeId::new(node)?;
+        scene_probe::probe(
+            id,
+            self.document.scene(),
+            self.document.context().world().layout_box(id),
+            self.width as f32,
+            self.height as f32,
+            |x, y| self.hit_test(x, y),
+        )
+    }
+
+    fn screenshot_rgba(&mut self) -> Result<(Size<u32>, Vec<u8>), AgentError> {
+        Self::screenshot_rgba(self)
+    }
+
+    fn resolve_agent_id(&self, agent_id: &str) -> Option<u64> {
+        self.accessibility_dump()
+            .into_iter()
+            .find(|node| node.agent_id.as_deref() == Some(agent_id))
+            .map(|node| node.id)
+    }
+}
+
+fn modifiers(stroke: &KeyStroke) -> InputModifiers {
+    InputModifiers {
+        alt: stroke.alt,
+        control: stroke.ctrl,
+        meta: stroke.meta,
+        shift: stroke.shift,
     }
 }
 
@@ -311,16 +492,6 @@ mod tests {
     use super::*;
     use nana_ui::runtime::{Button, DocumentId, List, Text};
 
-    /// GPU-less environments skip pixel evidence, and the skip must stay observable.
-    fn offscreen_gpu() -> Option<OffscreenSnapshots> {
-        match OffscreenSnapshots::new() {
-            Ok(gpu) => Some(gpu),
-            Err(error) => {
-                eprintln!("skipping offscreen GPU evidence: {error}");
-                None
-            }
-        }
-    }
     #[test]
     fn runtime_session_click_node_and_optional_preview() {
         let document_id = DocumentId::new(1).expect("document");
@@ -343,7 +514,7 @@ mod tests {
         );
         let handled = session.click_node(button.stable_id().get()).expect("click");
         assert!(handled);
-        if offscreen_gpu().is_some() {
+        if offscreen::optional().is_some() {
             let (size, pixels) = session.screenshot_rgba().expect("preview");
             assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
             assert!(pixels.iter().any(|channel| *channel != 0));
@@ -360,7 +531,7 @@ mod tests {
         const WIDTH: u32 = 96;
         const HEIGHT: u32 = 96;
 
-        let Some(mut gpu) = offscreen_gpu() else {
+        let Some(mut gpu) = offscreen::optional() else {
             return;
         };
         let renderers = default_scene_gpu_renderers();
@@ -436,7 +607,7 @@ mod tests {
         const WIDTH: u32 = 160;
         const HEIGHT: u32 = 120;
 
-        let Some(mut gpu) = offscreen_gpu() else {
+        let Some(mut gpu) = offscreen::optional() else {
             return;
         };
         let document_id = DocumentId::new(1).expect("document");
@@ -538,7 +709,7 @@ mod tests {
         const WIDTH: u32 = 320;
         const HEIGHT: u32 = 360;
 
-        if offscreen_gpu().is_none() {
+        if offscreen::optional().is_none() {
             return;
         }
         let document_id = DocumentId::new(1).expect("document");

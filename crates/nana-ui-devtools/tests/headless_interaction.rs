@@ -9,6 +9,7 @@ use nana_ui::runtime::{
 };
 use nana_ui_core::{LayoutStyle, LengthSpec};
 use nana_ui_devtools::agent::RuntimeAgentSession;
+use nana_ui_devtools::offscreen;
 use nana_ui_platform::InputModifiers;
 use std::sync::Arc;
 
@@ -111,8 +112,10 @@ fn key_press_commits_no_text_into_labels() {
 /// Pixel evidence that `scroll_by` reaches the painter, not just the retained
 /// tree. Writes both frames so the difference can be inspected by eye.
 #[test]
-#[ignore = "requires a GPU adapter; writes validation screenshots"]
 fn scroll_by_changes_painted_pixels() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     let (document, _) = scrolling_document();
     let mut session = RuntimeAgentSession::new(document, 360, 240).unwrap();
 

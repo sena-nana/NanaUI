@@ -54,6 +54,19 @@ jobs:
         run: cargo test --workspace --all-targets --locked
       - name: Run V8 engine tests
         run: cargo test -p nana-js-v8 --features engine --locked -- --test-threads=1
+      # The headless Agent surface is gated behind non-default features, so the
+      # default-feature run above compiles all of it out. Linux has lavapipe, so
+      # the offscreen pixel tests genuinely execute there; elsewhere they skip
+      # visibly through `offscreen::pixels_available`.
+      - name: Run headless Agent tests
+        run: cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked
+      - name: Check the Vue-free Agent tier pulls no JS engine
+        shell: bash
+        run: |
+          if [ "$(cargo tree -p nana-ui-devtools --features runtime-agent --locked | grep -ci v8)" != "0" ]; then
+            echo "runtime-agent must not depend on V8" >&2
+            exit 1
+          fi
       - name: Run nanavue JS tests
         shell: bash
         run: |

@@ -3,6 +3,7 @@
 use nana_ui::runtime::{DocumentId, MutationQueue, NodeStyle, RuntimeDocument, Stack, TextInput};
 use nana_ui_core::{LayoutStyle, LengthSpec, PaintTransform, VisibilitySpec};
 use nana_ui_devtools::agent::RuntimeAgentSession;
+use nana_ui_devtools::offscreen;
 use std::sync::Arc;
 
 fn assert_accessible_path(
@@ -38,8 +39,10 @@ fn assert_accessible_path(
 }
 
 #[test]
-#[ignore = "requires a GPU adapter; writes validation screenshots"]
 fn hidden_scroller_clips_visible_editors_and_scrolls_their_hit_targets() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     use nana_ui::runtime::{ScrollAxes, ScrollOffset, ScrollView};
     let id = DocumentId::new(1).unwrap();
     let mut document = RuntimeDocument::new(id);
@@ -132,8 +135,10 @@ fn hidden_scroller_clips_visible_editors_and_scrolls_their_hit_targets() {
 }
 
 #[test]
-#[ignore = "requires a GPU adapter; writes validation screenshots"]
 fn visible_editor_in_hidden_container_moves_with_its_hit_target() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     let id = DocumentId::new(1).unwrap();
     let mut document = RuntimeDocument::new(id);
     let cx = document.context_mut();

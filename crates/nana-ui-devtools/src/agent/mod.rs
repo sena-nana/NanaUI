@@ -6,25 +6,39 @@
 //! available under `runtime-agent` alone: a Rust product must not pull the Vue
 //! renderer and a JS engine into its dependency graph just to click a button
 //! without a window. [`vue::VueAgentSession`] needs `agent`.
+//!
+//! Both implement [`session::AgentSession`], so command dispatch and the stdio
+//! loop are written once in [`session`] and the wire types in [`protocol`] name
+//! no Vue type. [`cli`] drives a `&mut dyn AgentSession`, which is also how a
+//! consuming product joins with its own session and its own document.
 
 #[cfg(feature = "agent")]
 pub mod vue;
 
+pub mod cli;
+pub mod fixtures;
+pub mod pixels;
+pub mod protocol;
 pub mod runtime;
+pub(crate) mod scene_probe;
+pub mod session;
 
-pub use runtime::RuntimeAgentSession;
-#[cfg(feature = "agent")]
-pub use vue::{
-    AgentCommand, AgentReply, SemanticDumpWidget, VueAgentSession, semantic_counter_artifact,
-    semantic_counter_source,
+pub use protocol::{
+    A11yFilter, AgentCommand, AgentReply, DiagnosticDump, GpuDump, HitDump, KeyStroke, PixelDiff,
+    PixelStats, PointerGesture, RectDump, SceneProbeDump, SemanticDumpWidget, SessionInfo, Target,
+    ThemeName,
 };
+pub use runtime::RuntimeAgentSession;
+pub use session::{AgentSession, run_stdio};
+#[cfg(feature = "agent")]
+pub use vue::{VueAgentSession, semantic_counter_artifact, semantic_counter_source};
 
 use std::collections::BTreeMap;
 
-use nana_ui::runtime::{AccessibilityNode, AccessibilityRole, StableNodeId};
+use nana_ui::runtime::{
+    AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId, TextSelection,
+};
 use serde::{Deserialize, Serialize};
-
-pub(crate) const DEFAULT_CLEAR: [f32; 4] = [0.96, 0.96, 0.96, 1.0];
 
 #[derive(Debug)]
 pub struct AgentError(pub String);
@@ -57,6 +71,22 @@ pub struct BoundsDump {
     pub height: f32,
 }
 
+/// `nana-ui-runtime` deliberately carries no serde derives, so the wire shape of
+/// a text selection is defined here rather than by adding a serialization
+/// surface to a product crate for a dev-only consumer.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelectionDump {
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+/// Every field an [`AccessibilityNode`] carries.
+///
+/// A partial projection is worse than no projection: an Agent that cannot read
+/// `checked`, `selected`, `modal` or `invalid` has to fall back to writing Rust
+/// to answer "is the switch on", which is the exact failure this session exists
+/// to remove. Fields that are absent or at their default are skipped, so a
+/// plain text node stays as compact on the wire as it was before.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccessibilityDumpNode {
     pub id: u64,
@@ -70,11 +100,59 @@ pub struct AccessibilityDumpNode {
     pub bounds: BoundsDump,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// `/`-joined `build`/`mount` assembly keys, the Rust L3 stable handle.
+    /// Distinct from `agent_id` on purpose: they are different contracts, and
+    /// merging them would make a missing value ambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mixed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multiline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub editable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionDump>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub modal: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub busy: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub invalid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_maximum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_step: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_value: Option<f64>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[cfg(feature = "agent")]
 fn dump_accessibility_node(
     node: AccessibilityNode,
     agent_ids: &BTreeMap<u64, String>,
+) -> AccessibilityDumpNode {
+    dump_accessibility_node_with(node, agent_ids, &BTreeMap::new())
+}
+
+fn dump_accessibility_node_with(
+    node: AccessibilityNode,
+    agent_ids: &BTreeMap<u64, String>,
+    agent_paths: &BTreeMap<u64, String>,
 ) -> AccessibilityDumpNode {
     let id = node.id.get();
     AccessibilityDumpNode {
@@ -93,6 +171,71 @@ fn dump_accessibility_node(
             height: node.bounds.height,
         },
         agent_id: agent_ids.get(&id).cloned(),
+        agent_path: agent_paths.get(&id).cloned(),
+        description: node.description.map(|value| value.to_string()),
+        checked: node.checked,
+        mixed: node.mixed,
+        orientation: node.orientation.map(orientation_name).map(String::from),
+        selected: node.selected,
+        multiline: node.multiline,
+        editable: node.editable,
+        selection: node.selection.map(selection_dump),
+        modal: node.modal,
+        busy: node.busy,
+        invalid: node.invalid,
+        numeric_minimum: node.numeric_minimum,
+        numeric_maximum: node.numeric_maximum,
+        numeric_step: node.numeric_step,
+        numeric_value: node.numeric_value,
+    }
+}
+
+/// Map a recorded diagnostic onto the wire shape.
+#[cfg(feature = "agent")]
+pub(crate) fn diagnostic_dump(event: crate::DiagnosticEvent) -> protocol::DiagnosticDump {
+    use crate::DiagnosticKind;
+    use nana_js_engine::JsDiagnosticLevel;
+    protocol::DiagnosticDump {
+        sequence: event.sequence,
+        elapsed_micros: event.elapsed_micros,
+        kind: match event.kind {
+            DiagnosticKind::JsException => "js_exception",
+            DiagnosticKind::UnhandledPromiseRejection => "unhandled_promise_rejection",
+            DiagnosticKind::VueWarning => "vue_warning",
+            DiagnosticKind::VueError => "vue_error",
+            DiagnosticKind::HostCall => "host_call",
+            DiagnosticKind::ResourceLifecycle => "resource_lifecycle",
+            DiagnosticKind::WindowLifecycle => "window_lifecycle",
+            DiagnosticKind::Frame => "frame",
+            DiagnosticKind::DeviceLost => "device_lost",
+            DiagnosticKind::RenderError => "render_error",
+            DiagnosticKind::Inspector => "inspector",
+        }
+        .into(),
+        level: match event.level {
+            JsDiagnosticLevel::Error => "error",
+            JsDiagnosticLevel::Warning => "warn",
+            JsDiagnosticLevel::Info => "info",
+        }
+        .into(),
+        source: event.source,
+        message: event.message,
+        stack: event.stack,
+        fields: event.fields,
+    }
+}
+
+fn selection_dump(selection: TextSelection) -> SelectionDump {
+    SelectionDump {
+        anchor: selection.anchor,
+        focus: selection.focus,
+    }
+}
+
+fn orientation_name(orientation: SelectionOrientation) -> &'static str {
+    match orientation {
+        SelectionOrientation::Horizontal => "horizontal",
+        SelectionOrientation::Vertical => "vertical",
     }
 }
 

@@ -9,7 +9,9 @@ description: Select and report functional validation for NanaUI changes. Use whe
 
 - **UI:** Test changed layout constraints, state transitions, persistence and real action wiring.
 - **Agent headless:** Operate Vue/Runtime without a window via `$nanaui-agent-debug`
-  (`nana-agent-session` / `VueAgentSession`). Inspect a11y bounds and the PNG; do
+  (`nana-agent-session` for Vue/JS, `nana-runtime-agent` for Rust L3). Read the
+  screenshot reply's `pixels` stats, then the PNG; use `probe` / `hit_test` /
+  `diagnostics` when something is missing rather than guessing from the image. Do
   not treat semantic-only updates as visual proof.
 - **Visual:** Render the real workspace/gallery path with `ui-snapshots` and inspect affected PNGs.
   Paint `UiScene` through `SceneWgpuPainter`; keep the snapshot painter alive through
@@ -50,6 +52,7 @@ cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 cargo run --release -p component-gallery --bin ui-snapshots \
   --features snapshots --locked
+cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked
 cargo test -p nana-ui-devtools --features agent --lib --locked
 ```
 

@@ -2031,6 +2031,7 @@ dependencies = [
  "nana-ui",
  "nana-ui-core",
  "nana-ui-platform",
+ "nana-ui-scene",
  "nana-ui-vue",
  "pollster",
  "serde",

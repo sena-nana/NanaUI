@@ -1,91 +1,83 @@
-//! Headless Agent stdio session. Product windows never use this binary.
+//! Headless session for a Vue/JS artifact. Product windows never use this.
 //!
-//! Default fixture is the built-in counter. Pass `--js <file>` to drive a
-//! product Vue/JS artifact. JSON lines on stdin, JSON replies on stdout:
-//! `{"cmd":"screenshot","path":"..."}`, `{"cmd":"a11y"}`,
-//! `{"cmd":"click","agent_id":"increment"}`, `{"cmd":"type","text":"hi"}`.
+//! Default fixture is the built-in counter; `--js <file>` drives a product
+//! artifact. See `nana-runtime-agent` for the Vue-free, V8-free Rust L3 tier.
 
 use std::env;
-use std::io;
 use std::process::ExitCode;
 
 use nana_js_engine::RuntimeArtifact;
 use nana_js_v8::V8Engine;
+use nana_ui_devtools::agent::cli::{self, COMMON_USAGE};
 use nana_ui_devtools::agent::{VueAgentSession, semantic_counter_artifact};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
-    let width = parse_flag_u32(&args, "--width").unwrap_or(480);
-    let height = parse_flag_u32(&args, "--height").unwrap_or(320);
-    let screenshot = flag_value(&args, "--screenshot");
-    let stdio = args.iter().any(|arg| arg == "--stdio");
-    let artifact = match load_artifact(&args) {
+    let args = match cli::parse(env::args().skip(1)) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("nana-agent-session: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if args.help {
+        usage();
+        return ExitCode::SUCCESS;
+    }
+    if args.gpu_probe {
+        cli::print_gpu_probe();
+        return ExitCode::SUCCESS;
+    }
+
+    let artifact = match load_artifact(&args.rest) {
         Ok(artifact) => artifact,
         Err(error) => {
             eprintln!("nana-agent-session failed: {error}");
             return ExitCode::from(1);
         }
     };
-
-    let mut session = match VueAgentSession::new(V8Engine::new(), artifact, width, height) {
+    let mut session = match VueAgentSession::new_scaled(
+        V8Engine::new(),
+        artifact,
+        args.width,
+        args.height,
+        args.scale,
+    ) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("nana-agent-session failed: {error}");
             return ExitCode::from(1);
         }
     };
-
-    if let Some(path) = screenshot {
-        if let Err(error) = session.screenshot_png(path) {
-            eprintln!("screenshot failed: {error}");
-            return ExitCode::from(1);
-        }
-        println!("{path}");
-    }
-
-    if stdio {
-        let stdin = io::stdin();
-        if let Err(error) = session.run_stdio(stdin.lock(), io::stdout()) {
-            eprintln!("stdio session failed: {error}");
-            return ExitCode::from(1);
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    if screenshot.is_none() {
-        let dump = session.accessibility_dump();
-        match serde_json::to_string_pretty(&dump) {
-            Ok(json) => println!("{json}"),
-            Err(error) => {
-                eprintln!("a11y dump failed: {error}");
-                return ExitCode::from(1);
-            }
-        }
-    }
-    ExitCode::SUCCESS
+    cli::run(&mut session, &args)
 }
 
-fn load_artifact(args: &[String]) -> Result<RuntimeArtifact, String> {
-    let Some(path) = flag_value(args, "--js") else {
+fn usage() {
+    println!(
+        "nana-agent-session — headless NanaUI Vue/JS session\n\n\
+         Usage: nana-agent-session [--js <app.js>] [options]\n\n\
+         Vue options:\n\
+         \x20 --js <file>           artifact to load (default: built-in counter)\n\n\
+         Common options:\n{COMMON_USAGE}"
+    );
+}
+
+fn load_artifact(rest: &[String]) -> Result<RuntimeArtifact, String> {
+    let Some(path) = flag(rest, "--js") else {
         return Ok(semantic_counter_artifact());
     };
-    let source = std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?;
-    Ok(RuntimeArtifact::from_source(path, source))
+    let source = std::fs::read_to_string(&path).map_err(|error| format!("read {path}: {error}"))?;
+    Ok(RuntimeArtifact::from_source(&path, source))
 }
 
-fn parse_flag_u32(args: &[String], name: &str) -> Option<u32> {
-    flag_value(args, name)?.parse().ok()
-}
-
-fn flag_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+fn flag(rest: &[String], name: &str) -> Option<String> {
     let prefix = format!("{name}=");
     let mut index = 0;
-    while index < args.len() {
-        if let Some(value) = args[index].strip_prefix(&prefix) {
-            return Some(value);
+    while index < rest.len() {
+        if let Some(value) = rest[index].strip_prefix(&prefix) {
+            return Some(value.to_owned());
         }
-        if args[index] == name {
-            return args.get(index + 1).map(String::as_str);
+        if rest[index] == name {
+            return rest.get(index + 1).cloned();
         }
         index += 1;
     }

@@ -15,10 +15,18 @@ name = "nana-agent-session"
 path = "src/bin/nana-agent-session.rs"
 required-features = ["agent-bin"]
 
+# The Vue-free tier gets its own binary rather than a feature-gated branch, so
+# Rust-only work never pays the V8 build cost.
+[[bin]]
+name = "nana-runtime-agent"
+path = "src/bin/nana-runtime-agent.rs"
+required-features = ["runtime-agent"]
+
 [features]
 default = []
 offscreen = [
     "dep:nana-ui",
+    "dep:nana-ui-scene",
     "nana-ui/gpu",
     "nana-ui/bundled-fonts",
     "dep:image",
@@ -49,6 +57,7 @@ nana-js-engine.workspace = true
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, optional = true }
 nana-ui = { workspace = true, optional = true }
+nana-ui-scene = { workspace = true, optional = true }
 nana-ui-vue = { workspace = true, optional = true }
 nana-js-v8 = { workspace = true, optional = true }
 image = { workspace = true, optional = true }

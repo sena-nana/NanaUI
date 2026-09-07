@@ -977,6 +977,47 @@ impl AppContext {
         &self.world
     }
 
+    /// The key `child` was created under by [`Self::build`] or [`Self::mount`].
+    ///
+    /// The assembly key is already this framework's author-facing stable-identity
+    /// contract — [`FrameworkError::DuplicateAssemblyKey`] names it — so reading
+    /// it back gives tooling a handle that survives relayout and reconciliation.
+    /// Nodes created directly with `create_component` were never keyed and have
+    /// none; callers must have a second way to address those.
+    pub fn assembly_key(&self, parent: StableNodeId, child: StableNodeId) -> Option<&str> {
+        self.assembled
+            .get(&parent)?
+            .iter()
+            .find(|(_, slot)| slot.id == child)
+            .map(|(key, _)| key.as_str())
+    }
+
+    /// `/`-joined assembly keys from the outermost keyed ancestor down to `id`.
+    ///
+    /// `None` when no ancestor keyed this node.
+    pub fn assembly_path(&self, id: StableNodeId) -> Option<String> {
+        let mut segments = Vec::new();
+        let mut cursor = Some(id);
+        while let Some(node) = cursor {
+            let parent = self.world.node(node).and_then(|snapshot| snapshot.parent);
+            if let Some(parent) = parent
+                && let Some(key) = self.assembly_key(parent, node)
+            {
+                segments.push(key);
+            }
+            cursor = parent;
+            // The retained tree is acyclic, but a malformed one must not hang.
+            if segments.len() > self.assembled.len() + 1 {
+                break;
+            }
+        }
+        if segments.is_empty() {
+            return None;
+        }
+        segments.reverse();
+        Some(segments.join("/"))
+    }
+
     /// Messages queued by [`ViewContext::dispatch_program`] since the last take.
     /// The Scene host drains these into `RuntimeProgram::update` on the next frame.
     pub fn take_program_messages(&mut self) -> Vec<Box<dyn Any + Send>> {

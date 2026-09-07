@@ -4,8 +4,14 @@
 //!
 //! Optional `offscreen` / `runtime-agent` / `agent` features add snapshot CPU
 //! readback and a headless Agent session. Those paths are tooling-only and must
-//! not be wired into product Surface present. `runtime-agent` is the Vue-free
-//! tier for plain Rust Runtime products; `agent` adds the Vue/JS session.
+//! not be wired into product Surface present.
+//!
+//! The tiers nest: `offscreen` is paint plus readback; `runtime-agent` adds the
+//! JSON protocol, the [`agent::AgentSession`] trait, the Vue-free Rust L3
+//! session and the `nana-runtime-agent` binary, and pulls no JS engine; `agent`
+//! adds the Vue/JS session; `agent-bin` adds V8 and `nana-agent-session`.
+//! The protocol lives in the `runtime-agent` tier deliberately, so a plain Rust
+//! product speaks it without taking on the Vue renderer or V8.
 
 #[cfg(feature = "runtime-agent")]
 pub mod agent;

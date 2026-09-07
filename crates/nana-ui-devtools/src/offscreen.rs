@@ -35,16 +35,7 @@ pub struct OffscreenSnapshots {
 
 impl OffscreenSnapshots {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))?;
+        let (_instance, adapter) = request_adapter()?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("nana-ui snapshot device"),
@@ -65,6 +56,18 @@ impl OffscreenSnapshots {
             painter,
             image_ready,
         })
+    }
+
+    /// Product GPU-node renderers bound to this snapshot's Device/Queue.
+    ///
+    /// Without them a `GpuView` or `nana.host-texture` node paints nothing in a
+    /// screenshot, so an Agent sees a hole where the real application shows
+    /// content — and cannot tell that from a genuine layout bug.
+    pub fn default_gpu_renderers(&self) -> SceneGpuRendererRegistry {
+        nana_ui::default_scene_gpu_renderers_with_host(
+            std::sync::Arc::new(self.device.clone()),
+            std::sync::Arc::new(self.queue.clone()),
+        )
     }
 
     pub fn paint(
@@ -229,6 +232,84 @@ impl OffscreenSnapshots {
                 label: Some("nana-ui snapshot copy"),
             });
         readback(&self.device, &self.queue, copy, &texture, size)
+    }
+}
+
+/// What a snapshot adapter request found, without building a device.
+///
+/// Every headless caller asks the same question — "can this machine produce
+/// pixel evidence at all?" — so it is answered in one place instead of each
+/// test inventing its own skip message.
+#[derive(Debug, Clone, Default)]
+pub struct GpuProbe {
+    pub available: bool,
+    pub adapter: Option<String>,
+    pub backend: Option<String>,
+    /// Why no adapter was found. `None` when one was.
+    pub reason: Option<String>,
+}
+
+fn request_adapter() -> Result<(wgpu::Instance, wgpu::Adapter), Box<dyn std::error::Error>> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::from_env().unwrap_or_default(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))?;
+    Ok((instance, adapter))
+}
+
+/// Report the snapshot adapter without creating a device or a painter.
+pub fn gpu_probe() -> GpuProbe {
+    match request_adapter() {
+        Ok((_instance, adapter)) => {
+            let info = adapter.get_info();
+            GpuProbe {
+                available: true,
+                adapter: Some(info.name),
+                backend: Some(format!("{:?}", info.backend)),
+                reason: None,
+            }
+        }
+        Err(error) => GpuProbe {
+            available: false,
+            adapter: None,
+            backend: None,
+            reason: Some(error.to_string()),
+        },
+    }
+}
+
+/// `true` when a snapshot adapter exists, after one canonical skip line otherwise.
+///
+/// Use this when the pixels come from a session that builds its own GPU; use
+/// [`optional`] when the caller needs the [`OffscreenSnapshots`] itself.
+pub fn pixels_available() -> bool {
+    let probe = gpu_probe();
+    if !probe.available {
+        eprintln!(
+            "skipping offscreen GPU evidence: {}",
+            probe.reason.as_deref().unwrap_or("no snapshot adapter")
+        );
+    }
+    probe.available
+}
+
+/// Snapshot GPU, or `None` after one canonical skip line on stderr.
+///
+/// A GPU-less environment must skip *visibly*: a silent skip reads exactly like
+/// a pass, and a report claiming pixel evidence would then be unfalsifiable.
+pub fn optional() -> Option<OffscreenSnapshots> {
+    match OffscreenSnapshots::new() {
+        Ok(gpu) => Some(gpu),
+        Err(error) => {
+            eprintln!("skipping offscreen GPU evidence: {error}");
+            None
+        }
     }
 }
 

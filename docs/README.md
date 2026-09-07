@@ -20,6 +20,7 @@
 | 应用内打开网页（IAB，未实现） | [应用内浏览器](gpu.md#应用内浏览器) |
 | 标题栏、图标、系统材质、多窗口 | [窗口](window.md) |
 | 颜色、尺寸、字体、主题 | [视觉](look.md) |
+| 无窗口跑起来看一眼(截图 / a11y / 点击) | [`$nanaui-agent-debug`](../.agents/skills/nanaui-agent-debug/SKILL.md) |
 
 ## Vue + JS
 

@@ -6,11 +6,14 @@ use nana_ui::runtime::{
 };
 use nana_ui_core::{LayoutStyle, LengthSpec, VirtualViewport};
 use nana_ui_devtools::agent::RuntimeAgentSession;
+use nana_ui_devtools::offscreen;
 use std::sync::Arc;
 
 #[test]
-#[ignore = "requires a GPU adapter; writes a validation screenshot"]
 fn rust_virtual_list_retains_editor_and_matches_scroll_hit_geometry() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     let id = DocumentId::new(1).unwrap();
     let mut document = RuntimeDocument::new(id);
     let cx = document.context_mut();
@@ -160,8 +163,10 @@ fn rust_virtual_list_retains_editor_and_matches_scroll_hit_geometry() {
 }
 
 #[test]
-#[ignore = "requires a GPU adapter; writes a validation screenshot"]
 fn rust_virtual_table_frozen_regions_match_real_clicks() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     use nana_ui::runtime::{Table, TableCell, TableRow, VirtualTableItems, VirtualTableLayout};
     let id = DocumentId::new(1).unwrap();
     let mut document = RuntimeDocument::new(id);

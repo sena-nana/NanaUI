@@ -1,7 +1,7 @@
 """Real V8/Runtime/Scene navigation contract; build the fixture and Agent first."""
 import json
 from pathlib import Path
-import subprocess
+import agent_driver
 
 root = Path(__file__).resolve().parents[4]
 output = root / "target/virtual-navigation"
@@ -13,12 +13,9 @@ commands = [
     {"cmd": "screenshot", "path": str(output / "jumped.png")},
     {"cmd": "click", "agent_id": "release"}, {"cmd": "pump"}, {"cmd": "a11y"},
 ]
-result = subprocess.run([
-    str(root / "target/debug/nana-agent-session.exe"), "--js", str(output / "app.js"),
-    "--width", "480", "--height", "320", "--stdio",
-], input="\n".join(map(json.dumps, commands)) + "\n", capture_output=True, text=True, check=True)
-(output / "agent.jsonl").write_text(result.stdout, encoding="utf-8")
-replies = [json.loads(line) for line in result.stdout.splitlines()]
+raw, by_id = agent_driver.run(commands, js=output / "app.js")
+(output / "agent.jsonl").write_text(raw, encoding="utf-8")
+replies = [by_id[index] for index in range(len(commands))]
 assert len(replies) == len(commands)
 assert all(reply["ok"] for reply in replies), replies
 for index in [2, 5, 9]:
@@ -27,6 +24,7 @@ for index in [2, 5, 9]:
 def rows(reply):
     return {node["agent_id"]: node for node in reply["nodes"] if node.get("agent_id", "").startswith("row-")}
 
+agent_driver.screenshot_painted(replies[8])
 initial, jumped, selected, released = (replies[index] for index in [1, 4, 7, 11])
 assert list(rows(initial)) == [f"row-{i}" for i in range(5)]
 assert len(rows(jumped)) == 6

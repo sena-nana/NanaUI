@@ -2,6 +2,7 @@
 use nana_ui::runtime::{DocumentId, NodeStyle, RuntimeDocument, Stack, Text};
 use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec, SemanticColorRole};
 use nana_ui_devtools::agent::RuntimeAgentSession;
+use nana_ui_devtools::offscreen;
 use std::sync::Arc;
 
 fn covered_text_pixels(text: &str) -> Vec<u8> {
@@ -46,8 +47,10 @@ fn covered_text_pixels(text: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires a GPU adapter"]
 fn later_opaque_surface_occludes_earlier_text_pixels() {
+    if !offscreen::pixels_available() {
+        return;
+    }
     let with_text = covered_text_pixels("MMMMMMMM\nMMMMMMMM");
     let without_text = covered_text_pixels("");
     assert_eq!(

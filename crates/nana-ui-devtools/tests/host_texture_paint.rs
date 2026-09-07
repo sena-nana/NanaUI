@@ -7,23 +7,13 @@
 
 use nana_ui::runtime::{Avatar, DocumentId, GpuTextureView, RuntimeDocument, Thumbnail};
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
-use nana_ui_devtools::offscreen::{OffscreenSnapshots, Size};
+use nana_ui_devtools::offscreen::{self, OffscreenSnapshots, Size};
 
 const SLOT: &str = "test.cover";
 const W: u32 = 96;
 const H: u32 = 96;
 /// Opaque red, distinct from every semantic surface colour in both themes.
 const FILL: [u8; 4] = [255, 0, 0, 255];
-
-fn gpu() -> Option<OffscreenSnapshots> {
-    match OffscreenSnapshots::new() {
-        Ok(gpu) => Some(gpu),
-        Err(error) => {
-            eprintln!("skipping host-texture paint evidence: {error}");
-            None
-        }
-    }
-}
 
 /// A 1×1 opaque red texture registered under [`SLOT`].
 fn register_fill(gpu: &OffscreenSnapshots, registry: &HostTextureRegistry) {
@@ -104,9 +94,10 @@ fn paint_with(
 }
 
 #[test]
-#[ignore = "requires a GPU adapter"]
 fn avatar_bound_after_mount_reaches_the_screen() {
-    let Some(mut gpu) = gpu() else { return };
+    let Some(mut gpu) = offscreen::optional() else {
+        return;
+    };
     let registry = HostTextureRegistry::new();
     register_fill(&gpu, &registry);
 
@@ -148,9 +139,10 @@ fn avatar_bound_after_mount_reaches_the_screen() {
 }
 
 #[test]
-#[ignore = "requires a GPU adapter"]
 fn thumbnail_bound_after_mount_reaches_the_screen() {
-    let Some(mut gpu) = gpu() else { return };
+    let Some(mut gpu) = offscreen::optional() else {
+        return;
+    };
     let registry = HostTextureRegistry::new();
     register_fill(&gpu, &registry);
 
@@ -197,9 +189,10 @@ fn thumbnail_bound_after_mount_reaches_the_screen() {
 /// `GpuTextureView` the host has re-bound — which is what a product does when
 /// the same cover appears both as an avatar and as a plain texture view.
 #[test]
-#[ignore = "requires a GPU adapter"]
 fn avatar_and_texture_view_can_share_one_slot() {
-    let Some(mut gpu) = gpu() else { return };
+    let Some(mut gpu) = offscreen::optional() else {
+        return;
+    };
     let registry = HostTextureRegistry::new();
     register_fill(&gpu, &registry);
 
