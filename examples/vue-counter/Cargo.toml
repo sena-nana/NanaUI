@@ -19,7 +19,8 @@ engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
 windowed = ["engine-v8", "dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "nana-ui-vue/scene-view", "nana-ui-vue/hosted"]
 
 [dependencies]
-nana-js-engine.workspace = true
+# Demo content is the bundled Vue probe fixture.
+nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-ui-web-api.workspace = true
 nana-js-v8 = { workspace = true, optional = true }

@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 default = []
 full = ["bundled-fonts", "components", "hosted", "syntax-highlighting"]
-bundled-fonts = []
+bundled-fonts = ["nana-ui-core/bundled-fonts"]
 # Compatibility flags must gate real code: every entry here either maps to a
 # `cfg(feature = …)` component module or pulls a runtime feature. No-op aliases
 # were removed — enable `components` / `full` instead.

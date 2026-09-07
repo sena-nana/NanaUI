@@ -18,6 +18,20 @@ Android 是实验路径，**不是当前产品目标**。不要把它写进应�
 ./scripts/check-android-arm64.sh
 ```
 
+要出可安装的 APK，必须走 `dist` 档：
+
+```bash
+./scripts/check-android-arm64.sh --build --dist
+./scripts/package-android-host-apk.sh
+```
+
+dev 档会把约 390 MB 的 DWARF 和约 46 MB 的符号表内嵌进 `.so`（曾经的 473 MiB
+产物里只有 55 MiB 是真正装载的段）。`package-android-host-apk.sh` 无条件跑一次
+`llvm-strip --strip-all`，并对 stripped `.so` 设了 60 MiB 上限：超了直接失败，因为
+那基本只可能是误传了 dev 档产物。APK 里 `.so` 以未压缩方式存放
+（`aapt -0 .so` + `zipalign -p`）配合 `extractNativeLibs="false"`，装机后不再解压出
+第二份。
+
 编过只说明依赖和接口能对上。平台工程笔记在 `platform/android/README.md`。
 
 桌面 host 配置下的 Android host 回归当前为 39 项通过；这只验证 Rust 侧动作队列、

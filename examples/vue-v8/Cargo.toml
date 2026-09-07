@@ -11,7 +11,8 @@ name = "vue-v8"
 path = "src/main.rs"
 
 [dependencies]
-nana-js-engine.workspace = true
+# Demo content is the bundled Vue probe fixture.
+nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-js-v8 = { workspace = true, features = ["engine"] }
 nana-ui-vue.workspace = true
 serde_json.workspace = true

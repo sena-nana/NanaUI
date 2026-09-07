@@ -14,6 +14,8 @@ path = "src/lib.rs"
 base64.workspace = true
 crossbeam-channel.workspace = true
 nana-js-engine.workspace = true
+# Canvas2D text needs a default face and has no system-font fallback.
+nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }
 nana-ui-platform = { workspace = true, features = ["clipboard", "fetch", "ws"] }
 tiny-skia.workspace = true
 nana-svg-raster.workspace = true

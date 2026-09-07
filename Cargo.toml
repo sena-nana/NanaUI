@@ -72,3 +72,18 @@ accesskit_android = "0.8.0"
 accesskit_macos = "0.27.0"
 accesskit_windows = "0.35.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }
+
+# Release/dist split. `release` stays stock so CI and the benchmarks keep their
+# fast turnaround; `dist` is what packaging scripts build and is the only
+# profile allowed into an .app bundle or an APK.
+#
+# `panic = "abort"` drops the unwind tables (~7 MB of __eh_frame /
+# __unwind_info / __gcc_except_tab on the desktop binary). It also means a
+# panicking native component aborts the process instead of surfacing a
+# NativeComponentCommandError — see nana-ui-vue/src/native_component.rs.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

@@ -23,6 +23,7 @@ fn run(args: Vec<String>) -> Result<PathBuf, String> {
     let mut identifier = None;
     let mut out = None;
     let mut icon = None;
+    let mut strip = true;
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
@@ -37,9 +38,14 @@ fn run(args: Vec<String>) -> Result<PathBuf, String> {
             "--identifier" => identifier = Some(next()?),
             "--out" => out = Some(PathBuf::from(next()?)),
             "--icon" => icon = Some(PathBuf::from(next()?)),
+            "--no-strip" => {
+                strip = false;
+                index += 1;
+                continue;
+            }
             "--help" | "-h" => {
                 return Err(
-                    "nana-package-app --exe PATH --name NAME --identifier ID --out PATH [--icon ICNS]"
+                    "nana-package-app --exe PATH --name NAME --identifier ID --out PATH [--icon ICNS] [--no-strip]"
                         .into(),
                 );
             }
@@ -53,5 +59,6 @@ fn run(args: Vec<String>) -> Result<PathBuf, String> {
         identifier: identifier.ok_or("--identifier is required")?,
         out: out.ok_or("--out is required")?,
         icon,
+        strip,
     })
 }

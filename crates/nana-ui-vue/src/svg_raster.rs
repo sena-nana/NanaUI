@@ -4,8 +4,8 @@
 //! path; this module only handles generic charts and markup.
 
 use nana_svg_raster::SvgFont;
+use nana_ui_core::fonts::UI_FONT_REGULAR as FONT_BYTES;
 
-const FONT_BYTES: &[u8] = include_bytes!("../../nana-ui/assets/fonts/NotoSansSC-Regular.ttf");
 const MAX_RASTER_EDGE: u32 = 2048;
 
 pub use nana_svg_raster::RasterizedSvg;

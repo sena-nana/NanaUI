@@ -29,6 +29,8 @@ serde_json.workspace = true
 v8 = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Engine tests drive the bundled Vue probe artifacts.
+nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-ui-vue = { path = "../nana-ui-vue", default-features = false, features = ["hosted", "components", "syntax-highlighting"] }
 nana-ui-web-api.workspace = true
 nana-ui = { workspace = true, features = ["hosted", "components", "syntax-highlighting"] }

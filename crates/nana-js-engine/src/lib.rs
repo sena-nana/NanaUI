@@ -1230,33 +1230,47 @@ pub trait JsEngine {
 }
 
 /// Shared Phase 2 Vue `runtime-core` probe artifact (IIFE, UTF-8).
+///
+/// The bundled `.iife.js` fixtures (~576 KB) are behind `probe-fixtures`,
+/// which is off by default: they are test/demo content and used to be linked
+/// into every consumer, product builds included. The host-op registry and
+/// counters below are plain Rust and stay unconditional.
 pub mod probe {
-    use super::{HostApiRegistry, HostValue, JsException, RuntimeArtifact};
+    #[cfg(feature = "probe-fixtures")]
+    use super::RuntimeArtifact;
+    use super::{HostApiRegistry, HostValue, JsException};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     /// Pre-bundled `@vue/runtime-core` probe used by both engines (stub host ops).
+    #[cfg(feature = "probe-fixtures")]
     pub const VUE_RUNTIME_PROBE_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-runtime-probe.iife.js");
 
     /// Counter/Todo custom-renderer artifact — hostOps return Rust node handles.
+    #[cfg(feature = "probe-fixtures")]
     pub const VUE_PHASE3_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-phase3.iife.js");
 
     /// Reproducible Vite-built Vue SFC + TypeScript compatibility artifact.
+    #[cfg(feature = "probe-fixtures")]
     pub const VUE_SFC_COMPAT_JS: &str =
         include_str!("../fixtures/vue-sfc-compat/dist/vue-sfc-compat.iife.js");
+    #[cfg(feature = "probe-fixtures")]
     pub const VUE_SFC_COMPAT_CSS: &str =
         include_str!("../fixtures/vue-sfc-compat/dist/nanaui-vue-sfc-compat-fixture.css");
 
+    #[cfg(feature = "probe-fixtures")]
     pub fn vue_runtime_probe_artifact() -> RuntimeArtifact {
         RuntimeArtifact::from_source("vue-runtime-probe.iife.js", VUE_RUNTIME_PROBE_JS)
     }
 
+    #[cfg(feature = "probe-fixtures")]
     pub fn vue_phase3_artifact() -> RuntimeArtifact {
         RuntimeArtifact::from_source("vue-phase3.iife.js", VUE_PHASE3_JS)
     }
 
+    #[cfg(feature = "probe-fixtures")]
     pub fn vue_sfc_compat_artifact() -> RuntimeArtifact {
         RuntimeArtifact::from_source("vue-sfc-compat.iife.js", VUE_SFC_COMPAT_JS)
     }

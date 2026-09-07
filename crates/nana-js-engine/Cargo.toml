@@ -10,6 +10,18 @@ license = "MIT OR Apache-2.0"
 name = "nana_js_engine"
 path = "src/lib.rs"
 
+[features]
+default = []
+# The pre-bundled Vue probe/SFC `.iife.js` fixtures (~576 KB). Test and demo
+# content only — never enable from a product build.
+probe-fixtures = []
+
 [dependencies]
 # Pure trait/surface crate. The product engine is nana-js-v8.
 serde_json.workspace = true
+
+[dev-dependencies]
+# This crate's own tests drive the probe artifacts, so turn the fixtures on for
+# test builds only. Depending on yourself in dev-dependencies is the supported
+# way to enable a feature for `cargo test` without leaking it into consumers.
+nana-js-engine = { path = ".", features = ["probe-fixtures"] }

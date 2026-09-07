@@ -4,7 +4,11 @@
 # Usage:
 #   source scripts/android-env.sh
 #   ./scripts/check-android-arm64.sh
-#   ./scripts/check-android-arm64.sh --build
+#   ./scripts/check-android-arm64.sh --build          # dev profile, for debugging
+#   ./scripts/check-android-arm64.sh --build --dist   # what ships
+#
+# `--dist` is what package-android-host-apk.sh consumes. The dev profile emits
+# ~390 MB of DWARF into the .so; only the dist profile is packageable.
 #
 # Optional: export CARGO_TARGET_DIR=$PWD/target-android  (recommended on low disk)
 
@@ -26,18 +30,28 @@ mkdir -p "${CARGO_TARGET_DIR}"
 
 TARGET=aarch64-linux-android
 MODE=check
-if [[ "${1:-}" == "--build" ]]; then
-  MODE=build
-fi
+PROFILE=dev
+PROFILE_DIR=debug
+for arg in "$@"; do
+  case "${arg}" in
+    --build) MODE=build ;;
+    --dist) MODE=build; PROFILE=dist; PROFILE_DIR=dist ;;
+    *)
+      echo "check-android-arm64: unknown argument ${arg}" >&2
+      echo "  usage: $0 [--build] [--dist]" >&2
+      exit 2
+      ;;
+  esac
+done
 
-echo "check-android-arm64: mode=${MODE} target=${TARGET}"
+echo "check-android-arm64: mode=${MODE} profile=${PROFILE} target=${TARGET}"
 echo "check-android-arm64: CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
 
 run_crate() {
   local crate="$1"
   shift
-  echo "---- cargo ${MODE} -p ${crate} --target ${TARGET} $* ----"
-  cargo "${MODE}" -p "${crate}" --target "${TARGET}" --locked "$@"
+  echo "---- cargo ${MODE} -p ${crate} --target ${TARGET} --profile ${PROFILE} $* ----"
+  cargo "${MODE}" -p "${crate}" --target "${TARGET}" --profile "${PROFILE}" --locked "$@"
 }
 
 run_crate nana-js-engine
@@ -57,7 +71,7 @@ else
   run_crate nana-android-host --no-default-features
 fi
 
-ARTIFACT="${CARGO_TARGET_DIR}/${TARGET}/debug/libnana_android_host.so"
+ARTIFACT="${CARGO_TARGET_DIR}/${TARGET}/${PROFILE_DIR}/libnana_android_host.so"
 if [[ -f "${ARTIFACT}" ]]; then
   echo "check-android-arm64: artifact ${ARTIFACT} ($(wc -c <"${ARTIFACT}") bytes)"
   file "${ARTIFACT}" || true

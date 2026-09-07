@@ -101,6 +101,8 @@ Rust `TextArea::read_only(true)` 保留焦点、光标/选区、查找和复制�
 
 只给 JavaScript 一组命令和属性白名单时，走 Vue 的 `NativeComponentRegistry`（`Nana.components.call`）。那张表**不会**让节点自动进入布局和命中。
 
+工厂的 `command` / `unmount` 在 unwind 档下会捕获 panic，转成 `NativeComponentCommandError` 抛回 JS。发布用的 `dist` 档是 `panic = "abort"`（换掉展开表，桌面二进制省约 7 MB），该隔离不存在：工厂 panic 直接终止进程。工厂不要把 panic 当成可恢复的错误路径。
+
 实时画面不要做成「自己往窗口上画的控件」，走 [实时画面](gpu.md)。不支持动态加载 dylib 插件。
 
 没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。

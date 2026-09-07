@@ -11,6 +11,7 @@ use base64::Engine as _;
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 use image::{DynamicImage, ImageFormat};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
+use nana_ui_core::fonts::{UI_FONT_FAMILY as FONT_FAMILY, UI_FONT_REGULAR as FONT_BYTES};
 use tiny_skia::{
     BlendMode, Color, FillRule, FilterQuality, GradientStop, IntRect, LineCap, LineJoin,
     LinearGradient, Mask, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point,
@@ -19,8 +20,6 @@ use tiny_skia::{
 
 const DEFAULT_WIDTH: u32 = 300;
 const DEFAULT_HEIGHT: u32 = 150;
-const FONT_BYTES: &[u8] = include_bytes!("../../nana-ui/assets/fonts/NotoSansSC-Regular.ttf");
-const FONT_FAMILY: &str = "Noto Sans SC";
 
 /// One shaped, rasterizable glyph positioned relative to the text baseline.
 struct ShapedCanvasGlyph {

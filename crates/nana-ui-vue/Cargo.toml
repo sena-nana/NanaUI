@@ -31,7 +31,8 @@ scene-view = [
 hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]
 
 [dependencies]
-nana-ui-core.workspace = true
+# `svg_raster` needs a default face and has no system-font fallback.
+nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true
 nana-js-engine.workspace = true

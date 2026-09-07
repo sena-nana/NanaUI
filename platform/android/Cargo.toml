@@ -22,7 +22,8 @@ engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
 experimental-android = []
 
 [dependencies]
-nana-js-engine.workspace = true
+# Demo content is the bundled Vue probe fixture.
+nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, features = ["experimental-android"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = [

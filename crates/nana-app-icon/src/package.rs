@@ -1,7 +1,13 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::encode;
+
+/// Rust only emits this string when `debug-assertions` are on, so its presence
+/// is a reliable "this is a dev-profile binary" signal. A dev build of the
+/// gallery is ~108 MB against ~20 MB for `--profile dist`, and packaging one by
+/// accident is how the first oversized .app bundle happened.
+const DEBUG_ASSERTIONS_MARKER: &[u8] = b"attempt to add with overflow";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacAppPackage {
@@ -10,6 +16,10 @@ pub struct MacAppPackage {
     pub identifier: String,
     pub out: PathBuf,
     pub icon: Option<PathBuf>,
+    /// Run `strip -x` on the executable inside the bundle. On by default: a
+    /// release build still carries its full symbol table, which was 55 MB of
+    /// the 108 MB bundle.
+    pub strip: bool,
 }
 
 pub fn package_macos_app(spec: &MacAppPackage) -> Result<PathBuf, String> {
@@ -52,6 +62,16 @@ pub fn package_macos_app(spec: &MacAppPackage) -> Result<PathBuf, String> {
         permissions.set_mode(0o755);
         fs::set_permissions(&dest_exe, permissions).map_err(io_err("chmod executable"))?;
     }
+    if looks_like_debug_build(&dest_exe) {
+        eprintln!(
+            "nana-package-app: warning: {} looks like a dev-profile build \
+             (debug assertions are on). Build with `--profile dist` before packaging.",
+            spec.exe.display()
+        );
+    }
+    if spec.strip {
+        strip_executable(&dest_exe)?;
+    }
 
     let icns_path = resources.join("AppIcon.icns");
     if let Some(icon) = &spec.icon {
@@ -66,6 +86,40 @@ pub fn package_macos_app(spec: &MacAppPackage) -> Result<PathBuf, String> {
     )
     .map_err(io_err("write Info.plist"))?;
     Ok(app_dir)
+}
+
+/// True when the binary still carries `debug-assertions` panic strings.
+///
+/// Returns false if the file cannot be read — this is advisory, and a failure
+/// to sniff must not block packaging.
+fn looks_like_debug_build(exe: &Path) -> bool {
+    let Ok(bytes) = fs::read(exe) else {
+        return false;
+    };
+    bytes
+        .windows(DEBUG_ASSERTIONS_MARKER.len())
+        .any(|window| window == DEBUG_ASSERTIONS_MARKER)
+}
+
+/// `strip -x` drops local symbols while keeping the dynamic table intact, which
+/// is what Cargo's `strip = "symbols"` does for the linked output. Running it
+/// again here is cheap and covers executables built with any profile.
+#[cfg(target_os = "macos")]
+fn strip_executable(exe: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("strip")
+        .arg("-x")
+        .arg(exe)
+        .status()
+        .map_err(|error| format!("failed to run strip on {}: {error}", exe.display()))?;
+    if !status.success() {
+        return Err(format!("strip failed on {}: {status}", exe.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn strip_executable(_exe: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn info_plist(name: &str, identifier: &str, executable: &str) -> String {
@@ -127,6 +181,8 @@ mod tests {
             identifier: "dev.nanaui.dummy".into(),
             out: out.clone(),
             icon: None,
+            // The fixture is not a Mach-O file; `strip` would reject it.
+            strip: false,
         })
         .expect("package");
         assert_eq!(packed, out);

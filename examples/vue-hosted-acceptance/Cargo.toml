@@ -10,7 +10,8 @@ description = "Windowed V8 acceptance app for pure Vue and Vue/Runtime compositi
 nana-app-icon = { workspace = true, features = ["embed"] }
 
 [dependencies]
-nana-js-engine.workspace = true
+# Demo content is the bundled Vue probe fixture.
+nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-js-v8 = { workspace = true, features = ["engine"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls"] }
 nana-ui-platform.workspace = true

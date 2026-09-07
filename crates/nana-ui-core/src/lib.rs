@@ -12,6 +12,7 @@ pub mod action;
 pub mod box_layout;
 pub mod dialog;
 pub mod expansion;
+pub mod fonts;
 pub mod geometry;
 pub mod graph;
 pub mod icon;

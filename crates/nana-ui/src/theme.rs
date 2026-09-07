@@ -233,32 +233,12 @@ impl ThemeModeExt for ThemeMode {
     }
 }
 
-/// LiliaUI's regular Noto Sans SC face.
+// The faces themselves live in `nana-ui-core` so that the theme, the SVG
+// rasterizer and Canvas2D all reference one copy — see `nana_ui_core::fonts`.
 #[cfg(feature = "bundled-fonts")]
-pub const UI_FONT_REGULAR: &[u8] =
-    include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf").as_slice();
-/// LiliaUI's medium Noto Sans SC face.
-#[cfg(feature = "bundled-fonts")]
-pub const UI_FONT_MEDIUM: &[u8] =
-    include_bytes!("../assets/fonts/NotoSansSC-Medium.ttf").as_slice();
-/// LiliaUI's semibold Noto Sans SC face.
-#[cfg(feature = "bundled-fonts")]
-pub const UI_FONT_SEMIBOLD: &[u8] =
-    include_bytes!("../assets/fonts/NotoSansSC-SemiBold.ttf").as_slice();
-/// LiliaUI's bold Noto Sans SC face.
-#[cfg(feature = "bundled-fonts")]
-pub const UI_FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSansSC-Bold.ttf").as_slice();
-
-/// Returns every bundled UI face for registration with the Scene text shaper.
-#[cfg(feature = "bundled-fonts")]
-pub const fn ui_font_sources() -> [&'static [u8]; 4] {
-    [
-        UI_FONT_REGULAR,
-        UI_FONT_MEDIUM,
-        UI_FONT_SEMIBOLD,
-        UI_FONT_BOLD,
-    ]
-}
+pub use nana_ui_core::fonts::{
+    UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources,
+};
 
 #[cfg(test)]
 mod tests {

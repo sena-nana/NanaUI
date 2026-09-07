@@ -6,3 +6,16 @@
 [target.aarch64-linux-android]
 linker = "scripts/aarch64-linux-android-clang.sh"
 ar = "llvm-ar"
+# Cargo defaults ELF targets to split-debuginfo="off", which embeds every byte
+# of DWARF in the .so — 372 MiB of a 473 MiB dev-profile libnana_android_host.so.
+# "unpacked" moves .debug_info / .debug_str out to .dwo files beside the
+# objects; the skeleton (.debug_line, .debug_ranges) stays behind, so this cuts
+# DWARF by ~43% rather than removing it (measured on a cdylib probe: 9.06 -> 5.16
+# MiB of .debug_*). Debuggers still find the .dwo files in the target dir.
+#
+# This only helps dev builds. Shipping artifacts go through --profile dist,
+# which emits no DWARF at all.
+#
+# Scoped here rather than in a [profile.dev] because Windows MSVC only supports
+# "packed"; a workspace-wide profile key would break that host.
+rustflags = ["-Csplit-debuginfo=unpacked"]

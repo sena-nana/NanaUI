@@ -10,6 +10,15 @@ license = "MIT OR Apache-2.0"
 name = "nana_ui_core"
 path = "src/lib.rs"
 
+[features]
+default = []
+# The regular Noto Sans SC face only. Every consumer of the SVG rasterizer or
+# Canvas2D text needs it; those paths have no other fallback.
+bundled-font-regular = []
+# All four bundled UI weights (~10 MB). Desktop theme hosts want this; the
+# Android host deliberately does not.
+bundled-fonts = ["bundled-font-regular"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

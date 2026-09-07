@@ -1956,6 +1956,7 @@ dependencies = [
 name = "nana-js-engine"
 version = "0.1.0"
 dependencies = [
+ "nana-js-engine",
  "serde_json",
 ]
 
@@ -2104,6 +2105,7 @@ dependencies = [
  "image",
  "nana-js-engine",
  "nana-svg-raster",
+ "nana-ui-core",
  "nana-ui-platform",
  "tiny-skia",
 ]

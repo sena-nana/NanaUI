@@ -7,7 +7,7 @@
 #
 # Usage (from repo root):
 #   source scripts/android-env.sh
-#   ./scripts/check-android-arm64.sh --build
+#   ./scripts/check-android-arm64.sh --build --dist
 #   ./scripts/package-android-host-apk.sh
 #
 # Output (default):
@@ -31,7 +31,10 @@ if [[ -z "${ANDROID_HOME:-}" || -z "${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER:
 fi
 
 TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target-android}"
-SO="${PACKAGE_SO:-${TARGET_DIR}/aarch64-linux-android/debug/libnana_android_host.so}"
+SO="${PACKAGE_SO:-${TARGET_DIR}/aarch64-linux-android/dist/libnana_android_host.so}"
+# The .so is stripped below, so this bounds the *stripped* artifact. A dev-profile
+# .so is ~495 MB and ~57 MB even after stripping; a dist one is well under this.
+MAX_SO_BYTES="${PACKAGE_MAX_SO_BYTES:-62914560}"  # 60 MiB
 OUT_DIR="${PACKAGE_OUT_DIR:-${TARGET_DIR}/apk}"
 APK_NAME="${PACKAGE_APK_NAME:-nana-android-host-debug.apk}"
 PKG="app.nanaui.host"
@@ -42,7 +45,7 @@ TARGET_SDK=34
 
 if [[ ! -f "${SO}" ]]; then
   echo "package-android-host-apk: missing ${SO}" >&2
-  echo "  run: ./scripts/check-android-arm64.sh --build" >&2
+  echo "  run: ./scripts/check-android-arm64.sh --build --dist" >&2
   exit 1
 fi
 
@@ -69,7 +72,33 @@ ASSET_ROOT="${WORKDIR}/assets"
 rm -rf "${WORKDIR}"
 mkdir -p "${ASSET_ROOT}/lib/arm64-v8a" "${WORKDIR}/res/values" "${OUT_DIR}"
 
-cp "${SO}" "${ASSET_ROOT}/lib/arm64-v8a/lib${LIB_NAME}.so"
+STAGED_SO="${ASSET_ROOT}/lib/arm64-v8a/lib${LIB_NAME}.so"
+cp "${SO}" "${STAGED_SO}"
+
+# Strip unconditionally, even though [profile.dist] already sets strip="symbols".
+# This is the only gate on the path from a .so to an installable APK, and it has
+# to hold when someone hands us a hand-built or dev-profile artifact via
+# PACKAGE_SO. A dev .so carries ~390 MB of DWARF plus ~48 MB of symbol tables.
+LLVM_STRIP="${LLVM_STRIP:-${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64/bin/llvm-strip}"
+if [[ ! -x "${LLVM_STRIP}" ]]; then
+  LLVM_STRIP="$(command -v llvm-strip || true)"
+fi
+if [[ -z "${LLVM_STRIP}" || ! -x "${LLVM_STRIP}" ]]; then
+  echo "package-android-host-apk: llvm-strip not found" >&2
+  echo "  set LLVM_STRIP=/path/to/llvm-strip, or source scripts/android-env.sh" >&2
+  exit 1
+fi
+BEFORE_BYTES="$(wc -c <"${STAGED_SO}")"
+"${LLVM_STRIP}" --strip-all "${STAGED_SO}"
+AFTER_BYTES="$(wc -c <"${STAGED_SO}")"
+echo "package-android-host-apk: stripped .so ${BEFORE_BYTES} -> ${AFTER_BYTES} bytes"
+
+if (( AFTER_BYTES > MAX_SO_BYTES )); then
+  echo "package-android-host-apk: stripped .so is ${AFTER_BYTES} bytes, over the ${MAX_SO_BYTES} byte budget" >&2
+  echo "  this almost always means a dev-profile build: use --dist" >&2
+  echo "  raise PACKAGE_MAX_SO_BYTES only with a deliberate reason" >&2
+  exit 1
+fi
 
 MANIFEST="${WORKDIR}/AndroidManifest.xml"
 cat >"${MANIFEST}" <<EOF
@@ -83,7 +112,7 @@ cat >"${MANIFEST}" <<EOF
     <application
         android:label="@string/app_name"
         android:hasCode="false"
-        android:extractNativeLibs="true">
+        android:extractNativeLibs="false">
         <activity
             android:name="android.app.NativeActivity"
             android:label="@string/app_name"
@@ -111,15 +140,22 @@ UNALIGNED="${WORKDIR}/unaligned.apk"
 ALIGNED="${WORKDIR}/aligned.apk"
 FINAL="${OUT_DIR}/${APK_NAME}"
 
+# -0 .so stores the library uncompressed. This is required, not an
+# optimisation: with extractNativeLibs="false" the loader mmaps the .so
+# straight out of the APK, and a deflated entry cannot be mapped — the install
+# fails with "Failed to extract native libraries".
 "${BUILD_TOOLS}/aapt" package \
   -f \
+  -0 .so \
   -M "${MANIFEST}" \
   -S "${WORKDIR}/res" \
   -I "${ANDROID_JAR}" \
   -F "${UNALIGNED}" \
   "${ASSET_ROOT}"
 
-"${BUILD_TOOLS}/zipalign" -f 4 "${UNALIGNED}" "${ALIGNED}"
+# -p page-aligns the .so so it maps straight out of the APK; with
+# extractNativeLibs="false" that removes the second copy under /data.
+"${BUILD_TOOLS}/zipalign" -p -f 4 "${UNALIGNED}" "${ALIGNED}"
 
 KEYSTORE="${OUT_DIR}/debug.keystore"
 if [[ ! -f "${KEYSTORE}" ]]; then
@@ -148,6 +184,6 @@ fi
 echo "package-android-host-apk: OK"
 echo "  apk: ${FINAL}"
 echo "  so:  ${SO}"
-echo "  size: $(wc -c <"${FINAL}") bytes"
+echo "  size: $(wc -c <"${FINAL}") bytes (.so ${AFTER_BYTES} bytes stripped)"
 echo "  note: not installed — no device claim. When a device exists:"
 echo "    adb install -r ${FINAL}"

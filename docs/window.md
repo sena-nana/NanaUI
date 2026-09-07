@@ -60,6 +60,25 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 - Windows exe 可在 `build.rs` 里 `nana_app_icon::embed_windows()`
 - macOS Dock：`nana_window::set_application_icon_png`；`.app` 用 `nana-package-app`
 
+## 打包
+
+发布产物用 `dist` 档，不是 `release`，更不是 `debug`：
+
+```bash
+cargo build -p component-gallery --bin component-gallery --profile dist
+cargo run -p nana-app-icon --bin nana-package-app --   --exe target/dist/component-gallery --name NanaUI   --identifier dev.nanaui.gallery --out target/dist
+```
+
+`dist` = `release` + `lto = "fat"` + `codegen-units = 1` + `strip = "symbols"` +
+`panic = "abort"`。`release` 保持原样，CI 和 benchmark 继续快速迭代。
+
+`nana-package-app` 默认再跑一次 `strip -x`（`--no-strip` 关掉），并在可执行文件里
+探到 debug-assertions 字符串时警告——曾经有一个 108 MB 的 `.app` 就是误打了 debug
+构建，其中 55 MB 是符号表。
+
+用 `scripts/report-artifact-size.py <artifact>` 逐段核对体积，它同时数出二进制里内嵌
+了几份字体，并在发现 debug 构建时报警。
+
 ## 材质
 
 通过 `RuntimeProgram::window_material_mode` 申请**一种**系统效果。Appearance 设置在宿主提供时可选 Mica / Acrylic / Vibrancy；失败回实色，并给出原因，不会改试另一种。

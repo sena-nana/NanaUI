@@ -4,8 +4,17 @@
 //! Layout, hit-testing, and Scene identity still go through
 //! `nana_ui::runtime::ComponentRegistry` / `register_component`.
 //! Register descriptors here only for JS props/events/commands (`Nana.components.call`).
+//!
+//! # Panic isolation depends on the profile
+//!
+//! `command` and `unmount` isolate a panicking factory and report it to JS as a
+//! `NativeComponentCommandError`. That isolation exists only where unwinding
+//! does. The shipping `dist` profile sets `panic = "abort"` to drop the unwind
+//! tables, so under it a factory panic terminates the process instead. Factories
+//! must not treat a panic as a recoverable error path.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(panic = "unwind")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -363,22 +372,37 @@ impl NativeComponentRegistry {
                 format!("component `{component}` does not declare command `{name}`"),
             ));
         }
-        catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(panic = "unwind")]
+        {
+            catch_unwind(AssertUnwindSafe(|| {
+                descriptor
+                    .factory
+                    .command(NativeComponentCommand { id, name, args })
+            }))
+            .map_err(|_| {
+                component_error(
+                    "NativeComponentCommandError",
+                    format!("component `{component}` panicked while handling a command"),
+                )
+            })?
+        }
+        // Under `panic = "abort"` there is nothing to catch; calling directly
+        // keeps the abort at the factory's own frame instead of hiding it
+        // behind a guard that cannot fire.
+        #[cfg(not(panic = "unwind"))]
+        {
             descriptor
                 .factory
                 .command(NativeComponentCommand { id, name, args })
-        }))
-        .map_err(|_| {
-            component_error(
-                "NativeComponentCommandError",
-                format!("component `{component}` panicked while handling a command"),
-            )
-        })?
+        }
     }
 
     pub(crate) fn unmount(&self, component: &str, id: WidgetId) {
         if let Some(descriptor) = self.resolve(component) {
+            #[cfg(panic = "unwind")]
             let _ = catch_unwind(AssertUnwindSafe(|| descriptor.factory.unmount(id)));
+            #[cfg(not(panic = "unwind"))]
+            descriptor.factory.unmount(id);
         }
     }
 
@@ -482,5 +506,45 @@ mod tests {
         );
         registry.unmount("probe-view", 7);
         assert_eq!(*calls.lock().unwrap(), ["command:7:refresh", "unmount:7"]);
+    }
+
+    struct PanickingFactory;
+
+    impl NativeComponentFactory for PanickingFactory {
+        fn command(&self, _: NativeComponentCommand) -> Result<HostValue, JsException> {
+            panic!("factory blew up");
+        }
+
+        fn unmount(&self, _: WidgetId) {
+            panic!("factory blew up");
+        }
+    }
+
+    /// Only meaningful under unwinding. The `dist` profile is `panic = "abort"`,
+    /// where a factory panic terminates the process — see the module docs.
+    #[cfg(panic = "unwind")]
+    #[test]
+    fn command_panic_is_reported_to_js_under_unwind() {
+        let registry = NativeComponentRegistry::new();
+        registry
+            .register(
+                NativeComponentDescriptor::new("boom-view", PanickingFactory).commands(["refresh"]),
+            )
+            .unwrap();
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let error = registry
+            .command("boom-view", 1, "refresh", HostValue::Null)
+            .expect_err("a panicking factory must not surface as success");
+        registry.unmount("boom-view", 1);
+        std::panic::set_hook(previous);
+
+        assert_eq!(error.name, "NativeComponentCommandError");
+        assert!(
+            error.message.contains("panicked"),
+            "unexpected message: {}",
+            error.message
+        );
     }
 }
