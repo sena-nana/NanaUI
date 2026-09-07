@@ -2093,16 +2093,23 @@ mod tests {
             ..ComputedStyle::default()
         };
         let text = "alpha beta gamma delta epsilon zeta";
+        let max_width = 80.0;
         for (max_height, max_lines) in [(Some(14.4), None), (None, Some(1))] {
             let constraints = TextShapeConstraints {
-                max_width: Some(80.0),
+                max_width: Some(max_width),
                 max_height,
                 max_lines,
                 wrap: true,
                 shaping: TextShaping::Advanced,
                 ..TextShapeConstraints::default()
             };
-            let full = shaper.shape_buffer(text, &style, constraints);
+            // Wrapping must genuinely need more rows than the budget allows,
+            // otherwise the ellipsis assertions below would hold vacuously.
+            let wrapped = shaper.shape_buffer(text, &style, constraints);
+            assert!(
+                measured_text_overflows(&wrapped, true, Some(max_width), max_height, max_lines),
+                "fixture must overflow for height={max_height:?}, lines={max_lines:?}"
+            );
             let clipped = shaper.shape_buffer(
                 text,
                 &style,
@@ -2111,19 +2118,26 @@ mod tests {
                     ..constraints
                 },
             );
-            let visible_text_end = |buffer: &Buffer| {
-                buffer
-                    .layout_runs()
-                    .flat_map(|run| run.glyphs.iter())
-                    .map(|glyph| glyph.end)
-                    .max()
-                    .unwrap_or(0)
-            };
+            assert_eq!(clipped.layout_runs().count(), 1);
+            let row = clipped.layout_runs().next().unwrap();
+            // cosmic-text collapses the ellipsis glyph onto the elision
+            // boundary, so it is the one cluster with `start == end`. Comparing
+            // against the non-ellipsized row instead would be font-dependent:
+            // word wrap and mid-word elision break at unrelated offsets.
+            let ellipsis = row.glyphs.last().expect("visible row must have glyphs");
+            assert_eq!(
+                ellipsis.start, ellipsis.end,
+                "visible row must end with the ellipsis for height={max_height:?}, lines={max_lines:?}"
+            );
             assert!(
-                visible_text_end(&clipped) < visible_text_end(&full),
+                ellipsis.end < text.len(),
                 "ellipsis must replace overflowing text for height={max_height:?}, lines={max_lines:?}"
             );
-            assert_eq!(clipped.layout_runs().count(), 1);
+            assert!(
+                row.line_w <= max_width + ELLIPSIS_OVERFLOW_EPSILON,
+                "ellipsized row {} exceeds {max_width}",
+                row.line_w
+            );
         }
     }
 
@@ -2232,3 +2246,4 @@ mod tests {
         }
     }
 }
+
