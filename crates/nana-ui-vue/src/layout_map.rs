@@ -1,18 +1,18 @@
 //! L2 布局标签 → 初始 `WidgetKind` 与无作者 CSS 时的方向默认。
 //!
-//! 布局身份是 L3 [`LayoutStyle`]（经 L1 `css_map` 写入）。本模块**不**根据
-//! `display` / `flex-direction` 改 `WidgetKind`。
+//! 布局身份是 L3 [`LayoutStyle`](crate::css_map::LayoutStyle)（经 L1 `css_map`
+//! 写入）。本模块**不**根据 `display` / `flex-direction` 改 `WidgetKind`。
 
 use crate::bridge::WidgetKind;
-use crate::css_map::{FlexDirection, LayoutStyle};
+use crate::css_map::FlexDirection;
 
-/// 无作者 CSS 时的方向默认。Row → `flex-direction: row`；Card 内边距由 L3 `Card` 提供。
-pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
-    let mut layout = LayoutStyle::default();
+/// 无作者 CSS 时的方向默认。
+///
+/// kind **只**播种方向：gap 由作者 CSS / `gap-*` 提示提供，内边距由 L3 控件
+/// （如 `Card`）提供 —— 返回类型让这两者无法从这里被发明出来。
+pub fn kind_default_direction(kind: WidgetKind) -> Option<FlexDirection> {
     match kind {
-        WidgetKind::Row => {
-            layout.direction = Some(FlexDirection::Row);
-        }
+        WidgetKind::Row | WidgetKind::TableRow => Some(FlexDirection::Row),
         WidgetKind::Column
         | WidgetKind::Box
         | WidgetKind::SidebarFrame
@@ -25,15 +25,9 @@ pub fn default_layout_for_kind(kind: WidgetKind) -> LayoutStyle {
         | WidgetKind::ScrollView
         | WidgetKind::Table
         | WidgetKind::DesktopShell
-        | WidgetKind::PaneChrome => {
-            layout.direction = Some(FlexDirection::Column);
-        }
-        WidgetKind::TableRow => {
-            layout.direction = Some(FlexDirection::Row);
-        }
-        _ => {}
+        | WidgetKind::PaneChrome => Some(FlexDirection::Column),
+        _ => None,
     }
-    layout
 }
 
 /// 布局 tag → `WidgetKind`（不含控件）。`nana-stack` 是 L3 `Stack` 的通用盒。
@@ -55,21 +49,22 @@ pub fn layout_kind_from_tag(tag: &str) -> Option<WidgetKind> {
 mod tests {
     use super::*;
 
+    // Kinds seed direction and nothing else: the return type is what now keeps
+    // Row from inventing a gap (workspace seams) and Card from inventing padding.
     #[test]
-    fn row_kind_gets_row_defaults() {
-        let layout = default_layout_for_kind(WidgetKind::Row);
-        assert_eq!(layout.direction, Some(FlexDirection::Row));
-        assert!(
-            layout.gap.is_none(),
-            "Row kind must not invent gap (avoids workspace seams)"
+    fn row_kind_gets_row_default() {
+        assert_eq!(
+            kind_default_direction(WidgetKind::Row),
+            Some(FlexDirection::Row)
         );
     }
 
     #[test]
-    fn card_kind_does_not_invent_padding() {
-        let layout = default_layout_for_kind(WidgetKind::Card);
-        assert!(layout.padding.is_none());
-        assert_eq!(layout.direction, Some(FlexDirection::Column));
+    fn card_kind_gets_column_default() {
+        assert_eq!(
+            kind_default_direction(WidgetKind::Card),
+            Some(FlexDirection::Column)
+        );
     }
 
     #[test]

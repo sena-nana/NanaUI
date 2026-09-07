@@ -392,7 +392,7 @@ impl MessageBridge {
         // across a global stylesheet inject.
         //
         // Critical: do **not** seed `direction` from WidgetKind when author CSS
-        // is present. `default_layout_for_kind(Column)` would set Column, then
+        // is present. `kind_default_direction(Column)` would set Column, then
         // `display:flex` (`if direction.is_none() → Row`) would no-op — toolbars
         // with `justify-content:space-between` stay vertical and eat the Fill
         // height, clipping siblings (Repo evidence main pane painted empty).
@@ -407,26 +407,15 @@ impl MessageBridge {
                 .widgets
                 .get(&id)
                 .map(|w| w.props.layout.clone())
-                .unwrap_or_else(|| default_layout_for_kind(kind));
-            let defaults = default_layout_for_kind(kind);
+                .unwrap_or_default();
             if layout.direction.is_none() {
-                layout.direction = defaults.direction;
-            }
-            if layout.gap.is_none() {
-                layout.gap = defaults.gap;
-            }
-            if layout.padding.is_none() {
-                layout.padding = defaults.padding;
+                layout.direction = kind_default_direction(kind);
             }
             layout
         } else {
-            let mut layout = LayoutStyle::default();
-            let defaults = default_layout_for_kind(kind);
-            // Card/SettingsCard keep kind padding seed only — never direction.
-            // Gap must come from author CSS / `gap-*` hints (not kind default).
-            layout.gap = defaults.gap;
-            layout.padding = defaults.padding;
-            layout
+            // Author CSS present: seed nothing from the kind. Gap and padding come
+            // from the stylesheet / `gap-*` hints, direction from `display:flex`.
+            LayoutStyle::default()
         };
 
         // CSS `direction` inherits. Seed the used parent value before cascade so

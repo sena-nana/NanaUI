@@ -57,7 +57,7 @@ use crate::css_interactive_apply::{
 use crate::css_map::{
     FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
 };
-use crate::layout_map::default_layout_for_kind;
+use crate::layout_map::kind_default_direction;
 use crate::tree::NodeHandle;
 pub use crate::widget_map::resolve_kind_from_hints;
 
@@ -1139,15 +1139,8 @@ impl MessageBridge {
             props.element_tag = kind.element_tag().to_string();
         }
         // Seed layout defaults for layout kinds; stylesheet / class / inline win later.
-        let defaults = default_layout_for_kind(kind);
         if props.layout.direction.is_none() {
-            props.layout.direction = defaults.direction;
-        }
-        if props.layout.gap.is_none() {
-            props.layout.gap = defaults.gap;
-        }
-        if props.layout.padding.is_none() {
-            props.layout.padding = defaults.padding;
+            props.layout.direction = kind_default_direction(kind);
         }
         if kind.is_overlay() {
             apply_overlay_presence_open(&mut props);
@@ -1196,7 +1189,7 @@ impl MessageBridge {
             self.cascade.has_index_ready = false;
         }
         // A stylesheet-free registration with no inline declarations already
-        // has its complete layout seed from `default_layout_for_kind` above.
+        // has its complete layout seed from `kind_default_direction` above.
         // Avoid entering the selector/cascade machinery for this common bulk
         // mount path; explicit styles and authored sheets still take the full
         // route below.

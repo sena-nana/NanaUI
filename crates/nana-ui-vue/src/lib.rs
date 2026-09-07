@@ -219,7 +219,7 @@ pub use input::{
     CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
 };
-pub use layout_map::{default_layout_for_kind, layout_kind_from_tag};
+pub use layout_map::{kind_default_direction, layout_kind_from_tag};
 /// Adapter internals: pre-paint / parity boxes. Product geometry is Runtime/UiScene.
 pub use measure::{
     LayoutNode, MeasuredBox, measure_grid_auto_contribution, measure_layout, node_from_css,
