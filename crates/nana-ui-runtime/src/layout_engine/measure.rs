@@ -117,11 +117,18 @@ pub(super) fn intrinsic_size_scoped(
     let direction = used_flow_direction(style, ifc);
     let mut child_sizes = Vec::with_capacity(flow_children.len());
     for child in &flow_children {
-        let child_available = nodes
-            .style(*child)
-            .filter(|_| grid_measure)
-            .map(|child_style| grid_item_measure_available(child_style.as_ref(), content_available))
-            .unwrap_or(content_available);
+        // Resolving the child style is a map lookup plus an `Arc` clone, so keep
+        // it behind the grid check rather than filtering it away afterwards.
+        let child_available = if grid_measure {
+            nodes
+                .style(*child)
+                .map(|child_style| {
+                    grid_item_measure_available(child_style.as_ref(), content_available)
+                })
+                .unwrap_or(content_available)
+        } else {
+            content_available
+        };
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,

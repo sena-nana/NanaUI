@@ -315,7 +315,10 @@ impl UiWorld {
         // Scrolling and transforms leave LayoutBox unchanged and may carry no
         // ACCESSIBILITY dirty bit. Their hit-test subtrees nevertheless moved
         // in viewport space, so the native accessibility cache must see them.
-        let mut affected = work.accessibility.iter().copied().collect::<BTreeSet<_>>();
+        // These sets exist to produce a sorted, de-duplicated id sequence. A
+        // `BTreeSet` pays a tree insert and node allocation per id to do that;
+        // sorting a flat vec once yields the identical sequence for far less.
+        let mut affected = work.accessibility.clone();
         let mut pending = work
             .input_hit_test
             .iter()
@@ -323,35 +326,35 @@ impl UiWorld {
             .chain(&work.layout)
             .copied()
             .collect::<Vec<_>>();
-        let mut visited = BTreeSet::new();
+        // `visited` is membership-only, so it does not need ordering at all.
+        let mut visited = hashbrown::HashSet::new();
         while let Some(id) = pending.pop() {
             if !visited.insert(id) {
                 continue;
             }
-            affected.insert(id);
+            affected.push(id);
             if let Some(node) = self.nodes.get(id) {
                 pending.extend(node.hierarchy.children.iter().copied());
             }
         }
-        let affected = affected.into_iter().collect::<Vec<_>>();
-        let mut removed = work
-            .accessibility_removals
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
+        affected.sort_unstable();
+        affected.dedup();
+        let mut removed = work.accessibility_removals.clone();
         let mut memo = ProjectionMemo::default();
         let mut updated = Vec::new();
         for id in affected {
             if let Some(node) = self.project_accessibility_node(id, &mut memo) {
                 updated.push(node);
             } else if self.nodes.contains(id) {
-                removed.insert(id);
+                removed.push(id);
             }
         }
+        removed.sort_unstable();
+        removed.dedup();
         AccessibilityDelta {
             generation: work.generation,
             updated,
-            removed: removed.into_iter().collect(),
+            removed,
         }
     }
 }

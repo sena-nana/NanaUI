@@ -1,7 +1,7 @@
 //! Dense node table plus sparse side maps. Replaces `bevy_ecs::World` inside
 //! [`crate::UiWorld`]. Public identity stays [`crate::StableNodeId`].
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use crate::ComputedStyle;
@@ -65,6 +65,12 @@ impl ResolvedStyle {
     fn interned_default() -> Self {
         Self(Arc::clone(&INTERNED_DEFAULT_STYLE), 0)
     }
+}
+
+/// The process-wide default a root node inherits from. Sharing this avoids
+/// building a fresh `ComputedStyle` per root during style resolution.
+pub(crate) fn interned_default_style() -> Arc<ComputedStyle> {
+    Arc::clone(&INTERNED_DEFAULT_STYLE)
 }
 
 pub(crate) struct NodeRecord {

@@ -564,7 +564,16 @@ fn subtree_unchanged(
 }
 
 fn sort_by_order(ids: &mut [StableNodeId], nodes: &LayoutInputMap<'_>) {
-    ids.sort_by_key(|id| nodes.style(*id).map(|style| style.order).unwrap_or(0));
+    let order_of = |id: StableNodeId| nodes.style(id).map(|style| style.order).unwrap_or(0);
+    // Every key costs a map lookup plus an `Arc` clone, so resolve each one at
+    // most once. Siblings almost always keep the default order, and a stable
+    // sort on all-equal keys is a no-op, so scan for that case and skip.
+    if ids.iter().all(|id| order_of(*id) == 0) {
+        return;
+    }
+    // `sort_by_key` re-evaluates the key on every comparison; `sort_by_cached_key`
+    // is likewise stable but evaluates it once per element.
+    ids.sort_by_cached_key(|id| order_of(*id));
 }
 
 fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputMap<'_>) -> bool {

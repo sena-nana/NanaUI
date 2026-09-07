@@ -19,10 +19,14 @@ impl UiWorld {
             self.resolve_style::<SHARE>(parent, resolved)?;
         }
         let layout = self.motion_layout(id, &self.record(id).style.layout);
-        let inherited = parent
-            .map(|parent| self.record(parent).resolved.0.as_ref().clone())
-            .unwrap_or_default();
-        let inherited_color = parent.and_then(|parent| self.record(parent).resolved.0.color);
+        // Only a handful of fields are read out of the parent, so share its Arc
+        // instead of cloning the whole `ComputedStyle` (and its three heap
+        // fields) once per node. A borrow would pin `&mut self` to the end.
+        let inherited_style = parent
+            .map(|parent| Arc::clone(&self.record(parent).resolved.0))
+            .unwrap_or_else(crate::store::interned_default_style);
+        let inherited = inherited_style.as_ref();
+        let inherited_color = parent.and(inherited.color);
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
@@ -55,17 +59,17 @@ impl UiWorld {
                 .font_family
                 .as_deref()
                 .map(Arc::<str>::from)
-                .or(inherited.font_family),
+                .or_else(|| inherited.font_family.clone()),
             line_height: layout.line_height.or(inherited.line_height),
             letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
             font_features: layout
                 .font_features
                 .clone()
-                .unwrap_or(inherited.font_features),
+                .unwrap_or_else(|| inherited.font_features.clone()),
             font_variations: layout
                 .font_variation_settings
                 .clone()
-                .unwrap_or(inherited.font_variations),
+                .unwrap_or_else(|| inherited.font_variations.clone()),
             font_kerning: layout.font_kerning.unwrap_or(inherited.font_kerning),
             word_break: layout.word_break.unwrap_or(inherited.word_break),
             line_break: layout.line_break.unwrap_or(inherited.line_break),

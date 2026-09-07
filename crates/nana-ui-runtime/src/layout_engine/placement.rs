@@ -188,11 +188,16 @@ pub(super) fn place_node_scoped(
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let mut child_sizes = Vec::with_capacity(flow.len());
     for child in &flow {
-        let child_available = nodes
-            .style(*child)
-            .filter(|_| grid_2d)
-            .map(|child_style| grid_item_measure_available(child_style.as_ref(), content))
-            .unwrap_or(content);
+        // Resolving the child style is a map lookup plus an `Arc` clone, so keep
+        // it behind the grid check rather than filtering it away afterwards.
+        let child_available = if grid_2d {
+            nodes
+                .style(*child)
+                .map(|child_style| grid_item_measure_available(child_style.as_ref(), content))
+                .unwrap_or(content)
+        } else {
+            content
+        };
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,
