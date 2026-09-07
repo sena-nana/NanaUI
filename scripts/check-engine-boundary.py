@@ -53,6 +53,10 @@ def metadata(manifest: Path) -> dict[str, object]:
         check=True,
         capture_output=True,
         text=True,
+        # `cargo metadata` emits UTF-8. Without this, Python decodes with the
+        # locale codec, which is cp1252 on the Windows runner and blows up on
+        # the non-ASCII text in this repo's manifests.
+        encoding="utf-8",
     )
     return json.loads(result.stdout)
 
