@@ -149,11 +149,11 @@ def main() -> int:
         crate_root = Path(package["manifest_path"]).parent
         features = set(package["features"])
         for source in (crate_root / "src").rglob("*.rs"):
-            for feature in re.findall(r'feature\s*=\s*"([^"\n]+)"', source.read_text()):
+            for feature in re.findall(r'feature\s*=\s*"([^"\n]+)"', source.read_text(encoding="utf-8")):
                 if feature not in features:
                     failures.append(f"{source.relative_to(ROOT)} uses undeclared feature {feature}")
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
-        failures.extend(check_cargo_commands(workflow.read_text(), packages, workflow.name))
+        failures.extend(check_cargo_commands(workflow.read_text(encoding="utf-8"), packages, workflow.name))
 
     if failures:
         print("Engine dependency boundary failed:", file=sys.stderr)
