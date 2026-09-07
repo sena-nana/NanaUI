@@ -683,7 +683,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn pointer_move(x: f32, y: f32) -> nana_ui_platform::InputEvent {
         let mut event = pointer_down(x, y);
         if let nana_ui_platform::InputEvent::Pointer { phase, buttons, .. } = &mut event {
