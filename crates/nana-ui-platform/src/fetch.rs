@@ -983,10 +983,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let origin = format!("http://{address}");
+        // Hold the reply until the client has already given up. A fixed sleep
+        // raced the timeout: the read deadline is per-read, so a scheduling
+        // stall long enough to buffer the whole response made the read succeed
+        // instantly and the timeout never fired.
+        let (release, wait_for_release) = mpsc::channel::<()>();
         let join = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = read_request(&mut stream);
-            thread::sleep(Duration::from_millis(150));
+            let _ = wait_for_release.recv();
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
         });
@@ -995,6 +1000,7 @@ mod tests {
         let error = NativeFetchHost::new(timeout_policy)
             .fetch(FetchRequest::get(format!("{origin}/slow")))
             .unwrap_err();
+        let _ = release.send(());
         join.join().unwrap();
         assert_eq!(error.kind, FetchErrorKind::Timeout);
 
