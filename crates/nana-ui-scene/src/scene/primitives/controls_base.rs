@@ -10,7 +10,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let parent_clips = context.parent_clips;
     let style = context.node.source_style.layout.as_ref();
     let id = context.node.id;
-    match context.node.component_geometry.as_ref() {
+    match context.node.component_geometry.as_deref() {
         Some(ComponentGeometry::Button { label, .. }) => {
             emit(component_text_primitive(
                 id,

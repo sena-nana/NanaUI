@@ -16,7 +16,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let opacity = context.opacity;
     let node_order = context.node_order;
     let id = context.node.id;
-    match context.node.component_geometry.as_ref() {
+    match context.node.component_geometry.as_deref() {
         #[cfg(feature = "graph-canvas")]
         Some(ComponentGeometry::GraphCanvas {
             nodes: graph_nodes,

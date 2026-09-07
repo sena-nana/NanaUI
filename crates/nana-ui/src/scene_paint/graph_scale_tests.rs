@@ -25,7 +25,7 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
             ports,
             edges,
             ..
-        }) = node.component_geometry.as_mut()
+        }) = node.component_geometry.as_deref_mut()
         else {
             unreachable!()
         };

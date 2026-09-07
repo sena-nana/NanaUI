@@ -2929,7 +2929,9 @@ pub struct ExtractedNode {
     pub text_input: Option<TextInputState>,
     pub text_spans: Vec<ExtractedTextSpan>,
     pub standard_visual: Option<StandardVisual>,
-    pub component_geometry: Option<ComponentGeometry>,
+    /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise
+    /// dominate `ExtractedNode` and be memcpy'd for every extracted node.
+    pub component_geometry: Option<Box<ComponentGeometry>>,
     pub standard_visual_foreground: Option<[f32; 4]>,
     pub custom_render: Option<CustomRenderNode>,
 }

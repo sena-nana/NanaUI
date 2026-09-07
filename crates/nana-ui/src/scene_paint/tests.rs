@@ -543,7 +543,7 @@ fn graph_canvas_stroke_node(
         viewport_offset_y: 0.0,
         viewport_zoom: 1.0,
     });
-    node.component_geometry = Some(ComponentGeometry::GraphCanvas {
+    node.component_geometry = Some(Box::new(ComponentGeometry::GraphCanvas {
         nodes: Vec::new(),
         separators: Vec::new(),
         ports: Vec::new(),
@@ -554,7 +554,7 @@ fn graph_canvas_stroke_node(
         background,
         grid_color: [0.0, 0.0, 0.0, 0.0],
         separator_color: [0.0, 0.0, 0.0, 0.0],
-    });
+    }));
     node
 }
 
@@ -1418,14 +1418,14 @@ fn time_series_stroke_node(value: u64, points: Vec<[f32; 2]>, color: [f32; 4]) -
     node.standard_visual = Some(StandardVisual::TimeSeriesChart {
         values: Arc::from([0.0, 1.0]),
     });
-    node.component_geometry = Some(ComponentGeometry::TimeSeriesChart {
+    node.component_geometry = Some(Box::new(ComponentGeometry::TimeSeriesChart {
         grid: Vec::new(),
         area: Vec::new(),
         line: points,
         grid_color: [0.0, 0.0, 0.0, 0.0],
         area_color: [0.0, 0.0, 0.0, 0.0],
         line_color: color,
-    });
+    }));
     node
 }
 
@@ -3282,7 +3282,7 @@ fn commit_scene(context: &mut AppContext) -> UiScene {
 
 fn selected_button_fill(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> [f32; 4] {
     let work = context.world().extract_nodes(&[id]);
-    match work[0].component_geometry.as_ref() {
+    match work[0].component_geometry.as_deref() {
         Some(ComponentGeometry::Button {
             background: Some(fill),
             ..

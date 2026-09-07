@@ -8,7 +8,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let node_order = context.node_order;
     let parent_clips = context.parent_clips;
     let id = context.node.id;
-    match context.node.component_geometry.as_ref() {
+    match context.node.component_geometry.as_deref() {
         Some(ComponentGeometry::ModalFrame {
             scrim,
             surface,

@@ -456,7 +456,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -507,7 +507,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
     let text = scene
@@ -632,7 +632,7 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
         show_focus_ring: true,
         indicator: false,
     });
-    option.component_geometry = Some(ComponentGeometry::SelectionOption {
+    option.component_geometry = Some(Box::new(ComponentGeometry::SelectionOption {
         icon: Some((
             nana_ui_core::Icon::Search,
             LayoutBox {
@@ -657,7 +657,7 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
         },
         focus_ring: Some([0.2, 0.6, 1.0, 1.0]),
         indicator: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([option], []);
     for slot in [0, 2, 3, 7] {
@@ -740,7 +740,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         ]),
         highlighted: None,
     });
-    menu.component_geometry = Some(ComponentGeometry::MenuSurface {
+    menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
         trigger_image: None,
         trigger_surface: None,
         trigger: None,
@@ -824,7 +824,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         },
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.2, 0.2, 0.2, 1.0],
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([menu], []);
     assert_eq!(
@@ -1384,7 +1384,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1465,7 +1465,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     input
 }
@@ -1479,7 +1479,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
         diagnostic_labels,
         sticky_line,
         ..
-    }) = input.component_geometry.as_mut()
+    }) = input.component_geometry.as_deref_mut()
     else {
         unreachable!()
     };
@@ -1594,7 +1594,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
         diagnostic_markers,
         diagnostic_labels,
         ..
-    }) = input.component_geometry.as_mut()
+    }) = input.component_geometry.as_deref_mut()
     else {
         unreachable!()
     };
@@ -1677,7 +1677,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1757,7 +1757,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -1817,7 +1817,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1887,7 +1887,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input.clone()], []);
@@ -1916,7 +1916,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
 
     // 清空宿主 feed 后 swatch 图元消失。
     if let Some(ComponentGeometry::TextInput { swatch_markers, .. }) =
-        input.component_geometry.as_mut()
+        input.component_geometry.as_deref_mut()
     {
         swatch_markers.clear();
     }
@@ -1943,7 +1943,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2032,7 +2032,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         caret_color: [0.0; 4],
         preedit_color: [0.0; 4],
         steppers: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -2115,7 +2115,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2236,7 +2236,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -2303,7 +2303,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2354,7 +2354,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -2393,7 +2393,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2468,7 +2468,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
     input
 }
 
@@ -2613,7 +2613,9 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
 fn text_input_sticky_line_paints_panel_divider_and_head_text() {
     let mut scene = UiScene::new();
     let mut input = git_gutter_input(1, nana_ui_runtime::TextGitGutterGeometry::default());
-    if let Some(ComponentGeometry::TextInput { sticky_line, .. }) = &mut input.component_geometry {
+    if let Some(ComponentGeometry::TextInput { sticky_line, .. }) =
+        input.component_geometry.as_deref_mut()
+    {
         *sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
             panel: LayoutBox {
                 x: 0.0,
@@ -2720,7 +2722,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2774,7 +2776,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -2867,7 +2869,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2918,7 +2920,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -2984,7 +2986,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3053,7 +3055,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -3103,7 +3105,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3203,7 +3205,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -3283,7 +3285,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3359,7 +3361,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
@@ -3424,8 +3426,8 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
     ));
 }
 
-fn input_component_geometry(multiline: bool) -> Option<ComponentGeometry> {
-    Some(ComponentGeometry::TextInput {
+fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
+    Some(Box::new(ComponentGeometry::TextInput {
         multiline,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3476,7 +3478,7 @@ fn input_component_geometry(multiline: bool) -> Option<ComponentGeometry> {
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
-    })
+    }))
 }
 
 #[test]
@@ -3503,7 +3505,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         tone: nana_ui_core::StatusTone::Success,
         compact: true,
     });
-    badge.component_geometry = Some(ComponentGeometry::StatusBadge {
+    badge.component_geometry = Some(Box::new(ComponentGeometry::StatusBadge {
         indicator: LayoutBox {
             x: 8.0,
             y: 8.0,
@@ -3513,7 +3515,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         label: region("Online", 0.0, 11.0, Some(500)),
         background: [0.1, 0.8, 0.4, 0.12],
         foreground: [0.1, 0.8, 0.4, 1.0],
-    });
+    }));
 
     let mut validation = node(2, None, &[]);
     validation.standard_visual = Some(StandardVisual::ValidationMessage {
@@ -3521,7 +3523,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         intent: nana_ui_core::ValidationIntent::Danger,
         compact: true,
     });
-    validation.component_geometry = Some(ComponentGeometry::ValidationMessage {
+    validation.component_geometry = Some(Box::new(ComponentGeometry::ValidationMessage {
         indicator: LayoutBox {
             x: 4.0,
             y: 7.0,
@@ -3530,7 +3532,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         },
         label: region("Required", 0.0, 11.0, None),
         foreground: [0.9, 0.2, 0.2, 1.0],
-    });
+    }));
 
     let mut empty = node(3, None, &[]);
     empty.standard_visual = Some(StandardVisual::EmptyState {
@@ -3540,7 +3542,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         compact: false,
         action: None,
     });
-    empty.component_geometry = Some(ComponentGeometry::EmptyState {
+    empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
         root_clip: empty.layout,
         content_clip: LayoutBox {
             x: 16.0,
@@ -3561,7 +3563,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         title: region("No files", 26.0, 13.0, Some(600)),
         message: Some(region("Create one", 46.0, 12.0, None)),
         action: None,
-    });
+    }));
 
     let mut labeled = node(4, None, &[]);
     labeled.standard_visual = Some(StandardVisual::LabeledValue {
@@ -3572,11 +3574,11 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         compact: true,
         action: None,
     });
-    labeled.component_geometry = Some(ComponentGeometry::LabeledValue {
+    labeled.component_geometry = Some(Box::new(ComponentGeometry::LabeledValue {
         label: region("Revision", 0.0, 11.0, None),
         value: region("42", 14.0, 12.0, Some(600)),
         action: None,
-    });
+    }));
 
     let mut compact_empty = node(5, None, &[]);
     compact_empty.standard_visual = Some(StandardVisual::EmptyState {
@@ -3586,7 +3588,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         compact: true,
         action: None,
     });
-    compact_empty.component_geometry = Some(ComponentGeometry::EmptyState {
+    compact_empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
         root_clip: compact_empty.layout,
         content_clip: LayoutBox {
             x: 6.0,
@@ -3598,7 +3600,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         title: region("空状态", 2.0, 12.0, Some(600)),
         message: None,
         action: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([badge, validation, empty, labeled, compact_empty], []);
@@ -3752,11 +3754,11 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
         compact: false,
         action: None,
     });
-    labeled.component_geometry = Some(ComponentGeometry::LabeledValue {
+    labeled.component_geometry = Some(Box::new(ComponentGeometry::LabeledValue {
         label: region(Arc::from("Source"), 0.0),
         value: region(long_path.clone(), 14.0),
         action: None,
-    });
+    }));
 
     let mut card = node(2, None, &[]);
     card.standard_visual = Some(StandardVisual::Card {
@@ -3765,7 +3767,7 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
         loading: false,
         loading_phase: 0.0,
     });
-    card.component_geometry = Some(ComponentGeometry::Card {
+    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
         title: Some(ComponentTextRegion {
             bounds: LayoutBox {
                 x: 10.0,
@@ -3786,7 +3788,7 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
         },
         elevation: None,
         spinner: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([labeled, card], []);
@@ -3855,7 +3857,7 @@ fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
         disabled: false,
         size: nana_ui_core::ControlSize::Medium,
     });
-    item.component_geometry = Some(ComponentGeometry::ActionMenuItem {
+    item.component_geometry = Some(Box::new(ComponentGeometry::ActionMenuItem {
         icon: Some((
             nana_ui_core::Icon::Folder,
             LayoutBox {
@@ -3873,7 +3875,7 @@ fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
             60.0,
         )),
         background: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([item], []);
@@ -3931,7 +3933,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         font_size: size,
         font_weight: weight,
     };
-    modal.component_geometry = Some(ComponentGeometry::ModalFrame {
+    modal.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -3963,7 +3965,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
             spread_radius: 0.0,
             inset: false,
         },
-    });
+    }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
     assert!(matches!(
@@ -4043,7 +4045,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
         font_size: size,
         font_weight: weight,
     };
-    palette.component_geometry = Some(ComponentGeometry::CommandPalette {
+    palette.component_geometry = Some(Box::new(ComponentGeometry::CommandPalette {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -4071,7 +4073,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
             spread_radius: 0.0,
             inset: false,
         },
-    });
+    }));
 
     let mut scene = UiScene::default();
     scene.apply_delta([palette], []);
@@ -4136,7 +4138,7 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         danger: false,
         slots: nana_ui_runtime::ModalSlots::default(),
     });
-    drawer.component_geometry = Some(ComponentGeometry::ModalFrame {
+    drawer.component_geometry = Some(Box::new(ComponentGeometry::ModalFrame {
         scrim: LayoutBox {
             x: 0.0,
             y: 0.0,
@@ -4179,7 +4181,7 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
             spread_radius: 0.0,
             inset: false,
         },
-    });
+    }));
     let mut scene = UiScene::default();
     scene.apply_delta([drawer], []);
     let surface = scene
@@ -4217,7 +4219,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         loading_phase: 0.5,
         invalid: false,
     });
-    action.component_geometry = Some(ComponentGeometry::Button {
+    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         label: label.clone(),
         spinner: Some(LayoutBox {
             x: 42.0,
@@ -4229,7 +4231,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         border: None,
         border_width: 0.0,
         focus_ring: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([action.clone()], []);
     assert!(matches!(
@@ -4251,14 +4253,14 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         loading_phase: 0.0,
         invalid: false,
     });
-    action.component_geometry = Some(ComponentGeometry::Button {
+    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         label,
         spinner: None,
         background: Some([0.2, 0.4, 0.8, 1.0]),
         border: None,
         border_width: 0.0,
         focus_ring: None,
-    });
+    }));
     scene.apply_delta([action], []);
     assert!(
         scene
@@ -4296,7 +4298,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         compact: false,
         action: Some(id(11)),
     });
-    empty.component_geometry = Some(ComponentGeometry::EmptyState {
+    empty.component_geometry = Some(Box::new(ComponentGeometry::EmptyState {
         root_clip: empty.layout,
         content_clip,
         icon: Some((
@@ -4339,7 +4341,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
             width: 60.0,
             height: 24.0,
         }),
-    });
+    }));
     let mut action = node(11, Some(10), &[]);
     action.layout = LayoutBox {
         x: 20.0,
@@ -4356,7 +4358,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         loading_phase: 0.0,
         invalid: false,
     });
-    action.component_geometry = Some(ComponentGeometry::Button {
+    action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         label: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 20.0,
@@ -4374,7 +4376,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         border: None,
         border_width: 0.0,
         focus_ring: Some([0.3, 0.6, 1.0, 1.0]),
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([empty, action], []);
@@ -4514,7 +4516,7 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
         revealed: true,
         dragging: None,
     });
-    scroller.component_geometry = Some(ComponentGeometry::Scrollbar {
+    scroller.component_geometry = Some(Box::new(ComponentGeometry::Scrollbar {
         horizontal: None,
         vertical: Some(nana_ui_runtime::ScrollbarBar {
             track: LayoutBox {
@@ -4534,7 +4536,7 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
             thumb_radius: 3.0,
             max_offset: 80.0,
         }),
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([scroller], []);
@@ -4609,7 +4611,7 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
         revealed: true,
         dragging: None,
     });
-    scroller.component_geometry = Some(ComponentGeometry::Scrollbar {
+    scroller.component_geometry = Some(Box::new(ComponentGeometry::Scrollbar {
         horizontal: None,
         vertical: Some(nana_ui_runtime::ScrollbarBar {
             track: LayoutBox {
@@ -4629,7 +4631,7 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
             thumb_radius: 2.0,
             max_offset: 80.0,
         }),
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([scroller], []);
@@ -4777,7 +4779,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         rows: Arc::from([]),
         highlighted: None,
     });
-    menu.component_geometry = Some(ComponentGeometry::MenuSurface {
+    menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
         trigger_image: None,
         trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
             bounds: LayoutBox {
@@ -4818,7 +4820,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         },
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.3, 0.3, 0.3, 1.0],
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([menu], []);
@@ -4944,7 +4946,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         loading_phase: 0.0,
         invalid: false,
     });
-    switch.component_geometry = Some(ComponentGeometry::Switch {
+    switch.component_geometry = Some(Box::new(ComponentGeometry::Switch {
         thumb_progress: 1.0,
         label: ComponentTextRegion {
             bounds: LayoutBox {
@@ -4979,7 +4981,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         track_background: [0.2, 0.5, 0.9, 1.0],
         track_border: [0.1, 0.4, 0.8, 1.0],
         thumb_background: [1.0, 1.0, 1.0, 1.0],
-    });
+    }));
     switch.layout.width = 200.0;
     switch.layout.height = 52.0;
     switch.focused = true;
@@ -4993,7 +4995,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         ratio: 0.25,
         invalid: false,
     });
-    range.component_geometry = Some(ComponentGeometry::Range {
+    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
         label: Some(ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -5036,7 +5038,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             width: 120.0,
             height: 16.0,
         },
-    });
+    }));
     range.layout.width = 240.0;
     range.layout.height = 40.0;
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
@@ -5051,7 +5053,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     });
     style_mut(&mut card).background = Some([0.12, 0.12, 0.12, 1.0]);
     style_mut(&mut card).border_color = Some([0.3, 0.3, 0.3, 1.0]);
-    card.component_geometry = Some(ComponentGeometry::Card {
+    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
         title: Some(ComponentTextRegion {
             bounds: LayoutBox {
                 x: 10.0,
@@ -5084,7 +5086,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             width: 14.0,
             height: 14.0,
         }),
-    });
+    }));
 
     let mut list_item = node(5, None, &[]);
     list_item.text = Some(TextContent {
@@ -5096,7 +5098,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         trailing: None,
         detail: None,
     });
-    list_item.component_geometry = Some(ComponentGeometry::ListItem {
+    list_item.component_geometry = Some(Box::new(ComponentGeometry::ListItem {
         leading: None,
         content: Some(LayoutBox {
             x: 30.0,
@@ -5106,7 +5108,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         }),
         trailing: None,
         detail: None,
-    });
+    }));
     style_mut(&mut list_item).background = Some([0.15, 0.15, 0.15, 1.0]);
 
     let mut scene = UiScene::new();
@@ -5432,7 +5434,10 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
         viewport_offset_y: 0.0,
         viewport_zoom: 1.0,
     });
-    canvas.component_geometry = Some(geometry(vec![(edge.clone(), [0.5, 0.5, 0.5, 1.0])]));
+    canvas.component_geometry = Some(Box::new(geometry(vec![(
+        edge.clone(),
+        [0.5, 0.5, 0.5, 1.0],
+    )])));
 
     let mut scene = UiScene::new();
     scene.apply_delta([canvas.clone()], []);
@@ -5447,10 +5452,10 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
             .any(|primitive| primitive.id.slot == (1u64 << 32) + 1)
     );
 
-    canvas.component_geometry = Some(geometry(vec![
+    canvas.component_geometry = Some(Box::new(geometry(vec![
         (edge.clone(), [0.5, 0.5, 0.5, 1.0]),
         (edge.clone(), [0.2, 0.6, 1.0, 1.0]),
-    ]));
+    ])));
     scene.apply_delta([canvas.clone()], []);
     assert!(
         scene
@@ -5465,7 +5470,7 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
         "selected/connecting overlay must enter paint order on the next extract"
     );
 
-    canvas.component_geometry = Some(geometry(vec![(edge, [0.5, 0.5, 0.5, 1.0])]));
+    canvas.component_geometry = Some(Box::new(geometry(vec![(edge, [0.5, 0.5, 0.5, 1.0])])));
     scene.apply_delta([canvas], []);
     assert!(
         scene
@@ -5491,7 +5496,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
     chart.standard_visual = Some(StandardVisual::TimeSeriesChart {
         values: Arc::from([0.0, 1.0]),
     });
-    chart.component_geometry = Some(ComponentGeometry::TimeSeriesChart {
+    chart.component_geometry = Some(Box::new(ComponentGeometry::TimeSeriesChart {
         grid: vec![LayoutBox {
             x: 8.0,
             y: 10.0,
@@ -5508,7 +5513,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
         grid_color: [0.2, 0.2, 0.2, 0.55],
         area_color: [0.3, 0.5, 0.8, 0.16],
         line_color: [0.3, 0.5, 0.9, 1.0],
-    });
+    }));
 
     let mut markdown = node(2, None, &[]);
     markdown.layout = LayoutBox {
@@ -5524,7 +5529,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
         text: Arc::from("hello"),
         selection: Some((0, 5)),
     });
-    markdown.component_geometry = Some(ComponentGeometry::NativeMarkdown {
+    markdown.component_geometry = Some(Box::new(ComponentGeometry::NativeMarkdown {
         text: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -5544,7 +5549,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
             height: 48.0,
         }],
         selection_color: [0.2, 0.4, 0.8, 0.14],
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([chart, markdown], []);
@@ -5683,14 +5688,14 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
         loading_phase: 0.0,
         invalid: false,
     });
-    button.component_geometry = Some(ComponentGeometry::Button {
+    button.component_geometry = Some(Box::new(ComponentGeometry::Button {
         label,
         spinner: None,
         background: None,
         border: None,
         border_width: 0.0,
         focus_ring: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([button, text_node(2, 1, "Open")], []);
     assert_eq!(visible_text_count(&scene, &[id(1), id(2)]), 1);
@@ -5714,7 +5719,7 @@ fn card_body_text_is_painted_independently_of_its_optional_title() {
             loading: false,
             loading_phase: 0.0,
         });
-        card.component_geometry = Some(ComponentGeometry::Card {
+        card.component_geometry = Some(Box::new(ComponentGeometry::Card {
             title: title.map(|content| ComponentTextRegion {
                 bounds: LayoutBox {
                     x: 10.0,
@@ -5735,7 +5740,7 @@ fn card_body_text_is_painted_independently_of_its_optional_title() {
             },
             elevation: None,
             spinner: None,
-        });
+        }));
         let mut scene = UiScene::new();
         scene.apply_delta(
             [
@@ -5770,7 +5775,7 @@ fn card_child_list_item_keeps_its_label() {
         loading: false,
         loading_phase: 0.0,
     });
-    card.component_geometry = Some(ComponentGeometry::Card {
+    card.component_geometry = Some(Box::new(ComponentGeometry::Card {
         title: Some(ComponentTextRegion {
             bounds: LayoutBox {
                 x: 10.0,
@@ -5791,7 +5796,7 @@ fn card_child_list_item_keeps_its_label() {
         },
         elevation: None,
         spinner: None,
-    });
+    }));
 
     let mut item = node(2, Some(1), &[]);
     item.kind = Arc::new(NodeKind::Element {
@@ -5806,7 +5811,7 @@ fn card_child_list_item_keeps_its_label() {
         trailing: None,
         detail: None,
     });
-    item.component_geometry = Some(ComponentGeometry::ListItem {
+    item.component_geometry = Some(Box::new(ComponentGeometry::ListItem {
         leading: None,
         content: Some(LayoutBox {
             x: 10.0,
@@ -5816,7 +5821,7 @@ fn card_child_list_item_keeps_its_label() {
         }),
         trailing: None,
         detail: None,
-    });
+    }));
 
     let mut scene = UiScene::new();
     scene.apply_delta([card, item], []);
@@ -6775,7 +6780,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         font_size: 12.0,
         font_weight: None,
     };
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
@@ -6866,7 +6871,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -6948,7 +6953,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         font_size: 12.0,
         font_weight: None,
     };
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
@@ -7025,7 +7030,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([input], []);
 
@@ -7107,7 +7112,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         git_marks: Arc::from([]),
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
-    input.component_geometry = Some(ComponentGeometry::TextInput {
+    input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         multiline: true,
         text: text_region(display),
         selection: Vec::new(),
@@ -7151,7 +7156,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         steppers: None,
         minimap: None,
         sticky_line: None,
-    });
+    }));
     input.text_spans = vec![
         nana_ui_runtime::ExtractedTextSpan {
             start: 0,
@@ -7213,7 +7218,7 @@ fn timestamp_chart_gap_segments_share_one_stroke_without_visible_bridges() {
     let segments = (0..300)
         .map(|index| vec![[index as f32 * 3.0, 10.0], [index as f32 * 3.0 + 1.0, 20.0]])
         .collect();
-    chart.component_geometry = Some(ComponentGeometry::TimestampSeriesChart {
+    chart.component_geometry = Some(Box::new(ComponentGeometry::TimestampSeriesChart {
         grid: Vec::new(),
         area: Vec::new(),
         segments,
@@ -7221,7 +7226,7 @@ fn timestamp_chart_gap_segments_share_one_stroke_without_visible_bridges() {
         grid_color: [0.2; 4],
         area_color: [0.3; 4],
         line_color: [0.5, 0.5, 1.0, 1.0],
-    });
+    }));
     let mut scene = UiScene::new();
     scene.apply_delta([chart], []);
     let strokes: Vec<_> = scene
@@ -7280,7 +7285,7 @@ fn large_graph_primitive_families_do_not_overwrite_each_other() {
     canvas.layout = bounds;
     let mut scene = UiScene::new();
     for count in [300, 2, 300, 0] {
-        canvas.component_geometry = Some(geometry(count));
+        canvas.component_geometry = Some(Box::new(geometry(count)));
         scene.apply_delta([canvas.clone()], []);
         let primitives = scene
             .primitives()

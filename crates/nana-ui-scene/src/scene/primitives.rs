@@ -98,7 +98,7 @@ impl UiScene {
         let surface_clips: Arc<[ClipRegion]> = Arc::clone(&clips);
         let empty_state_content_clips: Arc<[ClipRegion]> =
             if let Some(ComponentGeometry::EmptyState { content_clip, .. }) =
-                node.component_geometry.as_ref()
+                node.component_geometry.as_deref()
             {
                 let mut content_clips = clips.to_vec();
                 content_clips.push(ClipRegion {
@@ -165,7 +165,7 @@ impl UiScene {
                     node.style.border_color
                 };
             let (surface_background, surface_border_color, surface_border_width) =
-                match node.component_geometry.as_ref() {
+                match node.component_geometry.as_deref() {
                     Some(ComponentGeometry::Button {
                         background,
                         border,
@@ -222,7 +222,7 @@ impl UiScene {
                             .paint
                             .primary_box_shadow()
                             .map(ComponentElevation::from_box_shadow)
-                            .or(match node.component_geometry.as_ref() {
+                            .or(match node.component_geometry.as_deref() {
                                 Some(ComponentGeometry::Card { elevation, .. }) => *elevation,
                                 _ => None,
                             }),
@@ -233,7 +233,7 @@ impl UiScene {
                                 surface.filter = None;
                             }
                             let component_owns_border = matches!(
-                                node.component_geometry.as_ref(),
+                                node.component_geometry.as_deref(),
                                 Some(
                                     ComponentGeometry::Button { .. }
                                         | ComponentGeometry::TextInput { .. }
@@ -271,7 +271,7 @@ impl UiScene {
                 });
             }
             let component_owns_text =
-                component_geometry_owns_text(node.component_geometry.as_ref());
+                component_geometry_owns_text(node.component_geometry.as_deref());
             if let Some(text) = node.text.as_ref().filter(|text| {
                 !text.value.is_empty()
                     && !component_owns_text
@@ -311,9 +311,9 @@ impl UiScene {
                 if let Some(ComponentGeometry::ListItem {
                     content: Some(content),
                     ..
-                }) = node.component_geometry
+                }) = node.component_geometry.as_deref()
                 {
-                    text_bounds = scene_rect(content);
+                    text_bounds = scene_rect(*content);
                 }
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 2 },
@@ -381,7 +381,7 @@ impl UiScene {
                 node_order,
             };
             let mut emit = |primitive| self.insert_primitive(primitive);
-            match node.component_geometry.as_ref() {
+            match node.component_geometry.as_deref() {
                 Some(ComponentGeometry::ModalFrame { .. }) => overlays::build(&context, &mut emit),
                 Some(ComponentGeometry::Button { .. }) => controls_base::build(&context, &mut emit),
                 Some(ComponentGeometry::TextInput { .. }) => text::build(&context, &mut emit),
@@ -493,7 +493,7 @@ impl UiScene {
                         spinner,
                         focus_ring,
                         ..
-                    }) = node.component_geometry.as_ref()
+                    }) = node.component_geometry.as_deref()
                     {
                         if let Some(spinner) = spinner {
                             self.insert_primitive(ScenePrimitive {
@@ -581,7 +581,7 @@ impl UiScene {
                         minimap,
                         sticky_line,
                         ..
-                    }) = node.component_geometry.as_ref()
+                    }) = node.component_geometry.as_deref()
                     {
                         // git gutter 标记：gutter 最左侧 2px 竖条按种类各一个
                         // quad 批次（slot 18 新增 / 19 修改 / 8 删除），与折叠
@@ -1317,7 +1317,7 @@ impl UiScene {
                     ..
                 }) => {
                     let (track, track_background, track_border, thumb_background) =
-                        match node.component_geometry.as_ref() {
+                        match node.component_geometry.as_deref() {
                             Some(ComponentGeometry::Switch {
                                 control,
                                 track_background,
@@ -1411,7 +1411,7 @@ impl UiScene {
                 }
                 Some(StandardVisual::Range { ratio, size, .. }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
-                    let track_band = match node.component_geometry.as_ref() {
+                    let track_band = match node.component_geometry.as_deref() {
                         Some(ComponentGeometry::Range { track, .. }) => scene_rect(*track),
                         _ => SceneRect {
                             x: bounds.x + 7.0,
@@ -1501,7 +1501,7 @@ impl UiScene {
                     if let Some(ComponentGeometry::Scrollbar {
                         horizontal,
                         vertical,
-                    }) = node.component_geometry.as_ref()
+                    }) = node.component_geometry.as_deref()
                     {
                         for (slot, bar) in [(3, vertical), (5, horizontal)] {
                             let Some(bar) = bar else {
@@ -1535,7 +1535,7 @@ impl UiScene {
                     ..
                 }) => {
                     if loading {
-                        let spinner_bounds = match node.component_geometry.as_ref() {
+                        let spinner_bounds = match node.component_geometry.as_deref() {
                             Some(ComponentGeometry::Card {
                                 spinner: Some(spinner),
                                 ..

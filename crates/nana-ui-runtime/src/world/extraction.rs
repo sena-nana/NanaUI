@@ -126,7 +126,8 @@ impl UiWorld {
         }
         let component_geometry = standard_visual
             .as_ref()
-            .and_then(|visual| self.derive_component_geometry(id, visual, style.as_ref()));
+            .and_then(|visual| self.derive_component_geometry(id, visual, style.as_ref()))
+            .map(Box::new);
         let standard_visual_foreground = standard_visual.as_ref().map(|visual| match visual {
             StandardVisual::ModalFrame { .. } => self.style_model.palette.text.as_rgba_array(),
             StandardVisual::Icon { .. } => style

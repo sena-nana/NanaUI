@@ -761,14 +761,14 @@ impl UiScene {
         let Some(parent) = node.parent.and_then(|id| self.nodes.get(&id)) else {
             return false;
         };
-        if let Some(ComponentGeometry::Card { title, .. }) = parent.component_geometry.as_ref() {
+        if let Some(ComponentGeometry::Card { title, .. }) = parent.component_geometry.as_deref() {
             return title.as_ref().is_some_and(|title| {
                 node.text
                     .as_ref()
                     .is_some_and(|text| text.value == title.content.as_ref())
             });
         }
-        component_geometry_owns_text(parent.component_geometry.as_ref())
+        component_geometry_owns_text(parent.component_geometry.as_deref())
             || parent
                 .text
                 .as_ref()
@@ -809,7 +809,7 @@ impl UiScene {
                 _ => return geometric,
             }
         };
-        let text_box = match &host.component_geometry {
+        let text_box = match host.component_geometry.as_deref() {
             Some(ComponentGeometry::ListItem {
                 content: Some(content),
                 ..
@@ -895,7 +895,7 @@ impl UiScene {
                 });
             }
             if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
-                ancestor.component_geometry.as_ref()
+                ancestor.component_geometry.as_deref()
             {
                 clips.push(ClipRegion {
                     bounds: scene_rect(*root_clip),
@@ -905,7 +905,7 @@ impl UiScene {
                 });
             }
             if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
-                ancestor.component_geometry.as_ref()
+                ancestor.component_geometry.as_deref()
             {
                 let focus_inset = if node.focused { 3.0 } else { 0.0 };
                 clips.push(ClipRegion {
@@ -1450,7 +1450,7 @@ fn component_text_primitive(
     document_order: usize,
 ) -> ScenePrimitive {
     let multiline = matches!(
-        node.component_geometry,
+        node.component_geometry.as_deref(),
         Some(ComponentGeometry::TextInput {
             multiline: true,
             ..
@@ -1460,7 +1460,7 @@ fn component_text_primitive(
         node.standard_visual,
         Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
     ) || matches!(
-        node.component_geometry,
+        node.component_geometry.as_deref(),
         Some(
             ComponentGeometry::NativeMarkdown { .. } | ComponentGeometry::SelectableRichText { .. }
         )
@@ -1547,7 +1547,7 @@ fn scene_text_spans(
     // 丢弃。
     let editor_main_text = region.is_some_and(|region| {
         matches!(
-            node.component_geometry.as_ref(),
+            node.component_geometry.as_deref(),
             Some(ComponentGeometry::TextInput { text, .. }) if std::ptr::eq(text, region)
         )
     });

@@ -4299,7 +4299,7 @@ mod minimap_tests {
         let (content, _) = context.world().text_input_pointer_context(node).unwrap();
         let extracted = &context.world().extract_nodes(&[node])[0];
         let crate::ComponentGeometry::TextInput { text, .. } =
-            extracted.component_geometry.as_ref().unwrap()
+            extracted.component_geometry.as_deref().unwrap()
         else {
             panic!("expected text input geometry");
         };
@@ -4317,7 +4317,7 @@ mod minimap_tests {
             .unwrap();
         let extracted = &context.world().extract_nodes(&[node])[0];
         let crate::ComponentGeometry::TextInput { text, .. } =
-            extracted.component_geometry.as_ref().unwrap()
+            extracted.component_geometry.as_deref().unwrap()
         else {
             panic!("expected text input geometry");
         };
