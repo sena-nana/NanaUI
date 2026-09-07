@@ -1,6 +1,7 @@
 //! Scene host present coordination.
 
 use super::*;
+#[cfg(target_os = "windows")]
 use crate::SceneGpuRendererRegistry;
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
@@ -145,6 +146,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         } else {
             self.texture_subscriptions.remove(&id);
         }
+        // Only the Windows native-content path inserts into the registry.
+        #[allow(unused_mut)]
         let mut gpu_renderers = self.program.scene_gpu_renderers(id);
         #[cfg(target_os = "windows")]
         let composition = if id == WindowId::PRIMARY {
