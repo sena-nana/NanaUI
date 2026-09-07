@@ -6,3 +6,4 @@ target/
 __pycache__/
 /perf/reports/**
 !/perf/reports/.gitkeep
+.zcode/
