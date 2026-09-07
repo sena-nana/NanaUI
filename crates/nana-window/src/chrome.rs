@@ -376,6 +376,12 @@ fn appkit_window<W: HasWindowHandle + ?Sized>(
     view.window()
 }
 
+// Used by the macOS and Windows live-resize paths; on other targets only the
+// tests reach it. Same idiom as the two helpers at the top of this file.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
 fn live_frame_after_delta(
     start: [f64; 4],
     dx: f64,
