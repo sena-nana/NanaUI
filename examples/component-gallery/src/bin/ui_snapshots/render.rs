@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use component_gallery::{
@@ -22,7 +22,8 @@ use nana_ui::{
 use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
-use crate::write::{self, Size};
+use crate::baseline::{Recorder, Report};
+use crate::write::Size;
 
 #[path = "render/gpu.rs"]
 mod gpu;
@@ -45,84 +46,72 @@ enum DockPreviewPhase {
     Retarget,
 }
 
-pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Error>> {
     let mut snapshots = OffscreenSnapshots::new()?;
-    let output = std::env::var_os("NANA_UI_SNAPSHOT_OUTPUT")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir()?.join("target/ui-snapshots"));
-
-    let motion_paths = motion::generate(&mut snapshots, &output)?;
-    let mut paths = vec![
-        runtime_scene_snapshot(
-            &mut snapshots,
-            &output,
-            "runtime-scene-dark.png",
-            ThemeMode::Dark,
-        )?,
-        runtime_scene_snapshot(
-            &mut snapshots,
-            &output,
-            "runtime-scene-light.png",
-            ThemeMode::Light,
-        )?,
-        titlebar_snapshot(
-            &mut snapshots,
-            &output,
-            "titlebar-custom-dark.png",
-            ThemeMode::Dark,
-            WindowChrome::custom(),
-            Some(LogicalPoint::new(880.0, 18.0)),
-        )?,
-        titlebar_snapshot(
-            &mut snapshots,
-            &output,
-            "titlebar-custom-light.png",
-            ThemeMode::Light,
-            WindowChrome::custom(),
-            None,
-        )?,
-        titlebar_snapshot(
-            &mut snapshots,
-            &output,
-            "titlebar-native-leading-dark.png",
-            ThemeMode::Dark,
-            WindowChrome::native_leading(78.0),
-            None,
-        )?,
-        dock_window_snapshot(
-            &mut snapshots,
-            &output,
-            "dock-window-custom-dark.png",
-            ThemeMode::Dark,
-            WindowChrome::custom(),
-            DockNode::item("navigation", None),
-        )?,
-        dock_window_snapshot(
-            &mut snapshots,
-            &output,
-            "dock-window-native-leading-light.png",
-            ThemeMode::Light,
-            WindowChrome::native_leading(78.0),
-            DockNode::item("navigation", None),
-        )?,
-    ];
-    paths.extend(component_migration_snapshots(
+    // Painter state is shared across the suite, so the render order is part of
+    // what the baseline records: motion frames stay first.
+    motion::generate(&mut snapshots, &mut recorder)?;
+    runtime_scene_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
+        "runtime-scene-dark.png",
         ThemeMode::Dark,
-    )?);
+    )?;
+    runtime_scene_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "runtime-scene-light.png",
+        ThemeMode::Light,
+    )?;
+    titlebar_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "titlebar-custom-dark.png",
+        ThemeMode::Dark,
+        WindowChrome::custom(),
+        Some(LogicalPoint::new(880.0, 18.0)),
+    )?;
+    titlebar_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "titlebar-custom-light.png",
+        ThemeMode::Light,
+        WindowChrome::custom(),
+        None,
+    )?;
+    titlebar_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "titlebar-native-leading-dark.png",
+        ThemeMode::Dark,
+        WindowChrome::native_leading(78.0),
+        None,
+    )?;
+    dock_window_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "dock-window-custom-dark.png",
+        ThemeMode::Dark,
+        WindowChrome::custom(),
+        DockNode::item("navigation", None),
+    )?;
+    dock_window_snapshot(
+        &mut snapshots,
+        &mut recorder,
+        "dock-window-native-leading-light.png",
+        ThemeMode::Light,
+        WindowChrome::native_leading(78.0),
+        DockNode::item("navigation", None),
+    )?;
+    component_migration_snapshots(&mut snapshots, &mut recorder, ThemeMode::Dark)?;
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
-        paths.extend(migration_next::generate_registered(
-            &mut snapshots,
-            &output,
-            theme,
-        )?);
+        migration_next::generate_registered(&mut snapshots, &mut recorder, theme)?;
     }
 
     for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
-        paths.push(dock_window_snapshot(
+        dock_window_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-window-merged-tabs-{suffix}.png"),
             theme,
             WindowChrome::custom(),
@@ -131,10 +120,10 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
                 "console",
                 [("navigation", None), ("console", None), ("output", None)],
             ),
-        )?);
-        paths.push(dock_window_snapshot(
+        )?;
+        dock_window_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-window-merged-split-{suffix}.png"),
             theme,
             WindowChrome::custom(),
@@ -148,14 +137,14 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
                 ),
                 DockNode::item("output", None),
             ),
-        )?);
-        paths.push(dock_drag_window_snapshot(
+        )?;
+        dock_drag_window_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-drag-window-{suffix}.png"),
             theme,
             WindowChrome::custom(),
-        )?);
+        )?;
         for (name, zone) in [
             ("left", DockDropZone::Left),
             ("right", DockDropZone::Right),
@@ -163,172 +152,172 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             ("bottom", DockDropZone::Bottom),
             ("tab", DockDropZone::Tab),
         ] {
-            paths.push(dock_preview_snapshot(
+            dock_preview_snapshot(
                 &mut snapshots,
-                &output,
+                &mut recorder,
                 &format!("dock-preview-{name}-{suffix}.png"),
                 theme,
                 zone,
                 DockPreviewPhase::Settled,
-            )?);
+            )?;
         }
-        paths.push(dock_preview_snapshot(
+        dock_preview_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-preview-retarget-tab-{suffix}.png"),
             theme,
             DockDropZone::Left,
             DockPreviewPhase::Retarget,
-        )?);
-        paths.push(dock_preview_snapshot(
+        )?;
+        dock_preview_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-hover-left-{suffix}.png"),
             theme,
             DockDropZone::Left,
             DockPreviewPhase::Candidate,
-        )?);
-        paths.push(dock_preview_snapshot(
+        )?;
+        dock_preview_snapshot(
             &mut snapshots,
-            &output,
+            &mut recorder,
             &format!("dock-preview-outside-{suffix}.png"),
             theme,
             DockDropZone::Left,
             DockPreviewPhase::Candidate,
-        )?);
+        )?;
     }
 
     let mut controls = GalleryState::new();
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-controls-dark.png",
         &mut controls,
-    )?);
+    )?;
 
     let mut controls_light = GalleryState::new();
     controls_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-controls-light.png",
         &mut controls_light,
-    )?);
-    paths.push(gallery_snapshot_with_cursor(
+    )?;
+    gallery_snapshot_with_cursor(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-sidebar-tools-dark.png",
         &mut controls,
         LogicalPoint::new(180.0, 60.0),
-    )?);
-    paths.push(gallery_snapshot_with_cursor(
+    )?;
+    gallery_snapshot_with_cursor(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-sidebar-tools-light.png",
         &mut controls_light,
         LogicalPoint::new(180.0, 60.0),
-    )?);
+    )?;
 
     let mut loading = GalleryState::new();
     loading.update(GalleryMessage::ToggleLoading);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-loading-dark.png",
         &mut loading,
-    )?);
+    )?;
 
     let mut surfaces = GalleryState::new();
     surfaces.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-surfaces-dark.png",
         &mut surfaces,
-    )?);
+    )?;
 
     let mut surfaces_light = GalleryState::new();
     surfaces_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     surfaces_light.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-surfaces-light.png",
         &mut surfaces_light,
-    )?);
+    )?;
 
     surfaces.update(GalleryMessage::PaneChrome(
         nana_ui::PaneChromeActionKind::SplitHorizontal,
     ));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-surfaces-split-dark.png",
         &mut surfaces,
-    )?);
+    )?;
 
     surfaces_light.update(GalleryMessage::PaneChrome(
         nana_ui::PaneChromeActionKind::SplitHorizontal,
     ));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-surfaces-split-light.png",
         &mut surfaces_light,
-    )?);
+    )?;
 
     let mut cards = GalleryState::new();
     cards.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     cards.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-cards-dark.png",
         &mut cards,
-    )?);
+    )?;
 
     surfaces_light.update(GalleryMessage::SelectSurfaceView(SurfaceView::Cards));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-cards-light.png",
         &mut surfaces_light,
-    )?);
+    )?;
 
     let mut feedback = GalleryState::new();
     feedback.update(GalleryMessage::SelectSection(GallerySection::Feedback));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-feedback-dark.png",
         &mut feedback,
-    )?);
+    )?;
 
     let mut rich_text = GalleryState::new();
     rich_text.update(GalleryMessage::SelectSection(GallerySection::RichText));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-rich-text-dark.png",
         &mut rich_text,
-    )?);
+    )?;
     rich_text.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-rich-text-light.png",
         &mut rich_text,
-    )?);
+    )?;
 
     let mut popover = GalleryState::new();
     popover.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     popover.update(GalleryMessage::TogglePopover);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-popover-dark.png",
         &mut popover,
-    )?);
+    )?;
 
     let mut context_menu = GalleryState::new();
     context_menu.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
@@ -340,19 +329,19 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     context_menu.update(GalleryMessage::ContextMenu(
         GalleryContextMenuEvent::OpenSubmenu(vec![0]),
     ));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-context-menu-dark.png",
         &mut context_menu,
-    )?);
+    )?;
     context_menu.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-context-menu-light.png",
         &mut context_menu,
-    )?);
+    )?;
 
     let mut context_menu_search = GalleryState::new();
     context_menu_search.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
@@ -364,12 +353,12 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     context_menu_search.update(GalleryMessage::ContextMenu(
         GalleryContextMenuEvent::Search("重命名".to_owned()),
     ));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-context-menu-search-dark.png",
         &mut context_menu_search,
-    )?);
+    )?;
 
     let mut context_menu_search_light = GalleryState::new();
     context_menu_search_light.update(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
@@ -382,81 +371,81 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     context_menu_search_light.update(GalleryMessage::ContextMenu(
         GalleryContextMenuEvent::Search("copy".to_owned()),
     ));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-context-menu-search-light.png",
         &mut context_menu_search_light,
-    )?);
+    )?;
 
     let mut command_palette = GalleryState::new();
     command_palette.update(GalleryMessage::ToggleCommandPalette);
     command_palette.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Search(
         "工作区".to_owned(),
     )));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-command-palette-dark.png",
         &mut command_palette,
-    )?);
+    )?;
 
     let mut command_palette_light = GalleryState::new();
     command_palette_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     command_palette_light.update(GalleryMessage::ToggleCommandPalette);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-command-palette-light.png",
         &mut command_palette_light,
-    )?);
+    )?;
 
     let mut dialog = GalleryState::new();
     dialog.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     dialog.update(GalleryMessage::ToggleDialog);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-dialog-dark.png",
         &mut dialog,
-    )?);
+    )?;
 
     let mut image_viewer = GalleryState::new();
     image_viewer.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     image_viewer.update(GalleryMessage::ToggleImageViewer);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-image-viewer-dark.png",
         &mut image_viewer,
-    )?);
+    )?;
 
     let mut workspace = GalleryState::new();
     workspace.update(GalleryMessage::SelectSection(GallerySection::Workspace));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-workspace-dark.png",
         &mut workspace,
-    )?);
+    )?;
 
     let mut workspace_dock_preview = GalleryState::new();
     workspace_dock_preview.update(GalleryMessage::SelectSection(GallerySection::Workspace));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-workspace-dock-preview-dark.png",
         &mut workspace_dock_preview,
-    )?);
+    )?;
     let mut workspace_dock_preview_light = GalleryState::new();
     workspace_dock_preview_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
     workspace_dock_preview_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-workspace-dock-preview-light.png",
         &mut workspace_dock_preview_light,
-    )?);
+    )?;
 
     let mut sidebar_collapsed = GalleryState::new();
     sidebar_collapsed.update(GalleryMessage::Workspace(
@@ -465,53 +454,52 @@ pub fn generate() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     sidebar_collapsed.update(GalleryMessage::Workspace(WorkspaceAction::AnimationFrame(
         std::time::Duration::from_millis(300),
     )));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-sidebar-collapsed-dark.png",
         &mut sidebar_collapsed,
-    )?);
+    )?;
 
     let mut settings = GalleryState::new();
     settings.update(GalleryMessage::OpenSettings);
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-settings-appearance-dark.png",
         &mut settings,
-    )?);
+    )?;
 
     settings.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-settings-appearance-light.png",
         &mut settings,
-    )?);
+    )?;
 
     settings.update(GalleryMessage::SetTheme(ThemeMode::Dark));
     settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "workspace",
     )));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-settings-workspace-dark.png",
         &mut settings,
-    )?);
+    )?;
 
     settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "about",
     )));
-    paths.push(gallery_snapshot(
+    gallery_snapshot(
         &mut snapshots,
-        &output,
+        &mut recorder,
         "gallery-settings-about-dark.png",
         &mut settings,
-    )?);
+    )?;
 
-    paths.extend(motion_paths);
-    Ok(paths)
+    recorder.finish()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -522,42 +510,15 @@ struct MigrationLayoutMessage {
 
 fn component_migration_snapshots(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     theme: ThemeMode,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let (runtime_document, runtime_layout) = migration_runtime_document(theme)?;
-    let runtime_pixels = snapshots.paint(
-        runtime_document.scene(),
-        MIGRATION_SIZE,
-        clear_color(theme),
-        None,
-        None,
-    )?;
-    let runtime_path = output.join("migration-first-batch-runtime-dark.png");
-    write::png(&runtime_path, MIGRATION_SIZE, &runtime_pixels)?;
-
-    let legacy_path = output.join("migration-first-batch-reference-dark.png");
-    let legacy_pixels = archived_or_runtime(&legacy_path, MIGRATION_SIZE, &runtime_pixels)?;
-
-    let comparison_size = Size::new(MIGRATION_SIZE.width * 2 + 8, MIGRATION_SIZE.height);
-    let comparison = side_by_side(&legacy_pixels, &runtime_pixels, MIGRATION_SIZE, 8);
-    let comparison_path = output.join("migration-first-batch-side-by-side-dark.png");
-    write::png(&comparison_path, comparison_size, &comparison)?;
-
-    let difference = pixel_difference(&legacy_pixels, &runtime_pixels);
-    let difference_path = output.join("migration-first-batch-difference-dark.png");
-    write::png(&difference_path, MIGRATION_SIZE, &difference)?;
-
-    let report_path = output.join("migration-first-batch-layout.txt");
-    write_migration_layout_report(&report_path, &runtime_layout)?;
-
-    Ok(vec![
-        legacy_path,
-        runtime_path,
-        comparison_path,
-        difference_path,
-        report_path,
-    ])
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(runtime_document.scene(), MIGRATION_SIZE, clear, None, None)?;
+    let key = "migration-first-batch-dark.png";
+    recorder.record(key, MIGRATION_SIZE, &pixels, clear)?;
+    write_migration_layout_report(&recorder.sibling(key, "layout.txt"), &runtime_layout)
 }
 
 fn migration_runtime_document(
@@ -633,7 +594,7 @@ fn migration_runtime_document(
     Ok((document, layout))
 }
 
-pub(super) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
+pub(crate) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32) -> Vec<u8> {
     let output_width = size.width * 2 + gap;
     let mut output = vec![0; (output_width * size.height * 4) as usize];
     for y in 0..size.height as usize {
@@ -649,7 +610,7 @@ pub(super) fn side_by_side(left: &[u8], right: &[u8], size: Size<u32>, gap: u32)
     output
 }
 
-pub(super) fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
+pub(crate) fn pixel_difference(left: &[u8], right: &[u8]) -> Vec<u8> {
     left.as_chunks::<4>()
         .0
         .iter()
@@ -667,12 +628,9 @@ fn write_migration_layout_report(
     path: &Path,
     runtime: &[MigrationLayoutMessage],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut report = String::from("component\tarchived\truntime\tstrict_equal\n");
+    let mut report = String::from("component\truntime_bounds\n");
     for entry in runtime {
-        report.push_str(&format!(
-            "{}\tarchived-png\t{:?}\tfalse\n",
-            entry.component, entry.bounds
-        ));
+        report.push_str(&format!("{}\t{:?}\n", entry.component, entry.bounds));
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -683,22 +641,15 @@ fn write_migration_layout_report(
 
 fn runtime_scene_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     theme: ThemeMode,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(900, 500);
     let document = runtime_scene_document(theme)?;
-    offscreen::write_scene(
-        snapshots,
-        output,
-        name,
-        document.scene(),
-        size,
-        clear_color(theme),
-        None,
-        None,
-    )
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+    recorder.record(name, size, &pixels, clear)
 }
 
 fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
@@ -1092,27 +1043,20 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
 
 fn titlebar_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
     hover: Option<LogicalPoint>,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(900, 120);
     let mut document = titlebar_document(theme, chrome)?;
     if let Some(point) = hover {
         dispatch_pointer(&mut document, size, PointerPhase::Move, point)?;
     }
-    offscreen::write_scene(
-        snapshots,
-        output,
-        name,
-        document.scene(),
-        size,
-        clear_color(theme),
-        None,
-        None,
-    )
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+    recorder.record(name, size, &pixels, clear)
 }
 
 fn titlebar_document(
@@ -1175,12 +1119,12 @@ fn titlebar_document(
 
 fn dock_window_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
     root: DockNode,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = if matches!(
         name,
         n if n.contains("merged")
@@ -1190,16 +1134,9 @@ fn dock_window_snapshot(
         Size::new(420, 320)
     };
     let document = dock_window_document(theme, chrome, root, size)?;
-    offscreen::write_scene(
-        snapshots,
-        output,
-        name,
-        document.scene(),
-        size,
-        clear_color(theme),
-        None,
-        None,
-    )
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+    recorder.record(name, size, &pixels, clear)
 }
 
 fn dock_window_document(
@@ -1248,45 +1185,31 @@ fn dock_window_document(
 
 fn dock_drag_window_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     theme: ThemeMode,
     chrome: WindowChrome,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
     let document = dock_window_document(theme, chrome, DockNode::item("navigation", None), size)?;
-    offscreen::write_scene(
-        snapshots,
-        output,
-        name,
-        document.scene(),
-        size,
-        clear_color(theme),
-        None,
-        None,
-    )
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+    recorder.record(name, size, &pixels, clear)
 }
 
 fn dock_preview_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     theme: ThemeMode,
     zone: DockDropZone,
     phase: DockPreviewPhase,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
     let document = dock_preview_document(theme, zone, phase, name.contains("outside"), size)?;
-    offscreen::write_scene(
-        snapshots,
-        output,
-        name,
-        document.scene(),
-        size,
-        clear_color(theme),
-        None,
-        None,
-    )
+    let clear = clear_color(theme);
+    let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+    recorder.record(name, size, &pixels, clear)
 }
 
 fn dock_preview_document(
@@ -1343,27 +1266,26 @@ fn dock_preview_document(
 
 fn gallery_snapshot(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     state: &mut GalleryState,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     state.flush_snapshot_scene();
+    let clear = clear_color(state.theme_mode());
     let pixels = paint_gallery(snapshots, state, GALLERY_SIZE)?;
-    let path = output.join(name);
-    write::png(&path, GALLERY_SIZE, &pixels)?;
-    Ok(path)
+    recorder.record(name, GALLERY_SIZE, &pixels, clear)
 }
 
 fn gallery_snapshot_with_cursor(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     name: &str,
     state: &mut GalleryState,
     cursor: LogicalPoint,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     state.flush_snapshot_scene();
     state.snapshot_hover(cursor.x, cursor.y);
-    gallery_snapshot(snapshots, output, name, state)
+    gallery_snapshot(snapshots, recorder, name, state)
 }
 
 fn paint_gallery(
@@ -1402,21 +1324,6 @@ fn paint_gallery(
         ),
         None => snapshots.paint_layers(&[], size, clear, Some(&gpu.textures), Some(&gpu.renderers)),
     }
-}
-
-fn archived_or_runtime(
-    path: &Path,
-    size: Size<u32>,
-    runtime: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if let Some((png_size, pixels)) = write::read_png(path)
-        && png_size == size
-        && pixels.len() == runtime.len()
-    {
-        return Ok(pixels);
-    }
-    write::png(path, size, runtime)?;
-    Ok(runtime.to_vec())
 }
 
 fn clear_color(theme: ThemeMode) -> [f32; 4] {

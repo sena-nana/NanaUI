@@ -1,11 +1,12 @@
 //! Snapshot evidence; no product state is stored here.
 use super::*;
 
+/// Writes the fixture's evidence file and returns its `machine_verdict`.
 pub(super) fn write_evidence(
     path: &Path,
     fixture: Fixture,
     runtime: &RuntimeEvidence,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let world = runtime.document.context().world();
     let bounds = world.layout_box(runtime.target);
     let hit = bounds.and_then(|bounds| {
@@ -508,6 +509,7 @@ pub(super) fn write_evidence(
         fixture.component,
         Component::Card
             | Component::Text
+            | Component::Avatar
             | Component::StatusBadge
             | Component::ValidationMessage
             | Component::EmptyState
@@ -602,6 +604,7 @@ pub(super) fn write_evidence(
             | Component::GpuTextureView
             | Component::GpuView
             | Component::Thumbnail
+            | Component::Avatar
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -764,7 +767,7 @@ pub(super) fn write_evidence(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, report)?;
-    Ok(())
+    Ok(runtime_ok)
 }
 
 pub(super) fn review_result(fixture: Fixture) -> (&'static str, &'static str) {

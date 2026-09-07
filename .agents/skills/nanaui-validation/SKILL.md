@@ -13,9 +13,16 @@ description: Select and report functional validation for NanaUI changes. Use whe
   screenshot reply's `pixels` stats, then the PNG; use `probe` / `hit_test` /
   `diagnostics` when something is missing rather than guessing from the image. Do
   not treat semantic-only updates as visual proof.
-- **Visual:** Render the real workspace/gallery path with `ui-snapshots` and inspect affected PNGs.
-  Paint `UiScene` through `SceneWgpuPainter`; keep the snapshot painter alive through
-  readback and send a real redraw update.
+- **Visual:** Render the real workspace/gallery path with `ui-snapshots`. It compares every
+  frame against the committed per-adapter baseline in
+  [`examples/component-gallery/snapshots/`](../../../examples/component-gallery/snapshots/README.md)
+  and exits non-zero on any difference, so a red run is the evidence — read
+  `target/ui-snapshots/snapshot-report.txt`, then the `*.difference.png` and
+  `*.side-by-side.png` it names. Re-record only after confirming the change is intended, with
+  `-- --bless [PREFIX ...]`; a bare `--bless` re-records all 559 snapshots. Comparison is exact
+  and baselines belong to the adapter that recorded them: another machine's GPU needs its own
+  `--bless` run, not a loosened threshold. Paint `UiScene` through `SceneWgpuPainter`; keep the
+  snapshot painter alive through readback and send a real redraw update.
 - **GPU:** Test geometry, invalidation and resource lifecycle; run `hosted-gpu-demo` for Surface or
   shared-context changes.
 - **Window:** Check the outcome contract and affected targets; require real platform evidence for
@@ -52,6 +59,7 @@ cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
 cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 cargo run --release -p component-gallery --bin ui-snapshots \
   --features snapshots --locked
+cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked
 cargo test -p nana-ui-devtools --features agent --lib --locked
 ```

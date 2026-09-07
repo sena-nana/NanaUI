@@ -17,7 +17,7 @@ use fixture_values::*;
 mod catalog;
 use catalog::*;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,13 +27,14 @@ use nana_ui::runtime::{
     ActionMenuItem as RuntimeActionMenuItem, Activate,
     AnchoredActionMenu as RuntimeAnchoredActionMenu, AppShell as RuntimeAppShell,
     AppTitleBar as RuntimeAppTitleBar, AppearanceSection as RuntimeAppearanceSection,
-    Button as RuntimeButton, CalendarHeatmap as RuntimeCalendarHeatmap,
+    Avatar as RuntimeAvatar, Button as RuntimeButton, CalendarHeatmap as RuntimeCalendarHeatmap,
     CalendarHeatmapDatum as RuntimeCalendarDatum, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
-    CommandPalette as RuntimeCommandPalette, ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots,
-    ContextMenu as RuntimeContextMenu, ContextMenuItem as RuntimeContextMenuItem,
-    DesktopShell as RuntimeDesktopShell, Dialog as RuntimeDialog, Dock as RuntimeDock,
-    DockNode as RuntimeDockNode, DockPanel as RuntimeDockPanel, DocumentId,
-    Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
+    Chip as RuntimeChip, CommandPalette as RuntimeCommandPalette,
+    ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots, ContextMenu as RuntimeContextMenu,
+    ContextMenuItem as RuntimeContextMenuItem, DesktopShell as RuntimeDesktopShell,
+    Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
+    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
+    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
     EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
     GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
     GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
@@ -81,13 +82,12 @@ use nana_ui_core::{
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 use nana_ui_scene::ScenePrimitiveKind;
 
-use crate::write::{self, Size};
+use crate::baseline::Recorder;
+use crate::write::Size;
 
 use super::gpu::{self, SnapshotGpu};
-use super::{pixel_difference, side_by_side};
 
 const SIZE: Size<u32> = Size::new(420, 120);
-const GAP: u32 = 8;
 const SLOT_INSET: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +106,8 @@ enum Component {
     SegmentedControl,
     Tabs,
     StatusBadge,
+    Chip,
+    Avatar,
     ValidationMessage,
     EmptyState,
     LabeledValue,
@@ -184,6 +186,8 @@ impl Component {
             Self::SegmentedControl => component_ids::SEGMENTED_CONTROL,
             Self::Tabs => component_ids::TABS,
             Self::StatusBadge => component_ids::STATUS_BADGE,
+            Self::Chip => component_ids::CHIP,
+            Self::Avatar => component_ids::AVATAR,
             Self::ValidationMessage => component_ids::VALIDATION_MESSAGE,
             Self::EmptyState => component_ids::EMPTY_STATE,
             Self::LabeledValue => component_ids::LABELED_VALUE,
@@ -274,9 +278,9 @@ fn tooltip_fixture_config(state: &str) -> TooltipConfig {
 
 pub(super) fn generate_registered(
     snapshots: &mut super::offscreen::OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     theme: ThemeMode,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
     let colors = theme.colors();
@@ -286,11 +290,10 @@ pub(super) fn generate_registered(
         colors.background,
         colors.accent_strong,
     );
-    let mut paths = Vec::with_capacity(FIXTURE_REGISTRY.len() * 5);
     for fixture in FIXTURE_REGISTRY {
-        paths.extend(render_fixture(snapshots, output, theme, *fixture, &gpu)?);
+        render_fixture(snapshots, recorder, theme, *fixture, &gpu)?;
     }
-    Ok(paths)
+    Ok(())
 }
 
 fn validate_fixture_registry() -> Result<(), String> {
@@ -336,21 +339,21 @@ fn validate_fixture_registry() -> Result<(), String> {
 
 fn render_fixture(
     snapshots: &mut super::offscreen::OffscreenSnapshots,
-    output: &Path,
+    recorder: &mut Recorder,
     theme: ThemeMode,
     fixture: Fixture,
     gpu: &SnapshotGpu,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let size = fixture_size(fixture);
     let theme_name = match theme {
         ThemeMode::Dark => "dark",
         ThemeMode::Light => "light",
     };
-    let directory = output
-        .join("component-migration")
-        .join(fixture.id.as_str())
-        .join(theme_name)
-        .join(fixture.state);
+    let key = format!(
+        "component-migration/{}/{theme_name}/{}.png",
+        fixture.id.as_str(),
+        fixture.state
+    );
 
     let runtime = runtime_fixture(theme, fixture, size)?;
     let (host_textures, gpu_renderers) = if is_gpu_fixture(fixture) {
@@ -358,50 +361,25 @@ fn render_fixture(
     } else {
         (None, None)
     };
-    let runtime_pixels = snapshots.paint(
+    let colors = theme.colors();
+    let clear = [
+        colors.background.r,
+        colors.background.g,
+        colors.background.b,
+        colors.background.a,
+    ];
+    let pixels = snapshots.paint(
         runtime.document.scene(),
         size,
-        [
-            theme.colors().background.r,
-            theme.colors().background.g,
-            theme.colors().background.b,
-            theme.colors().background.a,
-        ],
+        clear,
         host_textures,
         gpu_renderers,
     )?;
-    let runtime_path = directory.join("runtime.png");
-    write::png(&runtime_path, size, &runtime_pixels)?;
-
-    let reference_path = directory.join("reference.png");
-    let reference_pixels = if let Some((png_size, pixels)) = write::read_png(&reference_path) {
-        if png_size == size && pixels.len() == runtime_pixels.len() {
-            pixels
-        } else {
-            runtime_pixels.clone()
-        }
-    } else {
-        write::png(&reference_path, size, &runtime_pixels)?;
-        runtime_pixels.clone()
-    };
-
-    let side_size = Size::new(size.width * 2 + GAP, size.height);
-    let side = side_by_side(&reference_pixels, &runtime_pixels, size, GAP);
-    let side_path = directory.join("side-by-side.png");
-    write::png(&side_path, side_size, &side)?;
-    let difference = pixel_difference(&reference_pixels, &runtime_pixels);
-    let difference_path = directory.join("difference.png");
-    write::png(&difference_path, size, &difference)?;
-
-    let evidence_path = directory.join("evidence.txt");
-    write_evidence(&evidence_path, fixture, &runtime)?;
-    Ok(vec![
-        reference_path,
-        runtime_path,
-        side_path,
-        difference_path,
-        evidence_path,
-    ])
+    recorder.record(&key, size, &pixels, clear)?;
+    if !write_evidence(&recorder.sibling(&key, "evidence.txt"), fixture, &runtime)? {
+        recorder.note_contract_failure(&key);
+    }
+    Ok(())
 }
 
 fn fixture_size(fixture: Fixture) -> Size<u32> {
@@ -447,6 +425,8 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::NativeMarkdown, _) => Size::new(420, 140),
         (Component::ImageViewer, _) => Size::new(420, 240),
         (Component::GraphCanvas, _) => Size::new(420, 180),
+        (Component::Chip, _) => Size::new(200, 44),
+        (Component::Avatar, _) => Size::new(56, 56),
         (Component::Thumbnail, "wide") => Size::new(80, 40),
         (Component::Thumbnail, _) => Size::new(40, 40),
         _ => SIZE,
@@ -464,7 +444,8 @@ fn is_gpu_fixture(fixture: Fixture) -> bool {
     matches!(
         fixture.component,
         Component::GpuTextureView | Component::GpuView
-    ) || (fixture.component == Component::Thumbnail && fixture.state == "ready")
+    ) || (matches!(fixture.component, Component::Thumbnail | Component::Avatar)
+        && fixture.state == "ready")
 }
 
 struct RuntimeEvidence {
@@ -881,6 +862,28 @@ fn runtime_fixture(
                     status_badge_label(fixture.state),
                     status_tone(fixture.state),
                 ),
+            )?
+            .stable_id(),
+        Component::Chip => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeChip::new("Design review")
+                    .selected(fixture.state == "selected")
+                    .disabled(fixture.state == "disabled")
+                    .dismissible(matches!(fixture.state, "dismissible" | "disabled")),
+            )?
+            .stable_id(),
+        Component::Avatar => document
+            .context_mut()
+            .create_component(
+                document_id,
+                match fixture.state {
+                    "ready" => RuntimeAvatar::new(gpu::SNAPSHOT_GPU_SLOT),
+                    _ => RuntimeAvatar::empty(),
+                }
+                .size(40.0)
+                .label("Sena"),
             )?
             .stable_id(),
         Component::ValidationMessage => document

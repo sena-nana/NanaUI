@@ -63,9 +63,10 @@ Vue 的共享句柄复用 `Arc<Mutex<NanaTreeDocument>>`，其中独占持有 `R
 本机证据位于：
 
 - `target/performance/refactor-{runtime,vue,scene}.json` 与 `refactor-framework-catalog.json`；Issue #8 报告在 `target/performance/refactor-issue8/`。
-- `target/refactor-agent.png` 与 `target/ui-snapshots/`。这些产物留在构建目录，不作为新的视觉基准提交。
+- `target/refactor-agent.png` 与 `target/ui-snapshots/`。这些产物留在构建目录；当时没有可比对的基准。
 
-Gallery 的现有参考图回退机制可能使用 Runtime 输出；生成成功不等于 LiliaUI 视觉等价。本轮只对实际打开的图片作视觉确认，没有重新认证全部控件资格。未运行 Windows/Android 真机效果、远程 CI 或百万节点扩展规模；macOS 结果不能替代这些证据。
+Gallery 当时的参考图回退机制会把 Runtime 输出直接写成基准，生成成功不等于 LiliaUI 视觉等价；该回退已被
+`examples/component-gallery/snapshots/` 下按适配器提交的基准与显式 `--bless` 取代。本轮只对实际打开的图片作视觉确认，没有重新认证全部控件资格。未运行 Windows/Android 真机效果、远程 CI 或百万节点扩展规模；macOS 结果不能替代这些证据。
 
 ## 验收中修复的问题
 

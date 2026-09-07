@@ -60,6 +60,13 @@ jobs:
       # visibly through `offscreen::pixels_available`.
       - name: Run headless Agent tests
         run: cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked
+      # The Gallery snapshot gate itself cannot run here: it compares exactly
+      # against a baseline recorded by one GPU adapter, and no hosted runner
+      # matches a committed adapter key. These tests cover the parts that are
+      # adapter-independent -- the baseline store's verify/bless/stale logic,
+      # and that every compiled component still has a snapshot fixture.
+      - name: Run Gallery snapshot-gate tests
+        run: cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
       - name: Check the Vue-free Agent tier pulls no JS engine
         shell: bash
         run: |

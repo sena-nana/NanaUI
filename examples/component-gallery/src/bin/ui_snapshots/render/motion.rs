@@ -7,9 +7,8 @@ use std::time::Duration;
 
 pub(super) fn generate(
     snapshots: &mut OffscreenSnapshots,
-    output: &Path,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut paths = Vec::new();
+    recorder: &mut Recorder,
+) -> Result<(), Box<dyn std::error::Error>> {
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         let doc = DocumentId::new(1).unwrap();
         let mut document = RuntimeDocument::new(doc);
@@ -96,17 +95,15 @@ pub(super) fn generate(
                 cx.dismiss_overlay(host)?;
             }
             document.flush(viewport, &mut shaper)?;
-            paths.push(offscreen::write_scene(
-                snapshots,
-                output,
+            let clear = clear_color(theme);
+            let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
+            recorder.record(
                 &format!("motion-{theme_name}-{ms:04}.png"),
-                document.scene(),
                 size,
-                clear_color(theme),
-                None,
-                None,
-            )?);
+                &pixels,
+                clear,
+            )?;
         }
     }
-    Ok(paths)
+    Ok(())
 }

@@ -805,6 +805,36 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "danger status uses the semantic danger tone",
     ),
     f(
+        Component::Chip,
+        "default",
+        "an unselected chip reads as a quiet token and stays keyboard reachable",
+    ),
+    f(
+        Component::Chip,
+        "selected",
+        "a selected chip carries the accent tone and reports its selected state",
+    ),
+    f(
+        Component::Chip,
+        "dismissible",
+        "a dismissible chip paints its close affordance inside the token bounds",
+    ),
+    f(
+        Component::Chip,
+        "disabled",
+        "a disabled chip keeps its label legible and stops taking pointer input",
+    ),
+    f(
+        Component::Avatar,
+        "empty",
+        "an avatar without a resource falls back to a subtle circular placeholder",
+    ),
+    f(
+        Component::Avatar,
+        "ready",
+        "a bound avatar samples its host texture cover-fit inside the circular clip",
+    ),
+    f(
         Component::ValidationMessage,
         "warning",
         "warning validation retains its outlined marker and regular text weight",
