@@ -156,12 +156,26 @@ impl RegisterableComponent for Stack {
     const BIND_KIND: crate::ComponentBindKind = crate::ComponentBindKind::Layout;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut layout = spec.layout.as_ref().clone();
-        if layout.direction.is_none() {
-            match spec.type_id.as_str() {
-                "nana.row" => layout.direction = Some(nana_ui_core::FlexDirection::Row),
-                "nana.column" => layout.direction = Some(nana_ui_core::FlexDirection::Column),
-                _ => {}
-            }
+        // `nana.row` needs the seed: the engine's default flow axis is the
+        // block axis, so a row that does not say so lays out as a column.
+        //
+        // `nana.column` must NOT be seeded, even though it reads as the
+        // symmetric case. `used_flow_direction` is `unwrap_or(Column)`, so
+        // `None` and `Some(Column)` are the same layout -- and writing the
+        // second spelling over the first is not free. The Vue cascade rebuilds
+        // a node's `LayoutStyle` from scratch whenever author CSS applies to
+        // it, which leaves `direction` unset; this seed then wrote
+        // `Some(Column)` back through `project_common`, and the two writers
+        // alternated on every node, every pointer event. On a 2,000-row list
+        // that alternation scheduled a layout pass per event that nothing had
+        // asked for: removing it takes `FrameStage::Layout` on a hover from
+        // 0.138 ms to zero and settle from 0.62 to 0.40 ms.
+        //
+        // `projecting_a_stack_does_not_rewrite_the_style_the_cascade_published`
+        // holds this; `an_unset_flow_axis_is_a_column_but_not_a_row` holds the
+        // half that is load-bearing.
+        if layout.direction.is_none() && spec.type_id.as_str() == "nana.row" {
+            layout.direction = Some(nana_ui_core::FlexDirection::Row);
         }
         Stack::from_layout(layout)
     }
@@ -3624,6 +3638,124 @@ mod tests {
                 .resolve_component_tag("nana-video")
                 .map(ComponentTypeId::as_str),
             Some("nana.video")
+        );
+    }
+}
+
+#[cfg(test)]
+mod stack_direction_tests {
+    use super::*;
+    use crate::layout_engine::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
+    use crate::{
+        ComponentTypeId, ComponentView, DocumentId, MutationQueue, NodeKind, RegisterableComponent,
+        SemanticSpec, StableNodeId, UiWorld,
+    };
+    use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec};
+
+    /// Whether projecting a `Stack` over the style the CSS cascade just
+    /// published asks for a further style write.
+    fn projection_rewrites_style(type_id: &str, cascaded: &Arc<LayoutStyle>) -> bool {
+        let document = DocumentId::new(1).unwrap();
+        let id = StableNodeId::new(1).unwrap();
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, NodeKind::Element { tag: "div".into() });
+        // What `publish_layouts` writes: the cascade's own result.
+        queue.set_style(
+            id,
+            crate::NodeStyle {
+                layout: Arc::clone(cascaded),
+                ..crate::NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+
+        let type_id = ComponentTypeId::new(type_id).unwrap();
+        let stack = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, cascaded));
+        let mut queue = MutationQueue::new();
+        stack.project(id, &world, &mut queue);
+        !queue.is_empty()
+    }
+
+    /// Projection must not ask to rewrite the style the cascade just wrote.
+    ///
+    /// The Vue cascade rebuilds a node's `LayoutStyle` from scratch whenever
+    /// author CSS applies to it, which leaves `direction` unset. If projection
+    /// seeds a value there, the next cascade drops it again and the two writers
+    /// alternate on that node forever -- a style write per node per frame, and
+    /// with it a layout pass nothing asked for. On a 2,000-row list that cost
+    /// `FrameStage::Layout` 0.138 ms and settle 0.22 ms per pointer event.
+    ///
+    /// `nana.row` is the exception, and it is not a spelling difference: the
+    /// engine's default flow axis is the block axis, so a row that does not say
+    /// so lays out as a column. Its write is owed. That it still fights the
+    /// cascade is the remaining half, recorded in `docs/runtime-dirty-frame.md`.
+    #[test]
+    fn projecting_a_stack_does_not_rewrite_the_style_the_cascade_published() {
+        // Sized by author CSS, no `direction` -- what the cascade produces.
+        let cascaded = Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Px(320.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        });
+        for type_id in ["nana.column", "nana.box", "nana.stack"] {
+            assert!(
+                !projection_rewrites_style(type_id, &cascaded),
+                "{type_id}: projection rewrote the cascade's style, which puts \
+                 this node in a write-per-frame loop"
+            );
+        }
+        assert!(
+            projection_rewrites_style("nana.row", &cascaded),
+            "nana.row must still seed its flow axis -- if this stops being \
+             true the assertion above is testing nothing"
+        );
+    }
+
+    /// The half of the seed that is load-bearing, and the half that is not.
+    ///
+    /// Without this, "stop seeding" reads as a free simplification in both
+    /// directions -- and laying a row out as a column is a very visible bug.
+    #[test]
+    fn an_unset_flow_axis_is_a_column_but_not_a_row() {
+        let child = |name: &str| StyleLayoutNode {
+            id: name.into(),
+            style: LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..LayoutStyle::default()
+            },
+            children: Vec::new(),
+            text: None,
+        };
+        let laid_out = |direction: Option<FlexDirection>| {
+            let root = StyleLayoutNode {
+                id: "root".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Px(300.0)),
+                    height: Some(LengthSpec::Px(300.0)),
+                    direction,
+                    ..LayoutStyle::default()
+                },
+                children: vec![child("a"), child("b")],
+                text: None,
+            };
+            RuntimeLayoutEngine
+                .layout_style_tree(&root, LayoutViewport::new(320.0, 480.0))
+                .into_iter()
+                .find(|(name, _)| name == "b")
+                .expect("second child")
+                .1
+        };
+        assert_eq!(
+            laid_out(None),
+            laid_out(Some(FlexDirection::Column)),
+            "dropping the nana.column seed has to be inert"
+        );
+        assert_ne!(
+            laid_out(None),
+            laid_out(Some(FlexDirection::Row)),
+            "the nana.row seed has to stay"
         );
     }
 }
