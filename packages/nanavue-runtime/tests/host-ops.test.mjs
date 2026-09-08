@@ -357,6 +357,78 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(attrs.get(nodeId(el)).style, undefined);
   });
 
+  test("an unchanged style object does not cross into the host again", async () => {
+    // Vue compares props by reference, so a render function that builds its
+    // style inline hands over a new object every render. On a long list that
+    // was one crossing per row per render, each one landing in the CSS cascade.
+    const el = hostOps.createElement("div");
+    const stylePatches = () =>
+      calls.filter(([name, args]) => name === "patchProp" && args[1] === "style");
+    hostOps.patchProp(el, "style", null, { color: "red", gap: "8px" });
+    const after = stylePatches().length;
+
+    for (let i = 0; i < 5; i += 1) {
+      hostOps.patchProp(el, "style", { color: "red" }, { color: "red", gap: "8px" });
+    }
+    assert.equal(stylePatches().length, after, "equal declarations must stay home");
+    assert.deepEqual(attrs.get(nodeId(el)).style, { color: "red", gap: "8px" });
+
+    hostOps.patchProp(el, "style", null, { color: "blue", gap: "8px" });
+    assert.equal(stylePatches().length, after + 1, "a changed value must cross");
+    assert.deepEqual(attrs.get(nodeId(el)).style, { color: "blue", gap: "8px" });
+
+    // Dropping a declaration is a change even though no value differs.
+    hostOps.patchProp(el, "style", null, { color: "blue" });
+    assert.equal(stylePatches().length, after + 2);
+    assert.deepEqual(attrs.get(nodeId(el)).style, { color: "blue" });
+  });
+
+  test("an imperative style write does not erase what Vue patched", async () => {
+    // A TransitionGroup FLIP writes `transitionDuration` through the proxy. The
+    // proxy flush replaces the whole style attribute, so before the two writers
+    // were merged this dropped every declaration Vue owned.
+    const el = hostOps.createElement("div");
+    hostOps.patchProp(el, "style", null, { color: "red", gap: "8px" });
+    el.style.transitionDuration = "0s";
+    await Promise.resolve();
+
+    assert.deepEqual(attrs.get(nodeId(el)).style, {
+      color: "red",
+      gap: "8px",
+      transitionDuration: "0s",
+    });
+
+    // And Vue patching afterwards keeps the imperative write.
+    hostOps.patchProp(el, "style", null, { color: "blue", gap: "8px" });
+    assert.deepEqual(attrs.get(nodeId(el)).style, {
+      color: "blue",
+      gap: "8px",
+      transitionDuration: "0s",
+    });
+  });
+
+  test("a removed node forgets what the host held for it", () => {
+    // `remove` destroys the host's style state but keeps the JS shell so
+    // detached refs stay `===`. A cache that survived would suppress the patch
+    // that has to restore the declarations.
+    const parent = hostOps.createElement("div");
+    const el = hostOps.createElement("div");
+    hostOps.insert(el, parent, null);
+    hostOps.patchProp(el, "style", null, { color: "red" });
+    const stylePatches = () =>
+      calls.filter(([name, args]) => name === "patchProp" && args[1] === "style");
+    const before = stylePatches().length;
+
+    hostOps.remove(el);
+    hostOps.insert(el, parent, null);
+    hostOps.patchProp(el, "style", null, { color: "red" });
+
+    assert.ok(
+      stylePatches().length > before,
+      "the same declarations must cross again after the host forgot them",
+    );
+  });
+
   test("Vue warning and error handlers report structured diagnostics", () => {
     const app = createApp({});
     app.config.warnHandler("bad prop", null, "component trace");

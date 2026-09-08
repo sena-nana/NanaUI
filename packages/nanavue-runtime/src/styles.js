@@ -1,21 +1,113 @@
 /** Shared style queue; flushing never invalidates node identity or hierarchy. */
 import { hostCall } from "./layoutMetrics.js";
 import { isPaintOnlyStyleKey } from "./transitionContract.js";
-const pendingStyleStores = new Map();
+
+/**
+ * Per node, what each writer has declared and what the host was last given.
+ *
+ * Two writers own one style attribute: Vue's `patchProp` and the `el.style`
+ * proxy. The host op replaces the whole attribute, so whoever writes last used
+ * to erase the other -- a `TransitionGroup` FLIP writing `transitionDuration`
+ * through the proxy would drop every declaration Vue had patched. Keeping the
+ * two layers apart and sending their merge is what makes both survive, and it
+ * is also what makes `sent` a truthful answer to "does the host already have
+ * this?", which is the question that lets an unchanged repatch stay home.
+ *
+ * `vue` is the cleaned object from `patchProp`, or `OPAQUE` when Vue handed a
+ * raw CSS string. A string is not merged: parsing it back into declarations
+ * would have to get `url(a:b)` and quoted semicolons right for no gain, so that
+ * path keeps its old send-every-time behaviour.
+ */
+const styleLayers = new Map();
+const OPAQUE = Symbol("opaque style");
+const pendingStyleFlush = new Set();
 let styleFlushScheduled = false;
-export function flushPendingStyles() {
-  if (!pendingStyleStores.size) return;
-  const batch = [...pendingStyleStores.entries()];
-  pendingStyleStores.clear();
-  for (const [nid, store] of batch) {
-    try {
-      hostCall("patchProp", [nid, "style", { ...store }]);
-    } catch (_err) {}
+
+function layersFor(nid) {
+  let layers = styleLayers.get(nid);
+  if (!layers) {
+    layers = { vue: null, proxy: null, sent: OPAQUE };
+    styleLayers.set(nid, layers);
   }
+  return layers;
+}
+
+/** The declarations the host should hold for `nid`, or `null` to clear. */
+function mergedStyle(layers) {
+  let proxy = layers.proxy ? hostStyleStore(layers.proxy) : null;
+  // A registered but empty proxy layer is the same as no proxy layer. Letting
+  // `{}` count as present would turn "Vue cleared the style" into "Vue set an
+  // empty style", and the host clears the attribute only for `null`.
+  if (proxy && Object.keys(proxy).length === 0) proxy = null;
+  const vue = layers.vue;
+  if (vue === OPAQUE) return OPAQUE;
+  if (!vue && !proxy) return null;
+  // The proxy wins per key: it is an imperative write applied after render, the
+  // same precedence the DOM gives `el.style.foo = v` over the attribute.
+  return { ...(vue || {}), ...(proxy || {}) };
+}
+
+function sameDeclarations(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+/** Send the merged style unless the host already has exactly it. */
+function sendStyle(nid) {
+  const layers = layersFor(nid);
+  const next = mergedStyle(layers);
+  if (next !== OPAQUE && layers.sent !== OPAQUE && sameDeclarations(next, layers.sent)) {
+    return false;
+  }
+  layers.sent = next;
+  try {
+    hostCall("patchProp", [nid, "style", next === OPAQUE ? null : next]);
+  } catch (_err) {}
+  return true;
+}
+
+export function flushPendingStyles() {
+  if (!pendingStyleFlush.size) return;
+  const batch = [...pendingStyleFlush];
+  pendingStyleFlush.clear();
+  for (const nid of batch) sendStyle(nid);
+}
+
+/**
+ * Record what Vue's `patchProp` declared and send it if the host lacks it.
+ *
+ * `cleaned` is an object, or a raw CSS string, or `null` to clear. Returns
+ * whether anything crossed into the host.
+ */
+export function setVueStyle(nid, cleaned) {
+  const layers = layersFor(nid);
+  if (typeof cleaned === "string") {
+    layers.vue = OPAQUE;
+    layers.sent = OPAQUE;
+    try {
+      hostCall("patchProp", [nid, "style", cleaned]);
+    } catch (_err) {}
+    return true;
+  }
+  layers.vue = cleaned || null;
+  return sendStyle(nid);
+}
+
+/** Drop every layer for a node. Called wherever the node's host state dies. */
+export function forgetStyle(nid) {
+  styleLayers.delete(nid);
+  pendingStyleFlush.delete(nid);
 }
 
 export function queueStyleFlush(nid, store) {
-  pendingStyleStores.set(nid, hostStyleStore(store));
+  layersFor(nid).proxy = store;
+  pendingStyleFlush.add(nid);
   if (styleFlushScheduled) return;
   styleFlushScheduled = true;
   const run = () => {
@@ -76,6 +168,9 @@ export function syncPaintTransform(nid, store) {
 
 export function createStyleProxy(nid) {
   const store = Object.create(null);
+  // Registered up front so a Vue patch merges with an empty proxy layer rather
+  // than with one that only appears after the first imperative write.
+  layersFor(nid).proxy = store;
   const markDirty = () => queueStyleFlush(nid, store);
   return new Proxy(store, {
     get(target, prop) {

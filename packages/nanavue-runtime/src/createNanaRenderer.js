@@ -20,7 +20,7 @@ export { applyFlipPaintTransform, clearFlipPaintTransform, readFlipBox } from ".
 
 
 import { isOn, isModelListener, shouldSetAsDomProp, isSvgElement, isSvgAttrKey, serializePatchValue, seedHostProps, syncClassList } from "./props.js";
-import { flushPendingStyles, queueStyleFlush, flushHostFrame, installFlushHooks, parseCssText, hostStyleStore, paintTransformCssValue, syncPaintTransform, createStyleProxy } from "./styles.js";
+import { flushPendingStyles, queueStyleFlush, flushHostFrame, installFlushHooks, parseCssText, hostStyleStore, paintTransformCssValue, syncPaintTransform, createStyleProxy, setVueStyle, forgetStyle } from "./styles.js";
 import { contextForWindow } from "./windowContext.js";
 import { createEventDispatcher } from "./events.js";
 import { createNodeStore } from "./nodes.js";
@@ -96,6 +96,14 @@ function releaseNodeResources(node) {
   if (!node || typeof node !== "object") return;
   const children = Array.from(node.childNodes || []);
   for (const child of children) releaseNodeResources(child);
+  // The host destroys this node's style state on remove, but `nodeCache` keeps
+  // the JS shell so detached refs stay `===`. Without this a re-inserted
+  // wrapper would look like the host still holds the old declarations, and the
+  // patch that should restore them would be skipped.
+  {
+    const nid = nodeId(node);
+    if (nid != null) forgetStyle(nid);
+  }
   if (node.__nanaOwnedImage && typeof node.__nanaOwnedImage.close === "function") {
     node.__nanaOwnedImage.close();
     node.__nanaOwnedImage = null;
@@ -316,11 +324,11 @@ export const hostOps = {
 
     if (key === "style") {
       if (next == null) {
-        hostCall("patchProp", [nid, "style", null]);
+        setVueStyle(nid, null);
         return;
       }
       if (typeof next === "string") {
-        hostCall("patchProp", [nid, "style", next]);
+        setVueStyle(nid, next);
         return;
       }
       if (typeof next === "object") {
@@ -328,6 +336,11 @@ export const hostOps = {
         let sawPaintTransform = false;
         for (const [k, v] of Object.entries(next)) {
           if (isPaintOnlyStyleKey(k)) {
+            // Writing the proxy is what assembles the paint transform, and the
+            // proxy's own setter already forwards it. Deliberately outside the
+            // cascade dedupe below: a transform can change while `cleaned` stays
+            // byte-identical, and `set_paint_transform` does its own equality
+            // check on the Rust side.
             if (el && el.style) el.style[k] = v == null ? "" : v;
             sawPaintTransform = true;
             continue;
@@ -339,7 +352,11 @@ export const hostOps = {
             hostCall("setPaintTransform", [nid, paintTransformCssValue(el.style)]);
           } catch (_err) {}
         }
-        hostCall("patchProp", [nid, "style", cleaned]);
+        // Vue compares props by reference, and a render function that builds its
+        // style object inline hands over a new one every time even when nothing
+        // in it moved. On a long list that is one crossing per row per render,
+        // each landing in the CSS cascade. Compare by value instead.
+        setVueStyle(nid, cleaned);
       }
       return;
     }
