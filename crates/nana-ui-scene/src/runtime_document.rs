@@ -178,13 +178,13 @@ impl RuntimeDocument {
                 || !work.layout.is_empty()
                 || !work.transform.is_empty()
                 || !work.state.is_empty();
-            accessibility_subtrees.extend(
-                work.input_hit_test
-                    .iter()
-                    .chain(&work.transform)
-                    .chain(&work.layout)
-                    .copied(),
-            );
+            // Same seed rule as `project_accessibility_delta`: hit-test and
+            // transform subtrees moved in viewport space, scheduled-layout
+            // nodes did not. `work.layout` reaches the document root for any
+            // leaf resize, so seeding from it expands to the whole document
+            // while the nodes that actually moved arrive via `WriteLayout`.
+            accessibility_subtrees
+                .extend(work.input_hit_test.iter().chain(&work.transform).copied());
 
             accessibility_dirty.extend(work.accessibility.iter().copied());
             accessibility_removed.extend(work.accessibility_removals.iter().copied());
@@ -232,9 +232,16 @@ impl RuntimeDocument {
                 .world()
                 .extract_nodes(&render_dirty.into_iter().collect::<Vec<_>>());
             self.context.record_extract(&extracted);
+            // Applying the delta to the retained scene is part of Extract, not
+            // free: it walks the extracted nodes, rebuilds their primitives,
+            // and copy-on-writes the scene when a renderer still holds the
+            // previous frame. Timing only `extract_nodes` left that outside
+            // every `FrameStage`, so a large reflow frame reported roughly
+            // half its real cost to the Issue #8 contract.
+            let scene = Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed);
             self.context
                 .time_stage_duration(FrameStage::Extract, started.elapsed());
-            Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed)
+            scene
         };
         self.context.finish_frame_profile();
         Ok(RuntimeFrameUpdate {

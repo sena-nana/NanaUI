@@ -315,6 +315,16 @@ impl UiWorld {
         // Scrolling and transforms leave LayoutBox unchanged and may carry no
         // ACCESSIBILITY dirty bit. Their hit-test subtrees nevertheless moved
         // in viewport space, so the native accessibility cache must see them.
+        //
+        // Scheduled-layout nodes are deliberately NOT seeds, for the same
+        // reason `RuntimeDocument::apply_hit_test_work` refuses them: layout
+        // invalidation propagates to ancestors, so any leaf resize puts the
+        // document root in `work.layout`, and expanding a root seed walks the
+        // whole document. The nodes whose box actually moved are already here
+        // by a different route -- layout writeback commits `WriteLayout`,
+        // which marks INPUT | RENDER | ACCESSIBILITY on exactly those nodes,
+        // shifted descendants included.
+        //
         // These sets exist to produce a sorted, de-duplicated id sequence. A
         // `BTreeSet` pays a tree insert and node allocation per id to do that;
         // sorting a flat vec once yields the identical sequence for far less.
@@ -323,7 +333,6 @@ impl UiWorld {
             .input_hit_test
             .iter()
             .chain(&work.transform)
-            .chain(&work.layout)
             .copied()
             .collect::<Vec<_>>();
         // `visited` is membership-only, so it does not need ordering at all.

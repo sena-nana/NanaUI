@@ -12,6 +12,7 @@ mod flex;
 use flex::*;
 // These caches use internal numeric identities/constraint bits, not external text keys.
 use hashbrown::HashMap;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -244,6 +245,16 @@ impl RuntimeLayoutEngine {
         }
         retained.used_padding.extend(nodes.used_padding.drain());
         retained.placements.extend(nodes.placements.drain());
+        for (id, plan) in nodes.container_plans.drain() {
+            match plan {
+                Some(plan) => {
+                    retained.container_plans.insert(id, plan);
+                }
+                None => {
+                    retained.container_plans.remove(&id);
+                }
+            }
+        }
         for ((id, width, height), size) in intrinsic {
             retained
                 .intrinsics
@@ -260,6 +271,7 @@ impl RuntimeLayoutEngine {
             retained.boxes.retain(|id, _| world.contains(*id));
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
+            retained.container_plans.retain(|id, _| world.contains(*id));
         }
         if retained.intrinsics.len() > universe.saturating_mul(2) {
             retained.intrinsics.retain(|id, _| world.contains(*id));
@@ -385,6 +397,7 @@ impl RetainedLayoutCache {
             cache.boxes.remove(&id);
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
+            cache.container_plans.remove(&id);
         }
     }
 
@@ -436,6 +449,8 @@ struct DocumentLayoutCache {
     materialized_inputs: usize,
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
     pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    /// Cached in-flow child placement per container. See [`ContainerPlan`].
+    container_plans: HashMap<StableNodeId, ContainerPlan>,
 }
 
 impl DocumentLayoutCache {
@@ -444,7 +459,170 @@ impl DocumentLayoutCache {
         self.placements.clear();
         self.boxes.clear();
         self.used_padding.clear();
+        self.container_plans.clear();
         self.materialized_inputs = 0;
+    }
+}
+
+/// Test-only visibility into whether scoped layout is actually incremental.
+///
+/// The differential harness proves the result is CORRECT; these counters prove
+/// it is cheap. Without them a "fix" that quietly relayouts every sibling still
+/// passes every equivalence test.
+#[cfg(test)]
+pub(crate) mod plan_stats {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
+        static CHILDREN_MEASURED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        PLANS_REUSED.with(|cell| cell.set(0));
+        CHILDREN_MEASURED.with(|cell| cell.set(0));
+    }
+
+    pub(crate) fn note_plan_reused() {
+        PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    pub(crate) fn note_child_measured() {
+        CHILDREN_MEASURED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    pub(crate) fn plans_reused() -> usize {
+        PLANS_REUSED.with(Cell::get)
+    }
+
+    /// Children a container had to intrinsic-measure during its own placement.
+    /// This is the sibling scan that used to make every dirty frame O(N).
+    pub(crate) fn children_measured() -> usize {
+        CHILDREN_MEASURED.with(Cell::get)
+    }
+}
+
+/// One child's contribution to a cached container placement.
+#[derive(Clone)]
+struct PlannedChild {
+    child: StableNodeId,
+    /// The child's own layout style at plan time, compared by pointer. This is
+    /// what catches a style edit that moves a child without resizing it --
+    /// `margin`, `align_self`, `order`, `flex_grow`.
+    style: Arc<nana_ui_core::LayoutStyle>,
+    /// Intrinsic size measured BEFORE flex distribution: the pure input the
+    /// rest of the container's placement is a function of.
+    intrinsic: Size,
+    origin: Point,
+    size: Size,
+    /// Main-axis cursor before this child, i.e. the prefix sum of every
+    /// preceding child's outer main extent plus gaps. Lets a suffix replay
+    /// start at any index in O(1) instead of re-accumulating from zero.
+    cursor_before: f32,
+}
+
+/// A container's placement of its in-flow children, cached across passes.
+///
+/// The whole point of scoped layout is to charge by the change, but a flex
+/// container still had to walk every child to discover that none of them
+/// moved: `subtree_unchanged` prunes a child's SUBTREE, not the parent's scan
+/// of its siblings. So a one-row edit in an N-row list cost O(N).
+///
+/// The placement of in-flow children is a pure function of the container's own
+/// inputs plus, in order, each child's layout style and intrinsic size. When
+/// all of those are unchanged the previous result still holds, so the pass can
+/// skip straight to the children the change closure actually reaches.
+///
+/// Only children in that closure need re-checking: a layout-affecting
+/// `set_style` marks the node LAYOUT-dirty (`mark_subtree`), which is what puts
+/// it in the closure. `UiWorld::children_layout_style_is_local` guards the
+/// cases where an ancestor could move a child's style without touching it.
+#[derive(Clone)]
+struct ContainerPlan {
+    origin: Point,
+    size: Size,
+    containing: Size,
+    parent_font_px: f32,
+    viewport: LayoutViewport,
+    /// The container's effective style, compared by pointer.
+    style: Arc<nana_ui_core::LayoutStyle>,
+    /// The container's child list, compared by pointer. A structural edit
+    /// copy-on-writes this `Arc` (the cache holds a reference, so the world's
+    /// `Arc::make_mut` cannot mutate it in place), so a different pointer is a
+    /// different list.
+    children: Arc<Vec<StableNodeId>>,
+    /// Containing block handed to each child.
+    content: Size,
+    child_font_px: f32,
+    /// Available size each child's intrinsic measurement was taken against.
+    child_available: Size,
+    main_direction: FlexDirection,
+    /// Origin of the container's content box.
+    content_origin: Point,
+    /// Main-axis gap between children.
+    gap: f32,
+    /// True when this container placed its children as a plain left-to-right
+    /// accumulation, so child `i`'s position depends only on the children
+    /// before it. Everything that would couple siblings is excluded: wrapping,
+    /// a `justify-content` that distributes free space, reversed flow, grid
+    /// tracks, auto main margins, baseline or center/end cross alignment, and
+    /// any flex grow/shrink redistribution (detected from the data -- every
+    /// child's used main size equalled its intrinsic).
+    ///
+    /// Under that shape a resized child shifts exactly the children after it,
+    /// so the pass can keep the prefix and replay only the suffix.
+    sequential: bool,
+    /// In placement order.
+    entries: RefCell<Vec<PlannedChild>>,
+    /// `(child, index into entries)`, sorted by child, so the pass can ask
+    /// "which of my children are in the change closure?" without walking every
+    /// entry. Scanning the entries instead would leave the fast path O(number
+    /// of children), which is the cost it exists to remove.
+    by_child: Vec<(StableNodeId, u32)>,
+}
+
+impl ContainerPlan {
+    /// Everything the container's own placement depends on, other than its
+    /// children. A mismatch here means the plan is about a different layout.
+    #[allow(clippy::too_many_arguments)]
+    fn inputs_match(
+        &self,
+        origin: Point,
+        size: Size,
+        containing: Size,
+        parent_font_px: f32,
+        viewport: LayoutViewport,
+        style: &Arc<nana_ui_core::LayoutStyle>,
+        children: &Arc<Vec<StableNodeId>>,
+    ) -> bool {
+        self.origin == origin
+            && self.size == size
+            && self.containing == containing
+            && self.parent_font_px == parent_font_px
+            && self.viewport == viewport
+            && Arc::ptr_eq(&self.style, style)
+            && Arc::ptr_eq(&self.children, children)
+    }
+
+    fn child_count(&self) -> usize {
+        self.by_child.len()
+    }
+
+    /// Entry indices for the children the change closure reaches, in placement
+    /// order. Driven from the closure (small) rather than the child list.
+    fn affected_entries(&self, scope: &ScopeContext<'_>) -> Vec<u32> {
+        let mut indices: Vec<u32> = scope
+            .affected
+            .iter()
+            .filter_map(|id| {
+                self.by_child
+                    .binary_search_by_key(id, |(child, _)| *child)
+                    .ok()
+                    .map(|slot| self.by_child[slot].1)
+            })
+            .collect();
+        indices.sort_unstable();
+        indices
     }
 }
 
@@ -452,9 +630,27 @@ impl DocumentLayoutCache {
 struct LayoutInputMap<'a> {
     world: &'a UiWorld,
     nodes: HashMap<StableNodeId, LayoutInput>,
+    /// Effective styles for nodes this pass never materialized into `nodes`.
+    ///
+    /// A scoped pass prefetches nothing, so an unchanged sibling is reached
+    /// only through [`Self::style`] -- and reached repeatedly: flex main-axis
+    /// distribution, the baseline fold, and the cross-axis fold each ask for
+    /// the same child's style. `UiWorld::effective_layout_style` is not a
+    /// field read; it is several hash lookups plus an `Arc` clone, and a
+    /// hidden or overlay-hosted node also pays an `Arc::make_mut` clone of the
+    /// whole `LayoutStyle`. Resolving that once per node per pass is exact,
+    /// not an approximation: `layout_document_scoped` borrows the world
+    /// immutably for the entire pass, so no resolution can change underneath
+    /// this map.
+    styles: RefCell<HashMap<StableNodeId, Option<Arc<nana_ui_core::LayoutStyle>>>>,
     materialized: usize,
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    /// Container plans rebuilt this pass. Merged into the retained cache at the
+    /// end; containers that took the fast path record nothing, so their
+    /// existing plan simply stays. `None` retires a plan recorded when the
+    /// container was still on the cacheable path.
+    container_plans: HashMap<StableNodeId, Option<ContainerPlan>>,
 }
 
 impl<'a> LayoutInputMap<'a> {
@@ -462,9 +658,11 @@ impl<'a> LayoutInputMap<'a> {
         Self {
             world,
             nodes: HashMap::new(),
+            styles: RefCell::new(HashMap::new()),
             materialized: 0,
             placements: HashMap::new(),
             used_padding: HashMap::new(),
+            container_plans: HashMap::new(),
         }
     }
 
@@ -514,7 +712,12 @@ impl<'a> LayoutInputMap<'a> {
         if let Some(node) = self.nodes.get(&id) {
             return Some(Arc::clone(&node.style));
         }
-        self.world.layout_style(id)
+        if let Some(cached) = self.styles.borrow().get(&id) {
+            return cached.clone();
+        }
+        let resolved = self.world.layout_style(id);
+        self.styles.borrow_mut().insert(id, resolved.clone());
+        resolved
     }
 
     fn text_ascent(&self, id: StableNodeId) -> Option<f32> {
@@ -609,7 +812,7 @@ fn uses_2d_grid(style: &LayoutStyle, flow: &[StableNodeId], nodes: &LayoutInputM
     })
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Point {
     x: f32,
     y: f32,
@@ -619,7 +822,7 @@ impl Point {
     const ZERO: Self = Self { x: 0.0, y: 0.0 };
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Size {
     width: f32,
     height: f32,

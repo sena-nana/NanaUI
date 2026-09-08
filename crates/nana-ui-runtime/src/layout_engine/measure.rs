@@ -25,6 +25,108 @@ pub(super) fn intrinsic_size(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Resolve the node's own width/height from its style alone.
+///
+/// `Some` on an axis means the used size does not depend on the node's
+/// children: content-sized keywords (`min-content`, `max-content`,
+/// `fit-content`, `shrink`) and an indefinite `Fill` all resolve to `None`.
+fn resolved_size_specs(
+    style: &nana_ui_core::LayoutStyle,
+    available: Size,
+    viewport: LayoutViewport,
+    fonts: FontSizeContext,
+) -> (Option<f32>, Option<f32>) {
+    // `Fill` sizes the border box to the containing block minus the node's own
+    // margins — negative margins widen it, matching the stretch path below;
+    // percentages keep resolving against the raw containing block.
+    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
+    let width = resolve_axis(
+        demote_fill_spec_if_indefinite(style.width, available.width),
+        available.width,
+        available.width - margin.left - margin.right,
+        viewport,
+        fonts,
+    );
+    let height = resolve_axis(
+        demote_fill_spec_if_indefinite(style.height, available.height),
+        available.height,
+        available.height - margin.top - margin.bottom,
+        viewport,
+        fonts,
+    );
+    (width, height)
+}
+
+/// Compose the used size once the content-derived defaults are known.
+///
+/// `default_width` / `default_height` are consumed only through `unwrap_or`, so
+/// a caller that already has both specs resolved may pass anything for them —
+/// see the definite-size short circuit in [`intrinsic_size_scoped`].
+#[allow(clippy::too_many_arguments)]
+fn finish_intrinsic_size(
+    style: &nana_ui_core::LayoutStyle,
+    fonts: FontSizeContext,
+    viewport: LayoutViewport,
+    available: Size,
+    chrome: Size,
+    parent_direction: Option<FlexDirection>,
+    default_width: f32,
+    default_height: f32,
+) -> Size {
+    let (width_spec, height_spec) = resolved_size_specs(style, available, viewport, fonts);
+    let width_from_spec = width_spec.is_some();
+    let height_from_spec = height_spec.is_some();
+    let vp = Some((viewport.width, viewport.height));
+    let min_width = style.resolved_min_width_fonts(Some(available.width), vp, fonts);
+    let min_height = style.resolved_min_height_fonts(Some(available.height), vp, fonts);
+    let mut width = width_spec.unwrap_or(default_width).max(min_width);
+    let mut height = height_spec.unwrap_or(default_height).max(min_height);
+    if matches!(style.box_sizing, BoxSizing::ContentBox) {
+        if style.width.is_some_and(LengthSpec::is_definite_declared) {
+            width += chrome.width;
+        }
+        if style.height.is_some_and(LengthSpec::is_definite_declared) {
+            height += chrome.height;
+        }
+    }
+    if style.aspect_ratio.is_some_and(|r| r.is_finite() && r > 0.0) {
+        let stretch_fit_width = !width_from_spec
+            && style.stretch_fit_inline()
+            && !matches!(parent_direction, Some(FlexDirection::Row))
+            && available.width > 0.5;
+        if stretch_fit_width {
+            width = available.width.max(min_width);
+        }
+        let mut content_w =
+            if width_from_spec || stretch_fit_width || (!height_from_spec && width > 0.0) {
+                Some((width - chrome.width).max(0.0))
+            } else {
+                None
+            };
+        let mut content_h = if height_from_spec {
+            Some((height - chrome.height).max(0.0))
+        } else {
+            None
+        };
+        style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
+        if let Some(content_w) = content_w {
+            width = content_w + chrome.width;
+        }
+        if let Some(content_h) = content_h {
+            height = content_h + chrome.height;
+        }
+        width = width.max(min_width);
+        height = height.max(min_height);
+    }
+    if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
+        width = width.min(max);
+    }
+    if let Some(max) = style.resolved_max_height_fonts(Some(available.height), vp, fonts) {
+        height = height.min(max);
+    }
+    Size::new(width, height)
+}
+
 pub(super) fn intrinsic_size_scoped(
     id: StableNodeId,
     available: Size,
@@ -105,6 +207,31 @@ pub(super) fn intrinsic_size_scoped(
             chrome.height,
         ),
     );
+    // A node whose own width and height both resolve from its style needs no
+    // measurement of its children: the content-derived defaults below are
+    // consumed only through `unwrap_or`, so they would be discarded.
+    //
+    // This is what made a dirty frame O(document). Layout invalidation
+    // propagates to ancestors, so a single edit puts every container above it
+    // in the change closure, and each one dropped its cached intrinsic and
+    // re-measured all of its children -- a full sibling scan per level, to
+    // arrive at a size its own style had already fixed.
+    let (spec_width, spec_height) = resolved_size_specs(style, available, viewport, fonts);
+    if spec_width.is_some() && spec_height.is_some() {
+        let size = finish_intrinsic_size(
+            style,
+            fonts,
+            viewport,
+            available,
+            chrome,
+            parent_direction,
+            0.0,
+            0.0,
+        );
+        cache.insert(cache_key, size);
+        return Ok(size);
+    }
+
     let flow_children = collect_flow_children(&children, nodes, style.display)?;
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
     let ifc = !grid_measure
@@ -278,75 +405,16 @@ pub(super) fn intrinsic_size_scoped(
         _ => max_content_w,
     };
     let default_height = content.height + chrome.height;
-    // `Fill` sizes the border box to the containing block minus the node's own
-    // margins — negative margins widen it, matching the stretch path below;
-    // percentages keep resolving against the raw containing block.
-    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
-    let width_spec = resolve_axis(
-        demote_fill_spec_if_indefinite(style.width, available.width),
-        available.width,
-        available.width - margin.left - margin.right,
-        viewport,
+    let size = finish_intrinsic_size(
+        style,
         fonts,
-    );
-    let height_spec = resolve_axis(
-        demote_fill_spec_if_indefinite(style.height, available.height),
-        available.height,
-        available.height - margin.top - margin.bottom,
         viewport,
-        fonts,
+        available,
+        chrome,
+        parent_direction,
+        default_width,
+        default_height,
     );
-    let width_from_spec = width_spec.is_some();
-    let height_from_spec = height_spec.is_some();
-    let vp = Some((viewport.width, viewport.height));
-    let min_width = style.resolved_min_width_fonts(Some(available.width), vp, fonts);
-    let min_height = style.resolved_min_height_fonts(Some(available.height), vp, fonts);
-    let mut width = width_spec.unwrap_or(default_width).max(min_width);
-    let mut height = height_spec.unwrap_or(default_height).max(min_height);
-    if matches!(style.box_sizing, BoxSizing::ContentBox) {
-        if style.width.is_some_and(LengthSpec::is_definite_declared) {
-            width += chrome.width;
-        }
-        if style.height.is_some_and(LengthSpec::is_definite_declared) {
-            height += chrome.height;
-        }
-    }
-    if style.aspect_ratio.is_some_and(|r| r.is_finite() && r > 0.0) {
-        let stretch_fit_width = !width_from_spec
-            && style.stretch_fit_inline()
-            && !matches!(parent_direction, Some(FlexDirection::Row))
-            && available.width > 0.5;
-        if stretch_fit_width {
-            width = available.width.max(min_width);
-        }
-        let mut content_w =
-            if width_from_spec || stretch_fit_width || (!height_from_spec && width > 0.0) {
-                Some((width - chrome.width).max(0.0))
-            } else {
-                None
-            };
-        let mut content_h = if height_from_spec {
-            Some((height - chrome.height).max(0.0))
-        } else {
-            None
-        };
-        style.apply_aspect_ratio_used(&mut content_w, &mut content_h);
-        if let Some(content_w) = content_w {
-            width = content_w + chrome.width;
-        }
-        if let Some(content_h) = content_h {
-            height = content_h + chrome.height;
-        }
-        width = width.max(min_width);
-        height = height.max(min_height);
-    }
-    if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
-        width = width.min(max);
-    }
-    if let Some(max) = style.resolved_max_height_fonts(Some(available.height), vp, fonts) {
-        height = height.min(max);
-    }
-    let size = Size::new(width, height);
     cache.insert(cache_key, size);
     Ok(size)
 }

@@ -383,3 +383,174 @@ fn accessible_projection_uses_committed_transforms_before_hit_rebuild() {
     assert_eq!(before_rebuild, button_bounds(&world));
     assert_hit_at_accessible_center(&world);
 }
+
+/// The accessibility delta must be seeded by the nodes whose box actually
+/// MOVED, never by the scheduled-layout set.
+///
+/// Layout invalidation propagates to ancestors, so resizing any single row puts
+/// the document root in `work.layout`. Seeding the subtree expansion from that
+/// set therefore walks the entire document and re-projects every node, for a
+/// one-row change, on every layout-touching frame. The work counters cannot see
+/// it: `accessibility_nodes_updated` reports the scheduled ACCESSIBILITY set
+/// (`schedule.rs`), which stays at 1 while the projection does N.
+///
+/// `RuntimeDocument::apply_hit_test_work` already refuses `work.layout` for
+/// exactly this reason; this is the same rule for the accessibility seed.
+#[test]
+fn accessibility_delta_seeds_from_moved_boxes_not_scheduled_layout() {
+    const ROWS: u64 = 200;
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(), NodeKind::Document);
+    queue.create(node(2), document(), NodeKind::Element { tag: "div".into() });
+    queue.insert(node(1), node(2), None);
+    let row_style = |height: f32| NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            height: Some(nana_ui_core::LengthSpec::Px(height)),
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    };
+    for row in 0..ROWS {
+        let row_id = node(3 + row * 2);
+        let label_id = node(4 + row * 2);
+        queue.create(row_id, document(), NodeKind::Element { tag: "div".into() });
+        queue.create(label_id, document(), NodeKind::Text);
+        queue.insert(node(2), row_id, None);
+        queue.insert(row_id, label_id, None);
+        queue.set_style(row_id, row_style(20.0));
+    }
+    world.commit(queue).unwrap();
+    let mount = world.take_system_work();
+    world.resolve_styles(&mount.style).unwrap();
+    let _ = world.project_accessibility_delta(&mount);
+
+    // One paint/layout change on the LAST row. Nothing below it can shift.
+    let last_row = node(3 + (ROWS - 1) * 2);
+    let mut queue = MutationQueue::new();
+    queue.set_style(last_row, row_style(26.0));
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    // Precondition: the scheduled-layout set really does reach the root, so
+    // this test would be vacuous if it did not.
+    assert!(
+        work.layout.contains(&node(1)),
+        "layout invalidation must propagate to the document root for this to \
+         be the seed that matters; got {:?}",
+        work.layout
+    );
+
+    let delta = world.project_accessibility_delta(&work);
+    assert!(
+        delta.updated.len() <= 8,
+        "one row changed, so the accessibility delta must stay bounded; \
+         projected {} of {} nodes",
+        delta.updated.len(),
+        ROWS * 2 + 2
+    );
+}
+
+/// The other direction, as an equivalence rather than a spot check: applying
+/// the incremental delta must leave the retained accessibility tree identical
+/// to a full projection.
+///
+/// This is the case the subtree expansion exists for. A scroll marks INPUT on
+/// the scroller ALONE -- descendants keep their `LayoutBox` and carry no
+/// ACCESSIBILITY bit -- yet every descendant moved in viewport space. Narrowing
+/// the seed far enough to drop `input_hit_test` would leave the host holding
+/// stale bounds for the entire scrolled subtree, and the counters would still
+/// read clean.
+#[test]
+fn scrolling_publishes_the_moved_subtree_and_matches_a_full_projection() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(), NodeKind::Document);
+    queue.create(node(2), document(), NodeKind::Element { tag: "div".into() });
+    queue.insert(node(1), node(2), None);
+    queue.set_scroll_metrics(
+        node(2),
+        Some(crate::ScrollMetrics {
+            content_width: 100.0,
+            content_height: 400.0,
+            viewport_width: 100.0,
+            viewport_height: 100.0,
+        }),
+    );
+    for row in 0..6u64 {
+        let row_id = node(3 + row);
+        queue.create(row_id, document(), NodeKind::Element { tag: "div".into() });
+        queue.insert(node(2), row_id, None);
+        queue.write_layout(
+            row_id,
+            LayoutBox {
+                x: 0.0,
+                y: row as f32 * 20.0,
+                width: 100.0,
+                height: 20.0,
+            },
+        );
+    }
+    queue.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 400.0,
+        },
+    );
+    queue.write_layout(
+        node(2),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        },
+    );
+    world.commit(queue).unwrap();
+    world
+        .resolve_styles(&world.document_order(document()))
+        .unwrap();
+    world.take_system_work();
+
+    let snapshot = |world: &UiWorld| {
+        world
+            .project_accessibility(document())
+            .into_iter()
+            .map(|node| (node.id, node))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let mut retained = snapshot(&world);
+
+    for offset in [40.0f32, 0.0, 80.0] {
+        let mut queue = MutationQueue::new();
+        queue.set_scroll_offset(node(2), crate::ScrollOffset { x: 0.0, y: offset });
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        // Precondition: a scroll must NOT mark the descendants dirty itself,
+        // or the expansion this guards would be doing no work.
+        assert_eq!(
+            work.accessibility,
+            Vec::new(),
+            "a scroll marks no ACCESSIBILITY bit; the seed expansion is what \
+             must publish the moved subtree"
+        );
+        let delta = world.project_accessibility_delta(&work);
+        for id in delta.removed {
+            retained.remove(&id);
+        }
+        for entry in delta.updated {
+            retained.insert(entry.id, entry);
+        }
+        assert_eq!(
+            retained,
+            snapshot(&world),
+            "incremental delta diverged from a full projection after scrolling \
+             to {offset}"
+        );
+    }
+}

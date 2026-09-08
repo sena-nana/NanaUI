@@ -1272,6 +1272,33 @@ impl UiWorld {
         self.contains(id).then(|| self.effective_layout_style(id))
     }
 
+    /// True when `effective_layout_style` for `parent`'s children reduces to
+    /// each child's own `style.layout`, with no adjustment derived from an
+    /// ancestor.
+    ///
+    /// The scoped layout engine reuses a container's cached child placement
+    /// when nothing in the change closure altered it. That is only sound if a
+    /// child's layout style cannot change without the child itself being
+    /// marked LAYOUT-dirty -- and `set_style` guarantees exactly that (it
+    /// marks the subtree when layout semantics change). The three escapes are
+    /// the adjustments below, every one of which is derived from an ancestor
+    /// and can therefore move without touching the child:
+    ///
+    /// - `presence_live`, once anything is detached;
+    /// - `overlay_branch_active`, when the parent is an overlay host;
+    /// - `menu_branch_open` / `parent_triggered_overlay`, when the parent is a
+    ///   menu surface.
+    ///
+    /// Reporting false is always safe: it only costs the caller its fast path.
+    pub(crate) fn children_layout_style_is_local(&self, parent: StableNodeId) -> bool {
+        self.detached.is_empty()
+            && (self.overlay_host_nodes.is_empty() || self.overlay_host(parent).is_none())
+            && !matches!(
+                self.nodes.visual(parent),
+                Some(StandardVisual::MenuSurface { .. })
+            )
+    }
+
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
         let mut style = Arc::clone(&self.record(id).style.layout);
         if style.omits_box()

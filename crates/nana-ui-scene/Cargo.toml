@@ -15,13 +15,18 @@ image-viewer = ["nana-ui-runtime/image-viewer"]
 rich-text = ["nana-ui-runtime/rich-text"]
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
-benchmark = ["dep:serde", "dep:serde_json"]
+benchmark = ["dep:serde", "dep:serde_json", "nana-ui-runtime/benchmark"]
 
 [dependencies]
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+[[bin]]
+name = "nana-dirty-frame-benchmark"
+path = "src/bin/nana-dirty-frame-benchmark.rs"
+required-features = ["benchmark"]
 
 [[bin]]
 name = "nana-scene-benchmark"

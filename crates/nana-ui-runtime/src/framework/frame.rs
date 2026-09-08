@@ -193,7 +193,34 @@ impl AppContext {
         dirty: &[StableNodeId],
         force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
-        self.layout_document_observed(document, viewport, dirty, force_full, |_| {})
+        #[cfg(not(feature = "benchmark"))]
+        {
+            self.layout_document_observed(document, viewport, dirty, force_full, |_| {})
+        }
+        // Time the production path itself rather than a benchmark-only
+        // reimplementation of it: the sub-stage clocks are the same
+        // `completed` hook the full-layout benchmark already uses.
+        #[cfg(feature = "benchmark")]
+        {
+            let mut substages = [Duration::ZERO; 4];
+            let mut started = Instant::now();
+            let result =
+                self.layout_document_observed(document, viewport, dirty, force_full, |stage| {
+                    substages[stage] = started.elapsed();
+                    started = Instant::now();
+                });
+            for (total, elapsed) in self.layout_substage_totals.iter_mut().zip(substages) {
+                *total += elapsed;
+            }
+            result
+        }
+    }
+
+    /// Drain the per-sub-stage totals accumulated inside the Layout stage:
+    /// `[position_open_tooltips, engine, writeback + commit, scroll metrics]`.
+    #[cfg(feature = "benchmark")]
+    pub fn take_layout_substage_totals(&mut self) -> [Duration; 4] {
+        std::mem::take(&mut self.layout_substage_totals)
     }
 
     /// Diagnostic timings for the canonical full layout path. The production

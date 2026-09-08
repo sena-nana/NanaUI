@@ -792,6 +792,12 @@ pub struct AppContext {
     layout_full_invocations: usize,
     /// Layout passes on this context, scoped and full.
     layout_invocations: usize,
+    /// Cumulative wall time of the four `layout_document_observed` sub-stages
+    /// (tooltip positioning, engine, writeback + commit, scroll metrics) over
+    /// every layout pass since the last drain. Attribution inside the Layout
+    /// stage, which the 13 `FrameStage`s report as one number.
+    #[cfg(feature = "benchmark")]
+    layout_substage_totals: [Duration; 4],
     program_messages: Vec<ProgramMessage>,
     text_edit: text_edit::TextEditSession,
 }
@@ -957,6 +963,8 @@ impl AppContext {
             last_layout_scope: Vec::new(),
             layout_full_invocations: 0,
             layout_invocations: 0,
+            #[cfg(feature = "benchmark")]
+            layout_substage_totals: [Duration::ZERO; 4],
             program_messages: Vec::new(),
             text_edit: text_edit::TextEditSession::default(),
         };
