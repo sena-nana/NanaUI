@@ -1189,6 +1189,7 @@ impl UiWorld {
                         .get_mut()
                         .remove(id, snapshot.parent);
                     self.write_overlay_host(id, None);
+                    self.reindex_component(id, None);
                     let _removed = self.nodes.remove(id);
                     self.input.focus_scopes.retain(|root, target| {
                         if *target == Some(id) {
@@ -1444,6 +1445,7 @@ impl UiWorld {
             UiMutation::SetComponentType { id, type_id } => {
                 let current = self.nodes.component_type(*id);
                 if current != type_id.as_ref() {
+                    self.reindex_component(*id, type_id.as_ref());
                     self.nodes.set_component_type(*id, type_id.clone());
                 }
             }

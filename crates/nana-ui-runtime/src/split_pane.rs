@@ -425,16 +425,26 @@ impl AppContext {
                 ancestor = self.world().node(node).and_then(|inner| inner.parent);
             }
         }
+        // Every pointer move that is not inside a split reaches here, so walk
+        // the pane index rather than the document: a tree with no split panes
+        // answers without touching a node, and one with splits costs pane count
+        // instead of world size.
+        self.split_panes_in(document).find_map(|pane| {
+            let handle = self.handle_of_split(pane)?;
+            self.world()
+                .layout_box(handle)
+                .filter(|bounds| point_near_box(*bounds, x, y, SLOP))
+                .map(|_| handle)
+        })
+    }
+
+    /// Live `SplitPane` nodes in `document`, in no particular order.
+    fn split_panes_in(
+        &self,
+        document: crate::DocumentId,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
         self.world()
-            .document_order(document)
-            .into_iter()
-            .find(|&id| {
-                self.is_split_handle(id)
-                    && self
-                        .world()
-                        .layout_box(id)
-                        .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
-            })
+            .nodes_of_component(document, crate::component_descriptors::SPLIT_PANE.type_id)
     }
 
     fn handle_of_split(&self, id: StableNodeId) -> Option<StableNodeId> {
@@ -537,10 +547,11 @@ impl AppContext {
         target: Option<StableNodeId>,
     ) -> Result<bool, crate::FrameworkError> {
         let active = target.filter(|id| self.is_split_handle(*id));
+        // Same index, same reason as `split_handle_near`: this runs on every
+        // pointer move that clears the slop zone, and the panes it has to
+        // release are panes, not arbitrary nodes.
         let hovered: Vec<crate::Entity<SplitPane>> = self
-            .world()
-            .document_order(document)
-            .into_iter()
+            .split_panes_in(document)
             .filter_map(|id| self.split_pane_entity(id))
             .filter(|entity| {
                 self.read(*entity, |pane| pane.model.hovered())

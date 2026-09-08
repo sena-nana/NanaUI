@@ -466,6 +466,19 @@ pub struct UiWorld {
     /// node costs the host count rather than the world size.
     overlay_host_nodes: HashSet<StableNodeId>,
     overlay_hosts_by_document: HashMap<DocumentId, HashSet<StableNodeId>>,
+    /// Live nodes grouped by the component that created them.
+    ///
+    /// Several per-pointer-event paths need "every X in this document" -- the
+    /// split-handle slop probe, the calendar heatmap hover release -- and each
+    /// answered by walking `document_order` and filtering, which is a
+    /// full-document walk per event for a tree that usually contains none of
+    /// the thing being looked for.
+    ///
+    /// It lives beside `component_type` rather than in `AppContext` so there is
+    /// one authority: every path that gives a node a component type does it
+    /// through `SetComponentType`, including the semantic-binding path that
+    /// never touches `stamp_component_type`.
+    nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>,
     overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>>,
     /// Nodes visited by mutation validation since the last drain, summed over
     /// every commit the next frame will consume. Validation must scale with the
@@ -536,6 +549,7 @@ impl UiWorld {
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
             overlay_hosts_by_document: HashMap::new(),
+            nodes_by_component: HashMap::new(),
             overlay_dependents: HashMap::new(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
@@ -1070,6 +1084,41 @@ impl UiWorld {
 
     pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
         self.nodes.component_type(id)
+    }
+
+    /// Live nodes of one component type in `document`, in no particular order.
+    ///
+    /// Callers that used to walk `document_order` and filter cost the number of
+    /// that component instead of the world size.
+    pub fn nodes_of_component(
+        &self,
+        document: DocumentId,
+        component: &str,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.nodes_by_component
+            .get(component)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |id| self.document_of(*id) == Some(document))
+    }
+
+    /// Keep [`Self::nodes_by_component`] in step with a node's component type.
+    fn reindex_component(&mut self, id: StableNodeId, next: Option<&ComponentTypeId>) {
+        if let Some(previous) = self.nodes.component_type(id).cloned()
+            && let Some(nodes) = self.nodes_by_component.get_mut(&previous)
+        {
+            nodes.remove(&id);
+            if nodes.is_empty() {
+                self.nodes_by_component.remove(&previous);
+            }
+        }
+        if let Some(next) = next {
+            self.nodes_by_component
+                .entry(next.clone())
+                .or_default()
+                .insert(id);
+        }
     }
 
     fn note_structural_change(&mut self, parent: StableNodeId) {

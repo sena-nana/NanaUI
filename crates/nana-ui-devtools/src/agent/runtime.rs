@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument, StableNodeId,
@@ -29,7 +30,21 @@ pub struct RuntimeAgentSession {
     /// every dark-theme screenshot lie about its background.
     clear: Option<[f32; 4]>,
     host_textures: HostTextureRegistry,
+    /// Monotonic input clock, advanced one frame per dispatched event.
+    ///
+    /// `RuntimeInputAdapter::dispatch` passes `Duration::ZERO`, which silently
+    /// disables every time-gated path in the Runtime: tooltip delay, the split
+    /// handle hover probe, anything else that throttles on elapsed time fires
+    /// once and then never again. A headless session that exists to reproduce
+    /// what a window does must not be permanently frozen at t=0.
+    ///
+    /// Advanced by a fixed step rather than read from the wall clock, so a
+    /// scripted session stays reproducible.
+    clock: Duration,
 }
+
+/// One frame at 60Hz. What the input clock advances per dispatched event.
+const INPUT_FRAME: Duration = Duration::from_millis(16);
 
 impl RuntimeAgentSession {
     pub fn new(document: RuntimeDocument, width: u32, height: u32) -> Result<Self, AgentError> {
@@ -57,6 +72,7 @@ impl RuntimeAgentSession {
             height,
             clear: None,
             host_textures: HostTextureRegistry::new(),
+            clock: Duration::ZERO,
         };
         session.flush()?;
         Ok(session)
@@ -90,6 +106,12 @@ impl RuntimeAgentSession {
         &mut self.document
     }
 
+    /// Move the input clock on one frame and return the new instant.
+    fn advance_clock(&mut self) -> Duration {
+        self.clock = self.clock.saturating_add(INPUT_FRAME);
+        self.clock
+    }
+
     pub fn flush(&mut self) -> Result<(), AgentError> {
         self.document
             .flush(
@@ -116,8 +138,10 @@ impl RuntimeAgentSession {
     }
 
     pub fn click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Down, x, y)?;
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Up, x, y)?;
+        let down = self.advance_clock();
+        dispatch_runtime_pointer(&mut self.document, PointerPhase::Down, x, y, down)?;
+        let up = self.advance_clock();
+        dispatch_runtime_pointer(&mut self.document, PointerPhase::Up, x, y, up)?;
         self.flush()?;
         Ok(true)
     }
@@ -128,6 +152,7 @@ impl RuntimeAgentSession {
     /// there, and hand-rolling the `InputEvent` is the same boilerplate in
     /// every consumer that wants to verify a context menu headlessly.
     pub fn secondary_click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
+        let down = self.advance_clock();
         dispatch_runtime_button(
             &mut self.document,
             PointerPhase::Down,
@@ -135,8 +160,10 @@ impl RuntimeAgentSession {
             y,
             2,
             button_mask(2),
+            down,
         )?;
-        dispatch_runtime_button(&mut self.document, PointerPhase::Up, x, y, 2, 0)?;
+        let up = self.advance_clock();
+        dispatch_runtime_button(&mut self.document, PointerPhase::Up, x, y, 2, 0, up)?;
         self.flush()?;
         Ok(true)
     }
@@ -164,8 +191,9 @@ impl RuntimeAgentSession {
         let document_id = self.document.document();
         for character in text.chars() {
             let key = character.to_string();
+            let now = self.advance_clock();
             RuntimeInputAdapter::default()
-                .dispatch(
+                .dispatch_at(
                     self.document.context_mut(),
                     document_id,
                     &InputEvent::Keyboard {
@@ -176,6 +204,7 @@ impl RuntimeAgentSession {
                         repeat: false,
                         modifiers: InputModifiers::default(),
                     },
+                    now,
                 )
                 .map_err(|error| AgentError(error.to_string()))?;
         }
@@ -196,8 +225,9 @@ impl RuntimeAgentSession {
         delta_y: f32,
     ) -> Result<(), AgentError> {
         let document_id = self.document.document();
+        let now = self.advance_clock();
         RuntimeInputAdapter::default()
-            .dispatch(
+            .dispatch_at(
                 self.document.context_mut(),
                 document_id,
                 &InputEvent::Wheel {
@@ -208,6 +238,7 @@ impl RuntimeAgentSession {
                     line_delta: false,
                     modifiers: InputModifiers::default(),
                 },
+                now,
             )
             .map_err(|error| AgentError(error.to_string()))?;
         self.flush()?;
@@ -217,7 +248,8 @@ impl RuntimeAgentSession {
     /// Move the pointer without pressing, so hover-only presentation (tooltips,
     /// hover cards, row affordances) can be captured.
     pub fn hover_xy(&mut self, x: f32, y: f32) -> Result<(), AgentError> {
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Move, x, y)?;
+        let now = self.advance_clock();
+        dispatch_runtime_pointer(&mut self.document, PointerPhase::Move, x, y, now)?;
         self.flush()?;
         Ok(())
     }
@@ -233,8 +265,9 @@ impl RuntimeAgentSession {
     ) -> Result<(), AgentError> {
         let document_id = self.document.document();
         for pressed in [true, false] {
+            let now = self.advance_clock();
             RuntimeInputAdapter::default()
-                .dispatch(
+                .dispatch_at(
                     self.document.context_mut(),
                     document_id,
                     &InputEvent::Keyboard {
@@ -245,6 +278,7 @@ impl RuntimeAgentSession {
                         repeat: false,
                         modifiers,
                     },
+                    now,
                 )
                 .map_err(|error| AgentError(error.to_string()))?;
         }
@@ -446,8 +480,9 @@ fn dispatch_runtime_pointer(
     phase: PointerPhase,
     x: f32,
     y: f32,
+    now: Duration,
 ) -> Result<(), AgentError> {
-    dispatch_runtime_button(document, phase, x, y, 0, 0)
+    dispatch_runtime_button(document, phase, x, y, 0, 0, now)
 }
 
 fn dispatch_runtime_button(
@@ -457,10 +492,11 @@ fn dispatch_runtime_button(
     y: f32,
     button: i16,
     buttons: u16,
+    now: Duration,
 ) -> Result<(), AgentError> {
     let document_id = document.document();
     RuntimeInputAdapter::default()
-        .dispatch(
+        .dispatch_at(
             document.context_mut(),
             document_id,
             &InputEvent::Pointer {
@@ -482,6 +518,7 @@ fn dispatch_runtime_button(
                 activation_click: false,
                 modifiers: InputModifiers::default(),
             },
+            now,
         )
         .map_err(|error| AgentError(error.to_string()))?;
     Ok(())

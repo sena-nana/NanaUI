@@ -80,7 +80,7 @@ let start = cx.build(document_id, |ui| {
 两条路写同一棵 `UiWorld`，布局、文字、命中、抽取、绘制只有一份实现，所以**绘制稳态没有差别**（60 s / 21 万帧的纯 Rust 帧 CPU prepare P95 是 0.0105 ms，见 [高刷新性能记录](high-refresh-performance.md)）。差别只在两处：
 
 - **挂载与变更**：Vue 多出 V8 patch → 每个 DOM op 一次同步跨界调用 → CSS 级联。5,000 节点构造 P95 25.5 ms，同规模 Runtime 布局 P95 11.6–29.7 ms——同量级偏高，不是数量级。两条路在 5 k 以上都要分批挂载。
-- **每个指针事件**：实测 Vue 是常数约 0.062 ms，不随树增长；L3 仍是 O(节点数)，2,000 行时 0.024 ms。比值随规模下降，2,000 行上是 2.7 倍。见 [输入成本](input-cost.md)。
+- **每个指针事件**：两边都是常数，不随树增长——L3 约 0.0003 ms，Vue 约 0.062 ms。见 [输入成本](input-cost.md)。
 
 选型标准见 [README](../README.md#rust-还是-vue)。
 

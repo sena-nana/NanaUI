@@ -37,6 +37,15 @@ impl ComponentTypeId {
     }
 }
 
+/// So a `HashMap<ComponentTypeId, _>` can be looked up by the `&'static str`
+/// constants in `component_descriptors` without building an owned id first.
+/// Sound because the newtype's `Hash` and `Eq` are the wrapped `str`'s.
+impl std::borrow::Borrow<str> for ComponentTypeId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl fmt::Display for ComponentTypeId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())

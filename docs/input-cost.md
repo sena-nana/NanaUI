@@ -35,10 +35,10 @@ macOS / Apple Silicon，`--release`，60 次预热 + 400 次计时移动，P50�
 
 | 行数 | `bare` | `listeners` | `reactive` | L3 |
 | ---: | ---: | ---: | ---: | ---: |
-| 250 | 0.061 | 0.062 | 0.98 | 0.003 |
-| 500 | 0.061 | 0.062 | 1.87 | 0.006 |
-| 1,000 | 0.065 | 0.063 | 4.36 | 0.012 |
-| 2,000 | 0.064 | 0.063 | 11.07 | 0.024 |
+| 250 | 0.061 | 0.062 | 1.00 | 0.0003 |
+| 500 | 0.061 | 0.062 | 1.90 | 0.0003 |
+| 1,000 | 0.065 | 0.063 | 4.28 | 0.0003 |
+| 2,000 | 0.064 | 0.063 | 10.86 | 0.0003 |
 
 （`window` 形状。`headless` 形状的 `bare` 同样是 0.060–0.063；`reactive` 低一些，因为它
 不做窗口那套语义同步。滚动版本与不滚动的相同：2,000 行 `bare-scroll` 0.065。）
@@ -47,12 +47,11 @@ macOS / Apple Silicon，`--release`，60 次预热 + 400 次计时移动，P50�
 
 1. **`bare` 与 `listeners` 是常数**，250 到 2,000 行都是 0.06 ms 上下。事件派发不随树增长，
    而且两者相等——把事件真的送进 JS 处理器不要钱。
-2. **L3 仍然是 O(节点数)**（0.003 → 0.024 ms，已经砍掉一半，还剩一处）。于是比值随规模
-   **下降**：2,000 行上 Vue 比 L3 贵 2.7 倍。Vue 有约 0.06 ms 的固定底噪，小树上比值看着大
-   但两边都微不足道。
+2. **L3 现在也是常数**（0.0003 ms，任何规模）。两条路都不再随树增长；Vue 的固定底噪约
+   0.06 ms，是 L3 的 200 倍，但绝对值仍在十分之一毫秒以内。
 3. **`reactive` 是 `bare` 的 170 倍**，而且是 Vue 侧唯一还随树增长的一项。这是写法，见下。
 4. 滚动不再有惩罚。曾经有：无头路径上滚动的树每事件 1.9 ms。
-5. **现在轮到 L3 是那条线性的。** 见下一节。
+5. **L3 也已经收成常数。** 见下一节。
 
 ## 怎么走到这里的
 
@@ -75,65 +74,51 @@ macOS / Apple Silicon，`--release`，60 次预热 + 400 次计时移动，P50�
 - "`resolve_layout` 幂等" —— 不。挂载后第一趟只写 0 尺寸，第二趟才投影绘制几何；旧代码
   靠每帧都跑才收敛，第一版门把文档冻在收敛途中。它现在在一次调用内跑到不动点再记状态。
 
-## L3 侧的 O(节点数)
+## L3 侧曾经的 O(节点数)：已收成常数
 
-把 Vue 压成常数之后，剩下线性的那条是 Rust L3。三个黑盒判别先把它框住（都用真计时）：
+Vue 压成常数之后，剩下线性的那条是 Rust L3。三个黑盒判别先把它框住：不是 `flush`
+（空闲 flush 0.0001 ms 且不随规模变）、不是 hover 转换（同一行再悬停一样贵）、
+不是命中目标查找（指针移到树外一样贵）。也就是每个指针事件都跑、与命中和转换都无关的
+一段全树工作。
 
-| 问题 | 做法 | 结果 |
-| --- | --- | --- |
-| 是 `flush` 吗？ | `hover_xy` 之后再空跑一次 `flush` | **不是**。空闲 flush 0.0001 ms，不随规模变——Runtime 自己的帧门挡得很好 |
-| 是 hover 转换吗？ | 同一行再悬停一次 | **不是**。0.0473 vs 换行的 0.0476 |
-| 是命中目标查找吗？ | 指针移到树外面 (-500, -500) | **不是**。0.0470，一样贵 |
+分段计时找出三处，全是同一个形状——**"这个文档里的每个 X" 用扫描 `document_order` 加过滤
+来回答**：
 
-也就是说：每个指针事件都跑、与是否命中和是否换目标都无关的一段全树工作。再往里分段计时，
-是两处，各占一半。
+| 处 | 谁在问 | 每事件成本（2,000 行） |
+| --- | --- | ---: |
+| `active_runtime_overlays` | `route_overlay_pointer`：有没有浮层挡住指针 | 0.0233 ms |
+| `split_handle_near` | 指针是否在分割手柄的 6px 松弛内 | 与下一行合计 0.0246 ms |
+| `sync_split_handle_hover` | 释放文档里所有 hover 中的分割面板 | 同上 |
+| `clear_calendar_heatmap_hover` | 清掉所有日历热力图的 hover | 余下全部 |
 
-### 已修：`active_runtime_overlays` 每事件重建全文档反查表
+第一处的索引本来就存在（`UiWorld::overlay_hosts_by_document`，注释写着 "so cost tracks
+host count, not world size"），只是那个函数没用。后三处没有索引。
 
-`route_overlay_pointer` 在每个指针事件上问"有没有浮层挡住指针"，而
-`active_runtime_overlays` 回答这个问题的方式是把整个 `document_order` 收集成 Vec，再建一张
-全量的 id → 位置 HashMap，然后遍历。一棵 2,000 节点、零浮层的树上，这是每事件两次全量分配，
-只为得到一个空列表。
+**修法：把索引放在 `component_type` 旁边。** `UiWorld` 现在维护
+`nodes_by_component`，在 `SetComponentType` 应用处和 despawn 处更新。放在 world 而不是
+`AppContext`，是因为只有那里是唯一权威：语义绑定路径（`finish_semantic_binding`）根本不经过
+`stamp_component_type`，索引挂在框架层就会漏。
 
-索引本来就存在：`UiWorld::overlay_hosts_by_document`，它的文档注释写着 "Overlay validation
-iterates this instead of the entity index so cost tracks host count, not world size"。这个函数
-没有用它。改成从索引出发，并在没有浮层时直接返回。
+**结果：L3 每指针事件 0.0819 → 0.0003 ms，任何规模都一样**（250 到 2,000 行全是 0.0003）。
+不再随节点数增长。
 
-`route_overlay_pointer` 0.0233 → 0.0001 ms（常数）。L3 每事件 2,000 行 0.0489 → 0.0242（−50%）。
-Gallery 的 559 张像素门禁全匹配——那套快照走的正是这条纯 Rust 路径，是这次改动的正确性证据。
+正确性证据是 Gallery 的 559 张像素门禁全匹配——它走的正是这条纯 Rust 路径，有真实的对话框、
+菜单、抽屉、分割面板和 tooltip。
 
-### 基准的盲区：它以 `Duration::ZERO` 派发
+## 修掉的一个测量盲区：基准以前把时钟冻在 0
 
-追第二处的时候撞上这个，值得先记下来。`RuntimeAgentSession` 走
-`RuntimeInputAdapter::dispatch`，而那个便捷方法把 `now` 传成 `Duration::ZERO`
-（要带时钟得用 `dispatch_at`）。于是所有按时间节流的路径**在这套基准里只放行第一次**。
+`RuntimeAgentSession` 用的是 `RuntimeInputAdapter::dispatch`，那个便捷方法把 `now` 传成
+`Duration::ZERO`（带时钟的是 `dispatch_at`）。于是所有按时间节流的路径**只放行第一次**：
+`split_handle_near` 前面有 8 ms 节流，`now` 恒为 0 意味着第一次之后永远 false，它的全文档
+扫描全程只跑了一遍。
 
-`split_handle_near` 就是这样：它的调用方 `sync_split_handle_hover_near` 先过
-`begin_split_hover_probe` 的 8 ms 节流，`now` 恒为 0 意味着第一次之后永远返回 false，
-全文档回退扫描全程只跑了一遍。**这个基准结构上量不到它**，而真实应用用 `dispatch_at`
-配真时钟，120 Hz 下大约每隔一个事件就会放行一次。
+后果不只是少测了一处：**冻结时钟下的 L3 数字整体偏乐观 3.4 倍**（2,000 行 0.0242 vs 真实
+0.0819）。会话现在按每个事件推进一帧（16 ms），用固定步长而不是墙钟，脚本化的会话仍然可复现。
 
-所以 L3 这一侧的数字对时间门控的路径是偏乐观的。要继续往下追，先得让基准推进时钟——
-但那会让 tooltip 延时之类的行为在无头会话里开始触发，是对 Agent 的真实行为改动，
-需要单独评估。
+这也让无头会话第一次能触发 tooltip 延时这类行为——对 `$nanaui-agent-debug` 是能力增加，
+不是副作用。
 
-### 未修：剩下的一半，尚未归因
-
-`route_overlay_pointer` 修掉后，2,000 行仍有 0.024 ms/事件且仍是线性。分段计时把它定位在
-Move 分支的组件链里（0.0242 of 0.0246），但链里逐个测过的调用——`update_scrollbar_drag`、
-`sync_split_handle_hover_near`——都是 0.0000–0.0001 ms。**所以具体是哪一个还不知道。**
-
-`split_handle_near` 的全文档回退扫描（找 6px 松弛内的分割手柄，一棵没有分割面板的树上
-也要扫）在机制上是个真实的 O(节点数)，但按上面的盲区，它不是这里量到的这 0.024。
-给它加索引做过一版，零可测收益，撤了——没有测量支撑的优化不该留在树里。
-
-### 一个测量陷阱
-
-`AppContext::last_frame_profile()` 和 `last_work_counters()` **保留最后一次非空闲的值**
-（`finish_frame_profile` 里 `if profile.any_stage_ran()`）。在空闲帧上读它们会拿到挂载帧的
-数据——第一次量就是这样，读出"每事件 TextShape 12.3 ms"，比实测的整个事件还大 250 倍。
-
-## 还剩什么：`reactive`
+## 还剩什么：`reactive`## 还剩什么：`reactive`
 
 `reactive` 在 2,000 行上仍要 11.07 ms（超过半帧），其中 8.27 在 dispatch、2.80 在 settle。
 成因是**一个 render function 拥有整列**：hover 改一个参与渲染的 `ref`，Vue 就重建全部

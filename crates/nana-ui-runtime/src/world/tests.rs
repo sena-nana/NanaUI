@@ -5555,6 +5555,43 @@ fn dirty_work_is_incremental_and_static_world_stays_idle() {
     assert!(world.take_system_work().is_empty());
 }
 
+/// The component index is what lets the pointer path ask "every split pane in
+/// this document" without walking it. Its failure mode is silent -- a missed
+/// node just never gets its hover cleared -- so the two edges that maintain it
+/// need a test each.
+#[test]
+fn the_component_index_follows_retyping_and_despawn() {
+    let mut world = UiWorld::new();
+    let split = ComponentTypeId::new("nana.split-pane").unwrap();
+    let calendar = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(node(2), document(1), NodeKind::Element { tag: "div".into() });
+    queue.insert(node(1), node(2), None);
+    queue.set_component_type(node(2), Some(split.clone()));
+    world.commit(queue).unwrap();
+
+    let indexed = |world: &UiWorld, component: &str| {
+        let mut ids: Vec<_> = world.nodes_of_component(document(1), component).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(indexed(&world, "nana.split-pane"), vec![node(2)]);
+
+    // Retyping moves the node between buckets rather than leaving it in both.
+    let mut queue = MutationQueue::new();
+    queue.set_component_type(node(2), Some(calendar));
+    world.commit(queue).unwrap();
+    assert_eq!(indexed(&world, "nana.split-pane"), Vec::new());
+    assert_eq!(indexed(&world, "nana.calendar-heatmap"), vec![node(2)]);
+
+    // Despawn drops it, or the index grows forever and hands out dead ids.
+    let mut queue = MutationQueue::new();
+    queue.despawn_subtree(node(2));
+    world.commit(queue).unwrap();
+    assert_eq!(indexed(&world, "nana.calendar-heatmap"), Vec::new());
+}
+
 #[test]
 fn set_component_type_is_noop_when_unchanged() {
     let mut world = UiWorld::new();

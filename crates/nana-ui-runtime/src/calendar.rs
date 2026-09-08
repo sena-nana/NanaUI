@@ -705,10 +705,15 @@ impl crate::AppContext {
         &mut self,
         document: crate::DocumentId,
     ) -> Result<bool, crate::FrameworkError> {
+        // The pointer chain calls this on every move that leaves a heatmap, so
+        // it walks the component index rather than the document: a tree with no
+        // calendar in it answers without touching a node.
         let ids = self
             .world()
-            .document_order(document)
-            .into_iter()
+            .nodes_of_component(
+                document,
+                crate::component_descriptors::CALENDAR_HEATMAP.type_id,
+            )
             .filter(|id| self.is_calendar_heatmap(*id))
             .collect::<Vec<_>>();
         let mut changed = false;
