@@ -445,6 +445,12 @@ pub struct VueHost {
     /// What the last [`VueHost::resolve_layout`] ran against, so an identical
     /// repeat can be skipped. `None` until the first resolve.
     resolved_layout_key: Option<crate::host::frame::LayoutResolveKey>,
+    /// The scene the paint-box store was last filled from.
+    #[cfg(feature = "scene-view")]
+    recorded_scene_key: Option<crate::host::frame::SceneRecordKey>,
+    /// Cleared by `disable_frame_gates` so the equivalence harness can run the
+    /// same script down both paths.
+    frame_gates_enabled: bool,
     web_api: SharedWebApiState,
     canvas: SharedCanvasRuntime,
     video: video::SharedVideoRuntime,
@@ -575,6 +581,9 @@ impl VueHost {
             bridge: Arc::new(Mutex::new(bridge)),
             layout_boxes: Arc::new(LayoutBoxStore::new()),
             resolved_layout_key: None,
+            #[cfg(feature = "scene-view")]
+            recorded_scene_key: None,
+            frame_gates_enabled: true,
             web_api,
             canvas,
             video: video::shared_video_runtime(),

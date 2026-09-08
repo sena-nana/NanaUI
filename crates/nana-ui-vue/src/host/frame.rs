@@ -29,6 +29,32 @@ impl VueHost {
         }
         self.flush_runtime_scene(logical_width, logical_height)?;
 
+        // Re-recording every painted box is a full-tree walk plus one `record`
+        // per node, and `record` takes three locks -- on a 2,000 node tree that
+        // is 6,000 lock round trips per frame to write back the values already
+        // there. `UiScene::instance_id` changes on any node update or removal
+        // and on nothing else, so an unchanged scene has nothing to re-record.
+        //
+        // Skipping `begin_frame` with it is not a compromise, it is the
+        // correction: `reapply_scroll_translations` rebuilds the view overlays
+        // from scratch every time it runs (it clears them itself first), so this
+        // clear was redundant -- and worse, the `record` loop then dropped each
+        // overlay again through `clear_view`, leaving every geometry read
+        // unscrolled until the next `resolve_layout` rebuilt them.
+        let key = {
+            let document = self.document.lock().expect("vue doc");
+            let scene = document.runtime_document().scene();
+            SceneRecordKey {
+                instance: scene.instance_id(),
+                nodes: scene.node_count(),
+                logical: (logical_width.to_bits(), logical_height.to_bits()),
+            }
+        };
+        if self.gates_enabled() && self.recorded_scene_key == Some(key) {
+            return Ok(());
+        }
+        self.recorded_scene_key = Some(key);
+
         let records: Vec<(u64, nana_ui_scene::SceneRect)> = {
             let document = self.document.lock().expect("vue doc");
             let runtime = document.runtime_document();
@@ -155,8 +181,8 @@ impl VueHost {
     }
 
     pub fn resolve_layout(&mut self) {
-        let mut key = self.layout_resolve_key();
-        if self.resolved_layout_key == Some(key) {
+        let key = self.layout_resolve_key();
+        if self.gates_enabled() && self.resolved_layout_key == Some(key) {
             return;
         }
         // One pass is not a fixed point. The cascade sync and `flush_host_frame`
@@ -177,8 +203,7 @@ impl VueHost {
                 break;
             }
         }
-        key = self.layout_resolve_key();
-        self.resolved_layout_key = Some(key);
+        self.resolved_layout_key = Some(self.layout_resolve_key());
     }
 
     /// One projection pass. Returns whether it changed any node's layout, which
@@ -228,6 +253,25 @@ impl VueHost {
         reapply_scroll_translations(&mut doc, &bridge, &self.layout_boxes);
         bridge.resolve_missing_document_layout(&mut doc);
     }
+    /// Turn every frame gate off, so each call redoes its work.
+    ///
+    /// Tests only, and specifically the equivalence harness: the gates claim a
+    /// repeat would write what is already there, and the only way to check that
+    /// claim is to run both sides and compare. Not `cfg(test)` because the
+    /// harness has to be able to drive this from outside the crate.
+    pub fn disable_frame_gates(&mut self) {
+        self.frame_gates_enabled = false;
+        self.resolved_layout_key = None;
+        #[cfg(feature = "scene-view")]
+        {
+            self.recorded_scene_key = None;
+        }
+    }
+
+    fn gates_enabled(&self) -> bool {
+        self.frame_gates_enabled
+    }
+
     /// Force the next [`Self::resolve_layout`] to do its work.
     ///
     /// For callers that change something the key cannot see. Nothing needs this
@@ -361,5 +405,208 @@ mod tests {
             before,
             "a tree that grew must not reuse the previous resolve"
         );
+    }
+}
+
+/// Identifies one painted scene. See [`VueHost::flush_scene_frame`].
+///
+/// `node_count` rides along because `instance_id` answers "is this a different
+/// mutation" rather than "is this a different scene": a `Clone` gets a fresh id
+/// too. Pairing it with the count keeps an unrelated instance from ever reading
+/// as the one already recorded.
+#[cfg(feature = "scene-view")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SceneRecordKey {
+    instance: u64,
+    nodes: usize,
+    logical: (u32, u32),
+}
+
+#[cfg(all(test, feature = "scene-view"))]
+mod equivalence {
+    //! Same script down both paths, compared after every step.
+    //!
+    //! Every gate in this file rests on one claim: that a repeat would write
+    //! what the document already holds. That claim is not provable by reading
+    //! the code -- the last round shipped a gate on top of a `resolve_layout`
+    //! that was not idempotent, and a hand-written test caught it only because
+    //! it happened to assert the right thing. So run both, step by step, and
+    //! diverge loudly at the first step that differs rather than at the end.
+    //!
+    //! No V8 and no bundler output: the tree is built through the host op
+    //! registry, so this runs in the default `cargo test --workspace`.
+
+    use super::*;
+    use nana_js_engine::HostValue;
+
+    struct Pair {
+        gated: VueHost,
+        ungated: VueHost,
+    }
+
+    impl Pair {
+        fn new(rows: usize) -> Self {
+            let mut ungated = build(rows);
+            ungated.disable_frame_gates();
+            Self {
+                gated: build(rows),
+                ungated,
+            }
+        }
+
+        /// Run `step` on both hosts, then require the documents to agree.
+        fn step(&mut self, what: &str, step: impl Fn(&mut VueHost)) {
+            step(&mut self.gated);
+            step(&mut self.ungated);
+            let gated = snapshot(&self.gated);
+            let ungated = snapshot(&self.ungated);
+            assert_eq!(
+                gated.document.boxes.len(),
+                ungated.document.boxes.len(),
+                "after {what}: the gated document has a different number of boxes"
+            );
+            assert_eq!(
+                gated.painted, ungated.painted,
+                "after {what}: skipping the frame changed the geometry JS reads back"
+            );
+            assert!(
+                gated.document == ungated.document,
+                "after {what}: skipping the frame changed the document"
+            );
+        }
+    }
+
+    fn build(rows: usize) -> VueHost {
+        let host = VueHost::new();
+        let api = host.host_api_registry();
+        let body = api.call("mountRoot", &[]).expect("mount root");
+        let port = api
+            .call("createElement", &[HostValue::string("nana-scroll-view")])
+            .expect("create port");
+        api.call("insert", &[port.clone(), body, HostValue::Null])
+            .expect("insert port");
+        for row in 0..rows {
+            let node = api
+                .call("createElement", &[HostValue::string("div")])
+                .expect("create row");
+            api.call("insert", &[node.clone(), port.clone(), HostValue::Null])
+                .expect("insert row");
+            api.call(
+                "setElementText",
+                &[node, HostValue::string(format!("Row {row}"))],
+            )
+            .expect("text");
+        }
+        host
+    }
+
+    /// Everything a reader can observe about geometry, from both stores.
+    ///
+    /// `BoxSnapshot` alone is not enough and getting that wrong made the first
+    /// version of this harness pass with both gates deliberately broken: it
+    /// reads the *document's* layout boxes, while the scene gate decides whether
+    /// to refill the *paint-box store*. What JS actually reads back is the
+    /// store's view-aware value, so compare that too.
+    #[derive(Debug, PartialEq)]
+    struct Observable {
+        document: crate::BoxSnapshot,
+        painted: Vec<(u64, Option<crate::LayoutBox>)>,
+    }
+
+    fn snapshot(host: &VueHost) -> Observable {
+        let store = host.layout_box_store();
+        let document_slot = host.document();
+        let document = document_slot.lock().expect("vue doc");
+        let runtime = document.runtime_document();
+        let ids = runtime
+            .context()
+            .world()
+            .document_order(runtime.document());
+        let painted = ids
+            .into_iter()
+            .map(|id| {
+                let handle = NodeHandle(id.get());
+                (id.get(), store.get(handle))
+            })
+            .collect();
+        Observable {
+            document: document.snapshot_boxes(),
+            painted,
+        }
+    }
+
+    fn frame(host: &mut VueHost) {
+        host.prepare_window_frame();
+        host.flush_scene_frame().expect("scene frame");
+    }
+
+    #[test]
+    fn gated_and_ungated_frames_leave_the_same_document() {
+        let mut pair = Pair::new(24);
+
+        pair.step("mount", frame);
+        // A settled tree: this is the case the gates exist for, and the case
+        // where a wrong gate would freeze the document mid-convergence.
+        for round in 0..4 {
+            pair.step(&format!("idle frame {round}"), frame);
+        }
+
+        pair.step("scroll", |host| {
+            let port = { host.document().lock().expect("doc").mount_root().0 + 1 };
+            host.host_api_registry()
+                .call(
+                    "setScrollOffset",
+                    &[
+                        HostValue::Number(port as f64),
+                        HostValue::Number(0.0),
+                        HostValue::Number(96.0),
+                    ],
+                )
+                .expect("scroll");
+            frame(host);
+        });
+        for round in 0..3 {
+            pair.step(&format!("idle frame after scroll {round}"), frame);
+        }
+
+        pair.step("append a row", |host| {
+            let api = host.host_api_registry();
+            let body = api.call("mountRoot", &[]).expect("mount root");
+            let node = api
+                .call("createElement", &[HostValue::string("div")])
+                .expect("create");
+            api.call("insert", &[node.clone(), body, HostValue::Null])
+                .expect("insert");
+            api.call("setElementText", &[node, HostValue::string("appended")])
+                .expect("text");
+            frame(host);
+        });
+
+        pair.step("resize the viewport", |host| {
+            host.set_viewport(640, 400, 1.0);
+            frame(host);
+        });
+
+        pair.step("restyle a row", |host| {
+            // Resolve the id before calling: the host op takes the same document
+            // lock, and holding it here deadlocks into a `try_lock` failure.
+            let row = host.document().lock().expect("doc").mount_root().0 + 2;
+            let mut style = std::collections::BTreeMap::new();
+            style.insert("height".to_owned(), HostValue::string("48px"));
+            host.host_api_registry()
+                .call(
+                    "patchProp",
+                    &[
+                        HostValue::Number(row as f64),
+                        HostValue::string("style"),
+                        HostValue::Object(style),
+                    ],
+                )
+                .expect("style");
+            frame(host);
+        });
+        for round in 0..3 {
+            pair.step(&format!("idle frame after restyle {round}"), frame);
+        }
     }
 }
