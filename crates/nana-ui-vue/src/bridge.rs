@@ -1583,15 +1583,45 @@ impl MessageBridge {
         true
     }
 
+    /// Push each descendant's containing block down from `id`.
+    ///
+    /// A worklist rather than recursion, and the reason is allocation: the
+    /// recursive form cloned `widget.children` at every node it visited,
+    /// because the child loop needs `&mut self` and so cannot hold a borrow of
+    /// the list. That is one `Vec` allocation per node per frame, on a walk
+    /// that runs every frame whether or not a containing block moved. One
+    /// buffer for the whole walk replaces all of them.
+    ///
+    /// Worth being precise about what this bought, because the obvious story is
+    /// wrong: on a 2,000-row hover it moved this stage 0.096 -> 0.091 ms and
+    /// left settle where it was. **The allocations were not the cost; the
+    /// traversal is.** Removing the traversal needs the walk scoped to the
+    /// subtrees whose layout actually changed -- see `docs/runtime-dirty-frame.md`.
+    ///
+    /// Sibling order does not matter here -- a node's containing block depends
+    /// only on its parent's content box -- but parent-before-child does, so
+    /// each entry carries the content box its parent resolved.
     fn propagate_layout_containing_blocks(
         &mut self,
         id: WidgetId,
         viewport: Option<(f32, f32)>,
         changed: &mut bool,
     ) {
-        let (content, children) = {
-            let Some(widget) = self.widgets.get(&id) else {
+        let mut pending: Vec<(WidgetId, Option<f32>, Option<f32>)> = Vec::new();
+        let mut cursor = Some(id);
+        loop {
+            let Some(id) = cursor.take().or_else(|| {
+                pending.pop().map(|(child, width, height)| {
+                    if self.write_containing_block(child, width, height) {
+                        *changed = true;
+                    }
+                    child
+                })
+            }) else {
                 return;
+            };
+            let Some(widget) = self.widgets.get(&id) else {
+                continue;
             };
             let parent = ParentBox {
                 width: widget.props.containing_block_width,
@@ -1601,13 +1631,12 @@ impl MessageBridge {
                 .props
                 .layout
                 .resolve_content_box_with_viewport(parent, viewport);
-            (content, widget.children.clone())
-        };
-        for child in children {
-            if self.write_containing_block(child, content.width, content.height) {
-                *changed = true;
-            }
-            self.propagate_layout_containing_blocks(child, viewport, changed);
+            pending.extend(
+                widget
+                    .children
+                    .iter()
+                    .map(|child| (*child, content.width, content.height)),
+            );
         }
     }
 

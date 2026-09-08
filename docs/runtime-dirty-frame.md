@@ -764,9 +764,30 @@ settle 再降 **−26% / −15%**。
 
 ## 还剩什么
 
-**`sync_layout_containing_blocks` 0.095 ms/事件**,现在是 settle(0.30 ms)里最大的一块。
-`propagate_layout_containing_blocks` 每帧从每个 root 递归走整棵树,并且**对每个节点做一次
-`widget.children.clone()`**(每帧 N 次 Vec 分配),即使一个包含块都没变。5.09 倍/4 倍行数。
+**`sync_layout_containing_blocks` 0.091 ms/事件**,现在是 settle(0.30 ms)里最大的一块。
+`propagate_layout_containing_blocks` 每帧从每个 root 走整棵树,即使一个包含块都没变。
+5.09 倍/4 倍行数。
+
+这一条我做了一半,而且**做的那一半证明了我的机制假设是错的**。原来的递归形式对每个节点
+做一次 `widget.children.clone()`(每帧 N 次 Vec 分配),因为子节点循环需要 `&mut self`、
+握不住那个列表的借用。改成一个工作表复用一块缓冲之后:这一段 0.096 → 0.091 ms,settle
+纹丝不动。**分配不是成本,遍历才是。**(改动留下了——少 2,000 次每帧分配本身是对的——但
+它不是那笔钱。)
+
+真正的修法是把这趟走**收到"布局真的变了"的那些子树**上:一个节点的包含块只取决于它父节点
+的 content box,所以只有 `props.layout` 变过的节点的子树需要重推。上限量过了——把整趟走
+跳掉(env 开关,只为测上限,没有也不会上线)是 settle 0.298 → 0.209(**−30%**)。
+
+**没做,而且不该凭现在的理解做。** 种子集必须包含"这一帧 `props.layout` 可能变过"的每一个
+节点,漏一个的表现是包含块变陈旧——一处细微的错误布局,不是崩溃,正是这份文档一直在警惕的
+静默失败。而 `props.layout` 的写入点散在 `bridge.rs`、`cascade.rs`、`motion.rs`、
+`scroll.rs`、`svg_inline`、`css_paint` 等十几处(整字段赋值与单字段赋值都有),手工维护一个
+覆盖它们的失效集,我没法在这一轮里证明它是完整的。
+
+前置条件是先造出一个写入的**唯一收口**:把 `props.layout` 收成私有加一个 `set_layout()`,
+让"布局变了"这件事只有一个地方能发生。那是一次独立的重构,应当先做它,再谈收窄这趟走。
+(`reapply_layout_for` 无条件 `changes.dirty.insert(id)`,看起来是现成的信号,但
+`take_snapshot_changes()` 会把它抽干,抽干与这趟走的先后顺序也还没查清——不能直接拿来用。)
 
 **`sync_sidebar_footer` 0.079 ms/事件**,4.06 倍,未归因。
 
