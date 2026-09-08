@@ -102,16 +102,30 @@ iterates this instead of the entity index so cost tracks host count, not world s
 `route_overlay_pointer` 0.0233 → 0.0001 ms（常数）。L3 每事件 2,000 行 0.0489 → 0.0242（−50%）。
 Gallery 的 559 张像素门禁全匹配——那套快照走的正是这条纯 Rust 路径，是这次改动的正确性证据。
 
-### 未修：`split_handle_near` 的全文档回退扫描
+### 基准的盲区：它以 `Duration::ZERO` 派发
 
-剩下的一半在 `split_pane.rs` 的 `split_handle_near`：先试指针目标再走祖先链，都没命中就
-**回退到 `document_order` 全扫**，找 6px 松弛范围内的分割手柄。一棵没有分割面板的树上，
-每次指针移动都跑这一遍。有一个 8 ms 的时间节流（`begin_split_hover_probe`），但那是节流不是
-消除。
+追第二处的时候撞上这个，值得先记下来。`RuntimeAgentSession` 走
+`RuntimeInputAdapter::dispatch`，而那个便捷方法把 `now` 传成 `Duration::ZERO`
+（要带时钟得用 `dispatch_at`）。于是所有按时间节流的路径**在这套基准里只放行第一次**。
 
-修法与 overlay 那条同形：需要一份按文档维护的分割面板索引。目前没有——`is_split_pane` 是
-逐节点的视图 downcast，`views` 也没有按类型索引。所以这条没做：它需要先决定索引挂在哪、
-在哪注册与注销，而那是设计决定不是改一行。
+`split_handle_near` 就是这样：它的调用方 `sync_split_handle_hover_near` 先过
+`begin_split_hover_probe` 的 8 ms 节流，`now` 恒为 0 意味着第一次之后永远返回 false，
+全文档回退扫描全程只跑了一遍。**这个基准结构上量不到它**，而真实应用用 `dispatch_at`
+配真时钟，120 Hz 下大约每隔一个事件就会放行一次。
+
+所以 L3 这一侧的数字对时间门控的路径是偏乐观的。要继续往下追，先得让基准推进时钟——
+但那会让 tooltip 延时之类的行为在无头会话里开始触发，是对 Agent 的真实行为改动，
+需要单独评估。
+
+### 未修：剩下的一半，尚未归因
+
+`route_overlay_pointer` 修掉后，2,000 行仍有 0.024 ms/事件且仍是线性。分段计时把它定位在
+Move 分支的组件链里（0.0242 of 0.0246），但链里逐个测过的调用——`update_scrollbar_drag`、
+`sync_split_handle_hover_near`——都是 0.0000–0.0001 ms。**所以具体是哪一个还不知道。**
+
+`split_handle_near` 的全文档回退扫描（找 6px 松弛内的分割手柄，一棵没有分割面板的树上
+也要扫）在机制上是个真实的 O(节点数)，但按上面的盲区，它不是这里量到的这 0.024。
+给它加索引做过一版，零可测收益，撤了——没有测量支撑的优化不该留在树里。
 
 ### 一个测量陷阱
 
