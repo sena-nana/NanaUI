@@ -507,6 +507,22 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.equal(a, b);
   });
 
+  test("a transform in a patched style object crosses once, not twice", async () => {
+    // Writing `el.style.transform` already routes through the proxy's setter,
+    // which forwards to `setPaintTransform`. An explicit second call after the
+    // loop paid the boundary twice for one transform; the Rust side deduped it,
+    // which is why it went unnoticed.
+    const el = hostOps.createElement("li");
+    calls.length = 0;
+    hostOps.patchProp(el, "style", null, { transform: "translate(4px, 2px)" });
+    const sends = calls.filter(([name]) => name === "setPaintTransform");
+    assert.deepEqual(
+      sends.map(([, args]) => args[1]),
+      ["translate(4px, 2px)"],
+      "one write, one crossing",
+    );
+  });
+
   test("inline transform is a paint overlay and does not patchProp style", async () => {
     const el = hostOps.createElement("li");
     calls.length = 0;

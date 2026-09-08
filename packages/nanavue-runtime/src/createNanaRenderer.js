@@ -333,24 +333,18 @@ export const hostOps = {
       }
       if (typeof next === "object") {
         const cleaned = {};
-        let sawPaintTransform = false;
         for (const [k, v] of Object.entries(next)) {
           if (isPaintOnlyStyleKey(k)) {
-            // Writing the proxy is what assembles the paint transform, and the
-            // proxy's own setter already forwards it. Deliberately outside the
-            // cascade dedupe below: a transform can change while `cleaned` stays
+            // The proxy's own setter forwards paint-only keys to
+            // `setPaintTransform`, so this write is the whole transform path --
+            // there is no second call to make. Deliberately outside the cascade
+            // dedupe below: a transform can change while `cleaned` stays
             // byte-identical, and `set_paint_transform` does its own equality
             // check on the Rust side.
             if (el && el.style) el.style[k] = v == null ? "" : v;
-            sawPaintTransform = true;
             continue;
           }
           if (v != null && v !== "") cleaned[k] = Array.isArray(v) ? v[v.length - 1] : v;
-        }
-        if (sawPaintTransform && el && el.style) {
-          try {
-            hostCall("setPaintTransform", [nid, paintTransformCssValue(el.style)]);
-          } catch (_err) {}
         }
         // Vue compares props by reference, and a render function that builds its
         // style object inline hands over a new one every time even when nothing
