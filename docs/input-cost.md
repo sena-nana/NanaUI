@@ -126,18 +126,40 @@ host count, not world size"），只是那个函数没用。后三处没有索�
 一旦有任何东西变了，窗口帧就回到 O(总节点数)——`reactive` 与 `reactive-components` 的
 settle 几乎一样（2,000 行 2.58 vs 2.42 ms），而 `bare` 的是 0.0005。
 
-分段计时指向一处：`VueHost::sync_semantics`。它的门是"bridge revision 变了没有"，所以只在
-真的有改动时跑；但一跑就是全文档——`reparent_orphans`、`sync_sidebar_footer_into_document`、
-`sync_layout_containing_blocks`、`sync_semantics_from_bridge` 四段全树遍历，与改了几个节点无关。
+一路分段计时下去，2,000 行、每事件只有 **2 个** widget 变脏时：
 
-| 2,000 行，每帧 | `bare` | `reactive-components` |
+| 层 | 每帧 | 占比 |
 | --- | ---: | ---: |
-| `sync_semantics` | 0.068（其实只在挂载时跑一次，摊到 351 帧） | **2.53** |
-| `resolve_layout` | 0.054 | 0.054 |
+| `VueHost::sync_semantics` | 2.53 ms | 100% |
+| └ `sync_semantics_from_bridge` | 2.03 | 80% |
+| 　└ `apply_semantic_styles` | 1.54 | 61% |
+| 　　└ **`flush_runtime_systems`** | **1.51** | **60%** |
+| 　└ `prepare_semantic_styles` | 0.52 | 21% |
+| └ `reparent_orphans` | 0.25 | 10% |
+| └ `sync_layout_containing_blocks` | 0.15 | 6% |
+| └ `sync_sidebar_footer_into_document` | 0.08 | 3% |
 
-**增量信息是有的**：`MessageBridge` 自己维护 `changes.dirty`。那四段没有用它。这是本文档里
-反复出现的同一个形状的第四次，也是目前最大的一处：它影响每一个真的会变的界面，而不只是
-长列表 hover。**未修**——四段各自都要一个按 dirty 收窄的版本，而无障碍投影的正确性挂在上面。
+**Vue 层的增量已经在工作了。** 351 次同步里只有 1 次是全量（挂载那次），其余 350 次每次只
+投影 2 个 widget——`prepare_semantic_styles` 的 dirty 路径没问题。`apply_semantic_styles` 里
+`commit_extra` 0.013、`adopt_runtime_allocated_ids` 0.020，也都不是问题。
+
+**成本落在 `flush_runtime_systems`，也就是 Runtime 自己的帧。** 2 个节点脏，2,000 节点的树
+上要 1.51 ms。对照：同一棵树上什么都不脏时，Runtime 的空闲 flush 是 0.0001 ms 且不随规模变
+——它的"没活干就退出"挡得很好，"有活干"的那条路是 O(总节点数)。
+
+这不是新发现，是仓库自己记着的未决门禁：`high-refresh-performance.md` 里
+"Runtime 5,000 节点首次系统处理 P95 40.9 ms / 门禁 8 ms"、"标准布局 P95 51.9 ms / 门禁 8 ms"
+一直没过，Issue #8 的阈值也没放宽。这里的贡献只是指出：**它就是 Vue 侧"改动过的帧"成本的
+主体**，而 Vue 层之上已经没什么可省的了。
+
+### 所以框架对写法中立了吗：Vue 层是，Runtime 层还不是
+
+`reactive` 和 `reactive-components` 的 settle 相差 6%（2.58 vs 2.42），因为两者都只脏了 2 个
+widget，Vue 层照此收费。**这一层已经中立了。** 剩下的差别在 dispatch，那是 Vue 自己的 diff，
+是写法真正该负的账。
+
+但两者的 settle 都是 2.4 ms 而不是 0.002 ms——Runtime 按树大小而不是按改动量收费，于是**写对
+的那种也照样被罚**。要让框架真正对写法中立，缺口在 Runtime 的脏帧路径，不在 Vue 层。
 
 ## `reactive` vs `reactive-components`：拆组件值多少
 
@@ -160,7 +182,7 @@ vnode"，不生成子组件，所以 `<div v-for="row in 2000" :style="…">` �
 | --- | --- | --- |
 | `patchProp` 的 style 按引用而非按值比较 | 2,000 次，每次进 CSS 级联 | 60.3 → 10.9 ms |
 | 监听器换了闭包身份就重新告知宿主 | 2,000 次，每次入队一条 world mutation | 10.9 → 8.97 ms |
-| `sync_semantics` 全文档重扫 | 0 次跨界，但每帧四段全树遍历 | 未修 |
+| `sync_semantics` 之下的 `flush_runtime_systems` | 0 次跨界，但 2 个脏节点要 1.5 ms | 未修，见上节 |
 
 第二处尤其能说明问题：JS 侧的 invoker 模式**已经**正确地避免了监听器变动
 （`existing.value = handler`，不碰 `addEventListener`），然后紧接着还是
