@@ -1133,6 +1133,9 @@ pub(crate) fn try_bind_registered_component(
                 .map(|(key, value)| (key.as_str(), value.as_str())),
         )
         .collect();
+    // Both the slot probe and the icon probe walk the whole child list; one
+    // answer covers both.
+    let reads_child_derived_spec = context.component_reads_child_derived_spec(&type_id);
     let slot_pairs = {
         #[cfg(feature = "benchmark")]
         let _timer = crate::frame_profile::ScopeTimer::new(25);
@@ -1140,11 +1143,11 @@ pub(crate) fn try_bind_registered_component(
         // component that never reads them makes its instances pay that scan for
         // nothing, and the components that ignore slots -- layout boxes -- are
         // the ones with the most children: on a 2,000-row list this scan was
-        // 0.099 ms of a 0.41 ms settle, and it is the largest single leaf in
+        // 0.099 ms of a 0.41 ms settle, and it was the largest single leaf in
         // it. The registry answers per component, so the layout aliases
         // (`nana.column` / `nana.row` / `nana.box`) inherit the answer, and an
         // unregistered type answers "yes" rather than silently losing a slot.
-        if context.component_consumes_slots(&type_id) {
+        if reads_child_derived_spec {
             bind_semantic_slots(widget, snapshot)
         } else {
             Vec::new()
@@ -1223,7 +1226,13 @@ pub(crate) fn try_bind_registered_component(
         icon: {
             #[cfg(feature = "benchmark")]
             let _timer = crate::frame_profile::ScopeTimer::new(28);
-            widget_icon(widget, snapshot)
+            // Same scan, same reason: finding the icon child means probing
+            // every child's kind.
+            if reads_child_derived_spec {
+                widget_icon(widget, snapshot)
+            } else {
+                None
+            }
         },
         min: widget.props.min,
         max,

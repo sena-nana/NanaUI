@@ -15,14 +15,15 @@ impl AppContext {
         self.components.resolve_normalized(normalized_tag)
     }
 
-    /// Whether the component registered under `type_id` reads
-    /// [`SemanticSpec::slots`].
+    /// Whether the component registered under `type_id` reads the
+    /// [`SemanticSpec`] fields a host derives by scanning a widget's children:
+    /// `slots` (probing each child for `data-slot`) and `icon` (probing each
+    /// child for an `Icon` kind).
     ///
-    /// A host collects slots by scanning a widget's children for `data-slot`,
-    /// so this lets it skip the scan for a component that ignores them.
+    /// This lets a host skip both scans for a component that ignores them.
     /// Unknown types answer `true`.
-    pub fn component_consumes_slots(&self, type_id: &ComponentTypeId) -> bool {
-        self.components.consumes_slots(type_id)
+    pub fn component_reads_child_derived_spec(&self, type_id: &ComponentTypeId) -> bool {
+        self.components.reads_child_derived_spec(type_id)
     }
 
     pub fn bind_semantic(

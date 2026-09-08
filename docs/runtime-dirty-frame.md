@@ -442,12 +442,12 @@ grow、margin、auto margin、row、row-wrap）× 每种约 20 次编辑（头/�
 
 | 变体 | 起点 | 第一轮 | 第三轮 | 第四轮 | 第五轮 | 累计 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `reactive` 每事件 | 8.872 | 6.660 | 6.038 | 4.783 | **3.68** | **−59%** |
-| 　其中 settle | 2.664 | 1.638 | 1.330 | 0.732 | **0.303** | **−89%** |
-| `reactive-components` 每事件 | 5.449 | 3.388 | 2.751 | 1.793 | **0.98** | **−82%** |
-| 　其中 settle | 2.485 | 1.537 | 1.248 | 0.623 | **0.281** | **−89%** |
+| `reactive` 每事件 | 8.872 | 6.660 | 6.038 | 4.783 | **3.49** | **−61%** |
+| 　其中 settle | 2.664 | 1.638 | 1.330 | 0.732 | **0.194** | **−93%** |
+| `reactive-components` 每事件 | 5.449 | 3.388 | 2.751 | 1.793 | **0.77** | **−86%** |
+| 　其中 settle | 2.485 | 1.537 | 1.248 | 0.623 | **0.168** | **−93%** |
 
-第五轮的同机对照是 `reactive` 每事件 4.96 → 3.68、settle 0.763 → 0.303（前四轮那几列记在
+第五轮的同机对照是 `reactive` 每事件 5.08 → 3.49、settle 0.780 → 0.194（前四轮那几列记在
 各自当时的机器状态下，跨列比较只看趋势）。这一轮里 **hover 帧的 `FrameStage::Layout`
 归零**——一次只改颜色的 hover 本来就不欠任何布局。
 
@@ -762,6 +762,36 @@ settle 再降 **−26% / −15%**。
 `the_slot_flag_reaches_every_alias_and_defaults_to_yes` 断言三个别名都继承到了该标志,
 并且一个真的用 slot 的组件、以及一个注册表没见过的 id,都必须答"是"。
 
+### 第四、五块:两次为了证明"没活干"而走全树的扫描
+
+**`sync_sidebar_footer` 0.079 ms/事件(4.06 倍)。** 这棵树里**根本没有 sidebar**。
+`sync_sidebar_footer_into_document` 第一件事是 `roots_reachable()`——走一遍整棵树、给每个
+widget id 建一个 `HashSet`——只为拿去问 `reachable_sidebar_frame`。而那个函数只有在存在
+`kind == SidebarFrame` 的 widget 时才可能返回 `Some`,所以一个都没有时整段是 no-op。
+
+这正是第四轮给 `reparent_orphans` 加的那道 `has_sidebar_frame()` 守卫(对 map values 扫
+一遍枚举判别式,没有可达集、没有 class name 比较),当时**没有一并加到这里**。加上之后
+0.0796 → 0.0016 ms(**50 倍**),settle 0.299 → 0.219。
+
+**`widget_icon` 0.030 ms/事件(3.90 倍)**,此时已占 `try_bind_registered_component` 的七成。
+它要在孩子里找 `kind == Icon` 的那一个——又是一遍 2,000 个孩子的探测。而 `Stack` 同样不读
+`spec.icon`。
+
+这和上一节的 slot 是**同一个性质**:宿主要靠扫孩子才能算出来的 `SemanticSpec` 字段,而绑定
+到的组件根本不读。所以把上一节的标志**改名并加宽**成
+`READS_CHILD_DERIVED_SPEC`——一句话覆盖 `slots` 与 `icon` 两处扫描——而不是再加一个几乎
+一样的布尔。测试也一并覆盖两半:`Stack::from_semantic` 对带 slot / 带 icon 的 spec 都必须
+产出相同结果,两半都拿改坏的实现验过会失败。
+
+两条合起来,2,000 行三轮 p50:
+
+| 变体 | | 每事件 | settle |
+| --- | --- | ---: | ---: |
+| `reactive` | 本轮起点 | 5.08 | 0.780 |
+| | **现在** | **3.49** | **0.194** |
+| `reactive-components` | 本轮起点 | 1.88 | 0.652 |
+| | **现在** | **0.77** | **0.168** |
+
 ## 还剩什么
 
 **`sync_layout_containing_blocks` 0.091 ms/事件**,现在是 settle(0.30 ms)里最大的一块。
@@ -789,7 +819,7 @@ settle 再降 **−26% / −15%**。
 (`reapply_layout_for` 无条件 `changes.dirty.insert(id)`,看起来是现成的信号,但
 `take_snapshot_changes()` 会把它抽干,抽干与这趟走的先后顺序也还没查清——不能直接拿来用。)
 
-**`sync_sidebar_footer` 0.079 ms/事件**,4.06 倍,未归因。
+**`sync_sidebar_footer` 已修**,见下一节。
 
 **内容驱动尺寸的容器,在孩子真的改尺寸时,仍然重测全部孩子。** 这一轮补的是"闭包里的孩子
 都没变"那一半;另一半——容器按已缓存的每子贡献增量更新自己的聚合,也就是

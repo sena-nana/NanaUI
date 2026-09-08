@@ -155,10 +155,10 @@ impl RegisterableComponent for Stack {
     const TAGS: &'static [&'static str] = crate::component_descriptors::STACK.tags;
     const BIND_KIND: crate::ComponentBindKind = crate::ComponentBindKind::Layout;
     // A layout box carries its children; it does not address any of them by
-    // name. Saying so lets the host skip scanning them for `data-slot` -- and a
-    // layout box is exactly the widget with the most children to scan.
-    // `stack_ignores_slots` holds this honest.
-    const CONSUMES_SLOTS: bool = false;
+    // name, and it has no icon. Saying so lets the host skip both scans of the
+    // child list -- and a layout box is exactly the widget with the most
+    // children to scan. `stack_ignores_child_derived_spec` holds this honest.
+    const READS_CHILD_DERIVED_SPEC: bool = false;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut layout = spec.layout.as_ref().clone();
         // `nana.row` needs the seed: the engine's default flow axis is the
@@ -3717,13 +3717,14 @@ mod stack_direction_tests {
         );
     }
 
-    /// `Stack::CONSUMES_SLOTS = false` is a promise a host acts on by skipping
-    /// slot collection entirely. If `from_semantic` ever starts reading
-    /// `spec.slots`, that host silently drops those children instead of binding
-    /// them -- so the promise has to be checked, not just declared.
+    /// `Stack::READS_CHILD_DERIVED_SPEC = false` is a promise a host acts on by
+    /// skipping two scans of the child list entirely. If `from_semantic` ever
+    /// starts reading `spec.slots` or `spec.icon`, that host silently drops
+    /// those children instead of binding them -- so the promise has to be
+    /// checked, not just declared.
     #[test]
-    fn stack_ignores_slots_so_declaring_it_is_honest() {
-        const { assert!(!<Stack as RegisterableComponent>::CONSUMES_SLOTS) };
+    fn stack_ignores_child_derived_spec_so_declaring_it_is_honest() {
+        const { assert!(!<Stack as RegisterableComponent>::READS_CHILD_DERIVED_SPEC) };
         let layout = Arc::new(LayoutStyle {
             width: Some(LengthSpec::Px(64.0)),
             ..LayoutStyle::default()
@@ -3731,45 +3732,56 @@ mod stack_direction_tests {
         let slot_child = StableNodeId::new(7).unwrap();
         for type_id in ["nana.stack", "nana.column", "nana.row", "nana.box"] {
             let type_id = ComponentTypeId::new(type_id).unwrap();
-            let without = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, &layout));
+            let bare = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, &layout));
             let slots = [("content", slot_child), ("leading", slot_child)];
-            let with = Stack::from_semantic(&SemanticSpec {
+            let with_slots = Stack::from_semantic(&SemanticSpec {
                 slots: &slots,
                 ..SemanticSpec::from_parts(&type_id, &layout)
             });
             assert_eq!(
-                without, with,
+                bare, with_slots,
                 "{type_id:?}: Stack read its slots, but it is registered as \
                  ignoring them, so a host that skips collecting them would \
                  silently drop those children"
+            );
+            let with_icon = Stack::from_semantic(&SemanticSpec {
+                icon: Some(nana_ui_core::Icon::Add),
+                ..SemanticSpec::from_parts(&type_id, &layout)
+            });
+            assert_eq!(
+                bare, with_icon,
+                "{type_id:?}: Stack read its icon, but it is registered as \
+                 ignoring it, so a host that skips probing for one would \
+                 silently drop it"
             );
         }
     }
 
     /// The flag has to reach the registry under every id the component answers
     /// to. `Stack` is registered once and aliased three times; an alias that
-    /// lost the flag would just quietly keep paying the scan.
+    /// lost the flag would just quietly keep paying both scans.
     #[test]
-    fn the_slot_flag_reaches_every_alias_and_defaults_to_yes() {
+    fn the_child_spec_flag_reaches_every_alias_and_defaults_to_yes() {
         let context = AppContext::new();
         for slotless in ["nana.stack", "nana.column", "nana.row", "nana.box"] {
             let id = ComponentTypeId::new(slotless).unwrap();
             assert!(
-                !context.component_consumes_slots(&id),
-                "{slotless}: the layout alias did not inherit CONSUMES_SLOTS"
+                !context.component_reads_child_derived_spec(&id),
+                "{slotless}: the layout alias did not inherit \
+                 READS_CHILD_DERIVED_SPEC"
             );
         }
         // A component that does address children by name, and an id the
         // registry has never heard of, both have to answer "yes".
-        for slotted in [
+        for reads in [
             "nana.list-item",
             "nana.sidebar-frame",
             "nana.not-a-component",
         ] {
-            let id = ComponentTypeId::new(slotted).unwrap();
+            let id = ComponentTypeId::new(reads).unwrap();
             assert!(
-                context.component_consumes_slots(&id),
-                "{slotted}: skipping slot collection here would drop children"
+                context.component_reads_child_derived_spec(&id),
+                "{reads}: skipping the child scans here would drop children"
             );
         }
     }

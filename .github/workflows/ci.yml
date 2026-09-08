@@ -146,8 +146,8 @@ jobs:
             a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires_it \
             projecting_a_stack_does_not_rewrite_the_style_the_cascade_published \
             an_unset_flow_axis_is_a_column_but_not_a_row \
-            stack_ignores_slots_so_declaring_it_is_honest \
-            the_slot_flag_reaches_every_alias_and_defaults_to_yes \
+            stack_ignores_child_derived_spec_so_declaring_it_is_honest \
+            the_child_spec_flag_reaches_every_alias_and_defaults_to_yes \
             scroll_view_with_forty_rows_dirties_forty_one_hit_targets \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \
@@ -155,6 +155,10 @@ jobs:
           do
             cargo test -p nana-ui-runtime --lib --locked "$name"
           done
+          # Same class of invariant, different crate: the Vue bridge must not
+          # walk the whole tree to discover it has no sidebar.
+          cargo test -p nana-ui-vue --lib --locked \
+            the_sidebar_footer_sync_still_runs_when_there_is_a_frame
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants
