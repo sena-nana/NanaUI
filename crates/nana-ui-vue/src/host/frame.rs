@@ -41,19 +41,14 @@ impl VueHost {
         // clear was redundant -- and worse, the `record` loop then dropped each
         // overlay again through `clear_view`, leaving every geometry read
         // unscrolled until the next `resolve_layout` rebuilt them.
-        let key = {
+        let instance = {
             let document = self.document.lock().expect("vue doc");
-            let scene = document.runtime_document().scene();
-            SceneRecordKey {
-                instance: scene.instance_id(),
-                nodes: scene.node_count(),
-                logical: (logical_width.to_bits(), logical_height.to_bits()),
-            }
+            document.runtime_document().scene().instance_id()
         };
-        if self.gates_enabled() && self.recorded_scene_key == Some(key) {
+        if self.frame_gates_enabled && self.recorded_scene_instance == Some(instance) {
             return Ok(());
         }
-        self.recorded_scene_key = Some(key);
+        self.recorded_scene_instance = Some(instance);
 
         let records: Vec<(u64, nana_ui_scene::SceneRect)> = {
             let document = self.document.lock().expect("vue doc");
@@ -182,7 +177,7 @@ impl VueHost {
 
     pub fn resolve_layout(&mut self) {
         let key = self.layout_resolve_key();
-        if self.gates_enabled() && self.resolved_layout_key == Some(key) {
+        if self.frame_gates_enabled && self.resolved_layout_key == Some(key) {
             return;
         }
         // One pass is not a fixed point. The cascade sync and `flush_host_frame`
@@ -264,21 +259,8 @@ impl VueHost {
         self.resolved_layout_key = None;
         #[cfg(feature = "scene-view")]
         {
-            self.recorded_scene_key = None;
+            self.recorded_scene_instance = None;
         }
-    }
-
-    fn gates_enabled(&self) -> bool {
-        self.frame_gates_enabled
-    }
-
-    /// Force the next [`Self::resolve_layout`] to do its work.
-    ///
-    /// For callers that change something the key cannot see. Nothing needs this
-    /// today; it exists so that adding such a caller is a one-line fix rather
-    /// than a silent stale layout.
-    pub fn invalidate_resolved_layout(&mut self) {
-        self.resolved_layout_key = None;
     }
 
     /// Per-window Scene layout writeback buffer (same as probes / `layoutBox`).
@@ -406,20 +388,6 @@ mod tests {
             "a tree that grew must not reuse the previous resolve"
         );
     }
-}
-
-/// Identifies one painted scene. See [`VueHost::flush_scene_frame`].
-///
-/// `node_count` rides along because `instance_id` answers "is this a different
-/// mutation" rather than "is this a different scene": a `Clone` gets a fresh id
-/// too. Pairing it with the count keeps an unrelated instance from ever reading
-/// as the one already recorded.
-#[cfg(feature = "scene-view")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SceneRecordKey {
-    instance: u64,
-    nodes: usize,
-    logical: (u32, u32),
 }
 
 #[cfg(all(test, feature = "scene-view"))]

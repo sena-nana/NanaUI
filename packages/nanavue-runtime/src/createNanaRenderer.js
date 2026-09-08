@@ -20,7 +20,7 @@ export { applyFlipPaintTransform, clearFlipPaintTransform, readFlipBox } from ".
 
 
 import { isOn, isModelListener, shouldSetAsDomProp, isSvgElement, isSvgAttrKey, serializePatchValue, seedHostProps, syncClassList } from "./props.js";
-import { flushPendingStyles, queueStyleFlush, flushHostFrame, installFlushHooks, parseCssText, hostStyleStore, paintTransformCssValue, syncPaintTransform, createStyleProxy, setVueStyle, forgetStyle } from "./styles.js";
+import { flushHostFrame, installFlushHooks, setVueStyle, forgetStyle } from "./styles.js";
 import { contextForWindow } from "./windowContext.js";
 import { createEventDispatcher } from "./events.js";
 import { createNodeStore } from "./nodes.js";

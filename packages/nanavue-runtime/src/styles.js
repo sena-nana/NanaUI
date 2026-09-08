@@ -13,20 +13,19 @@ import { isPaintOnlyStyleKey } from "./transitionContract.js";
  * is also what makes `sent` a truthful answer to "does the host already have
  * this?", which is the question that lets an unchanged repatch stay home.
  *
- * `vue` is the cleaned object from `patchProp`, or `OPAQUE` when Vue handed a
- * raw CSS string. A string is not merged: parsing it back into declarations
- * would have to get `url(a:b)` and quoted semicolons right for no gain, so that
- * path keeps its old send-every-time behaviour.
+ * `vue` is the cleaned object from `patchProp`, or the raw CSS string Vue handed
+ * over. A string wins outright rather than merging: parsing it back into
+ * declarations would have to get `url(a:b)` and quoted semicolons right, for no
+ * gain over what that path did before.
  */
 const styleLayers = new Map();
-const OPAQUE = Symbol("opaque style");
 const pendingStyleFlush = new Set();
 let styleFlushScheduled = false;
 
 function layersFor(nid) {
   let layers = styleLayers.get(nid);
   if (!layers) {
-    layers = { vue: null, proxy: null, sent: OPAQUE };
+    layers = { vue: null, proxy: null, sent: undefined };
     styleLayers.set(nid, layers);
   }
   return layers;
@@ -34,26 +33,27 @@ function layersFor(nid) {
 
 /** The declarations the host should hold for `nid`, or `null` to clear. */
 function mergedStyle(layers) {
+  const vue = layers.vue;
+  if (typeof vue === "string") return vue;
   let proxy = layers.proxy ? hostStyleStore(layers.proxy) : null;
   // A registered but empty proxy layer is the same as no proxy layer. Letting
   // `{}` count as present would turn "Vue cleared the style" into "Vue set an
   // empty style", and the host clears the attribute only for `null`.
   if (proxy && Object.keys(proxy).length === 0) proxy = null;
-  const vue = layers.vue;
-  if (vue === OPAQUE) return OPAQUE;
   if (!vue && !proxy) return null;
   // The proxy wins per key: it is an imperative write applied after render, the
   // same precedence the DOM gives `el.style.foo = v` over the attribute.
   return { ...(vue || {}), ...(proxy || {}) };
 }
 
-function sameDeclarations(a, b) {
-  if (a === b) return true;
-  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-  const keys = Object.keys(a);
-  if (keys.length !== Object.keys(b).length) return false;
+/** Whether the host already holds exactly `next`. */
+function alreadySent(sent, next) {
+  if (sent === next) return true;
+  if (!sent || !next || typeof sent !== "object" || typeof next !== "object") return false;
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(sent).length) return false;
   for (const key of keys) {
-    if (a[key] !== b[key]) return false;
+    if (sent[key] !== next[key]) return false;
   }
   return true;
 }
@@ -62,12 +62,10 @@ function sameDeclarations(a, b) {
 function sendStyle(nid) {
   const layers = layersFor(nid);
   const next = mergedStyle(layers);
-  if (next !== OPAQUE && layers.sent !== OPAQUE && sameDeclarations(next, layers.sent)) {
-    return false;
-  }
+  if (layers.sent !== undefined && alreadySent(layers.sent, next)) return false;
   layers.sent = next;
   try {
-    hostCall("patchProp", [nid, "style", next === OPAQUE ? null : next]);
+    hostCall("patchProp", [nid, "style", next]);
   } catch (_err) {}
   return true;
 }
@@ -86,16 +84,7 @@ export function flushPendingStyles() {
  * whether anything crossed into the host.
  */
 export function setVueStyle(nid, cleaned) {
-  const layers = layersFor(nid);
-  if (typeof cleaned === "string") {
-    layers.vue = OPAQUE;
-    layers.sent = OPAQUE;
-    try {
-      hostCall("patchProp", [nid, "style", cleaned]);
-    } catch (_err) {}
-    return true;
-  }
-  layers.vue = cleaned || null;
+  layersFor(nid).vue = cleaned ?? null;
   return sendStyle(nid);
 }
 
