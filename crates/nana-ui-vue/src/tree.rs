@@ -1296,7 +1296,11 @@ impl NanaTreeDocument {
         #[cfg(feature = "benchmark")]
         let _loop_timer = crate::frame_profile::ScopeTimer::new(50);
         for raw_id in &projected {
-            let Some(widget) = snapshot.get(*raw_id) else {
+            #[cfg(not(feature = "benchmark"))]
+            let got = snapshot.get(*raw_id);
+            #[cfg(feature = "benchmark")]
+            let got = crate::frame_profile::timed(52, || snapshot.get(*raw_id));
+            let Some(widget) = got else {
                 continue;
             };
             let widget = &widget;

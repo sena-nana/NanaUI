@@ -88,7 +88,7 @@ pub mod frame_profile {
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
 
-    pub const PHASES: [&str; 52] = [
+    pub const PHASES: [&str; 53] = [
         "svg_rasters",
         "flush_host_frame",
         "sync_semantics",
@@ -141,6 +141,7 @@ pub mod frame_profile {
         "      · projection_ids",
         "      · prepare loop body",
         "      · # dirty ids in",
+        "      · snapshot.get in loop",
     ];
 
     thread_local! {

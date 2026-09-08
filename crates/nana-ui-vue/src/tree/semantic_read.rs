@@ -99,13 +99,18 @@ impl<'a> SemanticRead<'a> {
         let (parent, children) = topology.entry(id).or_insert_with(|| match &self.source {
             Source::Snapshot { .. } => (widget.parent, widget.children.clone().into()),
             Source::Bridge { bridge, document } => {
+                // `live_parent` does not check node membership, so the parent
+                // needs the full test. `live_children` already filters on
+                // `document.nodes`, so repeating that half for every child is
+                // one redundant hash lookup per child on the widest widget in
+                // the document -- and this runs per pointer event.
                 let visible = |id| document.nodes.contains_key(&id) && bridge.get(id).is_some();
                 (
                     document.live_parent(id).filter(|id| visible(*id)),
                     document
                         .live_children(id)
                         .into_iter()
-                        .filter(|id| visible(*id))
+                        .filter(|id| bridge.get(*id).is_some())
                         .collect(),
                 )
             }
