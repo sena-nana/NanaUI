@@ -1,4 +1,4 @@
-// Hover-cost fixture: one flat column of rows, built three ways.
+// Hover-cost fixture: one column of rows, built three ways, optionally scrolled.
 //
 // Three modes rather than one number, because "Vue hover is slow" would hide
 // which of three separable things is slow:
@@ -14,12 +14,23 @@
 // Rows are fixed-height and the pointer never leaves the column, so nothing
 // reflows: the scenario's `layout_nodes == 0` invariant has to hold on this
 // tree, not merely on the Rust one.
+//
+// SCROLL wraps the column in a fixed-height scrollport at a non-zero offset.
+// That is not cosmetic: with no scroll container the paint-box store's view
+// overlays stay empty for the life of the run, and every gate keyed on that
+// store looks like it works. A scrolled tree is the case those gates have to
+// survive, so it needs its own build.
 import { h, ref } from "@vue/runtime-core";
 import { createApp } from "../../../../../packages/nanavue-runtime/src/createNanaRenderer.js";
 
 const ROWS = __HOVER_BENCH_ROWS__;
 const MODE = __HOVER_BENCH_MODE__;
+const SCROLL = __HOVER_BENCH_SCROLL__;
 const ROW_HEIGHT = 24;
+const PORT_HEIGHT = 480;
+// Deep enough that rows above and below the port stay clipped, so the overlays
+// the store keeps are the interesting kind rather than a no-op translation.
+const SCROLL_TOP = 240;
 
 // Written by the `listeners` handler and never read by the render function, so
 // the handler does real work without invalidating anything. Deliberately not a
@@ -30,7 +41,7 @@ globalThis.__hoverBenchTouched = () => touched;
 createApp({
   setup() {
     const active = ref(-1);
-    return () =>
+    const column = () =>
       h(
         "div",
         {
@@ -59,6 +70,23 @@ createApp({
           }
           return h("div", props, `Row ${index}`);
         }),
+      );
+    if (!SCROLL) return column;
+    return () =>
+      h(
+        "nana-scroll-view",
+        {
+          "data-agent-id": "port",
+          ref: (el) => {
+            if (el && el.scrollTop !== SCROLL_TOP) el.scrollTop = SCROLL_TOP;
+          },
+          style: {
+            width: "320px",
+            height: `${PORT_HEIGHT}px`,
+            overflowY: "auto",
+          },
+        },
+        [column()],
       );
   },
 }).mount();

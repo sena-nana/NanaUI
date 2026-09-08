@@ -688,41 +688,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let Ok(mut host) = host.lock() else {
             return;
         };
-        host.prepare_canvas_gpu();
-        if let Ok(mut document) = host.document().lock() {
-            document.sync_svg_rasters();
-        }
-        host.prepare_svg_gpu();
-        host.prepare_media_gpu();
-        // Stamp packed HostTexture generation/version onto CustomRenderNode
-        // before extract; content invalidation must not leave revision at 0.
-        if let Ok(mut document) = host.document().lock() {
-            document.flush_host_frame();
-            host.report_commit_rejections(&mut document);
-        }
-        // Borrow semantic data only when the bridge moved past the synced revision.
-        let synced = host
-            .document()
-            .lock()
-            .ok()
-            .and_then(|document| document.synced_semantic_revision());
-        let needs_snapshot = match host.bridge().lock() {
-            Ok(bridge) => synced != Some(bridge.revision()),
-            Err(_) => true,
-        };
-        if needs_snapshot {
-            host.sync_semantics();
-        }
-        host.resolve_layout();
-        if let Ok(mut document) = host.document().lock() {
-            document.sync_svg_rasters();
-        }
-        host.prepare_svg_gpu();
-        host.prepare_media_gpu();
-        if let Ok(mut document) = host.document().lock() {
-            document.flush_host_frame();
-            host.report_commit_rejections(&mut document);
-        }
+        host.prepare_window_frame();
     }
 
     pub fn host_textures_for(&self, id: WindowId) -> Option<HostTextureRegistry> {

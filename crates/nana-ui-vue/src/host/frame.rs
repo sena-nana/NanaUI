@@ -90,6 +90,65 @@ impl VueHost {
     /// `LayoutBoxStore::revision` is the load-bearing half of the key: a Scene
     /// frame re-records every visible node whether or not it moved, so the store
     /// counts writes that changed something rather than writes.
+    /// Everything a window's redraw does to this host before the Scene is painted.
+    ///
+    /// Lives here rather than in the hosted adapter because every step is a host
+    /// method: the adapter was open-coding the host's own frame. Keeping it in
+    /// one place is also what lets a benchmark measure the real production
+    /// sequence instead of a replica that drifts from it.
+    ///
+    /// The two `sync_svg_rasters` / `flush_host_frame` rounds bracket
+    /// `resolve_layout` on purpose: the first makes rasters and committed host
+    /// ops available to layout, the second picks up whatever resolving produced.
+    pub fn prepare_window_frame(&mut self) {
+        // The GPU halves only exist with `hosted`; without it there is no device
+        // to prepare, and the rest of the frame is unchanged.
+        #[cfg(feature = "hosted")]
+        self.prepare_canvas_gpu();
+        if let Ok(mut document) = self.document.lock() {
+            document.sync_svg_rasters();
+        }
+        #[cfg(feature = "hosted")]
+        {
+            self.prepare_svg_gpu();
+            self.prepare_media_gpu();
+        }
+        // Stamp packed HostTexture generation/version onto CustomRenderNode
+        // before extract; content invalidation must not leave revision at 0.
+        if let Ok(mut document) = self.document.lock() {
+            document.flush_host_frame();
+            #[cfg(feature = "scene-view")]
+            self.report_commit_rejections(&mut document);
+        }
+        // Borrow semantic data only when the bridge moved past the synced revision.
+        let synced = self
+            .document
+            .lock()
+            .ok()
+            .and_then(|document| document.synced_semantic_revision());
+        let needs_snapshot = match self.bridge.lock() {
+            Ok(bridge) => synced != Some(bridge.revision()),
+            Err(_) => true,
+        };
+        if needs_snapshot {
+            self.sync_semantics();
+        }
+        self.resolve_layout();
+        if let Ok(mut document) = self.document.lock() {
+            document.sync_svg_rasters();
+        }
+        #[cfg(feature = "hosted")]
+        {
+            self.prepare_svg_gpu();
+            self.prepare_media_gpu();
+        }
+        if let Ok(mut document) = self.document.lock() {
+            document.flush_host_frame();
+            #[cfg(feature = "scene-view")]
+            self.report_commit_rejections(&mut document);
+        }
+    }
+
     pub fn resolve_layout(&mut self) {
         let mut key = self.layout_resolve_key();
         if self.resolved_layout_key == Some(key) {

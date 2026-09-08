@@ -14,9 +14,12 @@
 //! Both tiers are driven one level below `AgentSession` on purpose, so each side
 //! pays exactly one dispatch plus one settle:
 //!
-//! - Vue: `dispatch_pointer` (which ends in one `pump_frame`) then
-//!   `flush_scene_frame`, which is what a window's redraw does and what fills
-//!   the paint-box store the tier reads back.
+//! - Vue: `dispatch_pointer` (which ends in one `pump_frame`) then the settle
+//!   named by `--shape`. `window` runs `VueHost::prepare_window_frame`, the
+//!   sequence a real redraw runs. `headless` runs `flush_scene_frame`, which
+//!   only the Agent session and this binary call -- it is the headless stand-in
+//!   that fills the paint-box store, and measuring it alone would report a path
+//!   no shipped window takes.
 //! - L3: `hover_xy`, which is a Runtime pointer dispatch plus `flush`.
 //!
 //! Going through `AgentSession::pointer` instead would charge Vue for a second
@@ -68,6 +71,8 @@ struct Report {
     rows: usize,
     moves: usize,
     warmup: usize,
+    shape: &'static str,
+    scroll: bool,
     cases: Vec<Case>,
 }
 
@@ -117,10 +122,34 @@ impl Distribution {
     }
 }
 
+/// Which settle each timed event pays for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// `VueHost::prepare_window_frame` -- what a shipped window's redraw runs.
+    Window,
+    /// `flush_scene_frame` -- the Agent session's stand-in, which also fills the
+    /// paint-box store this binary and the headless tools read back.
+    Headless,
+}
+
+impl Shape {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::Headless => "headless",
+        }
+    }
+}
+
 struct Args {
     rows: usize,
     moves: usize,
     warmup: usize,
+    shape: Shape,
+    /// Drive the `-scroll` bundles: the same rows inside a scrollport at a
+    /// non-zero offset. Without one the paint-box store's view overlays stay
+    /// empty and any gate keyed on that store looks like it works.
+    scroll: bool,
     bundles: PathBuf,
     output: Option<PathBuf>,
 }
@@ -131,6 +160,8 @@ impl Default for Args {
             rows: 2000,
             moves: 600,
             warmup: 60,
+            shape: Shape::Window,
+            scroll: false,
             bundles: PathBuf::from("target/hover-bench"),
             output: None,
         }
@@ -148,7 +179,12 @@ fn main() -> ExitCode {
     };
 
     let mut cases = Vec::new();
-    for mode in ["bare", "listeners", "reactive"] {
+    let modes: &[&'static str] = if args.scroll {
+        &["bare-scroll", "listeners-scroll", "reactive-scroll"]
+    } else {
+        &["bare", "listeners", "reactive"]
+    };
+    for mode in modes.iter().copied() {
         let bundle = args
             .bundles
             .join(format!("{mode}-{}", args.rows))
@@ -179,6 +215,8 @@ fn main() -> ExitCode {
         rows: args.rows,
         moves: args.moves,
         warmup: args.warmup,
+        shape: args.shape.name(),
+        scroll: args.scroll,
         cases,
     };
     let json = serde_json::to_string_pretty(&report).expect("report must serialize");
@@ -277,8 +315,13 @@ fn vue_case(
     // The mount's own frame, so the first timed move is not the one that pays
     // for the initial layout and the first paint-box fill.
     host.pump_frame(&mut engine)?;
+    // Both shapes get a scene frame at mount: without one the paint-box store
+    // stays empty and `resolve_layout` would take its "nothing painted yet"
+    // branch forever, which no application does past its first frame.
     host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?;
+    host.prepare_window_frame();
     let mount_ms = as_ms(started.elapsed());
+    let shape = args.shape;
     let (hover_ms, dispatch_ms, settle_ms) = measure(args, |x, y| {
         let started = Instant::now();
         host.dispatch_pointer(
@@ -287,7 +330,10 @@ fn vue_case(
         )?;
         let dispatch = as_ms(started.elapsed());
         let started = Instant::now();
-        host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?;
+        match shape {
+            Shape::Window => host.prepare_window_frame(),
+            Shape::Headless => host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?,
+        }
         Ok(Sample {
             dispatch: Some(dispatch),
             settle: Some(as_ms(started.elapsed())),
@@ -376,6 +422,14 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Option<Args>, String>
             "--rows" => args.rows = parse_field(value()?, "--rows")?,
             "--moves" => args.moves = parse_field(value()?, "--moves")?,
             "--warmup" => args.warmup = parse_field(value()?, "--warmup")?,
+            "--shape" => {
+                args.shape = match value()?.as_str() {
+                    "window" => Shape::Window,
+                    "headless" => Shape::Headless,
+                    other => return Err(format!("--shape expects window|headless, got {other}")),
+                }
+            }
+            "--scroll" => args.scroll = true,
             "--bundles" => args.bundles = PathBuf::from(value()?),
             "--output" => args.output = Some(PathBuf::from(value()?)),
             "--help" | "-h" => {
@@ -385,6 +439,8 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Option<Args>, String>
                      \x20 --rows <n>       rows per tree (default 2000); the Vue bundles must match\n\
                      \x20 --moves <n>      timed hover moves (default 600)\n\
                      \x20 --warmup <n>     untimed moves first (default 60)\n\
+                     \x20 --shape <s>      window (default, a real redraw) or headless\n\
+                     \x20 --scroll         drive the -scroll bundles instead\n\
                      \x20 --bundles <dir>  where build-hover-bench.mjs wrote its output\n\
                      \x20 --output <path>  write JSON here instead of stdout"
                 );

@@ -3,7 +3,7 @@
 // Output lands under `target/`, not `dist/`: these are measurement inputs
 // regenerated on demand, not a committed fixture whose bytes CI diffs.
 //
-//   node build-hover-bench.mjs <bare|listeners|reactive> [rows]
+//   node build-hover-bench.mjs <bare|listeners|reactive>[-scroll] [rows]
 import { build } from "vite";
 import { fileURLToPath } from "node:url";
 
@@ -13,9 +13,13 @@ const runtimeCore = path(
 );
 
 const MODES = ["bare", "listeners", "reactive"];
-const mode = process.argv[2] ?? "bare";
+const requested = process.argv[2] ?? "bare";
+const scroll = requested.endsWith("-scroll");
+const mode = scroll ? requested.slice(0, -"-scroll".length) : requested;
 if (!MODES.includes(mode)) {
-  throw new Error(`mode must be one of ${MODES.join(", ")}, got ${mode}`);
+  throw new Error(
+    `mode must be one of ${MODES.join(", ")} (optionally -scroll), got ${requested}`,
+  );
 }
 const rows = Number(process.argv[3] ?? 2000);
 if (!Number.isInteger(rows) || rows <= 0) {
@@ -28,10 +32,11 @@ await build({
   define: {
     __HOVER_BENCH_ROWS__: String(rows),
     __HOVER_BENCH_MODE__: JSON.stringify(mode),
+    __HOVER_BENCH_SCROLL__: String(scroll),
   },
   build: {
     target: "es2020",
-    outDir: path(`../../../../target/hover-bench/${mode}-${rows}`),
+    outDir: path(`../../../../target/hover-bench/${requested}-${rows}`),
     emptyOutDir: false,
     lib: {
       entry: path("./src/HoverBench.js"),
