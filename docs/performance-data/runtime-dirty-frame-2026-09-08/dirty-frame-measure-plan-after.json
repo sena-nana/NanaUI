@@ -1,0 +1,2934 @@
+{
+  "schema_version": 1,
+  "phase": "dirty-frame-scaling",
+  "profile": "release",
+  "samples": 150,
+  "warmup": 30,
+  "cells": [
+    {
+      "shape": "paint",
+      "position": "tail",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.001708,
+        "p95": 0.001833,
+        "mean": 0.0017247799999999972,
+        "max": 0.0028339999999999997
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00023613333333333334
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.0000356
+        },
+        {
+          "stage": "Layout",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "HitTest",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Accessibility",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.001084,
+          "mean_ms": 0.0011116799999999999
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 1,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "accessibility_nodes_updated": 0,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1
+      },
+      "projected": {
+        "accessibility_updated": 0,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1,
+        "scene_rebuilt_primitives": 0,
+        "passes": 1
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0,
+        "engine_ms": 0.0,
+        "writeback_commit_ms": 0.0,
+        "scroll_metrics_ms": 0.0
+      }
+    },
+    {
+      "shape": "paint",
+      "position": "tail",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.001834,
+        "p95": 0.001917,
+        "mean": 0.0018352733333333309,
+        "max": 0.002375
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.000255
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00003695333333333334
+        },
+        {
+          "stage": "Layout",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "HitTest",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Accessibility",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.0012079999999999999,
+          "mean_ms": 0.0012024933333333332
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "accessibility_nodes_updated": 0,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1
+      },
+      "projected": {
+        "accessibility_updated": 0,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1,
+        "scene_rebuilt_primitives": 0,
+        "passes": 1
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0,
+        "engine_ms": 0.0,
+        "writeback_commit_ms": 0.0,
+        "scroll_metrics_ms": 0.0
+      }
+    },
+    {
+      "shape": "paint",
+      "position": "tail",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.001667,
+        "p95": 0.00175,
+        "mean": 0.001689706666666663,
+        "max": 0.002375
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00023615333333333336
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000041,
+          "mean_ms": 0.00003158666666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "HitTest",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Accessibility",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.0011250000000000001,
+          "mean_ms": 0.0011116333333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 1,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "accessibility_nodes_updated": 0,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1
+      },
+      "projected": {
+        "accessibility_updated": 0,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1,
+        "scene_rebuilt_primitives": 0,
+        "passes": 1
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0,
+        "engine_ms": 0.0,
+        "writeback_commit_ms": 0.0,
+        "scroll_metrics_ms": 0.0
+      }
+    },
+    {
+      "shape": "paint",
+      "position": "tail",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.001833,
+        "p95": 0.0018750000000000001,
+        "mean": 0.0017788533333333322,
+        "max": 0.001917
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00025468666666666665
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00003558
+        },
+        {
+          "stage": "Layout",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "HitTest",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Accessibility",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.001167,
+          "mean_ms": 0.0011544266666666668
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 1,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "accessibility_nodes_updated": 0,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1
+      },
+      "projected": {
+        "accessibility_updated": 0,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1,
+        "scene_rebuilt_primitives": 0,
+        "passes": 1
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0,
+        "engine_ms": 0.0,
+        "writeback_commit_ms": 0.0,
+        "scroll_metrics_ms": 0.0
+      }
+    },
+    {
+      "shape": "paint",
+      "position": "tail",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.001916,
+        "p95": 0.0024590000000000002,
+        "mean": 0.00201278,
+        "max": 0.0025
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.0002691666666666667
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004028
+        },
+        {
+          "stage": "Layout",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "HitTest",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Accessibility",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.00125,
+          "mean_ms": 0.0013316733333333332
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 1,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 0,
+        "hit_test_candidates": 0,
+        "accessibility_nodes_updated": 0,
+        "render_nodes_changed": 1,
+        "render_nodes_extracted": 1
+      },
+      "projected": {
+        "accessibility_updated": 0,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1,
+        "scene_rebuilt_primitives": 0,
+        "passes": 1
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0,
+        "engine_ms": 0.0,
+        "writeback_commit_ms": 0.0,
+        "scroll_metrics_ms": 0.0
+      }
+    },
+    {
+      "shape": "layout",
+      "position": "tail",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009375,
+        "p95": 0.009708,
+        "mean": 0.009121459999999994,
+        "max": 0.009792
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.0002530666666666667
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00032829333333333333
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.002542,
+          "mean_ms": 0.0025317066666666666
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.00075,
+          "mean_ms": 0.0007339
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000625,
+          "mean_ms": 0.0006092266666666667
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003792,
+          "mean_ms": 0.0037361
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 3,
+        "accessibility_nodes_updated": 3,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00004080666666666667,
+        "engine_ms": 0.002068893333333333,
+        "writeback_commit_ms": 0.00019025333333333333,
+        "scroll_metrics_ms": 0.00015001333333333332
+      }
+    },
+    {
+      "shape": "layout",
+      "position": "tail",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009125,
+        "p95": 0.009333000000000001,
+        "mean": 0.008891366666666673,
+        "max": 0.009417
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00025590666666666667
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000334,
+          "mean_ms": 0.00033645333333333333
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.0025830000000000002,
+          "mean_ms": 0.0025291399999999996
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.00075,
+          "mean_ms": 0.0007505266666666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000625,
+          "mean_ms": 0.0006206133333333333
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003583,
+          "mean_ms": 0.0035093866666666665
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 3,
+        "accessibility_nodes_updated": 3,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00003941333333333334,
+        "engine_ms": 0.0020669466666666664,
+        "writeback_commit_ms": 0.00019312,
+        "scroll_metrics_ms": 0.00015661333333333335
+      }
+    },
+    {
+      "shape": "layout",
+      "position": "tail",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009125,
+        "p95": 0.009334,
+        "mean": 0.008904960000000005,
+        "max": 0.0095
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00025638
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00033640000000000005
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.0026249999999999997,
+          "mean_ms": 0.00255276
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.00075,
+          "mean_ms": 0.0007499733333333333
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000625,
+          "mean_ms": 0.0006117133333333333
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003583,
+          "mean_ms": 0.003497493333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 3,
+        "accessibility_nodes_updated": 3,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0000405,
+        "engine_ms": 0.0020869666666666667,
+        "writeback_commit_ms": 0.00019411333333333334,
+        "scroll_metrics_ms": 0.00015252666666666666
+      }
+    },
+    {
+      "shape": "layout",
+      "position": "tail",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009625,
+        "p95": 0.009833999999999999,
+        "mean": 0.00963917333333333,
+        "max": 0.009959
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00024299999999999997
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.0003202666666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.002458,
+          "mean_ms": 0.0024556133333333333
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.00075,
+          "mean_ms": 0.00073968
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005866866666666666
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.004458,
+          "mean_ms": 0.004441693333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 3,
+        "accessibility_nodes_updated": 3,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000039166666666666665,
+        "engine_ms": 0.00201078,
+        "writeback_commit_ms": 0.00018276666666666667,
+        "scroll_metrics_ms": 0.0001436
+      }
+    },
+    {
+      "shape": "layout",
+      "position": "tail",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.008542000000000001,
+        "p95": 0.008708,
+        "mean": 0.00855525333333335,
+        "max": 0.009583
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00025,
+          "mean_ms": 0.00023780666666666663
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000292,
+          "mean_ms": 0.00030142
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.002417,
+          "mean_ms": 0.002417246666666667
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000709,
+          "mean_ms": 0.0007289
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005847133333333334
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003417,
+          "mean_ms": 0.0034261266666666666
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 3,
+        "accessibility_nodes_updated": 3,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0000392,
+        "engine_ms": 0.001977526666666667,
+        "writeback_commit_ms": 0.00018215333333333332,
+        "scroll_metrics_ms": 0.00014419333333333333
+      }
+    },
+    {
+      "shape": "nested",
+      "position": "tail",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009708,
+        "p95": 0.009833999999999999,
+        "mean": 0.00969499333333333,
+        "max": 0.009917
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00033001333333333336
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000374,
+          "mean_ms": 0.0003578066666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.003542,
+          "mean_ms": 0.0035497199999999997
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.00053752
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.0005102466666666668
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.0035,
+          "mean_ms": 0.0035086266666666662
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007164,
+        "engine_ms": 0.0027581199999999998,
+        "writeback_commit_ms": 0.00028276,
+        "scroll_metrics_ms": 0.0002899933333333333
+      }
+    },
+    {
+      "shape": "nested",
+      "position": "tail",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009417,
+        "p95": 0.009625,
+        "mean": 0.00951216666666667,
+        "max": 0.014583
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00033059999999999996
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.00036354
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.003583,
+          "mean_ms": 0.0036286000000000005
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.0005519333333333334
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.00051334
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.00325,
+          "mean_ms": 0.003238033333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007279333333333333,
+        "engine_ms": 0.0028147999999999997,
+        "writeback_commit_ms": 0.00028641333333333333,
+        "scroll_metrics_ms": 0.00029578666666666667
+      }
+    },
+    {
+      "shape": "nested",
+      "position": "tail",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009542,
+        "p95": 0.011167,
+        "mean": 0.009790000000000012,
+        "max": 0.016958
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.0003345
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.00036658000000000003
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.003584,
+          "mean_ms": 0.0036872666666666666
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.0005591133333333333
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.0005189133333333332
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003292,
+          "mean_ms": 0.003399993333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007776,
+        "engine_ms": 0.00288084,
+        "writeback_commit_ms": 0.00028771333333333336,
+        "scroll_metrics_ms": 0.00029056666666666666
+      }
+    },
+    {
+      "shape": "nested",
+      "position": "tail",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.010625,
+        "p95": 0.015291999999999998,
+        "mean": 0.01174612,
+        "max": 0.085958
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00034942
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.0004522266666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.003625,
+          "mean_ms": 0.004076406666666667
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0006125133333333333
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000541,
+          "mean_ms": 0.0005585266666666666
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.004292,
+          "mean_ms": 0.004550553333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008588666666666667,
+        "engine_ms": 0.00318304,
+        "writeback_commit_ms": 0.00034412,
+        "scroll_metrics_ms": 0.00030972
+      }
+    },
+    {
+      "shape": "nested",
+      "position": "tail",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.009708999999999999,
+        "p95": 0.011875,
+        "mean": 0.01005804666666667,
+        "max": 0.013834
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.0003457933333333333
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.0003709466666666666
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.0036669999999999997,
+          "mean_ms": 0.0038052933333333335
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.00056888
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000541,
+          "mean_ms": 0.0005322333333333334
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003375,
+          "mean_ms": 0.0034855733333333336
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008161333333333334,
+        "engine_ms": 0.0029694266666666666,
+        "writeback_commit_ms": 0.0002947,
+        "scroll_metrics_ms": 0.00030386666666666666
+      }
+    },
+    {
+      "shape": "nested-auto",
+      "position": "tail",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.010083,
+        "p95": 0.011125,
+        "mean": 0.01022025333333333,
+        "max": 0.011250000000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.0003347266666666666
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.00037248
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.003917,
+          "mean_ms": 0.00396612
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.0005610866666666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.00052306
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.0035,
+          "mean_ms": 0.0035477733333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007468,
+        "engine_ms": 0.003158653333333333,
+        "writeback_commit_ms": 0.00028642,
+        "scroll_metrics_ms": 0.0002877266666666666
+      }
+    },
+    {
+      "shape": "nested-auto",
+      "position": "tail",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.010042,
+        "p95": 0.011125,
+        "mean": 0.010221919999999999,
+        "max": 0.011583999999999999
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00033299999999999996,
+          "mean_ms": 0.00033668666666666664
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.0003739666666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.004042,
+          "mean_ms": 0.004126353333333333
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005719666666666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.0005380333333333333
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003292,
+          "mean_ms": 0.00335724
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008382,
+        "engine_ms": 0.0032968800000000003,
+        "writeback_commit_ms": 0.0002947666666666667,
+        "scroll_metrics_ms": 0.00029915333333333335
+      }
+    },
+    {
+      "shape": "nested-auto",
+      "position": "tail",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.011125,
+        "p95": 0.011417,
+        "mean": 0.01094080666666667,
+        "max": 0.014042
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000374,
+          "mean_ms": 0.00035725333333333335
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000376,
+          "mean_ms": 0.0003918466666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.0044989999999999995,
+          "mean_ms": 0.004432753333333334
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005889133333333333
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005699666666666666
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.0036669999999999997,
+          "mean_ms": 0.0036158533333333336
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008505333333333333,
+        "engine_ms": 0.003561973333333333,
+        "writeback_commit_ms": 0.0003061266666666667,
+        "scroll_metrics_ms": 0.0003166133333333333
+      }
+    },
+    {
+      "shape": "nested-auto",
+      "position": "tail",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.011250000000000001,
+        "p95": 0.012458,
+        "mean": 0.011656686666666666,
+        "max": 0.01925
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000334,
+          "mean_ms": 0.00034753999999999997
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000376,
+          "mean_ms": 0.00038437333333333335
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.004208,
+          "mean_ms": 0.004312259999999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005796866666666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000541,
+          "mean_ms": 0.0005322066666666667
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.004416,
+          "mean_ms": 0.0045585800000000004
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007562,
+        "engine_ms": 0.0034844399999999997,
+        "writeback_commit_ms": 0.00029056666666666666,
+        "scroll_metrics_ms": 0.00030273333333333334
+      }
+    },
+    {
+      "shape": "nested-auto",
+      "position": "tail",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.010958,
+        "p95": 0.011292,
+        "mean": 0.010650513333333339,
+        "max": 0.012875
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000334,
+          "mean_ms": 0.00034751333333333335
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.00037576
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.004334,
+          "mean_ms": 0.004321086666666667
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.000583,
+          "mean_ms": 0.0005780066666666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.000541,
+          "mean_ms": 0.0005294333333333333
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003583,
+          "mean_ms": 0.0035550399999999998
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 5,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2,
+        "accessibility_nodes_updated": 2,
+        "render_nodes_changed": 5,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007708666666666665,
+        "engine_ms": 0.0034775333333333337,
+        "writeback_commit_ms": 0.00029806,
+        "scroll_metrics_ms": 0.00030577999999999996
+      }
+    },
+    {
+      "shape": "layout-auto",
+      "position": "tail",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.24441699999999997,
+        "p95": 0.259375,
+        "mean": 0.24479195999999986,
+        "max": 0.33087500000000003
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00029099999999999997,
+          "mean_ms": 0.0002733533333333333
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.00041600000000000003,
+          "mean_ms": 0.00041448
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.097667,
+          "mean_ms": 0.0974461
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.073291,
+          "mean_ms": 0.07280778
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.06870799999999999,
+          "mean_ms": 0.06817635999999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.004292,
+          "mean_ms": 0.004518873333333334
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 7,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 5,
+        "accessibility_nodes_updated": 5,
+        "render_nodes_changed": 7,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 502,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00004974666666666667,
+        "engine_ms": 0.09680581333333334,
+        "writeback_commit_ms": 0.00033334,
+        "scroll_metrics_ms": 0.00017644
+      }
+    },
+    {
+      "shape": "layout-auto",
+      "position": "tail",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.463542,
+        "p95": 0.520333,
+        "mean": 0.4661972533333333,
+        "max": 0.55625
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00029099999999999997,
+          "mean_ms": 0.0002705333333333333
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000417,
+          "mean_ms": 0.0004514533333333333
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.188333,
+          "mean_ms": 0.18886002666666668
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.13766599999999998,
+          "mean_ms": 0.13914305999999999
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.13137500000000002,
+          "mean_ms": 0.13222390666666667
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.003917,
+          "mean_ms": 0.00399494
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 7,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 5,
+        "accessibility_nodes_updated": 5,
+        "render_nodes_changed": 7,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 1002,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00005171999999999999,
+        "engine_ms": 0.18820776666666666,
+        "writeback_commit_ms": 0.00034248,
+        "scroll_metrics_ms": 0.0001764
+      }
+    },
+    {
+      "shape": "layout-auto",
+      "position": "tail",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.9349999999999999,
+        "p95": 1.054584,
+        "mean": 0.9425649866666671,
+        "max": 1.308084
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00029099999999999997,
+          "mean_ms": 0.00031635333333333333
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000417,
+          "mean_ms": 0.0004699666666666666
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.382541,
+          "mean_ms": 0.38775974
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.286791,
+          "mean_ms": 0.2889758333333333
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.25879100000000005,
+          "mean_ms": 0.25942306666666665
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.004042,
+          "mean_ms": 0.0042044199999999995
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 7,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 5,
+        "accessibility_nodes_updated": 5,
+        "render_nodes_changed": 7,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 2002,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00005550000000000001,
+        "engine_ms": 0.3870624733333333,
+        "writeback_commit_ms": 0.00037443333333333335,
+        "scroll_metrics_ms": 0.00018970666666666666
+      }
+    },
+    {
+      "shape": "layout-auto",
+      "position": "tail",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 1.958833,
+        "p95": 2.229416,
+        "mean": 2.0100010999999993,
+        "max": 2.5978339999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00041600000000000003,
+          "mean_ms": 0.0004919466666666667
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.000584,
+          "mean_ms": 0.00092276
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.812667,
+          "mean_ms": 0.8306688799999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.5930840000000001,
+          "mean_ms": 0.63021922
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.529583,
+          "mean_ms": 0.5384827533333333
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.006667,
+          "mean_ms": 0.00760084
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 7,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 5,
+        "accessibility_nodes_updated": 5,
+        "render_nodes_changed": 7,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 4002,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008718666666666667,
+        "engine_ms": 0.8296624666666667,
+        "writeback_commit_ms": 0.0006028133333333334,
+        "scroll_metrics_ms": 0.00020999333333333333
+      }
+    },
+    {
+      "shape": "layout-auto",
+      "position": "tail",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 5.431708,
+        "p95": 6.026167,
+        "mean": 5.483473606666669,
+        "max": 7.50875
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0014169999999999999,
+          "mean_ms": 0.0014714133333333333
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.0025,
+          "mean_ms": 0.0025908466666666667
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.292333,
+          "mean_ms": 2.30546586
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.839375,
+          "mean_ms": 1.884269986666667
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.230875,
+          "mean_ms": 1.2717685866666666
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.014042,
+          "mean_ms": 0.014014413333333333
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 7,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "layout_nodes": 4,
+        "hit_test_candidates": 5,
+        "accessibility_nodes_updated": 5,
+        "render_nodes_changed": 7,
+        "render_nodes_extracted": 4
+      },
+      "projected": {
+        "accessibility_updated": 8002,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4,
+        "scene_rebuilt_primitives": 1,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0003052866666666667,
+        "engine_ms": 2.30241336,
+        "writeback_commit_ms": 0.0022220000000000005,
+        "scroll_metrics_ms": 0.0004489
+      }
+    }
+  ]
+}

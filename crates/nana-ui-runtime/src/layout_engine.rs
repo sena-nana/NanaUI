@@ -257,6 +257,13 @@ impl RuntimeLayoutEngine {
                 }
             }
         }
+        for (id, plans) in nodes.measure_plans.drain() {
+            if plans.is_empty() {
+                retained.measure_plans.remove(&id);
+            } else {
+                retained.measure_plans.insert(id, plans);
+            }
+        }
         for ((id, width, height), size) in intrinsic {
             retained
                 .intrinsics
@@ -276,6 +283,7 @@ impl RuntimeLayoutEngine {
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
+            retained.measure_plans.retain(|id, _| world.contains(*id));
         }
         if retained.intrinsics.len() > universe.saturating_mul(2) {
             retained.intrinsics.retain(|id, _| world.contains(*id));
@@ -402,6 +410,7 @@ impl RetainedLayoutCache {
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
             cache.container_plans.remove(&id);
+            cache.measure_plans.remove(&id);
         }
     }
 
@@ -455,6 +464,9 @@ struct DocumentLayoutCache {
     pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
     /// Cached in-flow child placement per container. See [`ContainerPlan`].
     container_plans: HashMap<StableNodeId, ContainerPlan>,
+    /// Cached intrinsic measurement per content-sized container. See
+    /// [`MeasurePlan`].
+    measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
 }
 
 impl DocumentLayoutCache {
@@ -464,6 +476,7 @@ impl DocumentLayoutCache {
         self.boxes.clear();
         self.used_padding.clear();
         self.container_plans.clear();
+        self.measure_plans.clear();
         self.materialized_inputs = 0;
     }
 }
@@ -479,6 +492,7 @@ pub mod plan_stats {
 
     thread_local! {
         static PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
+        static MEASURE_PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
         static CHILDREN_MEASURED: Cell<usize> = const { Cell::new(0) };
         static CONTAINERS_UNCACHEABLE: Cell<usize> = const { Cell::new(0) };
         static DIRTY_SEEDS: Cell<usize> = const { Cell::new(0) };
@@ -515,6 +529,7 @@ pub mod plan_stats {
 
     pub fn reset() {
         PLANS_REUSED.with(|cell| cell.set(0));
+        MEASURE_PLANS_REUSED.with(|cell| cell.set(0));
         CHILDREN_MEASURED.with(|cell| cell.set(0));
         CONTAINERS_UNCACHEABLE.with(|cell| cell.set(0));
         DIRTY_SEEDS.with(|cell| cell.set(0));
@@ -524,6 +539,16 @@ pub mod plan_stats {
 
     pub(crate) fn note_plan_reused() {
         PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    pub(crate) fn note_measure_plan_reused() {
+        MEASURE_PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    /// Containers that returned a cached intrinsic size instead of re-measuring
+    /// their children. See [`super::MeasurePlan`].
+    pub fn measure_plans_reused() -> usize {
+        MEASURE_PLANS_REUSED.with(Cell::get)
     }
 
     pub(crate) fn note_child_measured() {
@@ -545,8 +570,10 @@ pub mod plan_stats {
         PLANS_REUSED.with(Cell::get)
     }
 
-    /// Children a container had to intrinsic-measure during its own placement.
-    /// This is the sibling scan that used to make every dirty frame O(N).
+    /// Children a container had to intrinsic-measure, counting BOTH sibling
+    /// scans: the one in its placement loop and the one in its own intrinsic
+    /// measurement. This is the scan that used to make every dirty frame O(N),
+    /// and the measure-side half of it is invisible unless both are counted.
     pub fn children_measured() -> usize {
         CHILDREN_MEASURED.with(Cell::get)
     }
@@ -676,6 +703,162 @@ impl ContainerPlan {
     }
 }
 
+/// One child's contribution to a cached container measurement.
+struct MeasuredChild {
+    child: StableNodeId,
+    /// The child's effective layout style at plan time, or `None` when the node
+    /// was missing. Compared by pointer with a value fallback, for the same
+    /// reason as in [`ContainerPlan`]: a host that rebuilds its style objects
+    /// every frame hands back a fresh `Arc` holding an identical style.
+    style: Option<Arc<nana_ui_core::LayoutStyle>>,
+    /// The intrinsic size measured for this child, or `None` for a child the
+    /// flow collection dropped (`display:none`, out of flow). A dropped child
+    /// contributes nothing to the container's measurement, and it cannot start
+    /// contributing without its own style changing -- which the style compare
+    /// above catches.
+    intrinsic: Option<Size>,
+}
+
+/// A container's own intrinsic measurement, cached across passes.
+///
+/// The measure-side twin of [`ContainerPlan`], and the same shape of hole.
+/// [`measure::intrinsic_size_scoped`] short-circuits a node whose width and
+/// height both resolve from its own style, which is what stops a dirty frame
+/// from re-measuring the whole document. A CONTENT-SIZED container has no such
+/// short circuit: its own size is a function of its children, so every affected
+/// container re-measured every child -- each one only to hit the retained memo
+/// and return the value it already had. Layout invalidation propagates to
+/// ancestors, so a single edit puts every content-sized container above it on
+/// that path, and the frame is O(number of children) again.
+///
+/// The measurement is a pure function of the container's own inputs (style,
+/// child list, text metrics, available size, viewport, inherited font size,
+/// parent flow direction) plus, per child, that child's layout style and its
+/// intrinsic size under the recorded available size. When all of those are
+/// unchanged the previous result still holds.
+///
+/// Only children the change closure reaches need re-checking, and the check is
+/// driven FROM the closure: a container looks each affected id up in its own
+/// sorted entries, rather than walking its children looking for affected ones.
+/// Walking the children would leave the fast path O(number of children), which
+/// is the cost this exists to remove.
+///
+/// Entries are sorted by child id rather than kept in flow order: the container
+/// is either reusing the whole cached measurement or recomputing it from
+/// scratch, and neither needs the order.
+///
+/// This is a cache of its own, NOT a relaxation of the
+/// `retained.intrinsics.remove` in `layout_document_scoped`. That removal is
+/// still right and still happens: an affected node's memo holds entries for
+/// constraint combinations this frame will not measure, and those really are
+/// stale. What a plan caches is the container's result under ONE recorded
+/// constraint, re-validated against the closure before it is used, so the two
+/// do not overlap.
+struct MeasurePlan {
+    /// Constraint the container was measured against. This is the part of the
+    /// per-pass cache key that the plan, keyed by id alone, has to carry.
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    /// The container's effective style, compared by pointer with a value
+    /// fallback.
+    style: Arc<nana_ui_core::LayoutStyle>,
+    /// The container's child list, compared by pointer. A structural edit
+    /// copy-on-writes this `Arc`, so a different pointer is a different list.
+    children: Arc<Vec<StableNodeId>>,
+    /// The container's own shaped text, which competes with the children for
+    /// the content size.
+    text_metrics: Option<crate::TextMetrics>,
+    /// Available size every in-flow child was measured against. One value for
+    /// all of them: the per-child variant only arises on the grid paths, which
+    /// are not cached.
+    child_available: Size,
+    /// Flow direction handed to each child as its `parent_direction`.
+    child_direction: FlexDirection,
+    /// Sorted by child id.
+    entries: Vec<MeasuredChild>,
+    /// What the measurement produced.
+    size: Size,
+}
+
+/// The measure plans retained for one container.
+///
+/// A container is commonly measured TWICE per pass under two different
+/// constraints: once from its parent's own intrinsic measurement, against the
+/// parent's available content box, and once from its parent's placement,
+/// against the parent's USED content box. Under an auto-height ancestor those
+/// two differ, so a single slot is written by one call and missed by the other,
+/// every pass, forever. Two slots is the same answer -- and the same reason --
+/// as [`RetainedIntrinsic`].
+#[derive(Default)]
+struct MeasurePlanSlots {
+    slots: [Option<MeasurePlan>; 2],
+}
+
+impl MeasurePlanSlots {
+    fn is_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+
+    /// Picks the slot recorded under this constraint. Selection only, not a
+    /// correctness check: `MeasurePlan::inputs_match` compares `available`
+    /// again, so handing back the wrong slot costs a recompute, never a stale
+    /// answer.
+    fn get(&self, available: Size) -> Option<&MeasurePlan> {
+        self.slots
+            .iter()
+            .flatten()
+            .find(|plan| plan.available == available)
+    }
+
+    fn insert(&mut self, plan: MeasurePlan) {
+        if self.slots[0]
+            .as_ref()
+            .is_some_and(|held| held.available == plan.available)
+        {
+            self.slots[0] = Some(plan);
+            return;
+        }
+        self.slots.swap(0, 1);
+        self.slots[0] = Some(plan);
+    }
+
+    fn clear(&mut self) {
+        self.slots = [None, None];
+    }
+}
+
+impl MeasurePlan {
+    /// Everything the measurement depends on other than the children.
+    #[allow(clippy::too_many_arguments)]
+    fn inputs_match(
+        &self,
+        available: Size,
+        parent_direction: Option<FlexDirection>,
+        viewport: LayoutViewport,
+        parent_font_px: f32,
+        style: &Arc<nana_ui_core::LayoutStyle>,
+        children: &Arc<Vec<StableNodeId>>,
+        text_metrics: Option<crate::TextMetrics>,
+    ) -> bool {
+        self.available == available
+            && self.parent_direction == parent_direction
+            && self.viewport == viewport
+            && self.parent_font_px == parent_font_px
+            && self.text_metrics == text_metrics
+            && Arc::ptr_eq(&self.children, children)
+            && (Arc::ptr_eq(&self.style, style) || self.style == *style)
+    }
+
+    fn entry(&self, child: StableNodeId) -> Option<&MeasuredChild> {
+        self.entries
+            .binary_search_by_key(&child, |entry| entry.child)
+            .ok()
+            .map(|slot| &self.entries[slot])
+    }
+}
+
 /// On-demand `LayoutInput` cache. A miss loads exactly that id from `UiWorld`.
 struct LayoutInputMap<'a> {
     world: &'a UiWorld,
@@ -701,6 +884,9 @@ struct LayoutInputMap<'a> {
     /// existing plan simply stays. `None` retires a plan recorded when the
     /// container was still on the cacheable path.
     container_plans: HashMap<StableNodeId, Option<ContainerPlan>>,
+    /// Measure plans rebuilt this pass, merged the same way. An entry that
+    /// ends the pass empty retires the container's retained plans.
+    measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
 }
 
 impl<'a> LayoutInputMap<'a> {
@@ -713,6 +899,7 @@ impl<'a> LayoutInputMap<'a> {
             placements: HashMap::new(),
             used_padding: HashMap::new(),
             container_plans: HashMap::new(),
+            measure_plans: HashMap::new(),
         }
     }
 

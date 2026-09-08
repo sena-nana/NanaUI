@@ -10,11 +10,15 @@
 //!
 //! Two axes beyond the grid, because conflating either one hides the answer:
 //!
-//! - `--shape paint|layout`. A bare background-role swap dirties style and
-//!   render but schedules no layout; a height change also schedules layout,
-//!   and layout invalidation propagates to ancestors. They scale completely
-//!   differently. (A Vue hover is NOT the first one: its CSS cascade emits a
-//!   whole new `NodeStyle`, which lands in the second.)
+//! - `--shape paint|layout|nested|nested-auto|layout-auto`. A bare
+//!   background-role swap dirties style and render but schedules no layout; a
+//!   height change also schedules layout, and layout invalidation propagates to
+//!   ancestors. They scale completely differently. (A Vue hover is NOT the
+//!   first one: its CSS cascade emits a whole new `NodeStyle`, which lands in
+//!   the second.) The `nested*` shapes edit a LABEL inside a row instead, so
+//!   the row's own size cannot move; the `*-auto` shapes make the list
+//!   container content-sized, which is what takes it off the definite-size
+//!   short circuit in `intrinsic_size_scoped`.
 //! - `--position head|tail|spread`. Resizing the FIRST row genuinely shifts
 //!   every row below it, so O(total nodes) there is work that is owed and
 //!   proves nothing. Resizing the LAST rows shifts nothing, so any cost that
@@ -183,9 +187,9 @@ fn build(shape: Shape, rows: usize) -> RuntimeDocument {
         NodeStyle {
             layout: Arc::new(LayoutStyle {
                 width: Some(LengthSpec::Px(300.0)),
-                // Content-sized on the main axis for `NestedAuto`: the
+                // Content-sized on the main axis for the `*-auto` shapes: the
                 // container's own height then depends on its children.
-                height: (shape != Shape::NestedAuto).then_some(LengthSpec::Fill),
+                height: (!shape.container_hugs()).then_some(LengthSpec::Fill),
                 direction: Some(FlexDirection::Column),
                 ..LayoutStyle::default()
             }),
@@ -234,9 +238,25 @@ enum Shape {
     Nested,
     /// `Nested`, but the container is CONTENT-SIZED. Its own height depends on
     /// its children, so the definite-size short circuit in
-    /// `intrinsic_size_scoped` cannot fire and it re-measures every child --
-    /// even though each one hits the retained intrinsic memo and is unchanged.
+    /// `intrinsic_size_scoped` cannot fire. `MeasurePlan` is what keeps this
+    /// constant: every child hits the retained intrinsic memo and is unchanged,
+    /// so the container reuses its own cached measurement.
     NestedAuto,
+    /// `Layout` under a CONTENT-SIZED container: the row really does change
+    /// size, so the container's own height really does move and its measure
+    /// plan is correctly rejected. What it costs then is a full re-measure of
+    /// every child -- the measure-side analogue of the placement suffix replay,
+    /// which does not exist. `tail` is the interesting column: the resized row
+    /// is last, so nothing below it moves and the only work owed is the
+    /// container's new total.
+    LayoutAuto,
+}
+
+impl Shape {
+    /// Whether the list container is sized by its children.
+    fn container_hugs(self) -> bool {
+        matches!(self, Self::NestedAuto | Self::LayoutAuto)
+    }
 }
 
 /// Where in the document the dirty rows sit.
@@ -273,6 +293,7 @@ impl Shape {
             "layout" => Some(Self::Layout),
             "nested" => Some(Self::Nested),
             "nested-auto" => Some(Self::NestedAuto),
+            "layout-auto" => Some(Self::LayoutAuto),
             _ => None,
         }
     }
@@ -283,6 +304,7 @@ impl Shape {
             Self::Layout => "layout",
             Self::Nested => "nested",
             Self::NestedAuto => "nested-auto",
+            Self::LayoutAuto => "layout-auto",
         }
     }
 }
@@ -296,7 +318,7 @@ fn dirty(context: &mut AppContext, shape: Shape, targets: &[usize], toggled: boo
                 background: toggled.then_some(SemanticColorRole::Hover),
                 ..NodeStyle::default()
             },
-            Shape::Layout => NodeStyle {
+            Shape::Layout | Shape::LayoutAuto => NodeStyle {
                 layout: Arc::new(LayoutStyle {
                     width: Some(LengthSpec::Px(300.0)),
                     height: Some(LengthSpec::Px(if toggled { 22.0 } else { 20.0 })),
@@ -491,6 +513,7 @@ fn main() {
                     Shape::Layout,
                     Shape::Nested,
                     Shape::NestedAuto,
+                    Shape::LayoutAuto,
                 ]
             },
             |shape| vec![shape],

@@ -25,6 +25,9 @@
 - **Vue 的 settle 花在哪，量出来了**：73% 在 Vue 层。再往下追，用"跑 500 行和 2,000 行
   看哪些随文档增长"钉死了性质——**每个指针事件有 4 处 O(文档)**，而投影集合和调用次数
   都是常数。最大一处是 `try_bind_registered_component`：调用次数恒为 5，每次却 O(文档)。
+- **内容驱动尺寸的容器**：第五轮补上了 `ContainerPlan` 的测量侧对应物 `MeasurePlan`。
+  8,002 个节点上 1.41 → 0.011 ms（**128 倍**），与文档大小无关。仍欠的是"孩子真的改了
+  尺寸"那一半，见"还剩什么"。
 - 附带发现：**13 个 `FrameStage` 漏计了一次大回流帧的 45%**。已修，但这让 Extract 的历史
   基线不可比，见最后一节。
 
@@ -479,21 +482,142 @@ O(文档) 的脏工作**。一次事件里它发布的是 a11y 3.99 个节点、
 
 这是 `ContainerPlan` 的对称缺口:它覆盖了**摆放**,没有覆盖**测量**。修法同形——按
 (容器自身输入 + 每个子节点的 style/intrinsic)缓存容器自己的 intrinsic,只复检闭包内的
-子节点。没做。
+子节点。下一节做掉了。
 
 原来那句"下一个该动的是 `flush_runtime_systems` 的 0.297 ms / 5 次调用——按 Runtime 现在的单帧量级
 （0.008–0.011 ms）这应该只有 0.05 ms，说明 Vue 每个事件仍在往 Runtime 灌 O(文档) 的脏工作。
 `sync_layout_containing_blocks` 的 O(N) 是另一件事:`propagate_layout_containing_blocks`
 每帧从每个 root 递归走整棵树,即使没有一个包含块变化。
 
+## 第五轮:测量侧补上 `MeasurePlan`
+
+`ContainerPlan` 的形状照搬过来:按 id 缓存容器自己的 intrinsic,记下(容器自身输入 + 每个
+**直接子节点**的 style + 每个在流子节点的 intrinsic),复检由变更闭包驱动(在按 id 排序的
+entries 上二分,而不是遍历子节点列表)。全部命中就直接返回上次的尺寸,不碰任何一个孩子。
+
+一个刻意的形状差异:entries 覆盖**每一个直接子节点**,不只是在流的那些。流收集丢掉的孩子
+(`display:none`、绝对定位)在容器的测量里不贡献任何东西,但它可以因为一次 `set_style` 重新
+变成在流子节点——只记在流子节点的话,这次改动在 entries 里查不到,计划会被错误地沿用。
+给它们记一条只有 style 的条目,比较相等即可确定它仍然不贡献。
+
+结果(`--position tail --dirty 1`,flush p50 ms):
+
+| 形状 | | 502 | 1,002 | 2,002 | 4,002 | 8,002 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `nested-auto` | 之前 | 0.0858 | 0.1704 | 0.3449 | 0.6768 | 1.4062 |
+| | **之后** | **0.0101** | **0.0100** | **0.0111** | **0.0113** | **0.0110** |
+| `nested` | 之前 / 之后 | 0.0108 / 0.0097 | 0.0096 / 0.0094 | 0.0096 / 0.0095 | 0.0109 / 0.0106 | 0.0097 / 0.0097 |
+| `layout` | 之前 / 之后 | 0.0086 / 0.0094 | 0.0085 / 0.0091 | 0.0084 / 0.0091 | 0.0095 / 0.0096 | 0.0090 / 0.0085 |
+| `paint` | 之前 / 之后 | 0.0025 / 0.0017 | 0.0024 / 0.0018 | 0.0020 / 0.0017 | 0.0017 / 0.0018 | 0.0018 / 0.0019 |
+
+8,002 个节点上 **1.41 → 0.011 ms(128 倍)**,而且和 `nested` 一样与文档大小无关了。其余三种
+形状纹丝不动。`--position head` 上的 `nested-auto` 同样从 0.320 → 0.009 ms(2,000 行):那一列
+改的也是行内的 label,行本身尺寸不动,所以下面没有一行需要移位,常数才是应付的账。
+
+### 两件事是量出来的,不是设计出来的
+
+**一、一个约束槽位不够,要两个。** 第一版给每个容器存一份计划,结果 8,002 个节点上只从
+1.31 掉到 0.77 ms——**仍然是 O(N)**。计数器说得很清楚:`children_measured` 还等于行数,而
+`measure_plans_reused` 是 2。加一行调试输出才看见:同一个容器**每帧被测量两次,约束不同**
+——一次来自父节点自己的 intrinsic 测量(用父节点的**可用**内容框),一次来自父节点的摆放
+(用父节点的**已用**内容框)。父节点是内容驱动尺寸时这两个值不同,于是一份计划被其中一次
+写入、被另一次错过,每一帧,永远。
+
+改成两个槽位,原因和 `RetainedIntrinsic` 的 `[Option<_>; 2]` 一模一样。约束的相等性由
+`inputs_match` 判定,槽位查找只负责挑一份出来,所以选错槽位不会变成正确性问题。
+
+**二、全量通道上记录计划,亏的比赚的多。** 记录一份计划要为每个孩子克隆一次 `Arc` 并给
+容器排一次序。全量通道会重建整棵树的每个容器,于是这笔钱按文档大小收:
+`canonical_layout_5000_nodes_ms` p50 **1.79 → 2.55 ms(+42%)**。那个基准每次迭代在 1,280 和
+1,024 之间换视口宽度,所以每一帧都是 `force_full`——正是窗口拖拽时的形状。而它买到的只有
+一帧:下一次增量通道本来就会把计划建起来。
+
+所以现在只在增量通道上记录(`scope.is_some()`,这同时也排除掉 `layout_document`——css-parity
+和 Vue `measure_layout` 走它,而它返回时把整张表丢掉)。代价是**全量通道之后的第一帧增量是
+O(文档) 的**,那一帧要把计划建起来。改完之后:
+
+| | 之前 | 之后 |
+| --- | ---: | ---: |
+| `canonical_layout_5000_nodes_ms` p50 | 1.744 / 1.803 | 1.815 / 1.823 |
+| 5,000 节点首次系统处理 P95 | — | 1.985 ms |
+
+（两列各跑两轮交替取,差异在噪声内。首次系统处理与第三轮记的 1.992 ms 一致。）
+
+这一条**直接改变了五个测试的含义**:它们原来测的是全量之后的第一帧,也就是建计划那一帧,
+于是通过得毫无意义。五个测试现在都显式先跑一次"热身"编辑,再测稳态——热身这件事本身写在
+测试里,因为它是这个设计的一部分。下一节说这是怎么发现的。
+
+### 顺带关掉 `ContainerPlan` 的同一个洞
+
+两份计划都用"闭包里的这个 id 是不是我的某个 entry"来复检,而 entry 是按**直接子节点** id
+索引的。有两种情况会让在流子节点列表不再是直接子节点的子集:
+
+- `display: contents` 把孩子的**孩子**接进来,列表变成了计划从未记录过的孙子列表的函数;
+- 块级父节点下的行内级孩子,是否被拆箱取决于**它自己的子树里有没有块**,所以任意深处的
+  一次改动都能在它样式不变的情况下把它移进或移出列表。
+
+`collect_flow_children_reporting` 现在顺带报告"这次收集有没有向下伸手",两份计划都据此
+拒绝缓存。在收集时报告而不是事后检查,是因为收集本来就要走一遍每个孩子,而对产出的列表
+做成员检查是平方的。
+
+### 九处守卫都验过会失败
+
+"跳过本该重算的工作"这类改动失败是静默的,所以每一处判断都拿故意改坏的实现跑过整套
+`layout_engine` 测试:
+
+| 改坏什么 | 抓住它的测试 |
+| --- | --- |
+| 不再重测闭包里的孩子(只比 style) | `content_growth_..._when_the_container_hugs` |
+| 不再比孩子的 style(只比 intrinsic) | `a_container_whose_own_text_grows_remeasures_itself` |
+| 忽略容器自己的 style | `flipping_a_container_to_a_row_...` |
+| 忽略子节点列表身份 | `content_growth_..._when_the_container_hugs` |
+| 忽略容器自己的 text metrics | `a_container_whose_own_text_grows_remeasures_itself` |
+| 完全不复检孩子 | `a_display_contents_child_keeps_its_container_off_the_cached_plans` |
+| 槽位不看约束就返回 | `content_growth_..._when_the_container_hugs` |
+| 忽略父节点流方向 | `flipping_a_container_to_a_row_...` |
+| 不排除 `display:contents` / 行内拆箱 | `a_display_contents_child_keeps_its_container_off_the_cached_plans` |
+
+这一轮里这套沙盘跑了六遍,每次改动之后都跑。前三遍是在补测试:第一遍九条里有三条没被
+抓住,说明既有测试并没有覆盖到它们。**后面它抓到的不是我预想的东西,而是我自己**:
+加上"只在增量通道记录"之后再跑,九条里有三条从"抓住"变回了"没抓住"——因为那三个测试都
+是全量之后只做一次增量,而那一次现在成了建计划的那一帧,计划根本没被查询过。三个测试
+(以及前面两条增量性门禁)都补了显式热身。没有这套沙盘,它们会以绿色的状态守着一段从未
+执行到的代码。
+
+新增的形状与测试:
+
+- `diff_shapes()` 加了 7 种内容驱动尺寸的容器(auto 高、auto 宽高、auto + gap/margin、
+  auto + align-center、auto + grow、row auto 宽、auto + content-box padding),差分哈内斯
+  现在是 20 种形状 × 每种约 20 次编辑,每步之后逐节点与全量重算比对。哈内斯本身也加了
+  一条断言:每种形状都必须真的复用过一次测量计划,否则它守的是空气。
+- 哈内斯里"删一行"与"加一行"的**顺序换了**:`detach` 会在世界里留下一个游离节点,
+  `children_layout_style_is_local` 从此对整轮返回 false,两份计划都被退休——放在它后面的
+  `append` 什么也没验证。
+
 ## 还剩什么
 
-**改动被含住时已经不是了**（见上一节），**子节点改尺寸时还是。** 剩下的缺口就是那一条：
-容器按前缀复用摆放。
+**内容驱动尺寸的容器,在孩子真的改尺寸时,仍然重测全部孩子。** 这一轮补的是"闭包里的孩子
+都没变"那一半;另一半——容器按已缓存的每子贡献增量更新自己的聚合,也就是
+`replay_sequential_suffix` 的测量侧对应物——没做。基准里新加的 `layout-auto` 形状就是这条
+(内容驱动容器 + 改行高,`tail` 位置),flush p50 ms:
+
+| | 502 | 1,002 | 2,002 | 4,002 | 8,002 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 之前 | 0.2336 | 0.4633 | 0.9339 | 1.9852 | 5.5576 |
+| 之后 | 0.2444 | 0.4635 | 0.9350 | 1.9588 | 5.4317 |
+
+本轮对它没有影响(计划每帧被正确地拒绝,然后重建;重复三轮的 engine 分段是
+2.13/2.12/2.32 对 2.25/2.23/2.21 ms,两者重叠)。要把它也收成常数,需要在"平铺累加"那一支
+存下每个孩子的主轴贡献与交叉轴贡献,主轴按差量更新、交叉轴按最大值更新,并在"原来的最大
+值变小了"时退回全量重算(存不下第二大)。三处最大值(交叉轴、`max_content_w`、
+`stacked_min_w`)都要这么处理。
 
 **`head` 位置是超线性的，而且那是应付的账。** 改第一行会让下面每一行真的下移，所以
 O(N) 正当；但它比 O(N) 更陡——502→1.17、1,002→2.39、2,002→5.07、4,002→11.7、8,002→29.3 ms，
 节点翻倍时间约乘 2.5。**未归因**，是下一个该查的东西。
+
+**全量通道之后的第一帧增量是 O(文档) 的**,见上面第二条。这是刻意换来的:全量通道本身就
+是 O(文档),而在它上面记录计划会让每一帧全量都贵 42%。
 
 ### 澄清一件事：本轮没有碰那两条长期没过的门禁
 
@@ -544,19 +668,37 @@ Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed)  // ← �
 
 ```bash
 cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-frame-benchmark
-# 全网格（两种 shape × 两个 position × 5 × 5）
+# 全网格（五种 shape × 三个 position × 5 × 5）
 ./target/release/nana-dirty-frame-benchmark --samples 150 --warmup 30 --output report.json
 # 单格，便于剖析
 ./target/release/nana-dirty-frame-benchmark --shape layout --position tail --rows 4000 --dirty 1
+# 第五轮的那两列
+./target/release/nana-dirty-frame-benchmark --position tail --dirty 1 --samples 150 --warmup 30
 ```
 
-`--shape paint|layout`、`--position head|tail|spread`、`--rows`、`--dirty`、`--samples`、
-`--warmup`。stderr 打人读表格（含分段与 `layout_document_observed` 的四个子阶段），
-`--output` 写 JSON。
+`--shape paint|layout|nested|nested-auto|layout-auto`、`--position head|tail|spread`、
+`--rows`、`--dirty`、`--samples`、`--warmup`。stderr 打人读表格（含分段与
+`layout_document_observed` 的四个子阶段），`--output` 写 JSON。第五轮的两份报告是
+`performance-data/runtime-dirty-frame-2026-09-08/dirty-frame-measure-plan-{before,after}.json`。
+
+全量通道的两项（`canonical_layout_5000_nodes_ms`、5,000 节点首次系统处理）来自另一个二进制：
+
+```bash
+cargo build --release --locked -p nana-ui-runtime --features benchmark \
+  --bin nana-framework-benchmark --bin nana-runtime-benchmark
+./target/release/nana-runtime-benchmark --output runtime.json
+./target/release/nana-framework-benchmark --output framework.json \
+  $(python3 perf/runners/nana/run.py --print-framework-window-args)
+```
 
 ## 边界
 
 - 单机单次（macOS / Apple Silicon，release），没有跨机器复现，也没有进 CI 的性能门禁。
 - 基准的文档是一个平铺的定高列表。真实文档有嵌套、滚动容器、overlay，容器的分支会不同。
-- `paint` 与 `layout` 两种形状不覆盖文本内容变化、结构增删、视口变化。
-- 本轮只动增量通道。全量/首次通道未受影响，见上面那张表。
+- 五种形状都不覆盖文本内容变化、结构增删、视口变化。文本增长与结构增删只在
+  `layout_engine` 的差分哈内斯里覆盖（那里是正确性，不是时间）。
+- 第一、二轮只动增量通道，全量/首次通道未受影响。**第五轮动了全量通道**：它现在不再记录
+  测量计划，`canonical_layout_5000_nodes_ms` 因此回到 1.82 ms（记录时是 2.55 ms，不记录
+  之前是 1.77 ms）。代价是全量之后的第一帧增量是 O(文档) 的。
+- `MeasurePlan` 只覆盖平铺在流那一支。2D grid、grid track、IFC、`display:contents`、行内
+  拆箱、菜单叠层宿主都不缓存,每帧照常重测。真实文档里这些分支占多少没有量过。

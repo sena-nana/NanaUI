@@ -412,7 +412,8 @@ pub(super) fn place_node_scoped(
         }
     }
 
-    let mut flow = collect_flow_children(&child_ids, nodes, style.display)?;
+    let (mut flow, descendant_dependent_flow) =
+        collect_flow_children_reporting(&child_ids, nodes, style.display)?;
     let mut positioned = collect_positioned_children(&child_ids, nodes)?;
     let floated = if style
         .display
@@ -498,9 +499,15 @@ pub(super) fn place_node_scoped(
     // placement inputs the plan does not model, and
     // `children_layout_style_is_local` rules out the cases where an ancestor
     // could change a child's style without marking the child dirty.
+    // `descendant_dependent_flow` rules out the containers whose flow list is
+    // not decided by the direct children's own styles: `display:contents`
+    // splices grandchildren in, and an inline-level child is unboxed or not
+    // depending on its own subtree. Either way the plan's `by_child` index
+    // cannot answer "is this affected id one of my entries?".
     // Recorded on full passes too, so the first scoped pass after a mount or a
     // viewport change already has a plan to reuse.
     let cacheable = inherited_grid.is_none()
+        && !descendant_dependent_flow
         && !grid_2d
         && !ifc
         && floated.is_empty()

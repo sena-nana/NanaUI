@@ -157,10 +157,10 @@ pub(super) fn intrinsic_size_scoped(
     let Some(node) = nodes.get(id)? else {
         return Ok(Size::default());
     };
-    let style = node.style.clone();
-    let children = node.children.clone();
+    let style_arc = node.style.clone();
+    let child_ids = node.children.clone();
     let text_metrics = node.text_metrics;
-    let style = style.as_ref();
+    let style = style_arc.as_ref();
     if style.omits_box() {
         return Ok(Size::default());
     }
@@ -232,7 +232,38 @@ pub(super) fn intrinsic_size_scoped(
         return Ok(size);
     }
 
-    let flow_children = collect_flow_children(&children, nodes, style.display)?;
+    // The container is content-sized on at least one axis, so it owes a look at
+    // its children. Everything it needs from them may still be unchanged; see
+    // [`MeasurePlan`].
+    if let Some(scope) = scope
+        && let Some(plan) = scope
+            .retained
+            .measure_plans
+            .get(&id)
+            .and_then(|plans| plans.get(available))
+        && plan.inputs_match(
+            available,
+            parent_direction,
+            viewport,
+            parent_font_px,
+            &style_arc,
+            &child_ids,
+            text_metrics,
+        )
+        // An ancestor can rewrite a child's effective style without touching
+        // the child (overlay hosting, an open menu surface), which would move
+        // the measurement with every per-child input still comparing equal.
+        && nodes.world.children_layout_style_is_local(id)
+        && measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
+    {
+        #[cfg(any(test, feature = "benchmark"))]
+        super::plan_stats::note_measure_plan_reused();
+        cache.insert(cache_key, plan.size);
+        return Ok(plan.size);
+    }
+
+    let (flow_children, descendant_dependent_flow) =
+        collect_flow_children_reporting(&child_ids, nodes, style.display)?;
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
     let ifc = !grid_measure
         && !style
@@ -256,6 +287,8 @@ pub(super) fn intrinsic_size_scoped(
         } else {
             content_available
         };
+        #[cfg(any(test, feature = "benchmark"))]
+        super::plan_stats::note_child_measured();
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,
@@ -415,6 +448,125 @@ pub(super) fn intrinsic_size_scoped(
         default_width,
         default_height,
     );
+    // Record only on a scoped pass. A full pass rebuilds every container in
+    // the document, so recording there costs an `Arc` clone per child and a
+    // sort per container across the whole tree -- 1.79 -> 2.55 ms on the
+    // 5,000-node canonical layout, measured. It buys one frame: the next
+    // scoped pass would have found a plan waiting. `layout_document`
+    // (css-parity, `layout_style_tree`, Vue `measure_layout`) throws the map
+    // away entirely, and `force_full` has just cleared the retained cache, so
+    // in both cases the plans would be built for nobody.
+    if scope.is_some() {
+        // Only the plain in-flow path is cacheable, for the same reasons the
+        // placement plan is narrow. The grid-track path is excluded on top of
+        // that because `auto_track_contributions` measures children against
+        // constraints OTHER than `content_available`, and the plan re-checks a
+        // child only against the one it recorded.
+        let cacheable = !descendant_dependent_flow
+            && !grid_measure
+            && !ifc
+            && grid_tracks.is_none_or(|tracks| tracks.is_empty())
+            && nodes.world.children_layout_style_is_local(id);
+        let recorded = cacheable.then(|| {
+            // `flow_children` is a subsequence of `child_ids` -- that is what
+            // `descendant_dependent_flow` being false means -- so one cursor
+            // pairs each direct child with its measurement, if it has one.
+            let mut flow_cursor = 0usize;
+            let mut entries: Vec<MeasuredChild> = child_ids
+                .iter()
+                .copied()
+                .map(|child| {
+                    let intrinsic = (flow_children.get(flow_cursor) == Some(&child)).then(|| {
+                        let size = child_sizes[flow_cursor];
+                        flow_cursor += 1;
+                        size
+                    });
+                    MeasuredChild {
+                        child,
+                        style: nodes.style(child),
+                        intrinsic,
+                    }
+                })
+                .collect();
+            entries.sort_unstable_by_key(|entry| entry.child);
+            MeasurePlan {
+                available,
+                parent_direction,
+                viewport,
+                parent_font_px,
+                style: Arc::clone(&style_arc),
+                children: Arc::clone(&child_ids),
+                text_metrics,
+                child_available: content_available,
+                child_direction: direction,
+                entries,
+                size,
+            }
+        });
+        let slots = nodes.measure_plans.entry(id).or_default();
+        match recorded {
+            Some(plan) => slots.insert(plan),
+            // Leaving the entry empty retires the plans recorded while this
+            // container was still on the cacheable path.
+            None => slots.clear(),
+        }
+    }
     cache.insert(cache_key, size);
     Ok(size)
+}
+
+/// Re-check only the children the change closure reaches.
+///
+/// Everything outside the closure is unchanged by construction: a
+/// layout-affecting `set_style` marks the node LAYOUT-dirty, which is what puts
+/// it in the closure, and the caller has already confirmed that no
+/// ancestor-derived adjustment can move a child's style without touching the
+/// child.
+///
+/// Both halves matter. The intrinsic size alone misses a child whose margins
+/// changed -- margins are part of the container's content extent but not of the
+/// child's own measurement. The style alone misses a child that grew because
+/// its OWN content grew, which is the case `content_growth_under_a_child_moves_
+/// its_siblings` exists to hold.
+fn measure_plan_children_unchanged(
+    plan: &MeasurePlan,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut IntrinsicCache,
+    scope: &ScopeContext<'_>,
+) -> Result<bool, UiWorldError> {
+    for affected in scope.affected.iter().copied() {
+        let Some(entry) = plan.entry(affected) else {
+            continue;
+        };
+        // Pointer first, value second -- the value compare only ever runs for
+        // children in the change closure, so it stays off the per-sibling path.
+        let matches = match (&nodes.style(entry.child), &entry.style) {
+            (None, None) => true,
+            (Some(current), Some(cached)) => Arc::ptr_eq(current, cached) || current == cached,
+            _ => false,
+        };
+        if !matches {
+            return Ok(false);
+        }
+        // A child the flow collection dropped contributes nothing, and its
+        // style just compared equal, so it is still dropped.
+        if let Some(cached) = entry.intrinsic {
+            let measured = intrinsic_size_scoped(
+                entry.child,
+                plan.child_available,
+                Some(plan.child_direction),
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                Some(scope),
+            )?;
+            if measured != cached {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }

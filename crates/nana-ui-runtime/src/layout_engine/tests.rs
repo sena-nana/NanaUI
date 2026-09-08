@@ -3567,6 +3567,63 @@ fn diff_shapes() -> Vec<DiffShape> {
             },
             row: plain_row,
         },
+        // Content-driven containers: the definite-size short circuit in
+        // `intrinsic_size_scoped` cannot fire, so these are the shapes that
+        // reach `MeasurePlan` at all. Every edit below therefore has to survive
+        // BOTH plans agreeing to skip work.
+        DiffShape {
+            name: "column-auto-height",
+            container: column(|s| s.height = None),
+            row: plain_row,
+        },
+        DiffShape {
+            name: "column-auto-both",
+            container: column(|s| {
+                s.width = None;
+                s.height = None;
+            }),
+            row: plain_row,
+        },
+        DiffShape {
+            name: "column-auto-height-gap-margins",
+            container: column(|s| {
+                s.height = None;
+                s.gap = Some(LengthSpec::Px(3.0));
+            }),
+            row: margined_row,
+        },
+        DiffShape {
+            name: "column-auto-height-align-center",
+            container: column(|s| {
+                s.height = None;
+                s.align_items = AlignSpec::Center;
+            }),
+            row: plain_row,
+        },
+        DiffShape {
+            name: "column-auto-height-grow",
+            container: column(|s| s.height = None),
+            row: growing_row,
+        },
+        DiffShape {
+            name: "row-auto-width",
+            container: LayoutStyle {
+                width: None,
+                height: Some(LengthSpec::Px(80.0)),
+                direction: Some(FlexDirection::Row),
+                ..LayoutStyle::default()
+            },
+            row: plain_row,
+        },
+        DiffShape {
+            name: "column-auto-height-padded",
+            container: column(|s| {
+                s.height = None;
+                s.padding = Some(LengthSpec::Px(6.0));
+                s.box_sizing = BoxSizing::ContentBox;
+            }),
+            row: plain_row,
+        },
         DiffShape {
             name: "row-wrap",
             container: LayoutStyle {
@@ -3629,6 +3686,7 @@ fn diff_tree(shape: &DiffShape, rows: usize) -> (UiWorld, DocumentId) {
 struct ScopedStep {
     emitted: usize,
     children_measured: usize,
+    measure_plans_reused: usize,
 }
 
 fn scoped_step_matches_full(
@@ -3646,6 +3704,7 @@ fn scoped_step_matches_full(
     let step = ScopedStep {
         emitted: emitted.len(),
         children_measured: super::plan_stats::children_measured(),
+        measure_plans_reused: super::plan_stats::measure_plans_reused(),
     };
     write_changed_boxes(world, &emitted);
     let _ = world.take_system_work();
@@ -3653,9 +3712,15 @@ fn scoped_step_matches_full(
     let expected = full_boxes(world, document, viewport);
     let cached = &retained.documents[&document].boxes;
     for (node, box_) in &expected {
+        // A node that generates no box at all -- `display:contents` -- is never
+        // placed, so the scoped pass never emits it and the retained map has no
+        // entry, while the full pass fills its `document_order` slot with a
+        // default. Absent and zero are the same statement here: the retained
+        // map only ever loses an entry by never having had one, so this cannot
+        // hide a box the scoped pass dropped.
+        let cached = cached.get(node).copied().unwrap_or_default();
         assert_eq!(
-            cached.get(node),
-            Some(box_),
+            cached, *box_,
             "{label}: scoped layout diverged from full recompute at {node:?}"
         );
     }
@@ -3670,6 +3735,12 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
     const ROWS: usize = 24;
     let viewport = LayoutViewport::new(320.0, 400.0);
     for shape in diff_shapes() {
+        // If the equivalence below passed without ever consulting `MeasurePlan`
+        // -- a guard that went permanently false, a slot that never matched --
+        // the harness would be proving nothing about the cache it was extended
+        // to cover. Every shape reaches it, content-driven container or not,
+        // because the document root is itself content-driven.
+        let mut measure_plans_reused = 0usize;
         let (mut world, document) = diff_tree(&shape, ROWS);
         let mut retained = RetainedLayoutCache::default();
         let _ = world.take_system_work();
@@ -3695,13 +3766,14 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
                     },
                 );
                 world.commit(queue).unwrap();
-                scoped_step_matches_full(
+                measure_plans_reused += scoped_step_matches_full(
                     &mut world,
                     document,
                     viewport,
                     &mut retained,
                     &format!("{} row {row} height {height}", shape.name),
-                );
+                )
+                .measure_plans_reused;
             }
         }
 
@@ -3735,13 +3807,14 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
                 },
             );
             world.commit(queue).unwrap();
-            scoped_step_matches_full(
+            measure_plans_reused += scoped_step_matches_full(
                 &mut world,
                 document,
                 viewport,
                 &mut retained,
                 &format!("{} {label}-only edit", shape.name),
-            );
+            )
+            .measure_plans_reused;
         }
 
         // A width change on a middle row: cross-axis, not main-axis.
@@ -3756,13 +3829,14 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
             },
         );
         world.commit(queue).unwrap();
-        scoped_step_matches_full(
+        measure_plans_reused += scoped_step_matches_full(
             &mut world,
             document,
             viewport,
             &mut retained,
             &format!("{} cross-axis width", shape.name),
-        );
+        )
+        .measure_plans_reused;
 
         // A change on the CONTAINER itself, which invalidates every child.
         let mut container = shape.container.clone();
@@ -3776,26 +3850,20 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
             },
         );
         world.commit(queue).unwrap();
-        scoped_step_matches_full(
+        measure_plans_reused += scoped_step_matches_full(
             &mut world,
             document,
             viewport,
             &mut retained,
             &format!("{} container gap", shape.name),
-        );
+        )
+        .measure_plans_reused;
 
-        // Structural edits: remove a middle row, then append a new one.
-        let mut queue = MutationQueue::new();
-        queue.detach(id(3 + 5 * 2));
-        world.commit(queue).unwrap();
-        scoped_step_matches_full(
-            &mut world,
-            document,
-            viewport,
-            &mut retained,
-            &format!("{} detach row 5", shape.name),
-        );
-
+        // Structural edits. Append FIRST: a detach leaves a detached node in
+        // the world, which turns `children_layout_style_is_local` off for the
+        // rest of the run and retires both plans. An append after it would
+        // exercise nothing -- the plans it is meant to invalidate are already
+        // gone.
         let fresh = id(3 + ROWS as u64 * 2 + 100);
         let mut queue = MutationQueue::new();
         queue.create(fresh, document, NodeKind::Element { tag: "div".into() });
@@ -3808,12 +3876,32 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
             },
         );
         world.commit(queue).unwrap();
-        scoped_step_matches_full(
+        measure_plans_reused += scoped_step_matches_full(
             &mut world,
             document,
             viewport,
             &mut retained,
             &format!("{} append row", shape.name),
+        )
+        .measure_plans_reused;
+
+        let mut queue = MutationQueue::new();
+        queue.detach(id(3 + 5 * 2));
+        world.commit(queue).unwrap();
+        measure_plans_reused += scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            &format!("{} detach row 5", shape.name),
+        )
+        .measure_plans_reused;
+
+        assert!(
+            measure_plans_reused > 0,
+            "{}: the measure plan was never reused, so this shape did not \
+             exercise it",
+            shape.name
         );
     }
 }
@@ -3827,6 +3915,23 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
 /// subtree would notice.
 #[test]
 fn content_growth_under_a_child_moves_its_siblings() {
+    content_growth_under_a_child_moves_its_siblings_with(Some(LengthSpec::Px(600.0)));
+}
+
+/// The same case one level harder: the container is CONTENT-SIZED, so the
+/// growing row also changes the container's own measurement.
+///
+/// This is what `MeasurePlan` has to get wrong to be dangerous. The row's own
+/// style is byte-identical across the edit, so a plan that compared only styles
+/// would hand back the container's previous height and every row below it would
+/// keep a stale position -- silently, because nothing asserts about a node the
+/// optimizer decided not to touch.
+#[test]
+fn content_growth_under_a_child_moves_its_siblings_when_the_container_hugs() {
+    content_growth_under_a_child_moves_its_siblings_with(None);
+}
+
+fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option<LengthSpec>) {
     let viewport = LayoutViewport::new(320.0, 600.0);
     let document = DocumentId::new(1).unwrap();
     let mut world = UiWorld::new();
@@ -3839,10 +3944,11 @@ fn content_growth_under_a_child_moves_its_siblings() {
         NodeStyle {
             layout: Arc::new(LayoutStyle {
                 width: Some(LengthSpec::Px(300.0)),
-                // Fixed, so the container's OWN inputs stay identical when a
-                // row grows. Otherwise the plan is invalidated by the
-                // container's size and the per-child checks never run.
-                height: Some(LengthSpec::Px(600.0)),
+                // Fixed, so the PLACEMENT plan's own inputs stay identical when
+                // a row grows and its per-child checks actually run. `None`
+                // instead puts the container on the measure path as well, where
+                // the growing row moves the container's own size.
+                height: container_height,
                 direction: Some(FlexDirection::Column),
                 ..LayoutStyle::default()
             }),
@@ -3896,6 +4002,22 @@ fn content_growth_under_a_child_moves_its_siblings() {
     shape(&mut world);
     let _ = world.take_system_work();
 
+    // Prime: a full pass records no measure plans, so without an edit first
+    // the pass below would be building the plan rather than being caught out by
+    // it. Grow a DIFFERENT row's text so the plan exists and is current.
+    let mut queue = MutationQueue::new();
+    queue.set_text(id(4), TextContent { value: "zz".into() });
+    world.commit(queue).unwrap();
+    shape(&mut world);
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "priming pass",
+    );
+    let _ = world.take_system_work();
+
     // Grow the SECOND row's text. Its own style never changes.
     let label = id(4 + 2);
     let before = world.node_style(id(3 + 2)).unwrap().layout.clone();
@@ -3915,18 +4037,31 @@ fn content_growth_under_a_child_moves_its_siblings() {
     );
 
     super::plan_stats::reset();
-    scoped_step_matches_full(
+    let step = scoped_step_matches_full(
         &mut world,
         document,
         viewport,
         &mut retained,
         "text growth under a content-sized row",
     );
-    assert!(
-        super::plan_stats::plans_reused() > 0,
-        "the container plan must be reached here, or the intrinsic check this \
-         test exists to guard is never consulted"
-    );
+    if container_height.is_some() {
+        assert!(
+            super::plan_stats::plans_reused() > 0,
+            "the container plan must be reached here, or the intrinsic check \
+             this test exists to guard is never consulted"
+        );
+    } else {
+        // The container's own height moved, so the measure plan must have been
+        // REJECTED -- and rejecting it is the whole point. What has to be true
+        // is that it was consulted and said no, which shows up as the container
+        // re-measuring its children.
+        assert!(
+            step.children_measured >= ROWS as usize,
+            "a hugging container whose child grew must re-measure its children; \
+             it measured {}",
+            step.children_measured
+        );
+    }
 }
 
 /// The harness above proves correctness; this one proves the scoped pass is
@@ -3945,12 +4080,23 @@ fn content_growth_under_a_child_moves_its_siblings() {
 /// suffix replay buys.
 #[test]
 fn scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows() {
+    // A fixed-height container takes the definite-size short circuit in
+    // `intrinsic_size_scoped` and never measures a child at all, so it cannot
+    // tell whether the MEASURE side is incremental. A hugging container has no
+    // short circuit: it reaches `MeasurePlan` for every frame, and a regression
+    // there shows up as a sibling scan that grows with the document.
+    contained_edit_stays_flat(Some(LengthSpec::Px(40000.0)));
+    contained_edit_stays_flat(None);
+}
+
+fn contained_edit_stays_flat(container_height: Option<LengthSpec>) {
+    let hugging = container_height.is_none();
     let viewport = LayoutViewport::new(320.0, 4000.0);
     let shape = DiffShape {
         name: "column-plain",
         container: LayoutStyle {
             width: Some(LengthSpec::Px(300.0)),
-            height: Some(LengthSpec::Px(40000.0)),
+            height: container_height,
             direction: Some(FlexDirection::Column),
             ..LayoutStyle::default()
         },
@@ -3970,6 +4116,31 @@ fn scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows() {
             .unwrap();
         write_changed_boxes(&mut world, &emitted);
         let _ = world.take_system_work();
+
+        // A full pass deliberately records no measure plans -- see the comment
+        // at the recording site -- so the FIRST scoped pass after one measures
+        // its children and builds them. That priming frame is O(document) by
+        // construction; what this gate is about is the steady state after it.
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(4),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(17.0)),
+                    height: Some(LengthSpec::Px(5.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            "priming pass",
+        );
 
         let row = rows - 1;
         // 1. Contained: edit the LABEL inside the last row. The row's own size
@@ -4011,11 +4182,24 @@ fn scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows() {
         world.commit(queue).unwrap();
         let resized =
             scoped_step_matches_full(&mut world, document, viewport, &mut retained, "tail resize");
-        emitted_by_rows.push((
-            rows,
-            contained.emitted.max(resized.emitted),
-            contained.children_measured.max(resized.children_measured),
-        ));
+        // Resizing the last row changes a HUGGING container's own height, so
+        // its measure plan is correctly rejected and it re-measures every
+        // child. That is a real remaining gap -- the measure-side analogue of
+        // `replay_sequential_suffix`, which does not exist -- not something
+        // this gate should assert away, so it only holds the fixed-height
+        // container to the flat tail resize.
+        let measured = if hugging {
+            contained.children_measured
+        } else {
+            contained.children_measured.max(resized.children_measured)
+        };
+        assert!(
+            !hugging || resized.children_measured >= rows,
+            "a hugging container that really did resize must re-measure its \
+             children; if this stops being true the assertion above is \
+             measuring nothing"
+        );
+        emitted_by_rows.push((rows, contained.emitted.max(resized.emitted), measured));
     }
     let (small_rows, small, small_measured) = emitted_by_rows[0];
     let (big_rows, big, big_measured) = emitted_by_rows[1];
@@ -4031,5 +4215,396 @@ fn scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows() {
         "a contained edit must not scale its sibling scan with the document: \
          {small_rows} rows measured {small_measured} children, \
          {big_rows} rows measured {big_measured}"
+    );
+}
+
+/// Run the scoped passes that leave every plan recorded and current.
+///
+/// A full pass records no measure plans, so the first scoped pass after one is
+/// the pass that BUILDS them -- it consults nothing and can be fooled by
+/// nothing. Any test about what the plans do or refuse to do has to get past
+/// that frame first, or it asserts about a code path it never reached.
+///
+/// The edit is applied and then reverted, so the tree ends exactly where it
+/// started with the plans describing that state. Two passes are needed, not
+/// one: the second pass rejects the plan the first recorded (that is what the
+/// revert is) and records the one the test will meet.
+///
+/// Nothing here asserts that a plan came out -- an uncacheable container
+/// correctly produces none. What proves the priming works is that the
+/// deliberately broken implementations these tests exist to catch DO fail
+/// them.
+fn prime_measure_plans(
+    world: &mut UiWorld,
+    document: DocumentId,
+    viewport: LayoutViewport,
+    retained: &mut RetainedLayoutCache,
+    victim: StableNodeId,
+) {
+    let original = world.node_style(victim).unwrap().layout.clone();
+    let mut nudged = (*original).clone();
+    nudged.margin_top = Some(LengthSpec::Px(
+        match nudged.margin_top {
+            Some(LengthSpec::Px(px)) => px,
+            _ => 0.0,
+        } + 3.0,
+    ));
+    for layout in [Arc::new(nudged), original] {
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            victim,
+            NodeStyle {
+                layout,
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        scoped_step_matches_full(world, document, viewport, retained, "priming pass");
+    }
+}
+
+/// Build a hugging column with `children` laid out under it, run one full pass
+/// and return everything a scoped step needs.
+fn hugging_container_world(
+    rows: &[(u64, LayoutStyle, Vec<(u64, LayoutStyle)>)],
+    container: LayoutStyle,
+) -> (UiWorld, DocumentId) {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+    queue.insert(id(1), id(2), None);
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(container),
+            ..NodeStyle::default()
+        },
+    );
+    for (row, style, children) in rows {
+        queue.create(id(*row), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(2), id(*row), None);
+        queue.set_style(
+            id(*row),
+            NodeStyle {
+                layout: Arc::new(style.clone()),
+                ..NodeStyle::default()
+            },
+        );
+        for (child, child_style) in children {
+            queue.create(
+                id(*child),
+                document,
+                NodeKind::Element { tag: "div".into() },
+            );
+            queue.insert(id(*row), id(*child), None);
+            queue.set_style(
+                id(*child),
+                NodeStyle {
+                    layout: Arc::new(child_style.clone()),
+                    ..NodeStyle::default()
+                },
+            );
+        }
+    }
+    world.commit(queue).unwrap();
+    (world, document)
+}
+
+/// `MeasurePlan` records the flow direction its container handed each child as
+/// that child's `parent_direction`, and a child's own measurement can depend on
+/// it -- `aspect-ratio` stretch-fits the inline axis only when the parent is not
+/// a row.
+///
+/// Flipping the container from column to row leaves every child's own style,
+/// child list and available size untouched, so a plan that did not record the
+/// direction would hand back the column measurement forever.
+#[test]
+fn flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_direction() {
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let hug = |direction| LayoutStyle {
+        width: Some(LengthSpec::Px(300.0)),
+        height: None,
+        direction: Some(direction),
+        ..LayoutStyle::default()
+    };
+    // `aspect_ratio` with no width of its own: the used width comes from the
+    // stretch fit, which is disabled under a row parent.
+    let ratio_row = LayoutStyle {
+        aspect_ratio: Some(2.0),
+        ..LayoutStyle::default()
+    };
+    let (mut world, document) = hugging_container_world(
+        &[
+            (3, ratio_row.clone(), vec![]),
+            (4, ratio_row.clone(), vec![]),
+            (5, ratio_row, vec![]),
+        ],
+        hug(FlexDirection::Column),
+    );
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    prime_measure_plans(&mut world, document, viewport, &mut retained, id(5));
+    let column_box = retained.documents[&document].boxes[&id(3)];
+
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(hug(FlexDirection::Row)),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "container direction flipped to row",
+    );
+    assert_ne!(
+        retained.documents[&document].boxes[&id(3)],
+        column_box,
+        "the child's measurement must actually depend on the parent direction, \
+         or this test cannot detect a plan that ignores it"
+    );
+}
+
+/// `display:contents` splices a child's own children into its parent's flow
+/// list, so the parent's measurement is a function of a grandchild list that
+/// neither plan records: the plans index their entries by DIRECT child id.
+///
+/// The edit that proves the refusal to cache such a container is load-bearing
+/// is a change to a GRANDCHILD. It resizes what the container actually
+/// measures while every direct child id, and every direct child's style, stays
+/// byte-identical -- so the per-child checks have nothing to catch it with, and
+/// only declining the plan outright is correct. (Flipping the spliced child
+/// itself would be caught by the ordinary style compare, and proves nothing
+/// about this guard.)
+#[test]
+fn a_display_contents_child_keeps_its_container_off_the_cached_plans() {
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let hug = LayoutStyle {
+        width: Some(LengthSpec::Px(300.0)),
+        height: None,
+        direction: Some(FlexDirection::Column),
+        ..LayoutStyle::default()
+    };
+    let leaf = |height: f32| LayoutStyle {
+        width: Some(LengthSpec::Px(60.0)),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    };
+    // Padding so unboxing actually changes the container's content height: as
+    // `contents` the grandchildren stack bare, as a block the padding counts.
+    let wrapper = |display: Option<DisplaySpec>| LayoutStyle {
+        display,
+        padding: Some(LengthSpec::Px(12.0)),
+        box_sizing: BoxSizing::ContentBox,
+        ..LayoutStyle::default()
+    };
+    let (mut world, document) = hugging_container_world(
+        &[
+            (3, leaf(20.0), vec![]),
+            (
+                4,
+                wrapper(Some(DisplaySpec::Contents)),
+                vec![(6, leaf(20.0)), (7, leaf(20.0))],
+            ),
+            (5, leaf(20.0), vec![]),
+        ],
+        hug,
+    );
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    prime_measure_plans(&mut world, document, viewport, &mut retained, id(3));
+    let spliced = retained.documents[&document].boxes[&id(2)];
+
+    // A grandchild grows. Every DIRECT child of the container keeps its style
+    // and its id, so the per-child checks see nothing at all.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(6),
+        NodeStyle {
+            layout: Arc::new(leaf(53.0)),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let before = world.node_style(id(4)).unwrap().layout.clone();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "grandchild spliced in by display:contents grew",
+    );
+    assert!(
+        Arc::ptr_eq(&before, &world.node_style(id(4)).unwrap().layout),
+        "the spliced child's own style must be untouched, or this test is not \
+         exercising the case the direct-child entries cannot see"
+    );
+    assert_ne!(
+        retained.documents[&document].boxes[&id(2)].height,
+        spliced.height,
+        "the grandchild must actually move the container's height, or this test \
+         cannot detect a plan that cached across it"
+    );
+
+    // And the ordinary case on the same tree: the spliced child becomes a real
+    // box, which changes what the container measures through the flow list.
+    let spliced = retained.documents[&document].boxes[&id(2)];
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(4),
+        NodeStyle {
+            layout: Arc::new(wrapper(None)),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "display:contents child became a box",
+    );
+    assert_ne!(
+        retained.documents[&document].boxes[&id(2)].height,
+        spliced.height,
+        "unboxing must change the container's own height, or this test cannot \
+         detect a plan that cached across it"
+    );
+}
+
+/// A container's own shaped text competes with its children for the content
+/// size, and `set_text` moves that text without touching the container's style,
+/// its child list, or any child.
+///
+/// So the container's own text metrics are a plan input in their own right. A
+/// plan that recorded only style and children would hand back the height the
+/// old string produced, and every child under it would keep a stale position.
+#[test]
+fn a_container_whose_own_text_grows_remeasures_itself() {
+    struct Shaper;
+    impl TextShaper for Shaper {
+        fn shape(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            _style: &ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            TextMetrics {
+                width: text.value.len() as f32 * 8.0,
+                height: 40.0 * (1 + text.value.matches('\n').count()) as f32,
+                ascent: None,
+            }
+        }
+    }
+    let shape = |world: &mut UiWorld| {
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut Shaper).unwrap();
+    };
+
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    // The container hugs, carries text of its own, AND has children. The text
+    // is taller than the stacked children, so it is the text that decides the
+    // container's height.
+    queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+    queue.insert(id(1), id(2), None);
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(300.0)),
+                height: None,
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_text(
+        id(2),
+        TextContent {
+            value: "one".into(),
+        },
+    );
+    for row in 0..4u64 {
+        queue.create(
+            id(3 + row),
+            document,
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.insert(id(2), id(3 + row), None);
+        queue.set_style(
+            id(3 + row),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(60.0)),
+                    height: Some(LengthSpec::Px(10.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+    }
+    world.commit(queue).unwrap();
+    shape(&mut world);
+
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    shape(&mut world);
+    let _ = world.take_system_work();
+    prime_measure_plans(&mut world, document, viewport, &mut retained, id(3));
+    let short = retained.documents[&document].boxes[&id(2)];
+
+    let before = world.node_style(id(2)).unwrap().layout.clone();
+    let mut queue = MutationQueue::new();
+    queue.set_text(
+        id(2),
+        TextContent {
+            value: "one\ntwo\nthree".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    shape(&mut world);
+    assert!(
+        Arc::ptr_eq(&before, &world.node_style(id(2)).unwrap().layout),
+        "the container's own style must be untouched, or this test is not \
+         exercising the text-metrics input"
+    );
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "the container's own text grew",
+    );
+    assert_ne!(
+        retained.documents[&document].boxes[&id(2)].height,
+        short.height,
+        "the container's own text must decide its height, or this test cannot \
+         detect a plan that ignores it"
     );
 }

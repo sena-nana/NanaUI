@@ -139,6 +139,10 @@ jobs:
             scoped_layout_matches_full_recompute_across_container_shapes_and_edits \
             scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows \
             content_growth_under_a_child_moves_its_siblings \
+            content_growth_under_a_child_moves_its_siblings_when_the_container_hugs \
+            flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_direction \
+            a_display_contents_child_keeps_its_container_off_the_cached_plans \
+            a_container_whose_own_text_grows_remeasures_itself \
             scroll_view_with_forty_rows_dirties_forty_one_hit_targets \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \

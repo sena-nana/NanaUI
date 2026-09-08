@@ -2,14 +2,39 @@
 
 use super::*;
 
-pub(super) fn collect_flow_children(
+/// In-flow children, plus whether the answer depended on anything below
+/// the direct children.
+///
+/// The cached plans (`ContainerPlan`, `MeasurePlan`) re-check only the children
+/// the change closure reaches, and they identify those children by id in the
+/// container's own child list. That identification is only sound while the flow
+/// list is a subsequence of the direct children whose membership is decided by
+/// each child's own style. Two cases break it, and both are reported here:
+///
+/// - `display: contents` splices a child's OWN children into the flow list, so
+///   the list is a function of a grandchild list the plan never recorded.
+/// - an inline-level child under a block parent is unboxed or not depending on
+///   whether its subtree contains a block, so a change arbitrarily deep can
+///   move the child in or out of the flow list while its style stays put.
+///
+/// Reporting the condition rather than checking for it afterwards keeps this
+/// off the per-sibling path: the collection already visits every child, and a
+/// membership test over the produced list would be quadratic.
+pub(super) fn collect_flow_children_reporting(
     children: &[StableNodeId],
     nodes: &mut LayoutInputMap<'_>,
     parent_display: Option<DisplaySpec>,
-) -> Result<Vec<StableNodeId>, UiWorldError> {
+) -> Result<(Vec<StableNodeId>, bool), UiWorldError> {
     let mut out = Vec::new();
-    collect_flow_children_into(children, nodes, parent_display, &mut out)?;
-    Ok(out)
+    let mut descendant_dependent = false;
+    collect_flow_children_into(
+        children,
+        nodes,
+        parent_display,
+        &mut out,
+        &mut descendant_dependent,
+    )?;
+    Ok((out, descendant_dependent))
 }
 
 pub(super) fn parent_unboxes_inline(parent_display: Option<DisplaySpec>) -> bool {
@@ -22,6 +47,7 @@ pub(super) fn collect_flow_children_into(
     nodes: &mut LayoutInputMap<'_>,
     parent_display: Option<DisplaySpec>,
     out: &mut Vec<StableNodeId>,
+    descendant_dependent: &mut bool,
 ) -> Result<(), UiWorldError> {
     for child in children.iter().copied() {
         let Some(style) = nodes.style(child) else {
@@ -31,26 +57,36 @@ pub(super) fn collect_flow_children_into(
             continue;
         }
         if style.display.is_some_and(DisplaySpec::is_contents) {
+            *descendant_dependent = true;
             let nested = match nodes.get(child)? {
                 Some(node) => (*node.children).clone(),
                 None => continue,
             };
-            collect_flow_children_into(&nested, nodes, parent_display, out)?;
+            collect_flow_children_into(&nested, nodes, parent_display, out, descendant_dependent)?;
             continue;
         }
         if style.position.is_out_of_flow() {
             continue;
         }
-        if parent_unboxes_inline(parent_display)
-            && style.is_inline_level()
-            && inline_contains_block(child, nodes)?
-        {
-            let nested = match nodes.get(child)? {
-                Some(node) => (*node.children).clone(),
-                None => continue,
-            };
-            collect_flow_children_into(&nested, nodes, parent_display, out)?;
-            continue;
+        if parent_unboxes_inline(parent_display) && style.is_inline_level() {
+            // Whichever way the test goes, the answer came from the child's
+            // subtree, so a plan over this container cannot be re-checked from
+            // the direct child list alone.
+            *descendant_dependent = true;
+            if inline_contains_block(child, nodes)? {
+                let nested = match nodes.get(child)? {
+                    Some(node) => (*node.children).clone(),
+                    None => continue,
+                };
+                collect_flow_children_into(
+                    &nested,
+                    nodes,
+                    parent_display,
+                    out,
+                    descendant_dependent,
+                )?;
+                continue;
+            }
         }
         out.push(child);
     }
