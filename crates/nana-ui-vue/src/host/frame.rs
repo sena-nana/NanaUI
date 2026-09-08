@@ -12,11 +12,16 @@ impl VueHost {
     /// Commit host ops and flush Runtime layout/extract like a window Scene host.
     /// Headless sessions call this after [`Self::semantic_snapshot`].
     #[cfg(feature = "scene-view")]
-    pub fn flush_scene_frame(
-        &mut self,
-        logical_width: f32,
-        logical_height: f32,
-    ) -> Result<(), nana_ui_runtime::FrameworkError> {
+    pub fn flush_scene_frame(&mut self) -> Result<(), nana_ui_runtime::FrameworkError> {
+        // Read from the document rather than take it from the caller: the
+        // document derives its logical size from the physical viewport and the
+        // scale factor, so a caller passing its own numbers was a second source
+        // that agreed only at scale 1.
+        let (logical_width, logical_height) = self
+            .document
+            .lock()
+            .expect("vue doc")
+            .logical_size();
         {
             let mut doc = self.document.lock().expect("vue doc");
             doc.flush_host_frame();

@@ -318,7 +318,7 @@ fn vue_case(
     // Both shapes get a scene frame at mount: without one the paint-box store
     // stays empty and `resolve_layout` would take its "nothing painted yet"
     // branch forever, which no application does past its first frame.
-    host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?;
+    host.flush_scene_frame()?;
     host.prepare_window_frame();
     let mount_ms = as_ms(started.elapsed());
     let shape = args.shape;
@@ -332,7 +332,7 @@ fn vue_case(
         let started = Instant::now();
         match shape {
             Shape::Window => host.prepare_window_frame(),
-            Shape::Headless => host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?,
+            Shape::Headless => host.flush_scene_frame()?,
         }
         Ok(Sample {
             dispatch: Some(dispatch),

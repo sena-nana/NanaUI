@@ -195,7 +195,7 @@ impl<E: JsEngine> VueAgentSession<E> {
         self.host.pump_frame(&mut self.engine)?;
         let _ = self.host.semantic_snapshot();
         self.host
-            .flush_scene_frame(self.width as f32, self.height as f32)
+            .flush_scene_frame()
             .map_err(|error| AgentError(error.to_string()))?;
         Ok(())
     }
