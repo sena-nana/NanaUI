@@ -457,6 +457,16 @@ impl AppContext {
     }
 
     fn active_runtime_overlays(&self, document: DocumentId) -> Vec<ActiveRuntimeOverlay> {
+        // Start from the overlay-host index, not document order. This runs on
+        // every pointer event -- `route_overlay_pointer` calls it to ask whether
+        // anything blocks the pointer -- and walking the document to find hosts
+        // allocated an id vector plus a full reverse-lookup map per event, on a
+        // tree that usually has no overlay open at all. The index exists for
+        // exactly this reason; see `UiWorld::overlay_host_ids`.
+        let mut hosts: Vec<StableNodeId> = self.world.overlay_host_ids(document).collect();
+        if hosts.is_empty() {
+            return Vec::new();
+        }
         let order = self.world.document_order(document);
         // Hosts and their active roots are both entries in document order. Build
         // the reverse lookup once so several overlays do not each rescan the
@@ -466,10 +476,13 @@ impl AppContext {
             .enumerate()
             .map(|(index, id)| (*id, index))
             .collect::<HashMap<_, _>>();
-        let mut overlays = order
+        // Document order, so the stable sort below breaks ties the way it did
+        // when this iterated the document directly.
+        hosts.sort_by_key(|host| order_index.get(host).copied().unwrap_or(usize::MAX));
+        let mut overlays = hosts
             .iter()
-            .enumerate()
-            .filter_map(|(document_order, host)| {
+            .filter_map(|host| {
+                let document_order = order_index.get(host).copied()?;
                 let state = self.world.overlay_host(*host)?;
                 let root = state.active?;
                 if self.world.surface_closed(root) {

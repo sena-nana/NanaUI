@@ -1123,7 +1123,10 @@ impl UiWorld {
 
     /// Nodes that carry an `OverlayHostState`. Overlay validation iterates this
     /// instead of the entity index so cost tracks host count, not world size.
-    fn overlay_host_ids(&self, document: DocumentId) -> impl Iterator<Item = StableNodeId> + '_ {
+    pub(crate) fn overlay_host_ids(
+        &self,
+        document: DocumentId,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
         self.overlay_hosts_by_document
             .get(&document)
             .into_iter()
