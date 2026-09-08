@@ -23,12 +23,15 @@ perf/
 警告的不可比性。
 
 ```bash
-for mode in bare listeners reactive; do
+for mode in bare listeners reactive bare-scroll listeners-scroll reactive-scroll; do
   node crates/nana-js-engine/fixtures/vue-sfc-compat/build-hover-bench.mjs $mode 2000
 done
 cargo build --release -p nana-ui-devtools --features agent-bin --bin nana-hover-benchmark
-./target/release/nana-hover-benchmark --rows 2000 --moves 400 --warmup 60
+./target/release/nana-hover-benchmark --rows 2000 --moves 400 --warmup 60 --shape window
 ```
+
+`--shape window` 是真实窗口重绘的序列，`--shape headless` 是 Agent 会话的替身；只量后者
+会得出一条没有窗口会走的路径的结论。`--scroll` 驱动带滚动容器的同形状树。
 
 结果、成因和已落地的修复见 [`docs/input-cost.md`](../docs/input-cost.md)。这是目前唯一测过
 JS↔Rust 边界的基准：`nana-vue-runtime-benchmark` 不 import V8。
