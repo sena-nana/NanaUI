@@ -544,7 +544,9 @@ fn measure_plan_children_unchanged(
         // children in the change closure, so it stays off the per-sibling path.
         let matches = match (&nodes.style(entry.child), &entry.style) {
             (None, None) => true,
-            (Some(current), Some(cached)) => Arc::ptr_eq(current, cached) || current == cached,
+            (Some(current), Some(cached)) => {
+                Arc::ptr_eq(current, cached) || layout_inputs_equal(current, cached)
+            }
             _ => false,
         };
         if !matches {

@@ -76,7 +76,8 @@ fn check_plan_children(
         // plan on every event and give back all of the saving. The value
         // compare only ever runs for children in the change closure, so it
         // stays off the per-sibling path.
-        let style_moved = !Arc::ptr_eq(&current, &cached_style) && current != cached_style;
+        let style_moved =
+            !Arc::ptr_eq(&current, &cached_style) && !layout_inputs_equal(&current, &cached_style);
         let measured = intrinsic_size_scoped(
             child,
             plan.child_available,

@@ -4608,3 +4608,77 @@ fn a_container_whose_own_text_grows_remeasures_itself() {
          detect a plan that ignores it"
     );
 }
+
+/// Two spellings of the same layout must not retire a plan; two different
+/// layouts must.
+///
+/// `direction: None` and `direction: Some(Column)` are the same axis --
+/// `used_flow_direction` is `unwrap_or(Column)` -- and in a real host they
+/// alternate on the same node from one frame to the next, because more than one
+/// writer seeds the field. A plan compared with `==` is retired every frame by
+/// that alternation while nothing about the layout moved. `Some(Row)` is a
+/// different layout and must still retire it.
+#[test]
+fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires_it() {
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let leaf = |direction| LayoutStyle {
+        width: Some(LengthSpec::Px(60.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        direction,
+        ..LayoutStyle::default()
+    };
+    // Hugging container, so it is the measure plan that has to hold.
+    let hug = LayoutStyle {
+        width: Some(LengthSpec::Px(300.0)),
+        height: None,
+        direction: Some(FlexDirection::Column),
+        ..LayoutStyle::default()
+    };
+    let rows: Vec<(u64, LayoutStyle, Vec<(u64, LayoutStyle)>)> =
+        (3..=10).map(|row| (row, leaf(None), vec![])).collect();
+
+    const ROWS: usize = 8;
+    for (spelling, expect_remeasure) in [
+        // Same axis, different spelling: the plan must survive, so the
+        // container must not touch its children.
+        (Some(FlexDirection::Column), false),
+        // A real change: the plan must be retired and the children re-measured.
+        (Some(FlexDirection::Row), true),
+    ] {
+        let (mut world, document) = hugging_container_world(&rows, hug.clone());
+        let mut retained = RetainedLayoutCache::default();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        prime_measure_plans(&mut world, document, viewport, &mut retained, id(10));
+
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(4),
+            NodeStyle {
+                layout: Arc::new(leaf(spelling)),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let step = scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            &format!("child direction respelled as {spelling:?}"),
+        );
+        // The global "plans reused" counter is too coarse -- other nodes reuse
+        // their own plans either way. What this test is about is whether THIS
+        // container had to walk its children.
+        assert_eq!(
+            step.children_measured >= ROWS,
+            expect_remeasure,
+            "direction {spelling:?}: children measured {} (expected a rescan: \
+             {expect_remeasure})",
+            step.children_measured
+        );
+    }
+}

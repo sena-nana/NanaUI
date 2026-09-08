@@ -703,6 +703,41 @@ impl ContainerPlan {
     }
 }
 
+/// Whether two layout styles are the same INPUT to layout, as opposed to the
+/// same spelling of one.
+///
+/// `direction` is the one field the engine never reads directly: every use goes
+/// through [`used_flow_direction`], which is `unwrap_or(Column)`. So `None` and
+/// `Some(Column)` are the same layout, and `Some(Row)` is not.
+///
+/// That distinction is not academic. Three writers disagree about how to spell
+/// a default column: `MessageBridge::register` seeds `direction` from the
+/// widget kind, the CSS cascade republishes a style that leaves it `None`, and
+/// the Runtime's own `Stack` projection writes `Some(Column)` back. On a
+/// 2,000-row Vue list all three run every pointer event, so a plain `==`
+/// retires the cached plan on every frame while nothing about the layout has
+/// changed. That was the whole of the measure plan's benefit: on that
+/// benchmark, `==` left settle at 0.786 ms and the container re-measuring
+/// 2,000 children per event; this comparison takes it to 0.630 ms and 5.4.
+///
+/// The equality is exact, not a tolerance: it accepts exactly the pairs that
+/// `used_flow_direction` maps to the same axis, and every other field still has
+/// to match outright.
+fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutStyle) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.direction.unwrap_or(FlexDirection::Column) != b.direction.unwrap_or(FlexDirection::Column)
+    {
+        return false;
+    }
+    // Only reached when the styles differ, so the clone is off the hot path:
+    // once per closure child that failed the cheap compare.
+    let mut probe = a.clone();
+    probe.direction = b.direction;
+    probe == *b
+}
+
 /// One child's contribution to a cached container measurement.
 struct MeasuredChild {
     child: StableNodeId,
@@ -848,7 +883,7 @@ impl MeasurePlan {
             && self.parent_font_px == parent_font_px
             && self.text_metrics == text_metrics
             && Arc::ptr_eq(&self.children, children)
-            && (Arc::ptr_eq(&self.style, style) || self.style == *style)
+            && (Arc::ptr_eq(&self.style, style) || layout_inputs_equal(&self.style, style))
     }
 
     fn entry(&self, child: StableNodeId) -> Option<&MeasuredChild> {
