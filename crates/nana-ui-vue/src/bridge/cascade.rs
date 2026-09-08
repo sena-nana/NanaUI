@@ -27,6 +27,23 @@ fn compound_needs_topology(subject: &crate::css_cascade::CompoundSelector) -> bo
             .any(|alternative| alternative.empty)
 }
 
+/// One author sheet exactly as the host received it.
+///
+/// `source` is retained so a keyed replace can reparse the whole set. Rule
+/// `source_order` is a cascade tiebreak, and a replacement sheet with a
+/// different rule count cannot be spliced into the order range its predecessor
+/// occupied without colliding with every sheet that follows it.
+///
+/// `key` is the identity a replace targets — typically the stylesheet's `href`.
+/// Unkeyed sheets (plain [`MessageBridge::inject_stylesheet`]) can only be
+/// removed wholesale by [`MessageBridge::clear_authored_stylesheets`].
+#[derive(Debug, Clone)]
+pub(super) struct AuthoredSheet {
+    pub(super) key: Option<String>,
+    pub(super) source: String,
+    pub(super) parsed: ParsedStylesheet,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct State {
     /// Root identity only; its computed font size is always read live.
@@ -71,7 +88,7 @@ pub(super) struct State {
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     pub(super) stylesheet_skips: StylesheetParseReport,
     /// Unflattened author sheets (imports already merged; `@media` kept conditional).
-    pub(super) authored_sheets: Vec<ParsedStylesheet>,
+    pub(super) authored_sheets: Vec<AuthoredSheet>,
     /// Shared relative forest for the current recascade pass.
     pub(super) relative_pass: Option<Arc<RelativeMatchForest>>,
     /// Test hook: how many times a relative forest was built.
@@ -1095,7 +1112,7 @@ impl MessageBridge {
         let env = self.media_environment();
         let mut combined = ParsedStylesheet::default();
         for sheet in &self.cascade.authored_sheets {
-            merge_parsed_stylesheet(&mut combined, sheet.flatten(&env));
+            merge_parsed_stylesheet(&mut combined, sheet.parsed.flatten(&env));
         }
         self.cascade.stylesheet_rules = combined.static_rules;
         self.cascade.stylesheet_rule_index =
@@ -1145,7 +1162,7 @@ impl MessageBridge {
         self.cascade
             .authored_sheets
             .iter()
-            .any(|sheet| !sheet.media_rules.is_empty())
+            .any(|sheet| !sheet.parsed.media_rules.is_empty())
     }
 }
 
@@ -1168,17 +1185,15 @@ impl MessageBridge {
 }
 
 impl MessageBridge {
-    /// Parse and retain stylesheet rules, then recascade matching subtrees.
+    /// Parse one author sheet against the current base / media environment.
     ///
-    /// Empty / fully-deferred sheets are a no-op. Non-empty injects dirty nodes
-    /// that match the new rules and their descendants. Unmatched subtrees stay.
-    /// `@import` loads through [`FsStylesheetLoader`] into this same cascade;
-    /// `@media` is stored parsed and flattened against the current viewport /
-    /// theme without re-parsing CSS text.
-    pub fn inject_stylesheet(&mut self, css: &str) {
-        if css.trim().is_empty() {
-            return;
-        }
+    /// Pure with respect to the cascade: it advances nothing and retains
+    /// nothing, so both the append and the reparse path can use it.
+    fn parse_authored_source(
+        &mut self,
+        css: &str,
+        first_order: u32,
+    ) -> (ParsedStylesheet, StylesheetParseReport) {
         let base = self.resources.stylesheet_base.clone();
         let attach_loader = stylesheet_base_is_set(&base);
         let loader = FsStylesheetLoader { base: &base };
@@ -1189,11 +1204,98 @@ impl MessageBridge {
             base_href: None,
             import_cache: Some(&mut cache),
         };
-        let (sheet, report) =
-            parse_stylesheet_full_with_options(css, self.cascade.next_rule_order, &mut options);
+        let parsed = parse_stylesheet_full_with_options(css, first_order, &mut options);
         self.resources.import_cache = cache;
+        parsed
+    }
+
+    /// Reparse every retained sheet from its source, restarting `source_order`
+    /// at 0 and re-registering `@font-face` (deduped by `font_register_keys`).
+    ///
+    /// A keyed replace cannot patch orders in place: the new sheet's rule count
+    /// differs from the old one's, so every later sheet would have to shift.
+    /// Reparsing the whole set is a few hundred rules of work and is the only
+    /// version of this that keeps the cascade tiebreak honest.
+    ///
+    /// `stylesheet_skips` is reset rather than accumulated — after a replace it
+    /// should describe the sheets that are loaded now, not every sheet that was
+    /// ever loaded.
+    fn reparse_authored_sheets(&mut self) {
+        // Retaining a sheet whose source is empty is load-bearing, not an
+        // oversight: `clear_authored_stylesheets` blanks every source and leans
+        // on this loop to keep the (now ruleless) slots so the recascade sees a
+        // non-empty `authored_sheets` and takes the full path.
+        let retained = std::mem::take(&mut self.cascade.authored_sheets);
+        self.cascade.next_rule_order = 0;
+        self.cascade.stylesheet_skips = StylesheetParseReport::default();
+        // A changed `@import` graph must not be served from the old cache.
+        self.resources.import_cache.clear();
+
+        // `@font-face` is not re-registered here: registration is keyed and
+        // deduped, every retained sheet registered its faces when it was first
+        // injected, and the one sheet a replace actually changed registers its
+        // own below.
+        for sheet in retained {
+            let (parsed, report) =
+                self.parse_authored_source(&sheet.source, self.cascade.next_rule_order);
+            self.cascade.stylesheet_skips = self.cascade.stylesheet_skips.combine(report);
+            if let Some(last) = parsed.max_source_order() {
+                self.cascade.next_rule_order = last.saturating_add(1);
+            }
+            self.cascade
+                .authored_sheets
+                .push(AuthoredSheet { parsed, ..sheet });
+        }
+    }
+
+    /// Rebuild the active rule set and reapply it to the whole document.
+    ///
+    /// Used after a change that can *remove* rules, where the cheaper
+    /// "recascade only what the new rules match" path is not enough: a node that
+    /// stopped matching cannot be found by looking at the rules that remain.
+    fn recascade_all_after_stylesheet_change(&mut self) {
+        self.rebuild_active_stylesheet();
+        self.rebuild_stylesheet_vars();
+        self.reapply_layout_cascade_all();
+        if self.has_focus_within_css() {
+            let focused = self.focused_for_cascade();
+            self.reapply_focus_within_ancestors(None, focused);
+        }
+    }
+
+    /// Parse and retain stylesheet rules, then recascade matching subtrees.
+    ///
+    /// Empty / fully-deferred sheets are a no-op. Non-empty injects dirty nodes
+    /// that match the new rules and their descendants. Unmatched subtrees stay.
+    /// `@import` loads through [`FsStylesheetLoader`] into this same cascade;
+    /// `@media` is stored parsed and flattened against the current viewport /
+    /// theme without re-parsing CSS text.
+    pub fn inject_stylesheet(&mut self, css: &str) {
+        self.inject_stylesheet_keyed(None, css);
+    }
+
+    /// [`Self::inject_stylesheet`] that remembers `key` so a later
+    /// [`Self::replace_stylesheet`] can target this sheet in place.
+    ///
+    /// Re-injecting a key that is already loaded replaces it rather than
+    /// stacking a second copy, so a host op that fires on every mount stays
+    /// idempotent.
+    pub fn inject_stylesheet_keyed(&mut self, key: Option<&str>, css: &str) {
+        if let Some(key) = key
+            && self.has_stylesheet_key(key)
+        {
+            self.replace_stylesheet(key, css);
+            return;
+        }
+        if css.trim().is_empty() {
+            return;
+        }
+        let (sheet, report) = self.parse_authored_source(css, self.cascade.next_rule_order);
         self.cascade.stylesheet_skips = self.cascade.stylesheet_skips.combine(report);
-        if sheet.is_cascade_empty() {
+        // A keyed sheet is retained even when it contributes no rules: the key
+        // has to exist for a later replace to find, and an empty sheet flattens
+        // to nothing anyway.
+        if sheet.is_cascade_empty() && key.is_none() {
             return;
         }
         if let Some(last) = sheet.max_source_order() {
@@ -1205,7 +1307,11 @@ impl MessageBridge {
             self.consider_font_face(face);
         }
         let new_static = flattened.static_rules;
-        self.cascade.authored_sheets.push(sheet);
+        self.cascade.authored_sheets.push(AuthoredSheet {
+            key: key.map(str::to_owned),
+            source: css.to_owned(),
+            parsed: sheet,
+        });
         self.rebuild_active_stylesheet();
         self.rebuild_stylesheet_vars();
         if stylesheet_needs_relative(&new_static) {
@@ -1219,6 +1325,103 @@ impl MessageBridge {
             let focused = self.focused_for_cascade();
             self.reapply_focus_within_ancestors(None, focused);
         }
+    }
+
+    /// Swap the source of one keyed sheet and recascade the document.
+    ///
+    /// Appends instead when `key` is unknown, so a caller does not have to
+    /// track whether it has injected the sheet yet.
+    ///
+    /// No node is created or destroyed: node ids, focus, pointer capture,
+    /// scroll offsets, GPU slots and in-flight animations all survive. That is
+    /// what makes this the zero-state-loss half of hot reload.
+    ///
+    /// Unlike an inject this always recascades the whole document. A replace
+    /// can *remove* rules, and a node that no longer matches anything cannot be
+    /// found by looking at the rules that remain.
+    pub fn replace_stylesheet(&mut self, key: &str, css: &str) {
+        let Some(slot) = self
+            .cascade
+            .authored_sheets
+            .iter_mut()
+            .find(|sheet| sheet.key.as_deref() == Some(key))
+        else {
+            self.inject_stylesheet_keyed(Some(key), css);
+            return;
+        };
+        if slot.source == css {
+            return;
+        }
+        slot.source = css.to_owned();
+        self.reparse_authored_sheets();
+        self.register_font_faces_for_key(key);
+        self.recascade_all_after_stylesheet_change();
+    }
+
+    /// Register the `@font-face` rules of one keyed sheet.
+    ///
+    /// Only the sheet a replace changed can carry a face the host has not seen;
+    /// registration is deduped, so doing this for every retained sheet would be
+    /// a deep clone of every rule set for nothing.
+    fn register_font_faces_for_key(&mut self, key: &str) {
+        let env = self.media_environment();
+        let Some(sheet) = self
+            .cascade
+            .authored_sheets
+            .iter()
+            .find(|sheet| sheet.key.as_deref() == Some(key))
+        else {
+            return;
+        };
+        let faces = sheet.parsed.flatten(&env).font_faces;
+        for face in &faces {
+            self.consider_font_face(face);
+        }
+    }
+
+    /// Drop every author sheet and recascade.
+    ///
+    /// A full reload calls this before re-evaluating the artifact: the bundle
+    /// re-injects its own stylesheets on mount, and without this the cascade
+    /// would grow by one full copy per reload.
+    ///
+    /// Registered `@font-face` families are deliberately kept — they are host
+    /// resources keyed by family, not cascade rules, and re-registering them on
+    /// the next inject is a no-op.
+    pub fn clear_authored_stylesheets(&mut self) {
+        if self.cascade.authored_sheets.is_empty() {
+            return;
+        }
+        // Blank the sheets and recascade *before* dropping them. With zero
+        // author sheets the per-widget cascade takes its "no author CSS layers"
+        // shortcut and preserves the last computed `LayoutStyle`, so emptying
+        // the list first would leave every widget wearing the styles of the
+        // sheet that just went away. Emptying the sources instead runs the same
+        // path a `replace_stylesheet(key, "")` runs, which does reset.
+        for sheet in &mut self.cascade.authored_sheets {
+            sheet.source.clear();
+        }
+        self.reparse_authored_sheets();
+        self.recascade_all_after_stylesheet_change();
+        // The slots now hold no rules, so dropping them cannot change the active
+        // stylesheet -- no second rebuild pass is needed.
+        self.cascade.authored_sheets.clear();
+        self.cascade.next_rule_order = 0;
+        self.cascade.stylesheet_skips = StylesheetParseReport::default();
+        self.resources.import_cache.clear();
+    }
+
+    /// Whether a sheet is loaded under `key`.
+    pub fn has_stylesheet_key(&self, key: &str) -> bool {
+        self.cascade
+            .authored_sheets
+            .iter()
+            .any(|sheet| sheet.key.as_deref() == Some(key))
+    }
+
+    /// How many author sheets the cascade holds, keyed or not.
+    pub fn authored_stylesheet_count(&self) -> usize {
+        self.cascade.authored_sheets.len()
     }
 }
 

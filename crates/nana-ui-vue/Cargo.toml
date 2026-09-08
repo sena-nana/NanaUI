@@ -22,6 +22,12 @@ default = []
 full = ["components", "hosted", "syntax-highlighting"]
 syntax-highlighting = ["nana-ui-runtime/syntax-highlighting", "nana-ui?/syntax-highlighting"]
 benchmark = ["dep:serde", "dep:serde_json"]
+# Development-only reload. Off by default and never enabled by `full`: a product
+# build has no reason to carry a routine that tears its own tree down. The
+# enforcement that this cannot ship lives in `nana-ui-dev`, which refuses to
+# compile without `debug_assertions`; this feature keeps the code itself out of
+# a release binary's text as well.
+dev-reload = []
 # Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
 scene-view = [
     "dep:nana-ui",

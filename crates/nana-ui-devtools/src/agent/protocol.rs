@@ -329,6 +329,23 @@ pub enum AgentCommand {
         color: Option<[f32; 4]>,
     },
     Pump,
+    /// Reload the session's application without recreating its window or GPU
+    /// context. `js` re-evaluates the artifact and rebuilds the tree; `css`
+    /// swaps one keyed stylesheet and touches no node. Both are paths on the
+    /// host's filesystem, read by the session.
+    ///
+    /// Serde-only here: the implementation belongs to whichever session tier can
+    /// actually reload, so the Vue-free tier still names no JS engine.
+    Reload {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        js: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        css: Option<String>,
+        /// Stylesheet key `css` replaces. Defaults to the path itself, which is
+        /// what an app that injects with an `href` will have used.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        css_key: Option<String>,
+    },
 }
 
 impl AgentCommand {
@@ -355,6 +372,7 @@ impl AgentCommand {
             Self::Theme { .. } => "theme",
             Self::Clear { .. } => "clear",
             Self::Pump => "pump",
+            Self::Reload { .. } => "reload",
         }
     }
 }

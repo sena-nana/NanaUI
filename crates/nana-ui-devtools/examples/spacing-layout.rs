@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => include_str!("spacing-layout.js").to_owned(),
         };
         let artifact = RuntimeArtifact::from_source("spacing-layout.js", &source);
-        let mut vue = VueAgentSession::new(V8Engine::new(), artifact, width, 300)?;
+        let mut vue = VueAgentSession::new(V8Engine::new, artifact, width, 300)?;
         let page_id = vue
             .semantic_dump()
             .into_iter()

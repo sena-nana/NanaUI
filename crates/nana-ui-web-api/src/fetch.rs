@@ -168,6 +168,18 @@ impl FetchRuntime {
         due
     }
 
+    /// Cancel every in-flight request.
+    ///
+    /// Their completions are still drained later and discarded, the same way a
+    /// single [`Self::cancel`] behaves. Used when the JS that issued them is
+    /// being replaced and nothing is left to resolve their promises.
+    pub fn cancel_all(&mut self) {
+        let ids: Vec<u64> = self.cancellations.keys().copied().collect();
+        for id in ids {
+            self.cancel(id);
+        }
+    }
+
     pub fn has_pending(&self) -> bool {
         self.active > 0
     }

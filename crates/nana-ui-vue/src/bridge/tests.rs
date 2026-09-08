@@ -5600,3 +5600,181 @@ fn later_transform_e(doc: &crate::tree::NanaTreeDocument, id: u64) -> f32 {
         .expect("paint transform")
         .e
 }
+
+// --- Keyed stylesheets ------------------------------------------------------
+//
+// The hot-reload CSS fast path rests on these: a keyed sheet can be swapped in
+// place, the swap removes the rules it used to contribute, and the cascade
+// order after a swap is indistinguishable from a fresh set of injects.
+
+fn keyed_bridge_with_one_item() -> MessageBridge {
+    let mut bridge = MessageBridge::new();
+    bridge.register(1, WidgetKind::Column, WidgetProps::default());
+    bridge.register(
+        2,
+        WidgetKind::Button,
+        WidgetProps {
+            class_names: vec!["item".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.insert_child(2, 1, None);
+    bridge
+}
+
+fn item_width(bridge: &MessageBridge) -> Option<LengthSpec> {
+    bridge.get(2).expect("item widget").props.layout.width
+}
+
+fn item_height(bridge: &MessageBridge) -> Option<LengthSpec> {
+    bridge.get(2).expect("item widget").props.layout.height
+}
+
+#[test]
+fn replacing_a_keyed_sheet_applies_the_new_rules_and_drops_the_old_ones() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 10px; height: 4px; }");
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(10.0)));
+    assert_eq!(item_height(&bridge), Some(LengthSpec::Px(4.0)));
+
+    bridge.replace_stylesheet("app.css", ".item { width: 20px; }");
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(20.0)));
+    // The dropped `height` is the half a naive "append the new sheet" reload
+    // gets wrong: the old declaration would still win by source order.
+    assert_eq!(item_height(&bridge), None);
+}
+
+#[test]
+fn replacing_an_unknown_key_appends_it() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.replace_stylesheet("late.css", ".item { width: 7px; }");
+    assert!(bridge.has_stylesheet_key("late.css"));
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(7.0)));
+}
+
+#[test]
+fn re_injecting_a_key_replaces_instead_of_stacking() {
+    // `injectStylesheet(css, href)` fires on every mount in some apps; the href
+    // makes that idempotent rather than a slow leak.
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 3px; }");
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 9px; }");
+    assert_eq!(bridge.authored_stylesheet_count(), 1);
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(9.0)));
+}
+
+#[test]
+fn a_replace_preserves_cascade_order_against_a_freshly_injected_baseline() {
+    // Order is the whole risk in replacing a sheet in place: the new sheet has a
+    // different rule count than the one it displaces, so its `source_order`
+    // range cannot simply be reused. Compare against the only ground truth
+    // there is — the same three sheets injected in the same order from scratch.
+    let later = ".item { width: 50px; }";
+    let replacement = ".item { width: 30px; height: 30px; } .item { width: 31px; }";
+
+    let mut baseline = keyed_bridge_with_one_item();
+    baseline.inject_stylesheet_keyed(Some("a.css"), ".item { width: 1px; }");
+    baseline.inject_stylesheet_keyed(Some("b.css"), replacement);
+    baseline.inject_stylesheet_keyed(Some("c.css"), later);
+
+    let mut replaced = keyed_bridge_with_one_item();
+    replaced.inject_stylesheet_keyed(Some("a.css"), ".item { width: 1px; }");
+    replaced.inject_stylesheet_keyed(Some("b.css"), ".item { width: 2px; }");
+    replaced.inject_stylesheet_keyed(Some("c.css"), later);
+    replaced.replace_stylesheet("b.css", replacement);
+
+    assert_eq!(item_width(&replaced), item_width(&baseline));
+    assert_eq!(item_height(&replaced), item_height(&baseline));
+    // `c.css` still wins the width: a later sheet must not lose to an earlier
+    // one just because the earlier one grew a rule.
+    assert_eq!(item_width(&replaced), Some(LengthSpec::Px(50.0)));
+    assert_eq!(item_height(&replaced), Some(LengthSpec::Px(30.0)));
+}
+
+#[test]
+fn replacing_a_sheet_with_empty_css_removes_its_rules_but_keeps_the_key() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    bridge.replace_stylesheet("app.css", "");
+    assert_eq!(item_width(&bridge), None);
+    assert!(
+        bridge.has_stylesheet_key("app.css"),
+        "the slot must survive so the next save can fill it again"
+    );
+
+    bridge.replace_stylesheet("app.css", ".item { width: 13px; }");
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(13.0)));
+}
+
+#[test]
+fn replacing_a_sheet_with_identical_css_is_a_no_op() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    let before = bridge.take_snapshot_changes();
+    bridge.replace_stylesheet("app.css", ".item { width: 12px; }");
+    let after = bridge.take_snapshot_changes();
+    assert!(
+        after.dirty.is_empty() && !after.structure_changed,
+        "an unchanged save must not recascade: {before:?} then {after:?}"
+    );
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(12.0)));
+}
+
+#[test]
+fn clearing_author_sheets_drops_every_rule_and_both_kinds_of_sheet() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet(".item { height: 5px; }");
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    assert_eq!(bridge.authored_stylesheet_count(), 2);
+
+    bridge.clear_authored_stylesheets();
+    assert_eq!(bridge.authored_stylesheet_count(), 0);
+    assert_eq!(item_width(&bridge), None);
+    assert_eq!(item_height(&bridge), None);
+}
+
+#[test]
+fn a_reload_cycle_leaves_the_cascade_the_size_it_started() {
+    // The leak this guards is invisible for the first few reloads and obvious
+    // after twenty: every full reload re-injects the app's sheets, so without
+    // the clear the cascade grows by one full copy per save.
+    let mut bridge = keyed_bridge_with_one_item();
+    for _ in 0..20 {
+        bridge.clear_authored_stylesheets();
+        bridge.inject_stylesheet(".item { height: 5px; }");
+        bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    }
+    assert_eq!(bridge.authored_stylesheet_count(), 2);
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(12.0)));
+    assert_eq!(item_height(&bridge), Some(LengthSpec::Px(5.0)));
+}
+
+#[test]
+fn an_unkeyed_inject_is_untouched_by_a_keyed_replace() {
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet(".item { height: 5px; }");
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    bridge.replace_stylesheet("app.css", ".item { width: 13px; }");
+    assert_eq!(item_height(&bridge), Some(LengthSpec::Px(5.0)));
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(13.0)));
+    assert_eq!(bridge.authored_stylesheet_count(), 2);
+}
+
+#[test]
+fn a_replace_does_not_create_or_destroy_a_widget() {
+    // This is the property the CSS fast path is sold on: the tree is untouched,
+    // so node ids, focus, scroll offsets and running animations all survive.
+    let mut bridge = keyed_bridge_with_one_item();
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".item { width: 12px; }");
+    bridge.take_snapshot_changes();
+
+    bridge.replace_stylesheet("app.css", ".item { width: 40px; }");
+
+    let changes = bridge.take_snapshot_changes();
+    assert!(
+        !changes.structure_changed,
+        "a stylesheet swap must not report a structural change"
+    );
+    assert!(bridge.get(1).is_some() && bridge.get(2).is_some());
+    assert_eq!(item_width(&bridge), Some(LengthSpec::Px(40.0)));
+}

@@ -355,7 +355,9 @@ pub struct NanaTreeDocument {
     html_root: NodeHandle,
     mount_root: NodeHandle,
     pending: PendingHostOps,
-    stylesheets: Vec<String>,
+    /// Raw author sources for diagnostics only, paired with the key a replace
+    /// targets. The cascade lives in `MessageBridge`; this is never a parser.
+    stylesheets: Vec<(Option<String>, String)>,
     theme: String,
     logical_width: f32,
     logical_height: f32,
@@ -1752,7 +1754,20 @@ impl NanaTreeDocument {
 
     pub fn inject_stylesheet(&mut self, css: &str) {
         // Retained for diagnostics; cascade onto LayoutStyle happens in MessageBridge.
-        self.stylesheets.push(css.to_string());
+        self.stylesheets.push((None, css.to_string()));
+    }
+
+    /// Record a keyed sheet, replacing any earlier sheet under the same key so
+    /// `stylesheet_count` tracks what is loaded rather than how many times it
+    /// has been reloaded.
+    pub fn inject_stylesheet_keyed(&mut self, key: Option<&str>, css: &str) {
+        crate::upsert_keyed(&mut self.stylesheets, key, css);
+    }
+
+    /// Drop every recorded sheet. Pairs with
+    /// `MessageBridge::clear_authored_stylesheets` on a full reload.
+    pub fn clear_stylesheets(&mut self) {
+        self.stylesheets.clear();
     }
 
     pub fn stylesheet_count(&self) -> usize {

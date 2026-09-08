@@ -287,6 +287,35 @@ impl WebApiState {
         }
     }
 
+    /// Drop everything the previous JS context asked the host to keep doing.
+    ///
+    /// Timers, animation frames, in-flight `fetch` and open WebSockets all
+    /// belong to code that is about to be replaced: their callbacks are gone,
+    /// so leaving them scheduled means a reloaded app pays for work nobody will
+    /// receive, and every reload adds another generation of it.
+    ///
+    /// What deliberately survives:
+    ///
+    /// - `localStorage`, because it survives a browser refresh too. A developer
+    ///   who wants a clean slate clears it explicitly.
+    /// - `location`, for the same reason: a refresh keeps the URL.
+    ///
+    /// What deliberately does not: `documentElement`'s dataset and inline
+    /// style. Those are the previous app's writes, and a version that no longer
+    /// sets an attribute must not inherit it. The host re-applies the theme
+    /// immediately after a reload, so `data-theme` comes straight back.
+    pub fn reset_pending(&mut self) {
+        self.pending_raf.clear();
+        self.raf_deadline = None;
+        self.host_frame_open = false;
+        self.timeouts.clear();
+        self.intervals.clear();
+        self.document_dataset.clear();
+        self.document_style.clear();
+        self.fetch.cancel_all();
+        self.socket.close_all();
+    }
+
     pub fn drain_fetch_completions(&mut self) -> Vec<HostValue> {
         self.fetch
             .drain_completions()

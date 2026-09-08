@@ -88,6 +88,8 @@ mod css_interactive_apply;
 mod css_map;
 mod css_paint;
 mod css_paint_transform;
+#[cfg(feature = "dev-reload")]
+pub mod dev;
 mod host;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
@@ -214,7 +216,7 @@ pub use css_map::{
     resolve_grid_track_sizes, resolve_paint_color,
 };
 #[cfg(feature = "hosted")]
-pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueRuntimeProgram};
+pub use hosted_adapter::{VueHostedProgram, VueHostedRuntime, VueMessage, VueRuntimeProgram};
 pub use input::{
     CompositionEventKind, CompositionInput, HostedInputResult, InputModifiers, KeyboardEventKind,
     KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
@@ -410,6 +412,28 @@ impl std::fmt::Debug for DiagnosticBindings {
 /// Vue L1/L2 host: facade document, semantic props, paint-box projection, web-api.
 ///
 /// Retained authority is the inner `UiWorld` / `UiScene`, not these adapters.
+/// Append `css` to a keyed sheet list, replacing any earlier entry under the
+/// same key.
+///
+/// Unkeyed sheets always append: without an identity there is nothing to
+/// replace. Shared by the document's diagnostics list and the runtime's
+/// replay list so the two cannot disagree about what is loaded.
+pub(crate) fn upsert_keyed(
+    sheets: &mut Vec<(Option<String>, String)>,
+    key: Option<&str>,
+    css: &str,
+) {
+    if let Some(key) = key
+        && let Some(slot) = sheets
+            .iter_mut()
+            .find(|(slot_key, _)| slot_key.as_deref() == Some(key))
+    {
+        slot.1 = css.to_owned();
+        return;
+    }
+    sheets.push((key.map(str::to_owned), css.to_owned()));
+}
+
 #[derive(Debug)]
 pub struct VueHost {
     input_projection: host::input_projection::State,
@@ -740,14 +764,47 @@ impl VueHost {
     /// (`stylesheet_count` host op). Cascade / `LayoutStyle` rebuild happens
     /// only in [`MessageBridge`] — never treat `NanaTreeDocument` as a second parser.
     pub fn inject_stylesheet(&self, css: &str) {
+        self.inject_stylesheet_keyed(None, css);
+    }
+
+    /// [`Self::inject_stylesheet`] under an identity a later
+    /// [`Self::replace_stylesheet`] can target — normally the sheet's `href`.
+    pub fn inject_stylesheet_keyed(&self, key: Option<&str>, css: &str) {
         self.document
             .lock()
             .expect("vue doc")
-            .inject_stylesheet(css);
+            .inject_stylesheet_keyed(key, css);
         self.bridge
             .lock()
             .expect("vue bridge")
-            .inject_stylesheet(css);
+            .inject_stylesheet_keyed(key, css);
+    }
+
+    /// Swap one keyed sheet's source in place and recascade.
+    ///
+    /// Creates and destroys no node, so node ids, focus, scroll offsets and
+    /// running animations survive. Appends when `key` is unknown.
+    pub fn replace_stylesheet(&self, key: &str, css: &str) {
+        // Bridge before document, matching the renderer host ops: the resolve
+        // below needs both, and one consistent order is what keeps them from
+        // deadlocking against each other.
+        let mut bridge = self.bridge.lock().expect("vue bridge");
+        bridge.replace_stylesheet(key, css);
+        let mut document = self.document.lock().expect("vue doc");
+        document.inject_stylesheet_keyed(Some(key), css);
+        // Unlike an inject, a replace has no host op behind it to flush the
+        // recascade. Resolve here or the new rules sit in the cascade until
+        // something unrelated happens to touch the document.
+        bridge.resolve_document_layout(&mut document);
+    }
+
+    /// Drop every author sheet from both the cascade and the diagnostics list.
+    pub fn clear_stylesheets(&self) {
+        self.document.lock().expect("vue doc").clear_stylesheets();
+        self.bridge
+            .lock()
+            .expect("vue bridge")
+            .clear_authored_stylesheets();
     }
 
     /// Directory used as the jail / relative base for `@import` and `@font-face` `url()`.

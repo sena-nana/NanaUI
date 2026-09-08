@@ -221,7 +221,9 @@ struct VueRuntimeState {
     video: crate::video::SharedVideoRuntime,
     media: nana_ui_web_api::SharedMediaRuntime,
     local_storage: nana_ui_web_api::SharedStorage,
-    stylesheets: Vec<String>,
+    /// Application sheets replayed into every window, keyed so a replace
+    /// updates the entry a late-created window will inherit.
+    stylesheets: Vec<(Option<String>, String)>,
     #[cfg(feature = "scene-view")]
     components: crate::NativeComponentRegistry,
     #[cfg(feature = "scene-view")]
@@ -293,8 +295,8 @@ impl VueRuntimeState {
             self.diagnostic_sink.clone(),
             self.host_call_observer.clone(),
         );
-        for stylesheet in &self.stylesheets {
-            host.inject_stylesheet(stylesheet);
+        for (key, stylesheet) in &self.stylesheets {
+            host.inject_stylesheet_keyed(key.as_deref(), stylesheet);
         }
         if let Some(epoch) = self.host_animation_epoch {
             host.set_host_animation_epoch(epoch);
@@ -688,19 +690,75 @@ impl VueRuntime {
 
     /// Registers application CSS for every current and future Vue window.
     pub fn inject_stylesheet(&self, css: &str) -> Result<(), JsEngineError> {
-        let mut state = self
+        self.inject_stylesheet_keyed(None, css)
+    }
+
+    /// [`Self::inject_stylesheet`] under a key a later
+    /// [`Self::replace_stylesheet`] can target.
+    pub fn inject_stylesheet_keyed(
+        &self,
+        key: Option<&str>,
+        css: &str,
+    ) -> Result<(), JsEngineError> {
+        self.with_each_host(|host| host.inject_stylesheet_keyed(key, css))?;
+        self.record_stylesheet(key, css)
+    }
+
+    /// Swap one keyed sheet across every current window, and update the entry a
+    /// window created later will inherit.
+    ///
+    /// Creates and destroys no node -- this is the zero-state-loss reload path.
+    pub fn replace_stylesheet(&self, key: &str, css: &str) -> Result<(), JsEngineError> {
+        self.with_each_host(|host| host.replace_stylesheet(key, css))?;
+        self.record_stylesheet(Some(key), css)
+    }
+
+    /// Run `f` against every live window host.
+    fn with_each_host(&self, f: impl Fn(&VueHost)) -> Result<(), JsEngineError> {
+        let state = self
             .state
             .lock()
             .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
         for entry in state.windows.values() {
-            entry
+            let host = entry
                 .host
                 .lock()
-                .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                .inject_stylesheet(css);
+                .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+            f(&host);
         }
-        state.stylesheets.push(css.to_owned());
         Ok(())
+    }
+
+    /// Remember a sheet for windows created later. Keyed sheets replace their
+    /// earlier entry so the replay list tracks what is loaded, not how many
+    /// times it has been reloaded.
+    fn record_stylesheet(&self, key: Option<&str>, css: &str) -> Result<(), JsEngineError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+        crate::upsert_keyed(&mut state.stylesheets, key, css);
+        Ok(())
+    }
+
+    /// Surface a failed dev reload on the diagnostics channel.
+    ///
+    /// The previous artifact is already back on screen by the time this runs,
+    /// so the developer sees a working app; without this they would also see no
+    /// reason their save did not take, which is the harder half of the problem.
+    #[cfg(feature = "dev-reload")]
+    pub fn report_dev_reload_failure(&self, error: &JsEngineError) {
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        if let Some(sink) = &state.diagnostic_sink {
+            sink(JsDiagnosticEvent {
+                source: "nana.dev".into(),
+                level: JsDiagnosticLevel::Error,
+                message: format!("reload failed, kept the previous build: {error}"),
+                stack: error.exception.as_ref().and_then(|e| e.stack.clone()),
+            });
+        }
     }
 
     /// Apply diagnostics to every existing window and inherit them for windows

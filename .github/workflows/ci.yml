@@ -67,6 +67,18 @@ jobs:
       # and that every compiled component still has a snapshot fixture.
       - name: Run Gallery snapshot-gate tests
         run: cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
+      # `nana-ui-dev` refuses to compile without `debug_assertions`, which
+      # `[profile.dist]` turns off. A product crate that grows a dependency on
+      # the dev watcher fails here instead of shipping one to users. `check`
+      # rather than `build`: it evaluates the same cfg without paying fat LTO.
+      - name: Check the dev hot-reload crate cannot reach a packaged build
+        shell: bash
+        run: |
+          cargo check --profile dist -p component-gallery --locked
+          if cargo check --profile dist -p nana-ui-dev --locked 2>/dev/null; then
+            echo "nana-ui-dev compiled under the dist profile; its release guard is gone" >&2
+            exit 1
+          fi
       - name: Check the Vue-free Agent tier pulls no JS engine
         shell: bash
         run: |

@@ -37,11 +37,20 @@ pub struct VueAgentSession<E: JsEngine> {
     /// still reports `ok`. Recording them is what lets `{"cmd":"diagnostics"}`
     /// explain the screenshot instead of leaving the caller to guess.
     diagnostics: DevtoolsSession,
+    /// Builds every isolate this session runs, including the first.
+    ///
+    /// A factory rather than an instance because `JsEngine` has no constructor
+    /// in its contract, so a session cannot otherwise build the replacement a
+    /// `{"cmd":"reload"}` needs -- and taking it up front makes "this session
+    /// cannot reload" an unrepresentable state instead of a runtime error.
+    engine_factory: std::sync::Arc<dyn Fn() -> E + Send + Sync>,
+    /// The last artifact that evaluated cleanly, put back when a reload fails.
+    last_good: RuntimeArtifact,
 }
 
 impl<E: JsEngine> VueAgentSession<E> {
     pub fn new(
-        engine: E,
+        engine: impl Fn() -> E + Send + Sync + 'static,
         artifact: RuntimeArtifact,
         width: u32,
         height: u32,
@@ -54,7 +63,7 @@ impl<E: JsEngine> VueAgentSession<E> {
     /// A 1x-only Vue session cannot reproduce any HiDPI rounding defect, which
     /// is the class of bug most likely to need a screenshot in the first place.
     pub fn new_scaled(
-        mut engine: E,
+        engine: impl Fn() -> E + Send + Sync + 'static,
         artifact: RuntimeArtifact,
         width: u32,
         height: u32,
@@ -65,12 +74,18 @@ impl<E: JsEngine> VueAgentSession<E> {
                 "snapshot scale must be finite and positive".into(),
             ));
         }
+        let engine_factory: std::sync::Arc<dyn Fn() -> E + Send + Sync> =
+            std::sync::Arc::new(engine);
+        let mut engine = engine_factory();
         let diagnostics = DevtoolsSession::default();
         let mut host = VueHost::with_viewport(width, height, scale_factor);
         // `JsEngine` exposes no diagnostics hook, so this captures Vue
         // warnings/errors and resource lifecycle. An engine-level exception
         // surfaces as the failing command's own error instead.
         host.set_diagnostics(Some(diagnostics.js_sink()), None);
+        // Kept so a failed reload can put the working build back rather than
+        // leaving the developer with a blank window.
+        let last_good = artifact.clone();
         host.initialize_with_web_api(&mut engine, artifact)?;
         host.bind_event_bridge(&mut engine)?;
         let mut session = Self {
@@ -83,9 +98,59 @@ impl<E: JsEngine> VueAgentSession<E> {
             clear: None,
             host_textures: HostTextureRegistry::new(),
             diagnostics,
+            engine_factory,
+            last_good,
         };
         session.pump()?;
         Ok(session)
+    }
+
+    /// Read a UTF-8 artifact or stylesheet from disk for a reload.
+    ///
+    /// An empty file is refused rather than loaded: it is nearly always a save
+    /// caught between truncate and write, and evaluating it would replace a
+    /// working app with a blank one for no reason the developer can see.
+    fn read_reload_source(path: &Path) -> Result<String, AgentError> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|error| AgentError(format!("cannot read {}: {error}", path.display())))?;
+        if source.trim().is_empty() {
+            return Err(AgentError(format!(
+                "{} is empty; refusing to reload a half-written file",
+                path.display()
+            )));
+        }
+        Ok(source)
+    }
+
+    /// Tear the host down and swap in a brand-new isolate.
+    ///
+    /// The old engine is shut down *before* the new one is built. V8 enters an
+    /// isolate on creation and exits it on drop, strictly LIFO, so constructing
+    /// the replacement while the previous isolate is still live aborts the
+    /// process on the first reload.
+    ///
+    /// Returns whatever the outgoing artifact published for its successor.
+    fn swap_engine(&mut self) -> Result<Option<String>, AgentError> {
+        let state = nana_ui_vue::dev::save_state(&mut self.engine);
+        self.host.dev_teardown().map_err(AgentError::from)?;
+        self.engine.shutdown();
+        self.engine = (self.engine_factory)();
+        self.host
+            .set_diagnostics(Some(self.diagnostics.js_sink()), None);
+        Ok(state)
+    }
+
+    /// Evaluate `artifact` on the current (already torn-down) host and isolate.
+    fn evaluate(
+        &mut self,
+        artifact: RuntimeArtifact,
+        state: Option<&str>,
+    ) -> Result<(), AgentError> {
+        nana_ui_vue::dev::publish_restore_state(&mut self.engine, state)?;
+        self.host
+            .initialize_with_web_api(&mut self.engine, artifact)?;
+        self.host.bind_event_bridge(&mut self.engine)?;
+        Ok(())
     }
 
     /// Host textures sampled by `nana.host-texture` nodes during a screenshot.
@@ -262,6 +327,41 @@ impl<E: JsEngine> AgentSession for VueAgentSession<E> {
 
     fn flush(&mut self) -> Result<(), AgentError> {
         self.pump()
+    }
+
+    /// Re-evaluate the artifact in a fresh isolate and rebuild the tree.
+    ///
+    /// The document scaffold, the `UiWorld` and every offscreen GPU resource
+    /// survive: node ids keep rising rather than restarting, which is what keeps
+    /// the accessibility projection's monotonic generation honest.
+    ///
+    /// A failed evaluation puts the last good artifact back. The developer sees
+    /// the app they had plus the error, rather than a blank frame.
+    fn reload_artifact(&mut self, path: &Path) -> Result<(), AgentError> {
+        let source = Self::read_reload_source(path)?;
+        let artifact = RuntimeArtifact::from_source(path.to_string_lossy().as_ref(), source);
+        let state = self.swap_engine()?;
+        match self.evaluate(artifact.clone(), state.as_deref()) {
+            Ok(()) => {
+                self.last_good = artifact;
+                Ok(())
+            }
+            Err(error) => {
+                // The isolate the failed evaluation ran in is still fresh and
+                // the host is still torn down, so the previous build goes back
+                // in place without building a second one.
+                let previous = self.last_good.clone();
+                let _ = self.evaluate(previous, state.as_deref());
+                Err(error)
+            }
+        }
+    }
+
+    /// Swap one keyed stylesheet. No node is created or destroyed.
+    fn reload_stylesheet(&mut self, key: &str, path: &Path) -> Result<(), AgentError> {
+        let css = Self::read_reload_source(path)?;
+        self.host.replace_stylesheet(key, &css);
+        Ok(())
     }
 
     fn accessibility_nodes(&self) -> Vec<AccessibilityDumpNode> {
@@ -547,6 +647,359 @@ mod tests {
     use crate::agent::AgentCommand;
     use nana_js_v8::V8Engine;
 
+    // --- Reload -------------------------------------------------------------
+    //
+    // The reload path is the one place where the host tears its own tree down
+    // and rebuilds it under a live document. Everything asserted here is a
+    // property a windowed session depends on but cannot check cheaply: that the
+    // scaffold survives, that nothing accumulates across saves, and that node
+    // identity keeps moving forward so the accessibility projection stays valid.
+
+    /// An app that renders one labelled button, so a reload is visible as a
+    /// label change rather than as a count.
+    fn labelled_app(label: &str) -> String {
+        format!(
+            r#"
+(function () {{
+  const host = globalThis.__nanaHost;
+  const root = host.call("mountRoot", []);
+  const col = host.call("createWidget", ["column", {{ style: "width:100%;height:100%" }}]);
+  const btn = host.call("createWidget", ["button", {{ label: "{label}", "data-agent-id": "only" }}]);
+  host.call("insert", [col, root, null]);
+  host.call("insert", [btn, col, null]);
+  globalThis.__nanaFireEvent = function () {{ return true; }};
+  return {{ ok: true }};
+}})();
+"#
+        )
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join("nana-ui-devtools-reload")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn write(path: &std::path::Path, contents: &str) {
+        std::fs::write(path, contents).expect("write scratch file");
+    }
+
+    fn reload_session(source: &str) -> VueAgentSession<V8Engine> {
+        VueAgentSession::new(
+            V8Engine::new,
+            RuntimeArtifact::from_source("reload-fixture.js", source),
+            480,
+            320,
+        )
+        .expect("session")
+    }
+
+    fn widget_ids(session: &VueAgentSession<V8Engine>) -> Vec<u64> {
+        let mut ids: Vec<u64> = session.semantic_dump().into_iter().map(|w| w.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn only_label(session: &VueAgentSession<V8Engine>) -> String {
+        session
+            .semantic_dump()
+            .into_iter()
+            .find(|widget| widget.agent_id == "only")
+            .map(|widget| widget.label)
+            .unwrap_or_default()
+    }
+
+    fn world_generation(session: &VueAgentSession<V8Engine>) -> u64 {
+        session
+            .host()
+            .document()
+            .lock()
+            .expect("document")
+            .world()
+            .generation()
+    }
+
+    #[test]
+    fn a_reload_swaps_the_tree_and_keeps_the_document_scaffold() {
+        let dir = scratch_dir("swap");
+        let app = dir.join("app.js");
+        write(&app, &labelled_app("Before"));
+        let mut session = reload_session(&labelled_app("Before"));
+        session.flush().expect("flush");
+
+        let (html, body) = {
+            let document = session.host().document();
+            let guard = document.lock().expect("document");
+            (guard.html_root(), guard.mount_root())
+        };
+        // The scaffold survives by design and keeps its ids, so it is excluded
+        // from the identity comparison below; everything else is app-created.
+        let scaffold = [html.0, body.0];
+        let app_ids = |session: &VueAgentSession<V8Engine>| -> Vec<u64> {
+            widget_ids(session)
+                .into_iter()
+                .filter(|id| !scaffold.contains(id))
+                .collect()
+        };
+        let before_ids = app_ids(&session);
+        assert!(!before_ids.is_empty(), "the fixture must create widgets");
+        assert_eq!(only_label(&session), "Before");
+
+        write(&app, &labelled_app("After"));
+        session.reload_artifact(&app).expect("reload");
+        session.flush().expect("flush");
+
+        assert_eq!(only_label(&session), "After");
+        assert_eq!(
+            session
+                .semantic_dump()
+                .iter()
+                .filter(|w| w.agent_id == "only")
+                .count(),
+            1,
+            "the old tree must be gone, not layered under the new one"
+        );
+
+        let document = session.host().document();
+        let guard = document.lock().expect("document");
+        assert_eq!(guard.html_root(), html, "the html scaffold must survive");
+        assert_eq!(guard.mount_root(), body, "the body scaffold must survive");
+        drop(guard);
+
+        // Node ids are retired permanently, never recycled. Anything the host
+        // caches by node id therefore cannot alias a reloaded node -- which is
+        // exactly why the tree is rebuilt in place instead of swapping in a
+        // fresh `UiWorld`.
+        let after_ids = app_ids(&session);
+        let highest_before = before_ids.iter().copied().max().expect("ids before");
+        assert!(
+            after_ids.iter().all(|id| *id > highest_before),
+            "reloaded ids {after_ids:?} must all exceed {highest_before}"
+        );
+    }
+
+    #[test]
+    fn repeated_reloads_do_not_accumulate_widgets_or_stylesheets() {
+        // A missed reset is invisible for the first few saves and unmistakable
+        // after twenty. Five is enough to catch any per-reload growth.
+        let dir = scratch_dir("accumulate");
+        let app = dir.join("app.js");
+        let with_sheet = |label: &str| {
+            format!(
+                r#"
+(function () {{
+  const host = globalThis.__nanaHost;
+  host.call("injectStylesheet", [".only {{ width: 40px; }}", "app.css"]);
+  const root = host.call("mountRoot", []);
+  const btn = host.call("createWidget", ["button", {{ label: "{label}", class: "only", "data-agent-id": "only" }}]);
+  host.call("insert", [btn, root, null]);
+  globalThis.__nanaFireEvent = function () {{ return true; }};
+  return {{ ok: true }};
+}})();
+"#
+            )
+        };
+        let mut session = reload_session(&with_sheet("0"));
+        session.flush().expect("flush");
+        let baseline_widgets = session.semantic_dump().len();
+        let baseline_sheets = session
+            .host()
+            .document()
+            .lock()
+            .expect("document")
+            .stylesheet_count();
+
+        for round in 1..=5 {
+            write(&app, &with_sheet(&round.to_string()));
+            session.reload_artifact(&app).expect("reload");
+            session.flush().expect("flush");
+            assert_eq!(
+                session.semantic_dump().len(),
+                baseline_widgets,
+                "widget count grew on reload {round}"
+            );
+            assert_eq!(
+                session
+                    .host()
+                    .document()
+                    .lock()
+                    .expect("document")
+                    .stylesheet_count(),
+                baseline_sheets,
+                "stylesheet count grew on reload {round}"
+            );
+        }
+        assert_eq!(only_label(&session), "5");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_world_generation_moving_forward() {
+        // `AccessibilityProjector` rejects any update whose generation does not
+        // exceed the last one it applied, and it is built once per window and
+        // never rebuilt. A reload that reset the generation would leave screen
+        // readers announcing the pre-reload tree for the life of the process.
+        let dir = scratch_dir("generation");
+        let app = dir.join("app.js");
+        let mut session = reload_session(&labelled_app("Before"));
+        session.flush().expect("flush");
+        let before = world_generation(&session);
+
+        write(&app, &labelled_app("After"));
+        session.reload_artifact(&app).expect("reload");
+        session.flush().expect("flush");
+
+        assert!(
+            world_generation(&session) > before,
+            "generation must rise across a reload, went {before} -> {}",
+            world_generation(&session)
+        );
+    }
+
+    #[test]
+    fn a_reload_drops_focus_held_by_the_tree_it_replaced() {
+        let dir = scratch_dir("focus");
+        let app = dir.join("app.js");
+        let field = r#"
+(function () {
+  const host = globalThis.__nanaHost;
+  const root = host.call("mountRoot", []);
+  const input = host.call("createWidget", ["input", { value: "typed", "data-agent-id": "field" }]);
+  host.call("insert", [input, root, null]);
+  globalThis.__nanaFireEvent = function () { return true; };
+  return { ok: true };
+})();
+"#;
+        let mut session = reload_session(field);
+        session.flush().expect("flush");
+        let node = session
+            .accessibility_dump()
+            .into_iter()
+            .find(|n| n.agent_id.as_deref() == Some("field"))
+            .expect("field projects")
+            .id;
+        session.activate(node).expect("activate");
+        session.flush().expect("flush");
+
+        write(&app, &labelled_app("After"));
+        session.reload_artifact(&app).expect("reload");
+        session.flush().expect("flush");
+
+        let document = session.host().document();
+        let focused = document.lock().expect("document").focused();
+        assert!(
+            focused.is_none(),
+            "focus survived on a node that no longer exists: {focused:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_reload_puts_the_previous_build_back() {
+        // A blank window plus a syntax error that points at nothing the
+        // developer wrote is the worst outcome a dev loop can produce, and the
+        // easiest one to ship by accident.
+        let dir = scratch_dir("broken");
+        let app = dir.join("app.js");
+        let mut session = reload_session(&labelled_app("Working"));
+        session.flush().expect("flush");
+
+        write(&app, "this is not ( valid javascript");
+        let error = session.reload_artifact(&app).expect_err("broken source");
+        session.flush().expect("flush");
+
+        assert_eq!(
+            only_label(&session),
+            "Working",
+            "the working build must still be on screen after a failed reload"
+        );
+        assert!(!error.0.is_empty(), "the failure must be reported");
+    }
+
+    #[test]
+    fn an_empty_file_is_refused_rather_than_evaluated() {
+        let dir = scratch_dir("truncated");
+        let app = dir.join("app.js");
+        let mut session = reload_session(&labelled_app("Working"));
+        session.flush().expect("flush");
+
+        write(&app, "");
+        let error = session.reload_artifact(&app).expect_err("empty file");
+        assert!(
+            error.0.contains("empty"),
+            "a truncated save must say so, got {error:?}"
+        );
+        assert_eq!(only_label(&session), "Working");
+    }
+
+    #[test]
+    fn a_stylesheet_reload_restyles_without_touching_the_tree() {
+        let dir = scratch_dir("css");
+        let sheet = dir.join("app.css");
+        let styled = r#"
+(function () {
+  const host = globalThis.__nanaHost;
+  host.call("injectStylesheet", [".only { width: 40px; }", "app.css"]);
+  const root = host.call("mountRoot", []);
+  const btn = host.call("createWidget", ["button", { label: "Styled", class: "only", "data-agent-id": "only" }]);
+  host.call("insert", [btn, root, null]);
+  globalThis.__nanaFireEvent = function () { return true; };
+  return { ok: true };
+})();
+"#;
+        let mut session = reload_session(styled);
+        session.flush().expect("flush");
+        let before_ids = widget_ids(&session);
+        let generation = world_generation(&session);
+
+        write(&sheet, ".only { width: 90px; }");
+        session
+            .reload_stylesheet("app.css", &sheet)
+            .expect("stylesheet reload");
+        session.flush().expect("flush");
+
+        assert_eq!(
+            widget_ids(&session),
+            before_ids,
+            "a stylesheet swap must not create or destroy a node"
+        );
+        assert_eq!(only_label(&session), "Styled");
+        assert!(
+            world_generation(&session) >= generation,
+            "the generation must not go backwards"
+        );
+        assert_eq!(
+            session
+                .host()
+                .document()
+                .lock()
+                .expect("document")
+                .stylesheet_count(),
+            1,
+            "a keyed swap must replace the sheet, not stack another copy"
+        );
+    }
+
+    #[test]
+    fn the_reload_command_reports_what_it_cannot_do() {
+        let mut session = reload_session(&labelled_app("Working"));
+        let reply = session.dispatch(AgentCommand::Reload {
+            js: None,
+            css: None,
+            css_key: None,
+        });
+        assert!(!reply.ok, "an empty reload must be refused: {reply:?}");
+
+        let missing = session.dispatch(AgentCommand::Reload {
+            js: Some("/definitely/not/here.js".into()),
+            css: None,
+            css_key: None,
+        });
+        assert!(!missing.ok, "a missing artifact must be refused");
+        assert_eq!(only_label(&session), "Working");
+    }
+
     fn count_label(session: &VueAgentSession<V8Engine>) -> String {
         session
             .semantic_dump()
@@ -571,7 +1024,7 @@ mod tests {
     #[test]
     fn a_widget_keeps_its_projected_geometry_across_a_bare_pump() {
         let mut session =
-            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+            VueAgentSession::new(V8Engine::new, semantic_counter_artifact(), 480, 320)
                 .expect("session");
         let button = session
             .accessibility_dump()
@@ -606,7 +1059,7 @@ mod tests {
     #[test]
     fn mounted_widgets_announce_each_label_once() {
         let mut session =
-            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+            VueAgentSession::new(V8Engine::new, semantic_counter_artifact(), 480, 320)
                 .expect("session");
         session.click_agent_id("increment").expect("click");
 
@@ -632,7 +1085,7 @@ mod tests {
     #[test]
     fn repeated_clicks_advance_the_counter_in_both_projections() {
         let mut session =
-            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+            VueAgentSession::new(V8Engine::new, semantic_counter_artifact(), 480, 320)
                 .expect("session");
         assert_eq!(count_label(&session), "count = 0");
         assert_eq!(count_a11y_label(&session), "count = 0");
@@ -656,7 +1109,7 @@ mod tests {
     #[test]
     fn vue_session_click_updates_semantic_and_a11y() {
         let mut session =
-            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 480, 320)
+            VueAgentSession::new(V8Engine::new, semantic_counter_artifact(), 480, 320)
                 .expect("session");
         assert_eq!(count_label(&session), "count = 0");
         let increment = session
@@ -692,7 +1145,7 @@ mod tests {
             return;
         }
         let mut session =
-            VueAgentSession::new(V8Engine::new(), semantic_counter_artifact(), 240, 160)
+            VueAgentSession::new(V8Engine::new, semantic_counter_artifact(), 240, 160)
                 .expect("session");
         session.click_agent_id("increment").expect("click");
         let (size, pixels) = session.screenshot_rgba().expect("screenshot");

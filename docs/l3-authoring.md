@@ -2,7 +2,7 @@
 
 Rust 产品入口是 [`AppContext::build`](../crates/nana-ui-runtime/src/framework/build.rs)：嵌套描述一棵子树，一次 commit 进保留 `UiWorld`，事件写在 child 旁边。底层仍是 `create_component` / `append_child` / `on`；不要把 `build` 当成每帧 `Render`。
 
-对照与取舍见文末。第一扇窗口见 [开始](start.md)。
+对照与取舍见文末。第一扇窗口见 [开始](start.md)。开发期改完代码怎么最快看到界面，以及为什么 Rust 层做不到进程内热替换，见 [热重载](hot-reload.md)。
 
 ## 写法
 

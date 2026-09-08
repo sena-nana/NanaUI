@@ -45,6 +45,9 @@ runtime-agent = [
 agent = [
     "runtime-agent",
     "dep:nana-ui-vue",
+    # The Agent tier is a development surface by definition, so it always gets
+    # the reload path. A product build reaches neither.
+    "nana-ui-vue/dev-reload",
     "nana-ui-vue/scene-view",
     "nana-ui-vue/components",
     "nana-ui/components",

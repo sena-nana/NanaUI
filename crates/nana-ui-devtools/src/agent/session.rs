@@ -63,6 +63,23 @@ pub trait AgentSession {
         None
     }
 
+    /// Re-evaluate the application from `js` and rebuild the tree, keeping the
+    /// window and GPU context. Only a tier with a JS engine can do this; the
+    /// Vue-free Runtime tier has no artifact to re-evaluate, because its
+    /// application is Rust code that a running process cannot replace.
+    fn reload_artifact(&mut self, _path: &Path) -> Result<(), AgentError> {
+        Err(AgentError(
+            "this session cannot reload an artifact: its application is compiled in".into(),
+        ))
+    }
+
+    /// Replace one keyed stylesheet. Creates and destroys no node.
+    fn reload_stylesheet(&mut self, _key: &str, _path: &Path) -> Result<(), AgentError> {
+        Err(AgentError(
+            "this session has no author stylesheets to replace".into(),
+        ))
+    }
+
     /// Recorded JS exceptions, Vue errors, render errors and device loss.
     /// Empty for a session that records none.
     fn diagnostics(&self) -> Vec<DiagnosticDump> {
@@ -365,6 +382,42 @@ pub trait AgentSession {
                 self.set_clear(color);
                 AgentReply::ok().with_info(self.describe())
             }
+            AgentCommand::Reload { js, css, css_key } => {
+                self.dispatch_reload(js.as_deref(), css.as_deref(), css_key.as_deref())
+            }
+        }
+    }
+
+    /// Apply a reload, then flush so the reply describes the tree that resulted
+    /// rather than the one that was there when the command arrived.
+    ///
+    /// The stylesheet goes first: it is the cheap path, and when a command
+    /// carries both, applying CSS before the artifact means the artifact's own
+    /// mount-time injection has the last word, matching what a real save does.
+    #[doc(hidden)]
+    fn dispatch_reload(
+        &mut self,
+        js: Option<&str>,
+        css: Option<&str>,
+        css_key: Option<&str>,
+    ) -> AgentReply {
+        if js.is_none() && css.is_none() {
+            return AgentReply::err("reload needs js, css, or both");
+        }
+        if let Some(css) = css {
+            let key = css_key.unwrap_or(css);
+            if let Err(error) = self.reload_stylesheet(key, Path::new(css)) {
+                return AgentReply::err(error.0);
+            }
+        }
+        if let Some(js) = js
+            && let Err(error) = self.reload_artifact(Path::new(js))
+        {
+            return AgentReply::err(error.0);
+        }
+        match self.flush() {
+            Ok(()) => AgentReply::ok().with_info(self.describe()),
+            Err(error) => AgentReply::err(error.0),
         }
     }
 

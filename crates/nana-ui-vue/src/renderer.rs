@@ -845,10 +845,30 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         api.register("injectStylesheet", move |args| {
             let css = arg_str(args, 0).unwrap_or_default();
             let href = arg_str(args, 1);
-            lock_doc(&host.document)?.inject_stylesheet(&css);
+            lock_doc(&host.document)?.inject_stylesheet_keyed(href.as_deref(), &css);
             let mut bridge = lock_bridge(&host.bridge)?;
             apply_inject_stylesheet_href(&mut bridge, href.as_deref());
-            bridge.inject_stylesheet(&css);
+            // An `href` doubles as the sheet's identity: re-injecting the same
+            // one replaces it instead of stacking a copy, and a dev-time
+            // `replaceStylesheet` has something to target.
+            bridge.inject_stylesheet_keyed(href.as_deref(), &css);
+            let mut doc = lock_doc(&host.document)?;
+            bridge.resolve_document_layout(&mut doc);
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let host = host.clone();
+        api.register("replaceStylesheet", move |args| {
+            let Some(key) = arg_str(args, 0) else {
+                return Err(JsException::new(
+                    "replaceStylesheet(key, css) requires a stylesheet key",
+                ));
+            };
+            let css = arg_str(args, 1).unwrap_or_default();
+            lock_doc(&host.document)?.inject_stylesheet_keyed(Some(&key), &css);
+            let mut bridge = lock_bridge(&host.bridge)?;
+            bridge.replace_stylesheet(&key, &css);
             let mut doc = lock_doc(&host.document)?;
             bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Null)

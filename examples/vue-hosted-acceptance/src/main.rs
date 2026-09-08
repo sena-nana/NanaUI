@@ -22,8 +22,8 @@ use nana_ui_platform::{ImeEvent, InputEvent, PointerType, WindowEvent, WindowId}
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 use nana_ui_vue::{
-    BridgeEvent, NativeComponentCommand, NativeComponentDescriptor, NativeComponentFactory,
-    NativePropSchema, NativePropType, VueHostedRuntime, VueRuntimeProgram, WidgetId,
+    NativeComponentCommand, NativeComponentDescriptor, NativeComponentFactory, NativePropSchema,
+    NativePropType, VueHostedRuntime, VueMessage, VueRuntimeProgram, WidgetId,
 };
 
 #[derive(Clone)]
@@ -153,7 +153,7 @@ fn build_runtime(
 }
 
 impl RuntimeProgram for AcceptanceProgram {
-    type Message = BridgeEvent;
+    type Message = VueMessage;
     type Error = nana_js_engine::JsEngineError;
 
     fn initialize(
@@ -453,7 +453,7 @@ mod tests {
                 runtime
                     .dispatch_bridge_event(
                         WindowId::PRIMARY,
-                        BridgeEvent::Native {
+                        nana_ui_vue::BridgeEvent::Native {
                             id: first_id,
                             name: "activated".into(),
                             payload: HostValue::Object(BTreeMap::from([(

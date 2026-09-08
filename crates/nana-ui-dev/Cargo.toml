@@ -1,0 +1,37 @@
+[package]
+name = "nana-ui-dev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Development-only hot reload support for NanaUI applications"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "nana_ui_dev"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Glue for the Vue tiers: reads the artifact off the watcher thread and hands it
+# to a running `VueRuntimeProgram`. Off by default so an L3-only project does not
+# build the Vue renderer to get a file watcher.
+vue = ["dep:nana-ui-vue"]
+
+[dependencies]
+nana-js-engine.workspace = true
+nana-ui-core.workspace = true
+# `RuntimeProgramContext` lives behind `hosted`; the dev entry points need it.
+nana-ui = { workspace = true, features = ["hosted"] }
+# Default features are exactly `macos_fsevent`. Do NOT pass
+# `default-features = false`: that drops FSEvents and silently degrades
+# `RecommendedWatcher` to a polling watcher on the primary dev platform.
+notify = "8.2"
+serde.workspace = true
+serde_json.workspace = true
+nana-ui-vue = { workspace = true, optional = true, features = ["dev-reload", "hosted"] }
+
+[dev-dependencies]
+nana-ui-platform.workspace = true
+nana-ui-runtime.workspace = true
+nana-ui-scene.workspace = true

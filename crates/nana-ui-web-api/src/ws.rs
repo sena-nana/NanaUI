@@ -14,6 +14,9 @@ pub(crate) const SOCKET_WAKE_INTERVAL: std::time::Duration = std::time::Duration
 /// Close code synthesized when a host transport rejects a close request and
 /// can therefore never deliver its own `Closed` event.
 const ABNORMAL_CLOSE_CODE: u16 = 1006;
+/// RFC 6455 "going away" — the endpoint is disappearing, which is exactly what
+/// happens to every socket when the JS context is replaced.
+const GOING_AWAY_CLOSE_CODE: u16 = 1001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SocketState {
@@ -175,6 +178,22 @@ impl SocketRuntime {
             });
         }
         Ok(())
+    }
+
+    /// Close every connection at the transport and forget the local state.
+    ///
+    /// Queued events are dropped rather than delivered: the listeners that
+    /// would have received them belong to the JS being replaced. Without the
+    /// transport close the sockets would stay open for the life of the process.
+    pub fn close_all(&mut self) {
+        let ids: Vec<u64> = self.connections.keys().copied().collect();
+        if let Some(host) = self.host.clone() {
+            for id in ids {
+                let _ = host.close(id, GOING_AWAY_CLOSE_CODE, "runtime reload");
+            }
+        }
+        self.connections.clear();
+        while self.events.try_recv().is_ok() {}
     }
 
     pub fn drain_events(&mut self) -> Vec<SocketEvent> {

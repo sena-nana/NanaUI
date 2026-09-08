@@ -36,7 +36,7 @@ fn main() -> ExitCode {
         }
     };
     let mut session = match VueAgentSession::new_scaled(
-        V8Engine::new(),
+        V8Engine::new,
         artifact,
         args.width,
         args.height,
@@ -57,6 +57,9 @@ fn usage() {
          Usage: nana-agent-session [--js <app.js>] [options]\n\n\
          Vue options:\n\
          \x20 --js <file>           artifact to load (default: built-in counter)\n\n\
+         Reload (stdio):\n\
+         \x20 {{\"cmd\":\"reload\",\"js\":\"app.js\"}}       re-evaluate and rebuild the tree\n\
+         \x20 {{\"cmd\":\"reload\",\"css\":\"app.css\"}}    swap one stylesheet, keep the tree\n\n\
          Common options:\n{COMMON_USAGE}"
     );
 }

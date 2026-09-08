@@ -2416,3 +2416,80 @@ fn media_play_pause_current_time_host_ops() {
         Some(0.4)
     );
 }
+
+// --- Keyed stylesheets at the host boundary ---------------------------------
+
+fn install_styled_button(host: &mut VueHost) -> NodeHandle {
+    let mut doc = host.document.lock().expect("vue doc");
+    let root = doc.mount_root();
+    let button = doc.create_element("button");
+    doc.insert(button, root, None);
+    drop(doc);
+    host.bridge.lock().expect("vue bridge").register(
+        button.0,
+        WidgetKind::Button,
+        WidgetProps {
+            class_names: vec!["item".into()],
+            ..Default::default()
+        },
+    );
+    button
+}
+
+fn button_width(host: &VueHost, button: NodeHandle) -> Option<nana_ui_core::LengthSpec> {
+    host.bridge
+        .lock()
+        .expect("vue bridge")
+        .get(button.0)
+        .expect("button widget")
+        .props
+        .layout
+        .width
+}
+
+#[test]
+fn host_replace_stylesheet_reaches_the_runtime_document_without_another_host_call() {
+    // A replace has no host op behind it to flush the recascade, so `VueHost`
+    // resolves the document itself. Without that the new rules would sit in the
+    // cascade until something unrelated happened to touch the tree — which, in
+    // a hot-reload session, may be never.
+    use nana_ui_runtime::StableNodeId;
+
+    let mut host = VueHost::new();
+    let button = install_styled_button(&mut host);
+    host.inject_stylesheet_keyed(Some("app.css"), ".item { width: 10px; }");
+
+    host.replace_stylesheet("app.css", ".item { width: 44px; }");
+
+    let mut doc = host.document.lock().expect("vue doc");
+    doc.flush_host_frame();
+    let style = doc
+        .world()
+        .node_style(StableNodeId::new(button.0).expect("stable id"))
+        .expect("button runtime style");
+    assert_eq!(
+        style.layout.width,
+        Some(nana_ui_core::LengthSpec::Px(44.0)),
+        "the replaced rule must have reached the runtime tree"
+    );
+}
+
+#[test]
+fn host_clear_stylesheets_empties_both_the_cascade_and_the_diagnostics_list() {
+    let mut host = VueHost::new();
+    let button = install_styled_button(&mut host);
+    host.inject_stylesheet(".item { height: 4px; }");
+    host.inject_stylesheet_keyed(Some("app.css"), ".item { width: 10px; }");
+
+    host.clear_stylesheets();
+
+    assert_eq!(button_width(&host, button), None);
+    assert_eq!(
+        host.bridge
+            .lock()
+            .expect("vue bridge")
+            .authored_stylesheet_count(),
+        0
+    );
+    assert_eq!(host.document.lock().expect("vue doc").stylesheet_count(), 0);
+}

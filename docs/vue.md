@@ -6,7 +6,7 @@ Vue 用来把已经按网页习惯写好的界面落到**同一棵**原生树上
 
 ## 应用怎么接
 
-JavaScript 入口是 `@nanaui/nanavue-runtime` 的 `createApp()`。你自己的 Vite 工程把 SFC、TypeScript 和 CSS 打成 Nana 能加载的脚本（通常是 IIFE）。NanaUI 不扫描 `dist`，也不提供另一套打包器。
+JavaScript 入口是 `@nanaui/nanavue-runtime` 的 `createApp()`。你自己的 Vite 工程把 SFC、TypeScript 和 CSS 打成 Nana 能加载的脚本（通常是 IIFE）。NanaUI 不扫描 `dist`，也不提供另一套打包器。开发期不想每改一次就重启，见 [开发期热重载](hot-reload.md)。
 
 ```js
 import { createApp } from "@nanaui/nanavue-runtime";

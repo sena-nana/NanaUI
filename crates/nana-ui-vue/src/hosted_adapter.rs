@@ -95,6 +95,90 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         self.vue.inject_stylesheet(css)
     }
 
+    /// Replace the artifact and rebuild the tree, keeping the window alive.
+    ///
+    /// Takes an engine **factory**, not an engine. V8 enters an isolate when it
+    /// is created and exits it when it is dropped, and requires strict LIFO
+    /// ordering, so building the replacement before releasing the old one
+    /// aborts the process on the first reload. The old engine is shut down
+    /// first and the new one is built only afterwards; a caller that hands over
+    /// an already-constructed engine cannot express that order.
+    ///
+    /// `crate::dev` explains why the isolate is replaced at all rather than
+    /// re-evaluating into the surviving one.
+    ///
+    /// Deliberately absent: any call to [`Self::bind_host_gpu`]. The GPU is
+    /// bound on `VueHost`, not on the engine, so the `Device`, `Queue`,
+    /// `Surface` and every host texture survive untouched. That is the whole
+    /// difference between this and restarting the process.
+    ///
+    /// On an evaluation failure the previous artifact is re-evaluated so the
+    /// developer is left with the app they had rather than a blank window, and
+    /// the original error is returned.
+    #[cfg(feature = "dev-reload")]
+    pub fn dev_reload(
+        &mut self,
+        artifact: &RuntimeArtifact,
+        make_engine: &(dyn Fn() -> E + Send + Sync),
+        previous: Option<&RuntimeArtifact>,
+        geometry: Option<&nana_ui_platform::WindowGeometry>,
+        theme: ThemeMode,
+    ) -> Result<Vec<nana_ui_platform::WindowCommand>, JsEngineError> {
+        let state = crate::dev::save_state(&mut self.engine);
+
+        // One isolate is shared by every window, so auxiliary windows cannot
+        // outlive the reload. The reloaded artifact opens them again.
+        let window_commands = self.vue.dev_close_auxiliary_windows();
+
+        self.vue.dev_teardown()?;
+
+        // Throw the JS heap away *before* building the replacement: V8 enters
+        // an isolate on creation and exits it on drop, strictly LIFO, so the
+        // other order aborts the process. `shutdown` releases the isolate in
+        // place, leaving the shell replaced below owning nothing.
+        self.engine.shutdown();
+        self.engine = make_engine();
+
+        // Re-registers the complete host API -- including the GPU-bound ops,
+        // because the registry is rebuilt from current host state -- evaluates
+        // the artifact, and rebinds the event bridge for every live window.
+        crate::dev::publish_restore_state(&mut self.engine, state.as_deref())?;
+        if let Err(error) =
+            self.vue
+                .initialize(&mut self.engine, artifact.clone(), &self.application_api)
+        {
+            self.dev_restore_previous(previous, state.as_deref());
+            return Err(error);
+        }
+
+        // What the new context cannot know on its own.
+        if let Some(geometry) = geometry {
+            self.vue
+                .record_platform_geometry(VueWindowId::PRIMARY, geometry)?;
+        }
+        self.inject_theme(theme)?;
+
+        let mut commands = window_commands;
+        commands.extend(self.vue.drain_runtime_window_commands());
+        Ok(commands)
+    }
+
+    /// Put the last known-good artifact back after a failed reload.
+    ///
+    /// Best effort by construction: the caller already has an error to report,
+    /// and a failure here would only replace it with a less useful one.
+    #[cfg(feature = "dev-reload")]
+    fn dev_restore_previous(&mut self, previous: Option<&RuntimeArtifact>, state: Option<&str>) {
+        let Some(previous) = previous else {
+            return;
+        };
+        let _ = self.vue.dev_teardown();
+        let _ = crate::dev::publish_restore_state(&mut self.engine, state);
+        let _ = self
+            .vue
+            .initialize(&mut self.engine, previous.clone(), &self.application_api);
+    }
+
     pub fn bind_host_gpu(&mut self, resources: HostedGpuResources) -> Result<u64, JsEngineError> {
         let generation = self.vue.bind_host_gpu(resources)?;
         self.register_complete_host_api()?;
@@ -719,6 +803,58 @@ pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
     theme: ThemeMode,
+    #[cfg(feature = "dev-reload")]
+    dev: Option<DevState<E>>,
+}
+
+/// Host-level message for [`VueRuntimeProgram`].
+///
+/// `RuntimeProgram::Message` is documented as the channel for host-level work,
+/// not for widget input, so the two are kept apart here: `Input` carries a user
+/// action to the Vue tree, `Dev` carries a command addressed to the host. Before
+/// this split a dev-only reload had to travel as a [`BridgeEvent`] variant,
+/// which forced every widget-event match in the crate to answer questions —
+/// "which widget?", "which JS event name?" — that a reload has no answer for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VueMessage {
+    Input(BridgeEvent),
+    #[cfg(feature = "dev-reload")]
+    Dev(crate::dev::DevReload),
+}
+
+impl From<BridgeEvent> for VueMessage {
+    fn from(event: BridgeEvent) -> Self {
+        Self::Input(event)
+    }
+}
+
+#[cfg(feature = "dev-reload")]
+impl From<crate::dev::DevReload> for VueMessage {
+    fn from(request: crate::dev::DevReload) -> Self {
+        Self::Dev(request)
+    }
+}
+
+/// Everything [`RuntimeProgram::initialize`] needs, handed across the
+/// thread-local slot that `run_runtime` opens between the caller and the
+/// program it constructs.
+struct VueBootstrap<E: JsEngine> {
+    engine: E,
+    artifact: RuntimeArtifact,
+    application_api: HostApiRegistry,
+    #[cfg(feature = "dev-reload")]
+    dev: Option<DevState<E>>,
+}
+
+/// Everything a reload needs that the running program does not otherwise keep.
+#[cfg(feature = "dev-reload")]
+struct DevState<E: JsEngine> {
+    /// Builds the fresh isolate each reload runs in. A factory rather than an
+    /// engine because `JsEngine` has no constructor in its contract.
+    engine: std::sync::Arc<dyn Fn() -> E + Send + Sync>,
+    /// The last artifact that evaluated successfully. A save with a syntax
+    /// error is put back to this rather than leaving a blank window.
+    last_good: Option<std::sync::Arc<RuntimeArtifact>>,
 }
 
 /// Historical name for [`VueRuntimeProgram`].
@@ -726,7 +862,7 @@ pub type VueHostedProgram<E> = VueRuntimeProgram<E>;
 
 impl<E: JsEngine> VueRuntimeProgram<E> {
     pub fn bootstrap(
-        context: &RuntimeProgramContext<BridgeEvent>,
+        context: &RuntimeProgramContext<VueMessage>,
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
@@ -773,6 +909,8 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             runtime,
             documents: HashMap::new(),
             theme: ThemeMode::Light,
+            #[cfg(feature = "dev-reload")]
+            dev: None,
         };
         program.sync_documents();
         Ok(program)
@@ -783,6 +921,8 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             runtime,
             documents: HashMap::new(),
             theme: ThemeMode::Light,
+            #[cfg(feature = "dev-reload")]
+            dev: None,
         };
         program.sync_documents();
         program
@@ -815,6 +955,104 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
     }
 }
 
+#[cfg(feature = "dev-reload")]
+impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
+    /// Development entry: same as [`Self::run`], but able to reload.
+    ///
+    /// Takes an engine **factory** rather than an engine. Each reload runs in a
+    /// fresh isolate, and `JsEngine` has no constructor in its contract, so the
+    /// caller has to supply the one thing only it knows how to build. For a V8
+    /// application that is `V8Engine::new`.
+    ///
+    /// The caller drives reloads by dispatching [`VueMessage::Dev`] through
+    /// [`nana_ui::RuntimeProgramContext::dispatch`] -- which is safe from a
+    /// watcher thread -- with the file already read. Nothing here touches the
+    /// filesystem.
+    pub fn run_dev(
+        settings: RuntimeWindowSettings,
+        engine: impl Fn() -> E + Send + Sync + 'static,
+        artifact: RuntimeArtifact,
+        application_api: HostApiRegistry,
+    ) -> Result<(), nana_ui::HostedRunError> {
+        let factory: std::sync::Arc<dyn Fn() -> E + Send + Sync> = std::sync::Arc::new(engine);
+        let first = factory();
+        PENDING_VUE_BOOTSTRAP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(VueBootstrap {
+                engine: first,
+                artifact: artifact.clone(),
+                application_api,
+                dev: Some(DevState {
+                    engine: factory,
+                    last_good: Some(std::sync::Arc::new(artifact)),
+                }),
+            }));
+        });
+        nana_ui::run_runtime::<Self>(settings)
+    }
+
+    /// Apply one reload request. Returns `None` when reloading is not enabled.
+    ///
+    /// Runs only from [`RuntimeProgram::update`]: the engine must not be on the
+    /// stack when it is replaced, which rules out doing this from a host op or
+    /// part-way through a frame.
+    fn apply_dev_reload(
+        &mut self,
+        request: crate::dev::DevReload,
+        context: &RuntimeProgramContext<VueMessage>,
+    ) -> RuntimeProgramUpdate {
+        let Some(dev) = self.dev.as_ref() else {
+            return RuntimeProgramUpdate::default();
+        };
+        match request {
+            crate::dev::DevReload::Stylesheet { key, css } => {
+                // No teardown: the tree, and everything keyed by node id, stays.
+                if self.runtime.vue.replace_stylesheet(&key, &css).is_err() {
+                    return RuntimeProgramUpdate::default();
+                }
+                self.runtime.runtime_program_update(true)
+            }
+            crate::dev::DevReload::Artifact { name, source } => {
+                let make_engine = std::sync::Arc::clone(&dev.engine);
+                let previous = dev.last_good.clone();
+
+                let artifact = RuntimeArtifact::from_source(name, source);
+                let theme = self.theme;
+                // The window never moved, so its live geometry is the frame's.
+                let geometry = context.geometry();
+                let artifact = std::sync::Arc::new(artifact);
+                let outcome = self.runtime.dev_reload(
+                    &artifact,
+                    make_engine.as_ref(),
+                    previous.as_deref(),
+                    Some(&geometry),
+                    theme,
+                );
+                self.documents.clear();
+                self.sync_documents();
+                match outcome {
+                    Ok(window_commands) => {
+                        if let Some(dev) = self.dev.as_mut() {
+                            dev.last_good = Some(artifact);
+                        }
+                        RuntimeProgramUpdate {
+                            redraw: RuntimeRedraw::All,
+                            window_commands,
+                            exit: false,
+                        }
+                    }
+                    Err(error) => {
+                        // The previous artifact is already back on screen; report
+                        // the failure through the diagnostics channel so the
+                        // developer sees why the save did not take.
+                        self.runtime.vue.report_dev_reload_failure(&error);
+                        self.runtime.runtime_program_update(true)
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     /// Production entry for caller-owned engines. Release applications pass a
     /// `nana_js_v8::V8Engine` here, keeping one engine for every Vue window.
@@ -825,34 +1063,49 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
         application_api: HostApiRegistry,
     ) -> Result<(), nana_ui::HostedRunError> {
         PENDING_VUE_BOOTSTRAP.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new((engine, artifact, application_api)));
+            *slot.borrow_mut() = Some(Box::new(VueBootstrap {
+                engine,
+                artifact,
+                application_api,
+                #[cfg(feature = "dev-reload")]
+                dev: None,
+            }));
         });
         nana_ui::run_runtime::<Self>(settings)
     }
 }
 
 impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
-    type Message = BridgeEvent;
+    type Message = VueMessage;
     type Error = JsEngineError;
 
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        let (engine, artifact, application_api) = PENDING_VUE_BOOTSTRAP
+        let bootstrap = PENDING_VUE_BOOTSTRAP
             .with(|slot| slot.borrow_mut().take())
-            .and_then(|boxed| {
-                boxed
-                    .downcast::<(E, RuntimeArtifact, HostApiRegistry)>()
-                    .ok()
-            })
+            .and_then(|boxed| boxed.downcast::<VueBootstrap<E>>().ok())
             .map(|boxed| *boxed)
             .ok_or_else(|| {
                 JsEngineError::new(
                     "VueRuntimeProgram::run must supply the engine and runtime artifact",
                 )
             })?;
-        Self::bootstrap(context, engine, artifact, application_api)
-            .map(|program| (program, Vec::new()))
+        #[cfg(feature = "dev-reload")]
+        let dev = bootstrap.dev;
+        let program = Self::bootstrap(
+            context,
+            bootstrap.engine,
+            bootstrap.artifact,
+            bootstrap.application_api,
+        )?;
+        #[cfg(feature = "dev-reload")]
+        let program = {
+            let mut program = program;
+            program.dev = dev;
+            program
+        };
+        Ok((program, Vec::new()))
     }
 
     fn with_document<R>(
@@ -883,11 +1136,20 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         message: Self::Message,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        // Single-variant without `dev-reload`, so the match is infallible there.
+        #[cfg_attr(
+            not(feature = "dev-reload"),
+            allow(clippy::infallible_destructuring_match)
+        )]
+        let event = match message {
+            VueMessage::Input(event) => event,
+            // A reload replaces the engine, which is only safe with no JS on the
+            // stack -- i.e. exactly here, and never mid-frame or inside a host op.
+            #[cfg(feature = "dev-reload")]
+            VueMessage::Dev(request) => return self.apply_dev_reload(request, _context),
+        };
         self.sync_documents();
-        match self
-            .runtime
-            .dispatch_bridge_event(WindowId::PRIMARY, message)
-        {
+        match self.runtime.dispatch_bridge_event(WindowId::PRIMARY, event) {
             Ok(_) => {
                 self.sync_documents();
                 self.runtime.runtime_program_update(true)

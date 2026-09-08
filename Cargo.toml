@@ -14,6 +14,7 @@ members = [
     "tools/css-parity",
     "crates/nana-ui-platform",
     "crates/nana-ui-devtools",
+    "crates/nana-ui-dev",
     "platform/android",
     "examples/component-gallery",
     "examples/vue-v8",
@@ -37,6 +38,7 @@ nana-svg-raster = { path = "crates/nana-svg-raster" }
 nana-ui-vue = { path = "crates/nana-ui-vue" }
 nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
 nana-ui-devtools = { path = "crates/nana-ui-devtools" }
+nana-ui-dev = { path = "crates/nana-ui-dev" }
 nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
 nana-app-icon = { path = "crates/nana-app-icon", default-features = false }
