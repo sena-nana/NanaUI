@@ -260,8 +260,16 @@ impl RuntimeLayoutEngine {
         for (id, plans) in nodes.measure_plans.drain() {
             if plans.is_empty() {
                 retained.measure_plans.remove(&id);
-            } else {
-                retained.measure_plans.insert(id, plans);
+                continue;
+            }
+            // Merge rather than replace. A container is commonly measured under
+            // two constraints per pass but only RE-measured under one of them:
+            // the other is answered from its cached plan, which records nothing.
+            // Replacing would drop that constraint's plan, so the two slots
+            // would alternate instead of holding both.
+            let slots = retained.measure_plans.entry(id).or_default();
+            for plan in plans.into_plans().collect::<Vec<_>>().into_iter().rev() {
+                slots.insert(plan);
             }
         }
         for ((id, width, height), size) in intrinsic {
@@ -861,6 +869,11 @@ impl MeasurePlanSlots {
 
     fn clear(&mut self) {
         self.slots = [None, None];
+    }
+
+    /// The plans this holder carries, most recent first.
+    fn into_plans(self) -> impl Iterator<Item = MeasurePlan> {
+        self.slots.into_iter().flatten()
     }
 }
 
