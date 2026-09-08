@@ -24,6 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::DevError;
@@ -67,6 +68,28 @@ impl DevHandoff {
         let text = std::fs::read_to_string(path).ok()?;
         let _ = std::fs::remove_file(path);
         serde_json::from_str(&text).ok()
+    }
+
+    /// Carry the application's own state across the restart, serialized.
+    ///
+    /// The blob stays a string this crate never interprets; this is only the
+    /// JSON round trip every application would otherwise hand-write. State that
+    /// fails to serialize is dropped rather than failing the restart: coming
+    /// back on the wrong page is a survivable dev cycle, losing the rebuild is
+    /// not.
+    pub fn with_state<T: Serialize>(mut self, state: &T) -> Self {
+        self.state = serde_json::to_string(state).ok();
+        self
+    }
+
+    /// The application state carried by [`Self::with_state`].
+    ///
+    /// `None` covers all of: nothing was carried, the type changed since the
+    /// build that wrote it, and the blob came from somewhere else. A dev loop
+    /// has to survive edits to the very type it is restoring -- that is the
+    /// case this exists for, so a mismatch restores fresh instead of failing.
+    pub fn state_as<T: DeserializeOwned>(&self) -> Option<T> {
+        serde_json::from_str(self.state.as_deref()?).ok()
     }
 
     /// Apply the carried geometry to window settings.
@@ -191,6 +214,32 @@ mod tests {
         };
         handoff.write(&path).expect("write");
         assert_eq!(DevHandoff::take(&path), Some(handoff));
+    }
+
+    /// What an application actually wants back: where it was, not a string.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Session {
+        page: String,
+        selected: Option<u32>,
+    }
+
+    #[test]
+    fn typed_state_survives_the_round_trip() {
+        let session = Session {
+            page: "settings/appearance".into(),
+            selected: Some(7),
+        };
+        let handoff = DevHandoff::default().with_state(&session);
+        assert_eq!(handoff.state_as::<Session>(), Some(session));
+    }
+
+    #[test]
+    fn state_written_by_an_older_build_restores_fresh_rather_than_failing() {
+        // Editing the state type is the single most likely thing to happen
+        // between two runs of a dev loop, so a mismatch must not be an error.
+        let handoff = DevHandoff::default().with_state(&"a string, not a Session");
+        assert_eq!(handoff.state_as::<Session>(), None);
+        assert_eq!(DevHandoff::default().state_as::<Session>(), None);
     }
 
     #[test]

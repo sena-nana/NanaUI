@@ -8,8 +8,19 @@
 | --- | --- | --- |
 | Vue：注册过的 `.css` | 零拆除。节点 id、焦点、滚动位置、GPU 槽位、进行中的动画全部保留 | < 50 ms |
 | Vue：`.vue` / `.ts`（即打包产物变了） | 窗口、位置、wgpu `Device`/`Queue`/`Surface`、宿主纹理全部保留；只重挂 UI 树 | ~200 ms |
-| Rust L3：源码 | 重编译 → 交接窗口几何与状态 → re-exec。窗口闪一次 | 4–10 s，**链接主导** |
+| Rust L3：源码 | 重编译 → 交接窗口几何与状态 → re-exec。窗口闪一次 | 1.5–4 s（实测，见下表），**链接主导** |
 | Rust L3：数据文件 | 应用自己重读并重建（框架不提供默认钩子，见 [§已知空缺](#已知空缺)） | < 100 ms |
+
+Rust 一行的实测（macOS / Apple Silicon，默认 dev profile，热增量，`cargo build -p component-gallery`）：
+
+| 改哪一层 | 重建耗时 | 说明 |
+| --- | ---: | --- |
+| 应用自己的 crate（`component-gallery`，1.8 万行） | **1.5–1.6 s** | 三次连续测量；含重新链接 131 MB 的 debug 二进制 |
+| `nana-ui-runtime`（12.7 万行）后再建应用 | **3.6 s** | 连带重编 `nana-ui-scene` / `nana-ui` |
+
+这些数字明显低于本文早先给的 4–10 s / 30–90 s。差异来自平台与冷热：上面是 macOS 上已经预热的增量构建，Windows 的链接更慢。**在自己的机器上量一次再决定要不要为此调整架构**，`cargo build -p <你的包> --timings` 就够。窗口 + GPU 重建的 0.4–1.5 s 没有重新测量。
+
+**试过但没有采纳：`[profile.dev] debug = "line-tables-only"`。** 同一台机器同一负载，重建 1.53–1.77 s（基线 1.49–1.58 s），二进制 131.6 → 125.5 MB。macOS 的 `split-debuginfo` 默认就是 `unpacked`，DWARF 留在 `.o` 里、链接器只写一张 debug map，所以收窄 debug 级别在这里几乎不影响链接，却换掉了调试器里的变量信息。Linux / Windows 把 debuginfo 嵌进二进制，那里的账可能不一样——要加就先在目标平台上量。
 
 Vue 路径比浏览器刷新更好的地方：Tauri 的 devserver 刷新是整个 webview reload，这里 **GPU 设备从头到尾没有感知**。
 
@@ -88,13 +99,32 @@ let watcher = nana_ui_dev::watch_and_rebuild(
 
 // RuntimeProgram::update
 Message::Dev(DevSignal::Rebuilt) => {
-    nana_ui_dev::request_relaunch(DevHandoff { /* 几何 + 你的状态串 */ });
+    nana_ui_dev::request_relaunch(
+        DevHandoff { /* 几何 */ }.with_state(&self.session),
+    );
     RuntimeProgramUpdate { exit: true, ..Default::default() }
 }
 Message::Dev(DevSignal::BuildFailed(diagnostics)) => { eprintln!("{diagnostics}"); .. }
 ```
 
 `cargo build` 跑在监听线程上，不阻塞事件循环。构建成功后进程交接几何与一段**框架不解释**的状态串，然后 re-exec（Unix 用 `exec`，Windows 用 spawn + 退出）。
+
+### 让重启不丢状态
+
+状态串框架不解释，但不必手写 JSON 往返：`DevHandoff::with_state(&T)` 存，`state_as::<T>()` 取，`T` 是你自己的 `Serialize + Deserialize`。
+
+值得存的是**视图状态**——当前在哪一页、滚到哪、选中了谁。几何由 `run_with_restart` 恢复，看到的东西由这段决定；两者都恢复，一次重建才像刷新而不是重启。
+
+```rust
+// initialize —— 第一次启动，或状态类型自上次构建以来变了，都回到默认值
+let session = nana_ui_dev::restored_handoff()
+    .and_then(|handoff| handoff.state_as::<Session>())
+    .unwrap_or_default();
+```
+
+`state_as` 在类型对不上时返回 `None` 而不是报错：改自己正在恢复的那个类型，正是开发循环里最常发生的事，不该让它变成一次失败的重启。
+
+`restored_handoff()` 消费一次即止，且在 `run_with_restart` 下可以安全地从 `initialize` 里调——入口点会把它读到的那份**留给**程序，而不是让程序去重读一个已经被删掉的文件。
 
 ---
 
@@ -148,13 +178,41 @@ Rust 侧其实没问题：`register_host_api` 是替换而非追加，event brid
 - **`dlclose` 在关键平台不可靠。** macOS 不会卸载含 Objective-C 元数据或 TLS 的镜像，本仓库两样都有。
 - **静态量会重复。** dylib 若重新链接 `wgpu` 或 `v8` 就会出现两套 `Instance` / 两个 V8 platform。
 
-所以 L3 的诚实答案是重启，并且要说清楚代价的构成：4–10 s 里**链接占大头**，窗口和 GPU 重建只有 0.4–1.5 s。给 dev profile 配一个更快的链接器（Linux/Windows 上的 `lld`）比本文档里任何一项收益都大。
+所以 L3 的诚实答案是重启，并且要说清楚代价的构成：这一秒几秒里**链接占大头**，窗口和 GPU 重建只有 0.4–1.5 s。真实量级见开头那张实测表——macOS 上应用一行 1.5 s、改 Runtime 后 3.6 s；Windows 的链接更慢，给 dev profile 配 `lld` 在那里收益最大。
 
-另外：改 `nana-ui-runtime`（12.7 万行）是 30–90 s 重建。热重载帮你**基于**框架开发，不帮你开发框架本身。
+改 `nana-ui-runtime`（12.7 万行）会连带重编 `nana-ui-scene` / `nana-ui`，比改应用贵一倍多，但仍在个位数秒。热重载帮你**基于**框架开发，不帮你开发框架本身。
 
 ---
 
 ## 无头验证
+
+重建完还得看一眼才知道改动落没落。开窗口不是唯一办法，L3 尤其不该是——每次重建都要重新点回出问题的那个界面，比等编译还贵。
+
+### Rust L3：同一个 dev bin 兼作无头会话
+
+`nana-ui-dev` 的 `headless` feature 引入 `nana-ui-devtools` 的 Vue-free `runtime-agent` 层（离屏像素 + JSON 协议，不带 V8）。把建树抽成一个函数，两个入口共用：
+
+```rust
+fn build_document(session: &Session) -> RuntimeDocument { /* build / child / on */ }
+```
+
+窗口路径用它，无头路径也用它——于是截图是关于**真实应用**的证据，不是关于一个长得像它的 fixture 的。`child` 的 key 就是 Agent 的 `agent_path` 选择器。
+
+```bash
+cargo build -p my-app --bin dev --features dev,headless
+```
+
+```bash
+printf '%s\n' \
+  '{"id":1,"cmd":"a11y"}' \
+  '{"id":2,"cmd":"screenshot","path":"target/agent/after.png"}' \
+  '{"id":3,"cmd":"click","agent_path":"open"}' \
+  | ./target/debug/dev --stdio --width 320 --height 200 --theme dark
+```
+
+没带 `--stdio` / `--screenshot` / `--a11y` 时二进制照常进窗口循环，所以一个 bin 两用，不必维护两份。完整写法见 [`crates/nana-ui-dev/examples/l3-dev-entry.rs`](../crates/nana-ui-dev/examples/l3-dev-entry.rs)，命令与选择器全集见 [`$nanaui-agent-debug`](../.agents/skills/nanaui-agent-debug/SKILL.md)。
+
+### Vue：直接 reload
 
 Agent 会话支持 `reload`，不需要窗口也不需要 GPU：
 
@@ -163,7 +221,7 @@ Agent 会话支持 `reload`，不需要窗口也不需要 GPU：
 {"cmd":"reload","css":"web/dist/app.css"}
 ```
 
-`nana-runtime-agent`（Vue-free 层）会明确回答它做不到 —— 它的应用是编译进去的 Rust。
+`nana-runtime-agent`（Vue-free 层）会明确回答它做不到 —— 它的应用是编译进去的 Rust。要驱动自己的 Rust 应用，走上面那条路，不是这个内置 fixture 二进制。
 
 ---
 

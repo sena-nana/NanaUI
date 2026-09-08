@@ -17,6 +17,11 @@ default = []
 # to a running `VueRuntimeProgram`. Off by default so an L3-only project does not
 # build the Vue renderer to get a file watcher.
 vue = ["dep:nana-ui-vue"]
+# Lets a dev binary answer the headless Agent flags (`--stdio`, `--screenshot`,
+# `--a11y`) from the same document it puts in a window, so a rebuild can be
+# verified without opening one. Off by default: an L3 project that only wants
+# the restart loop should not build an offscreen WGPU stack to get it.
+headless = ["dep:nana-ui-devtools"]
 
 [dependencies]
 nana-js-engine.workspace = true
@@ -30,6 +35,9 @@ notify = "8.2"
 serde.workspace = true
 serde_json.workspace = true
 nana-ui-vue = { workspace = true, optional = true, features = ["dev-reload", "hosted"] }
+# `runtime-agent` is the Vue-free tier: offscreen pixels and the JSON protocol,
+# no V8. CI asserts that stays true.
+nana-ui-devtools = { workspace = true, optional = true, features = ["runtime-agent"] }
 
 [dev-dependencies]
 nana-ui-platform.workspace = true

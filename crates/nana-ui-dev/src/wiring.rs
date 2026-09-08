@@ -24,6 +24,31 @@ thread_local! {
     /// happen.
     static PENDING_RELAUNCH: std::cell::RefCell<Option<DevHandoff>> =
         const { std::cell::RefCell::new(None) };
+
+    /// The handoff [`run_with_restart`] already consumed from disk, parked for
+    /// the program's own `initialize` to read.
+    ///
+    /// Without this the two readers race for one file and the program always
+    /// loses: `run_with_restart` reads the handoff to restore geometry *before*
+    /// `run_runtime` calls `initialize`, and reading deletes the file. The
+    /// application's state blob -- the whole reason the blob exists -- would
+    /// never survive a single restart.
+    static RESTORED_HANDOFF: std::cell::RefCell<Option<DevHandoff>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Read and delete the handoff file named by [`HANDOFF_ENV`].
+fn take_handoff_file() -> Option<DevHandoff> {
+    std::env::var_os(HANDOFF_ENV)
+        .map(PathBuf::from)
+        .and_then(|path| DevHandoff::take(&path))
+}
+
+/// Keep a consumed handoff for the program's `initialize`, and hand it back to
+/// the caller that consumed it.
+fn park_for_initialize(handoff: Option<DevHandoff>) -> Option<DevHandoff> {
+    RESTORED_HANDOFF.with_borrow_mut(|slot| slot.clone_from(&handoff));
+    handoff
 }
 
 /// Ask [`run_with_restart`] to re-exec once the event loop stops.
@@ -36,14 +61,20 @@ pub fn request_relaunch(handoff: DevHandoff) {
     PENDING_RELAUNCH.with_borrow_mut(|slot| *slot = Some(handoff));
 }
 
-/// Geometry the previous process was showing, if this one was restarted.
+/// What the previous process was showing, if this one was restarted.
 ///
 /// Returns `None` on a normal first launch. Consumes the handoff, so a later
-/// manual restart starts fresh rather than restoring a stale frame.
+/// manual restart starts fresh rather than restoring a stale frame -- and so
+/// two calls in one process do not both claim to be the restore.
+///
+/// Safe to call from `RuntimeProgram::initialize` under [`run_with_restart`]:
+/// that entry point parks what it read rather than leaving the program to
+/// re-read a file it has already deleted.
 pub fn restored_handoff() -> Option<DevHandoff> {
-    std::env::var_os(HANDOFF_ENV)
-        .map(PathBuf::from)
-        .and_then(|path| DevHandoff::take(&path))
+    if let Some(parked) = RESTORED_HANDOFF.with_borrow_mut(Option::take) {
+        return Some(parked);
+    }
+    take_handoff_file()
 }
 
 /// Run an L3 application with restart-on-rebuild.
@@ -58,7 +89,9 @@ pub fn run_with_restart<Program: nana_ui::RuntimeProgram>(
     mut settings: RuntimeWindowSettings,
     handoff: &Path,
 ) -> Result<(), nana_ui::HostedRunError> {
-    if let Some(restored) = restored_handoff() {
+    // Geometry is this function's business; the state blob is the program's, and
+    // it asks for it from `initialize`, which runs inside `run_runtime` below.
+    if let Some(restored) = park_for_initialize(take_handoff_file()) {
         restored.apply(&mut settings);
     }
     let result = nana_ui::run_runtime::<Program>(settings);
@@ -136,4 +169,63 @@ where
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape an application would actually carry: which page it was on.
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Session {
+        tab: u8,
+        scroll: f32,
+    }
+
+    #[test]
+    fn the_program_still_gets_the_state_blob_after_the_entry_point_read_geometry() {
+        // `run_with_restart` reads the handoff to place the window, and reading
+        // deletes the file. Before this parked, `initialize` then found nothing
+        // and every restart came back on the default page.
+        let session = Session {
+            tab: 2,
+            scroll: 480.0,
+        };
+        let handoff = DevHandoff {
+            position: Some((-40, 120)),
+            size: Some((1280, 800)),
+            maximized: false,
+            state: None,
+        }
+        .with_state(&session);
+
+        let for_geometry = park_for_initialize(Some(handoff.clone()));
+        assert_eq!(
+            for_geometry.and_then(|handoff| handoff.size),
+            Some((1280, 800)),
+            "the entry point still needs the geometry it consumed"
+        );
+
+        let in_initialize = restored_handoff().expect("the program's turn");
+        assert_eq!(in_initialize.state_as::<Session>(), Some(session));
+    }
+
+    #[test]
+    fn a_parked_handoff_restores_once() {
+        // Twice would mean a later `remove_view` + rebuild restored a frame the
+        // application had already moved on from.
+        park_for_initialize(Some(DevHandoff {
+            size: Some((640, 480)),
+            ..DevHandoff::default()
+        }));
+
+        assert!(restored_handoff().is_some());
+        assert_eq!(restored_handoff(), None);
+    }
+
+    #[test]
+    fn parking_nothing_is_the_normal_first_launch() {
+        park_for_initialize(None);
+        assert_eq!(restored_handoff(), None);
+    }
 }

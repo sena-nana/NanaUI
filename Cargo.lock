@@ -2089,6 +2089,7 @@ dependencies = [
  "nana-js-engine",
  "nana-ui",
  "nana-ui-core",
+ "nana-ui-devtools",
  "nana-ui-platform",
  "nana-ui-runtime",
  "nana-ui-scene",

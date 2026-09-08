@@ -79,6 +79,11 @@ jobs:
             echo "nana-ui-dev compiled under the dist profile; its release guard is gone" >&2
             exit 1
           fi
+      # The dev binary's headless branch is opt-in, so the default run above
+      # compiles it out. Without this the `--stdio` / `--screenshot` path that
+      # `docs/hot-reload.md` tells L3 authors to use could rot unnoticed.
+      - name: Check the L3 dev entry's headless branch
+        run: cargo check -p nana-ui-dev --example l3-dev-entry --features headless --locked
       - name: Check the Vue-free Agent tier pulls no JS engine
         shell: bash
         run: |
