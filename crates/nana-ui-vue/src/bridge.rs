@@ -1475,10 +1475,13 @@ impl MessageBridge {
         let mut changed = false;
         let vp = self.cascade.layout_viewport;
         for root in roots {
-            if self.write_containing_block(root, viewport.width, viewport.height) {
-                changed = true;
-            }
-            self.propagate_layout_containing_blocks(root, vp, &mut changed);
+            self.propagate_layout_containing_blocks(
+                root,
+                viewport.width,
+                viewport.height,
+                vp,
+                &mut changed,
+            );
         }
         // Re-cascade after CB writeback so % / vh resolve against fresh bases.
         if viewport_changed {
@@ -1583,20 +1586,26 @@ impl MessageBridge {
         true
     }
 
-    /// Push each descendant's containing block down from `id`.
+    /// Push a containing block down from `id` through its whole subtree.
     ///
-    /// A worklist rather than recursion, and the reason is allocation: the
-    /// recursive form cloned `widget.children` at every node it visited,
-    /// because the child loop needs `&mut self` and so cannot hold a borrow of
-    /// the list. That is one `Vec` allocation per node per frame, on a walk
-    /// that runs every frame whether or not a containing block moved. One
-    /// buffer for the whole walk replaces all of them.
+    /// A worklist rather than recursion, and it does one map lookup per node
+    /// rather than two. The recursive form cloned `widget.children` at every
+    /// node it visited (the child loop needs `&mut self` and so cannot hold a
+    /// borrow of the list), and then looked each child up twice: once in
+    /// `write_containing_block` to store the block, and again to read the
+    /// layout that resolves the content box for its own children. These
+    /// widgets are boxed, so each lookup is a hash probe plus a pointer chase
+    /// into a different cache line.
     ///
-    /// Worth being precise about what this bought, because the obvious story is
-    /// wrong: on a 2,000-row hover it moved this stage 0.096 -> 0.091 ms and
-    /// left settle where it was. **The allocations were not the cost; the
-    /// traversal is.** Removing the traversal needs the walk scoped to the
-    /// subtrees whose layout actually changed -- see `docs/runtime-dirty-frame.md`.
+    /// Worth being precise about what each half bought, because the obvious
+    /// story was wrong twice. Removing the per-node allocation moved this stage
+    /// 0.096 -> 0.091 ms on a 2,000-row hover and left settle where it was;
+    /// fusing the two lookups took it to 0.079. **Neither was the bulk.**
+    ///
+    /// This still walks every node every frame. Pushing down only from the
+    /// widgets whose content box may have moved would take the stage to
+    /// ~0.0001 ms -- measured -- but nothing available can prove that the
+    /// seeding is complete; see `docs/runtime-dirty-frame.md`.
     ///
     /// Sibling order does not matter here -- a node's containing block depends
     /// only on its parent's content box -- but parent-before-child does, so
@@ -1604,39 +1613,39 @@ impl MessageBridge {
     fn propagate_layout_containing_blocks(
         &mut self,
         id: WidgetId,
+        width: Option<f32>,
+        height: Option<f32>,
         viewport: Option<(f32, f32)>,
         changed: &mut bool,
     ) {
-        let mut pending: Vec<(WidgetId, Option<f32>, Option<f32>)> = Vec::new();
-        let mut cursor = Some(id);
-        loop {
-            let Some(id) = cursor.take().or_else(|| {
-                pending.pop().map(|(child, width, height)| {
-                    if self.write_containing_block(child, width, height) {
-                        *changed = true;
-                    }
-                    child
-                })
-            }) else {
-                return;
-            };
-            let Some(widget) = self.widgets.get(&id) else {
+        let mut pending: Vec<(WidgetId, Option<f32>, Option<f32>)> = vec![(id, width, height)];
+        while let Some((id, width, height)) = pending.pop() {
+            let Some(widget) = self.widgets.get_mut(&id) else {
                 continue;
             };
-            let parent = ParentBox {
-                width: widget.props.containing_block_width,
-                height: widget.props.containing_block_height,
-            };
+            let next_w = width.filter(|v| *v > 0.0);
+            let next_h = height.filter(|v| *v > 0.0);
+            let moved = widget.props.containing_block_width != next_w
+                || widget.props.containing_block_height != next_h;
+            if moved {
+                widget.props.containing_block_width = next_w;
+                widget.props.containing_block_height = next_h;
+            }
             let content = widget
                 .props
                 .layout
-                .resolve_content_box_with_viewport(parent, viewport);
+                .resolve_content_box_with_viewport(ParentBox::new(next_w, next_h), viewport);
             pending.extend(
                 widget
                     .children
                     .iter()
                     .map(|child| (*child, content.width, content.height)),
             );
+            if moved {
+                // Disjoint field borrow: `widgets` above, `changes` here.
+                self.changes.dirty.insert(id);
+                *changed = true;
+            }
         }
     }
 
