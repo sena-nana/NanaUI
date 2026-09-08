@@ -377,19 +377,25 @@ export const hostOps = {
       if (!handler) return;
       if (existing) {
         // Vue patchEvent: update invoker.value; keep addEventListener peers.
+        // Nothing crosses: the host was told this node listens for this event
+        // when the invoker was created, and swapping the function behind a
+        // stable invoker does not change that. A render function that writes
+        // its handler inline hands over a new closure every time, so on a long
+        // list this was one crossing per row per render telling the host
+        // something it already knew -- and each one queued a world mutation.
         existing.value = handler;
-      } else {
-        const invoker = function (evt) {
-          const fn = invoker.value;
-          if (typeof fn === "function") fn(evt);
-        };
-        invoker.value = handler;
-        invokers[key] = invoker;
-        addNanaListener(nid, event, invoker, options);
-        // Alias press ↔ click for NanaButton / MessageBridge.
-        if (event === "press") addNanaListener(nid, "click", invoker, options);
-        if (event === "click") addNanaListener(nid, "press", invoker, options);
+        return;
       }
+      const invoker = function (evt) {
+        const fn = invoker.value;
+        if (typeof fn === "function") fn(evt);
+      };
+      invoker.value = handler;
+      invokers[key] = invoker;
+      addNanaListener(nid, event, invoker, options);
+      // Alias press ↔ click for NanaButton / MessageBridge.
+      if (event === "press") addNanaListener(nid, "click", invoker, options);
+      if (event === "click") addNanaListener(nid, "press", invoker, options);
       hostCall("patchProp", [nid, key, true]);
       return;
     }

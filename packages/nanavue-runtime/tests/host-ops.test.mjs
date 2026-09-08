@@ -383,6 +383,35 @@ describe("hostOps Vue RendererOptions contract", () => {
     assert.deepEqual(attrs.get(nodeId(el)).style, { color: "blue" });
   });
 
+  test("swapping a handler behind a live invoker does not cross into the host", () => {
+    // A render function that writes its handler inline hands over a new closure
+    // every render. The invoker keeps the listener stable on the JS side, so
+    // the host's answer to "does this node listen for click?" never changed --
+    // telling it again queued a world mutation per row per render.
+    const el = hostOps.createElement("button");
+    const eventPatches = () =>
+      calls.filter(([name, args]) => name === "patchProp" && args[1] === "onClick");
+    hostOps.patchProp(el, "onClick", null, () => {});
+    const after = eventPatches().length;
+    assert.equal(after > 0, true, "the first handler must register");
+
+    let fired = 0;
+    for (let i = 0; i < 5; i += 1) {
+      hostOps.patchProp(el, "onClick", () => {}, () => {
+        fired += 1;
+      });
+    }
+    assert.equal(eventPatches().length, after, "a swapped handler stays home");
+
+    // And the newest handler is the one that runs.
+    el.__nanaVei.onClick({ type: "click" });
+    assert.equal(fired, 1);
+
+    // Removing it must still cross, or the host keeps routing a dead listener.
+    hostOps.patchProp(el, "onClick", () => {}, null);
+    assert.equal(eventPatches().length, after + 1);
+  });
+
   test("an imperative style write does not erase what Vue patched", async () => {
     // A TransitionGroup FLIP writes `transitionDuration` through the proxy. The
     // proxy flush replaces the whole style attribute, so before the two writers

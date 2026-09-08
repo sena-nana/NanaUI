@@ -2287,10 +2287,17 @@ impl NanaTreeDocument {
             return;
         }
         let mut events = self.live_events(el);
-        if enabled {
-            events.insert(name.clone());
+        let changed = if enabled {
+            events.insert(name.clone())
         } else {
-            events.remove(&name);
+            events.remove(&name)
+        };
+        if !changed {
+            // The node already listens for exactly this. Queuing the mutation
+            // anyway dirties it for no reason, and callers do repeat: Vue
+            // re-patches a listener whenever the handler's identity changes,
+            // which for an inline closure is every render.
+            return;
         }
         self.pending.events.insert(el.0, events);
         self.pending.mutations.set_event_listener(
