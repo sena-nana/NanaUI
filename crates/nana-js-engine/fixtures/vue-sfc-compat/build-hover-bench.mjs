@@ -3,7 +3,7 @@
 // Output lands under `target/`, not `dist/`: these are measurement inputs
 // regenerated on demand, not a committed fixture whose bytes CI diffs.
 //
-//   node build-hover-bench.mjs <bare|listeners|reactive>[-scroll] [rows]
+//   node build-hover-bench.mjs <bare|listeners|reactive|reactive-components>[-scroll] [rows]
 import { build } from "vite";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +12,7 @@ const runtimeCore = path(
   "./node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js",
 );
 
-const MODES = ["bare", "listeners", "reactive"];
+const MODES = ["bare", "listeners", "reactive", "reactive-components"];
 const requested = process.argv[2] ?? "bare";
 const scroll = requested.endsWith("-scroll");
 const mode = scroll ? requested.slice(0, -"-scroll".length) : requested;

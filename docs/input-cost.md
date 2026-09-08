@@ -20,6 +20,7 @@ Rust L3 一个；另有把行放进滚动容器的 `-scroll` 版本。
 | `bare` | 没有任何指针处理器 |
 | `listeners` | 每行一个 `onPointerenter`，只写一个不参与渲染的计数器 |
 | `reactive` | 每行一个 `onPointerenter`，写一个行样式读取的 `ref` |
+| `reactive-components` | 同样的可见行为，但每行是自己的组件、拥有自己的 hover `ref`——文档推荐的写法 |
 | `runtime-l3` | 无处理器。L3 的 hover 工作与是否注册处理器无关 |
 
 四棵树在**同一个进程**里依次建立并驱动，计时取在进程内。
@@ -33,12 +34,12 @@ Rust L3 一个；另有把行放进滚动容器的 `-scroll` 版本。
 
 macOS / Apple Silicon，`--release`，60 次预热 + 400 次计时移动，P50（ms）：
 
-| 行数 | `bare` | `listeners` | `reactive` | L3 |
-| ---: | ---: | ---: | ---: | ---: |
-| 250 | 0.061 | 0.062 | 0.81 | 0.0003 |
-| 500 | 0.061 | 0.062 | 1.50 | 0.0003 |
-| 1,000 | 0.065 | 0.063 | 3.62 | 0.0003 |
-| 2,000 | 0.062 | 0.063 | 8.97 | 0.0003 |
+| 行数 | `bare` | `listeners` | `reactive` | `reactive-components` | L3 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 250 | 0.056 | 0.057 | 0.78 | 0.61 | 0.0003 |
+| 500 | 0.057 | 0.057 | 1.47 | 1.09 | 0.0003 |
+| 1,000 | 0.060 | 0.058 | 3.35 | 2.23 | 0.0003 |
+| 2,000 | 0.061 | 0.058 | 8.63 | 5.27 | 0.0003 |
 
 （`window` 形状。`headless` 形状的 `bare` 同样是 0.060–0.063；`reactive` 低一些，因为它
 不做窗口那套语义同步。滚动版本与不滚动的相同：2,000 行 `bare-scroll` 0.065。）
@@ -119,37 +120,51 @@ host count, not world size"），只是那个函数没用。后三处没有索�
 这也让无头会话第一次能触发 tooltip 延时这类行为——对 `$nanaui-agent-debug` 是能力增加，
 不是副作用。
 
-## 还剩什么：`reactive`
+## 还剩什么：任何真的改动过的帧都是 O(节点数)
 
-`reactive` 在 2,000 行上仍要 8.97 ms（超过半帧）。成因是**一个 render function 拥有整列**：
-hover 改一个参与渲染的 `ref`，Vue 就重建全部 2,000 个 vnode。
+上面那张表最容易被误读的一行是 `bare` 的 0.06 ms 常数。它常数，是因为那棵树**什么都没变**。
+一旦有任何东西变了，窗口帧就回到 O(总节点数)——`reactive` 与 `reactive-components` 的
+settle 几乎一样（2,000 行 2.58 vs 2.42 ms），而 `bare` 的是 0.0005。
 
-### 它不是稻草人
+分段计时指向一处：`VueHost::sync_semantics`。它的门是"bridge revision 变了没有"，所以只在
+真的有改动时跑；但一跑就是全文档——`reparent_orphans`、`sync_sidebar_footer_into_document`、
+`sync_layout_containing_blocks`、`sync_semantics_from_bridge` 四段全树遍历，与改了几个节点无关。
 
-模板里的 `v-for` 编译出来就是「一个 render function 返回 N 个 vnode」，不生成子组件。所以
-`<div v-for="row in 2000" :style="…">` 与这个 fixture 是同一个形状，而那是极常见的写法。
-（fixture 用手写 `h()`，编译过的模板还有 patch flag 之类的优化，常数会小一些，但阶不变。）
+| 2,000 行，每帧 | `bare` | `reactive-components` |
+| --- | ---: | ---: |
+| `sync_semantics` | 0.068（其实只在挂载时跑一次，摊到 351 帧） | **2.53** |
+| `resolve_layout` | 0.054 | 0.054 |
 
-### 它两次抓出框架侧的账
+**增量信息是有的**：`MessageBridge` 自己维护 `changes.dirty`。那四段没有用它。这是本文档里
+反复出现的同一个形状的第四次，也是目前最大的一处：它影响每一个真的会变的界面，而不只是
+长列表 hover。**未修**——四段各自都要一个按 dirty 收窄的版本，而无障碍投影的正确性挂在上面。
 
-把它当成"写法问题"是我在这份文档里犯过两次的错，每次都还有框架的账没结：
+## `reactive` vs `reactive-components`：拆组件值多少
+
+文档一直建议"把行拆成各自的组件，一个 `ref` 变化只 patch 一行"。给它量一个数：
+
+**2,000 行 8.63 → 5.27 ms，省 39%。仍然是 O(节点数)。**
+
+省下的是 Vue 侧的 vnode diff（dispatch 6.13 → 2.90）。没省下的是 settle——因为上一节那处
+与 Vue 怎么写无关。所以这条建议是真的，但它把一个"超过半帧"变成"三分之一帧"，不是变成常数；
+真正的常数要等 `sync_semantics` 收窄。
+
+`reactive` 这个变体不是稻草人：模板里的 `v-for` 编译出来就是"一个 render function 返回 N 个
+vnode"，不生成子组件，所以 `<div v-for="row in 2000" :style="…">` 与它同形。
+
+### 它三次抓出框架侧的账
+
+把它当成"写法问题"是我在这份文档里犯过的错，每次都还有框架的账没结：
 
 | 发现 | 每事件跨界（2,000 行） | 效果 |
 | --- | --- | --- |
 | `patchProp` 的 style 按引用而非按值比较 | 2,000 次，每次进 CSS 级联 | 60.3 → 10.9 ms |
 | 监听器换了闭包身份就重新告知宿主 | 2,000 次，每次入队一条 world mutation | 10.9 → 8.97 ms |
+| `sync_semantics` 全文档重扫 | 0 次跨界，但每帧四段全树遍历 | 未修 |
 
 第二处尤其能说明问题：JS 侧的 invoker 模式**已经**正确地避免了监听器变动
 （`existing.value = handler`，不碰 `addEventListener`），然后紧接着还是
-`hostCall("patchProp", [nid, key, true])`——把一件宿主早就知道的事又说了一遍，而
-Rust 侧的 `set_event_flag` 会无条件入队一条 mutation。两侧现在都做值比较。
-
-### 剩下的归应用
-
-两处跨界都堵上之后，剩的是 Vue 自己对 2,000 个 vnode 的 diff，框架侧拿不掉：
-
-- 把行拆成各自的组件，一个 `ref` 变化只 patch 一行；
-- 或者让 hover 只改不参与渲染的状态（`listeners` 变体就是这样，它是常数成本）。
+`hostCall("patchProp", [nid, key, true])`——把一件宿主早就知道的事又说了一遍。
 
 ## 怎么复现
 

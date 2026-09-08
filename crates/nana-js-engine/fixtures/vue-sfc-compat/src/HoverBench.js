@@ -9,7 +9,14 @@
 //             cost of actually calling into JS, without a re-render.
 //   reactive  a handler that writes a ref the rows render. Adds Vue's patch of
 //             the whole column, because one render function owns every row --
-//             the shape a naive hover handler over a long list really has.
+//             the shape a naive hover handler over a long list really has, and
+//             the shape a template `v-for` compiles to (it makes vnodes, not
+//             child components).
+//   reactive-components
+//             the same visible behaviour written the way the docs recommend:
+//             each row is its own component owning its own hover ref, so a
+//             pointer move re-renders the two rows that changed instead of the
+//             column. This exists to put a number on that advice.
 //
 // Rows are fixed-height and the pointer never leaves the column, so nothing
 // reflows: the scenario's `layout_nodes == 0` invariant has to hold on this
@@ -25,6 +32,7 @@ import { createApp } from "../../../../../packages/nanavue-runtime/src/createNan
 
 const ROWS = __HOVER_BENCH_ROWS__;
 const MODE = __HOVER_BENCH_MODE__;
+const PER_ROW_COMPONENT = MODE === "reactive-components";
 const SCROLL = __HOVER_BENCH_SCROLL__;
 const ROW_HEIGHT = 24;
 const PORT_HEIGHT = 480;
@@ -38,6 +46,35 @@ const SCROLL_TOP = 240;
 let touched = 0;
 globalThis.__hoverBenchTouched = () => touched;
 
+/// One row owning its own hover state. Nothing outside it reads that ref, so
+/// nothing outside it re-renders when the pointer arrives or leaves.
+const HoverRow = {
+  props: { index: { type: Number, required: true } },
+  setup(props) {
+    const hovered = ref(false);
+    return () =>
+      h(
+        "div",
+        {
+          "data-agent-id": `row-${props.index}`,
+          onPointerenter: () => {
+            hovered.value = true;
+          },
+          onPointerleave: () => {
+            hovered.value = false;
+          },
+          style: {
+            height: `${ROW_HEIGHT}px`,
+            width: "320px",
+            flexShrink: 0,
+            color: hovered.value ? "#ffffff" : "#a0a0a0",
+          },
+        },
+        `Row ${props.index}`,
+      );
+  },
+};
+
 createApp({
   setup() {
     const active = ref(-1);
@@ -49,6 +86,7 @@ createApp({
           style: { display: "flex", flexDirection: "column", width: "320px" },
         },
         Array.from({ length: ROWS }, (_, index) => {
+          if (PER_ROW_COMPONENT) return h(HoverRow, { key: index, index });
           const props = {
             key: index,
             "data-agent-id": `row-${index}`,

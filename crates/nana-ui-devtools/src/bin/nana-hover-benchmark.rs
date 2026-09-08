@@ -182,7 +182,7 @@ fn main() -> ExitCode {
     let modes: &[&'static str] = if args.scroll {
         &["bare-scroll", "listeners-scroll", "reactive-scroll"]
     } else {
-        &["bare", "listeners", "reactive"]
+        &["bare", "listeners", "reactive", "reactive-components"]
     };
     for mode in modes.iter().copied() {
         let bundle = args
