@@ -185,6 +185,12 @@ pub(crate) struct RegisteredComponentType {
     pub id: ComponentTypeId,
     rust_type: Option<TypeId>,
     binder: Binder,
+    /// Whether this component reads [`SemanticSpec::slots`]. Hosts collect
+    /// slots by scanning a widget's children, so a component that ignores them
+    /// makes every one of its instances pay a scan for nothing -- and layout
+    /// boxes, which ignore them, are exactly the widgets with the most
+    /// children. Registered per component, so the layout aliases inherit it.
+    consumes_slots: bool,
 }
 
 /// Types that builtins and plugins register through the same ABI.
@@ -197,6 +203,12 @@ pub trait RegisterableComponent: ComponentView {
     /// Opt in when interaction uses typed component state rather than only
     /// UiWorld fields. Builtins and extensions use the same retention path.
     const RETAIN_SEMANTIC_STATE: bool = false;
+    /// Whether [`Self::from_semantic`] reads [`SemanticSpec::slots`].
+    ///
+    /// Leave it `true` unless the component genuinely ignores slots: a host is
+    /// entitled to skip collecting them entirely when this is `false`, so a
+    /// component that lies here silently loses its slot children.
+    const CONSUMES_SLOTS: bool = true;
     fn reconcile_semantic(spec: &SemanticSpec<'_>, _previous: Option<&Self>) -> Self {
         Self::from_semantic(spec)
     }
@@ -238,6 +250,19 @@ impl ComponentRegistry {
     /// dedupe before looking up.
     pub fn resolve_normalized(&self, normalized_tag: &str) -> Option<&ComponentTypeId> {
         self.by_tag.get(normalized_tag)
+    }
+
+    /// Whether the component registered under `type_id` reads
+    /// [`SemanticSpec::slots`].
+    ///
+    /// Hosts collect slots by scanning a widget's children, so this lets them
+    /// skip the scan entirely for a component that ignores them. Unknown types
+    /// answer `true`: never silently drop a slot for a component this registry
+    /// has not been told about.
+    pub fn consumes_slots(&self, type_id: &ComponentTypeId) -> bool {
+        self.by_id
+            .get(type_id)
+            .is_none_or(|entry| entry.consumes_slots)
     }
 
     pub(crate) fn insert(&mut self, entry: RegisteredComponentType) -> Result<(), FrameworkError> {
@@ -351,6 +376,7 @@ pub(crate) fn registerable_entry<C: RegisterableComponent>()
             id: ComponentTypeId::new(C::TYPE_ID)?,
             rust_type: Some(TypeId::of::<C>()),
             binder: bind_registerable::<C>(),
+            consumes_slots: C::CONSUMES_SLOTS,
         },
         normalized_tags(C::TAGS),
     ))
@@ -365,6 +391,7 @@ pub(crate) fn tag_entry(
             id: ComponentTypeId::new(type_id)?,
             rust_type: None,
             binder: Arc::new(|_| Ok(ComponentBindKind::Layout)),
+            consumes_slots: true,
         },
         normalized_tags(tags),
     ))
@@ -380,6 +407,7 @@ pub(crate) fn alias_entry<C: RegisterableComponent>(
             id: ComponentTypeId::new(type_id)?,
             rust_type: None,
             binder: bind_registerable::<C>(),
+            consumes_slots: C::CONSUMES_SLOTS,
         },
         normalized_tags(tags),
     ))

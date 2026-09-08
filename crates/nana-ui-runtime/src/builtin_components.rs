@@ -154,6 +154,11 @@ impl RegisterableComponent for Stack {
     const TYPE_ID: &'static str = crate::component_descriptors::STACK.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::STACK.tags;
     const BIND_KIND: crate::ComponentBindKind = crate::ComponentBindKind::Layout;
+    // A layout box carries its children; it does not address any of them by
+    // name. Saying so lets the host skip scanning them for `data-slot` -- and a
+    // layout box is exactly the widget with the most children to scan.
+    // `stack_ignores_slots` holds this honest.
+    const CONSUMES_SLOTS: bool = false;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut layout = spec.layout.as_ref().clone();
         // `nana.row` needs the seed: the engine's default flow axis is the
@@ -3647,8 +3652,8 @@ mod stack_direction_tests {
     use super::*;
     use crate::layout_engine::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
     use crate::{
-        ComponentTypeId, ComponentView, DocumentId, MutationQueue, NodeKind, RegisterableComponent,
-        SemanticSpec, StableNodeId, UiWorld,
+        AppContext, ComponentTypeId, ComponentView, DocumentId, MutationQueue, NodeKind,
+        RegisterableComponent, SemanticSpec, StableNodeId, UiWorld,
     };
     use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec};
 
@@ -3710,6 +3715,63 @@ mod stack_direction_tests {
             "nana.row must still seed its flow axis -- if this stops being \
              true the assertion above is testing nothing"
         );
+    }
+
+    /// `Stack::CONSUMES_SLOTS = false` is a promise a host acts on by skipping
+    /// slot collection entirely. If `from_semantic` ever starts reading
+    /// `spec.slots`, that host silently drops those children instead of binding
+    /// them -- so the promise has to be checked, not just declared.
+    #[test]
+    fn stack_ignores_slots_so_declaring_it_is_honest() {
+        const { assert!(!<Stack as RegisterableComponent>::CONSUMES_SLOTS) };
+        let layout = Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Px(64.0)),
+            ..LayoutStyle::default()
+        });
+        let slot_child = StableNodeId::new(7).unwrap();
+        for type_id in ["nana.stack", "nana.column", "nana.row", "nana.box"] {
+            let type_id = ComponentTypeId::new(type_id).unwrap();
+            let without = Stack::from_semantic(&SemanticSpec::from_parts(&type_id, &layout));
+            let slots = [("content", slot_child), ("leading", slot_child)];
+            let with = Stack::from_semantic(&SemanticSpec {
+                slots: &slots,
+                ..SemanticSpec::from_parts(&type_id, &layout)
+            });
+            assert_eq!(
+                without, with,
+                "{type_id:?}: Stack read its slots, but it is registered as \
+                 ignoring them, so a host that skips collecting them would \
+                 silently drop those children"
+            );
+        }
+    }
+
+    /// The flag has to reach the registry under every id the component answers
+    /// to. `Stack` is registered once and aliased three times; an alias that
+    /// lost the flag would just quietly keep paying the scan.
+    #[test]
+    fn the_slot_flag_reaches_every_alias_and_defaults_to_yes() {
+        let context = AppContext::new();
+        for slotless in ["nana.stack", "nana.column", "nana.row", "nana.box"] {
+            let id = ComponentTypeId::new(slotless).unwrap();
+            assert!(
+                !context.component_consumes_slots(&id),
+                "{slotless}: the layout alias did not inherit CONSUMES_SLOTS"
+            );
+        }
+        // A component that does address children by name, and an id the
+        // registry has never heard of, both have to answer "yes".
+        for slotted in [
+            "nana.list-item",
+            "nana.sidebar-frame",
+            "nana.not-a-component",
+        ] {
+            let id = ComponentTypeId::new(slotted).unwrap();
+            assert!(
+                context.component_consumes_slots(&id),
+                "{slotted}: skipping slot collection here would drop children"
+            );
+        }
     }
 
     /// The half of the seed that is load-bearing, and the half that is not.

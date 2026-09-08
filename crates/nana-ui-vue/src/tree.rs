@@ -1285,9 +1285,16 @@ impl NanaTreeDocument {
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
+        #[cfg(not(feature = "benchmark"))]
         let projected = snapshot.projection_ids(full_pass);
         #[cfg(feature = "benchmark")]
+        let projected = crate::frame_profile::timed(49, || snapshot.projection_ids(full_pass));
+        #[cfg(feature = "benchmark")]
         crate::frame_profile::add(12, projected.len() as u64);
+        #[cfg(feature = "benchmark")]
+        crate::frame_profile::add(51, snapshot.changes.dirty.len() as u64);
+        #[cfg(feature = "benchmark")]
+        let _loop_timer = crate::frame_profile::ScopeTimer::new(50);
         for raw_id in &projected {
             let Some(widget) = snapshot.get(*raw_id) else {
                 continue;

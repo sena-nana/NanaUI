@@ -88,7 +88,7 @@ pub mod frame_profile {
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
 
-    pub const PHASES: [&str; 49] = [
+    pub const PHASES: [&str; 52] = [
         "svg_rasters",
         "flush_host_frame",
         "sync_semantics",
@@ -138,6 +138,9 @@ pub mod frame_profile {
         "        & dirty seeds",
         "        & affected closure",
         "        & retain sweeps",
+        "      · projection_ids",
+        "      · prepare loop body",
+        "      · # dirty ids in",
     ];
 
     thread_local! {
