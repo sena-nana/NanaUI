@@ -376,6 +376,15 @@ pub struct NanaTreeDocument {
     /// Facade nodes that currently expose a host-texture slot. Flush stamps
     /// only these instead of scanning the whole Vue node map.
     host_texture_nodes: HashSet<u64>,
+    /// Every `<svg>` element in the document.
+    ///
+    /// `sync_svg_rasters` runs up to four times per window frame, and without
+    /// this it answered "which nodes are svg roots?" by scanning every node and
+    /// calling `element_tag`, which clones the tag -- one heap allocation per
+    /// node per call, to discover that a tree with no SVG in it has no SVG in
+    /// it. A tag never changes after creation, so unlike `host_texture_nodes`
+    /// this only needs maintaining where nodes appear and disappear.
+    svg_root_nodes: HashSet<u64>,
     /// Cached generic SVG rasters keyed by the root `<svg>` node id.
     svg_rasters: HashMap<u64, CachedSvgRaster>,
     /// Shared slot registry handle. Device/Queue stay on the hosted renderer.
@@ -491,6 +500,7 @@ impl NanaTreeDocument {
             accessibility_full_required: false,
             commit_rejections: Vec::new(),
             host_texture_nodes: HashSet::new(),
+            svg_root_nodes: HashSet::new(),
             svg_rasters: HashMap::new(),
             #[cfg(feature = "scene-view")]
             host_textures: None,
@@ -641,6 +651,14 @@ impl NanaTreeDocument {
         })
     }
 
+    /// How many `<svg>` roots the raster loop will visit.
+    ///
+    /// Tests only: the index is an optimisation whose failure mode is silent, so
+    /// it needs to be observable.
+    pub fn svg_root_node_count(&self) -> usize {
+        self.svg_root_nodes.len()
+    }
+
     fn index_host_texture_node(&mut self, el: NodeHandle) {
         if self.surface_host_texture_slot(el).is_some() {
             self.host_texture_nodes.insert(el.0);
@@ -661,15 +679,10 @@ impl NanaTreeDocument {
 
     /// Rasterize non-Lucide `<svg>` roots into HostTexture slots.
     pub(crate) fn sync_svg_rasters(&mut self) {
-        let roots: Vec<u64> = self
-            .nodes
-            .keys()
-            .copied()
-            .filter(|&id| {
-                self.element_tag(NodeHandle(id))
-                    .is_some_and(|tag| tag.eq_ignore_ascii_case("svg"))
-            })
-            .collect();
+        if self.svg_root_nodes.is_empty() {
+            return;
+        }
+        let roots: Vec<u64> = self.svg_root_nodes.iter().copied().collect();
         for id in roots {
             let el = NodeHandle(id);
             if self.is_catalog_icon_svg(el) {
@@ -1694,9 +1707,11 @@ impl NanaTreeDocument {
                 scope_id: None,
             },
         );
-        let kind = NodeKind::Element {
-            tag: tag.to_ascii_lowercase(),
-        };
+        let lowered = tag.to_ascii_lowercase();
+        if lowered == "svg" {
+            self.svg_root_nodes.insert(id);
+        }
+        let kind = NodeKind::Element { tag: lowered };
         self.pending.kinds.insert(id, kind.clone());
         self.pending.mutations.create(
             StableNodeId::new(id).expect("allocated IDs are nonzero"),
@@ -2987,6 +3002,7 @@ impl NanaTreeDocument {
         for id in ids {
             self.nodes.remove(&id);
             self.host_texture_nodes.remove(&id);
+            self.svg_root_nodes.remove(&id);
             self.svg_rasters.remove(&id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);

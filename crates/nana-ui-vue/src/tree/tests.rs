@@ -1167,6 +1167,42 @@ fn video_src_size_change_invalidates_host_texture_revision() {
     );
 }
 
+/// `sync_svg_rasters` iterates an index instead of scanning every node, so the
+/// index has to see every way an `<svg>` can appear and disappear. A miss here
+/// is silent: the raster simply never updates.
+#[test]
+fn the_svg_index_sees_both_ways_an_svg_arrives_and_forgets_it_on_removal() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+
+    // Created through the renderer's own op.
+    let direct = doc.create_element("svg");
+    doc.insert(direct, doc.mount_root(), None);
+    // Created by parsing markup, the `v-html` / `insertStaticContent` path.
+    let (parsed, _, _) = doc.insert_static_content(
+        "<svg viewBox=\"0 0 8 8\"><rect width=\"8\" height=\"8\" fill=\"#123456\"/></svg>",
+        doc.mount_root(),
+        None,
+        ElementNamespace::Html,
+        None,
+        None,
+    );
+    assert_eq!(doc.element_tag(parsed).as_deref(), Some("svg"));
+
+    assert_eq!(
+        doc.svg_root_node_count(),
+        2,
+        "both the created and the parsed svg must be indexed"
+    );
+
+    doc.remove(direct);
+    doc.remove(parsed);
+    assert_eq!(
+        doc.svg_root_node_count(),
+        0,
+        "a removed svg must leave the index, or the raster loop grows forever"
+    );
+}
+
 #[test]
 fn generic_svg_projects_host_texture_custom_render() {
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);
