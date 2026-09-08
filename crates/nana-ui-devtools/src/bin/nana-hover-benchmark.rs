@@ -78,6 +78,17 @@ struct Case {
     mode: &'static str,
     mount_ms: f64,
     hover_ms: Distribution,
+    /// Vue only: the split inside one event. `dispatch` is the pointer entering
+    /// the tier -- hit test, DOM event dispatch into JS, the resulting patch and
+    /// one host frame pump. `settle` is `flush_scene_frame`: commit host ops,
+    /// run the Runtime systems, re-record every painted box.
+    ///
+    /// L3 leaves these `None`: `hover_xy` does both behind one call and the
+    /// split is not reachable without reaching past the session's API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch_ms: Option<Distribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settle_ms: Option<Distribution>,
 }
 
 #[derive(Serialize)]
@@ -200,22 +211,45 @@ fn sweep(index: usize, rows: usize) -> (f32, f32) {
 ///
 /// `hover` delivers one pointer move and lets that tier settle, and nothing
 /// else -- what it does on each side is the comparison.
+/// What one `measure` run produces: the whole event, and the two halves when
+/// the tier exposes them.
+type Timings = (Distribution, Option<Distribution>, Option<Distribution>);
+
+/// One event's timings: total, and optionally the two halves.
+#[derive(Default)]
+struct Sample {
+    dispatch: Option<f64>,
+    settle: Option<f64>,
+}
+
 fn measure(
     args: &Args,
-    mut hover: impl FnMut(f32, f32) -> Result<(), Box<dyn std::error::Error>>,
-) -> Result<Distribution, Box<dyn std::error::Error>> {
+    mut hover: impl FnMut(f32, f32) -> Result<Sample, Box<dyn std::error::Error>>,
+) -> Result<Timings, Box<dyn std::error::Error>> {
     for index in 0..args.warmup {
         let (x, y) = sweep(index, args.rows);
         hover(x, y)?;
     }
-    let mut samples = Vec::with_capacity(args.moves);
+    let mut totals = Vec::with_capacity(args.moves);
+    let mut dispatches = Vec::with_capacity(args.moves);
+    let mut settles = Vec::with_capacity(args.moves);
     for index in 0..args.moves {
         let (x, y) = sweep(index, args.rows);
         let started = Instant::now();
-        hover(x, y)?;
-        samples.push(as_ms(started.elapsed()));
+        let sample = hover(x, y)?;
+        totals.push(as_ms(started.elapsed()));
+        if let Some(dispatch) = sample.dispatch {
+            dispatches.push(dispatch);
+        }
+        if let Some(settle) = sample.settle {
+            settles.push(settle);
+        }
     }
-    Ok(Distribution::of(samples))
+    Ok((
+        Distribution::of(totals),
+        (!dispatches.is_empty()).then(|| Distribution::of(dispatches)),
+        (!settles.is_empty()).then(|| Distribution::of(settles)),
+    ))
 }
 
 fn as_ms(duration: Duration) -> f64 {
@@ -245,19 +279,27 @@ fn vue_case(
     host.pump_frame(&mut engine)?;
     host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?;
     let mount_ms = as_ms(started.elapsed());
-    let hover_ms = measure(args, |x, y| {
+    let (hover_ms, dispatch_ms, settle_ms) = measure(args, |x, y| {
+        let started = Instant::now();
         host.dispatch_pointer(
             &mut engine,
             PointerInput::mouse(PointerEventKind::Move, x, y),
         )?;
+        let dispatch = as_ms(started.elapsed());
+        let started = Instant::now();
         host.flush_scene_frame(WIDTH as f32, HEIGHT as f32)?;
-        Ok(())
+        Ok(Sample {
+            dispatch: Some(dispatch),
+            settle: Some(as_ms(started.elapsed())),
+        })
     })?;
     Ok(Case {
         tier: "vue",
         mode,
         mount_ms,
         hover_ms,
+        dispatch_ms,
+        settle_ms,
     })
 }
 
@@ -267,9 +309,9 @@ fn runtime_case(args: &Args) -> Result<Case, Box<dyn std::error::Error>> {
     let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT)?;
     let mount_ms = as_ms(started.elapsed());
     // Dispatch plus `flush`: one pointer move, one settle.
-    let hover_ms = measure(args, |x, y| {
+    let (hover_ms, _, _) = measure(args, |x, y| {
         session.hover_xy(x, y)?;
-        Ok(())
+        Ok(Sample::default())
     })?;
     Ok(Case {
         tier: "runtime-l3",
@@ -279,6 +321,8 @@ fn runtime_case(args: &Args) -> Result<Case, Box<dyn std::error::Error>> {
         mode: "no-handler",
         mount_ms,
         hover_ms,
+        dispatch_ms: None,
+        settle_ms: None,
     })
 }
 

@@ -52,8 +52,9 @@ macOS / Apple Silicon，`--release`，每档 60 次预热 + 400 次计时移动�
    的 `bare` 已经在付同样的价。
 2. **两条路都还是 O(节点数)。** 比值从 250 行的 16x 收敛到 2,000 行的 8x，说明修掉的那部分
    比留下的部分增长更快。
-3. **`reactive` 是 `bare` 的 ~48 倍，且没有改善。** 一个 render function 拥有全部行时，
-   hover 改一个 `ref` 会让 Vue patch 整列。这是**写法问题不是框架成本**，框架侧改不掉。
+3. **`reactive` 是 `bare` 的约 40 倍，且没有改善。** 一个 render function 拥有全部行时，
+   hover 改一个 `ref` 会让 Vue patch 整列。成因和一条可行的框架侧修法见
+   [§`reactive` 的成因](#reactive-的成因每行两次-patchprop而-style-从不比较)。
 
 放进帧预算看：2,000 行时 Vue 一次鼠标移动 `bare` 占 16.67 ms 的 2.3%（修复前 8.7%），
 `reactive` 仍要 18.7 ms——超过一整帧。
@@ -99,16 +100,67 @@ macOS / Apple Silicon，`--release`，每档 60 次预热 + 400 次计时移动�
 （`write_layout_boxes` 的 `overwrite = false` 分支）。第一版回归测试断言"移动过的盒子必须
 到达文档"，那是在断言一个不存在的契约——测试错了，不是代码错了。现在测的是扩大范围。
 
-## 还剩什么
+## 还剩什么：一次事件的两半
 
-修复后 2,000 行仍有 0.389 ms/事件，仍然 O(n)，来自 `dispatch_pointer` 自身和
-`flush_scene_frame`（后者按 document order 走全树记录绘制盒）。L3 侧的 `flush` 有对应的
-O(n) 活，这也是两边比值只有 8 倍而不是更大的原因。**L3 的 hover 同样是 O(总节点数)**——
-2,000 行里只有 20 行可见、指针不改变任何布局，仍然 0.048 ms 且线性增长。两边都还有空间。
+基准现在把每个 Vue 事件拆成 `dispatch`（指针进入这一层：命中、DOM 事件送进 JS、随之而来的
+patch、一次 host 帧泵）和 `settle`（`flush_scene_frame`：提交 host op、跑 Runtime 系统、
+重录每个绘制盒）。2,000 行、P50 ms：
 
-`sync_scene_layout_boxes` 与 `resolve_layout` 的函数体几乎相同，目前**没有**加门，因为它的
-调用方不是每事件路径。要加的话是同一把钥匙。
+| 模式 | 总计 | dispatch | settle |
+| --- | ---: | ---: | ---: |
+| `bare` | 0.379 | **0.061** | 0.315 |
+| `listeners` | 0.375 | 0.061 | 0.312 |
+| `reactive` | 15.20 | **14.75** | 0.458 |
 
+**dispatch 是常数。** 250 → 2,000 行全都是 0.055–0.061 ms。事件本身的派发路径不随树增长，
+之前那 22–31 倍里没有一分是"把事件送进 JS"。
+
+### O(n) 全在 `flush_scene_frame`
+
+`settle` 是唯一还随树线性增长的部分（0.039 → 0.077 → 0.152 → 0.315 ms）。它内部分三段，
+2,000 行 ms/事件：
+
+| 段 | 耗时 |
+| --- | ---: |
+| `doc.flush_host_frame()` + `report_commit_rejections` | 0.135 |
+| `flush_runtime_scene`（`RuntimeDocument::flush`） | **0.0002** |
+| `document_order` 遍历 + `node_bounds` + `layout_boxes.record` | 0.184 |
+
+Runtime 自己的 flush 在无脏数据时**已经几乎免费**——它自己挡得很好。剩下两段是 Vue 层
+自己的全树遍历：每帧把每个节点的绘制盒重新收集一遍（一个全量 `Vec`）再逐个 `record`，
+而 `record` 每次取三把锁，2,000 行就是每事件 6,000 次加解锁，产出与上一帧完全相同的值。
+
+同一把钥匙适用：`LayoutBoxStore::revision` 现在已经能回答"这一帧录进去的东西变了没有"，
+所以这段可以按 Scene 有没有实际变化跳过。没做，因为它不在这次改动范围内。
+
+L3 的 `no-handler` 同样是 O(n)（0.0063 → 0.0447 ms），来自它自己的 `flush`。两边剩下的
+线性成本是同一类东西，这也是比值只有 8 倍而不是更大的原因。
+
+### `reactive` 的成因：每行两次 `patchProp`，而 `style` 从不比较
+
+`reactive` 的 14.75 ms 全在 dispatch 内。在 V8↔Rust 边界上计数，2,000 行**每个指针事件
+发生 4,001 次 `patchProp`**，合计 10.8 ms（其余约 7 ms 在 JS 侧：Vue 对 2,000 个 vnode 的
+diff 加上跨界值转换）。
+
+一次 hover 只有一行的颜色变了，为什么是 4,001 次？因为 render function 每次都重建整列，
+而每行有两个 prop 的**引用**每次都是新的：
+
+- `style` 是一个新的对象字面量；
+- `onPointerenter` 是一个新的箭头函数。
+
+Vue 的 `patchProp` 按引用判断变化，于是两个都对所有 2,000 行触发。把处理器提到渲染外
+（缓存住身份）验证过：调用数 4,001 → 2,001，但耗时只降 9%——**贵的是 `style` 那一半**，
+每次约 4.9 µs，而监听器那半只有 0.5 µs。
+
+`style` 贵是因为它进 CSS 级联。而
+[`createNanaRenderer.js`](../packages/nanavue-runtime/src/createNanaRenderer.js) 的
+`patchProp` 拿到了 Vue 给的 `prev`，**却在 style 分支里没有用它**：清洗完就无条件
+`hostCall("patchProp", ...)`。
+
+所以这不只是写法问题——**渲染器可以按值比较而不是按引用**：清洗后的声明与上次送出的相同
+就不过界。那会让"内联 style 对象 + 长列表"这一整类应用的这项成本消失。这条还没做。
+
+应用侧同时仍然值得做的：把行拆成各自的组件，这样一个 `ref` 变化只 patch 一行而不是整列。
 ## 怎么复现
 
 ```bash
