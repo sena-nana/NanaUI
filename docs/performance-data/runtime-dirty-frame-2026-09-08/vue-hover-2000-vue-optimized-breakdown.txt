@@ -1,0 +1,124 @@
+[bare] mean per event over 460 events (dispatch | settle):
+  svg_rasters                         0.0000 | 0.0000
+  flush_host_frame                    0.0000 | 0.0000
+  sync_semantics                      0.0000 | 0.0000
+    reparent_orphans                  0.0000 | 0.0000
+    sync_sidebar_footer               0.0000 | 0.0000
+    sync_layout_containing_blocks     0.0000 | 0.0000
+    sync_semantics_from_bridge        0.0000 | 0.0000
+  resolve_layout                      0.0000 | 0.0000
+    resolve_layout_passes              0.000 | 0.000
+      prepare_semantic_styles         0.0000 | 0.0000
+      apply_semantic_styles           0.0000 | 0.0000
+        flush_runtime_systems         0.0000 | 0.0005
+        projected_widgets              0.000 | 0.000
+        flush_runtime_systems_calls     0.000 | 2.000
+    flush_host_frame_in_sync          0.0000 | 0.0000
+        · style build+compare         0.0000 | 0.0000
+        · project_migrating_component    0.0000 | 0.0000
+        · accessibility build+compare    0.0000 | 0.0000
+    · reparent collect_reachable      0.0000 | 0.0000
+    · find_sidebar_reparent_host      0.0000 | 0.0000
+    · reparent_sidebar_footer_slots    0.0000 | 0.0000
+        · try_bind_registered_component    0.0000 | 0.0000
+        · is_settings_row_projected_slot    0.0000 | 0.0000
+        · try_bind_calls               0.000 | 0.000
+          » resolve_widget_component_type    0.0000 | 0.0000
+          » bind_semantic_slots       0.0000 | 0.0000
+          » bind_semantic_copy        0.0000 | 0.0000
+          » tree_child_bind_options    0.0000 | 0.0000
+          » widget_icon               0.0000 | 0.0000
+          » prepare_semantic_binding    0.0000 | 0.0000
+[listeners] mean per event over 460 events (dispatch | settle):
+  svg_rasters                         0.0000 | 0.0000
+  flush_host_frame                    0.0000 | 0.0000
+  sync_semantics                      0.0000 | 0.0000
+    reparent_orphans                  0.0000 | 0.0000
+    sync_sidebar_footer               0.0000 | 0.0000
+    sync_layout_containing_blocks     0.0000 | 0.0000
+    sync_semantics_from_bridge        0.0000 | 0.0000
+  resolve_layout                      0.0000 | 0.0000
+    resolve_layout_passes              0.000 | 0.000
+      prepare_semantic_styles         0.0000 | 0.0000
+      apply_semantic_styles           0.0000 | 0.0000
+        flush_runtime_systems         0.0000 | 0.0005
+        projected_widgets              0.000 | 0.000
+        flush_runtime_systems_calls     0.000 | 2.000
+    flush_host_frame_in_sync          0.0000 | 0.0000
+        · style build+compare         0.0000 | 0.0000
+        · project_migrating_component    0.0000 | 0.0000
+        · accessibility build+compare    0.0000 | 0.0000
+    · reparent collect_reachable      0.0000 | 0.0000
+    · find_sidebar_reparent_host      0.0000 | 0.0000
+    · reparent_sidebar_footer_slots    0.0000 | 0.0000
+        · try_bind_registered_component    0.0000 | 0.0000
+        · is_settings_row_projected_slot    0.0000 | 0.0000
+        · try_bind_calls               0.000 | 0.000
+          » resolve_widget_component_type    0.0000 | 0.0000
+          » bind_semantic_slots       0.0000 | 0.0000
+          » bind_semantic_copy        0.0000 | 0.0000
+          » tree_child_bind_options    0.0000 | 0.0000
+          » widget_icon               0.0000 | 0.0000
+          » prepare_semantic_binding    0.0000 | 0.0000
+[reactive] mean per event over 460 events (dispatch | settle):
+  svg_rasters                         0.0000 | 0.0000
+  flush_host_frame                    0.0000 | 0.0000
+  sync_semantics                      0.0000 | 0.7581
+    reparent_orphans                  0.0000 | 0.0019
+    sync_sidebar_footer               0.0000 | 0.0792
+    sync_layout_containing_blocks     0.0000 | 0.1229
+    sync_semantics_from_bridge        0.0000 | 0.5532
+  resolve_layout                      0.0000 | 0.0001
+    resolve_layout_passes              1.000 | 0.000
+      prepare_semantic_styles         0.0000 | 0.2234
+      apply_semantic_styles           0.0000 | 0.3293
+        flush_runtime_systems         0.3780 | 0.2972
+        projected_widgets              0.000 | 4.998
+        flush_runtime_systems_calls     2.000 | 5.000
+    flush_host_frame_in_sync          0.0000 | 0.0002
+        · style build+compare         0.0000 | 0.0038
+        · project_migrating_component    0.0000 | 0.1617
+        · accessibility build+compare    0.0000 | 0.0003
+    · reparent collect_reachable      0.0000 | 0.0000
+    · find_sidebar_reparent_host      0.0000 | 0.0000
+    · reparent_sidebar_footer_slots    0.0000 | 0.0000
+        · try_bind_registered_component    0.0000 | 0.1593
+        · is_settings_row_projected_slot    0.0000 | 0.0003
+        · try_bind_calls               0.000 | 4.998
+          » resolve_widget_component_type    0.0000 | 0.0020
+          » bind_semantic_slots       0.0000 | 0.1153
+          » bind_semantic_copy        0.0000 | 0.0001
+          » tree_child_bind_options    0.0000 | 0.0003
+          » widget_icon               0.0000 | 0.0295
+          » prepare_semantic_binding    0.0000 | 0.0064
+[reactive-components] mean per event over 460 events (dispatch | settle):
+  svg_rasters                         0.0000 | 0.0000
+  flush_host_frame                    0.0000 | 0.0000
+  sync_semantics                      0.0000 | 0.6579
+    reparent_orphans                  0.0000 | 0.0019
+    sync_sidebar_footer               0.0000 | 0.0805
+    sync_layout_containing_blocks     0.0000 | 0.0980
+    sync_semantics_from_bridge        0.0000 | 0.4768
+  resolve_layout                      0.0000 | 0.0000
+    resolve_layout_passes              1.000 | 0.000
+      prepare_semantic_styles         0.0000 | 0.1766
+      apply_semantic_styles           0.0000 | 0.2996
+        flush_runtime_systems         0.2959 | 0.2734
+        projected_widgets              0.000 | 4.998
+        flush_runtime_systems_calls     2.000 | 5.000
+    flush_host_frame_in_sync          0.0000 | 0.0002
+        · style build+compare         0.0000 | 0.0031
+        · project_migrating_component    0.0000 | 0.1208
+        · accessibility build+compare    0.0000 | 0.0002
+    · reparent collect_reachable      0.0000 | 0.0000
+    · find_sidebar_reparent_host      0.0000 | 0.0000
+    · reparent_sidebar_footer_slots    0.0000 | 0.0000
+        · try_bind_registered_component    0.0000 | 0.1189
+        · is_settings_row_projected_slot    0.0000 | 0.0003
+        · try_bind_calls               0.000 | 4.998
+          » resolve_widget_component_type    0.0000 | 0.0015
+          » bind_semantic_slots       0.0000 | 0.0769
+          » bind_semantic_copy        0.0000 | 0.0001
+          » tree_child_bind_options    0.0000 | 0.0003
+          » widget_icon               0.0000 | 0.0304
+          » prepare_semantic_binding    0.0000 | 0.0052
