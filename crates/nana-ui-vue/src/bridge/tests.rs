@@ -5778,3 +5778,51 @@ fn a_replace_does_not_create_or_destroy_a_widget() {
     assert!(bridge.get(1).is_some() && bridge.get(2).is_some());
     assert_eq!(item_width(&bridge), Some(LengthSpec::Px(40.0)));
 }
+
+/// `sync_sidebar_footer_into_document` returns early when the document has no
+/// `SidebarFrame` at all, because everything it does needs one.
+///
+/// The early return replaces a whole-tree reachability walk that allocated a
+/// `HashSet` of every widget id, every frame, to establish there was nothing to
+/// do -- 0.079 ms per pointer event on a 2,000-row document with no sidebar.
+/// This holds the half that has to keep working: with a frame present, the
+/// footer slot and its content still reach the document.
+#[test]
+fn the_sidebar_footer_sync_still_runs_when_there_is_a_frame() {
+    // Bridge widget ids and document handles are the same numbering, so the
+    // document nodes have to be created first and their handles reused.
+    let mut doc = crate::tree::NanaTreeDocument::new(400, 300, 1.0);
+    let doc_root = doc.create_element("div");
+    let body = doc.create_element("div");
+    let frame_h = doc.create_element("div");
+    let footer_h = doc.create_element("div");
+    let content_h = doc.create_element("div");
+
+    let mut bridge = MessageBridge::new();
+    let mut frame = WidgetProps::default();
+    frame.element_tag = "nana-sidebar-frame".into();
+    frame.class_names = vec!["nana-sidebar-frame".into()];
+    bridge.ensure_document_roots(doc_root.0, body.0);
+    bridge.register(frame_h.0, WidgetKind::SidebarFrame, frame);
+    bridge.insert_child(frame_h.0, body.0, None);
+    let mut footer = WidgetProps::default();
+    footer.class_names = vec!["nana-sidebar-frame__footer".into()];
+    bridge.register(footer_h.0, WidgetKind::Column, footer);
+    bridge.insert_child(footer_h.0, frame_h.0, None);
+    let mut content = WidgetProps::default();
+    content.class_names = vec!["sb-footer".into()];
+    bridge.register(content_h.0, WidgetKind::Column, content);
+    bridge.insert_child(content_h.0, footer_h.0, None);
+
+    bridge.sync_sidebar_footer_into_document(&mut doc);
+    assert_eq!(
+        doc.parent_node(footer_h),
+        Some(frame_h),
+        "the footer slot must still be inserted under the frame"
+    );
+    assert_eq!(
+        doc.parent_node(content_h),
+        Some(footer_h),
+        "the footer content must still be inserted under the slot"
+    );
+}
