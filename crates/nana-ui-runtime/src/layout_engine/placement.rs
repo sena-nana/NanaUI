@@ -372,7 +372,7 @@ pub(super) fn place_node_scoped(
     {
         match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
             PlanCheck::Unchanged => {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "benchmark"))]
                 super::plan_stats::note_plan_reused();
                 for index in plan.affected_entries(scope) {
                     let (child, origin, size) = {
@@ -403,7 +403,7 @@ pub(super) fn place_node_scoped(
                 if replay_sequential_suffix(
                     id, plan, from, viewport, nodes, intrinsic, output, scope,
                 )? {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "benchmark"))]
                     super::plan_stats::note_plan_reused();
                     return Ok(());
                 }
@@ -480,7 +480,7 @@ pub(super) fn place_node_scoped(
         } else {
             content
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "benchmark"))]
         super::plan_stats::note_child_measured();
         child_sizes.push(intrinsic_size_scoped(
             *child,
@@ -518,6 +518,8 @@ pub(super) fn place_node_scoped(
             .collect()
     });
     if !cacheable {
+        #[cfg(any(test, feature = "benchmark"))]
+        super::plan_stats::note_container_uncacheable();
         // Retire a plan recorded while this container was still cacheable.
         nodes.container_plans.insert(id, None);
     }

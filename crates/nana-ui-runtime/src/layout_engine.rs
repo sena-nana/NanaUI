@@ -168,6 +168,8 @@ impl RuntimeLayoutEngine {
         for id in &affected {
             retained.intrinsics.remove(id);
         }
+        #[cfg(any(test, feature = "benchmark"))]
+        plan_stats::note_scope(dirty.len(), affected.len());
         let scope = ScopeContext {
             affected: &affected,
             retained: &*retained,
@@ -268,6 +270,8 @@ impl RuntimeLayoutEngine {
         // world, not the partial input map.
         let universe = if force_full { nodes.len() } else { world.len() };
         if retained.boxes.len() > universe.saturating_mul(2) {
+            #[cfg(any(test, feature = "benchmark"))]
+            plan_stats::note_retain_sweep();
             retained.boxes.retain(|id, _| world.contains(*id));
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
@@ -469,18 +473,53 @@ impl DocumentLayoutCache {
 /// The differential harness proves the result is CORRECT; these counters prove
 /// it is cheap. Without them a "fix" that quietly relayouts every sibling still
 /// passes every equivalence test.
-#[cfg(test)]
-pub(crate) mod plan_stats {
+#[cfg(any(test, feature = "benchmark"))]
+pub mod plan_stats {
     use std::cell::Cell;
 
     thread_local! {
         static PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
         static CHILDREN_MEASURED: Cell<usize> = const { Cell::new(0) };
+        static CONTAINERS_UNCACHEABLE: Cell<usize> = const { Cell::new(0) };
+        static DIRTY_SEEDS: Cell<usize> = const { Cell::new(0) };
+        static AFFECTED: Cell<usize> = const { Cell::new(0) };
+        static RETAIN_SWEEPS: Cell<usize> = const { Cell::new(0) };
     }
 
-    pub(crate) fn reset() {
+    pub(crate) fn note_scope(dirty: usize, affected: usize) {
+        DIRTY_SEEDS.with(|cell| cell.set(cell.get() + dirty));
+        AFFECTED.with(|cell| cell.set(cell.get() + affected));
+    }
+
+    pub(crate) fn note_retain_sweep() {
+        RETAIN_SWEEPS.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    /// Nodes handed to `layout_document_scoped` as the change closure seed.
+    #[cfg(feature = "benchmark")]
+    pub fn dirty_seeds() -> usize {
+        DIRTY_SEEDS.with(Cell::get)
+    }
+
+    /// Seeds plus their ancestors: what the pass actually walks.
+    #[cfg(feature = "benchmark")]
+    pub fn affected() -> usize {
+        AFFECTED.with(Cell::get)
+    }
+
+    /// Times the retained caches were swept for despawned ids.
+    #[cfg(feature = "benchmark")]
+    pub fn retain_sweeps() -> usize {
+        RETAIN_SWEEPS.with(Cell::get)
+    }
+
+    pub fn reset() {
         PLANS_REUSED.with(|cell| cell.set(0));
         CHILDREN_MEASURED.with(|cell| cell.set(0));
+        CONTAINERS_UNCACHEABLE.with(|cell| cell.set(0));
+        DIRTY_SEEDS.with(|cell| cell.set(0));
+        AFFECTED.with(|cell| cell.set(0));
+        RETAIN_SWEEPS.with(|cell| cell.set(0));
     }
 
     pub(crate) fn note_plan_reused() {
@@ -491,13 +530,24 @@ pub(crate) mod plan_stats {
         CHILDREN_MEASURED.with(|cell| cell.set(cell.get() + 1));
     }
 
-    pub(crate) fn plans_reused() -> usize {
+    /// A container that took the placement path but could not be cached, so it
+    /// will rescan its children on every future frame.
+    pub(crate) fn note_container_uncacheable() {
+        CONTAINERS_UNCACHEABLE.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    #[cfg(feature = "benchmark")]
+    pub fn containers_uncacheable() -> usize {
+        CONTAINERS_UNCACHEABLE.with(Cell::get)
+    }
+
+    pub fn plans_reused() -> usize {
         PLANS_REUSED.with(Cell::get)
     }
 
     /// Children a container had to intrinsic-measure during its own placement.
     /// This is the sibling scan that used to make every dirty frame O(N).
-    pub(crate) fn children_measured() -> usize {
+    pub fn children_measured() -> usize {
         CHILDREN_MEASURED.with(Cell::get)
     }
 }

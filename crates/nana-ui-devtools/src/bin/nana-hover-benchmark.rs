@@ -378,7 +378,10 @@ fn vue_case(
             let counter = name.trim() == "resolve_layout_passes"
                 || name.trim() == "projected_widgets"
                 || name.trim() == "flush_runtime_systems_calls"
-                || name.trim() == "· try_bind_calls";
+                || name.trim() == "· try_bind_calls"
+                || name.trim().starts_with('#')
+                || name.trim().starts_with('%')
+                || name.trim().starts_with('&');
             let events = settle_events as f64;
             if counter {
                 eprintln!(

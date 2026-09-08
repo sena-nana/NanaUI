@@ -3090,6 +3090,56 @@ impl NanaTreeDocument {
             .runtime_document_mut()
             .flush(viewport, &mut shaper)
             .expect("vue runtime frame");
+        #[cfg(feature = "benchmark")]
+        {
+            crate::frame_profile::add(39, nana_ui_runtime::plan_stats::plans_reused() as u64);
+            crate::frame_profile::add(
+                40,
+                nana_ui_runtime::plan_stats::containers_uncacheable() as u64,
+            );
+            crate::frame_profile::add(41, nana_ui_runtime::plan_stats::children_measured() as u64);
+            crate::frame_profile::add(46, nana_ui_runtime::plan_stats::dirty_seeds() as u64);
+            crate::frame_profile::add(47, nana_ui_runtime::plan_stats::affected() as u64);
+            crate::frame_profile::add(48, nana_ui_runtime::plan_stats::retain_sweeps() as u64);
+            nana_ui_runtime::plan_stats::reset();
+            // The four sub-stages inside `FrameStage::Layout`:
+            // tooltip positioning, the engine itself, layout writeback plus its
+            // commit, and scroll-metric publication.
+            let substages = self
+                .runtime
+                .runtime_document_mut()
+                .context_mut()
+                .take_layout_substage_totals();
+            for (slot, elapsed) in (42..46).zip(substages) {
+                crate::frame_profile::record(slot, elapsed);
+            }
+            crate::frame_profile::add(30, update.accessibility.updated.len() as u64);
+            crate::frame_profile::add(31, update.scene.updated_nodes as u64);
+            crate::frame_profile::add(32, update.passes as u64);
+            // `last_frame_profile` RETAINS the last non-idle frame, so reading
+            // it after an idle flush hands back an older frame's stages. Four
+            // of the five flushes an event makes are idle, so reading
+            // unconditionally counted the one real frame five times.
+            if !update.is_idle() {
+                let profile = self
+                    .runtime
+                    .runtime_document()
+                    .context()
+                    .last_frame_profile();
+                for (slot, stage) in [
+                    (33, nana_ui_runtime::FrameStage::Style),
+                    (34, nana_ui_runtime::FrameStage::TextShape),
+                    (35, nana_ui_runtime::FrameStage::Layout),
+                    (36, nana_ui_runtime::FrameStage::HitTest),
+                    (37, nana_ui_runtime::FrameStage::Accessibility),
+                    (38, nana_ui_runtime::FrameStage::Extract),
+                ] {
+                    if let Some(timing) = profile.stage(stage) {
+                        crate::frame_profile::record(slot, timing.duration);
+                    }
+                }
+            }
+        }
         self.record_accessibility_delta(update.accessibility);
     }
 

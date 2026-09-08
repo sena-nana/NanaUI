@@ -40,6 +40,11 @@ mod hover_card;
 mod image_viewer;
 mod key_layers;
 mod layout_engine;
+/// Benchmark-only view of whether scoped layout actually reused its cached
+/// container placements. Hosts use it to tell "the dirty set is small" apart
+/// from "the frame was cheap".
+#[cfg(feature = "benchmark")]
+pub use layout_engine::plan_stats;
 mod menus;
 mod mutation;
 mod native_content;

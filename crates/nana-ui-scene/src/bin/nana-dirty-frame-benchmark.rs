@@ -171,7 +171,7 @@ fn row_layout() -> Arc<LayoutStyle> {
 }
 
 /// A flat column of `rows` rows, each with one text label. 2 * rows + 2 nodes.
-fn build(rows: usize) -> RuntimeDocument {
+fn build(shape: Shape, rows: usize) -> RuntimeDocument {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
     let mut queue = MutationQueue::new();
@@ -183,7 +183,9 @@ fn build(rows: usize) -> RuntimeDocument {
         NodeStyle {
             layout: Arc::new(LayoutStyle {
                 width: Some(LengthSpec::Px(300.0)),
-                height: Some(LengthSpec::Fill),
+                // Content-sized on the main axis for `NestedAuto`: the
+                // container's own height then depends on its children.
+                height: (shape != Shape::NestedAuto).then_some(LengthSpec::Fill),
                 direction: Some(FlexDirection::Column),
                 ..LayoutStyle::default()
             }),
@@ -230,6 +232,11 @@ enum Shape {
     /// row can shift. The list container is dirty and must still not pay for
     /// its other children.
     Nested,
+    /// `Nested`, but the container is CONTENT-SIZED. Its own height depends on
+    /// its children, so the definite-size short circuit in
+    /// `intrinsic_size_scoped` cannot fire and it re-measures every child --
+    /// even though each one hits the retained intrinsic memo and is unchanged.
+    NestedAuto,
 }
 
 /// Where in the document the dirty rows sit.
@@ -265,6 +272,7 @@ impl Shape {
             "paint" => Some(Self::Paint),
             "layout" => Some(Self::Layout),
             "nested" => Some(Self::Nested),
+            "nested-auto" => Some(Self::NestedAuto),
             _ => None,
         }
     }
@@ -274,6 +282,7 @@ impl Shape {
             Self::Paint => "paint",
             Self::Layout => "layout",
             Self::Nested => "nested",
+            Self::NestedAuto => "nested-auto",
         }
     }
 }
@@ -296,7 +305,7 @@ fn dirty(context: &mut AppContext, shape: Shape, targets: &[usize], toggled: boo
                 }),
                 ..NodeStyle::default()
             },
-            Shape::Nested => NodeStyle {
+            Shape::Nested | Shape::NestedAuto => NodeStyle {
                 layout: Arc::new(LayoutStyle {
                     width: Some(LengthSpec::Px(if toggled { 90.0 } else { 80.0 })),
                     height: Some(LengthSpec::Px(12.0)),
@@ -306,7 +315,7 @@ fn dirty(context: &mut AppContext, shape: Shape, targets: &[usize], toggled: boo
             },
         };
         let target = match shape {
-            Shape::Nested => label_id(*row),
+            Shape::Nested | Shape::NestedAuto => label_id(*row),
             _ => row_id(*row),
         };
         queue.set_style(target, style);
@@ -330,7 +339,7 @@ fn measure(
     samples: usize,
     warmup: usize,
 ) -> Cell {
-    let mut runtime = build(rows);
+    let mut runtime = build(shape, rows);
     let viewport = LayoutViewport::new(300.0, 800.0);
     let mut shaper = MeasureTextShaper;
     // Mount. This is the one full frame; everything after it is incremental.
@@ -476,7 +485,14 @@ fn main() {
         .and_then(|index| args.get(index + 1))
         .and_then(|raw| Shape::parse(raw))
         .map_or_else(
-            || vec![Shape::Paint, Shape::Layout, Shape::Nested],
+            || {
+                vec![
+                    Shape::Paint,
+                    Shape::Layout,
+                    Shape::Nested,
+                    Shape::NestedAuto,
+                ]
+            },
             |shape| vec![shape],
         );
 

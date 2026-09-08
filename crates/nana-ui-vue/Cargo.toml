@@ -21,7 +21,7 @@ components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", 
 default = []
 full = ["components", "hosted", "syntax-highlighting"]
 syntax-highlighting = ["nana-ui-runtime/syntax-highlighting", "nana-ui?/syntax-highlighting"]
-benchmark = ["dep:serde", "dep:serde_json"]
+benchmark = ["dep:serde", "dep:serde_json", "nana-ui-runtime/benchmark"]
 # Development-only reload. Off by default and never enabled by `full`: a product
 # build has no reason to carry a routine that tears its own tree down. The
 # enforcement that this cannot ship lives in `nana-ui-dev`, which refuses to

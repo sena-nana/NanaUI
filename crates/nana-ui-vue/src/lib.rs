@@ -88,7 +88,7 @@ pub mod frame_profile {
     use std::cell::RefCell;
     use std::time::{Duration, Instant};
 
-    pub const PHASES: [&str; 30] = [
+    pub const PHASES: [&str; 49] = [
         "svg_rasters",
         "flush_host_frame",
         "sync_semantics",
@@ -119,6 +119,25 @@ pub mod frame_profile {
         "        » tree_child_bind_options",
         "        » widget_icon",
         "        » prepare_semantic_binding",
+        "      # a11y nodes published",
+        "      # scene nodes updated",
+        "      # flush passes",
+        "      $ Style",
+        "      $ TextShape",
+        "      $ Layout",
+        "      $ HitTest",
+        "      $ Accessibility",
+        "      $ Extract",
+        "      % plans reused",
+        "      % containers uncacheable",
+        "      % children measured",
+        "        ^ tooltips",
+        "        ^ engine",
+        "        ^ writeback+commit",
+        "        ^ scroll metrics",
+        "        & dirty seeds",
+        "        & affected closure",
+        "        & retain sweeps",
     ];
 
     thread_local! {
