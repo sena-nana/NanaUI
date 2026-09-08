@@ -1253,10 +1253,24 @@ impl NanaTreeDocument {
             }
             return;
         }
+        #[cfg(not(feature = "benchmark"))]
         self.flush_host_frame();
+        #[cfg(feature = "benchmark")]
+        crate::frame_profile::timed(14, || self.flush_host_frame());
         let changes = bridge.take_snapshot_changes();
-        let prepared = self.prepare_semantic_styles(&SemanticRead::bridge(bridge, self, changes));
-        self.apply_semantic_styles(prepared);
+        #[cfg(not(feature = "benchmark"))]
+        {
+            let prepared =
+                self.prepare_semantic_styles(&SemanticRead::bridge(bridge, self, changes));
+            self.apply_semantic_styles(prepared);
+        }
+        #[cfg(feature = "benchmark")]
+        {
+            let read = SemanticRead::bridge(bridge, self, changes);
+            let prepared = crate::frame_profile::timed(9, || self.prepare_semantic_styles(&read));
+            drop(read);
+            crate::frame_profile::timed(10, || self.apply_semantic_styles(prepared));
+        }
     }
 
     fn prepare_semantic_styles(&self, snapshot: &SemanticRead<'_>) -> PreparedSemanticSync {
@@ -1272,6 +1286,8 @@ impl NanaTreeDocument {
             mutations.set_theme(snapshot.theme);
         }
         let projected = snapshot.projection_ids(full_pass);
+        #[cfg(feature = "benchmark")]
+        crate::frame_profile::add(12, projected.len() as u64);
         for raw_id in &projected {
             let Some(widget) = snapshot.get(*raw_id) else {
                 continue;
@@ -1372,15 +1388,19 @@ impl NanaTreeDocument {
                 // their own visible label later in the same transaction.
                 mutations.set_text_input(id, None);
             }
-            if project_migrating_component(
-                widget,
-                snapshot,
-                id,
-                self.runtime.context(),
-                &mut mutations,
-                &mut pending,
-            ) || is_shell_composer_slot(snapshot, widget)
-            {
+            let migrated = {
+                #[cfg(feature = "benchmark")]
+                let _timer = crate::frame_profile::ScopeTimer::new(16);
+                project_migrating_component(
+                    widget,
+                    snapshot,
+                    id,
+                    self.runtime.context(),
+                    &mut mutations,
+                    &mut pending,
+                )
+            };
+            if migrated || is_shell_composer_slot(snapshot, widget) {
                 // The component consumed `props.layout` when it was built and
                 // now owns this node's LayoutStyle. Record it so the cascade
                 // writeback leaves the projected geometry alone.
@@ -1392,18 +1412,23 @@ impl NanaTreeDocument {
                 }
                 continue;
             }
-            let style = NodeStyle {
-                layout: Arc::new(widget.props.layout.clone()),
-                foreground: widget
-                    .props
-                    .muted
-                    .then_some(nana_ui_core::SemanticColorRole::Muted),
-                background: None,
-                border: None,
-                interaction: nana_ui_runtime::InteractionStyle::default(),
-                ..NodeStyle::default()
+            let changed_style = {
+                #[cfg(feature = "benchmark")]
+                let _timer = crate::frame_profile::ScopeTimer::new(15);
+                let style = NodeStyle {
+                    layout: Arc::new(widget.props.layout.clone()),
+                    foreground: widget
+                        .props
+                        .muted
+                        .then_some(nana_ui_core::SemanticColorRole::Muted),
+                    background: None,
+                    border: None,
+                    interaction: nana_ui_runtime::InteractionStyle::default(),
+                    ..NodeStyle::default()
+                };
+                (self.runtime.node_style(id) != Some(&style)).then_some(style)
             };
-            if self.runtime.node_style(id) != Some(&style) {
+            if let Some(style) = changed_style {
                 mutations.set_style(id, style);
             }
             let interaction = InteractionState {
@@ -1485,8 +1510,12 @@ impl NanaTreeDocument {
                 invalid: widget.props.invalid,
                 ..AccessibilityState::default()
             };
-            if self.runtime.accessibility(id) != Some(&accessibility) {
-                mutations.set_accessibility(id, accessibility);
+            {
+                #[cfg(feature = "benchmark")]
+                let _timer = crate::frame_profile::ScopeTimer::new(17);
+                if self.runtime.accessibility(id) != Some(&accessibility) {
+                    mutations.set_accessibility(id, accessibility);
+                }
             }
             if matches!(widget.kind, crate::WidgetKind::Text) {
                 let label = widget.props.display_label();
@@ -3046,6 +3075,10 @@ impl NanaTreeDocument {
     }
 
     fn flush_runtime_systems(&mut self) {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(11);
+        #[cfg(feature = "benchmark")]
+        crate::frame_profile::count(13);
         let viewport =
             LayoutViewport::new(self.logical_width.max(1.0), self.logical_height.max(1.0));
         #[cfg(feature = "scene-view")]

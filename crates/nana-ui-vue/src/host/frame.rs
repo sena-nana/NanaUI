@@ -17,11 +17,7 @@ impl VueHost {
         // document derives its logical size from the physical viewport and the
         // scale factor, so a caller passing its own numbers was a second source
         // that agreed only at scale 1.
-        let (logical_width, logical_height) = self
-            .document
-            .lock()
-            .expect("vue doc")
-            .logical_size();
+        let (logical_width, logical_height) = self.document.lock().expect("vue doc").logical_size();
         {
             let mut doc = self.document.lock().expect("vue doc");
             doc.flush_host_frame();
@@ -157,9 +153,19 @@ impl VueHost {
             Err(_) => true,
         };
         if needs_snapshot {
+            #[cfg(not(feature = "benchmark"))]
             self.sync_semantics();
+            #[cfg(feature = "benchmark")]
+            crate::frame_profile::timed(2, || self.sync_semantics());
         }
+        #[cfg(not(feature = "benchmark"))]
         self.resolve_layout();
+        #[cfg(feature = "benchmark")]
+        {
+            let started = std::time::Instant::now();
+            self.resolve_layout();
+            crate::frame_profile::record(7, started.elapsed());
+        }
         if let Ok(mut document) = self.document.lock() {
             document.sync_svg_rasters();
         }
@@ -194,6 +200,8 @@ impl VueHost {
         // turn that into a hang instead of a stale frame.
         const MAX_RESOLVE_PASSES: usize = 8;
         for _ in 0..MAX_RESOLVE_PASSES {
+            #[cfg(feature = "benchmark")]
+            crate::frame_profile::count(8);
             if !self.resolve_layout_uncached() {
                 break;
             }
@@ -486,10 +494,7 @@ mod equivalence {
         let document_slot = host.document();
         let document = document_slot.lock().expect("vue doc");
         let runtime = document.runtime_document();
-        let ids = runtime
-            .context()
-            .world()
-            .document_order(runtime.document());
+        let ids = runtime.context().world().document_order(runtime.document());
         let painted = ids
             .into_iter()
             .map(|id| {

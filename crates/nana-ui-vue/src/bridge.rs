@@ -1664,6 +1664,15 @@ impl MessageBridge {
         if !self.scaffolded {
             return;
         }
+        // Every path below needs a `SidebarFrame`: this function only reparents
+        // orphaned ones, and `reparent_sidebar_footer_slots` needs a reachable
+        // one to hang a footer on. Without any, the whole thing is a no-op --
+        // but proving that used to cost a full tree walk plus a scan of every
+        // widget's class names, twice per pointer event, on documents that have
+        // no sidebar at all.
+        if !self.has_sidebar_frame() {
+            return;
+        }
         let Some(workspace_row) = self.find_sidebar_reparent_host() else {
             self.reparent_sidebar_footer_slots();
             return;
@@ -1680,8 +1689,12 @@ impl MessageBridge {
             return;
         }
         let mut reachable = std::collections::HashSet::new();
-        for &root in &self.roots {
-            self.collect_reachable(root, &mut reachable);
+        {
+            #[cfg(feature = "benchmark")]
+            let _timer = crate::frame_profile::ScopeTimer::new(18);
+            for &root in &self.roots {
+                self.collect_reachable(root, &mut reachable);
+            }
         }
         let mut orphans: Vec<(WidgetId, usize)> = self
             .widgets
@@ -1735,6 +1748,11 @@ impl MessageBridge {
         if !self.scaffolded {
             return;
         }
+        if !self.has_sidebar_frame() {
+            return;
+        }
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(20);
         let reachable = self.roots_reachable();
         let Some(frame_id) = self.reachable_sidebar_frame(&reachable) else {
             return;
@@ -1837,6 +1855,17 @@ impl MessageBridge {
         reachable
     }
 
+    /// Whether any widget is a `SidebarFrame` at all.
+    ///
+    /// Still a scan, but of map values against an enum discriminant -- no
+    /// reachability set, no per-widget class-name comparisons. It exists to
+    /// make the far more expensive sidebar reparenting provably skippable.
+    fn has_sidebar_frame(&self) -> bool {
+        self.widgets
+            .values()
+            .any(|widget| matches!(widget.kind, WidgetKind::SidebarFrame))
+    }
+
     fn reachable_sidebar_frame(
         &self,
         reachable: &std::collections::HashSet<WidgetId>,
@@ -1847,6 +1876,8 @@ impl MessageBridge {
     }
 
     fn find_sidebar_reparent_host(&self) -> Option<WidgetId> {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(19);
         let mut reachable = std::collections::HashSet::new();
         for &root in &self.roots {
             self.collect_reachable(root, &mut reachable);

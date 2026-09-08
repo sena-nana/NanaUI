@@ -60,7 +60,7 @@ agent = [
     "nana-ui/components",
     "nana-ui/syntax-highlighting",
 ]
-agent-bin = ["agent", "dep:nana-js-v8", "nana-js-v8/engine"]
+agent-bin = ["agent", "dep:nana-js-v8", "nana-js-v8/engine", "nana-ui-vue/benchmark"]
 
 [dependencies]
 nana-js-engine.workspace = true

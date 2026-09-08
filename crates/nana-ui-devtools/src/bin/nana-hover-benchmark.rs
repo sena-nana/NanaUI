@@ -226,7 +226,10 @@ fn main() -> ExitCode {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Err(error) = std::fs::write(path, format!("{json}\n")) {
-                eprintln!("nana-hover-benchmark: cannot write {}: {error}", path.display());
+                eprintln!(
+                    "nana-hover-benchmark: cannot write {}: {error}",
+                    path.display()
+                );
                 return ExitCode::from(1);
             }
             println!("{}", path.display());
@@ -242,7 +245,10 @@ fn main() -> ExitCode {
 /// inside one row exercises neither tier's hover-change path.
 fn sweep(index: usize, rows: usize) -> (f32, f32) {
     let row = index % rows.min(HEIGHT as usize / ROW_HEIGHT as usize).max(1);
-    (WIDTH as f32 / 2.0, row as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0)
+    (
+        WIDTH as f32 / 2.0,
+        row as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0,
+    )
 }
 
 /// Run the sweep, timing only the timed pass.
@@ -322,23 +328,73 @@ fn vue_case(
     host.prepare_window_frame();
     let mount_ms = as_ms(started.elapsed());
     let shape = args.shape;
+    let mut settle_events = 0usize;
+    let mut settle_totals = [std::time::Duration::ZERO; nana_ui_vue::frame_profile::PHASES.len()];
+    let mut dispatch_totals = settle_totals;
     let (hover_ms, dispatch_ms, settle_ms) = measure(args, |x, y| {
+        // `flush_runtime_systems` runs in BOTH halves of an event, so the
+        // accumulator has to be drained between them or the settle column
+        // silently reports dispatch work as well.
+        let _ = nana_ui_vue::frame_profile::take();
         let started = Instant::now();
         host.dispatch_pointer(
             &mut engine,
             PointerInput::mouse(PointerEventKind::Move, x, y),
         )?;
         let dispatch = as_ms(started.elapsed());
+        for (total, phase) in dispatch_totals
+            .iter_mut()
+            .zip(nana_ui_vue::frame_profile::take())
+        {
+            *total += phase;
+        }
         let started = Instant::now();
         match shape {
             Shape::Window => host.prepare_window_frame(),
             Shape::Headless => host.flush_scene_frame()?,
         }
+        let settle = as_ms(started.elapsed());
+        for (total, phase) in settle_totals
+            .iter_mut()
+            .zip(nana_ui_vue::frame_profile::take())
+        {
+            *total += phase;
+        }
+        settle_events += 1;
         Ok(Sample {
             dispatch: Some(dispatch),
-            settle: Some(as_ms(started.elapsed())),
+            settle: Some(settle),
         })
     })?;
+    // Where the settle actually goes. Printed rather than serialized: it is a
+    // diagnostic for one question, not part of the report schema.
+    if settle_events > 0 {
+        eprintln!("[{mode}] mean per event over {settle_events} events (dispatch | settle):");
+        for ((name, dispatch), total) in nana_ui_vue::frame_profile::PHASES
+            .iter()
+            .zip(dispatch_totals)
+            .zip(settle_totals)
+        {
+            let counter = name.trim() == "resolve_layout_passes"
+                || name.trim() == "projected_widgets"
+                || name.trim() == "flush_runtime_systems_calls"
+                || name.trim() == "· try_bind_calls";
+            let events = settle_events as f64;
+            if counter {
+                eprintln!(
+                    "  {name:<32} {:>9.3} | {:.3}",
+                    dispatch.as_nanos() as f64 / events,
+                    total.as_nanos() as f64 / events
+                );
+            } else {
+                eprintln!(
+                    "  {name:<32} {:>9.4} | {:.4}",
+                    dispatch.as_secs_f64() * 1000.0 / events,
+                    total.as_secs_f64() * 1000.0 / events
+                );
+            }
+        }
+    }
     Ok(Case {
         tier: "vue",
         mode,

@@ -15,11 +15,17 @@ pub(crate) fn widget_icon(
     widget: &SemanticWidgetView<'_>,
     snapshot: &SemanticRead<'_>,
 ) -> Option<nana_ui_core::Icon> {
+    // Probe the kind without materializing each sibling's topology, then
+    // materialize only the one child that matched.
     widget
         .children
         .iter()
-        .filter_map(|child| snapshot.get(*child))
-        .find(|child| child.kind == crate::WidgetKind::Icon)
+        .find(|child| {
+            snapshot
+                .raw(**child)
+                .is_some_and(|child| child.kind == crate::WidgetKind::Icon)
+        })
+        .and_then(|child| snapshot.get(*child))
         .and_then(|widget| glyph_name_icon(&widget))
         .or_else(|| glyph_name_icon(widget))
 }
@@ -736,9 +742,12 @@ pub(crate) fn bind_semantic_slots(
         }
         slots.push((name.to_string(), id));
     };
+    // `raw` rather than `get`: this only reads one attribute, and paying for
+    // each sibling's topology memo is what made projecting a container cost
+    // O(its children).
     let data_slot = |name: &str| {
         widget.children.iter().find_map(|child| {
-            let child = snapshot.get(*child)?;
+            let child = snapshot.raw(*child)?;
             (child.props.attrs.get("data-slot").map(String::as_str) == Some(name))
                 .then(|| StableNodeId::new(child.id))
                 .flatten()
@@ -972,8 +981,11 @@ pub(crate) fn bind_semantic_slots(
             );
         }
         _ => {
+            // The generic pass-through: every child is probed for `data-slot`
+            // and almost none have one. `raw` keeps that probe to a hash lookup
+            // instead of materializing a view plus a topology entry per child.
             for &child in widget.children.iter() {
-                let Some(child) = snapshot.get(child) else {
+                let Some(child) = snapshot.raw(child) else {
                     continue;
                 };
                 let Some(id) = StableNodeId::new(child.id) else {
@@ -1077,7 +1089,13 @@ pub(crate) fn try_bind_registered_component(
     mutations: &mut MutationQueue,
     pending: &mut PendingAssembly,
 ) -> Option<bool> {
-    let type_id = resolve_widget_component_type(widget, snapshot, context)?;
+    #[cfg(feature = "benchmark")]
+    crate::frame_profile::count(23);
+    let type_id = {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(24);
+        resolve_widget_component_type(widget, snapshot, context)
+    }?;
     if !can_bind_from_semantic(widget) {
         if context.world().component_type(id) != Some(&type_id) {
             mutations.set_component_type(id, Some(type_id));
@@ -1115,14 +1133,26 @@ pub(crate) fn try_bind_registered_component(
                 .map(|(key, value)| (key.as_str(), value.as_str())),
         )
         .collect();
-    let slot_pairs = bind_semantic_slots(widget, snapshot);
+    let slot_pairs = {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(25);
+        bind_semantic_slots(widget, snapshot)
+    };
     let slot_refs: Vec<(&str, StableNodeId)> = slot_pairs
         .iter()
         .map(|(name, id)| (name.as_str(), *id))
         .collect();
-    let (owned_label, owned_hint) = bind_semantic_copy(widget, snapshot);
+    let (owned_label, owned_hint) = {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(26);
+        bind_semantic_copy(widget, snapshot)
+    };
     let (number, max) = semantic_numeric_fields(widget);
-    let tree_child_options = tree_child_bind_options(widget, snapshot);
+    let tree_child_options = {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(27);
+        tree_child_bind_options(widget, snapshot)
+    };
     let option_list: Vec<SemanticOption<'_>> = if !widget.props.options.is_empty() {
         widget
             .props
@@ -1178,7 +1208,11 @@ pub(crate) fn try_bind_registered_component(
         secure: widget.props.secure,
         button_kind,
         size: widget.props.size,
-        icon: widget_icon(widget, snapshot),
+        icon: {
+            #[cfg(feature = "benchmark")]
+            let _timer = crate::frame_profile::ScopeTimer::new(28);
+            widget_icon(widget, snapshot)
+        },
         min: widget.props.min,
         max,
         step: widget.props.step,
@@ -1194,6 +1228,8 @@ pub(crate) fn try_bind_registered_component(
     )
     .then(|| context.world().text_input(id).cloned())
     .flatten();
+    #[cfg(feature = "benchmark")]
+    let _bind_timer = crate::frame_profile::ScopeTimer::new(29);
     let binding = context
         .prepare_semantic_binding(id, &spec, mutations)
         .ok()?;
@@ -1432,8 +1468,12 @@ pub(crate) fn project_migrating_component(
     pending: &mut PendingAssembly,
 ) -> bool {
     let world = context.world();
-    if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
-        return true;
+    {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(22);
+        if crate::widget_map::is_settings_row_projected_slot(snapshot, widget) {
+            return true;
+        }
     }
     if is_title_bar_child(widget) {
         let title = widget.props.display_label();
@@ -1442,10 +1482,14 @@ pub(crate) fn project_migrating_component(
         pending.title_bars.push((id, bar));
         return true;
     }
-    if !is_sidebar_frame_body(widget)
-        && try_bind_registered_component(widget, snapshot, id, context, mutations, pending)
-            == Some(true)
-    {
+    let bound = {
+        #[cfg(feature = "benchmark")]
+        let _timer = crate::frame_profile::ScopeTimer::new(21);
+        !is_sidebar_frame_body(widget)
+            && try_bind_registered_component(widget, snapshot, id, context, mutations, pending)
+                == Some(true)
+    };
+    if bound {
         return true;
     }
     match effective_kind(widget) {

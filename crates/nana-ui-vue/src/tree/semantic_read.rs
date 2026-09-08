@@ -65,6 +65,26 @@ impl<'a> SemanticRead<'a> {
             changes,
         }
     }
+    /// One widget's own record, WITHOUT materializing its topology.
+    ///
+    /// [`Self::get`] memoizes parent and children for every id it touches, and
+    /// that memo allocates a child list per visit. A scan that only needs to
+    /// test one attribute or the kind must not pay that for every sibling:
+    /// projecting a container walks its whole child list, so an ancestor of a
+    /// change was charging O(its children) per frame just to discover that
+    /// none of them carried a `data-slot`.
+    pub fn raw(&self, id: u64) -> Option<&'a crate::SemanticWidget> {
+        match &self.source {
+            Source::Snapshot { index, .. } => index.get(&id).copied(),
+            Source::Bridge { bridge, document } => {
+                if !document.nodes.contains_key(&id) {
+                    return None;
+                }
+                bridge.get(id)
+            }
+        }
+    }
+
     pub fn get(&self, id: u64) -> Option<SemanticWidgetView<'a>> {
         let widget = match &self.source {
             Source::Snapshot { index, .. } => *index.get(&id)?,

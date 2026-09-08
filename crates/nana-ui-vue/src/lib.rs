@@ -76,6 +76,104 @@
 //! Custom Renderer host ops attach through [`nana_js_engine::JsEngine`] only —
 //! never via `v8::*`.
 
+/// Benchmark-only phase timers for one `prepare_window_frame`.
+///
+/// `docs/input-cost.md` attributes the Vue settle from a breakdown of
+/// `sync_semantics`. That breakdown does not cover the whole settle:
+/// `prepare_window_frame` also runs `resolve_layout`, which iterates to a fixed
+/// point. Guessing which half dominates is how the last two rounds went wrong,
+/// so this measures both.
+#[cfg(feature = "benchmark")]
+pub mod frame_profile {
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
+
+    pub const PHASES: [&str; 30] = [
+        "svg_rasters",
+        "flush_host_frame",
+        "sync_semantics",
+        "  reparent_orphans",
+        "  sync_sidebar_footer",
+        "  sync_layout_containing_blocks",
+        "  sync_semantics_from_bridge",
+        "resolve_layout",
+        "  resolve_layout_passes",
+        "    prepare_semantic_styles",
+        "    apply_semantic_styles",
+        "      flush_runtime_systems",
+        "      projected_widgets",
+        "      flush_runtime_systems_calls",
+        "  flush_host_frame_in_sync",
+        "      · style build+compare",
+        "      · project_migrating_component",
+        "      · accessibility build+compare",
+        "  · reparent collect_reachable",
+        "  · find_sidebar_reparent_host",
+        "  · reparent_sidebar_footer_slots",
+        "      · try_bind_registered_component",
+        "      · is_settings_row_projected_slot",
+        "      · try_bind_calls",
+        "        » resolve_widget_component_type",
+        "        » bind_semantic_slots",
+        "        » bind_semantic_copy",
+        "        » tree_child_bind_options",
+        "        » widget_icon",
+        "        » prepare_semantic_binding",
+    ];
+
+    thread_local! {
+        static TOTALS: RefCell<[Duration; PHASES.len()]> =
+            const { RefCell::new([Duration::ZERO; PHASES.len()]) };
+    }
+
+    pub fn record(phase: usize, elapsed: Duration) {
+        TOTALS.with(|totals| totals.borrow_mut()[phase] += elapsed);
+    }
+
+    /// Count occurrences rather than time; stored in the nanos field.
+    pub fn count(phase: usize) {
+        add(phase, 1);
+    }
+
+    pub fn add(phase: usize, occurrences: u64) {
+        TOTALS.with(|totals| totals.borrow_mut()[phase] += Duration::from_nanos(occurrences));
+    }
+
+    pub fn timed<R>(phase: usize, work: impl FnOnce() -> R) -> R {
+        let started = Instant::now();
+        let result = work();
+        record(phase, started.elapsed());
+        result
+    }
+
+    /// Times a scope that is not expressible as a closure (borrow reasons).
+    pub struct ScopeTimer {
+        phase: usize,
+        started: Instant,
+    }
+
+    impl ScopeTimer {
+        pub fn new(phase: usize) -> Self {
+            Self {
+                phase,
+                started: Instant::now(),
+            }
+        }
+    }
+
+    impl Drop for ScopeTimer {
+        fn drop(&mut self) {
+            record(self.phase, self.started.elapsed());
+        }
+    }
+
+    pub fn take() -> [Duration; PHASES.len()] {
+        TOTALS.with(|totals| {
+            std::mem::replace(&mut *totals.borrow_mut(), [Duration::ZERO; PHASES.len()])
+        })
+    }
+}
+
 mod app;
 mod bridge;
 #[cfg(feature = "hosted")]
@@ -714,11 +812,26 @@ impl VueHost {
         let (logical_w, logical_h) = self.document.lock().expect("vue doc").logical_size();
         let mut bridge = self.bridge.lock().expect("vue bridge");
         let mut document = self.document.lock().expect("vue doc");
-        bridge.reparent_orphans();
-        bridge.sync_sidebar_footer_into_document(&mut document);
-        bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
-        document.flush_host_frame();
-        document.sync_semantics_from_bridge(&mut bridge);
+        #[cfg(not(feature = "benchmark"))]
+        {
+            bridge.reparent_orphans();
+            bridge.sync_sidebar_footer_into_document(&mut document);
+            bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h));
+            document.flush_host_frame();
+            document.sync_semantics_from_bridge(&mut bridge);
+        }
+        #[cfg(feature = "benchmark")]
+        {
+            crate::frame_profile::timed(3, || bridge.reparent_orphans());
+            crate::frame_profile::timed(4, || {
+                bridge.sync_sidebar_footer_into_document(&mut document)
+            });
+            crate::frame_profile::timed(5, || {
+                bridge.sync_layout_containing_blocks(ParentBox::from_viewport(logical_w, logical_h))
+            });
+            document.flush_host_frame();
+            crate::frame_profile::timed(6, || document.sync_semantics_from_bridge(&mut bridge));
+        }
     }
 
     /// Latest Appearance settings mirrored from L1 document dataset/style.
