@@ -552,17 +552,15 @@ mod equivalence {
         }
 
         pair.step("scroll", |host| {
-            let port = { host.document().lock().expect("doc").mount_root().0 + 1 };
-            host.host_api_registry()
-                .call(
-                    "setScrollOffset",
-                    &[
-                        HostValue::Number(port as f64),
-                        HostValue::Number(0.0),
-                        HostValue::Number(96.0),
-                    ],
-                )
-                .expect("scroll");
+            // Straight at the document rather than through the `setScrollOffset`
+            // host op: that op also writes a process-global pending-scroll
+            // queue, and another test in this binary asserts that queue is
+            // empty. What this harness needs is the offset, not the queue.
+            let document = host.document();
+            let mut document = document.lock().expect("doc");
+            let port = NodeHandle(document.mount_root().0 + 1);
+            document.set_scroll_offset(port, nana_ui_runtime::ScrollOffset { x: 0.0, y: 96.0 });
+            drop(document);
             frame(host);
         });
         for round in 0..3 {
