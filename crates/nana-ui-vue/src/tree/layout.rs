@@ -4,6 +4,7 @@
 //! independent of the retained document core.
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::NanaTreeDocument;
 use super::NodeHandle;
@@ -39,6 +40,14 @@ pub struct LayoutBoxStore {
     boxes: Mutex<HashMap<u64, LayoutBox>>,
     views: Mutex<HashMap<u64, LayoutBox>>,
     transforms: Mutex<HashMap<u64, (LayoutBox, [f32; 6])>>,
+    /// Bumped only when a write actually changes what is stored.
+    ///
+    /// A Scene frame re-records every visible node whether or not it moved, so
+    /// "was written" is true every frame and useless as a change signal. What
+    /// readers need is "is different from last time", which is what lets
+    /// [`crate::VueHost::resolve_layout`] skip a repeat -- see the note there
+    /// for why that is worth this bookkeeping.
+    revision: AtomicU64,
 }
 
 impl LayoutBoxStore {
@@ -46,29 +55,46 @@ impl LayoutBoxStore {
         Self::default()
     }
 
+    /// Monotonic counter over *effective* changes to this store.
+    ///
+    /// Equal values mean every box, view and transform is what it was; they do
+    /// not mean nothing was written.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
+    fn bump(&self) {
+        self.revision.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Drop JS scroll overlays; keep last Scene paint boxes.
     pub fn begin_frame(&self) {
-        if let Ok(mut guard) = self.views.lock() {
+        if let Ok(mut guard) = self.views.lock()
+            && !guard.is_empty()
+        {
             guard.clear();
+            self.bump();
         }
     }
 
     pub fn record(&self, handle: NodeHandle, x: f32, y: f32, width: f32, height: f32) {
+        let recorded = LayoutBox {
+            handle,
+            x,
+            y,
+            width,
+            height,
+        };
+        let mut changed = false;
         if let Ok(mut guard) = self.boxes.lock() {
-            guard.insert(
-                handle.0,
-                LayoutBox {
-                    handle,
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-            );
+            changed |= guard.insert(handle.0, recorded) != Some(recorded);
         }
-        self.clear_view(handle);
+        changed |= self.clear_view(handle);
         if let Ok(mut guard) = self.transforms.lock() {
-            guard.remove(&handle.0);
+            changed |= guard.remove(&handle.0).is_some();
+        }
+        if changed {
+            self.bump();
         }
     }
 
@@ -89,40 +115,59 @@ impl LayoutBoxStore {
             height,
         };
         let transformed = transform_layout_box(source, affine);
+        let mut changed = false;
         if let Ok(mut guard) = self.boxes.lock() {
-            guard.insert(handle.0, transformed);
+            changed |= guard.insert(handle.0, transformed) != Some(transformed);
         }
-        self.clear_view(handle);
+        changed |= self.clear_view(handle);
         if let Ok(mut guard) = self.transforms.lock() {
-            guard.insert(handle.0, (source, affine));
+            changed |= guard.insert(handle.0, (source, affine)) != Some((source, affine));
+        }
+        if changed {
+            self.bump();
         }
     }
 
     pub fn remove(&self, handle: NodeHandle) {
+        let mut changed = false;
         if let Ok(mut guard) = self.boxes.lock() {
-            guard.remove(&handle.0);
+            changed |= guard.remove(&handle.0).is_some();
         }
-        self.clear_view(handle);
+        changed |= self.clear_view(handle);
         if let Ok(mut guard) = self.transforms.lock() {
-            guard.remove(&handle.0);
+            changed |= guard.remove(&handle.0).is_some();
+        }
+        if changed {
+            self.bump();
         }
     }
 
     pub fn retain(&self, mut live: impl FnMut(u64) -> bool) {
+        let mut changed = false;
         if let Ok(mut guard) = self.boxes.lock() {
+            let before = guard.len();
             guard.retain(|&id, _| live(id));
+            changed |= guard.len() != before;
         }
         if let Ok(mut guard) = self.views.lock() {
+            let before = guard.len();
             guard.retain(|&id, _| live(id));
+            changed |= guard.len() != before;
         }
         if let Ok(mut guard) = self.transforms.lock() {
+            let before = guard.len();
             guard.retain(|&id, _| live(id));
+            changed |= guard.len() != before;
+        }
+        if changed {
+            self.bump();
         }
     }
 
-    fn clear_view(&self, handle: NodeHandle) {
-        if let Ok(mut guard) = self.views.lock() {
-            guard.remove(&handle.0);
+    fn clear_view(&self, handle: NodeHandle) -> bool {
+        match self.views.lock() {
+            Ok(mut guard) => guard.remove(&handle.0).is_some(),
+            Err(_) => false,
         }
     }
 
@@ -176,8 +221,10 @@ impl LayoutBoxStore {
     }
 
     pub(crate) fn overlay_view(&self, box_: LayoutBox) {
-        if let Ok(mut views) = self.views.lock() {
-            views.insert(box_.handle.0, box_);
+        if let Ok(mut views) = self.views.lock()
+            && views.insert(box_.handle.0, box_) != Some(box_)
+        {
+            self.bump();
         }
     }
 

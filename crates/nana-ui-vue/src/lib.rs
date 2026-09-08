@@ -442,6 +442,9 @@ pub struct VueHost {
     document: Arc<Mutex<NanaTreeDocument>>,
     bridge: Arc<Mutex<MessageBridge>>,
     layout_boxes: Arc<LayoutBoxStore>,
+    /// What the last [`VueHost::resolve_layout`] ran against, so an identical
+    /// repeat can be skipped. `None` until the first resolve.
+    resolved_layout_key: Option<crate::host::frame::LayoutResolveKey>,
     web_api: SharedWebApiState,
     canvas: SharedCanvasRuntime,
     video: video::SharedVideoRuntime,
@@ -571,6 +574,7 @@ impl VueHost {
             document: Arc::new(Mutex::new(document)),
             bridge: Arc::new(Mutex::new(bridge)),
             layout_boxes: Arc::new(LayoutBoxStore::new()),
+            resolved_layout_key: None,
             web_api,
             canvas,
             video: video::shared_video_runtime(),

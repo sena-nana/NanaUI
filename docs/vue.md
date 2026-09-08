@@ -36,6 +36,12 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
 
+## 长列表上的 hover
+
+一个 render function 拥有整列时，hover 处理器改一个参与渲染的 `ref` 会让 Vue patch 整列——实测 2,000 行时一次鼠标移动 18.7 ms（超过一整帧），是同一棵树无处理器时的 48 倍。这是长列表上最容易写出来的写法，也是这条路径上目前最大的单项成本，框架侧改不掉。把行拆成各自的组件，或者让 hover 只改不参与渲染的状态。
+
+另外，Vue 的每个指针事件本身比 Rust L3 贵 8–16 倍且随节点数线性增长，这与写法无关。很大的树上做指针密集的操作仍然应该走 L3；一般规模的界面上这已经不是选型因素。数据与成因见 [输入成本](input-cost.md)。
+
 ## Markdown
 
 `NanaMarkdown` 用 `modelValue` 或 `value` 传入原始 Markdown，需启用 `rich-text`。源码未变化时保留解析结果和选区；源码变化后重新解析。高亮由共享 Runtime 绑定路径处理。

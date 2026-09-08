@@ -22,6 +22,13 @@ name = "nana-runtime-agent"
 path = "src/bin/nana-runtime-agent.rs"
 required-features = ["runtime-agent"]
 
+# Per-pointer-event cost, Vue vs Rust L3, in one process. Needs both sessions,
+# so it sits behind the same feature as the V8 binary.
+[[bin]]
+name = "nana-hover-benchmark"
+path = "src/bin/nana-hover-benchmark.rs"
+required-features = ["agent-bin"]
+
 [features]
 default = []
 offscreen = [

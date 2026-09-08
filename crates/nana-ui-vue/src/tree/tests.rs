@@ -5906,6 +5906,84 @@ fn same_frame_host_ops_flush_once_at_frame_boundary() {
     assert!(doc.world().custom_render(parent_id).is_some());
 }
 
+/// The store's revision is what lets `VueHost::resolve_layout` skip a repeat,
+/// so it has to answer "is this different" and not "was this written". A Scene
+/// frame re-records every visible node whether or not it moved; if that bumped
+/// the revision, the skip would never fire and a pointer move would keep paying
+/// five full-tree passes.
+#[test]
+fn recording_the_same_box_again_does_not_move_the_store_revision() {
+    let store = LayoutBoxStore::new();
+    let node = NodeHandle(41);
+    store.record(node, 4.0, 8.0, 100.0, 24.0);
+    let after_first = store.revision();
+
+    store.record(node, 4.0, 8.0, 100.0, 24.0);
+    assert_eq!(
+        store.revision(),
+        after_first,
+        "an unchanged repaint must not read as a change"
+    );
+
+    store.record(node, 4.0, 9.0, 100.0, 24.0);
+    assert_ne!(
+        store.revision(),
+        after_first,
+        "a node that actually moved must read as a change"
+    );
+}
+
+/// Every other way the store can change has to move the revision too: missing
+/// one leaves `resolve_layout` skipping a resolve it owed.
+#[test]
+fn every_effective_store_change_moves_the_revision() {
+    let store = LayoutBoxStore::new();
+    let node = NodeHandle(42);
+    let other = NodeHandle(43);
+    store.record(node, 0.0, 0.0, 10.0, 10.0);
+    store.record(other, 0.0, 20.0, 10.0, 10.0);
+
+    let before = store.revision();
+    store.translate(node, 0.0, -5.0).expect("scroll overlay");
+    assert_ne!(store.revision(), before, "a scroll overlay changes geometry");
+
+    let before = store.revision();
+    store.begin_frame();
+    assert_ne!(
+        store.revision(),
+        before,
+        "dropping the overlays changes geometry back"
+    );
+    let settled = store.revision();
+    store.begin_frame();
+    assert_eq!(
+        store.revision(),
+        settled,
+        "a frame that drops nothing is not a change"
+    );
+
+    let before = store.revision();
+    store.remove(other);
+    assert_ne!(store.revision(), before, "a removed node is a change");
+    let after_remove = store.revision();
+    store.remove(other);
+    assert_eq!(
+        store.revision(),
+        after_remove,
+        "removing what is already gone is not a change"
+    );
+
+    let before = store.revision();
+    store.retain(|_| true);
+    assert_eq!(
+        store.revision(),
+        before,
+        "a retain that drops nothing is not a change"
+    );
+    store.retain(|_| false);
+    assert_ne!(store.revision(), before, "a retain that drops is a change");
+}
+
 #[test]
 fn layout_box_store_keeps_clean_paint_and_drops_removed_nodes() {
     let store = LayoutBoxStore::new();

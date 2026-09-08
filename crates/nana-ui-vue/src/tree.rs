@@ -2558,11 +2558,16 @@ impl NanaTreeDocument {
     }
 
     /// Flush the engine, then WriteLayout missing boxes or a larger overflow extent.
-    pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) {
-        self.write_layout_boxes(boxes, false);
+    ///
+    /// Returns whether any node's layout actually differed. Callers that resolve
+    /// to a fixed point need that: `false` is the only honest signal that another
+    /// pass would be dead work, and the comparison is already being made per node
+    /// by `enqueue_layout_if_changed`.
+    pub fn apply_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)]) -> bool {
+        self.write_layout_boxes(boxes, false)
     }
 
-    fn write_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)], overwrite: bool) {
+    fn write_layout_boxes(&mut self, boxes: &[(NodeHandle, LayoutBox)], overwrite: bool) -> bool {
         self.flush_runtime_systems();
         let w = self.logical_width.max(1.0);
         let h = self.logical_height.max(1.0);
@@ -2613,10 +2618,12 @@ impl NanaTreeDocument {
                 );
             }
         }
-        if !mutations.is_empty() || !self.pending.is_empty() {
+        let changed = !mutations.is_empty();
+        if changed || !self.pending.is_empty() {
             self.commit_extra(mutations).ok();
         }
         self.flush_runtime_extract();
+        changed
     }
 
     pub fn snapshot_boxes(&self) -> BoxSnapshot {

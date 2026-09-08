@@ -75,6 +75,15 @@ let start = cx.build(document_id, |ui| {
 
 命令式 `create_component` + `append_child` 仍然每次调用 commit 一次，适合单节点补丁，不适合整页挂载。
 
+### 相对 Vue 的成本
+
+两条路写同一棵 `UiWorld`，布局、文字、命中、抽取、绘制只有一份实现，所以**绘制稳态没有差别**（60 s / 21 万帧的纯 Rust 帧 CPU prepare P95 是 0.0105 ms，见 [高刷新性能记录](high-refresh-performance.md)）。差别只在两处：
+
+- **挂载与变更**：Vue 多出 V8 patch → 每个 DOM op 一次同步跨界调用 → CSS 级联。5,000 节点构造 P95 25.5 ms，同规模 Runtime 布局 P95 11.6–29.7 ms——同量级偏高，不是数量级。两条路在 5 k 以上都要分批挂载。
+- **每个指针事件**：实测 Vue 比 L3 贵 8–16 倍（2,000 行时 0.39 ms vs 0.048 ms），两边都是 O(节点数)。成本不在把事件送进 JS；曾经的 22–31 倍里约四分之三是每事件重算全树布局盒，已经挡掉。见 [输入成本](input-cost.md)。
+
+选型标准见 [README](../README.md#rust-还是-vue)。
+
 ## 和 GPUI 的差别
 
 GPUI 的现代面是：`Entity` 保留状态，每帧 `render()` 返回嵌套的 `div().child(...)`。Nana 只借作者层的嵌套 `.child` / 事件就近绑定，运行时仍是保留 `UiWorld`（Vue L1/L2 与 Rust 写同一棵树、增量 flush、稳定 `StableNodeId`）。
