@@ -160,15 +160,30 @@ mod tests {
         }
         let marker = format!("nana-ui-clipboard-{}-{}", std::process::id(), "probe");
         let previous = clip.read_text();
-        assert!(
-            clip.write_text(&marker),
-            "desktop OS clipboard write must succeed when available"
-        );
+
+        // The pasteboard is one machine-wide resource, so anything else on the
+        // machine — including a second `cargo test` — can overwrite it between
+        // our write and our read. That is interference, not a broken clipboard,
+        // so the write/read pair is retried as a unit and only a run that never
+        // round-trips is a failure. Asserting on a single attempt made this
+        // test fail whenever two test processes overlapped.
+        let mut observed = None;
+        for _ in 0..8 {
+            assert!(
+                clip.write_text(&marker),
+                "desktop OS clipboard write must succeed when available"
+            );
+            observed = clip.read_text();
+            if observed.as_deref() == Some(marker.as_str()) {
+                break;
+            }
+        }
         assert_eq!(
-            clip.read_text().as_deref(),
+            observed.as_deref(),
             Some(marker.as_str()),
             "desktop OS clipboard read must return the written text"
         );
+
         if let Some(prev) = previous {
             let _ = clip.write_text(&prev);
         }

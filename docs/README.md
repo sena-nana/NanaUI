@@ -50,3 +50,5 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 | crate 分层、所有权（改框架时） | [架构](architecture.md) |
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
 | Android（实验，非产品目标） | [Android](android.md) |
+
+[待重录的快照](pending-snapshot-bless.md)：本轮改动待在录制基线的机器上 `--bless` 的 40 张，做完即删。

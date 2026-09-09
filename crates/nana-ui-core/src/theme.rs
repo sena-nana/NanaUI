@@ -46,13 +46,19 @@ pub struct ThemeMetrics {
     pub radius_lg: f32,
     pub compact_control_height: f32,
     pub control_height: f32,
+    /// Horizontal inset of a small control. Matches
+    /// [`crate::ControlSize::padding_x`] for `Small`: one concept, one value.
     pub compact_control_padding_x: f32,
     pub control_padding_x: f32,
     pub selection_height: f32,
     pub icon_button_size: f32,
     pub panel_padding_x: f32,
     pub panel_padding_y: f32,
+    /// Horizontal inset of a text field. Matches `control_padding_x` so a
+    /// field and the `Select` beside it start their text on the same line.
     pub field_padding_x: f32,
+    /// Horizontal inset of a list row. Matches the sidebar's own row padding:
+    /// list rows and sidebar rows are one visual family.
     pub list_item_padding_x: f32,
     pub motion_fast_ms: u16,
     pub motion_standard_ms: u16,
@@ -66,14 +72,14 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     radius_lg: 14.0,
     compact_control_height: 28.0,
     control_height: 32.0,
-    compact_control_padding_x: 7.0,
-    control_padding_x: 10.0,
+    compact_control_padding_x: space::MD,
+    control_padding_x: space::LG,
     selection_height: 36.0,
     icon_button_size: 28.0,
     panel_padding_x: 16.0,
     panel_padding_y: 14.0,
-    field_padding_x: 9.0,
-    list_item_padding_x: 9.0,
+    field_padding_x: space::LG,
+    list_item_padding_x: space::MD,
     motion_fast_ms: 120,
     motion_standard_ms: 240,
 };

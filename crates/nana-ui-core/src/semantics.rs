@@ -73,11 +73,16 @@ impl ControlSize {
         }
     }
 
+    /// Horizontal inset for a control at this size.
+    ///
+    /// All three read from [`UI_METRICS`]; `Small` used to be a bare `8.0`
+    /// beside a `compact_control_padding_x` of `7.0`, which is how a `Button`
+    /// and a `Chip` standing next to each other ended up 1px apart.
     pub const fn padding_x(self) -> f32 {
         match self {
-            Self::Small => 8.0,
+            Self::Small => UI_METRICS.compact_control_padding_x,
             Self::Medium => UI_METRICS.control_padding_x,
-            Self::Large => 14.0,
+            Self::Large => crate::theme::space::XXL,
         }
     }
 
