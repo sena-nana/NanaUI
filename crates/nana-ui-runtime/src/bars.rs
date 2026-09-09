@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole, space,
-};
+use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole, space};
 
 use crate::view_components::project_common;
 use crate::{
@@ -24,7 +22,6 @@ use crate::{
 pub struct Toolbar {
     /// Accessible name, so a window with several toolbars is navigable.
     pub label: Option<Arc<str>>,
-    pub size: ControlSize,
     /// Draws the shell surface and a bottom hairline. Off for a toolbar nested
     /// in a surface that already provides them.
     pub chrome: bool,
@@ -35,7 +32,6 @@ impl Toolbar {
     pub fn new() -> Self {
         Self {
             label: None,
-            size: ControlSize::Small,
             chrome: true,
             style: bar_style(true, false),
         }
@@ -43,11 +39,6 @@ impl Toolbar {
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
-        self
-    }
-
-    pub fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
         self
     }
 
@@ -76,7 +67,6 @@ impl Default for Toolbar {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusBar {
     pub label: Option<Arc<str>>,
-    pub size: ControlSize,
     pub chrome: bool,
     pub style: NodeStyle,
 }
@@ -85,7 +75,6 @@ impl StatusBar {
     pub fn new() -> Self {
         Self {
             label: None,
-            size: ControlSize::Small,
             chrome: true,
             style: bar_style(true, true),
         }
@@ -93,11 +82,6 @@ impl StatusBar {
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
-        self
-    }
-
-    pub fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
         self
     }
 

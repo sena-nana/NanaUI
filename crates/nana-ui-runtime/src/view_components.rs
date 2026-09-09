@@ -1,4 +1,3 @@
-use std::fmt;
 use std::sync::Arc;
 
 use crate::{
@@ -1388,25 +1387,6 @@ pub struct OverlayChanged {
 pub struct OverlayClosing {
     pub root: StableNodeId,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SliderError {
-    NonFinite,
-    InvalidRange,
-    OutOfRange,
-}
-
-impl fmt::Display for SliderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::NonFinite => "slider values must be finite",
-            Self::InvalidRange => "slider minimum must be less than maximum",
-            Self::OutOfRange => "slider value must be within its range",
-        })
-    }
-}
-
-impl std::error::Error for SliderError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextInput {
@@ -3366,8 +3346,7 @@ impl RangeField {
     ///
     /// Non-finite or inverted bounds fall back to `0.0..=1.0`; a non-finite or
     /// non-positive `step` falls back to one hundredth of the span; `value` is
-    /// clamped into the resulting range and quantized. Use [`RangeField::try_new`]
-    /// when the caller wants bad input rejected rather than repaired.
+    /// clamped into the resulting range and quantized.
     pub fn new(value: f64, minimum: f64, maximum: f64, step: f64) -> Self {
         let (minimum, maximum) = if minimum.is_finite() && maximum.is_finite() && minimum < maximum
         {
@@ -3403,20 +3382,6 @@ impl RangeField {
         field
     }
 
-    /// Same construction as [`RangeField::new`], but rejects input it would
-    /// otherwise repair.
-    pub fn try_new(value: f64, minimum: f64, maximum: f64, step: f64) -> Result<Self, SliderError> {
-        if !value.is_finite() || !minimum.is_finite() || !maximum.is_finite() || !step.is_finite() {
-            return Err(SliderError::NonFinite);
-        }
-        if minimum >= maximum || step <= 0.0 {
-            return Err(SliderError::InvalidRange);
-        }
-        if !(minimum..=maximum).contains(&value) {
-            return Err(SliderError::OutOfRange);
-        }
-        Ok(Self::new(value, minimum, maximum, step))
-    }
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
         self
@@ -3438,22 +3403,11 @@ impl RangeField {
         self
     }
     /// Sets the page step, ignoring a non-finite or non-positive value.
-    /// Use [`RangeField::try_page_step`] to reject it instead.
     pub fn page_step(mut self, page_step: f64) -> Self {
         if page_step.is_finite() && page_step > 0.0 {
             self.page_step = page_step;
         }
         self
-    }
-    pub fn try_page_step(mut self, page_step: f64) -> Result<Self, SliderError> {
-        if !page_step.is_finite() {
-            return Err(SliderError::NonFinite);
-        }
-        if page_step <= 0.0 {
-            return Err(SliderError::InvalidRange);
-        }
-        self.page_step = page_step;
-        Ok(self)
     }
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;

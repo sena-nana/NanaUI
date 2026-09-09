@@ -36,8 +36,6 @@ pub enum DropEffect {
     Copy,
     /// The payload moves here.
     Move,
-    /// A link to the payload is made here.
-    Link,
 }
 
 /// What one node accepts.
@@ -69,10 +67,6 @@ impl DropAccepts {
 
     pub fn accepts(&self, kind: &DropKind) -> bool {
         self.kinds.iter().any(|accepted| accepted == kind)
-    }
-
-    pub fn kinds(&self) -> &[DropKind] {
-        &self.kinds
     }
 
     pub fn declared_effect(&self) -> DropEffect {

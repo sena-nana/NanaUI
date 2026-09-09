@@ -299,7 +299,6 @@ impl crate::AppContext {
 
 #[cfg(test)]
 mod editor_tests {
-    use super::*;
     use crate::{AppContext, DocumentId, TextArea, TextDeleteKind, TextInput};
 
     fn document() -> DocumentId {

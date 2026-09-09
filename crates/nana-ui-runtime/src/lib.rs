@@ -291,9 +291,9 @@ pub use view_components::{
     IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged,
     NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment, RangeChanged,
     RangeDragState, RangeField, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollView,
-    ScrollbarDragState, SecondaryPress, SliderError, Stack, Switch, Table, TableCell,
-    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted,
-    ToggleChanged, Tooltip, UserScroll,
+    ScrollbarDragState, SecondaryPress, Stack, Switch, Table, TableCell, TableCellFocused,
+    TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted, ToggleChanged, Tooltip,
+    UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
