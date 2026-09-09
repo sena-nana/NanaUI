@@ -28,9 +28,46 @@ impl AppContext {
         layout: &VirtualListLayout,
         viewport: VirtualViewport,
         retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.materialize_virtual_list_retained_with(
+            list,
+            items,
+            layout,
+            viewport,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            |_, _, _, _| Ok(()),
+        )
+    }
+
+    /// [`Self::materialize_virtual_list_retained_in`] with a mount hook.
+    ///
+    /// `on_mount` runs once for each row this pass newly created, after the
+    /// commit that published it, so it can bind handlers with
+    /// [`Self::on`] / [`Self::observe`]. Rows that scrolled back into an
+    /// already-mounted window are not reported again, and a row released by
+    /// scrolling away loses its handlers with the node.
+    #[allow(clippy::too_many_arguments)]
+    pub fn materialize_virtual_list_retained_with<K, C>(
+        &mut self,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        viewport: VirtualViewport,
+        retained_keys: &[K],
         mut key_at: impl FnMut(usize) -> K,
         mut index_of_key: impl FnMut(&K) -> Option<usize>,
         mut build: impl FnMut(usize, &K) -> C,
+        mut on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
     ) -> Result<VirtualListWindow, FrameworkError>
     where
         K: Clone + Eq + Hash,
@@ -135,6 +172,8 @@ impl AppContext {
             next_containers.remove(key);
         }
         let mut staged_items = Vec::new();
+        // Items created by this pass, reported to `on_mount` after the commit.
+        let mut mounted_now: Vec<(StableNodeId, usize, K)> = Vec::new();
         let mut staged_containers = Vec::new();
         for (index, key) in indices.zip(&plan.order) {
             let top = layout.extent(0..index);
@@ -160,6 +199,7 @@ impl AppContext {
                 let component = build(index, key);
                 let container_id = self.allocate_id();
                 let item_id = self.allocate_id();
+                mounted_now.push((item_id, index, key.clone()));
                 mutations.create(container_id, root.document, container.node_kind());
                 container.project(container_id, &self.world, &mut mutations);
                 mutations.create(item_id, root.document, component.node_kind());
@@ -215,6 +255,9 @@ impl AppContext {
             .materializer
             .commit(plan)
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
+        for (id, index, key) in mounted_now {
+            on_mount(self, Entity::from_stable_id(id), index, &key)?;
+        }
         Ok(window)
     }
 

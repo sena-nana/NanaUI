@@ -61,6 +61,14 @@ pub struct SearchDropdown {
 }
 
 impl SearchDropdown {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(value: Option<impl Into<Arc<str>>>) -> Self {
         Self {
             value: value.map(Into::into),
@@ -91,7 +99,7 @@ impl SearchDropdown {
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
-        self.style = field_style_for_size(size);
+        crate::select::apply_field_size(&mut self.style, size);
         self
     }
 
@@ -293,6 +301,21 @@ impl SearchDropdown {
 }
 
 impl ComponentView for SearchDropdown {
+    fn reconcile(&mut self, mut next: Self) {
+        // The filter field's text state is the user's typing, not application
+        // props: a refresh must not reset the caret mid-query.
+        if next.inactive() {
+            next.opened = false;
+            next.highlighted = None;
+        } else if self.value == next.value && self.options == next.options {
+            next.opened = self.opened;
+            next.highlighted = self.highlighted;
+            next.query = self.query.clone();
+            next.state = self.state.clone();
+        }
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "search-dropdown".into(),
@@ -310,6 +333,7 @@ impl ComponentView for SearchDropdown {
             loading: self.loading,
             options: self.option_data().into(),
             highlighted: self.highlighted_visible(),
+            checkable: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));

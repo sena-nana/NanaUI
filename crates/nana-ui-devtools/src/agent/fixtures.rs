@@ -91,10 +91,7 @@ fn form_controls(document: &mut RuntimeDocument, id: DocumentId) {
                 ui.child("notifications", Switch::new("Notifications", true));
                 ui.child("archive", Checkbox::new("Archive", false));
                 ui.child("title", TextInput::new("draft"));
-                ui.child(
-                    "volume",
-                    RangeField::new(4.0, 0.0, 10.0, 1.0).expect("range"),
-                );
+                ui.child("volume", RangeField::new(4.0, 0.0, 10.0, 1.0));
             })
         })
         .expect("form fixture");

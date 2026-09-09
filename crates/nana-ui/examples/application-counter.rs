@@ -35,8 +35,11 @@ impl ApplicationState for Counter {
             ui.with("counter", List::new(), |ui| {
                 let label = ui.child("value", Text::new("0"));
                 let increment = ui.child("increment", Button::new("增加"));
+                // `dispatch_program_all`, not `dispatch_program`: the message
+                // type is `WindowId`, so coalescing by type would drop every
+                // click but the last whenever two land in the same frame.
                 ui.on(increment, move |_, _: &Activate, cx| {
-                    cx.dispatch_program(id)
+                    cx.dispatch_program_all(id)
                 });
                 label
             })

@@ -4,6 +4,10 @@ use super::*;
 
 impl AppContext {
     pub(super) fn remove_event_handlers_for(&mut self, removed: &HashSet<StableNodeId>) -> usize {
+        // An editor's undo journal dies with the editor.
+        for id in removed {
+            self.text_histories.forget(*id);
+        }
         let affected = removed
             .iter()
             .filter_map(|id| self.event_dependencies.remove(id))

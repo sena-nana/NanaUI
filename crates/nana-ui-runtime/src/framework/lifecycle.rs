@@ -214,6 +214,83 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Builds the cancel and confirm actions of a [`ConfirmDialog`] and wires
+    /// them to [`ConfirmIntent`], so the common case needs no slot plumbing.
+    ///
+    /// Idempotent: it creates the buttons on the first call and refreshes their
+    /// labels and disabled state afterwards. Returns whether it created them.
+    /// A dialog that needs a secondary action, a close affordance or a custom
+    /// body still assembles its own slots with [`Self::set_confirm_slots`];
+    /// this helper leaves an already-populated dialog alone.
+    pub fn assemble_confirm_dialog(
+        &mut self,
+        dialog: Entity<crate::ConfirmDialog>,
+    ) -> Result<bool, FrameworkError> {
+        let document = self
+            .world
+            .node(dialog.id)
+            .ok_or(FrameworkError::MissingView(dialog.id))?
+            .document;
+        let (confirm_label, cancel_label, danger, busy, existing) =
+            self.read(dialog, |dialog| {
+                (
+                    Arc::clone(&dialog.confirm_label),
+                    Arc::clone(&dialog.cancel_label),
+                    dialog.danger,
+                    dialog.busy,
+                    dialog.confirm_slots().cloned(),
+                )
+            })?;
+
+        if let Some(slots) = existing
+            .filter(|slots| self.world.contains(slots.cancel) && self.world.contains(slots.confirm))
+        {
+            self.update_component(
+                Entity::<crate::Button>::from_stable_id(slots.cancel),
+                |button, _| {
+                    button.label = cancel_label.to_string();
+                    button.disabled = busy;
+                },
+            )?;
+            self.update_component(
+                Entity::<crate::Button>::from_stable_id(slots.confirm),
+                |button, _| {
+                    button.label = confirm_label.to_string();
+                    button.disabled = busy;
+                },
+            )?;
+            return Ok(false);
+        }
+
+        let cancel = self.create_detached_component(
+            document,
+            crate::Button::new(cancel_label.as_ref())
+                .kind(nana_ui_core::ButtonKind::Ghost)
+                .disabled(busy),
+        )?;
+        let confirm = self.create_detached_component(
+            document,
+            crate::Button::new(confirm_label.as_ref())
+                .kind(if danger {
+                    nana_ui_core::ButtonKind::Danger
+                } else {
+                    nana_ui_core::ButtonKind::Primary
+                })
+                .disabled(busy),
+        )?;
+        self.set_confirm_slots(
+            dialog,
+            crate::ConfirmSlots {
+                body: None,
+                close_action: None,
+                cancel: cancel.stable_id(),
+                secondary: None,
+                confirm: confirm.stable_id(),
+            },
+        )?;
+        Ok(true)
+    }
+
     pub fn set_confirm_slots(
         &mut self,
         confirm: Entity<crate::ConfirmDialog>,
@@ -925,7 +1002,7 @@ impl AppContext {
             .node(target)
             .ok_or(FrameworkError::MissingView(target))?
             .document;
-        let Some(viewport) = self.component_lifecycle.viewports.get(&document).copied() else {
+        let Some(viewport) = self.world.document_viewport(document) else {
             return Ok(());
         };
         let metrics = self.world.text_metrics(overlay).unwrap_or_default();

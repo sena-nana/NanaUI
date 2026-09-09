@@ -15,8 +15,8 @@ use crate::{
 };
 
 const MENU_WIDTH: f32 = 200.0;
-const MENU_PADDING: f32 = 4.0;
-const MENU_MIN_WIDTH: f32 = 120.0;
+const MENU_PADDING: f32 = crate::popover::MENU_SURFACE_PADDING;
+use crate::popover::MENU_MIN_WIDTH;
 const MENU_MIN_HEIGHT: f32 = 32.0;
 const ICON_GAP: f32 = 8.0;
 
@@ -34,6 +34,14 @@ pub struct ActionMenuItem {
 }
 
 impl ActionMenuItem {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(label: impl Into<Arc<str>>) -> Self {
         let size = ControlSize::Small;
         Self {
@@ -173,6 +181,14 @@ pub struct AnchoredActionMenu {
 }
 
 impl AnchoredActionMenu {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(x: f32, y: f32) -> Self {
         let mut menu = Self {
             open: true,
@@ -332,6 +348,14 @@ pub struct ContextMenu {
 }
 
 impl ContextMenu {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(anchor_x: f32, anchor_y: f32) -> Self {
         let mut menu = Self {
             items: Vec::new(),
@@ -844,7 +868,7 @@ fn menu_option_icon(
                 row.y,
                 row.height,
                 size.text_size(),
-                Some(LineHeightSpec::Absolute(size.text_size())),
+                Some(LineHeightSpec::Absolute(size.line_height())),
                 true,
                 icon_size,
             ),
@@ -886,7 +910,7 @@ fn item_style(size: ControlSize) -> NodeStyle {
             padding_left: Some(LengthSpec::Px(size.padding_x())),
             padding_right: Some(LengthSpec::Px(size.padding_x())),
             font_size: Some(size.text_size()),
-            line_height: Some(LineHeightSpec::Absolute(size.text_size())),
+            line_height: Some(LineHeightSpec::Absolute(size.line_height())),
             border_radius: Some(UI_METRICS.radius_sm),
             ..nana_ui_core::LayoutStyle::default()
         }),

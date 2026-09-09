@@ -2,7 +2,130 @@
 
 use super::*;
 
+/// Which fields under a subtree are currently reporting invalid input.
+///
+/// Produced by [`AppContext::validity_of`]. Ids are in document order, so
+/// `first_invalid` is the field a submit handler should reveal and focus.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FormValidity {
+    /// Enabled fields whose accessible state reports invalid input.
+    pub invalid: Vec<StableNodeId>,
+}
+
+impl FormValidity {
+    /// No enabled field under the subtree is invalid.
+    pub fn is_valid(&self) -> bool {
+        self.invalid.is_empty()
+    }
+
+    /// First invalid field in document order.
+    pub fn first_invalid(&self) -> Option<StableNodeId> {
+        self.invalid.first().copied()
+    }
+}
+
 impl AppContext {
+    /// Declares that a node accepts drops of the listed kinds.
+    ///
+    /// Registration is what the framework owns: it can then answer *where* a
+    /// drop would land. Deciding what a drop means stays with the application,
+    /// as with `SecondaryPress`. Dropping the node releases the registration.
+    pub fn set_drop_target<V: View>(
+        &mut self,
+        entity: Entity<V>,
+        accepts: nana_ui_core::DropAccepts,
+    ) -> Result<(), FrameworkError> {
+        if !self.world.contains(entity.id) {
+            return Err(FrameworkError::MissingView(entity.id));
+        }
+        self.world.set_drop_target(entity.id, accepts);
+        Ok(())
+    }
+
+    /// Stops a node accepting drops. Returns whether it was accepting any.
+    pub fn clear_drop_target<V: View>(&mut self, entity: Entity<V>) -> bool {
+        self.world.clear_drop_target(entity.id)
+    }
+
+    /// Innermost node whose box contains `(x, y)` and that accepts `kind`,
+    /// with the effect it declared.
+    ///
+    /// A target covers its whole subtree, so a panel registers once instead of
+    /// every descendant. Matching is by layout box rather than by hit-test: a
+    /// drop surface is usually a plain container that takes no pointer events,
+    /// and refusing files over it because it is not clickable would be wrong.
+    /// Returns `None` when nothing there accepts the payload — reject the drop
+    /// then rather than guessing a target.
+    pub fn drop_target_at(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        kind: &nana_ui_core::DropKind,
+    ) -> Option<(StableNodeId, nana_ui_core::DropEffect)> {
+        let depth_of = |mut id: StableNodeId| {
+            let mut depth = 0_u32;
+            while let Some(parent) = self.world.node(id).and_then(|node| node.parent) {
+                depth += 1;
+                id = parent;
+            }
+            depth
+        };
+        self.world
+            .drop_target_ids()
+            .filter(|id| {
+                self.world
+                    .node(*id)
+                    .is_some_and(|node| node.document == document)
+            })
+            .filter(|id| {
+                self.world
+                    .drop_target(*id)
+                    .is_some_and(|accepts| accepts.accepts(kind))
+            })
+            .filter(|id| {
+                self.world.layout_box(*id).is_some_and(|bounds| {
+                    x >= bounds.x
+                        && x < bounds.x + bounds.width
+                        && y >= bounds.y
+                        && y < bounds.y + bounds.height
+                })
+            })
+            .max_by_key(|id| depth_of(*id))
+            .and_then(|id| {
+                self.world
+                    .drop_target(id)
+                    .map(|accepts| (id, accepts.declared_effect()))
+            })
+    }
+
+    /// Collects the invalid fields under `root`, in document order.
+    ///
+    /// Reads the accessible state every control already publishes, so it covers
+    /// each component carrying `invalid` without the application tracking a
+    /// parallel copy. Disabled fields are excluded: a control the user cannot
+    /// reach must not block submission.
+    ///
+    /// Validation itself stays the application's: this reports what the tree
+    /// currently says, it does not decide what counts as valid.
+    pub fn validity_of(&self, root: StableNodeId) -> FormValidity {
+        let mut invalid = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.world.node(id) else {
+                continue;
+            };
+            stack.extend(node.children.iter().rev().copied());
+            if let Some(state) = self.world.accessibility(id)
+                && state.invalid
+                && !state.disabled
+            {
+                invalid.push(id);
+            }
+        }
+        FormValidity { invalid }
+    }
+
     /// Reconcile the complete ordered option set and its controlled selection
     /// in one retained transaction. Removed options are parked, preserving
     /// their typed state and application-owned event handlers.
@@ -250,10 +373,32 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Activation: commit `requested` as the selection and announce it.
     pub fn request_segmented_selection(
         &mut self,
         control: Entity<SegmentedControl>,
         requested: Entity<SegmentedOption>,
+    ) -> Result<bool, FrameworkError> {
+        self.segmented_selection_inner(control, requested, true)
+    }
+
+    /// Roving focus: move focus to `requested` and announce it without
+    /// selecting. Arrow keys browse a segmented group; selection follows on
+    /// activation, which is the manual-activation behaviour assistive
+    /// technology expects from a tablist / radiogroup.
+    fn move_segmented_focus(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        requested: Entity<SegmentedOption>,
+    ) -> Result<bool, FrameworkError> {
+        self.segmented_selection_inner(control, requested, false)
+    }
+
+    fn segmented_selection_inner(
+        &mut self,
+        control: Entity<SegmentedControl>,
+        requested: Entity<SegmentedOption>,
+        commit: bool,
     ) -> Result<bool, FrameworkError> {
         let is_child = self
             .world
@@ -270,14 +415,29 @@ impl AppContext {
             return Ok(false);
         }
         let document = self.world.node(control.id).unwrap().document;
-        self.update_component(control, |control, cx| {
+        // Self-driving, like `Checkbox`, `Switch`, `Select` and `Tabs`: the
+        // control commits the selection itself and the event reports what
+        // happened rather than asking for it. The commit rides the same
+        // transaction as the focus move and the event, so a blocked focus or a
+        // failing handler still rolls the selection back with them.
+        let committed = self.update_component(control, |control, cx| {
+            if commit {
+                control.selected = Some(requested.id);
+            }
             control.focus_target = Some(requested.id);
             cx.mutations().request_focus(document, Some(requested.id));
             cx.emit(SegmentedSelectionRequested {
                 option: requested.id,
             });
             true
-        })
+        })?;
+        if commit && committed {
+            // Publish the per-option surface flags the control just changed.
+            // An application that wants to veto or redirect the choice writes
+            // the selection it wants back with `set_segmented_selection`.
+            self.set_segmented_selection(control, Some(requested))?;
+        }
+        Ok(committed)
     }
 
     /// Handle horizontal roving focus before range/table/text key routing.
@@ -325,7 +485,7 @@ impl AppContext {
         let Some(target) = policy.resolve(&items, Some(focused), intent) else {
             return Ok(false);
         };
-        self.request_segmented_selection(control, Entity::from_stable_id(target))
+        self.move_segmented_focus(control, Entity::from_stable_id(target))
     }
 
     pub(super) fn is_roving_tab_stop(&self, id: StableNodeId) -> bool {

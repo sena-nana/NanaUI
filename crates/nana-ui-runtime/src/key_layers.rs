@@ -146,6 +146,34 @@ impl CapturedStroke {
         let stroke = Self::new(Arc::clone(&event.key), event.modifiers);
         (!stroke.key.is_empty()).then_some(stroke)
     }
+
+    /// Platform-conventional rendering, e.g. `Ctrl+Shift+P` or `⌘P`.
+    pub fn display(&self) -> String {
+        let mut parts = Vec::new();
+        if self.modifiers.control {
+            parts.push("Ctrl".to_owned());
+        }
+        if self.modifiers.alt {
+            parts.push("Alt".to_owned());
+        }
+        if self.modifiers.shift {
+            parts.push("Shift".to_owned());
+        }
+        if self.modifiers.meta {
+            parts.push(if cfg!(target_os = "macos") {
+                "⌘".to_owned()
+            } else {
+                "Super".to_owned()
+            });
+        }
+        let key = if self.key.chars().count() == 1 {
+            self.key.to_uppercase()
+        } else {
+            self.key.to_string()
+        };
+        parts.push(key);
+        parts.join("+")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,15 +295,21 @@ impl ComponentView for KeyCaptureLayer {
     }
 }
 
-/// Enabled-state record for [`ActionRegistry`].
+/// One registered action: its stable id, when it is available, and the copy a
+/// command palette shows for it.
 ///
-/// Not the host command-palette descriptor (`nana_ui::command::ActionDescriptor`,
-/// which carries label / category / keywords).
+/// This is the single action record. The keymap needs `id` / `enabled` / `when`;
+/// a palette additionally reads `label` / `category` / `keywords`. A host that
+/// only binds keys leaves the copy empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDescriptor {
     pub id: ActionId,
     pub enabled: bool,
     pub when: ContextPredicate,
+    /// Human-readable name. Empty for actions that never reach a palette.
+    pub label: String,
+    pub category: Option<String>,
+    pub keywords: Vec<String>,
 }
 
 impl ActionDescriptor {
@@ -284,7 +318,30 @@ impl ActionDescriptor {
             id: id.into(),
             enabled: true,
             when: ContextPredicate::always(),
+            label: String::new(),
+            category: None,
+            keywords: Vec::new(),
         }
+    }
+
+    /// Action carrying palette copy.
+    pub fn labeled(id: impl Into<ActionId>, label: impl Into<String>) -> Self {
+        Self::new(id).label(label)
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
+    }
+
+    pub fn keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -315,10 +372,21 @@ impl fmt::Display for ActionRegistryError {
 
 impl std::error::Error for ActionRegistryError {}
 
-/// Enabled-state lookup used by [`KeymapLayer`]. Not a second keymap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredAction {
+    descriptor: ActionDescriptor,
+    /// Registration order, so a palette lists actions the way the host declared
+    /// them rather than alphabetically by id.
+    order: u64,
+}
+
+/// Every action the application registers: the keymap reads `enabled` / `when`,
+/// a command palette reads the copy and calls [`Self::search`]. One registry,
+/// not one per consumer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionRegistry {
-    actions: BTreeMap<ActionId, ActionDescriptor>,
+    actions: BTreeMap<ActionId, RegisteredAction>,
+    next_order: u64,
 }
 
 impl ActionRegistry {
@@ -337,26 +405,127 @@ impl ActionRegistry {
         if self.actions.contains_key(&descriptor.id) {
             return Err(ActionRegistryError::Duplicate { id: descriptor.id });
         }
-        self.actions.insert(descriptor.id.clone(), descriptor);
+        let order = self.next_order;
+        self.next_order += 1;
+        self.actions.insert(
+            descriptor.id.clone(),
+            RegisteredAction { descriptor, order },
+        );
         Ok(())
+    }
+
+    pub fn unregister(&mut self, id: &ActionId) -> Option<ActionDescriptor> {
+        self.actions.remove(id).map(|action| action.descriptor)
     }
 
     pub fn set_enabled(&mut self, id: &ActionId, enabled: bool) -> bool {
         let Some(action) = self.actions.get_mut(id) else {
             return false;
         };
-        action.enabled = enabled;
+        action.descriptor.enabled = enabled;
         true
     }
 
     pub fn get(&self, id: &ActionId) -> Option<&ActionDescriptor> {
-        self.actions.get(id)
+        self.actions.get(id).map(|action| &action.descriptor)
     }
 
     pub fn is_available(&self, id: &ActionId, context: &KeyContext) -> bool {
         self.get(id)
             .is_some_and(|action| action.enabled && action.when.matches(context))
     }
+
+    /// Enabled actions whose `when` matches, in registration order.
+    pub fn available(&self, context: &KeyContext) -> Vec<&ActionDescriptor> {
+        let mut actions = self
+            .actions
+            .values()
+            .filter(|action| action.descriptor.enabled && action.descriptor.when.matches(context))
+            .collect::<Vec<_>>();
+        actions.sort_by_key(|action| action.order);
+        actions
+            .into_iter()
+            .map(|action| &action.descriptor)
+            .collect()
+    }
+
+    /// Fuzzy-matches `query` against label, id, category and keywords.
+    /// Best match first; ties keep registration order.
+    pub fn search<'a>(&'a self, query: &str, context: &KeyContext) -> Vec<ActionMatch<'a>> {
+        let query = query.trim().to_lowercase();
+        let mut matches = self
+            .actions
+            .values()
+            .filter(|action| action.descriptor.enabled && action.descriptor.when.matches(context))
+            .filter_map(|action| {
+                action_score(&action.descriptor, &query).map(|score| ActionMatch {
+                    action: &action.descriptor,
+                    score,
+                    order: action.order,
+                })
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|matched| (matched.score, matched.order));
+        matches
+    }
+}
+
+/// One search hit from [`ActionRegistry::search`]; lower `score` is better.
+#[derive(Debug, Clone, Copy)]
+pub struct ActionMatch<'a> {
+    pub action: &'a ActionDescriptor,
+    pub score: u32,
+    order: u64,
+}
+
+fn action_score(action: &ActionDescriptor, query: &str) -> Option<u32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let candidates = std::iter::once(action.label.as_str())
+        .chain(std::iter::once(action.id.as_str()))
+        .chain(action.category.as_deref())
+        .chain(action.keywords.iter().map(String::as_str))
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    query
+        .split_whitespace()
+        .map(|term| {
+            candidates
+                .iter()
+                .filter_map(|candidate| fuzzy_score(candidate, term))
+                .min()
+        })
+        .try_fold(0_u32, |total, score| {
+            score.map(|score| total.saturating_add(score))
+        })
+}
+
+fn fuzzy_score(candidate: &str, query: &str) -> Option<u32> {
+    if candidate == query {
+        return Some(0);
+    }
+    if candidate.starts_with(query) {
+        return Some(
+            10 + candidate
+                .chars()
+                .count()
+                .saturating_sub(query.chars().count()) as u32,
+        );
+    }
+    if let Some(position) = candidate.find(query) {
+        return Some(100 + position as u32);
+    }
+    let mut candidate_chars = candidate.chars().enumerate();
+    let mut last = 0_usize;
+    let mut gap = 0_usize;
+    for query_char in query.chars() {
+        let (index, _) =
+            candidate_chars.find(|(_, candidate_char)| *candidate_char == query_char)?;
+        gap = gap.saturating_add(index.saturating_sub(last));
+        last = index.saturating_add(1);
+    }
+    Some(200 + gap as u32)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,6 +558,14 @@ impl KeyBinding {
     pub fn when(mut self, when: ContextPredicate) -> Self {
         self.when = when;
         self
+    }
+    /// The whole sequence rendered for display, e.g. `Ctrl+K Ctrl+S`.
+    pub fn display(&self) -> String {
+        self.sequence
+            .iter()
+            .map(CapturedStroke::display)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -430,6 +607,27 @@ impl Keymap {
         Self {
             bindings: bindings.into_iter().collect(),
         }
+    }
+
+    /// Shortcut a command palette shows beside `action`, if one is bound and
+    /// currently available. The last matching binding wins, so a later
+    /// registration overrides an earlier default.
+    pub fn binding_label(
+        &self,
+        action: &ActionId,
+        context: &KeyContext,
+        registry: &ActionRegistry,
+    ) -> Option<String> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|binding| {
+                binding.action == *action
+                    && !binding.sequence.is_empty()
+                    && binding.when.matches(context)
+                    && registry.is_available(action, context)
+            })
+            .map(KeyBinding::display)
     }
 
     pub fn push(&mut self, binding: KeyBinding) {

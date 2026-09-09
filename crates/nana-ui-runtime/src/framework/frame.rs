@@ -253,9 +253,7 @@ impl AppContext {
             self.layout_full_invocations += 1;
         }
         let started = self.stage_clock();
-        self.component_lifecycle
-            .viewports
-            .insert(document, viewport);
+        self.world.set_document_viewport(document, viewport);
         let result = (|| {
             self.position_open_tooltips(document)?;
             completed(0);

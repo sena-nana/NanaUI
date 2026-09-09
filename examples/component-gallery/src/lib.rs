@@ -1290,7 +1290,8 @@ impl RuntimeProgram for GalleryApp {
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         let event = input.event;
         if id == WindowId::PRIMARY {
-            let messages = self.drain_primary_input(event);
+            let mut messages = self.drain_menu_activations();
+            messages.extend(self.drain_primary_input(event));
             self.absorb_runtime_workspace();
             let mut update = self.apply_all(messages);
             if !self.state.settings_open {
@@ -1333,12 +1334,76 @@ impl RuntimeProgram for GalleryApp {
     }
 }
 
+/// Menu ids the gallery answers. Small and explicit: the menu reports what the
+/// user chose and the application decides what it means.
+mod menu_action {
+    pub const TOGGLE_THEME: u32 = 1;
+    pub const TOGGLE_SIDEBAR: u32 = 2;
+    pub const OPEN_SETTINGS: u32 = 3;
+    pub const COMMAND_PALETTE: u32 = 4;
+}
+
+/// The gallery's menu bar.
+///
+/// On macOS the first menu becomes the application menu, so it carries the
+/// app-level commands.
+fn gallery_menu_bar() -> nana_ui::MenuBar {
+    use nana_ui::{Menu, MenuEntry, MenuShortcut};
+
+    nana_ui::MenuBar::new([
+        Menu::new(
+            "NanaUI Gallery",
+            [MenuEntry::item(menu_action::OPEN_SETTINGS, "设置…")
+                .shortcut(MenuShortcut::primary(","))],
+        ),
+        Menu::new(
+            "视图",
+            [
+                MenuEntry::item(menu_action::TOGGLE_SIDEBAR, "切换侧栏")
+                    .shortcut(MenuShortcut::primary("b")),
+                MenuEntry::item(menu_action::TOGGLE_THEME, "切换深浅主题")
+                    .shortcut(MenuShortcut::primary("t").shift()),
+                MenuEntry::Separator,
+                MenuEntry::item(menu_action::COMMAND_PALETTE, "命令面板")
+                    .shortcut(MenuShortcut::primary("p").shift()),
+            ],
+        ),
+    ])
+}
+
 impl GalleryApp {
+    /// Turn menu selections into the same messages the UI produces.
+    ///
+    /// The menu reports ids; routing them is application business, exactly
+    /// like a `SecondaryPress` handler deciding what to open.
+    fn drain_menu_activations(&mut self) -> Vec<GalleryMessage> {
+        nana_ui::take_menu_activations()
+            .into_iter()
+            .filter_map(|id| match id {
+                menu_action::TOGGLE_THEME => Some(GalleryMessage::ToggleTheme),
+                menu_action::OPEN_SETTINGS => Some(GalleryMessage::OpenSettings),
+                menu_action::COMMAND_PALETTE => Some(GalleryMessage::ToggleCommandPalette),
+                menu_action::TOGGLE_SIDEBAR => Some(GalleryMessage::Workspace(
+                    WorkspaceAction::ToggleRegion(RegionId::Resources),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn handle_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
         match event {
-            WindowEvent::Ready { id, geometry } | WindowEvent::Resized { id, geometry } => {
-                self.apply_window_geometry(id, geometry)
+            WindowEvent::Ready { id, geometry } => {
+                let mut update = self.apply_window_geometry(id, geometry);
+                if id == WindowId::PRIMARY {
+                    update.window_commands.push(WindowCommand::SetMenuBar {
+                        id,
+                        bar: Some(gallery_menu_bar()),
+                    });
+                }
+                update
             }
+            WindowEvent::Resized { id, geometry } => self.apply_window_geometry(id, geometry),
             WindowEvent::Moved { id, geometry } if id != WindowId::PRIMARY => {
                 self.apply_window_geometry(id, geometry)
             }
@@ -1420,12 +1485,12 @@ fn shortcut_message(event: &InputEvent) -> Option<GalleryMessage> {
         return None;
     }
     Some(GalleryMessage::KeyStroke(KeyStroke::new(
-        key,
+        key.as_str(),
         KeyModifiers {
             control: modifiers.control,
             alt: modifiers.alt,
             shift: modifiers.shift,
-            logo: modifiers.meta,
+            meta: modifiers.meta,
         },
     )))
 }
@@ -1667,19 +1732,19 @@ fn context_action_from_value(value: &str) -> Option<ContextAction> {
 fn gallery_action_registry() -> ActionRegistry {
     let mut registry = ActionRegistry::new();
     for action in [
-        ActionDescriptor::new("workspace.command_palette", "显示命令面板")
+        ActionDescriptor::labeled("workspace.command_palette", "显示命令面板")
             .category("工作区")
             .keywords(["command", "palette"]),
-        ActionDescriptor::new("appearance.toggle_theme", "切换深浅主题")
+        ActionDescriptor::labeled("appearance.toggle_theme", "切换深浅主题")
             .category("外观")
             .keywords(["theme", "dark", "light"]),
-        ActionDescriptor::new("workspace.toggle_sidebar", "切换侧栏")
+        ActionDescriptor::labeled("workspace.toggle_sidebar", "切换侧栏")
             .category("工作区")
             .keywords(["sidebar", "navigation"]),
-        ActionDescriptor::new("workspace.reset_layout", "恢复工作区布局")
+        ActionDescriptor::labeled("workspace.reset_layout", "恢复工作区布局")
             .category("工作区")
             .keywords(["layout", "reset"]),
-        ActionDescriptor::new("graph.reset_viewport", "重置节点图视口")
+        ActionDescriptor::labeled("graph.reset_viewport", "重置节点图视口")
             .category("节点图")
             .keywords(["graph", "viewport"])
             .when(ContextPredicate::always().all_of(["graph"])),

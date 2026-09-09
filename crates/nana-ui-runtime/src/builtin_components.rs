@@ -73,6 +73,9 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<ListItem>()?;
         registrar.register_component::<Thumbnail>()?;
         registrar.register_component::<Chip>()?;
+        registrar.register_component::<crate::DatePicker>()?;
+        registrar.register_component::<crate::Toolbar>()?;
+        registrar.register_component::<crate::StatusBar>()?;
         registrar.register_component::<Avatar>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
@@ -369,6 +372,47 @@ impl RegisterableComponent for ListItem {
     }
 }
 
+impl RegisterableComponent for crate::Toolbar {
+    const TYPE_ID: &'static str = crate::component_descriptors::TOOLBAR.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TOOLBAR.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let bar = crate::Toolbar::new();
+        let label = spec.display_label();
+        if label.is_empty() {
+            bar
+        } else {
+            bar.label(label)
+        }
+    }
+}
+
+impl RegisterableComponent for crate::StatusBar {
+    const TYPE_ID: &'static str = crate::component_descriptors::STATUS_BAR.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::STATUS_BAR.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let bar = crate::StatusBar::new();
+        let label = spec.display_label();
+        if label.is_empty() {
+            bar
+        } else {
+            bar.label(label)
+        }
+    }
+}
+
+impl RegisterableComponent for crate::DatePicker {
+    const TYPE_ID: &'static str = crate::component_descriptors::DATE_PICKER.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DATE_PICKER.tags;
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        // Without a date in the attributes the grid opens on the epoch; the
+        // host sets the real cursor through the component.
+        let cursor = nana_ui_core::CivilDate::new(1970, 1, 1).expect("epoch is a valid date");
+        crate::DatePicker::new(cursor)
+            .disabled(spec.disabled)
+            .month_label(spec.display_label())
+    }
+}
+
 impl RegisterableComponent for Chip {
     const TYPE_ID: &'static str = crate::component_descriptors::CHIP.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::CHIP.tags;
@@ -513,7 +557,6 @@ impl RegisterableComponent for RangeField {
         };
         let value = (spec.number as f64).clamp(min, max);
         let mut component = RangeField::new(value, min, max, step)
-            .unwrap_or_else(|_| RangeField::new(0.0, 0.0, 1.0, 0.1).expect("default range"))
             .disabled(spec.disabled)
             .invalid(spec.invalid)
             .size(spec.size);

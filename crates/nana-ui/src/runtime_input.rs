@@ -826,6 +826,26 @@ impl RuntimeInputAdapter {
                 repeat: _,
                 modifiers,
                 ..
+            } if *pressed
+                && !modifiers.alt
+                && (modifiers.control || modifiers.meta)
+                && key.eq_ignore_ascii_case("z") =>
+            {
+                // Undo/redo is the one editing shortcut that carries Shift, so
+                // it is matched before the clipboard arm excludes it.
+                if modifiers.shift {
+                    context.redo_focused_text(document)?
+                } else {
+                    context.undo_focused_text(document)?
+                }
+            }
+            InputEvent::Keyboard {
+                pressed,
+                key,
+                text,
+                repeat: _,
+                modifiers,
+                ..
             } if *pressed && !modifiers.alt && !modifiers.shift => {
                 let primary = modifiers.control || modifiers.meta;
                 if primary && self.dispatch_clipboard_shortcut(context, document, key)? {
@@ -1089,7 +1109,7 @@ impl RuntimeInputAdapter {
             let Some(text) = self.read_clipboard() else {
                 return Ok(false);
             };
-            return context.replace_focused_text(document, &text);
+            return context.paste_focused_text(document, &text);
         }
         Ok(false)
     }
@@ -2843,7 +2863,7 @@ mod tests {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
         let range = context
-            .create_component(document, RangeField::new(0.5, 0.0, 1.0, 0.1).unwrap())
+            .create_component(document, RangeField::new(0.5, 0.0, 1.0, 0.1))
             .unwrap();
         let mut layout = MutationQueue::new();
         layout.write_layout(

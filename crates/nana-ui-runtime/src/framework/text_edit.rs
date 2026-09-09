@@ -82,7 +82,7 @@ pub struct FocusedTextEditor {
     pub accepts_input: bool,
     pub accepts_selection: bool,
     pub code_editing: Option<CodeEditing>,
-    kind: TextEditorKind,
+    pub(crate) kind: TextEditorKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,6 +395,9 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
+        // Moving the caret ends the current typing run: typing, arrowing away
+        // and typing again is two undo steps, not one.
+        self.seal_editor_history(focused.node);
         if !focused.accepts_selection {
             return Ok(false);
         }
@@ -640,20 +643,29 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let atoms = self.editor_text_atoms(focused.node, focused.kind);
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let atoms = atoms_in(value, &atoms);
-            let replacement = match kind {
-                TextDeleteKind::Backward => delete_backward_atoms(value, selection, &atoms)?,
-                TextDeleteKind::Forward => delete_forward_atoms(value, selection, &atoms)?,
-                TextDeleteKind::WordBackward => {
-                    delete_word_backward_atoms(value, selection, &atoms)?
-                }
-                TextDeleteKind::WordForward => delete_word_forward_atoms(value, selection, &atoms)?,
-                TextDeleteKind::LineStart => delete_to_line_start_atoms(value, selection, &atoms)?,
-                TextDeleteKind::LineEnd => delete_to_line_end_atoms(value, selection, &atoms)?,
-            };
-            Some(CursorEdit::Span(replacement))
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Delete,
+            |value, selection, _| {
+                let atoms = atoms_in(value, &atoms);
+                let replacement = match kind {
+                    TextDeleteKind::Backward => delete_backward_atoms(value, selection, &atoms)?,
+                    TextDeleteKind::Forward => delete_forward_atoms(value, selection, &atoms)?,
+                    TextDeleteKind::WordBackward => {
+                        delete_word_backward_atoms(value, selection, &atoms)?
+                    }
+                    TextDeleteKind::WordForward => {
+                        delete_word_forward_atoms(value, selection, &atoms)?
+                    }
+                    TextDeleteKind::LineStart => {
+                        delete_to_line_start_atoms(value, selection, &atoms)?
+                    }
+                    TextDeleteKind::LineEnd => delete_to_line_end_atoms(value, selection, &atoms)?,
+                };
+                Some(CursorEdit::Span(replacement))
+            },
+        )
     }
 
     /// Insert a newline into the focused `TextArea`, with auto-indent when
@@ -673,21 +685,26 @@ impl AppContext {
             .code_editing
             .as_ref()
             .map(|code| code.indent_unit.to_string());
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let replacement = match &indent_unit {
-                Some(unit) => auto_indent_newline(value, selection, unit),
-                None => {
-                    let range = selection.ordered();
-                    let caret = range.start + 1;
-                    TextReplacement {
-                        range,
-                        insert: "\n".into(),
-                        caret,
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Typing,
+            |value, selection, _| {
+                let replacement = match &indent_unit {
+                    Some(unit) => auto_indent_newline(value, selection, unit),
+                    None => {
+                        let range = selection.ordered();
+                        let caret = range.start + 1;
+                        TextReplacement {
+                            range,
+                            insert: "\n".into(),
+                            caret,
+                        }
                     }
-                }
-            };
-            Some(CursorEdit::Span(replacement))
-        })
+                };
+                Some(CursorEdit::Span(replacement))
+            },
+        )
     }
 
     /// Apply code-editor auto-pairing for a typed character. `Ok(false)`
@@ -704,9 +721,12 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            auto_pair_edit(value, selection, typed).map(CursorEdit::Span)
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Typing,
+            |value, selection, _| auto_pair_edit(value, selection, typed).map(CursorEdit::Span),
+        )
     }
 
     /// Indent (`Tab`) or outdent (`Shift+Tab`) the focused code editor.
@@ -726,14 +746,19 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let unit = code.indent_unit.to_string();
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = if outdent {
-                outdent_selection(value, selection, &unit)?
-            } else {
-                indent_selection(value, selection, &unit)?
-            };
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = if outdent {
+                    outdent_selection(value, selection, &unit)?
+                } else {
+                    indent_selection(value, selection, &unit)?
+                };
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Toggle line comments across the selections of the focused code editor.
@@ -752,10 +777,15 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let prefix = code.comment_prefix.to_string();
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = toggle_line_comment(value, selection, &prefix)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = toggle_line_comment(value, selection, &prefix)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Move the block of lines each selection touches up or down one line,
@@ -773,10 +803,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = move_lines(value, selection, direction)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = move_lines(value, selection, direction)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Duplicate the block of lines each selection touches on the line below
@@ -792,10 +827,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = duplicate_lines(value, selection)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = duplicate_lines(value, selection)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Delete the block of lines each selection touches, including one
@@ -811,10 +851,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = delete_lines(value, selection)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Delete,
+            |value, selection, _| {
+                let (next, selection) = delete_lines(value, selection)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Join the lines each selection touches into one line (single-space
@@ -830,10 +875,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = join_lines(value, selection)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = join_lines(value, selection)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Uppercase (`upper`) or lowercase every selection of the focused editor.
@@ -849,10 +899,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = transform_selection_case(value, selection, upper)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = transform_selection_case(value, selection, upper)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Sort the lines each selection touches by byte order, optionally
@@ -871,10 +926,15 @@ impl AppContext {
             return Ok(false);
         }
         self.text_edit.caret_goal_x = None;
-        self.edit_editor_multi(focused.node, focused.kind, |value, selection, _| {
-            let (next, selection) = sort_lines(value, selection, descending, unique)?;
-            Some(CursorEdit::Transform { next, selection })
-        })
+        self.edit_editor_multi(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |value, selection, _| {
+                let (next, selection) = sort_lines(value, selection, descending, unique)?;
+                Some(CursorEdit::Transform { next, selection })
+            },
+        )
     }
 
     /// Move the caret of the focused editor onto the bracket matching the
@@ -1325,6 +1385,7 @@ impl AppContext {
         self.edit_editor_multi(
             focused.node,
             focused.kind,
+            crate::TextEditOrigin::Structural,
             |value, selection, is_primary| {
                 if !is_primary {
                     return None;
@@ -1379,38 +1440,43 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let mut replaced = 0usize;
-        self.edit_editor(focused.node, focused.kind, |state| {
-            let matches =
-                find_matches_in_scope(&state.value, query, options, scope, &state.selection);
-            if matches.is_empty() {
-                return None;
-            }
-            let first = matches[0].clone();
-            let first_replacement = if preserve_case {
-                preserve_case_replacement(replacement, &state.value[first.clone()])
-            } else {
-                replacement.to_owned()
-            };
-            let (value, count) = replace_all_matches_in_range(
-                &state.value,
-                query,
-                replacement,
-                options,
-                match scope {
-                    TextFindScope::Document => None,
-                    TextFindScope::Selection => find_scope_range(&state.selection),
-                },
-                preserve_case,
-            );
-            replaced = count;
-            Some(EditorEdit {
-                value,
-                selection: TextSelection {
-                    anchor: first.start,
-                    focus: first.start + first_replacement.len(),
-                },
-            })
-        })?;
+        self.edit_editor(
+            focused.node,
+            focused.kind,
+            crate::TextEditOrigin::Structural,
+            |state| {
+                let matches =
+                    find_matches_in_scope(&state.value, query, options, scope, &state.selection);
+                if matches.is_empty() {
+                    return None;
+                }
+                let first = matches[0].clone();
+                let first_replacement = if preserve_case {
+                    preserve_case_replacement(replacement, &state.value[first.clone()])
+                } else {
+                    replacement.to_owned()
+                };
+                let (value, count) = replace_all_matches_in_range(
+                    &state.value,
+                    query,
+                    replacement,
+                    options,
+                    match scope {
+                        TextFindScope::Document => None,
+                        TextFindScope::Selection => find_scope_range(&state.selection),
+                    },
+                    preserve_case,
+                );
+                replaced = count;
+                Some(EditorEdit {
+                    value,
+                    selection: TextSelection {
+                        anchor: first.start,
+                        focus: first.start + first_replacement.len(),
+                    },
+                })
+            },
+        )?;
         Ok(replaced)
     }
 
@@ -1916,7 +1982,14 @@ impl AppContext {
             anchor: insert_at,
             focus: insert_at + length,
         };
-        self.commit_editor_value(drag.node, focused.kind, next, selection, Vec::new())
+        self.commit_editor_value(
+            drag.node,
+            focused.kind,
+            next,
+            selection,
+            Vec::new(),
+            crate::TextEditOrigin::Structural,
+        )
     }
 
     /// 取消拖拽移动选中（Esc）。仅当拖拽属于该文档的聚焦编辑器时消费。
@@ -2143,6 +2216,7 @@ impl AppContext {
         &mut self,
         node: StableNodeId,
         kind: TextEditorKind,
+        origin: crate::TextEditOrigin,
         edit: impl FnOnce(&TextInputState) -> Option<EditorEdit>,
     ) -> Result<bool, FrameworkError> {
         let state = self.editor_state(node, kind)?;
@@ -2153,26 +2227,7 @@ impl AppContext {
             return Ok(false);
         }
         let EditorEdit { value, selection } = edited;
-        match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, cx| {
-                    area.state.value = value;
-                    area.state.selection = selection;
-                    cx.emit(area.change());
-                    true
-                })
-            }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, cx| {
-                    field.state.value = value;
-                    field.state.selection = selection;
-                    cx.emit(field.change());
-                    true
-                })
-            }
-        }
+        self.commit_editor_value(node, kind, value, selection, Vec::new(), origin)
     }
 
     /// Apply a per-cursor edit closure to every active selection and commit
@@ -2188,6 +2243,7 @@ impl AppContext {
         &mut self,
         node: StableNodeId,
         kind: TextEditorKind,
+        origin: crate::TextEditOrigin,
         mut edit: impl FnMut(&str, TextSelection, bool) -> Option<CursorEdit>,
     ) -> Result<bool, FrameworkError> {
         let state = self.editor_state(node, kind)?;
@@ -2205,7 +2261,7 @@ impl AppContext {
             if value == state.value {
                 return Ok(false);
             }
-            return self.commit_editor_value(node, kind, value, selection, Vec::new());
+            return self.commit_editor_value(node, kind, value, selection, Vec::new(), origin);
         }
         let selections = state.selections().into_owned();
         let primary_index = selections
@@ -2241,7 +2297,7 @@ impl AppContext {
             .filter(|(index, _)| *index != primary_index)
             .map(|(_, selection)| *selection)
             .collect();
-        self.commit_editor_value(node, kind, value, primary, additional)
+        self.commit_editor_value(node, kind, value, primary, additional, origin)
     }
 
     /// Commit a value edit together with the rebuilt selection set. The set
@@ -2254,6 +2310,7 @@ impl AppContext {
         value: String,
         selection: TextSelection,
         additional: Vec<TextSelection>,
+        origin: crate::TextEditOrigin,
     ) -> Result<bool, FrameworkError> {
         let linked = self.world.text_snippet_session(node).and_then(|session| {
             let old = self.editor_state(node, kind).ok()?;
@@ -2272,33 +2329,34 @@ impl AppContext {
         next.normalize_selections();
         let (value, selection, additional) =
             (next.value, next.selection, next.additional_selections);
+        let write = move |state: &mut crate::TextInputState| {
+            state.value = value;
+            state.selection = selection;
+            state.additional_selections = additional;
+        };
         let changed = match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, cx| {
-                    if !area.accepts_input() || area.state.value == value {
+            TextEditorKind::Area => self.commit_editor_edit(
+                Entity::<TextArea>::from_stable_id(node),
+                origin,
+                move |area: &mut TextArea, _| {
+                    if !area.accepts_input() {
                         return false;
                     }
-                    area.state.value = value;
-                    area.state.selection = selection;
-                    area.state.additional_selections = additional;
-                    cx.emit(area.change());
+                    write(&mut area.state);
                     true
-                })
-            }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, cx| {
-                    if !field.accepts_input() || field.state.value == value {
+                },
+            ),
+            TextEditorKind::Field => self.commit_editor_edit(
+                Entity::<TextInput>::from_stable_id(node),
+                origin,
+                move |field: &mut TextInput, _| {
+                    if !field.accepts_input() {
                         return false;
                     }
-                    field.state.value = value;
-                    field.state.selection = selection;
-                    field.state.additional_selections = additional;
-                    cx.emit(field.change());
+                    write(&mut field.state);
                     true
-                })
-            }
+                },
+            ),
         }?;
         if changed && let Some(session) = linked_session {
             let mut mutations = MutationQueue::new();
@@ -2456,6 +2514,7 @@ impl AppContext {
                 next.value,
                 next.selection,
                 Vec::new(),
+                crate::TextEditOrigin::Structural,
             )?;
             self.dismiss_focused_text_completion(document)?;
             return Ok(changed);
@@ -2540,6 +2599,7 @@ impl AppContext {
                 next.value,
                 next.selection,
                 next.additional_selections,
+                crate::TextEditOrigin::Structural,
             )?;
             if changed {
                 let stops = edit
@@ -2583,6 +2643,7 @@ impl AppContext {
         self.edit_editor_multi(
             focused.node,
             focused.kind,
+            crate::TextEditOrigin::Structural,
             |value, selection, is_primary| {
                 if !is_primary {
                     return None;

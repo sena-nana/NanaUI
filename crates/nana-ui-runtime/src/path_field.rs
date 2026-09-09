@@ -17,6 +17,10 @@ use crate::{
 };
 
 /// Host should open a file or folder picker and assign the result.
+/// Default accessible name. Applications localize it with
+/// [`PathField::label`].
+const DEFAULT_LABEL: &str = "路径";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowseRequested;
 
@@ -28,12 +32,28 @@ pub struct PathField {
     pub disabled: bool,
     pub invalid: bool,
     pub size: ControlSize,
+    /// Accessible name announced for the field.
+    pub label: Arc<str>,
     pub input: Option<StableNodeId>,
     pub browse: Option<StableNodeId>,
     pub style: NodeStyle,
 }
 
 impl PathField {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    /// Overrides the accessible name announced for the field.
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
     pub fn new(value: impl Into<Arc<str>>) -> Self {
         Self {
             value: value.into(),
@@ -41,6 +61,7 @@ impl PathField {
             disabled: false,
             invalid: false,
             size: ControlSize::Medium,
+            label: Arc::from(DEFAULT_LABEL),
             input: None,
             browse: None,
             style: field_style(ControlSize::Medium),
@@ -111,7 +132,7 @@ impl ComponentView for PathField {
             },
             AccessibilityState {
                 role: AccessibilityRole::Generic,
-                label: Some(Arc::from("路径")),
+                label: Some(Arc::clone(&self.label)),
                 value: Some(Arc::clone(&self.value)),
                 disabled: self.disabled,
                 invalid: self.invalid,
@@ -221,6 +242,37 @@ fn field_style(size: ControlSize) -> NodeStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_accessible_name_is_localizable_and_defaults_to_the_bundled_string() {
+        use crate::{AppContext, DocumentId};
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+
+        let default_field = context
+            .create_component(document, PathField::new("/tmp"))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .accessibility(default_field.stable_id())
+                .and_then(|state| state.label.clone())
+                .as_deref(),
+            Some(DEFAULT_LABEL)
+        );
+
+        let localized = context
+            .create_component(document, PathField::new("/tmp").label("Path"))
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .accessibility(localized.stable_id())
+                .and_then(|state| state.label.clone())
+                .as_deref(),
+            Some("Path")
+        );
+    }
+
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;

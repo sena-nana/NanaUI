@@ -13,7 +13,7 @@ use crate::{
 };
 
 const ROW_GAP: f32 = 1.0;
-const DEPTH_STEP: f32 = 12.0;
+use crate::popover::TREE_DEPTH_STEP as DEPTH_STEP;
 const DISCLOSURE_SIZE: f32 = 16.0;
 const ICON_SIZE: f32 = 12.0;
 
@@ -51,6 +51,14 @@ pub struct TreeRowGeometry {
 }
 
 impl TreeView {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(nodes: impl IntoIterator<Item = TreeNode<Arc<str>>>) -> Self {
         Self {
             nodes: nodes.into_iter().collect(),
@@ -109,9 +117,20 @@ impl ComponentView for TreeView {
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(self.intrinsic_height()));
-        layout.min_height = Some(LengthSpec::Px(self.intrinsic_height()));
+        if layout.width.is_none() {
+            layout.width = Some(LengthSpec::Fill);
+        }
+        // Boxes are border-box, so declared padding has to be added on top of
+        // the row stack; otherwise it eats the last row. A caller that sets its
+        // own height (a tree inside a fixed viewport) keeps it.
+        let padding = layout.resolved_padding();
+        let content = self.intrinsic_height() + padding.top + padding.bottom;
+        if layout.height.is_none() {
+            layout.height = Some(LengthSpec::Px(content));
+        }
+        if layout.min_height.is_none() {
+            layout.min_height = Some(LengthSpec::Px(content));
+        }
         project_common(
             id,
             world,

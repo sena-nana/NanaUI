@@ -235,8 +235,10 @@ pub use nana_window::apply_hosted_system_material;
 #[cfg(feature = "hosted")]
 pub use nana_window::{
     Appearance as WindowAppearance, FallbackColor, MaterialEffect, MaterialFallback,
-    MaterialOutcome, PlatformMaterialSupport, apply_system_material, clear_system_material,
-    hosted_platform_material_support, platform_material_support,
+    MaterialOutcome, Menu, MenuBar, MenuBarSupport, MenuEntry, MenuShortcut,
+    PlatformMaterialSupport, apply_system_material, clear_system_material,
+    hosted_platform_material_support, install_menu_bar, menu_bar_support,
+    platform_material_support, take_menu_activations,
 };
 pub use overlay::ExclusiveOverlay;
 pub use pane::ratio_pane_split;

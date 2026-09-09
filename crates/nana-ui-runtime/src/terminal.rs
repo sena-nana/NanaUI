@@ -139,6 +139,19 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
     pub fn new(screen: TerminalScreen) -> Self {
         let mut style = NodeStyle::default().surface(SemanticColorRole::Surface);
         let layout = Arc::make_mut(&mut style.layout);

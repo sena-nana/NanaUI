@@ -12,8 +12,10 @@ use crate::{
 
 const HANDLE_WIDTH: f32 = 16.0;
 const MENU_GAP: f32 = 0.0;
-const MENU_PAD: f32 = 4.0;
-const MENU_ITEM_GAP: f32 = 1.0;
+const MENU_PAD: f32 = crate::popover::MENU_SURFACE_PADDING;
+use crate::popover::MENU_ITEM_GAP;
+/// Width of the leading check lane in a drop-down menu row.
+const MENU_CHECK_RESERVE: f32 = 16.0;
 
 /// Option identity stays application-owned. Disabled options remain visible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,14 @@ pub struct Select {
 }
 
 impl Select {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(value: Option<impl Into<Arc<str>>>) -> Self {
         Self {
             value: value.map(Into::into),
@@ -88,7 +98,7 @@ impl Select {
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
-        self.style = field_style_for_size(size);
+        apply_field_size(&mut self.style, size);
         self
     }
 
@@ -307,6 +317,7 @@ impl crate::ComponentView for Select {
                 })
                 .collect(),
             highlighted: self.highlighted,
+            checkable: false,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -353,6 +364,8 @@ pub(crate) fn select_geometry(
     style: &ComputedStyle,
     source: &NodeStyle,
     palette: &SemanticPalette,
+    viewport: Option<crate::LayoutViewport>,
+    checkable: bool,
 ) -> ComponentGeometry {
     let padding = source.layout.resolved_padding_against(Some(bounds.width));
     let border = source.layout.resolved_border_width();
@@ -370,7 +383,17 @@ pub(crate) fn select_geometry(
         style.color.unwrap_or_else(|| palette.text.as_rgba_array())
     };
     let handle_color = palette.muted.as_rgba_array();
-    let menu = opened.then(|| select_menu_geometry(bounds, size, options, highlighted, palette));
+    let menu = opened.then(|| {
+        select_menu_geometry(
+            bounds,
+            size,
+            options,
+            highlighted,
+            palette,
+            viewport,
+            checkable,
+        )
+    });
     ComponentGeometry::Select {
         label: ComponentTextRegion {
             bounds: LayoutBox {
@@ -404,19 +427,25 @@ fn select_menu_geometry(
     options: &[SelectOptionData],
     highlighted: Option<usize>,
     palette: &SemanticPalette,
+    viewport: Option<crate::LayoutViewport>,
+    checkable: bool,
 ) -> crate::SelectMenuGeometry {
     let item_height = size.height();
     let count = options.len().max(1) as f32;
-    let height = MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
+    let natural_height =
+        MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
+    let (surface_y, height) = resolve_menu_vertical(field, natural_height, viewport);
     let surface = LayoutBox {
         x: field.x,
-        y: field.y + field.height + MENU_GAP,
+        y: surface_y,
         width: field.width,
         height,
     };
-    let show_checks = options.iter().any(|option| option.checked);
-    let check_reserve = if show_checks { 16.0 } else { 0.0 };
+    // Reserved for the whole menu when the menu *can* check, not when one
+    // option currently is: deriving it from `any(checked)` shifted every label
+    // 16px sideways the moment the first option became checked.
+    let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
     let options = options
         .iter()
         .enumerate()
@@ -484,6 +513,49 @@ pub(crate) fn select_option_at(menu: &crate::SelectMenuGeometry, x: f32, y: f32)
         .position(|option| !option.disabled && option.bounds.contains(x, y))
 }
 
+/// Places the drop-down surface below its field, folding it back inside the
+/// window near the bottom edge.
+///
+/// Preference order matches the menu families: open downwards; flip above the
+/// field when the space below cannot hold the menu but the space above can;
+/// otherwise stay on the roomier side and cap the height to it. Without a
+/// viewport (the document has not been laid out yet) the menu keeps its natural
+/// downward placement.
+fn resolve_menu_vertical(
+    field: LayoutBox,
+    natural_height: f32,
+    viewport: Option<crate::LayoutViewport>,
+) -> (f32, f32) {
+    let below_y = field.y + field.height + MENU_GAP;
+    let Some(viewport) = viewport else {
+        return (below_y, natural_height);
+    };
+    let space_below = (viewport.height - below_y).max(0.0);
+    if natural_height <= space_below {
+        return (below_y, natural_height);
+    }
+    let space_above = (field.y - MENU_GAP).max(0.0);
+    if natural_height <= space_above {
+        return (field.y - MENU_GAP - natural_height, natural_height);
+    }
+    if space_above > space_below {
+        (0.0, space_above)
+    } else {
+        (below_y, space_below)
+    }
+}
+
+/// Re-applies only the metrics `ControlSize` owns onto an existing field style.
+///
+/// `size()` builders use this instead of rebuilding the whole [`NodeStyle`], so
+/// a style the caller supplied keeps its colors, borders and interaction paints.
+pub(crate) fn apply_field_size(style: &mut NodeStyle, size: ControlSize) {
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.height = Some(LengthSpec::Px(size.height()));
+    layout.padding_left = Some(LengthSpec::Px(size.padding_x()));
+    layout.padding_right = Some(LengthSpec::Px(size.padding_x()));
+}
+
 pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
@@ -522,6 +594,122 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_multi_select_dropdown_reserves_the_check_lane() {
+        use crate::{Dropdown, DropdownOption, StandardVisual};
+
+        let checkable_of = |context: &AppContext, id| match context.world().standard_visual(id) {
+            Some(StandardVisual::Select { checkable, .. }) => checkable,
+            other => panic!("expected a Select visual, got {other:?}"),
+        };
+        let options = [DropdownOption::new("a", "A"), DropdownOption::new("b", "B")];
+
+        let mut context = AppContext::new();
+        // A plain Select never draws checks, so it must not indent its labels.
+        let select = context.create_component(document(), sample()).unwrap();
+        assert!(!checkable_of(&context, select.stable_id()));
+
+        // Single-select dropdown: still no check column.
+        let single = context
+            .create_component(
+                document(),
+                Dropdown::single(Some("a")).options(options.clone()),
+            )
+            .unwrap();
+        assert!(!checkable_of(&context, single.stable_id()));
+
+        // Multi-select reserves the lane even while nothing is checked yet, so
+        // labels do not jump sideways on the first check.
+        let empty_multi = context
+            .create_component(
+                document(),
+                Dropdown::multiple(Vec::<String>::new()).options(options.clone()),
+            )
+            .unwrap();
+        assert!(checkable_of(&context, empty_multi.stable_id()));
+
+        let checked_multi = context
+            .create_component(
+                document(),
+                Dropdown::multiple(vec!["a".to_string()]).options(options),
+            )
+            .unwrap();
+        assert!(checkable_of(&context, checked_multi.stable_id()));
+    }
+
+    fn menu_field(y: f32) -> LayoutBox {
+        LayoutBox {
+            x: 10.0,
+            y,
+            width: 120.0,
+            height: 32.0,
+        }
+    }
+
+    #[test]
+    fn menu_opens_downwards_when_the_viewport_has_room() {
+        let viewport = crate::LayoutViewport::new(600.0, 600.0);
+        let field = menu_field(100.0);
+        let (y, height) = resolve_menu_vertical(field, 90.0, Some(viewport));
+        assert_eq!(y, field.y + field.height + MENU_GAP);
+        assert_eq!(height, 90.0);
+    }
+
+    #[test]
+    fn menu_flips_above_the_field_when_it_would_fall_off_the_bottom() {
+        // Field near the bottom edge: 600 - (500 + 32 + gap) leaves < 90px below,
+        // while 500px sit above it.
+        let viewport = crate::LayoutViewport::new(600.0, 600.0);
+        let field = menu_field(500.0);
+        let (y, height) = resolve_menu_vertical(field, 90.0, Some(viewport));
+        assert_eq!(height, 90.0, "a flipped menu keeps its natural height");
+        assert_eq!(y, field.y - MENU_GAP - 90.0);
+        assert!(y >= 0.0, "flipped menu stays inside the viewport");
+    }
+
+    #[test]
+    fn a_menu_taller_than_both_sides_is_capped_to_the_roomier_one() {
+        let viewport = crate::LayoutViewport::new(600.0, 300.0);
+        let field = menu_field(220.0);
+        let (y, height) = resolve_menu_vertical(field, 5_000.0, Some(viewport));
+        // 220px above vs 300-(220+32+gap) below: it opens upwards, capped.
+        assert_eq!(y, 0.0);
+        assert!(height <= 220.0, "capped to the space above, got {height}");
+        assert!(height > 0.0);
+    }
+
+    #[test]
+    fn menu_without_a_laid_out_viewport_keeps_its_downward_placement() {
+        let field = menu_field(500.0);
+        let (y, height) = resolve_menu_vertical(field, 90.0, None);
+        assert_eq!(y, field.y + field.height + MENU_GAP);
+        assert_eq!(height, 90.0);
+    }
+
+    #[test]
+    fn size_keeps_caller_supplied_style_and_only_rewrites_size_metrics() {
+        let mut custom = field_style_for_size(ControlSize::Medium);
+        custom.background = Some(SemanticColorRole::Selected);
+        Arc::make_mut(&mut custom.layout).border_radius = Some(17.0);
+
+        let select = Select::new(Some("a"))
+            .style(custom)
+            .size(ControlSize::Large);
+
+        // Caller-owned paint and geometry survive `size()`.
+        assert_eq!(select.style.background, Some(SemanticColorRole::Selected));
+        assert_eq!(select.style.layout.border_radius, Some(17.0));
+        // Metrics that `ControlSize` owns are refreshed.
+        assert_eq!(
+            select.style.layout.height,
+            Some(LengthSpec::Px(ControlSize::Large.height()))
+        );
+        assert_eq!(
+            select.style.layout.padding_left,
+            Some(LengthSpec::Px(ControlSize::Large.padding_x()))
+        );
+    }
+
     #[test]
     fn background_props_refresh_preserves_open_select_and_keyboard_highlight() {
         let options = [SelectOption::new("a", "A"), SelectOption::new("b", "B")];

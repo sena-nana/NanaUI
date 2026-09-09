@@ -11,6 +11,7 @@
 
 mod animation;
 mod avatar;
+mod bars;
 mod breadcrumb;
 mod builtin_components;
 #[cfg(feature = "calendar")]
@@ -23,6 +24,7 @@ mod command_palette;
 pub mod component_descriptors;
 mod component_registry;
 mod components;
+mod date_picker;
 mod dock;
 mod dropdown;
 mod feedback;
@@ -97,6 +99,7 @@ pub use animation::{
     component_animation_id, component_animation_kinds,
 };
 pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
+pub use bars::{StatusBar, Toolbar};
 pub use breadcrumb::{
     Breadcrumb, BreadcrumbEvent, BreadcrumbItem, BreadcrumbSegment, BreadcrumbTone,
 };
@@ -140,6 +143,7 @@ pub use components::{
     TextSnippet, TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
     TriggeredMenuOverlay,
 };
+pub use date_picker::{DateChanged, DateCursorMoved, DatePicker, DatePickerSlots};
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
     DockCommand, DockCommandOutcome, DockDropZone, DockFloatingPersist, DockFloatingSurface,
@@ -156,10 +160,10 @@ pub use feedback::{
 pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
-    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FrameworkError,
-    OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind, Subscription,
-    Task, TextDeleteKind, TextFindScope, UiBuilder, UiExtension, View, ViewContext,
-    VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FormValidity,
+    FrameworkError, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind,
+    Subscription, Task, TextDeleteKind, TextEditOrigin, TextFindScope, UiBuilder, UiExtension,
+    View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
@@ -181,7 +185,7 @@ pub use image_viewer::{
     ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
 pub use key_layers::{
-    ActionDescriptor, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
+    ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
     KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,
     KeymapState,
 };
@@ -195,25 +199,26 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContentFit, ContextPredicate, DropdownEvent, DropdownSelection, FlexDirection, FlexWrap,
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
-    GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
-    GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
-    GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel, GraphModelError, GraphNode, GraphNodeId,
-    GraphPoint, GraphPort, GraphPortId, GraphPortKind, GraphPortSide, GraphRect, GraphSelection,
-    GraphSize, GraphTarget, GraphTargetDescriptor, GraphTargetId, GraphTargetKind, GraphViewport,
-    IconData, IconPathCommand, IconShape, JustifySpec, KeyContext, LayoutStyle, LengthSpec,
-    LineBreakSpec, LineHeightSpec, OverflowSpec, PointerEventsSpec, PopoverAlignment,
-    PopoverPlacement, PositionSpec, SemanticColorRole, StatusTone, TITLE_BAR_HEIGHT, TabDragGroup,
-    TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor,
-    TableNavigation, TextAlignSpec, TextShadowSpec, ThemeMode, TreeNavigation, TreeNode,
-    TreeViewEvent, ValidationIntent, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
-    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
-    VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
-    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
-    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, WINDOW_CONTROL_GAP,
-    WINDOW_CONTROL_WIDTH, WhiteSpaceSpec, WordBreakSpec, WorkCounters,
-    custom_window_controls_width, graph_node_fitted_height, port_tangent, tree_navigation_event,
+    ContentFit, ContextPredicate, DropAccepts, DropEffect, DropKind, DropdownEvent,
+    DropdownSelection, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
+    FontVariationSetting, FrameStage, GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM,
+    GRAPH_NODE_TITLE_HEIGHT, GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH,
+    GpuWorkObservation, GraphCanvasId, GraphEdge, GraphEdgeId, GraphEndpoint, GraphModel,
+    GraphModelError, GraphNode, GraphNodeId, GraphPoint, GraphPort, GraphPortId, GraphPortKind,
+    GraphPortSide, GraphRect, GraphSelection, GraphSize, GraphTarget, GraphTargetDescriptor,
+    GraphTargetId, GraphTargetKind, GraphViewport, IconData, IconPathCommand, IconShape,
+    JustifySpec, KeyContext, LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, OverflowSpec,
+    PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec, SemanticColorRole,
+    StatusTone, TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface,
+    TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec,
+    ThemeMode, TreeNavigation, TreeNode, TreeViewEvent, ValidationIntent, VirtualAlignment,
+    VirtualFrozenWindow, VirtualListLayout, VirtualListMaterialization,
+    VirtualListMaterializationError, VirtualListMaterializer, VirtualListMount, VirtualListWindow,
+    VirtualScrollAnchor, VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
+    VirtualTreeWindow, VirtualViewport, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WhiteSpaceSpec,
+    WordBreakSpec, WorkCounters, custom_window_controls_width, graph_node_fitted_height,
+    port_tangent, tree_navigation_event,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,

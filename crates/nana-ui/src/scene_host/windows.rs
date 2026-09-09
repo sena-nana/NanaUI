@@ -134,6 +134,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     );
                 }
             }
+            RoutedWindowCommand::SetMenuBar(id) => {
+                let WindowCommand::SetMenuBar { bar, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    // The host owns the handle; the application only described
+                    // the menu. An empty bar removes it.
+                    let bar = bar.clone().unwrap_or_default();
+                    nana_window::install_menu_bar(window.as_ref(), &bar);
+                }
+            }
             RoutedWindowCommand::SetApplicationIcon => {
                 let WindowCommand::SetApplicationIcon { icon } = command else {
                     return;

@@ -12,6 +12,57 @@ fn project_layout(cx: &mut AppContext) {
 }
 
 #[test]
+fn the_mount_hook_binds_each_new_row_once_and_not_rows_already_mounted() {
+    use std::sync::{Arc, Mutex};
+
+    let mut cx = AppContext::new();
+    let list = cx.create_component(document(), List::new()).unwrap();
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 100));
+
+    let mounted = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&mounted);
+    let materialize =
+        |cx: &mut AppContext, items: &mut VirtualListItems<usize, TextInput>, offset: f32| {
+            let seen = Arc::clone(&seen);
+            cx.materialize_virtual_list_retained_with(
+                list,
+                items,
+                &layout,
+                VirtualViewport::vertical(offset, 40.0, 0.0),
+                &[],
+                |index| index,
+                |key| Some(*key),
+                |index, _| TextInput::new(format!("row {index}")),
+                move |_cx, _entity, index, _key| {
+                    seen.lock().unwrap().push(index);
+                    Ok(())
+                },
+            )
+            .unwrap()
+        };
+
+    materialize(&mut cx, &mut items, 0.0);
+    let first = mounted.lock().unwrap().clone();
+    assert!(!first.is_empty(), "the first window mounts rows");
+
+    // Same window again: nothing is newly created, so nothing is reported.
+    materialize(&mut cx, &mut items, 0.0);
+    assert_eq!(*mounted.lock().unwrap(), first, "no row is bound twice");
+
+    // Scrolling in fresh rows reports only those.
+    materialize(&mut cx, &mut items, 200.0);
+    let after = mounted.lock().unwrap().clone();
+    assert!(after.len() > first.len());
+    assert!(
+        after[first.len()..]
+            .iter()
+            .all(|index| !first.contains(index)),
+        "only rows that were not already mounted are reported"
+    );
+}
+
+#[test]
 fn retained_virtual_list_keeps_offscreen_editor_and_sparse_geometry() {
     let mut cx = AppContext::new();
     let list = cx.create_component(document(), List::new()).unwrap();

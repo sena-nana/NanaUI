@@ -472,6 +472,28 @@ fn dispatch_program_keeps_the_latest_message_of_each_type() {
 }
 
 #[test]
+fn dispatch_program_all_keeps_every_message_of_one_type_in_order() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(document, SidebarRow::new("舞台"))
+        .unwrap();
+    context
+        .on(row, |_row, _event: &Activate, cx| {
+            // One application enum would be a single Rust type; coalescing
+            // would drop the first action. `dispatch_program_all` keeps both.
+            cx.dispatch_program_all("stage");
+            cx.dispatch_program_all("functions");
+        })
+        .unwrap();
+    assert!(context.activate_sidebar_row(row).unwrap());
+    let queued = context.take_program_messages();
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[0].downcast_ref::<&str>().copied(), Some("stage"));
+    assert_eq!(queued[1].downcast_ref::<&str>().copied(), Some("functions"));
+}
+
+#[test]
 fn plugin_register_activation_reaches_activate_node() {
     #[derive(Clone)]
     struct Ping;
@@ -1119,9 +1141,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
     let slider = context
         .create_component(
             document,
-            RangeField::new(25.0, 0.0, 100.0, 1.0)
-                .unwrap()
-                .label("Volume"),
+            RangeField::new(25.0, 0.0, 100.0, 1.0).label("Volume"),
         )
         .unwrap();
     let toggles = Arc::new(Mutex::new(Vec::new()));
@@ -1545,7 +1565,6 @@ fn range_accessibility_set_value_uses_quantized_typed_action() {
         .create_component(
             document,
             RangeField::new(0.25, 0.0, 1.0, 0.25)
-                .unwrap()
                 .label("Opacity")
                 .unit("%"),
         )
@@ -1582,7 +1601,7 @@ fn failed_component_projection_keeps_typed_state_and_world_unchanged() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let slider = context
-        .create_component(document, RangeField::new(25.0, 0.0, 100.0, 1.0).unwrap())
+        .create_component(document, RangeField::new(25.0, 0.0, 100.0, 1.0))
         .unwrap();
     let generation = context.world().generation();
     let visual = context.world().standard_visual(slider.stable_id());
@@ -1817,21 +1836,28 @@ fn segmented_options_reconcile_atomically_and_roving_selection_skips_disabled() 
     assert!(context.read(first, |option| option.selected).unwrap());
     assert!(!context.read(last, |option| option.selected).unwrap());
     assert_eq!(&*observed.lock().unwrap(), &[last.stable_id()]);
+    // Activation is self-driving: the control commits the selection itself.
     assert!(context.activate_node(last.stable_id()).unwrap());
     assert_eq!(
         &*observed.lock().unwrap(),
         &[last.stable_id(), last.stable_id()]
     );
+    assert_eq!(
+        context.read(control, |control| control.selected).unwrap(),
+        Some(last.stable_id())
+    );
+    assert!(!context.read(first, |option| option.selected).unwrap());
+    assert!(context.read(last, |option| option.selected).unwrap());
     assert!(!context.activate_node(disabled.stable_id()).unwrap());
+    // Re-publishing the selection the control already holds is a no-op, so an
+    // application that echoes the event back costs nothing.
     let generation = context.world().generation();
     assert!(
-        context
+        !context
             .set_segmented_selection(control, Some(last))
             .unwrap()
     );
-    assert_eq!(context.world().generation(), generation + 1);
-    assert!(!context.read(first, |option| option.selected).unwrap());
-    assert!(context.read(last, |option| option.selected).unwrap());
+    assert_eq!(context.world().generation(), generation);
     assert!(
         context
             .apply_accessibility_action(
@@ -2493,6 +2519,218 @@ fn layout_publishes_scroll_metrics_and_clamps_wheel_offset() {
 
 /// 200x120 scrollport holding 200px of rows, so the vertical axis overflows
 /// by 80px.
+#[test]
+fn scroll_into_view_moves_the_minimum_distance_and_leaves_visible_targets_alone() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    // 200x120 viewport over five 40px rows: 200px of content, max offset 80.
+    let scroll = overflowing_scroll_view(
+        &mut context,
+        document,
+        nana_ui_core::ScrollbarVisibility::Always,
+    );
+    let viewport = crate::LayoutViewport::new(200.0, 120.0);
+    context.layout_document(document, viewport).unwrap();
+    let rows = context.world.node(scroll.id).unwrap().children;
+
+    // Rows 0..=2 fill the viewport already, so nothing moves.
+    assert!(!context.scroll_into_view(scroll, rows[1], 0.0).unwrap());
+    assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 0.0);
+
+    // The last row ends at 200: scroll just far enough to seat its bottom edge.
+    assert!(context.scroll_into_view(scroll, rows[4], 0.0).unwrap());
+    assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 80.0);
+
+    // Coming back up aligns the target's top edge, not the bottom.
+    assert!(context.scroll_into_view(scroll, rows[0], 0.0).unwrap());
+    assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 0.0);
+
+    // A margin keeps context around the target where the container has room.
+    assert!(context.scroll_into_view(scroll, rows[3], 8.0).unwrap());
+    assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 48.0);
+}
+
+#[test]
+fn scroll_into_view_reports_a_missing_target() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let scroll = overflowing_scroll_view(
+        &mut context,
+        document,
+        nana_ui_core::ScrollbarVisibility::Always,
+    );
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+    let missing = StableNodeId::new(9_999).unwrap();
+    assert!(matches!(
+        context.scroll_into_view(scroll, missing, 0.0),
+        Err(FrameworkError::MissingView(id)) if id == missing
+    ));
+}
+
+#[test]
+fn assemble_confirm_dialog_builds_both_actions_and_routes_confirm_intent() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let dialog = context
+        .create_component(
+            document,
+            crate::ConfirmDialog::new("删除", "无法撤销")
+                .confirm_label("Delete")
+                .cancel_label("Keep"),
+        )
+        .unwrap();
+    context.append_child(host, dialog).unwrap();
+
+    // One call replaces hand-building the two buttons and the slot wiring.
+    assert!(context.assemble_confirm_dialog(dialog).unwrap());
+    let slots = context
+        .read(dialog, |dialog| dialog.confirm_slots().cloned())
+        .unwrap()
+        .expect("assemble published confirm slots");
+    assert_eq!(
+        context
+            .read(Entity::<Button>::from_stable_id(slots.confirm), |button| {
+                button.label.clone()
+            })
+            .unwrap(),
+        "Delete"
+    );
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let out = Arc::clone(&seen);
+    context
+        .on(dialog, move |_dialog, intent: &crate::ConfirmIntent, _| {
+            out.lock().unwrap().push(*intent)
+        })
+        .unwrap();
+    context.activate_overlay(host, dialog).unwrap();
+
+    assert!(context.activate_node(slots.confirm).unwrap());
+    assert!(context.activate_node(slots.cancel).unwrap());
+    assert_eq!(
+        &*seen.lock().unwrap(),
+        &[
+            crate::ConfirmIntent::Confirm { danger: false },
+            crate::ConfirmIntent::Cancel
+        ]
+    );
+
+    // Re-running only refreshes the existing actions.
+    assert!(!context.assemble_confirm_dialog(dialog).unwrap());
+}
+
+#[test]
+fn validity_reports_invalid_fields_in_document_order_and_ignores_disabled_ones() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let form = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let ok = context
+        .create_detached_component(document, TextInput::new("ada"))
+        .unwrap();
+    let bad_name = context
+        .create_detached_component(document, TextInput::new("").invalid(true))
+        .unwrap();
+    // Invalid but unreachable: it must not block submission.
+    let bad_disabled = context
+        .create_detached_component(document, TextInput::new("").invalid(true).disabled(true))
+        .unwrap();
+    let bad_email = context
+        .create_detached_component(document, TextInput::new("x@").invalid(true))
+        .unwrap();
+    for child in [ok, bad_name, bad_disabled, bad_email] {
+        context.append_child(form, child).unwrap();
+    }
+
+    let validity = context.validity_of(form.stable_id());
+    assert!(!validity.is_valid());
+    assert_eq!(
+        validity.invalid,
+        vec![bad_name.stable_id(), bad_email.stable_id()]
+    );
+    assert_eq!(validity.first_invalid(), Some(bad_name.stable_id()));
+
+    // Clearing the fields the user can reach makes the form submittable, even
+    // though the disabled one still carries `invalid`.
+    for field in [bad_name, bad_email] {
+        context
+            .update_component(field, |input, _| input.invalid = false)
+            .unwrap();
+    }
+    let validity = context.validity_of(form.stable_id());
+    assert!(validity.is_valid());
+    assert_eq!(validity.first_invalid(), None);
+}
+
+#[test]
+fn a_drop_target_covers_its_subtree_and_only_the_kinds_it_accepts() {
+    use nana_ui_core::{DropAccepts, DropEffect, DropKind};
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut panel_style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut panel_style.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(100.0));
+    }
+    let panel = context
+        .create_component(document, Stack::column(0.0).style(panel_style))
+        .unwrap();
+    let inner = context
+        .create_detached_component(document, Text::new("drop files here"))
+        .unwrap();
+    context.append_child(panel, inner).unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+
+    // Nothing is registered yet.
+    assert!(
+        context
+            .drop_target_at(document, 20.0, 20.0, &DropKind::Files)
+            .is_none()
+    );
+
+    context
+        .set_drop_target(panel, DropAccepts::files().effect(DropEffect::Move))
+        .unwrap();
+
+    // A hit on the child resolves to the registered ancestor.
+    let (target, effect) = context
+        .drop_target_at(document, 20.0, 20.0, &DropKind::Files)
+        .expect("the ancestor accepts the drop");
+    assert_eq!(target, panel.stable_id());
+    assert_eq!(effect, DropEffect::Move);
+
+    // A kind it does not accept finds nothing.
+    assert!(
+        context
+            .drop_target_at(document, 20.0, 20.0, &DropKind::custom("record"))
+            .is_none()
+    );
+
+    // Outside the panel there is no target.
+    assert!(
+        context
+            .drop_target_at(document, 380.0, 280.0, &DropKind::Files)
+            .is_none()
+    );
+
+    assert!(context.clear_drop_target(panel));
+    assert!(
+        context
+            .drop_target_at(document, 20.0, 20.0, &DropKind::Files)
+            .is_none()
+    );
+}
+
 fn overflowing_scroll_view(
     context: &mut AppContext,
     document: DocumentId,
@@ -3662,7 +3900,6 @@ fn composite_geometry_separates_text_controls_and_range_drag_axis() {
         .create_component(
             document,
             RangeField::new(50.0, 0.0, 100.0, 1.0)
-                .unwrap()
                 .label("Volume")
                 .unit("%")
                 .style(sized(300.0, 58.0)),
@@ -3746,7 +3983,6 @@ fn a_focused_range_keeps_its_rail_interaction_free() {
         .create_component(
             document,
             RangeField::new(25.0, 0.0, 100.0, 1.0)
-                .unwrap()
                 .label("Volume")
                 .unit("%"),
         )
@@ -3795,7 +4031,6 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
             .create_component(
                 document,
                 RangeField::new(0.7, 0.0, 1.0, 0.1)
-                    .unwrap()
                     .label("Opacity")
                     .unit("%")
                     .size(size),
@@ -3960,7 +4195,6 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
         .create_component(
             document,
             RangeField::new(0.5, 0.0, 1.0, 0.1)
-                .unwrap()
                 .label("Opacity")
                 .disabled(true),
         )

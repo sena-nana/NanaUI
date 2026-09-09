@@ -107,6 +107,14 @@ pub struct Tabs {
 }
 
 impl Tabs {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(selected: impl Into<Arc<str>>) -> Self {
         let selected = selected.into();
         Self {

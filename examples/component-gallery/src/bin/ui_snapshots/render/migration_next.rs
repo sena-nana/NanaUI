@@ -837,7 +837,7 @@ fn runtime_fixture(
             }
         }
         Component::RangeField => {
-            let mut component = RuntimeRangeField::new(range_value(fixture.state), 0.0, 1.0, 0.1)?
+            let mut component = RuntimeRangeField::new(range_value(fixture.state), 0.0, 1.0, 0.1)
                 .label("Opacity")
                 .unit("×")
                 .disabled(fixture.state == "disabled")

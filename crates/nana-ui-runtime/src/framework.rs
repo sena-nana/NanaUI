@@ -6,6 +6,7 @@ mod modal;
 mod registry;
 mod scroll;
 mod selection;
+pub use selection::FormValidity;
 mod text_input;
 mod value_input;
 mod virtualize;
@@ -55,6 +56,7 @@ mod assemble;
 mod build;
 mod overlay;
 pub(crate) mod text_edit;
+mod text_history;
 pub use assemble::AssemblyScope;
 pub use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
@@ -63,6 +65,7 @@ pub use overlay::{
     RuntimeOverlayKind,
 };
 pub use text_edit::{TextDeleteKind, TextFindScope};
+pub use text_history::TextEditOrigin;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 pub(crate) const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -360,6 +363,18 @@ pub struct Entity<V: View> {
     marker: PhantomData<fn() -> V>,
 }
 
+/// A typed handle is also the node's stable id.
+///
+/// Slots on composites (`ListItemSlots`, `DesktopShell`'s regions, ...) hold
+/// `StableNodeId` because a slot is heterogeneous — a leading slot may carry an
+/// icon, an avatar or a thumbnail. This conversion lets callers hand over an
+/// `Entity` directly instead of spelling `.stable_id()` at every assignment.
+impl<V: View> From<Entity<V>> for StableNodeId {
+    fn from(entity: Entity<V>) -> Self {
+        entity.id
+    }
+}
+
 impl<V: View> Copy for Entity<V> {}
 
 impl<V: View> Clone for Entity<V> {
@@ -431,7 +446,6 @@ struct HoverCardLifecycle {
 #[derive(Default)]
 struct ComponentLifecycle {
     now: Duration,
-    viewports: HashMap<DocumentId, crate::LayoutViewport>,
     pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
     hover_cards: HashMap<StableNodeId, HoverCardLifecycle>,
@@ -576,15 +590,32 @@ impl<V: View> ViewContext<'_, V> {
             .push_back((self.entity.id, TypeId::of::<E>(), Box::new(event)));
     }
 
-    /// Queue a `RuntimeProgram::Message` for the Scene host.
+    /// Queue a `RuntimeProgram::Message` for the Scene host, keeping only the
+    /// latest value of each message type.
     ///
-    /// The host delivers the latest message of each type on the next frame
+    /// The host delivers the queued messages on the next frame
     /// (`RuntimeProgram::update`), not during the current input handler.
-    /// Repeated dispatches of the same type keep only the last value.
+    ///
+    /// Coalescing is by Rust type, so it is only what you want when the message
+    /// type carries a *state* that supersedes its predecessor — a resize, a
+    /// "theme changed", a redraw request. An application whose messages are one
+    /// `enum` (the idiomatic shape) has a single type for everything, so two
+    /// dispatches in the same frame would collapse into one and the first user
+    /// action would be silently lost. Use [`Self::dispatch_program_all`] there.
     pub fn dispatch_program<M: Send + 'static>(&mut self, message: M) {
         let type_id = TypeId::of::<M>();
         self.program_messages
             .retain(|queued| queued.as_ref().type_id() != type_id);
+        self.program_messages.push(Box::new(message));
+    }
+
+    /// Queue a `RuntimeProgram::Message` without dropping earlier ones.
+    ///
+    /// Every dispatched message reaches `RuntimeProgram::update` next frame, in
+    /// dispatch order. This is the right entry point when one message type
+    /// carries distinct user actions — typically a single application `enum`,
+    /// where [`Self::dispatch_program`] would keep only the last of them.
+    pub fn dispatch_program_all<M: Send + 'static>(&mut self, message: M) {
         self.program_messages.push(Box::new(message));
     }
 }
@@ -779,6 +810,9 @@ pub struct AppContext {
     activations: HashMap<TypeId, ActivationFn>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn>,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
+    /// Components whose assembler is running, so the `update_component` calls
+    /// an assembler makes do not re-enter it.
+    assembling: HashSet<StableNodeId>,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
     frame_profiler: FrameProfiler,
@@ -800,6 +834,8 @@ pub struct AppContext {
     layout_substage_totals: [Duration; 4],
     program_messages: Vec<ProgramMessage>,
     text_edit: text_edit::TextEditSession,
+    /// Undo journals, one per editor node.
+    text_histories: text_history::TextHistories,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -954,6 +990,7 @@ impl AppContext {
             activations: HashMap::new(),
             secondary_presses: HashMap::new(),
             assembled: HashMap::new(),
+            assembling: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
             frame_profiler: FrameProfiler::new(),
@@ -967,6 +1004,7 @@ impl AppContext {
             layout_substage_totals: [Duration::ZERO; 4],
             program_messages: Vec::new(),
             text_edit: text_edit::TextEditSession::default(),
+            text_histories: text_history::TextHistories::default(),
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)
@@ -2090,6 +2128,23 @@ impl AppContext {
         self.update_inner(entity, update, |_view, _world, _mutations| {})
     }
 
+    /// Replaces a component's application-owned props, keeping the interaction
+    /// state the runtime owns.
+    ///
+    /// This is the entry point for the "rebuild the component from application
+    /// state" pattern. Assigning over the component inside
+    /// [`Self::update_component`] overwrites runtime-owned fields too, which is
+    /// how a refresh ends up closing an open menu or resetting a caret; this
+    /// routes through [`ComponentView::reconcile`], where each component
+    /// decides what survives.
+    pub fn set_component<C: ComponentView>(
+        &mut self,
+        entity: Entity<C>,
+        next: C,
+    ) -> Result<(), FrameworkError> {
+        self.update_component(entity, |component, _| component.reconcile(next))
+    }
+
     /// Update component state and project the final state after all closure
     /// events emitted by the update have been delivered.
     pub fn update_component<C: ComponentView, R>(
@@ -2144,7 +2199,33 @@ impl AppContext {
             self.suspend_component_lifecycle(entity.id);
         }
         self.sync_component_lifecycle(entity.id)?;
+        self.run_component_assembler(entity.id, TypeId::of::<C>())?;
         Ok(result)
+    }
+
+    /// Reconciles the children a composite derives from its own props, right
+    /// after the props changed.
+    ///
+    /// Components like `Chip`, `PathField` or `DesktopShell` own child nodes
+    /// that follow their fields. Requiring the application to remember a
+    /// matching `assemble_*` after every write made stale chrome a silent
+    /// failure, so the write itself drives it. Assemblers are idempotent and
+    /// return early when nothing changed; the guard keeps the
+    /// `update_component` calls they make from re-entering.
+    fn run_component_assembler(
+        &mut self,
+        id: StableNodeId,
+        type_id: TypeId,
+    ) -> Result<(), FrameworkError> {
+        let Some(assembler) = component_assembler(type_id) else {
+            return Ok(());
+        };
+        if !self.world.contains(id) || !self.assembling.insert(id) {
+            return Ok(());
+        }
+        let outcome = assembler(self, id);
+        self.assembling.remove(&id);
+        outcome.map(|_| ())
     }
 
     fn update_inner<V: View, R>(
@@ -2259,7 +2340,7 @@ impl AppContext {
     fn release_empty_document_layout(&mut self, document: DocumentId) {
         if !self.world.has_document_roots(document) {
             self.layout_cache.remove_document(document);
-            self.component_lifecycle.viewports.remove(&document);
+            self.world.clear_document_viewport(document);
         }
     }
 
@@ -2386,3 +2467,36 @@ mod tests;
 
 #[cfg(test)]
 mod retained_interaction_tests;
+
+/// Assembler for a composite component type, if it has one.
+///
+/// One table so [`AppContext::update_component`] and the explicit
+/// `assemble_*` entry points cannot disagree about which types self-assemble.
+fn component_assembler(
+    type_id: TypeId,
+) -> Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>> {
+    macro_rules! assemblers {
+        ($($ty:path => $method:ident),* $(,)?) => {
+            $(
+                if type_id == TypeId::of::<$ty>() {
+                    return Some(|cx, id| cx.$method(Entity::<$ty>::from_stable_id(id)));
+                }
+            )*
+        };
+    }
+    // Leaf composites only: their children follow purely from their own props,
+    // so assembling on write is cheap and cannot surprise the caller.
+    //
+    // Shell / Workspace / Dock / SplitPane / PaneSection are deliberately absent.
+    // Their assemblers reconcile application-owned slots and are not free, so
+    // running them from every write breaks the "an idle projection does not
+    // dirty the world" contract the dirty-frame path depends on. Those stay
+    // explicit; call the matching `assemble_*` after wiring slots.
+    assemblers! {
+        crate::Chip => assemble_chip,
+        crate::ColorField => assemble_color_field,
+        crate::PathField => assemble_path_field,
+        crate::FileTab => assemble_file_tab,
+    }
+    None
+}

@@ -55,6 +55,24 @@ impl ControlSize {
         }
     }
 
+    /// Control size whose body text is closest to `text_size`.
+    ///
+    /// Text is sized in px, not in `ControlSize`; this maps a raw font size
+    /// back onto the scale so callers can borrow the matching line height
+    /// instead of inventing one.
+    pub fn nearest_text(text_size: f32) -> Self {
+        if !text_size.is_finite() {
+            return Self::Medium;
+        }
+        if text_size <= (Self::Small.text_size() + Self::Medium.text_size()) / 2.0 {
+            Self::Small
+        } else if text_size <= (Self::Medium.text_size() + Self::Large.text_size()) / 2.0 {
+            Self::Medium
+        } else {
+            Self::Large
+        }
+    }
+
     pub const fn padding_x(self) -> f32 {
         match self {
             Self::Small => 8.0,

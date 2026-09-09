@@ -453,6 +453,16 @@ pub struct UiWorld {
     /// instead of discarding the retained layout cache.
     viewport_basis_nodes: usize,
     viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>>,
+    /// Nodes that accept a drop, and what they accept. A sparse index rather
+    /// than a field on every node: almost no tree has drop targets.
+    drop_targets: HashMap<StableNodeId, nana_ui_core::DropAccepts>,
+    /// Viewport each document was last laid out against.
+    ///
+    /// Geometry projection runs on `&UiWorld` with no window context, but
+    /// overlay surfaces that the framework places itself (the `Select` menu)
+    /// have to fold back inside the window near its edges. Layout is the one
+    /// place that already knows the viewport, so it records it here.
+    document_viewports: HashMap<DocumentId, crate::LayoutViewport>,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
     presence_flags: HashMap<StableNodeId, PresenceFlags>,
@@ -544,6 +554,8 @@ impl UiWorld {
             z_index_nodes: 0,
             viewport_basis_nodes: 0,
             viewport_basis: HashMap::new(),
+            document_viewports: HashMap::new(),
+            drop_targets: HashMap::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
@@ -1470,6 +1482,50 @@ impl UiWorld {
     }
 
     /// Mounted viewport-dependent nodes in one document, without scanning other documents.
+    /// Declares that `id` accepts drops, replacing any previous declaration.
+    pub(crate) fn set_drop_target(&mut self, id: StableNodeId, accepts: nana_ui_core::DropAccepts) {
+        self.drop_targets.insert(id, accepts);
+    }
+
+    /// Stops `id` accepting drops. Returns whether it was a target.
+    pub(crate) fn clear_drop_target(&mut self, id: StableNodeId) -> bool {
+        self.drop_targets.remove(&id).is_some()
+    }
+
+    /// Every node currently registered as a drop target.
+    pub(crate) fn drop_target_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.drop_targets.keys().copied()
+    }
+
+    pub(crate) fn drop_target(&self, id: StableNodeId) -> Option<&nana_ui_core::DropAccepts> {
+        self.drop_targets.get(&id)
+    }
+
+    /// Records the viewport a document was laid out against.
+    pub(crate) fn set_document_viewport(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+    ) {
+        self.document_viewports.insert(document, viewport);
+    }
+
+    /// Viewport `document` was last laid out against.
+    pub(crate) fn document_viewport(&self, document: DocumentId) -> Option<crate::LayoutViewport> {
+        self.document_viewports.get(&document).copied()
+    }
+
+    /// Forgets a document's viewport once it holds no roots.
+    pub(crate) fn clear_document_viewport(&mut self, document: DocumentId) {
+        self.document_viewports.remove(&document);
+    }
+
+    /// Viewport of the document owning `id`, if it has been laid out.
+    pub(crate) fn document_viewport_of(&self, id: StableNodeId) -> Option<crate::LayoutViewport> {
+        let document = self.node(id)?.document;
+        self.document_viewports.get(&document).copied()
+    }
+
     pub fn viewport_basis_ids_for(
         &self,
         document: DocumentId,

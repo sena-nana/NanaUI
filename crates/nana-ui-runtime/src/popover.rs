@@ -16,10 +16,15 @@ const POPOVER_WIDTH: f32 = 240.0;
 const POPOVER_PADDING: f32 = 10.0;
 const POPOVER_GAP: f32 = 6.0;
 const ACTION_MENU_WIDTH: f32 = 200.0;
-const ACTION_MENU_PADDING: f32 = 4.0;
+/// Inner padding of a menu list surface (action menu, context menu, the
+/// `Select` drop-down). One authority so the three families cannot drift.
+pub(crate) const MENU_SURFACE_PADDING: f32 = nana_ui_core::space::XS;
+const ACTION_MENU_PADDING: f32 = MENU_SURFACE_PADDING;
 const ACTION_MENU_GAP: f32 = 4.0;
 pub(crate) const MENU_MIN_WIDTH: f32 = 120.0;
 pub(crate) const MENU_ITEM_GAP: f32 = 1.0;
+/// Indentation per tree level, shared by `TreeView` and sidebar tree rows.
+pub(crate) const TREE_DEPTH_STEP: f32 = nana_ui_core::space::XL;
 pub(crate) const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 /// The trigger is a real button, so it matches the compact control height
 /// rather than hugging its glyphs.

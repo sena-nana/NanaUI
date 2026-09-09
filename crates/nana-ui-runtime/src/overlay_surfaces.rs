@@ -79,6 +79,13 @@ impl ModalSlots {
     }
 }
 
+/// Default confirming-action label. Localize with
+/// [`ConfirmDialog::confirm_label`].
+const DEFAULT_CONFIRM_LABEL: &str = "确认";
+/// Default dismissing-action label. Localize with
+/// [`ConfirmDialog::cancel_label`].
+const DEFAULT_CANCEL_LABEL: &str = "取消";
+
 pub trait ModalSurface: ComponentView {
     fn slots(&self) -> &ModalSlots;
     fn slots_mut(&mut self) -> &mut ModalSlots;
@@ -88,6 +95,12 @@ pub trait ModalSurface: ComponentView {
 pub struct ConfirmDialog {
     pub title: Arc<str>,
     pub message: Arc<str>,
+    /// Label of the confirming action built by
+    /// [`AppContext::assemble_confirm_dialog`].
+    pub confirm_label: Arc<str>,
+    /// Label of the dismissing action built by
+    /// [`AppContext::assemble_confirm_dialog`].
+    pub cancel_label: Arc<str>,
     pub size: DialogSize,
     pub danger: bool,
     pub busy: bool,
@@ -98,10 +111,37 @@ pub struct ConfirmDialog {
 }
 
 impl ConfirmDialog {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    pub fn size(mut self, size: DialogSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Label of the confirming action. Applications localize it here.
+    pub fn confirm_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.confirm_label = label.into();
+        self
+    }
+
+    /// Label of the dismissing action. Applications localize it here.
+    pub fn cancel_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.cancel_label = label.into();
+        self
+    }
+
     pub fn new(title: impl Into<Arc<str>>, message: impl Into<Arc<str>>) -> Self {
         Self {
             title: title.into(),
             message: message.into(),
+            confirm_label: Arc::from(DEFAULT_CONFIRM_LABEL),
+            cancel_label: Arc::from(DEFAULT_CANCEL_LABEL),
             size: DialogSize::Default,
             danger: false,
             busy: false,
@@ -180,6 +220,14 @@ pub struct Drawer {
 }
 
 impl Drawer {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(title: impl Into<Arc<str>>) -> Self {
         Self {
             title: title.into(),

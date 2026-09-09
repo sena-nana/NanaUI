@@ -443,6 +443,16 @@ pub enum WindowCommand {
         id: WindowId,
         icon: Option<WindowIcon>,
     },
+    /// Application menu bar. `None` removes it.
+    ///
+    /// The menu is described by the application but installed by the host,
+    /// because on Windows it belongs to a window and controls never reach a
+    /// window handle. Selections come back through
+    /// `nana_window::take_menu_activations`.
+    SetMenuBar {
+        id: WindowId,
+        bar: Option<nana_ui_core::MenuBar>,
+    },
     /// Process-wide application icon. `None` clears a registration so the default mark is used.
     SetApplicationIcon {
         icon: Option<WindowIcon>,

@@ -29,7 +29,7 @@ fn accessibility_dump_carries_state_not_only_labels() {
         cx.create_component(id, Checkbox::new("Archive", false))
             .unwrap();
         cx.create_component(id, TextInput::new("draft")).unwrap();
-        cx.create_component(id, RangeField::new(4.0, 0.0, 10.0, 1.0).unwrap())
+        cx.create_component(id, RangeField::new(4.0, 0.0, 10.0, 1.0))
             .unwrap();
     });
     session.flush().expect("flush");

@@ -454,14 +454,28 @@ impl ComponentView for ReorderList {
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
+        if layout.width.is_none() {
+            layout.width = Some(LengthSpec::Fill);
+        }
         if live_rows {
             layout.direction = Some(FlexDirection::Column);
-            layout.gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
-            layout.height = Some(LengthSpec::Shrink);
+            if layout.gap.is_none() {
+                layout.gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
+            }
+            if layout.height.is_none() {
+                layout.height = Some(LengthSpec::Shrink);
+            }
         } else {
-            layout.height = Some(LengthSpec::Px(self.intrinsic_height()));
-            layout.min_height = Some(LengthSpec::Px(self.intrinsic_height()));
+            // Border-box: declared padding is added to the self-drawn row
+            // stack instead of clipping its last row.
+            let padding = layout.resolved_padding();
+            let content = self.intrinsic_height() + padding.top + padding.bottom;
+            if layout.height.is_none() {
+                layout.height = Some(LengthSpec::Px(content));
+            }
+            if layout.min_height.is_none() {
+                layout.min_height = Some(LengthSpec::Px(content));
+            }
         }
         project_common(
             id,

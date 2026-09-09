@@ -69,6 +69,14 @@ pub struct Dropdown {
 }
 
 impl Dropdown {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn single(value: Option<impl Into<Arc<str>>>) -> Self {
         Self::new(DropdownSelection::Single(value.map(Into::into)))
     }
@@ -107,7 +115,7 @@ impl Dropdown {
 
     pub fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
-        self.style = crate::select::field_style_for_size(size);
+        crate::select::apply_field_size(&mut self.style, size);
         self
     }
 
@@ -340,6 +348,20 @@ impl Dropdown {
 }
 
 impl ComponentView for Dropdown {
+    fn reconcile(&mut self, mut next: Self) {
+        // Selection and options are the application's; the open menu and its
+        // keyboard highlight belong to the interaction in flight, and survive a
+        // refresh that did not touch those props.
+        if next.inactive() {
+            next.opened = false;
+            next.highlighted = None;
+        } else if self.selection == next.selection && self.options == next.options {
+            next.opened = self.opened;
+            next.highlighted = self.highlighted;
+        }
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "dropdown".into(),
@@ -357,6 +379,7 @@ impl ComponentView for Dropdown {
             loading: self.loading,
             options: self.option_data().into(),
             highlighted: self.highlighted,
+            checkable: matches!(self.selection, DropdownSelection::Multiple(_)),
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -444,6 +467,36 @@ fn multiple_label(values: &[Arc<str>], options: &[DropdownOption]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refreshing_props_keeps_an_open_menu_and_its_highlight() {
+        let options = [DropdownOption::new("a", "A"), DropdownOption::new("b", "B")];
+        let mut dropdown = Dropdown::single(Some("a"))
+            .options(options.clone())
+            .opened(true);
+        dropdown.highlighted = Some(1);
+
+        // The shape an application refresh takes: rebuild from state.
+        crate::ComponentView::reconcile(
+            &mut dropdown,
+            Dropdown::single(Some("a"))
+                .options(options.clone())
+                .invalid(true),
+        );
+        assert!(
+            dropdown.opened,
+            "an unrelated prop change keeps the menu open"
+        );
+        assert_eq!(dropdown.highlighted, Some(1));
+
+        // A real selection change does replace the interaction.
+        crate::ComponentView::reconcile(
+            &mut dropdown,
+            Dropdown::single(Some("b")).options(options),
+        );
+        assert!(!dropdown.opened);
+        assert_eq!(dropdown.highlighted, None);
+    }
+
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;

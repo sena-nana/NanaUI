@@ -96,6 +96,60 @@ fn keyed_scroll_props_preserve_drag_during_background_refresh() {
 }
 
 #[test]
+fn rebuilding_the_same_keyed_tree_replaces_handlers_instead_of_stacking_them() {
+    let mut cx = AppContext::new();
+    let root = cx.create_component(document(), Stack::column(0.0)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+
+    // The same keyed build, run twice against a stable parent — the shape an
+    // app repeats when it refreshes a region.
+    let build_once = |cx: &mut AppContext, tag: u8| {
+        let out = seen.clone();
+        cx.build_child(root, move |ui| {
+            let button = ui.child("save", Button::new("save"));
+            ui.on(button, move |_, _: &Activate, _| {
+                out.lock().unwrap().push(tag)
+            });
+            button
+        })
+        .unwrap()
+    };
+
+    let first = build_once(&mut cx, 1);
+    let second = build_once(&mut cx, 2);
+    assert_eq!(first.id, second.id, "keyed child is reused across builds");
+
+    cx.update(second, |_, event| event.emit(Activate)).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![2],
+        "the rebuilt handler replaces the first, so Activate fires once"
+    );
+}
+
+#[test]
+fn one_build_may_register_several_handlers_for_the_same_node_and_event() {
+    let mut cx = AppContext::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (first, second) = (seen.clone(), seen.clone());
+    let button = cx
+        .build(document(), move |ui| {
+            let button = ui.child("save", Button::new("save"));
+            ui.on(button, move |_, _: &Activate, _| {
+                first.lock().unwrap().push(1)
+            });
+            ui.on(button, move |_, _: &Activate, _| {
+                second.lock().unwrap().push(2)
+            });
+            button
+        })
+        .unwrap();
+
+    cx.update(button, |_, event| event.emit(Activate)).unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![1, 2]);
+}
+
+#[test]
 fn keyed_binding_replaces_callback_and_preserves_additive_subscriptions() {
     let mut cx = AppContext::new();
     let button = cx.create_component(document(), Button::new("go")).unwrap();

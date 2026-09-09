@@ -287,14 +287,16 @@ impl UiWorld {
                 loading,
                 ..
             } => {
-                // Loading reserves 20px through symmetric intrinsic padding in
-                // the layout pass. That reservation grows the outer button; it
-                // is not additional visual padding, so return it to the inline
-                // content box before centering spinner + label.
+                // Loading reserves `BUTTON_LOADING_RESERVE_X` per side through
+                // symmetric intrinsic padding in the layout pass. That
+                // reservation grows the outer button; it is not additional
+                // visual padding, so return it to the inline content box before
+                // centering spinner + label.
+                let reserve = crate::view_components::BUTTON_LOADING_RESERVE_X;
                 let button_content = if *loading {
                     LayoutBox {
-                        x: content.x - 10.0,
-                        width: content.width + 20.0,
+                        x: content.x - reserve,
+                        width: content.width + reserve * 2.0,
                         ..content
                     }
                 } else {
@@ -304,7 +306,11 @@ impl UiWorld {
                     .text_metrics(id)
                     .map_or(0.0, |metrics| metrics.width.min(button_content.width));
                 let spinner_extent = size.icon_size().min(button_content.height);
-                let gap = if *loading { 6.0 } else { 0.0 };
+                let gap = if *loading {
+                    crate::view_components::BUTTON_LOADING_GAP
+                } else {
+                    0.0
+                };
                 let group_width = (label_width + if *loading { spinner_extent + gap } else { 0.0 })
                     .min(button_content.width);
                 let group_x = button_content.x + (button_content.width - group_width) / 2.0;
@@ -1493,8 +1499,16 @@ impl UiWorld {
                 let shaped_title_width = self
                     .text_metrics(id)
                     .map_or(0.0, |metrics| metrics.width.min(content.width));
-                let title_width = (content.width - if *loading { 22.0 } else { 0.0 }).max(0.0);
-                let title_y = bounds.y + border + (padding.top - 24.0).max(0.0);
+                let title_width = (content.width
+                    - if *loading {
+                        crate::view_components::CARD_LOADING_RESERVE
+                    } else {
+                        0.0
+                    })
+                .max(0.0);
+                let title_y = bounds.y
+                    + border
+                    + (padding.top - crate::view_components::CARD_TITLE_BAND).max(0.0);
                 Some(crate::ComponentGeometry::Card {
                     title: title.as_ref().map(|title| {
                         text_region(
@@ -1502,12 +1516,12 @@ impl UiWorld {
                                 x: bounds.x + border + padding.left,
                                 y: title_y,
                                 width: title_width,
-                                height: 18.0,
+                                height: crate::view_components::CARD_TITLE_LINE,
                             },
                             Arc::clone(title),
                             false,
-                            13.0,
-                            Some(600),
+                            crate::view_components::CARD_TITLE_SIZE,
+                            Some(crate::view_components::CARD_TITLE_WEIGHT),
                         )
                     }),
                     content,
@@ -2000,11 +2014,18 @@ impl UiWorld {
                 dismissible,
                 ..
             } => {
-                let pad_x = 12.0;
-                let pad_y = 10.0;
-                let indicator = 7.0;
-                let gap = 8.0;
-                let dismiss = if *dismissible { 28.0 } else { 0.0 };
+                // Same constants the layout side reserves; the two must not
+                // drift, and the dismiss reserve follows the themeable compact
+                // control height rather than a literal.
+                let pad_x = crate::toast::PAD_X;
+                let pad_y = crate::toast::PAD_Y;
+                let indicator = crate::toast::INDICATOR_SIZE;
+                let gap = crate::toast::INDICATOR_GAP;
+                let dismiss = if *dismissible {
+                    nana_ui_core::ControlSize::Small.height_in(self.style_model.metrics)
+                } else {
+                    0.0
+                };
                 let copy_x = bounds.x + pad_x + indicator + gap;
                 let copy_right =
                     bounds.x + bounds.width - pad_x - if *dismissible { dismiss } else { 0.0 };
@@ -2101,6 +2122,7 @@ impl UiWorld {
                 opened,
                 options,
                 highlighted,
+                checkable,
                 ..
             } => Some(crate::select::select_geometry(
                 bounds,
@@ -2113,6 +2135,8 @@ impl UiWorld {
                 style,
                 &source,
                 &self.style_model.palette,
+                self.document_viewport_of(id),
+                *checkable,
             )),
             StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,

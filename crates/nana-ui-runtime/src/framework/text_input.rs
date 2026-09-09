@@ -182,7 +182,7 @@ impl AppContext {
         let snippet = self.world.text_snippet_session(entity.stable_id());
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
-        let changed = self.update_component(entity, |editable, cx| {
+        let changed = self.commit_editor_edit(entity, TextEditOrigin::Ime, |editable, _| {
             if !editable.delete_surrounding(before_bytes, after_bytes) {
                 return false;
             }
@@ -194,7 +194,6 @@ impl AppContext {
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
-            cx.emit(editable.change());
             true
         })?;
         if changed && let Some(session) = linked {
@@ -210,26 +209,48 @@ impl AppContext {
         document: DocumentId,
         text: &str,
     ) -> Result<bool, FrameworkError> {
+        self.insert_focused_text(document, text, TextEditOrigin::Typing)
+    }
+
+    /// Insert clipboard text at the focused editor's selection.
+    ///
+    /// Same write as [`Self::replace_focused_text`], but one paste is one undo
+    /// step however much it inserted, where a run of typed characters collapses
+    /// into a single step.
+    pub fn paste_focused_text(
+        &mut self,
+        document: DocumentId,
+        text: &str,
+    ) -> Result<bool, FrameworkError> {
+        self.insert_focused_text(document, text, TextEditOrigin::Paste)
+    }
+
+    fn insert_focused_text(
+        &mut self,
+        document: DocumentId,
+        text: &str,
+        origin: TextEditOrigin,
+    ) -> Result<bool, FrameworkError> {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.replace_editable_selection(entity, text);
+            return self.replace_editable_selection(entity, text, origin);
         }
         Ok(false)
     }
@@ -420,7 +441,7 @@ impl AppContext {
         let snippet = self.world.text_snippet_session(entity.stable_id());
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
-        let changed = self.update_component(entity, |editable, cx| {
+        let changed = self.commit_editor_edit(entity, TextEditOrigin::Delete, |editable, _| {
             {
                 let state = editable.state_mut();
                 if state.selection.anchor == state.selection.focus {
@@ -449,7 +470,6 @@ impl AppContext {
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
-            cx.emit(editable.change());
             true
         })?;
         if changed && let Some(session) = linked {
@@ -471,7 +491,7 @@ impl AppContext {
         let snippet = self.world.text_snippet_session(entity.stable_id());
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
-        let changed = self.update_component(entity, |editable, cx| {
+        let changed = self.commit_editor_edit(entity, TextEditOrigin::Ime, |editable, cx| {
             cx.mutations().set_ime(entity.stable_id(), None);
             if !editable.commit_ime_text(text) {
                 return false;
@@ -484,7 +504,6 @@ impl AppContext {
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
-            cx.emit(editable.change());
             true
         })?;
         if changed && let Some(session) = linked {
@@ -503,12 +522,8 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
-            if !editable.set_value(value) {
-                return false;
-            }
-            cx.emit(editable.change());
-            true
+        self.commit_editor_edit(entity, TextEditOrigin::Program, |editable, _| {
+            editable.set_value(value)
         })
     }
 
@@ -542,7 +557,7 @@ impl AppContext {
         entity: Entity<TextInput>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        self.replace_editable_selection(entity, text)
+        self.replace_editable_selection(entity, text, TextEditOrigin::Typing)
     }
 
     pub fn replace_text_area_selection(
@@ -550,13 +565,14 @@ impl AppContext {
         entity: Entity<TextArea>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        self.replace_editable_selection(entity, text)
+        self.replace_editable_selection(entity, text, TextEditOrigin::Typing)
     }
 
     pub(super) fn replace_editable_selection<C: EditableText>(
         &mut self,
         entity: Entity<C>,
         text: &str,
+        origin: TextEditOrigin,
     ) -> Result<bool, FrameworkError> {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
@@ -564,7 +580,7 @@ impl AppContext {
         let snippet = self.world.text_snippet_session(entity.stable_id());
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
-        let changed = self.update_component(entity, |editable, cx| {
+        let changed = self.commit_editor_edit(entity, origin, |editable, _| {
             let atoms =
                 crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
             if !atoms.is_empty() {
@@ -588,7 +604,6 @@ impl AppContext {
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
-            cx.emit(editable.change());
             true
         })?;
         if changed && let Some(session) = linked {

@@ -59,6 +59,14 @@ pub struct CommandPalette {
 }
 
 impl CommandPalette {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(
         title: impl Into<Arc<str>>,
         items: impl IntoIterator<Item = CommandPaletteItem>,

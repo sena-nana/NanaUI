@@ -15,16 +15,17 @@ use crate::{
     StandardVisual, TextContent, TooltipVisual, UiWorld,
 };
 
-const FRAME_PADDING_TOP: f32 = 10.0;
-const FRAME_PADDING_RIGHT: f32 = 8.0;
-const FRAME_PADDING_BOTTOM: f32 = 10.0;
-const FRAME_PADDING_LEFT: f32 = 12.0;
+const FRAME_PADDING_TOP: f32 = nana_ui_core::space::LG;
+/// Narrower than the left inset: the scrollbar overlay lives on this edge.
+const FRAME_PADDING_RIGHT: f32 = nana_ui_core::space::MD;
+const FRAME_PADDING_BOTTOM: f32 = nana_ui_core::space::LG;
+const FRAME_PADDING_LEFT: f32 = nana_ui_core::space::XL;
 const FRAME_GAP: f32 = 14.0;
 const ROW_PADDING_LEFT: f32 = 8.0;
 const ROW_PADDING_RIGHT: f32 = 8.0;
 const ROW_ICON_SIZE: f32 = ControlSize::Small.icon_size();
 const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
-const ROW_TREE_DEPTH_STEP: f32 = 12.0;
+use crate::popover::TREE_DEPTH_STEP as ROW_TREE_DEPTH_STEP;
 const SECTION_ANIMATION_DURATION: Duration = nana_ui_core::motion::SIDEBAR_COLLAPSE;
 const SECTION_HEADER_GAP: f32 = 5.0;
 const SECTION_HEADER_TITLE_SIZE: f32 = 11.0;
@@ -445,7 +446,7 @@ impl SidebarRow {
         layout.padding_left = Some(LengthSpec::Px(sidebar_row_depth_inset(self.depth)));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.font_size = Some(self.size.text_size());
-        layout.line_height = Some(LineHeightSpec::Absolute(self.size.text_size()));
+        layout.line_height = Some(LineHeightSpec::Absolute(self.size.line_height()));
         layout.font_weight = Some(if self.state == SidebarRowState::AncestorActive {
             600
         } else {
@@ -870,7 +871,7 @@ impl SidebarSection {
         layout.min_height = Some(LengthSpec::Px(row_height));
         layout.gap = Some(LengthSpec::Px(SECTION_HEADER_GAP));
         layout.padding_left = Some(LengthSpec::Px(ROW_PADDING_LEFT));
-        layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_LEFT));
+        layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
         layout.line_height = Some(LineHeightSpec::Absolute(SECTION_HEADER_TITLE_SIZE));
         layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
@@ -1860,7 +1861,7 @@ mod tests {
         assert_eq!(style.layout.font_size, Some(ControlSize::Small.text_size()));
         assert_eq!(
             style.layout.line_height,
-            Some(LineHeightSpec::Absolute(ControlSize::Small.text_size()))
+            Some(LineHeightSpec::Absolute(ControlSize::Small.line_height()))
         );
         assert_eq!(
             context.world().standard_visual(leading.stable_id()),

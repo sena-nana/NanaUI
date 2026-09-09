@@ -260,6 +260,66 @@ impl Text {
         self.style = style;
         self
     }
+
+    /// Font size in logical px. Also sets the line box to the matching
+    /// [`nana_ui_core::ControlSize`] line height, so text does not sit in a box
+    /// tighter than the font.
+    pub fn font_size(mut self, size: f32) -> Self {
+        let layout = Arc::make_mut(&mut self.style.layout);
+        layout.font_size = Some(size);
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
+            nana_ui_core::ControlSize::nearest_text(size).line_height(),
+        ));
+        self
+    }
+
+    /// Font weight (400 regular, 500 medium, 600 semibold).
+    pub fn font_weight(mut self, weight: u16) -> Self {
+        Arc::make_mut(&mut self.style.layout).font_weight = Some(weight);
+        self
+    }
+
+    /// Semantic foreground role. Business colors do not belong here; pick the
+    /// role that matches the text's job.
+    pub fn color(mut self, role: nana_ui_core::SemanticColorRole) -> Self {
+        self.style.foreground = Some(role);
+        self
+    }
+
+    /// Line box height, overriding what [`Self::font_size`] derived.
+    pub fn line_height(mut self, line_height: f32) -> Self {
+        Arc::make_mut(&mut self.style.layout).line_height =
+            Some(nana_ui_core::LineHeightSpec::Absolute(line_height));
+        self
+    }
+
+    pub fn width(mut self, width: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).width = Some(width);
+        self
+    }
+
+    pub fn max_width(mut self, max_width: nana_ui_core::LengthSpec) -> Self {
+        Arc::make_mut(&mut self.style.layout).max_width = Some(max_width);
+        self
+    }
+
+    /// Keeps the text on one line.
+    pub fn nowrap(mut self, nowrap: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).white_space_nowrap = nowrap;
+        self
+    }
+
+    /// Truncates overflow with an ellipsis. Pair with [`Self::nowrap`] for the
+    /// usual single-line label.
+    pub fn ellipsis(mut self, ellipsis: bool) -> Self {
+        Arc::make_mut(&mut self.style.layout).text_overflow_ellipsis = ellipsis;
+        self
+    }
+
+    /// Single-line label that truncates rather than wrapping.
+    pub fn truncating(self) -> Self {
+        self.nowrap(true).ellipsis(true)
+    }
 }
 
 impl ComponentView for Text {
@@ -303,6 +363,31 @@ pub struct Button {
     pub style: NodeStyle,
     pub(crate) style_override: bool,
 }
+
+/// Width a loading `Button` reserves on each side for the spinner and its gap.
+///
+/// Applied as intrinsic padding while laying the button out and given back to
+/// the inline content box when the spinner and label are placed, so the two
+/// sides must agree. Keep them reading the same constants.
+/// Font size of a `Card` title.
+pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::UI_BASE_TEXT_SIZE;
+/// Font weight of a `Card` title.
+pub(crate) const CARD_TITLE_WEIGHT: u16 = 600;
+/// Line box the title occupies.
+pub(crate) const CARD_TITLE_LINE: f32 = 18.0;
+/// Gap between the title band and the card's content.
+pub(crate) const CARD_TITLE_GAP: f32 = nana_ui_core::space::SM;
+/// Vertical band a titled `Card` adds above its content padding.
+///
+/// Layout adds it to `padding_top`; the painter subtracts it again to find the
+/// title's own row. Both sides must read this one constant.
+pub(crate) const CARD_TITLE_BAND: f32 = CARD_TITLE_LINE + CARD_TITLE_GAP;
+/// Width a loading `Card` reserves for its spinner beside the title.
+pub(crate) const CARD_LOADING_RESERVE: f32 = 22.0;
+
+pub(crate) const BUTTON_LOADING_RESERVE_X: f32 = 10.0;
+/// Gap between a loading `Button`'s spinner and its label.
+pub(crate) const BUTTON_LOADING_GAP: f32 = 6.0;
 
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
@@ -419,20 +504,14 @@ impl ComponentView for Button {
         let mut effective_style = self.style.clone();
         let layout = Arc::make_mut(&mut effective_style.layout);
         if self.loading {
-            layout.padding_left = Some(
-                layout
-                    .padding_left
-                    .map_or(nana_ui_core::LengthSpec::Px(10.0), |padding| {
-                        add_length_px(padding, 10.0)
-                    }),
-            );
-            layout.padding_right = Some(
-                layout
-                    .padding_right
-                    .map_or(nana_ui_core::LengthSpec::Px(10.0), |padding| {
-                        add_length_px(padding, 10.0)
-                    }),
-            );
+            layout.padding_left = Some(layout.padding_left.map_or(
+                nana_ui_core::LengthSpec::Px(BUTTON_LOADING_RESERVE_X),
+                |padding| add_length_px(padding, BUTTON_LOADING_RESERVE_X),
+            ));
+            layout.padding_right = Some(layout.padding_right.map_or(
+                nana_ui_core::LengthSpec::Px(BUTTON_LOADING_RESERVE_X),
+                |padding| add_length_px(padding, BUTTON_LOADING_RESERVE_X),
+            ));
         }
         if !self.style_override {
             effective_style.foreground = Some(match self.kind {
@@ -977,7 +1056,7 @@ impl ComponentView for Card {
                     .unwrap_or(nana_ui_core::LengthSpec::Px(
                         nana_ui_core::UI_METRICS.panel_padding_y,
                     ));
-            layout.padding_top = Some(add_length_px(base, 24.0));
+            layout.padding_top = Some(add_length_px(base, CARD_TITLE_BAND));
         }
         project_common(
             id,
@@ -1029,7 +1108,7 @@ impl ListItem {
         ));
         layout.font_size = Some(nana_ui_core::ControlSize::Small.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
-            nana_ui_core::ControlSize::Small.text_size(),
+            nana_ui_core::ControlSize::Small.line_height(),
         ));
         // 列表行是单行原语：过长文本截断省略，不折行撑破固定行高。
         layout.white_space_nowrap = true;
@@ -1119,7 +1198,7 @@ impl ListItem {
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
         layout.font_size = Some(size.text_size());
-        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.text_size()));
+        layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
         self
     }
     pub fn auto_height(mut self, auto_height: bool) -> Self {
@@ -2548,6 +2627,14 @@ pub struct OverlayHost {
 }
 
 impl OverlayHost {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -2676,6 +2763,14 @@ pub struct Tooltip {
 }
 
 impl Tooltip {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn new(label: impl Into<Arc<str>>) -> Self {
         Self::with_config(label, nana_ui_core::TooltipConfig::default())
     }
@@ -3018,10 +3113,13 @@ impl Divider {
         } else {
             0.0
         };
-        let mut style = NodeStyle {
-            background: Some(nana_ui_core::SemanticColorRole::BorderSoft),
-            ..NodeStyle::default()
-        };
+        // Patch onto the caller's style rather than replacing it: `thickness()`
+        // and `inset()` must not silently discard a style set before them.
+        let mut style = self.style.clone();
+        if style.background.is_none() {
+            style.background = Some(nana_ui_core::SemanticColorRole::BorderSoft);
+        }
+        let base = (*style.layout).clone();
         let layout = Arc::new(match self.orientation {
             crate::SelectionOrientation::Horizontal => nana_ui_core::LayoutStyle {
                 width: Some(nana_ui_core::LengthSpec::Fill),
@@ -3030,7 +3128,7 @@ impl Divider {
                 flex_shrink: Some(0.0),
                 margin_left: Some(nana_ui_core::LengthSpec::Px(inset)),
                 margin_right: Some(nana_ui_core::LengthSpec::Px(inset)),
-                ..nana_ui_core::LayoutStyle::default()
+                ..base
             },
             crate::SelectionOrientation::Vertical => nana_ui_core::LayoutStyle {
                 width: Some(nana_ui_core::LengthSpec::Px(thickness)),
@@ -3039,7 +3137,7 @@ impl Divider {
                 flex_shrink: Some(0.0),
                 margin_top: Some(nana_ui_core::LengthSpec::Px(inset)),
                 margin_bottom: Some(nana_ui_core::LengthSpec::Px(inset)),
-                ..nana_ui_core::LayoutStyle::default()
+                ..base
             },
         });
         style.layout = layout;
@@ -3264,16 +3362,29 @@ pub enum RangeAdjustment {
 }
 
 impl RangeField {
-    pub fn new(value: f64, minimum: f64, maximum: f64, step: f64) -> Result<Self, SliderError> {
-        if !value.is_finite() || !minimum.is_finite() || !maximum.is_finite() || !step.is_finite() {
-            return Err(SliderError::NonFinite);
-        }
-        if minimum >= maximum || step <= 0.0 {
-            return Err(SliderError::InvalidRange);
-        }
-        if !(minimum..=maximum).contains(&value) {
-            return Err(SliderError::OutOfRange);
-        }
+    /// Builds a range field, repairing inconsistent bounds instead of failing.
+    ///
+    /// Non-finite or inverted bounds fall back to `0.0..=1.0`; a non-finite or
+    /// non-positive `step` falls back to one hundredth of the span; `value` is
+    /// clamped into the resulting range and quantized. Use [`RangeField::try_new`]
+    /// when the caller wants bad input rejected rather than repaired.
+    pub fn new(value: f64, minimum: f64, maximum: f64, step: f64) -> Self {
+        let (minimum, maximum) = if minimum.is_finite() && maximum.is_finite() && minimum < maximum
+        {
+            (minimum, maximum)
+        } else {
+            (0.0, 1.0)
+        };
+        let step = if step.is_finite() && step > 0.0 {
+            step
+        } else {
+            (maximum - minimum) / 100.0
+        };
+        let value = if value.is_finite() {
+            value.clamp(minimum, maximum)
+        } else {
+            minimum
+        };
         let mut field = Self {
             value,
             minimum,
@@ -3289,7 +3400,22 @@ impl RangeField {
             style: range_field_style(),
         };
         field.value = field.quantize(value);
-        Ok(field)
+        field
+    }
+
+    /// Same construction as [`RangeField::new`], but rejects input it would
+    /// otherwise repair.
+    pub fn try_new(value: f64, minimum: f64, maximum: f64, step: f64) -> Result<Self, SliderError> {
+        if !value.is_finite() || !minimum.is_finite() || !maximum.is_finite() || !step.is_finite() {
+            return Err(SliderError::NonFinite);
+        }
+        if minimum >= maximum || step <= 0.0 {
+            return Err(SliderError::InvalidRange);
+        }
+        if !(minimum..=maximum).contains(&value) {
+            return Err(SliderError::OutOfRange);
+        }
+        Ok(Self::new(value, minimum, maximum, step))
     }
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
@@ -3311,7 +3437,15 @@ impl RangeField {
         self.invalid = invalid;
         self
     }
-    pub fn page_step(mut self, page_step: f64) -> Result<Self, SliderError> {
+    /// Sets the page step, ignoring a non-finite or non-positive value.
+    /// Use [`RangeField::try_page_step`] to reject it instead.
+    pub fn page_step(mut self, page_step: f64) -> Self {
+        if page_step.is_finite() && page_step > 0.0 {
+            self.page_step = page_step;
+        }
+        self
+    }
+    pub fn try_page_step(mut self, page_step: f64) -> Result<Self, SliderError> {
         if !page_step.is_finite() {
             return Err(SliderError::NonFinite);
         }

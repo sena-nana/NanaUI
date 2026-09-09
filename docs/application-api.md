@@ -16,7 +16,7 @@
 
 新代码从 `nana_ui::runtime` 引入控件。crate 根再导出是兼容面。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
 
-`nana_ui::ActionDescriptor` 是宿主命令面板（label / category / keywords）。`nana_ui::runtime::ActionDescriptor` 只是 keymap 启用表。不要混用。
+`ActionDescriptor` 只有一个，定义在 Runtime（`nana_ui::runtime`，`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`，命令面板另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`，要进面板的用 `ActionDescriptor::labeled(id, label)`。`ActionRegistry` 同样只有一个，按注册顺序保序，`search` / `available` 供面板检索。
 
 Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`，把 UiScene 交给 `SceneWgpuPainter`）。没有 `scene-view` 的构建只做 flush / 对照，不画产品帧。
 
@@ -55,7 +55,7 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | 方法 | 职责 |
 | --- | --- |
 | `initialize` | 建程序实例；可返回要在第一帧 `update` 的消息 |
-| `document` / `document_mut` | 按 `WindowId` 交出 `RuntimeDocument` |
+| `with_document` / `with_document_mut` | 按 `WindowId` 在访问闭包中交出 `RuntimeDocument` |
 | `update` | 宿主级消息；保持便宜 |
 | `theme_mode` | 深色 / 浅色 |
 | `window_material_mode` | 可选；默认实色 |
@@ -67,6 +67,7 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
 | `window_event` | 窗口生命周期 |
+| `window_event` 里发 `WindowCommand::SetMenuBar` | 原生菜单栏；选中项用 `take_menu_activations()` 每帧 drain，见 [窗口](window.md#菜单栏) |
 | `input_event` | Runtime 派发之后的原始输入，唯一的输入钩子。参数 `RoutedInput` 同时带 `event`、`pointer_hit`（仅指针与滚轮）和 `disposition`；已消费事件仍派发，应用快捷键应检查 `disposition.prevent_default` |
 | `next_wakeup` / `wake` | 与重绘无关的定时工作 |
 | `host_failure` | 宿主已从该错误恢复；默认忽略 |
@@ -85,14 +86,21 @@ RuntimeDocument::new(DocumentId)
 AppContext::build(document, |ui| {
     ui.column(12.0, |ui| {
         let save = ui.child("save", Button::new("…"));
-        ui.on(save, |_, Activate, cx| { cx.dispatch_program(Msg); });
+        ui.on(save, |_, Activate, cx| { cx.dispatch_program_all(Msg); });
     })
 })
 mount { scope.child("key", …) }          // 动态区增删
-update_component(entity, |view, _| { … }) // 文案 / loading
+update_component(entity, |view, _| { … }) // 改单个字段
+set_component(entity, Button::new(…))     // 整体换 props，保留交互态
 ```
 
 `build` 是初次整页（一次 commit）。`mount` 是 keyed 子树协调，不是第二套渲染器。点击 handler 不要再 `build` 一遍。Vue 不得用 `create_component` / `build` 分配 ID，它绑定自己已有的节点。细则见 [L3 组成式建树](l3-authoring.md)。
+
+从应用状态整体重建一个组件时用 `set_component`，不要在 `update_component` 里写
+`*view = 新的()`：后者连运行时拥有的交互态一起覆盖，表现为刷新一下菜单就收起、
+过滤框光标被重置。`set_component` 走 `ComponentView::reconcile`，由每个组件决定
+什么该活下来（`Select` / `Dropdown` / `SearchDropdown` 保留展开与高亮，
+`SearchDropdown` 还保留用户已输入的查询与光标）。props 真的变了仍会重置交互态。
 
 `create_component` / `append_child` / `on` 仍是底层 primitive。
 
@@ -110,7 +118,9 @@ update_component(entity, |view, _| { … }) // 文案 / loading
 
 ## 性能上你不用手写的
 
-`build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。`dispatch_program` 按类型保留最后一条，在下一帧 `update`。
+`build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。
+
+消息有两个入口，按类型选：`dispatch_program` **按 Rust 类型只保留最后一条**，适合「后一条取代前一条」的状态消息（resize、主题变了、请求重绘）；`dispatch_program_all` 按派发顺序全部送达。业务消息通常是一个 `enum`，那就是**同一个类型**——用 `dispatch_program` 会让同一帧内的两次点击塌成一次、悄悄丢掉第一次，这种情况用 `dispatch_program_all`。两者都在下一帧进入 `update`。
 
 ## Rust 虚拟列表和树
 
@@ -129,9 +139,14 @@ cx.materialize_virtual_list_retained_in(
 )?;
 ```
 
+每行要绑事件时用 `materialize_virtual_list_retained_with`，它多收一个 `on_mount`
+回调：**只**为本次新建的行调用一次（滚回已挂载的行不会重复调用），在提交之后执行，
+可以直接 `cx.on(entity, ...)`。滚走释放的行连同 handler 一起释放。
+
 项身份与内容按 key 保持；框架在组件外放置一个非命中容器以维护逻辑位置，
 并管理 List 的完整内容高度。数据重排必须提供最新逆索引；删除、折叠或 key
-不匹配会释放对应项。离屏导航先查询目标偏移并物化，布局发布后调用 `scroll_to`，
+不匹配会释放对应项。离屏导航先查询目标偏移并物化，布局发布后调用 `scroll_into_view(scroll, target, margin)`
+（已在视口内的目标不动容器，只按最小距离滚动；虚拟化行仍需先物化才有布局盒），
 再将焦点移到目标项内的具体控件。业务持久化草稿和选择仍按 key 保存。
 旧物化入口仅协调身份，不要与定位入口混用于同一个非空 `items`。
 

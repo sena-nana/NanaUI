@@ -296,17 +296,27 @@ impl EmptyState {
             AlignSpec::Center
         };
         layout.gap = Some(LengthSpec::Px(0.0));
+        // Surface padding follows the spacing scale; a caller that declares its
+        // own keeps it.
         let (horizontal, vertical) = if self.compact {
-            (6.0, 8.0)
+            (nana_ui_core::space::SM, nana_ui_core::space::MD)
         } else {
-            (16.0, 24.0)
+            (nana_ui_core::space::XXXL, nana_ui_core::space::PAGE)
         };
-        layout.padding_left = Some(LengthSpec::Px(horizontal));
-        layout.padding_right = Some(LengthSpec::Px(horizontal));
+        if layout.padding_left.is_none() {
+            layout.padding_left = Some(LengthSpec::Px(horizontal));
+        }
+        if layout.padding_right.is_none() {
+            layout.padding_right = Some(LengthSpec::Px(horizontal));
+        }
         // The real intrinsic leading block is written after TextShaper has
         // measured title/message for the resolved content width.
-        layout.padding_top = Some(LengthSpec::Px(vertical));
-        layout.padding_bottom = Some(LengthSpec::Px(vertical));
+        if layout.padding_top.is_none() {
+            layout.padding_top = Some(LengthSpec::Px(vertical));
+        }
+        if layout.padding_bottom.is_none() {
+            layout.padding_bottom = Some(LengthSpec::Px(vertical));
+        }
         layout.border_width = Some(0.0);
         style
     }
@@ -561,18 +571,29 @@ impl Progress {
         style.border = None;
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
+        // Padding the caller declared is kept; only the unset edges default to
+        // zero. Boxes are border-box, so the declared padding is added to the
+        // content height instead of squeezing the bar.
+        for edge in [
+            &mut layout.padding_left,
+            &mut layout.padding_right,
+            &mut layout.padding_top,
+            &mut layout.padding_bottom,
+        ] {
+            if edge.is_none() {
+                *edge = Some(LengthSpec::Px(0.0));
+            }
+        }
+        let padding = layout.resolved_padding();
         let heading = self.heading_height();
-        layout.height = Some(LengthSpec::Px(if heading > 0.0 {
+        let content = if heading > 0.0 {
             heading + PROGRESS_GAP + PROGRESS_GIRTH
         } else {
             PROGRESS_GIRTH
-        }));
+        };
+        layout.height = Some(LengthSpec::Px(content + padding.top + padding.bottom));
         layout.direction = Some(FlexDirection::Column);
         layout.gap = Some(LengthSpec::Px(PROGRESS_GAP));
-        layout.padding_left = Some(LengthSpec::Px(0.0));
-        layout.padding_right = Some(LengthSpec::Px(0.0));
-        layout.padding_top = Some(LengthSpec::Px(0.0));
-        layout.padding_bottom = Some(LengthSpec::Px(0.0));
         layout.border_width = Some(0.0);
         if self.label.is_some() {
             layout.font_size = Some(PROGRESS_LABEL_SIZE);
@@ -712,9 +733,17 @@ impl Spinner {
         } else {
             size + SPINNER_GAP
         }));
-        layout.padding_right = Some(LengthSpec::Px(0.0));
-        layout.padding_top = Some(LengthSpec::Px(0.0));
-        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+        // `padding_left` above is the spinner's own glyph lane and stays
+        // framework-owned; the other three edges are the caller's.
+        for edge in [
+            &mut layout.padding_right,
+            &mut layout.padding_top,
+            &mut layout.padding_bottom,
+        ] {
+            if edge.is_none() {
+                *edge = Some(LengthSpec::Px(0.0));
+            }
+        }
         layout.border_width = Some(0.0);
         layout.font_size = Some(SPINNER_LABEL_SIZE);
         style

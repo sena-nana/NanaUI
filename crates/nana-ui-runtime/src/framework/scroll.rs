@@ -166,6 +166,75 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Scrolls `target` into view inside `scroll`, moving the minimum distance.
+    ///
+    /// Uses the layout boxes published by the last layout pass, so call it
+    /// after layout has run for the frame that created or moved `target`.
+    /// A target already fully visible does not move the container.
+    ///
+    /// This does not materialize virtualized rows: for an off-screen row in a
+    /// `materialize_virtual_*` list, query the target offset and materialize
+    /// first, then call this once the row has a layout box.
+    ///
+    /// `margin` keeps that many logical pixels of context on the leading and
+    /// trailing edge where the container has room for it.
+    pub fn scroll_into_view(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        target: StableNodeId,
+        margin: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target_box) = self.world.layout_box(target) else {
+            return Err(FrameworkError::MissingView(target));
+        };
+        let Some(view_box) = self.world.layout_box(scroll.id) else {
+            return Err(FrameworkError::MissingView(scroll.id));
+        };
+        let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        let margin = if margin.is_finite() {
+            margin.max(0.0)
+        } else {
+            0.0
+        };
+
+        // Scrolling does not write back into `LayoutBox`, so a child's box is
+        // its position within the content, independent of the current offset.
+        let axis = |target_start: f32,
+                    target_extent: f32,
+                    view_start: f32,
+                    view_extent: f32,
+                    current: f32| {
+            let leading = target_start - view_start;
+            let trailing = leading + target_extent;
+            if leading - margin < current {
+                (leading - margin).max(0.0)
+            } else if trailing + margin > current + view_extent {
+                // Never scroll so far that the leading edge leaves the viewport.
+                (trailing + margin - view_extent).min(leading).max(0.0)
+            } else {
+                current
+            }
+        };
+
+        let next = ScrollOffset {
+            x: axis(
+                target_box.x,
+                target_box.width,
+                view_box.x,
+                view_box.width,
+                offset.x,
+            ),
+            y: axis(
+                target_box.y,
+                target_box.height,
+                view_box.y,
+                view_box.height,
+                offset.y,
+            ),
+        };
+        self.scroll_to(scroll, next)
+    }
+
     /// Publish measured scroll geometry and clamp an existing offset when the
     /// content or viewport shrinks. Metrics are Runtime-derived state, not a
     /// duplicate field on [`ScrollView`].

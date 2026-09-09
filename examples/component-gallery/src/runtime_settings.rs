@@ -351,11 +351,11 @@ impl GallerySettingsRuntime {
         });
         let _ = context.update_component(self.shell, |shell, _| {
             shell.model = state.settings_workspace.model().clone();
-            shell.title_leading = Some(self.title_leading.stable_id());
-            shell.title_center = Some(self.title_center.stable_id());
-            shell.title_trailing = Some(self.title_trailing.stable_id());
-            shell.navigation = Some(self.sidebar.stable_id());
-            shell.primary = Some(self.page.stable_id());
+            shell.title_leading = Some(self.title_leading.into());
+            shell.title_center = Some(self.title_center.into());
+            shell.title_trailing = Some(self.title_trailing.into());
+            shell.navigation = Some(self.sidebar.into());
+            shell.primary = Some(self.page.into());
         });
         let _ = context.assemble_settings_sidebar(self.sidebar);
         let _ = context.assemble_appearance_section(self.appearance);

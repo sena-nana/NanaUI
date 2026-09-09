@@ -1353,6 +1353,7 @@ enum RoutedWindowCommand {
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
     SetIcon(WindowId),
+    SetMenuBar(WindowId),
     SetApplicationIcon,
     Drag(WindowId),
     Ignore,
@@ -1390,6 +1391,7 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
             RoutedWindowCommand::SetAlwaysOnTop(*id)
         }
         WindowCommand::SetIcon { id, .. } if known(*id) => RoutedWindowCommand::SetIcon(*id),
+        WindowCommand::SetMenuBar { id, .. } if known(*id) => RoutedWindowCommand::SetMenuBar(*id),
         WindowCommand::SetApplicationIcon { .. } => RoutedWindowCommand::SetApplicationIcon,
         WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
         _ => RoutedWindowCommand::Ignore,

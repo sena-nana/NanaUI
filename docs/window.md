@@ -51,6 +51,26 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 透明 Alpha（`settings.transparent`）强制 `MaterialEffect::Transparent`，不会改试 Mica / Acrylic。失败只能回不透明实色，并带 `MaterialFallback`。真机入口：`vue-hosted-acceptance --chrome-probe`、`--input-probe`、`--hybrid --windows`，以及 `nana-ui` 的 `transparent-window` 示例。
 
+## 菜单栏
+
+原生应用菜单栏是**唯一画不进界面树**的桌面 chrome：macOS 上它属于应用而不是窗口，住在系统菜单条里。所以它在 `nana-window`，用一份平台中立的模型描述（`MenuBar` / `Menu` / `MenuEntry` / `MenuShortcut`，模型本身在 `nana-ui-core`，纯数据）。
+
+应用**声明**菜单，宿主**安装**它：发 `WindowCommand::SetMenuBar { id, bar }`。普通控件拿不到窗口句柄，而 Windows 的菜单属于窗口，所以安装必须由持有窗口的 Scene host 做——和 `SetIcon` 同一条路。
+
+选中项通过 `take_menu_activations()` 回来：每帧 drain 一次，拿到的是 `MenuEntry::Item` 的 `id`。**框架只报告用户选了哪一项，这个 id 是什么意思仍由应用决定**，与 `SecondaryPress` 同一原则。参照 `examples/component-gallery`：菜单 id 被映射成和界面操作完全相同的业务消息。
+
+平台支持不对等，`menu_bar_support()` 如实上报，不假装：
+
+| 平台 | 结果 | 说明 |
+| --- | --- | --- |
+| macOS | `System` | 系统菜单条。第一个菜单落在应用菜单位置，放应用级命令。无需窗口，也可直接用 `install_application_menu_bar` |
+| Windows | `InWindow` | 窗口内的 `HMENU`。选中经 `WM_COMMAND`，由 `SetWindowSubclass` 挂的钩子取回 |
+| 其它 | `Unavailable` | 什么都不装。把这些命令放进界面里 |
+
+`installed_menu_bar()` 读回平台实际持有的菜单（macOS），供宿主自检；`crates/nana-window/examples/menu-probe.rs` 就是用它做真机验收的。
+
+菜单是整体替换：再调一次 `SetMenuBar` 换掉整条。没有增量条目 API——重建一个菜单很便宜，而跨三个平台做 diff 不便宜。
+
 ## 图标
 
 任务栏、exe、Dock 上的图标是应用身份，不是界面里的 `Icon` 字形。

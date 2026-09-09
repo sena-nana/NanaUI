@@ -224,6 +224,25 @@ mod tests {
     }
 
     #[test]
+    fn making_a_chip_dismissible_grows_its_close_button_without_a_second_call() {
+        let mut context = AppContext::new();
+        let chip = context
+            .create_component(document(), Chip::new("Beta"))
+            .unwrap();
+        assert!(context.read(chip, |chip| chip.close).unwrap().is_none());
+
+        // No explicit `assemble_chip`: the write itself reconciles the child.
+        context
+            .update_component(chip, |chip, _| chip.dismissible = true)
+            .unwrap();
+        let close = context
+            .read(chip, |chip| chip.close)
+            .unwrap()
+            .expect("close button assembled from the prop change");
+        assert!(context.world().contains(close));
+    }
+
+    #[test]
     fn pill_chrome_and_selected_kind() {
         let mut context = AppContext::new();
         let chip = context

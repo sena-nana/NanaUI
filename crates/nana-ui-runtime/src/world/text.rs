@@ -402,7 +402,7 @@ pub(super) fn form_field_geometry(
 ) -> Option<crate::ComponentGeometry> {
     let (label_size, _gap, label_role, label_weight) =
         crate::form_surfaces::form_field_density(size);
-    let label_height = label_size * 1.2;
+    let label_height = crate::form_surfaces::form_field_label_line(size);
     let support = error.or(hint);
     let support_role = if error.is_some() {
         SemanticColorRole::Danger

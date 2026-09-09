@@ -28,6 +28,10 @@ pub struct UiBuilder<'a> {
     working: HashMap<StableNodeId, HashMap<String, AssembledChild>>,
     pending_views: HashMap<StableNodeId, Box<dyn Any + Send>>,
     pending_ons: Vec<Box<dyn FnOnce(&mut AppContext) -> Result<(), FrameworkError>>>,
+    /// How many `on` calls this build has already made for a given
+    /// `(node, event type)`. The count is the handler's identity, so rebuilding
+    /// the same tree replaces its handlers instead of stacking new ones.
+    on_slots: HashMap<(StableNodeId, TypeId), usize>,
     pending_forget: HashSet<StableNodeId>,
     lifecycle: Vec<StableNodeId>,
     park_roots: bool,
@@ -100,6 +104,7 @@ impl<'a> UiBuilder<'a> {
             working: HashMap::new(),
             pending_views: HashMap::new(),
             pending_ons: Vec::new(),
+            on_slots: HashMap::new(),
             pending_forget: HashSet::new(),
             lifecycle: Vec::new(),
             park_roots,
@@ -211,6 +216,13 @@ impl<'a> UiBuilder<'a> {
     }
 
     /// Register an event handler after the tree batch commits.
+    ///
+    /// Registration is idempotent across rebuilds: handlers are keyed by the
+    /// position of this call among the `on` calls this build makes for the same
+    /// `(node, event type)`, so building the same tree again replaces each
+    /// handler rather than appending a second copy that would fire twice.
+    /// Registering several handlers for one node and event in a single build
+    /// still keeps all of them — they take successive slots.
     pub fn on<V, E>(
         &mut self,
         entity: Entity<V>,
@@ -222,8 +234,18 @@ impl<'a> UiBuilder<'a> {
         if self.error.is_some() || entity.id == DUMMY_NODE {
             return;
         }
-        self.pending_ons
-            .push(Box::new(move |cx| cx.on(entity, handler)));
+        let slot = {
+            let seen = self
+                .on_slots
+                .entry((entity.id, TypeId::of::<E>()))
+                .or_insert(0);
+            let slot = *seen;
+            *seen += 1;
+            slot
+        };
+        self.pending_ons.push(Box::new(move |cx| {
+            cx.on_keyed(entity, format!("ui::on::{slot}"), handler)
+        }));
     }
 
     /// Create a parked node that is not inserted under the current parent.

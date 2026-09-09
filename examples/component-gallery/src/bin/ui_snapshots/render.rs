@@ -656,7 +656,7 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
     let document_id = DocumentId::new(1).expect("snapshot document ID is non-zero");
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
-    let slider_component = RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0)?.label("Volume");
+    let slider_component = RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0).label("Volume");
     let (
         title,
         input,

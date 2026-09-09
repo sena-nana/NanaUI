@@ -14,6 +14,35 @@ pub struct TableColumn {
     pub min_extent: f32,
     pub max_extent: f32,
     pub resizable: bool,
+    /// Whether activating this column's header cycles the table's sort.
+    pub sortable: bool,
+}
+
+/// Direction a sorted column is ordered in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+impl SortDirection {
+    #[must_use]
+    pub fn reversed(self) -> Self {
+        match self {
+            Self::Ascending => Self::Descending,
+            Self::Descending => Self::Ascending,
+        }
+    }
+}
+
+/// Which column a table is sorted by, and how.
+///
+/// The table owns which header shows an indicator; **ordering the rows stays
+/// the application's job** — only it knows how its data compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableSort {
+    pub column: String,
+    pub direction: SortDirection,
 }
 
 impl TableColumn {
@@ -22,6 +51,7 @@ impl TableColumn {
         Self {
             key: key.into(),
             extent,
+            sortable: false,
             min_extent: 0.0,
             max_extent: f32::INFINITY,
             resizable: true,
@@ -36,6 +66,12 @@ impl TableColumn {
             f32::INFINITY
         };
         self.extent = self.extent.clamp(self.min_extent, self.max_extent);
+        self
+    }
+
+    /// Marks the column's header as a sort control.
+    pub fn sortable(mut self, sortable: bool) -> Self {
+        self.sortable = sortable;
         self
     }
 
@@ -267,6 +303,7 @@ pub struct VirtualTableLayout {
     rows: VirtualListLayout,
     columns: Vec<TableColumn>,
     column_extents: VirtualListLayout,
+    sort: Option<TableSort>,
 }
 
 impl VirtualTableLayout {
@@ -280,6 +317,7 @@ impl VirtualTableLayout {
             rows: VirtualListLayout::new(row_extents),
             columns,
             column_extents,
+            sort: None,
         }
     }
 
@@ -304,6 +342,68 @@ impl VirtualTableLayout {
 
     pub fn update_row_extent(&mut self, row: usize, extent: f32) -> bool {
         self.rows.update_item_extent(row, extent)
+    }
+
+    /// Column the table is currently sorted by, if any.
+    pub fn sort(&self) -> Option<&TableSort> {
+        self.sort.as_ref()
+    }
+
+    /// Publishes the sort a header should indicate. `None` clears it.
+    /// Returns whether it changed. A column that is not `sortable`, or one the
+    /// table does not have, is rejected.
+    pub fn set_sort(&mut self, sort: Option<TableSort>) -> bool {
+        if let Some(sort) = &sort
+            && !self
+                .columns
+                .iter()
+                .any(|column| column.sortable && column.key == sort.column)
+        {
+            return false;
+        }
+        if self.sort == sort {
+            return false;
+        }
+        self.sort = sort;
+        true
+    }
+
+    /// Header-activation cycle: ascending, then descending, then unsorted.
+    /// Returns the sort now in effect.
+    pub fn toggle_sort(&mut self, column: &str) -> Option<&TableSort> {
+        let next = match &self.sort {
+            Some(current) if current.column == column => {
+                match current.direction {
+                    SortDirection::Ascending => Some(TableSort {
+                        column: column.to_owned(),
+                        direction: SortDirection::Descending,
+                    }),
+                    // A third activation clears the sort rather than looping.
+                    SortDirection::Descending => None,
+                }
+            }
+            _ => Some(TableSort {
+                column: column.to_owned(),
+                direction: SortDirection::Ascending,
+            }),
+        };
+        self.set_sort(next);
+        self.sort.as_ref()
+    }
+
+    /// Moves a column, keeping its width and the table's total extent.
+    ///
+    /// `to` is the destination index in the list as it stands after the column
+    /// is lifted out. Out-of-range indices and a no-op move return `false`.
+    pub fn move_column(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.columns.len() || to >= self.columns.len() || from == to {
+            return false;
+        }
+        let column = self.columns.remove(from);
+        self.columns.insert(to, column);
+        self.column_extents =
+            VirtualListLayout::new(self.columns.iter().map(|column| column.extent));
+        true
     }
 
     pub fn resize_column(&mut self, column: usize, extent: f32) -> bool {
@@ -398,6 +498,80 @@ fn sanitize_extent(extent: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    fn sortable_table() -> VirtualTableLayout {
+        VirtualTableLayout::new(
+            std::iter::repeat_n(24.0, 3),
+            [
+                TableColumn::new("name", 120.0).sortable(true),
+                TableColumn::new("size", 80.0).sortable(true),
+                TableColumn::new("actions", 60.0),
+            ],
+        )
+    }
+
+    #[test]
+    fn header_activation_cycles_ascending_descending_then_clears() {
+        let mut table = sortable_table();
+        assert!(table.sort().is_none());
+
+        assert_eq!(
+            table.toggle_sort("name").map(|sort| sort.direction),
+            Some(SortDirection::Ascending)
+        );
+        assert_eq!(
+            table.toggle_sort("name").map(|sort| sort.direction),
+            Some(SortDirection::Descending)
+        );
+        assert!(table.toggle_sort("name").is_none(), "third press clears it");
+
+        // Switching column starts that column ascending.
+        table.toggle_sort("name");
+        let sort = table.toggle_sort("size").expect("size becomes the sort");
+        assert_eq!(sort.column, "size");
+        assert_eq!(sort.direction, SortDirection::Ascending);
+    }
+
+    #[test]
+    fn a_column_that_is_not_sortable_is_rejected() {
+        let mut table = sortable_table();
+        assert!(table.toggle_sort("actions").is_none());
+        assert!(table.sort().is_none());
+        assert!(!table.set_sort(Some(TableSort {
+            column: "missing".to_owned(),
+            direction: SortDirection::Ascending,
+        })));
+    }
+
+    #[test]
+    fn moving_a_column_keeps_widths_and_total_extent() {
+        let mut table = sortable_table();
+        let total = |table: &VirtualTableLayout| {
+            table
+                .columns()
+                .iter()
+                .map(|column| column.extent)
+                .sum::<f32>()
+        };
+        let before = total(&table);
+
+        assert!(table.move_column(0, 2));
+        let keys = table
+            .columns()
+            .iter()
+            .map(|column| column.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["size", "actions", "name"]);
+        assert_eq!(total(&table), before);
+        assert_eq!(
+            table.columns()[2].extent,
+            120.0,
+            "the moved width follows it"
+        );
+
+        assert!(!table.move_column(1, 1), "a no-op move reports no change");
+        assert!(!table.move_column(0, 9), "out of range is rejected");
+    }
+
     use super::*;
 
     #[test]

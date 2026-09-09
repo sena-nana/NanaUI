@@ -2,6 +2,7 @@
 
 mod chrome;
 mod material;
+mod menu;
 mod platform;
 mod size_move;
 
@@ -19,6 +20,10 @@ pub use material::{
     Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome,
     PlatformMaterialSupport, apply_hosted_system_material, apply_system_material,
     clear_system_material, hosted_platform_material_support, platform_material_support,
+};
+pub use menu::{
+    Menu, MenuBar, MenuBarSupport, MenuEntry, MenuShortcut, install_application_menu_bar,
+    install_menu_bar, installed_menu_bar, menu_bar_support, take_menu_activations,
 };
 pub use size_move::LiveSizeMove;
 

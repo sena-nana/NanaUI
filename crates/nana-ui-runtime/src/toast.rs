@@ -15,11 +15,11 @@ use crate::{
 const TITLE_SIZE: f32 = 12.0;
 const TITLE_WEIGHT: u16 = 600;
 const DESCRIPTION_SIZE: f32 = 11.0;
-const COPY_GAP: f32 = 2.0;
-const INDICATOR_SIZE: f32 = 7.0;
-const INDICATOR_GAP: f32 = 8.0;
-const PAD_Y: f32 = 10.0;
-const PAD_X: f32 = 12.0;
+pub(crate) const COPY_GAP: f32 = 2.0;
+pub(crate) const INDICATOR_SIZE: f32 = 7.0;
+pub(crate) const INDICATOR_GAP: f32 = 8.0;
+pub(crate) const PAD_Y: f32 = 10.0;
+pub(crate) const PAD_X: f32 = 12.0;
 
 fn sanitize_description(description: Option<&Arc<str>>) -> Option<Arc<str>> {
     description.filter(|value| !value.is_empty()).cloned()

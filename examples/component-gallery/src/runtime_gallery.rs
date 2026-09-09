@@ -1211,7 +1211,6 @@ fn mount_controls(
         });
         let range = ui.leaf(fill_range_field(
             nana_ui::runtime::RangeField::new(f64::from(state.slider), 0.0, 100.0, 1.0)
-                .expect("gallery range")
                 .label("强度")
                 .unit("%"),
         ));
@@ -2246,7 +2245,6 @@ fn mount_inspector(
         let radius = state.appearance.standard_radius().round() as u8;
         let slider = ui.leaf(fill_range_field(
             nana_ui::runtime::RangeField::new(f64::from(radius), 0.0, 24.0, 1.0)
-                .expect("radius range")
                 .label("标准圆角")
                 .unit("px"),
         ));
@@ -2412,25 +2410,24 @@ fn sync_controls(
     });
     for (index, dropdown) in tree.dropdowns.iter().copied().enumerate() {
         let placeholder = ["小", "中", "大"][index];
-        let _ = context.update_component(dropdown, |field, _| {
-            *field = gallery_dropdown(state, placeholder, field.size);
-        });
+        // `set_component`, not an assignment: the menu stays open across a
+        // refresh that did not change the selection.
+        let size = context
+            .read(dropdown, |field| field.size)
+            .unwrap_or_default();
+        let _ = context.set_component(dropdown, gallery_dropdown(state, placeholder, size));
     }
     let _ = context.update_component(tree.field_status, |label, _| {
         *label = field_status_text(state);
     });
-    let _ = context.update_component(tree.checkbox, |box_, _| {
-        *box_ = Checkbox::new("启用选项", state.checked);
-    });
+    let _ = context.set_component(tree.checkbox, Checkbox::new("启用选项", state.checked));
     let _ = context.update_component(tree.switch, |switch, _| {
         *switch = Switch::new("允许编辑说明", state.switched).disabled(!state.checked);
     });
     let _ = context.update_component(tree.range, |range, _| {
         range.value = f64::from(state.slider);
     });
-    let _ = context.update_component(tree.search, |search, _| {
-        *search = gallery_search(state);
-    });
+    let _ = context.set_component(tree.search, gallery_search(state));
     let _ = context.update_component(tree.textarea, |area, _| {
         *area = gallery_textarea(state);
     });

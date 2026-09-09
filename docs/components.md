@@ -23,11 +23,19 @@ import "@nanaui/nanavue-components/controls.css";
 
 ## 目录
 
-**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。
+
+**布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。
+
+**表格与树。** `Table` / `TableRow` / `TableCell`、`TreeView`、`ReorderList`。列可 `sortable(true)`，表头激活走 `VirtualTableLayout::toggle_sort`（升序 → 降序 → 取消）；`move_column` 重排列。**排序本身仍由应用做**——只有你知道数据怎么比。
 
 **展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`GraphCanvas`、`GraphMinimap`。
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
+
+`Chip`、`ColorField`、`PathField`、`FileTab` 这类**叶子复合件**在你写 props 的那一刻自己重建子节点，不需要再记一次 `assemble_*`。`Shell` / `Workspace` / `Dock` / `SplitPane` / `PaneSection` 不走这条：它们协调的是应用自己的槽位，且不便宜，挂到每次写入会破坏「无变更不弄脏」的脏帧合同——这几个仍在装配好槽位后显式调用对应的 `assemble_*`。
+
+`ConfirmDialog` 的确认 / 取消按钮由 `AppContext::assemble_confirm_dialog(dialog)` 建好并接上 `ConfirmIntent`，不需要自己造两个按钮再拼槽位；按钮文案用 `confirm_label` / `cancel_label` 覆盖，`danger(true)` 让确认按钮走危险色。需要次要动作、关闭钮或自定义正文时，仍用 `set_confirm_slots` 自己装配，这时 `assemble_confirm_dialog` 不会覆盖你已有的槽位。
 
 `ContextMenu` 同样挂在 `OverlayHost` 下并用 `activate_overlay` 打开：框架按 Menu 语义负责 Escape 与点击外部收起，应用不再自建点外判定。框架驱动的收起会同步组件自身的 `open` 并发出 `ContextMenuEvent::Dismiss`，与选中项收起走同一条回执，应用不需要事后对账两份状态。
 
@@ -47,9 +55,15 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
 
-**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
+**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
 部分族需要 Cargo feature（`calendar`、`charts`、`graph-canvas`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 会转发到 `nana-ui-runtime` 和 `nana-ui-scene`，控制对应实现、几何投影和公开导出。`components` 启用全部可选控件族；精简宿主按需选择。Vue 标签也受相同功能开关约束，缺失时会报告组件不可用。
+
+`DatePicker` 是月历网格：由现有控件组合而成（表头图标按钮 + 日期按钮），`assemble_date_picker` 建好并复用这 6×7 个按钮，翻月只换标签不重建。选中发 `DateChanged`，翻月发 `DateCursorMoved`；`range` 之外与非本月的日期不可选。**月份标题由应用给**（`month_label`）——月名是 locale 相关的，框架不带 locale 数据。日期类型是 `nana_ui_core::CivilDate`，只有年月日，不是日期时间库。
+
+`Toolbar` / `StatusBar` 是两条横条容器，内容由应用放。相对裸 `Stack::bar` 多的是壳层表面和**无障碍角色**：读屏把工具栏播报成一组控件、状态栏播报成 live status 区域，普通布局盒表达不了这个。`chrome(false)` 用于已经自带表面的父容器。
+
+拖放：`set_drop_target(entity, DropAccepts::files())` 登记节点接受什么，`drop_target_at(document, x, y, kind)` 回答某点上最内层接受该载荷的节点（按布局盒匹配，不要求节点可点击）。**框架只回答落在哪里**，落下之后做什么仍是应用的——和 `SecondaryPress` 一样。Tab / Dock / `ReorderList` 的拖动移动的是框架自己的结构，仍走各自的合同。
 
 `ColorField` 是色块 + hex，`assemble_color_field` 挂 HSV 选择器；提交发 `ColorChanged`，拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮，浏览只发 `BrowseRequested`，由应用打开系统对话框。
 
@@ -67,15 +81,61 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 典型事件：`Activate`（按钮）、`TextChanged`、`ToggleChanged`、`RangeChanged`、`TabsEvent`、`SearchDropdownEvent`、`ContextMenuEvent`。签名以 rustdoc 为准。
 
+### 谁改状态
+
+**内建控件一律自驱**：用户操作后控件自己更新可见状态，事件报告「发生了什么」，不是「请求做什么」。应用不需要把状态回写一遍才能看到变化。
+
+| 控件 | 用户操作后 |
+| --- | --- |
+| `Checkbox` / `Switch` | 自己翻 `checked`，发 `ToggleChanged` |
+| `Select` / `Dropdown` / `SearchDropdown` | 自己写选中值并收起菜单 |
+| `Tabs` | 自己改 `selected` |
+| `TreeView` | 自己应用展开 / 选中 |
+| `Popover` / `ActionMenu` / `ContextMenu` | 自己开关 `open` |
+| `SegmentedControl`（含 `radio_group()`） | 激活时自己改选中，发 `SegmentedSelectionRequested` |
+
+要**否决或改写**用户的选择，在 handler 里把你要的状态写回去（`set_segmented_selection`、`update_component` 等）；重复写入当前已有的值是 no-op，不会多一次提交。
+
+方向键在 `SegmentedControl` / `Tabs` 上只移焦点、不改选中（手动激活语义），选中跟随 Enter / 空格 / 点击。这是读屏软件对 tablist / radiogroup 的预期。
+
 右键（button 2）派发 `SecondaryPress`，从命中节点往上找到第一个注册了该事件的节点，事件里带命中节点与坐标。框架不开菜单、不塞默认项：要不要弹、弹什么，由应用在 handler 里决定（通常是 `ContextMenu`）。没人注册就什么都不发生。
 
 需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`，下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 
+## 表单校验
+
+每个控件自己带 `invalid`，`FormField` 带 `error`，`ValidationMessage` 单独显示——这三份是显示层。要在提交前问「这张表还有没有没填对的」，用 `AppContext::validity_of(root)`：它读控件已经发布的无障碍状态，按 document order 返回子树里所有 `invalid` 且未禁用的字段。
+
+```rust
+let validity = cx.validity_of(form.stable_id());
+if let Some(first) = validity.first_invalid() {
+    cx.scroll_into_view(scroll, first, 8.0)?;   // 滚到第一个错误
+    cx.focus_node(document, first)?;
+    return;
+}
+```
+
+禁用字段不计入：用户够不到的控件不该挡住提交。校验规则本身仍是应用的——`validity_of` 只报告树当前的说法，不定义什么算合法。
+
 ## 文本与列表
 
-`TextInput` / `TextArea` 持有已提交的 UTF-8、选区和 IME preedit。它们是视图侧编辑模型：文档 revision、撤销、冲突、持久化仍由应用拥有。可选 feature `syntax-highlighting` 在同一 `TextArea` 上启用名为 `"highlight"` 的 presenter，不另造一套编辑器。
+`TextInput` / `TextArea` 持有已提交的 UTF-8、选区和 IME preedit。它们是视图侧编辑模型：撤销由 Runtime 提供（见下），文档 revision、冲突与持久化仍由应用拥有。可选 feature `syntax-highlighting` 在同一 `TextArea` 上启用名为 `"highlight"` 的 presenter，不另造一套编辑器。
 
 Rust `TextArea::read_only(true)` 保留焦点、光标/选区、查找和复制，拒绝修改、替换、剪切及粘贴。它与 `disabled(true)` 不同：禁用控件不参与这些交互。运行时切换为只读会结束未提交的 IME 组合，并拒绝此前开始的文本拖放写入；程序仍可通过组件更新提供新的权威文本。`HostedTextarea` 转发同一属性，语义构造属性为 `readOnly`。应用显示只读文档时应使用此属性，而不是以禁用样式替代只读状态。
+
+### 统一编辑入口与撤销
+
+编辑器的文本**只有一条写路径**：`AppContext::commit_editor_edit(entity, origin, apply)`。键入、删除、粘贴、IME 提交、行变换、代码片段、应用设值，全部汇入这里。凡是「每次编辑都要做」的事只在这一处做：发变更事件、记撤销。新增一种编辑操作时不要自己 `update_component` 写 `state.value`，走这个入口，否则它不会进撤销。
+
+`TextEditOrigin` 说明这次编辑是什么，决定它是否与上一步合并：
+- `Typing` / `Delete` —— 连续的同类操作合成**一个**撤销步，撤销不会一个字符一个字符往回走；移动光标会断开这一串。
+- `Paste` / `Ime` / `Structural` —— 各自独立成步。一次输入法提交是一步。
+- `Program` —— 应用自己写的值（如载入另一个文档）。它**清空**日志，撤销不会退回上一个文档的内容。
+- `History` —— 撤销/重做自身，永不记录。
+
+IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所以日志天然看不到组合中间态，只看到提交。
+
+`undo_focused_text` / `redo_focused_text` 作用于焦点编辑器，恢复编辑**开始时**的选区（含多光标），`can_undo_text` / `can_redo_text` 供菜单置灰。`RuntimeInputAdapter` 已接 Ctrl/Cmd+Z 与 Ctrl/Cmd+Shift+Z。每个编辑器 200 步上限，节点销毁即释放。
 
 剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。
 

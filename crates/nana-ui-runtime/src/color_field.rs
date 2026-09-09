@@ -20,6 +20,10 @@ use crate::{
 const SWATCH_SIZE: f32 = 22.0;
 
 /// Committed RGBA in 0..=1.
+/// Default accessible name. Applications localize it with
+/// [`ColorField::label`].
+const DEFAULT_LABEL: &str = "颜色";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorChanged {
     pub value: [f32; 4],
@@ -42,6 +46,8 @@ pub struct ColorField {
     pub disabled: bool,
     pub invalid: bool,
     pub size: ControlSize,
+    /// Accessible name announced for the field.
+    pub label: Arc<str>,
     pub swatch: Option<StableNodeId>,
     pub hex: Option<StableNodeId>,
     pub picker: Option<StableNodeId>,
@@ -51,6 +57,20 @@ pub struct ColorField {
 }
 
 impl ColorField {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    /// Overrides the accessible name announced for the field.
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
     pub fn new(value: [f32; 4]) -> Self {
         let value = sanitize_rgba(value);
         let (hue, sat, val) = rgb_to_hsv(value);
@@ -63,6 +83,7 @@ impl ColorField {
             disabled: false,
             invalid: false,
             size: ControlSize::Medium,
+            label: Arc::from(DEFAULT_LABEL),
             swatch: None,
             hex: None,
             picker: None,
@@ -127,6 +148,26 @@ impl ColorField {
 }
 
 impl ComponentView for ColorField {
+    fn reconcile(&mut self, mut next: Self) {
+        // The open picker and the HSV cursor track the drag in progress; the
+        // committed value is the application's.
+        if next.disabled {
+            next.opened = false;
+        } else if self.value == next.value {
+            next.opened = self.opened;
+            next.hue = self.hue;
+            next.sat = self.sat;
+            next.val = self.val;
+        }
+        // Child identities are runtime-owned either way.
+        next.swatch = self.swatch;
+        next.hex = self.hex;
+        next.picker = self.picker;
+        next.pad = self.pad;
+        next.hue_slider = self.hue_slider;
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "color-field".into(),
@@ -153,7 +194,7 @@ impl ComponentView for ColorField {
             },
             AccessibilityState {
                 role: AccessibilityRole::Generic,
-                label: Some(Arc::from("颜色")),
+                label: Some(Arc::clone(&self.label)),
                 value: Some(Arc::from(format_hex(self.value))),
                 disabled: self.disabled,
                 invalid: self.invalid,
@@ -205,7 +246,7 @@ impl AppContext {
             Some(id) => Entity::<RangeField>::from_stable_id(id),
             None => self.create_detached_component(
                 document,
-                RangeField::new(snapshot.hue as f64, 0.0, 360.0, 1.0).expect("hue range"),
+                RangeField::new(snapshot.hue as f64, 0.0, 360.0, 1.0),
             )?,
         };
         let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {

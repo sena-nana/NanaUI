@@ -363,9 +363,11 @@ pub trait RuntimeProgram: Sized + 'static {
         f: impl FnOnce(&mut RuntimeDocument) -> R,
     ) -> Result<Option<R>, DocumentAccessError>;
 
-    /// Apply a host-level message. `dispatch_program` coalesces to the latest
-    /// and runs on the next frame. Keep this cheap; fill content in
-    /// [`Self::bind_window`] after present.
+    /// Apply a host-level message, on the frame after it was dispatched.
+    ///
+    /// `dispatch_program` coalesces to the latest message of each type;
+    /// `dispatch_program_all` delivers every one in dispatch order. Keep this
+    /// cheap; fill content in [`Self::bind_window`] after present.
     fn update(
         &mut self,
         message: Self::Message,

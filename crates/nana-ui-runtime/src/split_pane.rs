@@ -38,6 +38,14 @@ pub struct SplitPane {
 }
 
 impl SplitPane {
+    /// Replaces the node style wholesale.
+    ///
+    /// Builders that derive layout from other props (such as `size`) overwrite
+    /// only the fields they own, so call those after this one.
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
     pub fn from_model(model: &SplitPaneModel, first: StableNodeId, second: StableNodeId) -> Self {
         Self {
             first: Some(first),

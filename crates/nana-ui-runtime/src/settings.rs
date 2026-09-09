@@ -869,10 +869,12 @@ const SETTINGS_SIDEBAR_GAP: f32 = 12.0;
 const SETTINGS_SIDEBAR_TAB_GAP: f32 = 1.0;
 const SETTINGS_SIDEBAR_ICON_SIZE: f32 = ControlSize::Small.icon_size();
 const SETTINGS_PAGE_GAP: f32 = 16.0;
-const SETTINGS_PAGE_PADDING_TOP: f32 = 20.0;
-const SETTINGS_PAGE_PADDING_RIGHT: f32 = 24.0;
-const SETTINGS_PAGE_PADDING_BOTTOM: f32 = 24.0;
-const SETTINGS_PAGE_PADDING_LEFT: f32 = 24.0;
+/// Tighter than the other three: the page sits under a title row that already
+/// contributes its own leading.
+const SETTINGS_PAGE_PADDING_TOP: f32 = nana_ui_core::space::PAGE_TIGHT;
+const SETTINGS_PAGE_PADDING_RIGHT: f32 = nana_ui_core::space::PAGE;
+const SETTINGS_PAGE_PADDING_BOTTOM: f32 = nana_ui_core::space::PAGE;
+const SETTINGS_PAGE_PADDING_LEFT: f32 = nana_ui_core::space::PAGE;
 const SETTINGS_PAGE_TITLE_SIZE: f32 = 18.0;
 const SETTINGS_PAGE_TITLE_WEIGHT: u16 = 600;
 
@@ -1659,7 +1661,6 @@ fn ensure_range(
     minimum: f64,
     maximum: f64,
     unit: &str,
-    parent: StableNodeId,
 ) -> Result<Entity<RangeField>, FrameworkError> {
     if let Some(id) = *slot {
         let entity = Entity::<RangeField>::from_stable_id(id);
@@ -1668,9 +1669,7 @@ fn ensure_range(
         })?;
         Ok(entity)
     } else {
-        let field = RangeField::new(value, minimum, maximum, 1.0)
-            .map_err(|_| FrameworkError::InvalidComponentValue(parent))?
-            .unit(unit);
+        let field = RangeField::new(value, minimum, maximum, 1.0).unit(unit);
         let entity = context.create_detached_component(document, field)?;
         *slot = Some(entity.stable_id());
         Ok(entity)
@@ -1877,7 +1876,6 @@ impl AppContext {
                 f64::from(AppearanceSettings::MIN_BACKDROP_OPACITY) * 100.0,
                 f64::from(AppearanceSettings::MAX_BACKDROP_OPACITY) * 100.0,
                 "%",
-                section.stable_id(),
             )?
             .stable_id()
         };
@@ -1926,7 +1924,6 @@ impl AppContext {
             f64::from(AppearanceSettings::MIN_STANDARD_RADIUS),
             f64::from(AppearanceSettings::MAX_STANDARD_RADIUS),
             " px",
-            section.stable_id(),
         )?;
         let radius_row = mount_settings_row(
             self,

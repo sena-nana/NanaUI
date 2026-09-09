@@ -14,6 +14,15 @@ use crate::{
 
 const SUPPORT_SIZE: f32 = 11.0;
 
+/// Line box a [`FormField`] reserves for its label at `size`.
+///
+/// Layout writes this into `padding_top`; the painter places the label inside
+/// the same band. Both sides must read this one function.
+pub(crate) fn form_field_label_line(size: ControlSize) -> f32 {
+    let (label_size, _, _, _) = form_field_density(size);
+    ControlSize::nearest_text(label_size).line_height()
+}
+
 pub(crate) fn form_field_density(size: ControlSize) -> (f32, f32, SemanticColorRole, u16) {
     match size {
         ControlSize::Small => (11.0, 2.0, SemanticColorRole::Muted, 400),
@@ -83,13 +92,22 @@ impl FormField {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Percent(100.0));
         layout.direction = Some(FlexDirection::Column);
-        layout.gap = Some(LengthSpec::Px(0.0));
+        // A field holding more than one child sets its own gap; only the
+        // default is zero.
+        if layout.gap.is_none() {
+            layout.gap = Some(LengthSpec::Px(0.0));
+        }
         layout.border_width = Some(0.0);
         layout.font_size = Some(label_size);
         layout.font_weight = Some(label_weight);
-        layout.padding_top = Some(LengthSpec::Px(label_size * 1.2 + gap));
+        // Reserve the line box `ControlSize` declares for this text size rather
+        // than guessing a leading factor: a label that wraps or a font with
+        // taller metrics would otherwise overlap the control.
+        let label_line = form_field_label_line(self.size);
+        let support_line = ControlSize::nearest_text(SUPPORT_SIZE).line_height();
+        layout.padding_top = Some(LengthSpec::Px(label_line + gap));
         layout.padding_bottom = Some(LengthSpec::Px(if self.support_text().is_some() {
-            SUPPORT_SIZE * 1.2 + gap
+            support_line + gap
         } else {
             0.0
         }));
@@ -362,7 +380,15 @@ mod tests {
         assert_eq!(layout.border_width, Some(0.0));
         assert_eq!(layout.font_size, Some(12.0));
         assert_eq!(layout.font_weight, Some(500));
-        assert_eq!(layout.padding_top, Some(LengthSpec::Px(12.0 * 1.2 + 5.0)));
+        // The reserve is the declared line box for this label size plus the
+        // density gap, not a guessed leading factor.
+        assert_eq!(
+            layout.padding_top,
+            Some(LengthSpec::Px(
+                form_field_label_line(ControlSize::Medium) + 5.0
+            ))
+        );
+        assert_eq!(form_field_label_line(ControlSize::Medium), 16.0);
         assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(0.0)));
         assert_eq!(
             context
@@ -396,11 +422,15 @@ mod tests {
         assert_eq!(style.layout.font_weight, Some(400));
         assert_eq!(
             style.layout.padding_top,
-            Some(LengthSpec::Px(11.0 * 1.2 + 2.0))
+            Some(LengthSpec::Px(
+                form_field_label_line(ControlSize::Small) + 2.0
+            ))
         );
+        // Support text reserves the line box for its own size, not the label's.
+        let support_line = ControlSize::nearest_text(SUPPORT_SIZE).line_height();
         assert_eq!(
             style.layout.padding_bottom,
-            Some(LengthSpec::Px(SUPPORT_SIZE * 1.2 + 2.0))
+            Some(LengthSpec::Px(support_line + 2.0))
         );
     }
 

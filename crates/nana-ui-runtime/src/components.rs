@@ -825,6 +825,10 @@ pub enum StandardVisual {
         loading: bool,
         options: Arc<[SelectOptionData]>,
         highlighted: Option<usize>,
+        /// Whether this menu can ever draw check marks (a multi-select
+        /// dropdown). The check lane is reserved for the whole menu when it
+        /// can, so labels do not shift as options are checked and unchecked.
+        checkable: bool,
     },
     MenuSurface {
         kind: MenuSurfaceKind,
@@ -2271,6 +2275,7 @@ pub enum AccessibilityRole {
     MenuItem,
     Tooltip,
     Status,
+    Toolbar,
     Image,
     Main,
     Navigation,

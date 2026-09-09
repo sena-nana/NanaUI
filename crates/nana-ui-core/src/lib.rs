@@ -10,7 +10,9 @@
 
 pub mod action;
 pub mod box_layout;
+pub mod date;
 pub mod dialog;
+pub mod drag;
 pub mod expansion;
 pub mod fonts;
 pub mod geometry;
@@ -20,6 +22,7 @@ mod icon_data;
 pub mod layout;
 mod layout_style_api;
 pub mod menu;
+pub mod menu_bar;
 pub mod motion;
 pub mod number_field;
 pub mod overlay;
@@ -61,7 +64,9 @@ pub use box_layout::{
     icon_y_on_text_glyph_center, resolve_grid_column_widths, resolve_grid_track_sizes,
     text_line_box_height_px,
 };
+pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+pub use drag::{DropAccepts, DropEffect, DropKind};
 pub use expansion::ExpansionState;
 pub use geometry::{
     ContentFit, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect,
@@ -82,6 +87,7 @@ pub use layout::{
     WorkspaceLayout, WorkspaceLayoutError,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
+pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::Easing;
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
@@ -108,7 +114,7 @@ pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
     drop_before_index, reorder_changes_position, tab_at,
 };
-pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
+pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space};
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 pub use url_jail::{
@@ -123,8 +129,8 @@ pub use virtual_list::{
     VirtualScrollAnchor, VirtualViewport,
 };
 pub use virtual_table::{
-    TableColumn, TableCursor, TableNavigation, VirtualTableFrozenWindow, VirtualTableLayout,
-    VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    SortDirection, TableColumn, TableCursor, TableNavigation, TableSort, VirtualTableFrozenWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
 pub use work::{FrameStage, GpuWorkObservation, WorkCounters};

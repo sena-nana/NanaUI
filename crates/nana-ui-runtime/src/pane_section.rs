@@ -23,7 +23,7 @@ use crate::{
 /// Inset between pane content and the region edge. Card surfaces in the pane
 /// keep [`UI_METRICS::panel_padding_x`] as their own content inset; this
 /// gutter frames the card boxes around them.
-const PANE_GUTTER: f32 = 12.0;
+const PANE_GUTTER: f32 = nana_ui_core::space::XL;
 
 /// Vertical distance between the pinned rows and the body.
 const PANE_GAP: f32 = 6.0;
