@@ -145,6 +145,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     nana_window::install_menu_bar(window.as_ref(), &bar);
                 }
             }
+            RoutedWindowCommand::OpenFileDialog(id) => {
+                let WindowCommand::OpenFileDialog { request, .. } = command else {
+                    return;
+                };
+                if let Some(window) = self.window(id) {
+                    nana_window::open_file_dialog(window.as_ref(), request.clone());
+                }
+            }
             RoutedWindowCommand::SetApplicationIcon => {
                 let WindowCommand::SetApplicationIcon { icon } = command else {
                     return;

@@ -1354,6 +1354,7 @@ enum RoutedWindowCommand {
     SetAlwaysOnTop(WindowId),
     SetIcon(WindowId),
     SetMenuBar(WindowId),
+    OpenFileDialog(WindowId),
     SetApplicationIcon,
     Drag(WindowId),
     Ignore,
@@ -1392,6 +1393,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::SetIcon { id, .. } if known(*id) => RoutedWindowCommand::SetIcon(*id),
         WindowCommand::SetMenuBar { id, .. } if known(*id) => RoutedWindowCommand::SetMenuBar(*id),
+        WindowCommand::OpenFileDialog { id, .. } if known(*id) => {
+            RoutedWindowCommand::OpenFileDialog(*id)
+        }
         WindowCommand::SetApplicationIcon { .. } => RoutedWindowCommand::SetApplicationIcon,
         WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
         _ => RoutedWindowCommand::Ignore,

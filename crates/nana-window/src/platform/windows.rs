@@ -275,3 +275,133 @@ unsafe extern "system" fn menu_subclass_proc(
     }
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
+
+/// Opens the common file dialog owned by `window`.
+///
+/// `GetOpenFileNameW` / `GetSaveFileNameW` run modally, so this returns after
+/// the user is done; the result is pushed onto the same queue the async macOS
+/// sheet uses, so callers drain one place on both platforms.
+///
+/// Folder picking is not served by the common dialog and needs the shell item
+/// API; until that is wired it reports a cancel rather than opening the wrong
+/// dialog.
+pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    request: nana_ui_core::FileDialogRequest,
+) {
+    use nana_ui_core::{FileDialogKind, FileDialogResult};
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, GetSaveFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST,
+        OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    let cancel = || crate::file_dialog::push_result(FileDialogResult::cancelled(request.id));
+    if request.kind == FileDialogKind::PickFolder {
+        cancel();
+        return;
+    }
+    let Some(owner) = hwnd(window) else {
+        cancel();
+        return;
+    };
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    // The filter is a run of NUL-separated pairs terminated by an extra NUL.
+    let mut filter = Vec::new();
+    for group in &request.filters {
+        filter.extend(wide(&group.name));
+        let patterns = group
+            .extensions
+            .iter()
+            .map(|extension| format!("*.{extension}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        filter.extend(wide(&patterns));
+    }
+    filter.push(0);
+
+    let title = request.title.as_ref().map(|title| wide(title));
+    let directory = request
+        .directory
+        .as_ref()
+        .map(|directory| wide(&directory.to_string_lossy()));
+
+    // The dialog writes the chosen path (or a NUL-separated list) into place.
+    let mut buffer = vec![0_u16; 32 * 1024];
+    if let Some(name) = &request.file_name {
+        let name = wide(name);
+        let take = name.len().min(buffer.len());
+        buffer[..take].copy_from_slice(&name[..take]);
+    }
+
+    let mut flags = OFN_EXPLORER | OFN_PATHMUSTEXIST;
+    if request.kind.is_save() {
+        flags |= OFN_OVERWRITEPROMPT;
+    } else {
+        flags |= OFN_FILEMUSTEXIST;
+    }
+    if request.kind.is_multiple() {
+        flags |= OFN_ALLOWMULTISELECT;
+    }
+
+    let mut options: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    options.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    options.hwndOwner = owner;
+    options.lpstrFile = buffer.as_mut_ptr();
+    options.nMaxFile = buffer.len() as u32;
+    options.Flags = flags;
+    if !request.filters.is_empty() {
+        options.lpstrFilter = filter.as_ptr();
+        options.nFilterIndex = 1;
+    }
+    if let Some(title) = &title {
+        options.lpstrTitle = title.as_ptr();
+    }
+    if let Some(directory) = &directory {
+        options.lpstrInitialDir = directory.as_ptr();
+    }
+
+    let chosen = unsafe {
+        if request.kind.is_save() {
+            GetSaveFileNameW(&raw mut options)
+        } else {
+            GetOpenFileNameW(&raw mut options)
+        }
+    };
+    if chosen == 0 {
+        cancel();
+        return;
+    }
+
+    // Multi-select writes the directory, then each file name, all NUL
+    // separated; a single selection is one full path.
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for (index, unit) in buffer.iter().enumerate() {
+        if *unit == 0 {
+            if index == start {
+                break;
+            }
+            segments.push(String::from_utf16_lossy(&buffer[start..index]));
+            start = index + 1;
+        }
+    }
+    let paths = match segments.len() {
+        0 => Vec::new(),
+        1 => vec![std::path::PathBuf::from(&segments[0])],
+        _ => {
+            let directory = std::path::PathBuf::from(&segments[0]);
+            segments[1..]
+                .iter()
+                .map(|name| directory.join(name))
+                .collect()
+        }
+    };
+    crate::file_dialog::push_result(FileDialogResult {
+        id: request.id,
+        paths,
+    });
+}

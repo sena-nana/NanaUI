@@ -1,6 +1,10 @@
-//! Path text field with a browse affordance. The control never opens a native
-//! dialog; it emits [`BrowseRequested`] so the host can run `rfd` (or similar)
-//! and write the chosen path back.
+//! Path text field with a browse affordance.
+//!
+//! The control never opens a native dialog — a dialog needs the parent window
+//! handle, which controls do not reach. It emits [`BrowseRequested`]; the
+//! application answers by sending `WindowCommand::OpenFileDialog`, and writes
+//! the chosen path back when the result arrives through
+//! `nana_window::take_file_dialog_results`.
 
 use std::sync::Arc;
 

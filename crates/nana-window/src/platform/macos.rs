@@ -241,3 +241,161 @@ pub(crate) fn installed_menu_bar() -> Option<Vec<(String, Vec<String>)>> {
     }
     Some(bar)
 }
+
+/// Configures an `NSSavePanel` (or its `NSOpenPanel` subclass) from a request.
+///
+/// Split out so the configuration can be verified without running the panel:
+/// a modal dialog cannot be driven from a test.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn configure_panel(
+    panel: &objc2_app_kit::NSSavePanel,
+    request: &nana_ui_core::FileDialogRequest,
+) {
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    if let Some(title) = &request.title {
+        panel.setTitle(Some(&NSString::from_str(title)));
+    }
+    if let Some(directory) = &request.directory {
+        let path = NSString::from_str(&directory.to_string_lossy());
+        let url = NSURL::fileURLWithPath(&path);
+        panel.setDirectoryURL(Some(&url));
+    }
+    if let Some(name) = &request.file_name {
+        panel.setNameFieldStringValue(&NSString::from_str(name));
+    }
+    if !request.filters.is_empty() {
+        // AppKit filters by extension list; the group names are the
+        // application's own labels and have no AppKit counterpart here.
+        let extensions = request
+            .filters
+            .iter()
+            .flat_map(|filter| filter.extensions.iter())
+            .map(|extension| NSString::from_str(extension))
+            .collect::<Vec<_>>();
+        let refs = extensions.iter().map(|value| &**value).collect::<Vec<_>>();
+        let array = NSArray::from_slice(&refs);
+        #[allow(deprecated)]
+        panel.setAllowedFileTypes(Some(&array));
+    }
+}
+
+/// Opens the system file dialog as a sheet on `window`.
+///
+/// A sheet rather than `runModal`: a modal run would block the event loop, so
+/// the window behind the dialog would stop rendering. The completion handler
+/// pushes the outcome onto the queue `take_file_dialog_results` drains, which
+/// is the same shape the menu uses.
+pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    request: nana_ui_core::FileDialogRequest,
+) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWindow};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        // AppKit panels are main-thread only. Report a cancel rather than
+        // leaving the caller waiting for a result that will never arrive.
+        crate::file_dialog::push_result(nana_ui_core::FileDialogResult::cancelled(request.id));
+        return;
+    };
+
+    let id = request.id;
+    let multiple = request.kind.is_multiple();
+    let save = request.kind.is_save();
+
+    // `NSOpenPanel` is an `NSSavePanel`, so both configure through the same
+    // reference and only the completion differs.
+    let (panel, open): (Retained<NSSavePanel>, Option<Retained<NSOpenPanel>>) = if save {
+        (NSSavePanel::savePanel(mtm), None)
+    } else {
+        let open = NSOpenPanel::openPanel(mtm);
+        let folder = matches!(request.kind, nana_ui_core::FileDialogKind::PickFolder);
+        open.setCanChooseFiles(!folder);
+        open.setCanChooseDirectories(folder);
+        open.setAllowsMultipleSelection(multiple);
+        (Retained::into_super(open.clone()), Some(open))
+    };
+    configure_panel(&panel, &request);
+
+    let sheet = panel.clone();
+    let completion = RcBlock::new(move |response: NSModalResponse| {
+        let mut paths = Vec::new();
+        if response == NSModalResponseOK {
+            if let Some(open) = &open {
+                for url in &*open.URLs() {
+                    if let Some(path) = url.path() {
+                        paths.push(std::path::PathBuf::from(path.to_string()));
+                    }
+                }
+            } else if let Some(url) = panel.URL()
+                && let Some(path) = url.path()
+            {
+                paths.push(std::path::PathBuf::from(path.to_string()));
+            }
+        }
+        crate::file_dialog::push_result(nana_ui_core::FileDialogResult { id, paths });
+    });
+
+    let Some(parent) = ns_window(window, mtm) else {
+        // No parent to hang a sheet on: report a cancel instead of opening a
+        // detached dialog the user cannot associate with anything.
+        crate::file_dialog::push_result(nana_ui_core::FileDialogResult::cancelled(id));
+        return;
+    };
+    let _: &NSWindow = &parent;
+    sheet.beginSheetModalForWindow_completionHandler(&parent, &completion);
+}
+
+/// The `NSWindow` behind a raw handle.
+fn ns_window<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    _mtm: objc2::MainThreadMarker,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2::rc::Retained;
+    use objc2_app_kit::NSView;
+    use raw_window_handle::RawWindowHandle;
+
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    // The handle is the content view; its window is the sheet's parent.
+    let view: Retained<NSView> =
+        unsafe { Retained::retain(handle.ns_view.as_ptr().cast::<NSView>())? };
+    view.window()
+}
+
+/// Builds and configures a panel from `request`, then reads back what AppKit
+/// holds: title, starting directory and allowed extensions.
+///
+/// Verification entry. A file dialog is modal and cannot be driven from a
+/// test, so this checks the half that is ours — that the request reached
+/// AppKit intact — without presenting anything.
+pub(crate) fn describe_configured_panel(
+    request: &nana_ui_core::FileDialogRequest,
+) -> Option<(Option<String>, Option<String>, Vec<String>)> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSOpenPanel, NSSavePanel};
+
+    let mtm = MainThreadMarker::new()?;
+    let panel: objc2::rc::Retained<NSSavePanel> = if request.kind.is_save() {
+        NSSavePanel::savePanel(mtm)
+    } else {
+        objc2::rc::Retained::into_super(NSOpenPanel::openPanel(mtm))
+    };
+    configure_panel(&panel, request);
+
+    let title = Some(panel.title().to_string()).filter(|title| !title.is_empty());
+    let directory = panel
+        .directoryURL()
+        .and_then(|url| url.path())
+        .map(|path| path.to_string());
+    #[allow(deprecated)]
+    let extensions = panel.allowedFileTypes().map_or_else(Vec::new, |types| {
+        types.iter().map(|value| value.to_string()).collect()
+    });
+    Some((title, directory, extensions))
+}

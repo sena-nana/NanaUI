@@ -71,6 +71,22 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 菜单是整体替换：再调一次 `SetMenuBar` 换掉整条。没有增量条目 API——重建一个菜单很便宜，而跨三个平台做 diff 不便宜。
 
+## 文件对话框
+
+系统文件对话框需要父窗口句柄——macOS 挂成 sheet,Windows 需要 owner HWND——而句柄只在宿主层。所以对话框和菜单栏走同一条路:模型在 `nana-ui-core`(`FileDialogRequest` / `FileDialogResult` / `FileFilter`),打开由宿主经 `WindowCommand::OpenFileDialog { id, request }` 执行。控件仍然拿不到句柄:`PathField` 只发 `BrowseRequested`,由应用翻译成一个请求。
+
+结果是**异步**的:`take_file_dialog_results()` 每帧 drain,拿到 `FileDialogResult { id, paths }`。`id` 是请求里带的,应用有多个浏览按钮时靠它对上号。
+
+**取消不是错误**,是 `paths` 为空的正常结果。让调用方去 match 一个错误才能发现「用户按了取消」,会诱导把它当失败处理。平台不支持时也立刻回一个取消,而不是把请求悄悄丢掉——等一个永远不来的结果比明确的取消更糟。
+
+| 平台 | 结果 | 说明 |
+| --- | --- | --- |
+| macOS | `System` | `NSOpenPanel` / `NSSavePanel` 以 **sheet** 呈现。不用 `runModal`:那会阻塞事件循环,对话框背后的窗口会停止渲染 |
+| Windows | `System` | `GetOpenFileNameW` / `GetSaveFileNameW`,模态。选目录尚未接(需要 shell item API),目前直接回取消而不是打开错的对话框 |
+| 其它 | `Unavailable` | 立刻回取消 |
+
+`describe_configured_dialog(&request)` 读回平台实际配置(标题、起始目录、扩展名),不呈现任何东西——对话框是模态的、没法在测试里驱动,所以验证的是「请求有没有完整到达平台」这一半。`crates/nana-window/examples/file-dialog-probe.rs` 就是拿它做真机验收的。
+
 ## 图标
 
 任务栏、exe、Dock 上的图标是应用身份，不是界面里的 `Icon` 字形。

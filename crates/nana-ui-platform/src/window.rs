@@ -453,6 +453,16 @@ pub enum WindowCommand {
         id: WindowId,
         bar: Option<nana_ui_core::MenuBar>,
     },
+    /// Open the system file dialog owned by this window.
+    ///
+    /// The host opens it because the dialog needs the parent window handle,
+    /// which controls never reach; `PathField` still only emits
+    /// `BrowseRequested`. The outcome — including a cancel — arrives through
+    /// `nana_window::take_file_dialog_results`.
+    OpenFileDialog {
+        id: WindowId,
+        request: nana_ui_core::FileDialogRequest,
+    },
     /// Process-wide application icon. `None` clears a registration so the default mark is used.
     SetApplicationIcon {
         icon: Option<WindowIcon>,

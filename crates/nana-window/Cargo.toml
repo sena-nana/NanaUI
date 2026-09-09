@@ -13,9 +13,14 @@ window-vibrancy = "0.8.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
-objc2-app-kit = { workspace = true, default-features = false, features = ["NSApplication", "NSEvent", "NSView", "NSWindow", "NSImage", "NSButton", "NSControl", "NSCell", "NSMenu", "NSMenuItem", "NSResponder", "objc2-quartz-core"] }
+block2 = "0.6.2"
+objc2-app-kit = { workspace = true, default-features = false, features = ["NSApplication", "NSEvent", "NSView", "NSWindow", "NSImage", "NSButton", "NSControl", "NSCell", "NSMenu", "NSMenuItem", "NSOpenPanel", "block2", "NSPanel", "NSResponder", "NSSavePanel", "objc2-quartz-core"] }
 objc2-foundation = { workspace = true, default-features = false, features = [
+    "NSArray",
     "NSData",
+    "NSEnumerator",
+    "NSString",
+    "NSURL",
     "objc2-core-foundation",
 ] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer", "CAMetalLayer", "objc2-metal"] }
@@ -26,6 +31,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
