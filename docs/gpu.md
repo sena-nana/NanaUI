@@ -74,6 +74,25 @@ Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4
 
 `GpuViewMode::Inline` 复用当前 dest pass；`Standalone` 在同一 encoder / 目标上另开 pass。Renderer 不得 `request_device`，也不得 submit 宿主正在用的 encoder。
 
+### 批绘制
+
+`SceneGpuRenderer` 有两个带默认实现的方法，不实现就是原来的逐节点路径：
+
+```rust
+fn batch_capacity(&self) -> usize { 1 }
+fn draw_batch_in_pass(&self, nodes: &[SceneGpuBatchNode<'_>], pass, context) -> usize { 0 }
+```
+
+`batch_capacity() > 1` 时，painter 把 **display list 上连续**的同 renderer 实例、无 `dedicated_pass`、bounds 非空的节点作为一段交给你；返回值是这段前缀里你实际编码了几个，返回 0 就退回 `draw_in_pass`。你可以只吃掉前缀——例如只处理共享同一 clip 的那几个。
+
+这**不是**把 GPU 内容攒到帧尾。run 是 display list 的连续切片：中间任何一条 Quad / Text / Icon / HostTexture / backdrop / 合成组边界都终止它，shader 节点不可能跨过一个 Button。document order 与不批处理时逐比特相同，变的只是 draw 次数。
+
+内置的 `DefaultGpuViewRenderer` 是实例化的参考实现：一条 instance-step 顶点缓冲，N 个相邻同 renderer 节点一次 draw，不需要任何可选 device feature。**上限**：合并的是同一条管线的 run；每个节点一个不同 shader 时，下限就是每种管线一次 draw。
+
+多节点共用一个 shader 时，用**一个** `slot_id`、**一个** `revision`，把差异放进 `params`——`params` 不参与 resource 冲突判定，也不使 frame plan 失效。对一部分节点 bump `version` 而对其余不 bump 会让整帧被拒（见下面「不要做的」）。需要各自独立 revision 时给每个节点一个自己的 slot；渲染图按 renderer 而不是按 resource 建 pass，所以这不再随节点数增加 pass。
+
+`SceneGpuRenderContext` 带 `dest_size`（目标的物理像素尺寸），Standalone 路径的 viewport / scissor 与主 pass 一致。
+
 节点上的 `palette` 和 `seed` 走 `CustomRenderNode::params`，槽位见 `gpu_view_params`。Runtime 只搬运这串数，语义由 renderer 键定义；换 renderer 就换一套自己的槽位约定。
 
 ```bash
@@ -143,6 +162,18 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 
 自定义 renderer 默认每帧重新准备；显式实现 `preparation_version` 后才允许复用。
 版本变化或 renderer 实例替换会重新准备，实际 `render` 仍在需要呈现的帧执行。
+**这一条对整棵树收费**：只要有一个未实现该方法的自定义 renderer 在树上，painter 就把整帧
+判为不可缓存，重建全部 quad / 文字 / 图标的绘制命令。内置的 `DefaultGpuViewRenderer`
+按 `(revision, params)` 实现了它；自己写 renderer 时请照做。
+
+`SceneGpuPrepareContext` 带 `dest_size`（目标物理像素尺寸）。尺寸变化必然使 painter 的
+预备批次失效，所以准备阶段看到的就是这批命令实际编码时的尺寸。
+
+## 渲染图的形状
+
+`frame_graph` 按 **renderer** 建 preparation pass（`prepare:{renderer}`），并把 document order 上**连续且同 renderer** 的 Custom 图元并进一个 `custom:{renderer}` pass。pass 数因此对节点数是常数，`FramePlan.operations` 逐字节不变。
+
+`CompiledRenderGraph` 是公开类型：pass 的数量与 label 会随之变化，后端扩展不要把它们当稳定值。多个 renderer 同时存在时，`FramePlan.preparations` 的顺序是「先 renderer 名、再 resource label」；生产者写的是互不相同的外部资源，所以这个顺序没有语义约束。
 
 ## 不要做的
 
