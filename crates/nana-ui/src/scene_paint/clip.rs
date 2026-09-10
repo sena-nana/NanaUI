@@ -648,6 +648,42 @@ pub(super) fn physical_bounds(
     intersect_physical(slot, clip)
 }
 
+/// An empty rect covers no pixel, so it never overlaps anything.
+pub(super) fn overlaps_physical(left: PhysicalRect, right: PhysicalRect) -> bool {
+    if left.width == 0 || left.height == 0 || right.width == 0 || right.height == 0 {
+        return false;
+    }
+    left.x < right.x.saturating_add(right.width)
+        && right.x < left.x.saturating_add(left.width)
+        && left.y < right.y.saturating_add(right.height)
+        && right.y < left.y.saturating_add(left.height)
+}
+
+pub(super) fn union_physical(left: PhysicalRect, right: PhysicalRect) -> PhysicalRect {
+    if left.width == 0 || left.height == 0 {
+        return right;
+    }
+    if right.width == 0 || right.height == 0 {
+        return left;
+    }
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = left
+        .x
+        .saturating_add(left.width)
+        .max(right.x.saturating_add(right.width));
+    let bottom_edge = left
+        .y
+        .saturating_add(left.height)
+        .max(right.y.saturating_add(right.height));
+    PhysicalRect {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom_edge - y,
+    }
+}
+
 pub(super) fn intersect_physical(left: PhysicalRect, right: PhysicalRect) -> PhysicalRect {
     let x = left.x.max(right.x);
     let y = left.y.max(right.y);

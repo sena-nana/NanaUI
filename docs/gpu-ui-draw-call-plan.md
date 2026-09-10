@@ -188,7 +188,7 @@ painter 侧不为空包围盒的文字生成 `DrawCommand::Text`（顺带省掉 
 |---|---|---|---|---|
 | 1 ✅ | 屏外文字不进 display list + 计数器不再虚报 | `dense-2k` 1503 → ~1003 | **1503 → 1003** | 低 |
 | 2 ✅ | 相邻文字 run 合并（与 `push_quad` 同构） | `dense-2k` 1002 → 4 | **1003 → 4** | 中 |
-| 3 ✅ | 重叠感知批次合并（方向 1） | `column-list` 23 → 5 | **9 行 `(quad, label)` 39 → 26；`shader-nodes-256` 132 → 16** | 高。`gpu_interleaved` 已冻结在 document order 上 |
+| 3 ✅ | 重叠感知批次合并（方向 1） | `column-list` 23 → 5 | **9 行 `(quad, label)` 39 → 26；`shader-nodes-256` 132 → 16** | 高。采样数判定已冻结在 document order 上 |
 | — | 打包 icon atlas | 暂缓 | — | 基准场景里图标已经是 1 次 draw；等有真实的多字形图标条场景再说 |
 
 **第 1 步的实现与这里原先的设计不同，原设计不成立。** 原计划改
@@ -225,10 +225,14 @@ run 长度**没有加上限**：cryoglyph 的 atlas 会自动扩到
 `PreparedKind::Affine`（旋转/斜切文本）自带顶点缓冲，`merge_runs` 直接拒绝，
 天然截断 run。
 
-第 3 步同样落在 `crates/nana-ui/src/scene_paint/mod.rs`（`Batching` / `OpenBatch` /
-`GroupEdit`、四个 `push_*` 改成走打开批次、`painted_bounds` 与各图元的外扩量、
-`gpu_interleaved` 冻结并进 `PreparedBatch`）和 `text.rs`（`PreparedText::ink`、
-`can_merge_runs` 放宽到任意更早的 run）。
+第 3 步同样落在 `crates/nana-ui/src/scene_paint/mod.rs`（`Batching` / `OpenBatch`、
+四个 `push_*` 改成走打开批次、`painted_bounds` 与各图元的外扩量、`glyph_then_quad`
+冻结并进 `PreparedBatch`）、`clip.rs`（`overlaps_physical` / `union_physical`）和
+`text.rs`（`PreparedText::ink`、`can_merge_runs` 放宽到任意更早的 run）。
+
+一条批次不存 kind 也不存 scissor：识别候选的谓词直接读命令本身，命令里就带着它的
+scissor，变体也就定死了 kind。开合组时也不需要三态——一个空开空关的组会把自己的
+`PushGroup` 取回去，而它开着的时候什么都没发出过，所以不可能有批次指向它或它之后。
 
 ### 落地后的实测（2026-09-10，同机同口径）
 

@@ -319,11 +319,12 @@ label 与没有它们的同一棵树 draw call 相同、整帧像素相同；一
   外扩覆盖 side bearing。
 - **抗锯齿边不需要额外余量**：`physical_scissor` 把盒子向外取整到整像素。实测把 quad
   的余量从 1px 降到 0 会改变整帧哈希，降到 1px 不会——所以余量就是 1px 的 outline 基线。
-- **MSAA 判定冻结在 document order 上**。`gpu_interleaved` 原来是扫描最终命令表算的；
-  合并会把字形推成后缀，那个标志就会翻转并重建整张 dest。现在它在建表时按发射顺序算好，
-  并随 `PreparedBatch` 一起缓存。回归测试
-  `batch_merging_does_not_flip_the_dest_sample_count` 断言这一点（改回扫描最终表，
-  它会挂）。
+- **MSAA 判定冻结在 document order 上**。`gpu_interleaved` 原来整个是扫描最终命令表
+  算的；合并会把字形推成后缀，标志就会翻转并重建整张 dest。现在「字形之后来了 quad
+  或 mesh」这一半在建表时按发射顺序算好，随 `PreparedBatch` 一起缓存；另一半
+  （HostTexture / Custom / Backdrop / 分组命令）本来就不参与合并，仍旧读最终表。
+  回归测试 `batch_merging_does_not_flip_the_dest_sample_count` 断言这一点（改回整个
+  扫描最终表，它会挂）。
 
 | 场景 | draw calls（基线 → 前两步 → 三步） | encode p50 /ms |
 |---|---|---|
