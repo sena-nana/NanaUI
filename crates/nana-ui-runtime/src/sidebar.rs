@@ -498,6 +498,7 @@ impl SidebarRow {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()
             },
+            ..InteractionStyle::default()
         };
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         style
@@ -1399,6 +1400,7 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
             foreground: Some(SemanticColorRole::Faint),
             ..SemanticPaint::default()
         },
+        ..InteractionStyle::default()
     };
     let layout = Arc::make_mut(&mut style.layout);
     layout.width = Some(LengthSpec::Px(extent));

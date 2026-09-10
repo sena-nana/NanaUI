@@ -15,6 +15,9 @@ export const NanaButton = {
     disabled: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
     label: { type: String, default: "" },
+    icon: { type: String, default: undefined },
+    iconSize: { type: Number, default: undefined },
+    iconGap: { type: Number, default: 6 },
   },
   emits: ["press"],
   setup(props, { slots, emit, attrs }) {
@@ -39,6 +42,9 @@ export const NanaButton = {
     return () =>
       h("button", {
         ...attrs,
+        icon: props.icon,
+        "icon-size": props.iconSize,
+        "icon-gap": props.iconGap,
         kind: props.kind,
         size: props.size,
         disabled: props.disabled,

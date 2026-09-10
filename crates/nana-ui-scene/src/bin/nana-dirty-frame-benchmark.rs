@@ -387,7 +387,8 @@ fn measure(
 
     let mut flushes = Vec::with_capacity(samples);
     let mut stage_totals = [Duration::ZERO; 13];
-    let mut stage_samples: Vec<Vec<Duration>> = vec![Vec::with_capacity(samples); 13];
+    let mut stage_samples: Vec<Vec<Duration>> =
+        (0..13).map(|_| Vec::with_capacity(samples)).collect();
     let mut stage_status = [StageStatus::Skipped; 13];
     let mut counters = WorkCounters::default();
     let mut substage_totals = [Duration::ZERO; 4];

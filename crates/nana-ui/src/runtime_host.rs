@@ -346,6 +346,21 @@ pub trait RuntimeProgram: Sized + 'static {
         }
     }
 
+    /// Native web content is anchored to BrowserView nodes; application chrome stays in Runtime.
+    /// Omit a request to release its native child. Revisions must increase for every command.
+    fn native_browser_requests(&self, _id: WindowId) -> Vec<crate::NativeBrowserRequest> {
+        Vec::new()
+    }
+
+    fn native_browser_event(
+        &mut self,
+        _id: WindowId,
+        _event: crate::NativeBrowserEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error>;

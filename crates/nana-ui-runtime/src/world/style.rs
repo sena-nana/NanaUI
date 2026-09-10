@@ -117,23 +117,44 @@ impl UiWorld {
             .map(|parent| self.record(parent).resolved.0.foreground)
             .unwrap_or(SemanticColorRole::Text);
         let foreground = paint.foreground.unwrap_or(inherited_foreground);
-        let color = layout.color.or_else(|| {
-            paint
-                .foreground
-                .map(|role| self.style_model.color(role).as_rgba_array())
-                .or(inherited_color)
-                .or_else(|| Some(self.style_model.color(foreground).as_rgba_array()))
-        });
-        let background = layout.background.or_else(|| {
-            paint
-                .background
-                .map(|role| self.style_model.color(role).as_rgba_array())
-        });
-        let border_color = layout.resolved_border_color().or_else(|| {
-            paint
-                .border
-                .map(|role| self.style_model.color(role).as_rgba_array())
-        });
+        let color = layout
+            .color
+            .or_else(|| {
+                paint
+                    .foreground_mix
+                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
+            })
+            .or_else(|| {
+                paint
+                    .foreground
+                    .map(|role| self.style_model.color(role).as_rgba_array())
+                    .or(inherited_color)
+                    .or_else(|| Some(self.style_model.color(foreground).as_rgba_array()))
+            });
+        let background = layout
+            .background
+            .or_else(|| {
+                paint
+                    .background_mix
+                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
+            })
+            .or_else(|| {
+                paint
+                    .background
+                    .map(|role| self.style_model.color(role).as_rgba_array())
+            });
+        let border_color = layout
+            .resolved_border_color()
+            .or_else(|| {
+                paint
+                    .border_mix
+                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
+            })
+            .or_else(|| {
+                paint
+                    .border
+                    .map(|role| self.style_model.color(role).as_rgba_array())
+            });
         if let Some(transition) = self.hover_transitions.get(&id) {
             let progress = crate::Easing::EaseOutCubic.sample(
                 (self
@@ -167,6 +188,9 @@ impl UiWorld {
                 return Some(color);
             }
             let paint = self.semantic_paint(id, local);
+            if let Some(mix) = paint.foreground_mix {
+                return Some(mix.resolve(self.style_model).as_rgba_array());
+            }
             if let Some(role) = paint.foreground {
                 return Some(self.style_model.color(role).as_rgba_array());
             }
@@ -186,7 +210,9 @@ impl UiWorld {
             foreground: local.foreground,
             background: local.background,
             border: local.border,
-        };
+            ..crate::SemanticPaint::default()
+        }
+        .overlay(local.interaction.base);
         let accessibility = &self.record(id).accessibility;
         let selected = accessibility.checked == Some(true)
             || accessibility.mixed

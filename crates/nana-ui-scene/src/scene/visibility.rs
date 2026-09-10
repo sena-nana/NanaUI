@@ -228,7 +228,14 @@ impl VisibilityIndex {
             };
             index.bounds[leaf + offset] = primitive_bounds(scene, id);
             index.nodes.entry(id.node).or_default().push((offset, id));
-            let mut parent = scene.nodes.get(&id.node).and_then(|node| node.parent);
+            let scroll_parent = |id| {
+                scene.nodes.get(&id).and_then(|node| {
+                    (node.source_style.layout.position != nana_ui_core::PositionSpec::Fixed)
+                        .then_some(node.parent)
+                        .flatten()
+                })
+            };
+            let mut parent = scroll_parent(id.node);
             while let Some(id) = parent {
                 let ranges = index.descendants.entry(id).or_default();
                 if let Some(last) = ranges.last_mut().filter(|range| range.end == offset) {
@@ -236,7 +243,7 @@ impl VisibilityIndex {
                 } else {
                     ranges.push(offset..offset + 1);
                 }
-                parent = scene.nodes.get(&id).and_then(|node| node.parent);
+                parent = scroll_parent(id);
             }
         }
         for offset in (1..leaf).rev() {

@@ -36,6 +36,8 @@ fn primary_edges(expanded: bool, has_track_before: bool, has_track_after: bool) 
 pub struct WorkspaceRegionSlot {
     pub id: RegionId,
     pub content: Option<StableNodeId>,
+    /// The supplied component retains ownership of input and accessibility.
+    pub borrowed: bool,
 }
 
 impl WorkspaceRegionSlot {
@@ -43,6 +45,17 @@ impl WorkspaceRegionSlot {
         Self {
             id,
             content: Some(content),
+            borrowed: false,
+        }
+    }
+
+    /// Lend an existing component as the region surface without replacing its
+    /// current input or accessibility semantics. Workspace owns its region layout and surface paint.
+    pub fn borrowed(id: RegionId, content: StableNodeId) -> Self {
+        Self {
+            id,
+            content: Some(content),
+            borrowed: true,
         }
     }
 }
@@ -150,7 +163,7 @@ impl Workspace {
 
     pub fn slot(mut self, id: RegionId, content: StableNodeId) -> Self {
         if let Some(existing) = self.slots.iter_mut().find(|slot| slot.id == id) {
-            existing.content = Some(content);
+            *existing = WorkspaceRegionSlot::new(id, content);
         } else {
             self.slots.push(WorkspaceRegionSlot::new(id, content));
         }
@@ -341,21 +354,33 @@ impl Workspace {
             layout.overflow_y = OverflowSpec::Visible;
         }
         let style = overlay_region_style(world.node_style(content), region);
-        project_common(
-            content,
-            world,
-            mutations,
-            &style,
-            InteractionState {
-                pointer_events: false,
-                focusable: false,
-            },
-            AccessibilityState {
-                role: AccessibilityRole::Generic,
-                label: Some(Arc::from(state.id().as_str())),
-                ..AccessibilityState::default()
-            },
-        );
+        let borrowed = self
+            .slots
+            .iter()
+            .any(|slot| slot.id == *state.id() && slot.content == Some(content) && slot.borrowed);
+        if borrowed {
+            // Do not replay a captured interaction/a11y snapshot: the borrowed
+            // component's own projection remains the live source of truth.
+            if world.node_style(content) != Some(&style) {
+                mutations.set_style(content, style);
+            }
+        } else {
+            project_common(
+                content,
+                world,
+                mutations,
+                &style,
+                InteractionState {
+                    pointer_events: false,
+                    focusable: false,
+                },
+                AccessibilityState {
+                    role: AccessibilityRole::Generic,
+                    label: Some(Arc::from(state.id().as_str())),
+                    ..AccessibilityState::default()
+                },
+            );
+        }
         self.project_handle(state, content, world, mutations);
     }
 
@@ -1179,6 +1204,85 @@ mod tests {
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    #[test]
+    fn borrowed_regions_keep_live_component_semantics_after_reassembly() {
+        let mut context = AppContext::new();
+        let text = context
+            .create_detached_component(document(), crate::Text::new("before"))
+            .unwrap();
+        let input = context
+            .create_detached_component(
+                document(),
+                crate::TextInput::new("value").label("before label"),
+            )
+            .unwrap();
+        let model = WorkspaceModel::with_layout(
+            WorkspaceLayout::new([
+                RegionState::new(RegionId::Primary, RegionRole::Primary).fill_priority(1),
+                RegionState::new(RegionId::Inspector, RegionRole::Inspector).size(180.0),
+            ])
+            .unwrap(),
+        );
+        let workspace = context
+            .create_component(
+                document(),
+                Workspace::from_model(
+                    &model,
+                    [
+                        WorkspaceRegionSlot::borrowed(RegionId::Primary, text.stable_id()),
+                        WorkspaceRegionSlot::borrowed(RegionId::Inspector, input.stable_id()),
+                    ],
+                ),
+            )
+            .unwrap();
+        context.assemble_workspace(workspace).unwrap();
+        assert_eq!(
+            context
+                .world()
+                .accessibility(text.stable_id())
+                .unwrap()
+                .role,
+            AccessibilityRole::Text
+        );
+        assert!(
+            context
+                .world()
+                .interaction(input.stable_id())
+                .unwrap()
+                .focusable
+        );
+        context
+            .update_component(text, |view, _| view.value = "after".into())
+            .unwrap();
+        context
+            .update_component(input, |view, _| {
+                view.disabled = true;
+                view.label = Some("after label".into());
+            })
+            .unwrap();
+        context.assemble_workspace(workspace).unwrap();
+        context.update_component(workspace, |_, _| ()).unwrap();
+        assert_eq!(context.world().text(text.stable_id()), Some("after"));
+        assert_eq!(
+            context
+                .world()
+                .accessibility(text.stable_id())
+                .unwrap()
+                .role,
+            AccessibilityRole::Text
+        );
+        let accessibility = context.world().accessibility(input.stable_id()).unwrap();
+        assert_eq!(accessibility.label.as_deref(), Some("after label"));
+        assert!(accessibility.disabled);
+        assert!(
+            !context
+                .world()
+                .interaction(input.stable_id())
+                .unwrap()
+                .focusable
+        );
     }
 
     fn five_region_layout() -> WorkspaceLayout {

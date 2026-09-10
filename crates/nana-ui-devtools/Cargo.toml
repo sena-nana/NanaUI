@@ -80,3 +80,7 @@ wgpu = { workspace = true, optional = true }
 [[example]]
 name = "spacing-layout"
 required-features = ["agent-bin"]
+
+[[example]]
+name = "restored-content-probe"
+required-features = ["runtime-agent", "nana-ui/components"]

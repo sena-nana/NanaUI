@@ -399,3 +399,294 @@ fn scoped_hidden_ancestor_updates_match_full_rebuild() {
         }
     }
 }
+
+#[test]
+fn viewport_fixed_projection_escapes_ancestor_clip_and_scroll_but_keeps_lifecycle() {
+    let mut world = UiWorld::new();
+    let document = DocumentId::new(1).unwrap();
+    let id = |value| StableNodeId::new(value).unwrap();
+    let mut queue = MutationQueue::new();
+    for (value, x, y, size) in [
+        (1, 0.0, 0.0, 30.0),
+        (2, 100.0, 100.0, 60.0),
+        (3, 110.0, 110.0, 20.0),
+    ] {
+        queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        queue.write_layout(
+            id(value),
+            LayoutBox {
+                x,
+                y,
+                width: size,
+                height: size,
+            },
+        );
+        queue.set_interaction(
+            id(value),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    queue.insert(id(1), id(2), None);
+    queue.insert(id(2), id(3), None);
+    let outer = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            overflow_x: nana_ui_core::OverflowSpec::Hidden,
+            overflow_y: nana_ui_core::OverflowSpec::Scroll,
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 35.0,
+                f: 25.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fixed = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            position: PositionSpec::Fixed,
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 3.0,
+                f: 4.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    queue.set_style(id(1), outer);
+    queue.set_style(id(2), fixed.clone());
+    world.commit(queue).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    world.rebuild_hit_test(document);
+    assert_eq!(world.hit_test(document, 150.0, 150.0), Some(id(2)));
+    assert_eq!(world.hit_test(document, 115.0, 115.0), Some(id(3)));
+    assert_eq!(
+        world.pointer_layout_position(id(3), 115.0, 115.0),
+        Some((112.0, 111.0))
+    );
+
+    let mut scroll = MutationQueue::new();
+    scroll.set_scroll_offset(id(1), ScrollOffset { x: 0.0, y: 70.0 });
+    world.commit(scroll).unwrap();
+    world.update_hit_test_scroll(document, id(1), [0.0, -70.0]);
+    assert_eq!(world.hit_test(document, 115.0, 115.0), Some(id(3)));
+    world.rebuild_hit_test(document);
+    assert_eq!(world.hit_test(document, 115.0, 115.0), Some(id(3)));
+
+    let mut scroll = MutationQueue::new();
+    scroll.set_scroll_offset(id(2), ScrollOffset { x: 0.0, y: 10.0 });
+    world.commit(scroll).unwrap();
+    world.update_hit_test_scroll(document, id(2), [0.0, -10.0]);
+    assert_eq!(world.hit_test(document, 115.0, 105.0), Some(id(3)));
+    assert_eq!(
+        world.pointer_layout_position(id(3), 115.0, 105.0),
+        Some((112.0, 111.0))
+    );
+
+    let mut disabled = fixed.clone();
+    Arc::make_mut(&mut disabled.layout).pointer_events = Some(PointerEventsSpec::None);
+    let mut change = MutationQueue::new();
+    change.set_style(id(2), disabled);
+    world.commit(change).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    assert!(world.rebuild_hit_test_scoped(document, &[id(2)]));
+    assert_eq!(world.hit_test(document, 115.0, 105.0), None);
+
+    let mut change = MutationQueue::new();
+    change.set_style(id(2), fixed);
+    world.commit(change).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    assert!(world.rebuild_hit_test_scoped(document, &[id(2)]));
+    assert_eq!(world.hit_test(document, 115.0, 105.0), Some(id(3)));
+    let mut park = MutationQueue::new();
+    park.park_subtree(id(1));
+    world.commit(park).unwrap();
+    world.resolve_styles(&[id(1), id(2), id(3)]).unwrap();
+    if !world.rebuild_hit_test_scoped(document, &[id(1)]) {
+        world.rebuild_hit_test(document);
+    }
+    assert_eq!(world.hit_test(document, 115.0, 105.0), None);
+}
+
+#[test]
+fn viewport_fixed_hit_order_respects_structural_stacking_and_position_changes() {
+    let mut world = UiWorld::new();
+    let document = DocumentId::new(1).unwrap();
+    let id = |value| StableNodeId::new(value).unwrap();
+    let mut queue = MutationQueue::new();
+    for value in 1..=4 {
+        queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        queue.write_layout(
+            id(value),
+            LayoutBox {
+                x: 100.0,
+                y: 100.0,
+                width: 80.0,
+                height: 80.0,
+            },
+        );
+        queue.set_interaction(
+            id(value),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    queue.insert(id(1), id(2), None);
+    queue.insert(id(2), id(3), None);
+    let style = |position, z| NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            position,
+            z_index: z,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    queue.set_style(id(1), style(PositionSpec::Relative, Some(10)));
+    let fixed = style(PositionSpec::Fixed, Some(100));
+    queue.set_style(id(2), fixed.clone());
+    queue.set_style(id(4), style(PositionSpec::Relative, Some(20)));
+    world.commit(queue).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    world.rebuild_hit_test(document);
+    assert_eq!(
+        world.hit_test(document, 120.0, 120.0),
+        Some(id(4)),
+        "the outer z10 group cannot escape the later z20 group"
+    );
+
+    let mut change = MutationQueue::new();
+    change.set_style(id(1), style(PositionSpec::Relative, Some(30)));
+    world.commit(change).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    if !world.rebuild_hit_test_scoped(document, &[id(1)]) {
+        world.rebuild_hit_test(document);
+    }
+    assert_eq!(world.hit_test(document, 120.0, 120.0), Some(id(3)));
+
+    // Both directions migrate the spatial root without retaining a stale copy.
+    for position in [PositionSpec::Relative, PositionSpec::Fixed] {
+        let mut change = MutationQueue::new();
+        change.set_style(id(2), style(position, Some(100)));
+        world.commit(change).unwrap();
+        world
+            .resolve_styles(&world.document_order(document))
+            .unwrap();
+        assert!(world.rebuild_hit_test_scoped(document, &[id(2)]));
+        let candidates = world.hit_test_candidates(document, 120.0, 120.0);
+        assert_eq!(candidates.iter().filter(|node| **node == id(2)).count(), 1);
+        assert_eq!(candidates.first(), Some(&id(3)));
+        let incremental = candidates;
+        world.rebuild_hit_test(document);
+        assert_eq!(
+            incremental,
+            world.hit_test_candidates(document, 120.0, 120.0)
+        );
+    }
+    // No authored group: later ordinary paint must beat an earlier fixed node.
+    let mut change = MutationQueue::new();
+    change.set_style(id(1), style(PositionSpec::Relative, None));
+    change.set_style(id(2), style(PositionSpec::Fixed, None));
+    change.set_style(id(4), style(PositionSpec::Relative, None));
+    world.commit(change).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    world.rebuild_hit_test(document);
+    assert_eq!(world.hit_test(document, 120.0, 120.0), Some(id(4)));
+}
+
+#[test]
+fn viewport_fixed_overlap_preserves_select_menu_layer_and_inactive_fast_path() {
+    let mut context = crate::AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context
+        .create_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    let select = context
+        .create_detached_component(
+            document,
+            crate::Select::new(Some("a"))
+                .options([
+                    crate::SelectOption::new("a", "Alpha"),
+                    crate::SelectOption::new("b", "Beta"),
+                ])
+                .opened(true),
+        )
+        .unwrap();
+    let mut button = crate::Button::new("Cover");
+    let style = Arc::make_mut(&mut button.style.layout);
+    style.position = PositionSpec::Fixed;
+    style.offset_left = Some(LengthSpec::Px(0.0));
+    style.offset_top = Some(LengthSpec::Px(0.0));
+    style.width = Some(LengthSpec::Px(300.0));
+    style.height = Some(LengthSpec::Px(200.0));
+    style.z_index = Some(100);
+    let fixed = context.create_detached_component(document, button).unwrap();
+    context.append_child(root, select).unwrap();
+    context.append_child(root, fixed).unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    context.rebuild_hit_test(document);
+    let geometry = context
+        .world()
+        .component_geometry(select.stable_id())
+        .unwrap();
+    let crate::ComponentGeometry::Select {
+        menu: Some(menu), ..
+    } = geometry
+    else {
+        panic!("open Select geometry");
+    };
+    let point = (menu.surface.x + 10.0, menu.surface.y + 10.0);
+    assert_eq!(
+        context.world().hit_test(document, point.0, point.1),
+        Some(select.stable_id()),
+        "Select menu paints at effective z1000"
+    );
+    assert_eq!(
+        context.world().hit_test(document, 10.0, 10.0),
+        Some(fixed.stable_id()),
+        "the Select trigger must not inherit its menu's z1000"
+    );
+    assert!(context.world().hit_test_index[&document].viewport_hit_at(10.0, 10.0));
+    context
+        .update_component(fixed, |button, _| {
+            Arc::make_mut(&mut button.style.layout).pointer_events = Some(PointerEventsSpec::None)
+        })
+        .unwrap();
+    context.resolve_styles(&[fixed.stable_id()]).unwrap();
+    context.rebuild_hit_test_for(document, &[fixed.stable_id()]);
+    assert!(
+        !context.world().hit_test_index[&document].viewport_hit_at(10.0, 10.0),
+        "non-interactive tooltip-like roots must retain the first-hit fast path"
+    );
+    context
+        .update_component(fixed, |button, _| {
+            Arc::make_mut(&mut button.style.layout).position = PositionSpec::Relative
+        })
+        .unwrap();
+    context.resolve_styles(&[fixed.stable_id()]).unwrap();
+    context.rebuild_hit_test_for(document, &[fixed.stable_id()]);
+    assert!(
+        context.world().hit_test_index[&document]
+            .viewport_roots
+            .is_empty(),
+        "removing the last fixed boundary clears its index membership"
+    );
+}

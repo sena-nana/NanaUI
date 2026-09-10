@@ -1470,6 +1470,27 @@ impl UiWorld {
                     );
                 }
 
+                let button_layout_changed = match (self.nodes.visual(*id), visual.as_ref()) {
+                    (
+                        Some(StandardVisual::Button {
+                            icon: a,
+                            icon_size: sa,
+                            icon_gap: ga,
+                            loading: la,
+                            ..
+                        }),
+                        Some(StandardVisual::Button {
+                            icon: b,
+                            icon_size: sb,
+                            icon_gap: gb,
+                            loading: lb,
+                            ..
+                        }),
+                    ) => (a.is_some(), sa, ga, la) != (b.is_some(), sb, gb, lb),
+                    (_, Some(StandardVisual::Button { .. }))
+                    | (Some(StandardVisual::Button { .. }), _) => true,
+                    _ => false,
+                };
                 let (
                     text_input_presentation_changed,
                     empty_state_presentation_changed,
@@ -1542,6 +1563,11 @@ impl UiWorld {
                 self.mark(
                     *id,
                     DirtyMask::RENDER
+                        | if button_layout_changed {
+                            DirtyMask::LAYOUT
+                        } else {
+                            0
+                        }
                         | if text_input_presentation_changed
                             || empty_state_presentation_changed
                             || modal_presentation_changed
@@ -2186,6 +2212,24 @@ impl UiWorld {
             }
         }
         for &id in &parked {
+            #[cfg(feature = "charts")]
+            if let Some(mut visual) = self.standard_visual(id) {
+                let active = match &mut visual {
+                    StandardVisual::DonutChart { active, .. }
+                    | StandardVisual::StackedTimeSeriesChart { active, .. } => Some(active),
+                    _ => None,
+                };
+                if active.is_some_and(|active| active.take().is_some()) {
+                    self.apply(
+                        &UiMutation::SetStandardVisual {
+                            id,
+                            visual: Some(visual),
+                        },
+                        &mut report,
+                    );
+                    report.mutations += 1;
+                }
+            }
             let Some(StandardVisual::Icon {
                 icon,
                 size,

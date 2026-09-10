@@ -276,6 +276,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let Some(window) = self.window(id) {
             window.set_visible(false);
         }
+        self.browsers.retain(|(window, _), _| *window != id);
         self.close_file_dialog(event_loop, id);
         self.chrome.remove(&id);
         self.frame_schedules.remove(&id);

@@ -6745,6 +6745,7 @@ fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
 }
 
 #[test]
+#[cfg(feature = "hosted")]
 fn native_content_opening_preserves_outside_pixels_and_later_overlays_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -6955,3 +6956,6 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
 #[cfg(feature = "graph-canvas")]
 #[path = "graph_scale_tests.rs"]
 mod graph_scale_tests;
+
+#[path = "key_badge_tests.rs"]
+mod key_badge_tests;

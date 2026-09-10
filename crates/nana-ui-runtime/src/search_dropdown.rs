@@ -377,6 +377,7 @@ impl ComponentView for SearchDropdown {
             foreground: Some(nana_ui_core::SemanticColorRole::Faint),
             background: Some(nana_ui_core::SemanticColorRole::Subtle),
             border: Some(nana_ui_core::SemanticColorRole::Border),
+            ..SemanticPaint::default()
         };
         project_common(
             id,

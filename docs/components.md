@@ -29,7 +29,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 **表格与树。** `Table` / `TableRow` / `TableCell`、`TreeView`、`ReorderList`。列可 `sortable(true)`，表头激活走 `VirtualTableLayout::toggle_sort`（升序 → 降序 → 取消）；`move_column` 重排列。**排序本身仍由应用做**——只有你知道数据怎么比。
 
-**展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`GraphCanvas`、`GraphMinimap`。
+**展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`DonutChart`、`GraphCanvas`、`GraphMinimap`。
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
@@ -173,3 +173,27 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。
 
 `Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
+
+### 图表与带图标按钮
+
+`DonutChart::new([DonutSlice { value, color }])` 使用主题语义色绘制环形组成，
+`.labels(...)` 提供各项名称，`.cutout(...)` 控制中心孔比例。无效或负数值不占面积，
+原下标保留；`active` 是正常指针悬停命中的项，中心孔和分隔缝不会选中。
+图表内部使用普通 Tooltip 节点，离开、卸载或 park 后关闭；合法的 live reparent
+保留当前状态。业务分组、Top N 与数值格式来源仍由应用提供。
+
+`TimeSeriesChart::stacked([TimeSeriesLayer::new(label, values, color), ...])`
+在总量曲线下绘制分类堆叠柱。总量 `values` 决定样本数量；每层缺少的项按零处理，
+超出的项不增加日期。`.axis_labels(...)` 与 `.tooltip_details(...)` 由应用提供
+本地化日期和补充说明，正常悬停同步 `active`、标记与提示；显式高度保留。
+未设置 layers 的既有 sparkline 不变；`from_samples` 继续按真实时间间隔定位并保留
+缺失样本的断线，时间戳数据优先于 layers。
+
+Vue 使用 `NanaDonutChart` 的 `slices` / `labels` / `cutout`，以及
+`NanaTimeSeriesChart` 的 `layers` / `axisLabels` / `tooltipDetails`；图层与扇区
+`color` 使用 `SemanticColorRole` 名称（如 `Accent`、`Success`），进入同一 Runtime
+组件注册和绘制路径。
+
+`Button::icon(icon).icon_size(px).icon_gap(px)` 把图标与文字作为同一内容组量测、
+居中和裁剪，保持一个按钮的 Activate、焦点与禁用语义。loading 用 spinner 替换
+图标而不叠加第二个槽位；仅 spinner 相位变化不触发布局。

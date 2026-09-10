@@ -15,6 +15,8 @@ mod controls_base;
 mod graph_canvas;
 #[cfg(feature = "image-viewer")]
 mod image_viewer;
+#[cfg(feature = "rich-text")]
+mod markdown_drawing;
 mod overlays;
 #[cfg(feature = "rich-text")]
 mod rich_text;
@@ -35,6 +37,7 @@ struct GeometryPaintContext<'a> {
 impl UiScene {
     pub(super) fn rebuild_node_primitives(&mut self, id: StableNodeId) -> usize {
         self.remove_node_primitives(id);
+        self.unadjustable_projections.remove(&id);
         let Some(node) = self.nodes.get(&id).cloned() else {
             return 0;
         };
@@ -58,6 +61,9 @@ impl UiScene {
         let transform = parent_transform.then(local_transform);
         self.projections
             .insert(id, (self.attribute_epoch, transform, parent_clips.len()));
+        if super::attributes::inverse(transform).is_none() {
+            self.unadjustable_projections.insert(id);
+        }
         self.draw_attributes
             .get_mut()
             .expect("scene attributes")
@@ -254,7 +260,16 @@ impl UiScene {
                     },
                 });
             }
-            if let Some(custom) = node.custom_render.clone() {
+            #[cfg(feature = "image-viewer")]
+            let viewer_owns_content = matches!(
+                node.component_geometry.as_deref(),
+                Some(ComponentGeometry::ImageViewer { .. })
+            );
+            #[cfg(not(feature = "image-viewer"))]
+            let viewer_owns_content = false;
+            if let Some(custom) = node.custom_render.clone()
+                && !viewer_owns_content
+            {
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 1 },
                     node: id,
@@ -426,6 +441,8 @@ impl UiScene {
                 }
                 #[cfg(feature = "charts")]
                 Some(ComponentGeometry::TimeSeriesChart { .. })
+                | Some(ComponentGeometry::DonutChart { .. })
+                | Some(ComponentGeometry::StackedTimeSeriesChart { .. })
                 | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {
                     charts::build(&context, &mut emit)
                 }
@@ -461,6 +478,8 @@ impl UiScene {
                 Some(ComponentGeometry::CalendarHeatmap { .. }) => {}
                 #[cfg(not(feature = "charts"))]
                 Some(ComponentGeometry::TimeSeriesChart { .. })
+                | Some(ComponentGeometry::DonutChart { .. })
+                | Some(ComponentGeometry::StackedTimeSeriesChart { .. })
                 | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {}
                 #[cfg(not(feature = "controls"))]
                 Some(ComponentGeometry::ReorderList { .. }) => {}
@@ -1617,6 +1636,8 @@ impl UiScene {
                 Some(StandardVisual::CalendarHeatmap { .. }) => {}
                 #[cfg(feature = "charts")]
                 Some(StandardVisual::TimeSeriesChart { .. })
+                | Some(StandardVisual::DonutChart { .. })
+                | Some(StandardVisual::StackedTimeSeriesChart { .. })
                 | Some(StandardVisual::TimestampSeriesChart { .. }) => {}
                 #[cfg(feature = "controls")]
                 Some(StandardVisual::ReorderList { .. }) => {}

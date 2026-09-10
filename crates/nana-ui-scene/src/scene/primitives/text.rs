@@ -15,8 +15,29 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             selection,
             selection_color,
             steppers,
+            resize_grip,
             ..
         }) => {
+            if let Some(grip) = resize_grip {
+                emit(visual_quad_batch(
+                    &VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips,
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                    },
+                    250,
+                    [4.0, 8.0].into_iter().map(|offset| SceneRect {
+                        x: grip.x + grip.width - offset,
+                        y: grip.y + grip.height - 3.0,
+                        width: 2.0,
+                        height: 2.0,
+                    }),
+                    VisualQuadStyle::solid(text.color.unwrap_or([0.5, 0.5, 0.5, 1.0])),
+                ));
+            }
             if let Some(steppers) = steppers {
                 for (slot, icon, bounds, color) in [
                     (

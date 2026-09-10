@@ -53,6 +53,7 @@
     "./NanaTableRow": "./src/NanaTableRow.js",
     "./NanaTableCell": "./src/NanaTableCell.js",
     "./NanaReorderList": "./src/NanaReorderList.js",
+    "./NanaDonutChart": "./src/NanaDonutChart.js",
     "./NanaTimeSeriesChart": "./src/NanaTimeSeriesChart.js",
     "./search": "./src/nana-search.js",
     "./NanaThemeToggle": "./src/NanaThemeToggle.js",

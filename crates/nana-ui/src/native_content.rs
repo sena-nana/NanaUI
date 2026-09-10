@@ -1,5 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "hosted")]
+use std::sync::Mutex;
 
+#[cfg(feature = "hosted")]
 use crate::scene_gpu::{
     SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
 };
@@ -95,11 +98,13 @@ fn intersection(a: SceneRect, b: SceneRect) -> SceneRect {
     }
 }
 
+#[cfg(feature = "hosted")]
 #[derive(Debug, Default)]
 pub(crate) struct NativeContentRenderer {
     pipeline: Mutex<Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>>,
 }
 
+#[cfg(feature = "hosted")]
 impl SceneGpuRenderer for NativeContentRenderer {
     fn prepare(&self, _: &SceneGpuNode, context: SceneGpuPrepareContext<'_>) {
         let mut cached = self.pipeline.lock().expect("native content pipeline");

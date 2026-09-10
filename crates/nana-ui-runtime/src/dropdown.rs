@@ -330,6 +330,7 @@ impl Dropdown {
             foreground: Some(nana_ui_core::SemanticColorRole::Faint),
             background: Some(nana_ui_core::SemanticColorRole::Subtle),
             border: Some(nana_ui_core::SemanticColorRole::Border),
+            ..SemanticPaint::default()
         };
         let layout = Arc::make_mut(&mut style.layout);
         if layout.width.is_none() {

@@ -138,6 +138,162 @@ pub(in crate::world) fn timestamp_series_geometry(
     }
 }
 
+pub(in crate::world) fn stacked_time_series_geometry(
+    bounds: LayoutBox,
+    title: &str,
+    values: &[f64],
+    layers: &[crate::TimeSeriesLayer],
+    axis_labels: &[Arc<str>],
+    active: Option<usize>,
+    palette: &SemanticPalette,
+) -> crate::ComponentGeometry {
+    let plot = crate::TimeSeriesChart::stacked_plot(bounds);
+    let clean = |value: f64| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        }
+    };
+    let scale = values
+        .iter()
+        .copied()
+        .chain(layers.iter().flat_map(|layer| layer.values.iter().copied()))
+        .map(clean)
+        .fold(1.0, f64::max);
+    let maximum = values
+        .iter()
+        .map(|value| clean(*value) / scale)
+        .chain((0..values.len()).map(|index| {
+            layers
+                .iter()
+                .map(|layer| clean(layer.values.get(index).copied().unwrap_or(0.0)) / scale)
+                .sum::<f64>()
+        }))
+        .fold(1.0 / scale, f64::max);
+    let mut bars = Vec::new();
+    let mut line = Vec::new();
+    let mut labels = Vec::new();
+    let mut grid = Vec::new();
+    let slot = plot.width / values.len().max(1) as f32;
+    let bar_width = (slot * 0.7).max(1.0);
+    for (index, value) in values.iter().enumerate() {
+        let x = plot.x + slot * (index as f32 + 0.5);
+        let mut base = plot.y + plot.height;
+        for layer in layers {
+            let height = (clean(layer.values.get(index).copied().unwrap_or(0.0)) / scale / maximum)
+                as f32
+                * plot.height;
+            if height > 0.0 {
+                base -= height;
+                bars.push((
+                    LayoutBox {
+                        x: x - bar_width / 2.0,
+                        y: base,
+                        width: bar_width,
+                        height,
+                    },
+                    palette.get(layer.color).as_rgba_array(),
+                ));
+            }
+        }
+        line.push([
+            x,
+            plot.y + plot.height * (1.0 - (clean(*value) / scale / maximum) as f32),
+        ]);
+    }
+    let text = |value: String, x, y, width| crate::ComponentTextRegion {
+        bounds: LayoutBox {
+            x,
+            y,
+            width,
+            height: 14.0,
+        },
+        content: Arc::from(value),
+        color: Some(palette.muted.as_rgba_array()),
+        font_size: 10.0,
+        font_weight: None,
+    };
+    for index in 0..=4 {
+        let y = plot.y + plot.height * index as f32 / 4.0;
+        grid.push(LayoutBox {
+            x: plot.x,
+            y,
+            width: plot.width,
+            height: 1.0,
+        });
+        let value = ((maximum * (4 - index) as f64 / 4.0) * scale).min(f64::MAX);
+        let value = if value >= 1_000_000.0 {
+            format!("{:.1}M", value / 1_000_000.0)
+        } else if value >= 1_000.0 {
+            format!("{:.1}k", value / 1_000.0)
+        } else {
+            format!("{value:.0}")
+        };
+        labels.push(text(value, bounds.x, y - 7.0, 44.0));
+    }
+    let stride = ((values.len() as f32 * 48.0 / plot.width.max(1.0)).ceil() as usize).max(1);
+    for index in (0..values.len()).step_by(stride) {
+        if let Some(label) = axis_labels.get(index) {
+            labels.push(text(
+                label.to_string(),
+                plot.x + slot * (index as f32 + 0.5) - 22.0,
+                plot.y + plot.height + 8.0,
+                44.0,
+            ));
+        }
+    }
+    let legend_items = layers
+        .iter()
+        .map(|layer| {
+            (
+                layer.label.as_ref(),
+                palette.get(layer.color).as_rgba_array(),
+            )
+        })
+        .chain(std::iter::once((title, palette.text.as_rgba_array())))
+        .collect::<Vec<_>>();
+    let legend_width: f32 = legend_items
+        .iter()
+        .map(|(label, _)| label.chars().count() as f32 * 11.0 + 26.0)
+        .sum();
+    let mut x = bounds.x + (bounds.width - legend_width).max(0.0) / 2.0;
+    let mut legend = Vec::new();
+    for (label, color) in legend_items {
+        let y = bounds.y + bounds.height - 15.0;
+        legend.push((
+            LayoutBox {
+                x,
+                y,
+                width: 10.0,
+                height: 10.0,
+            },
+            color,
+        ));
+        let width = label.chars().count() as f32 * 11.0;
+        labels.push(text(label.to_string(), x + 14.0, y - 2.0, width));
+        x += width + 26.0;
+    }
+    let marker = active
+        .and_then(|index| line.get(index))
+        .map(|point| LayoutBox {
+            x: point[0] - 3.0,
+            y: point[1] - 3.0,
+            width: 6.0,
+            height: 6.0,
+        });
+    crate::ComponentGeometry::StackedTimeSeriesChart {
+        bars,
+        legend,
+        grid,
+        line,
+        labels,
+        marker,
+        grid_color: palette.border_soft.as_rgba_array(),
+        line_color: palette.text.as_rgba_array(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1174,6 +1174,19 @@ impl UiWorld {
         self.derive_component_geometry(id, visual, style)
     }
 
+    pub(crate) fn component_content_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let node = self.nodes.get(id)?;
+        let bounds = node.layout;
+        let padding = self.used_layout_padding(id);
+        let border = node.style.layout.resolved_border_width();
+        Some(LayoutBox {
+            x: bounds.x + border + padding.left,
+            y: bounds.y + border + padding.top,
+            width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
+            height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
+        })
+    }
+
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
         self.nodes.get(id).map(|node| &node.accessibility)
     }

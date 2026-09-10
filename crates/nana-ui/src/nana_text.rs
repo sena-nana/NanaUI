@@ -1332,7 +1332,7 @@ fn cosmic_cursor(buffer: &Buffer, byte_offset: usize, affinity: Affinity) -> Opt
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpu"))]
 pub(crate) fn first_content_glyph_x(buffer: &Buffer) -> Option<f32> {
     for run in buffer.layout_runs() {
         for glyph in run.glyphs {

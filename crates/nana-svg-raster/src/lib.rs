@@ -69,10 +69,20 @@ pub fn rasterize_document(bytes: &[u8]) -> Option<RasterizedSvg> {
 
 /// URL image decode: document size, straight alpha, contained within `max_edge`.
 pub fn rasterize_document_capped(bytes: &[u8], max_edge: u32) -> Option<RasterizedSvg> {
+    rasterize_document_capped_with_font(bytes, max_edge, None)
+}
+
+/// URL SVG decode using the host's existing UI font for SVG text.
+/// Embedded glyph paths do not require a font.
+pub fn rasterize_document_capped_with_font(
+    bytes: &[u8],
+    max_edge: u32,
+    font: Option<SvgFont<'_>>,
+) -> Option<RasterizedSvg> {
     render(
         Source::Bytes(bytes),
         None,
-        None,
+        font,
         None,
         Fit::DocumentCapped { max_edge },
         None,

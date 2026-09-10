@@ -25,7 +25,7 @@ const METADATA_HEIGHT: f32 = 16.0;
 const COVERAGE: f32 = 0.75;
 
 /// Close, outside (scrim), and surface interaction are distinct.
-/// Escape stays a host subscription, as with [`crate::Dialog`].
+/// Mounted viewers dismiss through the shared overlay lifecycle on Escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageViewerEvent {
     Close,
@@ -158,6 +158,7 @@ pub struct ImageViewer {
     pub name: Option<Arc<str>>,
     pub metadata: Option<Arc<str>>,
     pub content: ImageViewerContent,
+    pub intrinsic_size: Option<(u32, u32)>,
     pub zoom: f32,
     pub offset: ImageViewerOffset,
     pub dragging: Option<ImageViewerDrag>,
@@ -170,11 +171,17 @@ impl ImageViewer {
             name: None,
             metadata: None,
             content: content.into(),
+            intrinsic_size: None,
             zoom: ZOOM_MIN,
             offset: ImageViewerOffset::ZERO,
             dragging: None,
             style: overlay_style(),
         }
+    }
+
+    pub fn intrinsic_size(mut self, width: u32, height: u32) -> Self {
+        self.intrinsic_size = (width > 0 && height > 0).then_some((width, height));
+        self
     }
 
     pub fn name(mut self, name: impl Into<Arc<str>>) -> Self {
@@ -219,7 +226,8 @@ impl ImageViewer {
         };
         let (name, metadata) = caption_boxes(surface, has_name, has_metadata);
         let zoom = clamp_zoom(self.zoom);
-        let offset = clamp_offset(self.offset, zoom, stage);
+        let fitted = fitted_bounds(stage, self.intrinsic_size);
+        let offset = clamp_offset(self.offset, zoom, stage, fitted);
         ImageViewerGeometry {
             scrim: bounds,
             surface,
@@ -227,7 +235,7 @@ impl ImageViewer {
             close: close_box(surface),
             name,
             metadata,
-            content: transform_about(stage, stage, zoom, offset),
+            content: transform_about(fitted, stage, zoom, offset),
         }
     }
 
@@ -251,7 +259,12 @@ impl ImageViewer {
     /// Applies zoom/pan about `stage` center.
     pub fn transformed_bounds(&self, content: LayoutBox, stage: LayoutBox) -> LayoutBox {
         let zoom = clamp_zoom(self.zoom);
-        transform_about(content, stage, zoom, clamp_offset(self.offset, zoom, stage))
+        transform_about(
+            content,
+            stage,
+            zoom,
+            clamp_offset(self.offset, zoom, stage, content),
+        )
     }
 
     pub fn pointer_down(
@@ -305,6 +318,7 @@ impl ImageViewer {
             ),
             clamp_zoom(self.zoom),
             geometry.stage,
+            fitted_bounds(geometry.stage, self.intrinsic_size),
         );
         true
     }
@@ -342,6 +356,7 @@ impl ImageViewer {
             ),
             self.zoom,
             geometry.stage,
+            fitted_bounds(geometry.stage, self.intrinsic_size),
         );
         true
     }
@@ -377,6 +392,7 @@ impl ComponentView for ImageViewer {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let visual = StandardVisual::ImageViewer {
+            intrinsic_size: self.intrinsic_size,
             name: self.name.clone(),
             metadata: self.metadata.clone(),
             zoom: self.zoom,
@@ -431,6 +447,15 @@ impl crate::AppContext {
         if !x.is_finite() || !y.is_finite() {
             return Err(crate::FrameworkError::InvalidInput);
         }
+        if !self.world().is_mounted(viewer.stable_id()) {
+            return Ok(None);
+        }
+        let Some((x, y)) = self
+            .world()
+            .pointer_layout_position(viewer.stable_id(), x, y)
+        else {
+            return Ok(None);
+        };
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(None);
         };
@@ -457,6 +482,22 @@ impl crate::AppContext {
         if !x.is_finite() || !y.is_finite() {
             return Err(crate::FrameworkError::InvalidInput);
         }
+        let id = viewer.stable_id();
+        let Some(document) = self.world().node(id).map(|node| node.document) else {
+            return Ok(false);
+        };
+        if !self.world().is_mounted(id) {
+            return Ok(false);
+        }
+        if self.world().pointer_capture(document, pointer_id) != Some(id) {
+            self.update_component(viewer, |viewer, _| {
+                viewer.pointer_up(pointer_id);
+            })?;
+            return Ok(false);
+        }
+        let Some((x, y)) = self.world().pointer_layout_position(id, x, y) else {
+            return Ok(false);
+        };
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
@@ -490,6 +531,15 @@ impl crate::AppContext {
         if !x.is_finite() || !y.is_finite() || !delta_y.is_finite() {
             return Err(crate::FrameworkError::InvalidInput);
         }
+        if !self.world().is_mounted(viewer.stable_id()) {
+            return Ok(false);
+        }
+        let Some((x, y)) = self
+            .world()
+            .pointer_layout_position(viewer.stable_id(), x, y)
+        else {
+            return Ok(false);
+        };
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
@@ -574,18 +624,42 @@ fn clamp_zoom(zoom: f32) -> f32 {
     }
 }
 
-fn clamp_offset(offset: ImageViewerOffset, zoom: f32, stage: LayoutBox) -> ImageViewerOffset {
+fn fitted_bounds(stage: LayoutBox, size: Option<(u32, u32)>) -> LayoutBox {
+    let Some((width, height)) = size.filter(|(width, height)| *width > 0 && *height > 0) else {
+        return stage;
+    };
+    let scale = (stage.width / width as f32)
+        .min(stage.height / height as f32)
+        .clamp(0.0, 1.0);
+    let (width, height) = (width as f32 * scale, height as f32 * scale);
+    LayoutBox {
+        x: stage.x + (stage.width - width) * 0.5,
+        y: stage.y + (stage.height - height) * 0.5,
+        width,
+        height,
+    }
+}
+
+fn clamp_offset(
+    offset: ImageViewerOffset,
+    zoom: f32,
+    stage: LayoutBox,
+    fitted: LayoutBox,
+) -> ImageViewerOffset {
     if zoom <= 1.0 {
         return ImageViewerOffset::ZERO;
     }
     ImageViewerOffset::new(
-        clamp_axis(offset.x, stage.width * zoom, stage.width),
-        clamp_axis(offset.y, stage.height * zoom, stage.height),
+        clamp_axis(offset.x, fitted.width * zoom, stage.width),
+        clamp_axis(offset.y, fitted.height * zoom, stage.height),
     )
 }
 
 fn clamp_axis(value: f32, rendered: f32, viewport: f32) -> f32 {
     let required_coverage = viewport * COVERAGE;
+    if rendered < required_coverage {
+        return 0.0;
+    }
     let max = ((viewport + rendered) / 2.0 - required_coverage).max(0.0);
     if value.is_finite() {
         value.clamp(-max, max)
@@ -630,12 +704,6 @@ mod tests {
             geometry.stage.x + geometry.stage.width * nx,
             geometry.stage.y + geometry.stage.height * ny,
         )
-    }
-
-    fn write_layout(context: &mut AppContext, id: StableNodeId, layout: LayoutBox) {
-        let mut mutations = MutationQueue::new();
-        mutations.write_layout(id, layout);
-        context.commit_mutations(mutations).unwrap();
     }
 
     #[test]
@@ -723,11 +791,11 @@ mod tests {
             height: 80.0,
         };
         assert_eq!(
-            clamp_offset(ImageViewerOffset::new(500.0, -500.0), 2.0, stage),
+            clamp_offset(ImageViewerOffset::new(500.0, -500.0), 2.0, stage, stage),
             ImageViewerOffset::new(75.0, -60.0)
         );
         assert_eq!(
-            clamp_offset(ImageViewerOffset::new(20.0, 20.0), 1.0, stage),
+            clamp_offset(ImageViewerOffset::new(20.0, 20.0), 1.0, stage, stage),
             ImageViewerOffset::ZERO
         );
     }
@@ -779,6 +847,7 @@ mod tests {
         assert!(matches!(
             context.world().standard_visual(viewer.stable_id()),
             Some(StandardVisual::ImageViewer {
+                intrinsic_size: None,
                 ref name,
                 ref metadata,
                 zoom,
@@ -839,7 +908,10 @@ mod tests {
         let viewer = context
             .create_component(document, ImageViewer::new(ImageViewerContent::None))
             .unwrap();
-        write_layout(&mut context, viewer.stable_id(), bounds());
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&events);
         context
@@ -847,8 +919,19 @@ mod tests {
                 observed.lock().unwrap().push(*event);
             })
             .unwrap();
-        let geometry = ImageViewer::new(ImageViewerContent::None).geometry(bounds());
-        let close = (geometry.close.x + 2.0, geometry.close.y + 2.0);
+        let geometry = context
+            .read(viewer, |view| {
+                view.geometry(context.world().layout_box(viewer.stable_id()).unwrap())
+            })
+            .unwrap();
+        let close = context
+            .world()
+            .layout_pointer_position(
+                viewer.stable_id(),
+                geometry.close.x + 2.0,
+                geometry.close.y + 2.0,
+            )
+            .unwrap();
         assert_eq!(
             context
                 .image_viewer_pointer_down(viewer, 1, close.0, close.1)
@@ -864,6 +947,65 @@ mod tests {
         assert_eq!(
             *events.lock().unwrap(),
             [ImageViewerEvent::Close, ImageViewerEvent::Outside]
+        );
+    }
+    #[test]
+    fn intrinsic_images_keep_small_size_and_contain_large_aspect_ratios() {
+        let small = ImageViewer::default()
+            .intrinsic_size(72, 40)
+            .geometry(bounds());
+        assert_eq!((small.content.width, small.content.height), (72.0, 40.0));
+        assert!((small.content.x + 36.0 - small.stage.x - small.stage.width * 0.5).abs() < 0.001);
+        assert!((small.content.y + 20.0 - small.stage.y - small.stage.height * 0.5).abs() < 0.001);
+        for (width, height) in [(4000, 1000), (1000, 4000)] {
+            let geometry = ImageViewer::default()
+                .intrinsic_size(width, height)
+                .geometry(bounds());
+            assert!(geometry.content.width <= geometry.stage.width + 0.001);
+            assert!(geometry.content.height <= geometry.stage.height + 0.001);
+            assert!(
+                (geometry.content.width / geometry.content.height - width as f32 / height as f32)
+                    .abs()
+                    < 0.001
+            );
+            assert!(
+                (geometry.content.width - geometry.stage.width).abs() < 0.001
+                    || (geometry.content.height - geometry.stage.height).abs() < 0.001
+            );
+        }
+    }
+
+    #[test]
+    fn intrinsic_image_zoom_and_pan_use_fitted_dimensions() {
+        let mut viewer = ImageViewer::default().intrinsic_size(72, 40);
+        viewer.zoom = 2.0;
+        viewer.offset = ImageViewerOffset::new(1000.0, -1000.0);
+        let geometry = viewer.geometry(bounds());
+        assert_eq!(
+            (geometry.content.width, geometry.content.height),
+            (144.0, 80.0)
+        );
+        assert!(
+            (geometry.content.x + 72.0 - geometry.stage.x - geometry.stage.width * 0.5).abs()
+                < 0.001
+        );
+        let (x, y) = stage_point(&geometry, 0.5, 0.5);
+        viewer.pointer_down(&geometry, 4, x, y);
+        viewer.pointer_move(&geometry, 4, x + 1000.0, y - 1000.0);
+        assert_eq!(viewer.offset, ImageViewerOffset::ZERO);
+        viewer.intrinsic_size = Some((4000, 1000));
+        let large = viewer.geometry(bounds());
+        viewer.pointer_down(&large, 5, x, y);
+        viewer.pointer_move(&large, 5, x + 10000.0, y + 10000.0);
+        let moved = viewer.geometry(bounds());
+        assert!(viewer.offset.x > 0.0);
+        assert!(moved.content.x <= moved.stage.x + moved.stage.width * (1.0 - COVERAGE) + 0.001);
+        viewer.zoom = 1.0;
+        let reset = viewer.geometry(bounds());
+        assert!(
+            (reset.content.x + reset.content.width * 0.5 - reset.stage.x - reset.stage.width * 0.5)
+                .abs()
+                < 0.001
         );
     }
 }

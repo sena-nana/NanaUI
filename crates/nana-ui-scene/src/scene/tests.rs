@@ -1,4 +1,4 @@
-#[cfg(feature = "charts")]
+#[cfg(all(feature = "charts", feature = "rich-text"))]
 use nana_ui_runtime::TimeSeriesChart;
 use std::sync::Arc;
 
@@ -457,6 +457,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1385,6 +1386,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1678,6 +1680,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1818,6 +1821,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -1944,6 +1948,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2116,6 +2121,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2304,6 +2310,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2394,6 +2401,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2723,6 +2731,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2870,6 +2879,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -2987,6 +2997,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3106,6 +3117,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3286,6 +3298,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -3428,6 +3441,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
 
 fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
     Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
@@ -4212,6 +4226,9 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         font_weight: Some(500),
     };
     action.standard_visual = Some(StandardVisual::Button {
+        icon: None,
+        icon_size: 14.0,
+        icon_gap: 6.0,
         label: Arc::from("Delete"),
         kind: nana_ui_core::ButtonKind::Danger,
         size: nana_ui_core::ControlSize::Medium,
@@ -4220,6 +4237,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         invalid: false,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
+        icon: None,
         label: label.clone(),
         spinner: Some(LayoutBox {
             x: 42.0,
@@ -4246,6 +4264,9 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     ));
 
     action.standard_visual = Some(StandardVisual::Button {
+        icon: None,
+        icon_size: 14.0,
+        icon_gap: 6.0,
         label: Arc::from("Delete"),
         kind: nana_ui_core::ButtonKind::Primary,
         size: nana_ui_core::ControlSize::Medium,
@@ -4254,6 +4275,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         invalid: false,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
+        icon: None,
         label,
         spinner: None,
         background: Some([0.2, 0.4, 0.8, 1.0]),
@@ -4351,6 +4373,9 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
     };
     action.focused = true;
     action.standard_visual = Some(StandardVisual::Button {
+        icon: None,
+        icon_size: 14.0,
+        icon_gap: 6.0,
         label: Arc::from("Action"),
         kind: nana_ui_core::ButtonKind::Primary,
         size: nana_ui_core::ControlSize::Medium,
@@ -4359,6 +4384,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         invalid: false,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
+        icon: None,
         label: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 20.0,
@@ -5526,10 +5552,15 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
         value: "hello".into(),
     });
     markdown.standard_visual = Some(StandardVisual::NativeMarkdown {
+        blocks: nana_ui_runtime::NativeMarkdown::from_source("hello")
+            .blocks()
+            .to_vec()
+            .into(),
         text: Arc::from("hello"),
         selection: Some((0, 5)),
     });
     markdown.component_geometry = Some(Box::new(ComponentGeometry::NativeMarkdown {
+        drawing: nana_ui_runtime::NativeMarkdown::from_source("hello").drawing(markdown.layout),
         text: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -5616,12 +5647,12 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
         scene
             .primitive(PrimitiveId {
                 node: id(2),
-                slot: 2
+                slot: 1025
             })
             .map(|primitive| &primitive.kind),
         Some(ScenePrimitiveKind::Text {
             content,
-            wrap: true,
+            wrap: false,
             ..
         }) if content == "hello"
     ));
@@ -5681,6 +5712,9 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
         font_weight: Some(500),
     };
     button.standard_visual = Some(StandardVisual::Button {
+        icon: None,
+        icon_size: 14.0,
+        icon_gap: 6.0,
         label: Arc::from("Open"),
         kind: nana_ui_core::ButtonKind::Ghost,
         size: nana_ui_core::ControlSize::Medium,
@@ -5689,6 +5723,7 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
         invalid: false,
     });
     button.component_geometry = Some(Box::new(ComponentGeometry::Button {
+        icon: None,
         label,
         spinner: None,
         background: None,
@@ -6781,6 +6816,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         font_weight: None,
     };
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
@@ -6954,6 +6990,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         font_weight: None,
     };
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
@@ -7113,6 +7150,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
         editor_options: nana_ui_runtime::TextEditorRenderOptions::default(),
     });
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
+        resize_grip: None,
         multiline: true,
         text: text_region(display),
         selection: Vec::new(),
@@ -7347,4 +7385,151 @@ fn conflict_query_agrees_with_the_frame_graph() {
     scene.apply_delta([first], []);
     assert!(scene.conflicting_external_resource().is_none());
     assert!(scene.frame_plan().is_ok());
+}
+
+#[test]
+fn retained_descendants_follow_resized_scrollport_clips() {
+    let mut scrollport = node(1, None, &[2]);
+    scrollport.layout.height = 400.0;
+    Arc::make_mut(&mut scrollport.source_style.layout).overflow_y =
+        nana_ui_core::OverflowSpec::Scroll;
+    let mut content = node(2, Some(1), &[]);
+    content.layout.height = 600.0;
+    style_mut(&mut content).background = Some([0.0, 1.0, 0.0, 1.0]);
+    let mut scene = UiScene::new();
+    scene.apply_delta([scrollport.clone(), content.clone()], []);
+    let primitive = scene.primitives().find(|p| p.node == id(2)).unwrap().id;
+    assert_eq!(
+        scene.draw_primitive(primitive).unwrap().clips[0]
+            .bounds
+            .height,
+        400.0
+    );
+    for height in [250.0, 400.0, 160.0] {
+        scrollport.layout.height = height;
+        scene.apply_delta([scrollport.clone()], []);
+        let mut fresh = UiScene::new();
+        fresh.apply_delta([scrollport.clone(), content.clone()], []);
+        assert_eq!(
+            scene.draw_primitive(primitive).unwrap().clips,
+            fresh.draw_primitive(primitive).unwrap().clips,
+            "retained content must use the current scrollport, even without re-extraction"
+        );
+    }
+    Arc::make_mut(&mut scrollport.source_style.layout).overflow_y =
+        nana_ui_core::OverflowSpec::Visible;
+    scene.apply_delta([scrollport], []);
+    assert!(scene.draw_primitive(primitive).unwrap().clips.is_empty());
+}
+
+#[test]
+fn viewport_fixed_draws_and_descendants_escape_outer_geometry_in_full_and_scroll_deltas() {
+    let mut outer = node(1, None, &[2]);
+    outer.layout.width = 30.0;
+    outer.layout.height = 30.0;
+    outer.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
+        overflow_x: nana_ui_core::OverflowSpec::Hidden,
+        overflow_y: nana_ui_core::OverflowSpec::Scroll,
+        opacity: Some(0.5),
+        transform: Some(nana_ui_core::PaintTransform {
+            e: 35.0,
+            f: 25.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut fixed = node(2, Some(1), &[3]);
+    fixed.layout = LayoutBox {
+        x: 100.0,
+        y: 100.0,
+        width: 60.0,
+        height: 60.0,
+    };
+    fixed.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
+        position: nana_ui_core::PositionSpec::Fixed,
+        transform: Some(nana_ui_core::PaintTransform {
+            e: 3.0,
+            f: 4.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    style_mut(&mut fixed).background = Some([1.0, 0.0, 0.0, 1.0]);
+    let mut child = node(3, Some(2), &[]);
+    child.layout = LayoutBox {
+        x: 110.0,
+        y: 110.0,
+        width: 20.0,
+        height: 20.0,
+    };
+    style_mut(&mut child).background = Some([0.0, 1.0, 0.0, 1.0]);
+    let mut scene = UiScene::new();
+    scene.apply_delta([outer.clone(), fixed.clone(), child.clone()], []);
+    let viewport = SceneRect {
+        x: 100.0,
+        y: 100.0,
+        width: 80.0,
+        height: 80.0,
+    };
+    let check = |scene: &UiScene, child_y| {
+        assert_eq!(scene.draw_node_bounds(id(2)).unwrap().x, 103.0);
+        assert_eq!(scene.draw_node_bounds(id(2)).unwrap().y, 104.0);
+        assert_eq!(scene.draw_node_bounds(id(3)).unwrap().y, child_y);
+        for node in [id(2), id(3)] {
+            let primitive = scene.primitives().find(|p| p.node == node).unwrap();
+            assert!(scene.draw_primitive(primitive.id).unwrap().clips.is_empty());
+            assert!(
+                scene
+                    .opacity_groups(node)
+                    .iter()
+                    .any(|group| group.node == id(1) && group.opacity == 0.5)
+            );
+        }
+        let visible = scene.visible_operations(viewport).unwrap();
+        for node in [id(2), id(3)] {
+            assert!(
+                visible
+                    .iter()
+                    .any(|op| matches!(op, RenderOperation::Draw(p) if p.node == node))
+            );
+        }
+    };
+    check(&scene, 114.0);
+    outer.scroll_offset.y = 70.0;
+    scene.apply_delta([outer.clone()], []);
+    check(&scene, 114.0);
+    fixed.scroll_offset.y = 10.0;
+    scene.apply_delta([fixed.clone()], []);
+    check(&scene, 104.0);
+    let mut fresh = UiScene::new();
+    fresh.apply_delta([outer, fixed.clone(), child], []);
+    check(&fresh, 104.0);
+    // Changing the boundary invalidates the retained visibility ancestry too.
+    Arc::make_mut(&mut fixed.source_style.layout).position = nana_ui_core::PositionSpec::Relative;
+    scene.apply_delta([fixed.clone()], []);
+    assert!(
+        !scene
+            .draw_primitive(scene.primitives().find(|p| p.node == id(2)).unwrap().id)
+            .unwrap()
+            .clips
+            .is_empty()
+    );
+    let child_primitive = scene.primitives().find(|p| p.node == id(3)).unwrap().id;
+    let child_draw = scene.draw_primitive(child_primitive).unwrap();
+    assert_eq!(child_draw.transform.0[4], 38.0);
+    assert_eq!(child_draw.transform.0[5], -51.0);
+    assert!(
+        !child_draw.clips.is_empty(),
+        "unextracted child must inherit the restored outer clip"
+    );
+    Arc::make_mut(&mut fixed.source_style.layout).position = nana_ui_core::PositionSpec::Fixed;
+    scene.apply_delta([fixed], []);
+    let child_draw = scene.draw_primitive(child_primitive).unwrap();
+    assert_eq!(child_draw.transform.0[4], 3.0);
+    assert_eq!(child_draw.transform.0[5], -6.0);
+    assert!(
+        child_draw.clips.is_empty(),
+        "returning to Fixed clears the retained outer clip"
+    );
+    check(&scene, 104.0);
 }

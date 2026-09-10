@@ -685,6 +685,53 @@ impl AppContext {
     }
 
     pub(super) fn suspend_component_lifecycle(&mut self, id: StableNodeId) {
+        #[cfg(feature = "rich-text")]
+        {
+            self.component_lifecycle
+                .rich_text_presses
+                .retain(|_, target| *target != id);
+            if let Some(markdown) = self
+                .views
+                .get(&id)
+                .and_then(|view| view.downcast_ref::<crate::NativeMarkdown>())
+            {
+                markdown.clear_selection();
+            }
+            if let Some(text) = self
+                .views
+                .get(&id)
+                .and_then(|view| view.downcast_ref::<crate::SelectableRichText>())
+            {
+                text.clear_selection();
+            }
+        }
+        self.component_lifecycle
+            .text_area_resizes
+            .retain(|_, target| *target != id);
+        if let Some(area) = self
+            .views
+            .get_mut(&id)
+            .and_then(|view| view.downcast_mut::<TextArea>())
+            && let Some(drag) = area.resize_drag.take()
+        {
+            area.resized_height = drag.previous_height;
+        }
+        #[cfg(feature = "image-viewer")]
+        if let Some(viewer) = self
+            .views
+            .get_mut(&id)
+            .and_then(|view| view.downcast_mut::<crate::ImageViewer>())
+        {
+            viewer.dragging = None;
+        }
+        #[cfg(feature = "charts")]
+        if let Some(view) = self.views.get_mut(&id) {
+            if let Some(chart) = view.downcast_mut::<crate::DonutChart>() {
+                chart.active = None;
+            } else if let Some(chart) = view.downcast_mut::<crate::TimeSeriesChart>() {
+                chart.active = None;
+            }
+        }
         if let Some(button) = self
             .views
             .get_mut(&id)
@@ -720,6 +767,9 @@ impl AppContext {
         // Projections only start timelines for pending or mounted nodes, and a
         // remount may never project again on its own.
         if self.world.is_mounted(id) {
+            if let Some(area) = self.view_entity::<TextArea>(id) {
+                self.update_component(area, |_, _| ())?;
+            }
             let mut mutations = MutationQueue::new();
             if self
                 .views
@@ -953,6 +1003,8 @@ impl AppContext {
         for (target, overlay) in targets {
             self.position_tooltip(target, overlay)?;
         }
+        #[cfg(feature = "charts")]
+        self.position_chart_tooltips(document)?;
         Ok(())
     }
 
@@ -995,7 +1047,7 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let anchor = self
             .world
-            .layout_box(target)
+            .viewport_layout_box(target)
             .ok_or(FrameworkError::MissingView(target))?;
         let document = self
             .world

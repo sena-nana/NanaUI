@@ -395,9 +395,6 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        // Moving the caret ends the current typing run: typing, arrowing away
-        // and typing again is two undo steps, not one.
-        self.seal_editor_history(focused.node);
         if !focused.accepts_selection {
             return Ok(false);
         }
@@ -1440,7 +1437,7 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let mut replaced = 0usize;
-        self.edit_editor(
+        let applied = self.edit_editor(
             focused.node,
             focused.kind,
             crate::TextEditOrigin::Structural,
@@ -1477,7 +1474,7 @@ impl AppContext {
                 })
             },
         )?;
-        Ok(replaced)
+        Ok(if applied { replaced } else { 0 })
     }
 
     /// Place or extend the selection of the focused editor from a pointer
@@ -2138,7 +2135,7 @@ impl AppContext {
         // 光标落在折叠隐藏区间内 → 该折叠自动展开（reveal 语义；查找导航
         // 跳转也经由此路径展开）。
         self.unfold_text_folds_containing(node, &[selection.focus])?;
-        match kind {
+        let changed = match kind {
             TextEditorKind::Area => {
                 let entity = Entity::<TextArea>::from_stable_id(node);
                 self.update_component(entity, |area: &mut TextArea, _| {
@@ -2159,7 +2156,11 @@ impl AppContext {
                     true
                 })
             }
+        }?;
+        if changed {
+            self.seal_editor_history(node);
         }
+        Ok(changed)
     }
 
     /// Write the complete selection set (primary plus additional cursors),
@@ -2178,7 +2179,7 @@ impl AppContext {
             .chain(additional.iter().map(|selection| selection.focus))
             .collect();
         self.unfold_text_folds_containing(node, &focuses)?;
-        match kind {
+        let changed = match kind {
             TextEditorKind::Area => {
                 let entity = Entity::<TextArea>::from_stable_id(node);
                 self.update_component(entity, |area: &mut TextArea, _| {
@@ -2187,10 +2188,15 @@ impl AppContext {
                     {
                         return false;
                     }
+                    let previous = (
+                        area.state.selection,
+                        area.state.additional_selections.clone(),
+                    );
                     area.state.selection = selection;
                     area.state.additional_selections = additional;
                     area.state.normalize_selections();
-                    true
+                    previous.0 != area.state.selection
+                        || previous.1 != area.state.additional_selections
                 })
             }
             TextEditorKind::Field => {
@@ -2201,13 +2207,22 @@ impl AppContext {
                     {
                         return false;
                     }
+                    let previous = (
+                        field.state.selection,
+                        field.state.additional_selections.clone(),
+                    );
                     field.state.selection = selection;
                     field.state.additional_selections = additional;
                     field.state.normalize_selections();
-                    true
+                    previous.0 != field.state.selection
+                        || previous.1 != field.state.additional_selections
                 })
             }
+        }?;
+        if changed {
+            self.seal_editor_history(node);
         }
+        Ok(changed)
     }
 
     /// Apply a committed value edit and emit the editor's change event.
@@ -2321,6 +2336,13 @@ impl AppContext {
         } else {
             (value, selection, None)
         };
+        if matches!(kind, TextEditorKind::Field)
+            && !self.read(Entity::<TextInput>::from_stable_id(node), |field| {
+                field.accepts_edit_value(&value)
+            })?
+        {
+            return Ok(false);
+        }
         let mut next = TextInputState {
             value,
             selection,

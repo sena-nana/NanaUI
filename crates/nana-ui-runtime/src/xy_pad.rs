@@ -369,6 +369,7 @@ fn field_style(size: ControlSize) -> NodeStyle {
                 foreground: Some(SemanticColorRole::Faint),
                 background: Some(SemanticColorRole::Subtle),
                 border: Some(SemanticColorRole::Border),
+                ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
         },

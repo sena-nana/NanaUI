@@ -208,7 +208,14 @@ impl PathExt<'_> {
 const MAX_SVG_EDGE: u32 = 2048;
 
 fn decode_svg_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let raster = nana_svg_raster::rasterize_document_capped(bytes, MAX_SVG_EDGE)?;
+    #[cfg(any(feature = "rich-text", feature = "bundled-fonts"))]
+    let font = Some(nana_svg_raster::SvgFont {
+        bytes: nana_ui_core::fonts::UI_FONT_REGULAR,
+        family: nana_ui_core::fonts::UI_FONT_FAMILY,
+    });
+    #[cfg(not(any(feature = "rich-text", feature = "bundled-fonts")))]
+    let font = None;
+    let raster = nana_svg_raster::rasterize_document_capped_with_font(bytes, MAX_SVG_EDGE, font)?;
     Some((raster.width, raster.height, raster.rgba.to_vec()))
 }
 
@@ -399,5 +406,26 @@ mod tests {
         let (width, height, rgba) = decode_url_rgba(&url).expect("base64 svg");
         assert_eq!((width, height), (1, 1));
         assert_eq!(&rgba[..4], &[0x01, 0x02, 0x03, 0xff]);
+    }
+    #[cfg(any(feature = "rich-text", feature = "bundled-fonts"))]
+    #[test]
+    fn svg_text_uses_the_existing_ui_font_for_latin_and_cjk() {
+        for text in ["Mermaid", "流程图"] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="180" height="40"><text x="2" y="30" font-family="sans-serif" font-size="24" fill="red">{text}</text></svg>"#
+            );
+            let (width, height, pixels) = decode_svg_rgba(svg.as_bytes()).unwrap();
+            assert_eq!((width, height), (180, 40));
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[3] > 0)
+                    .count()
+                    > 50,
+                "SVG text must produce glyph pixels"
+            );
+        }
     }
 }

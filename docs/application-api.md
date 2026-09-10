@@ -129,6 +129,12 @@ slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组
 
 消息有两个入口，按类型选：`dispatch_program` **按 Rust 类型只保留最后一条**，适合「后一条取代前一条」的状态消息（resize、主题变了、请求重绘）；`dispatch_program_all` 按派发顺序全部送达。业务消息通常是一个 `enum`，那就是**同一个类型**——用 `dispatch_program` 会让同一帧内的两次点击塌成一次、悄悄丢掉第一次，这种情况用 `dispatch_program_all`。两者都在下一帧进入 `update`。
 
+控件需要先于默认编辑处理按键时，用 `AppContext::on_key` 或 `on_view_key` 注册一个策略；后者读取当前保留的控件值。返回 `true` 表示消费，重复注册替换旧策略，删除视图会移除策略。`RuntimeInputAdapter` 在浮层处理后、默认编辑前调用 `dispatch_focused_key`，只投递给当前文档中已挂载且未禁用的焦点节点，IME 组合期间跳过业务策略。
+
+保留编辑器绑定到另一个任务、文件或草稿身份时，即使文本相同也应调用 `clear_text_history(node)`，清除原对象的 undo/redo；它不改变文本、选区或正在进行的 IME。业务对象身份和是否允许重绑定仍由应用判断。
+
+自接指针的组件可用 `UiWorld::pointer_layout_position` 将窗口坐标转换到布局坐标，反向用 `layout_pointer_position`。两者使用当前命中投影，包括祖先滚动和透视变换；无投影、已 park 或不可逆变换返回 `None`。输入之前应由既有帧流程刷新布局与命中投影。
+
 ## Rust 虚拟列表和树
 
 需要真实滚动占位与屏外编辑保留时，将 List 放在 ScrollView 内，使用
@@ -203,6 +209,14 @@ padding。同一 `UiWorld` 交替布局多个文档时，一个文档的全量�
 恢复锚点。受影响滚动容器的内容范围由 UiWorld 的惰性布局边界索引计算。首次查询构建子树索引；
 普通几何写回只更新变更节点及祖先的最大边界，结构变化重建对应父级的子节点聚合。
 索引不包含绘制阴影、滤镜或滚动偏移，保持既有布局滚动范围语义；删除节点同步释放条目。
+
+### Workspace 借用已有控件作为区域
+
+`WorkspaceRegionSlot::new` 表示 Workspace 管理的结构区域，使用 Generic 语义且自身不接收指针。
+如果直接将已有控件作为区域表面，使用 `WorkspaceRegionSlot::borrowed`：Workspace 仅投影区域布局和表面样式，
+控件继续持有当前输入及无障碍语义；重新装配不会恢复旧的 label、disabled 或 focusable 快照。
+`DesktopShell` 对直接借入的 ScrollView 自动选择此合同，普通结构区域保留原行为。
+创建 Workspace 后须调用 `AppContext::assemble_workspace` 建立区域轨道，再进行布局和命中索引构建。
 
 ### 隐藏层级中的无障碍语义
 

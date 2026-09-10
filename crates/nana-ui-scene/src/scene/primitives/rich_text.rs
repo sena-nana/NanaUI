@@ -10,11 +10,35 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     match context.node.component_geometry.as_deref() {
         #[cfg(feature = "rich-text")]
         Some(ComponentGeometry::NativeMarkdown {
+            drawing,
             text,
             selection,
             selection_color,
-        })
-        | Some(ComponentGeometry::SelectableRichText {
+        }) => {
+            if !selection.is_empty() {
+                emit(visual_quad_batch(
+                    &VisualPrimitiveContext {
+                        node: id,
+                        transform,
+                        clips,
+                        opacity,
+                        z_index: node.z_index,
+                        document_order: node_order,
+                    },
+                    1,
+                    selection.iter().copied().map(scene_rect),
+                    VisualQuadStyle::solid(*selection_color),
+                ));
+            }
+            super::markdown_drawing::build(
+                context,
+                drawing,
+                text.color.unwrap_or([0.8, 0.8, 0.8, 1.0]),
+                emit,
+            );
+        }
+        #[cfg(feature = "rich-text")]
+        Some(ComponentGeometry::SelectableRichText {
             text,
             selection,
             selection_color,

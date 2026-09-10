@@ -52,8 +52,15 @@ pub mod icons;
 pub mod layout;
 pub mod menu;
 mod nana_text;
+#[cfg(feature = "hosted")]
+mod native_browser;
 #[cfg(feature = "gpu")]
 mod native_content;
+#[cfg(feature = "hosted")]
+pub use native_browser::{
+    BrowserCommand, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState, NativeBrowserEvent,
+    NativeBrowserRequest,
+};
 pub mod overlay;
 pub mod pane;
 mod runtime_animation;
@@ -96,8 +103,6 @@ pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;
 pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
-#[cfg(feature = "charts")]
-pub use nana_ui_runtime::TimeSeriesChart;
 #[cfg(feature = "calendar")]
 pub use nana_ui_runtime::{
     CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
@@ -109,6 +114,8 @@ pub use nana_ui_runtime::{
 pub use nana_ui_runtime::{
     CapturedStroke, KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeymapLayer,
 };
+#[cfg(feature = "charts")]
+pub use nana_ui_runtime::{DonutChart, DonutSlice, TimeSeriesChart, TimeSeriesLayer};
 #[cfg(feature = "gpu")]
 pub use nana_ui_runtime::{GpuTextureView, GpuView, GpuViewMode, GpuViewPalette};
 #[cfg(feature = "graph-canvas")]

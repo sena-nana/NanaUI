@@ -726,8 +726,7 @@ impl ComponentView for SettingsDisclosure {
     }
 }
 
-const DEFAULT_PLATFORM_HINT: &str =
-    "实色或窗口透明由设置选择；系统模糊（Vibrancy / Mica / Acrylic）在当前设备提供时可选。";
+const DEFAULT_PLATFORM_HINT: &str = "可选择实色或透明背景；设备支持时，也可使用系统模糊效果。";
 
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]

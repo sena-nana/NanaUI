@@ -4,6 +4,7 @@ use super::*;
 
 pub(in crate::world) fn image_viewer_geometry(
     bounds: LayoutBox,
+    intrinsic_size: Option<(u32, u32)>,
     name: Option<&Arc<str>>,
     metadata: Option<&Arc<str>>,
     zoom: f32,
@@ -12,6 +13,7 @@ pub(in crate::world) fn image_viewer_geometry(
     palette: &SemanticPalette,
 ) -> crate::ComponentGeometry {
     let mut viewer = crate::ImageViewer::new(crate::ImageViewerContent::None);
+    viewer.intrinsic_size = intrinsic_size;
     if let Some(name) = name {
         viewer = viewer.name(Arc::clone(name));
     }

@@ -80,6 +80,7 @@ const HOST_TAGS = {
   NanaTableRow: "tr",
   NanaTableCell: "td",
   NanaReorderList: "nana-reorder-list",
+  NanaDonutChart: "nana-donut-chart",
   NanaTimeSeriesChart: "nana-time-series-chart",
   NanaDesktopShell: "nana-desktop-shell",
   NanaAppTitleBar: "nana-app-title-bar",

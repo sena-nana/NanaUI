@@ -657,8 +657,10 @@ impl TextPipeline {
             opentype.kerning,
             italic,
         );
+        // Match NanaTextShaper's measurement policy, including ASCII. Basic
+        // shaping changes advances and can wrap/truncate text that fits the
+        // Runtime content box (notably multiline chart tooltips).
         let shaping = match shaping {
-            TextShaping::Auto if content.is_ascii() => Shaping::Basic,
             TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
         };
         let rtl = opentype.direction.is_rtl();
@@ -1479,7 +1481,12 @@ mod tests {
             font_weight: Some(600),
             ..ComputedStyle::default()
         };
-        for content in ["未命名 1", "shade"] {
+        for (content, shaping) in [
+            ("未命名 1", TextShaping::Advanced),
+            ("shade", TextShaping::Advanced),
+            ("Cost $0.30", TextShaping::Auto),
+            ("Save memory", TextShaping::Auto),
+        ] {
             let natural = shaper
                 .shape(
                     StableNodeId::new(1).unwrap(),
@@ -1489,7 +1496,7 @@ mod tests {
                     &style,
                     TextShapeConstraints {
                         wrap: false,
-                        shaping: TextShaping::Advanced,
+                        shaping,
                         ..TextShapeConstraints::default()
                     },
                 )
@@ -1521,7 +1528,7 @@ mod tests {
                         false,
                         ellipsis,
                         None,
-                        TextShaping::Advanced,
+                        shaping,
                         TextHorizontalAlignment::Start,
                         TextVerticalAlignment::Top,
                         &[],

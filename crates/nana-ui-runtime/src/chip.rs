@@ -135,6 +135,9 @@ impl ComponentView for Chip {
             mutations.set_text(id, text);
         }
         let visual = StandardVisual::Button {
+            icon: None,
+            icon_size: self.size.icon_size(),
+            icon_gap: 6.0,
             label: Arc::clone(&self.label),
             kind: self.kind(),
             size: self.size,
@@ -255,6 +258,9 @@ mod tests {
         assert_eq!(
             visual,
             StandardVisual::Button {
+                icon: None,
+                icon_size: ControlSize::Small.icon_size(),
+                icon_gap: 6.0,
                 label: Arc::from("Beta"),
                 kind: ButtonKind::Selected,
                 size: ControlSize::Small,

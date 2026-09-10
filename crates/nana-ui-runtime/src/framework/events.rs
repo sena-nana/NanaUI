@@ -7,6 +7,7 @@ impl AppContext {
         // An editor's undo journal dies with the editor.
         for id in removed {
             self.text_histories.forget(*id);
+            self.key_handlers.remove(id);
         }
         let affected = removed
             .iter()

@@ -237,6 +237,7 @@ impl InteractiveCard {
                 foreground: Some(SemanticColorRole::Faint),
                 background: Some(SemanticColorRole::Subtle),
                 border: self.selected.then_some(SemanticColorRole::BorderSoft),
+                ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
         };

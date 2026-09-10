@@ -185,6 +185,19 @@ impl TextHistories {
 }
 
 impl crate::AppContext {
+    /// Start an independent undo session when an existing editor is rebound to
+    /// another business object, even if the new text is identical.
+    pub fn clear_text_history(&mut self, node: StableNodeId) -> Result<(), crate::FrameworkError> {
+        if !self.world.contains(node) {
+            return Err(crate::FrameworkError::MissingView(node));
+        }
+        if self.world.text_input(node).is_none() {
+            return Err(crate::FrameworkError::InvalidInput);
+        }
+        self.text_histories.forget(node);
+        Ok(())
+    }
+
     /// The single place an editor's text state changes.
     ///
     /// `apply` mutates the component; everything that must happen for *every*
@@ -286,6 +299,18 @@ impl crate::AppContext {
         self.text_histories.seal(node);
     }
 
+    pub(super) fn seal_blurred_editor_history(
+        &mut self,
+        document: crate::DocumentId,
+        previous: Option<StableNodeId>,
+    ) {
+        if previous != self.world.focused(document)
+            && let Some(previous) = previous
+        {
+            self.seal_editor_history(previous);
+        }
+    }
+
     /// Whether the editor has an edit to undo.
     pub fn can_undo_text(&self, node: StableNodeId) -> bool {
         self.text_histories.can_undo(node)
@@ -315,6 +340,221 @@ mod editor_tests {
 
     fn value_of(cx: &AppContext, area: crate::Entity<TextArea>) -> String {
         cx.read(area, |area| area.state.value.clone()).unwrap()
+    }
+
+    #[test]
+    fn focus_changes_separate_typing_runs_but_refocusing_the_same_editor_does_not() {
+        for clear in [false, true] {
+            let mut cx = AppContext::new();
+            let area = focused_area(&mut cx, "");
+            cx.replace_focused_text(document(), "first").unwrap();
+            assert!(!cx.focus_node(document(), area.stable_id()).unwrap());
+            cx.replace_focused_text(document(), " run").unwrap();
+            if clear {
+                cx.clear_focus(document()).unwrap();
+            } else {
+                let other = cx.create_component(document(), TextInput::new("")).unwrap();
+                cx.focus_node(document(), other.stable_id()).unwrap();
+            }
+            cx.focus_node(document(), area.stable_id()).unwrap();
+            cx.replace_focused_text(document(), " second").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "first run");
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "");
+            assert!(cx.redo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "first run");
+        }
+    }
+
+    #[test]
+    fn select_all_and_accessibility_selection_separate_replacement_from_typing() {
+        for accessibility in [false, true] {
+            let mut cx = AppContext::new();
+            let area = focused_area(&mut cx, "");
+            cx.replace_focused_text(document(), "first").unwrap();
+            if accessibility {
+                assert!(
+                    cx.apply_accessibility_action(
+                        document(),
+                        crate::AccessibilityActionRequest {
+                            target: area.stable_id(),
+                            action: crate::AccessibilityAction::SetSelection(
+                                crate::TextSelection {
+                                    anchor: 0,
+                                    focus: 5
+                                }
+                            ),
+                        }
+                    )
+                    .unwrap()
+                );
+            } else {
+                cx.select_all_focused_text(document()).unwrap();
+            }
+            cx.replace_focused_text(document(), "second").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "first");
+            assert!(cx.redo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "second");
+        }
+    }
+
+    #[test]
+    fn rejected_focus_and_selection_leave_the_typing_run_intact() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "first").unwrap();
+        let structure = cx
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        assert!(!cx.focus_node(document(), structure.stable_id()).unwrap());
+        assert!(
+            !cx.apply_accessibility_action(
+                document(),
+                crate::AccessibilityActionRequest {
+                    target: area.stable_id(),
+                    action: crate::AccessibilityAction::SetSelection(crate::TextSelection {
+                        anchor: 0,
+                        focus: 999
+                    }),
+                }
+            )
+            .unwrap()
+        );
+        assert!(
+            !cx.move_focused_text_caret(document(), crate::TextCaretIntent::Right, false, None)
+                .unwrap()
+        );
+        cx.replace_focused_text(document(), " second").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn pointer_and_public_range_selection_split_history_in_the_same_editor() {
+        for pointer in [false, true] {
+            let mut cx = AppContext::new();
+            let area = focused_area(&mut cx, "");
+            cx.replace_focused_text(document(), "first").unwrap();
+            if pointer {
+                let mut queue = crate::MutationQueue::new();
+                queue.write_layout(
+                    area.stable_id(),
+                    crate::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 200.0,
+                        height: 80.0,
+                    },
+                );
+                cx.commit_mutations(queue).unwrap();
+                cx.resolve_styles(&[area.stable_id()]).unwrap();
+                cx.shape_text(&[area.stable_id()], &mut crate::MeasureTextShaper)
+                    .unwrap();
+                let (content, _) = cx
+                    .world()
+                    .text_input_pointer_context(area.stable_id())
+                    .unwrap();
+                assert!(
+                    cx.text_editor_pointer_press(
+                        document(),
+                        area.stable_id(),
+                        1,
+                        content.x + 1.0,
+                        content.y + 1.0,
+                        false,
+                        false,
+                        std::time::Duration::ZERO,
+                        &mut crate::MeasureTextShaper
+                    )
+                    .unwrap()
+                );
+                cx.text_editor_pointer_release(1);
+            } else {
+                assert!(cx.select_focused_text_range(document(), 0, 0).unwrap());
+            }
+            assert_eq!(
+                cx.read(area, |area| area.state.selection).unwrap(),
+                crate::TextSelection::caret(0)
+            );
+            cx.replace_focused_text(document(), "second ").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "first");
+            assert!(cx.redo_focused_text(document()).unwrap());
+            assert_eq!(value_of(&cx, area), "second first");
+        }
+    }
+
+    #[test]
+    fn modal_focus_round_trip_seals_history_but_rejected_focus_batch_does_not() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        let host = cx
+            .create_component(document(), crate::OverlayHost::new())
+            .unwrap();
+        let dialog = cx
+            .create_component(document(), crate::Dialog::new("Dialog"))
+            .unwrap();
+        cx.append_child(host, dialog).unwrap();
+        cx.replace_focused_text(document(), "first").unwrap();
+        let mut rejected = crate::MutationQueue::new();
+        rejected.request_focus(document(), Some(host.stable_id()));
+        assert!(cx.commit_mutations(rejected).is_err());
+        assert_eq!(cx.world().focused(document()), Some(area.stable_id()));
+        cx.replace_focused_text(document(), " run").unwrap();
+        cx.activate_overlay(host, dialog).unwrap();
+        assert_eq!(cx.world().focused(document()), Some(dialog.stable_id()));
+        cx.dismiss_overlay(host).unwrap();
+        assert_eq!(cx.world().focused(document()), Some(area.stable_id()));
+        cx.replace_focused_text(document(), " second").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "first run");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn style_resolution_clearing_focus_seals_history() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "first").unwrap();
+        let initial = cx.read(area, |area| area.style.clone()).unwrap();
+        let mut hidden = initial.clone();
+        std::sync::Arc::make_mut(&mut hidden.layout).display =
+            Some(nana_ui_core::DisplaySpec::None);
+        cx.update_component(area, |area, _| area.style = hidden)
+            .unwrap();
+        cx.resolve_styles(&[area.stable_id()]).unwrap();
+        assert_eq!(cx.world().focused(document()), None);
+        cx.update_component(area, |area, _| area.style = initial)
+            .unwrap();
+        cx.resolve_styles(&[area.stable_id()]).unwrap();
+        cx.focus_node(document(), area.stable_id()).unwrap();
+        cx.replace_focused_text(document(), " second").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "first");
+    }
+
+    #[test]
+    fn identity_rebind_clears_undo_and_redo_without_changing_editor_state() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "first").unwrap();
+        assert!(cx.can_undo_text(area.stable_id()));
+        cx.clear_text_history(area.stable_id()).unwrap();
+        assert_eq!(value_of(&cx, area), "first");
+        assert!(!cx.undo_focused_text(document()).unwrap());
+        cx.replace_focused_text(document(), "second").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert!(cx.can_redo_text(area.stable_id()));
+        let state = cx.read(area, |area| area.state.clone()).unwrap();
+        cx.set_ime_preedit(document(), "ni".to_owned(), None)
+            .unwrap();
+        cx.clear_text_history(area.stable_id()).unwrap();
+        assert!(!cx.can_redo_text(area.stable_id()));
+        assert_eq!(cx.read(area, |area| area.state.clone()).unwrap(), state);
+        assert!(cx.world().ime(area.stable_id()).is_some());
     }
 
     #[test]

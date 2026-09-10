@@ -2894,7 +2894,9 @@ impl UiWorld {
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_edges();
         let leading_visual = match self.nodes.visual(id) {
-            Some(StandardVisual::Checkbox { .. }) => 24.0,
+            Some(StandardVisual::Checkbox { size, .. }) => {
+                size.indicator_size() + size.indicator_gap()
+            }
             Some(StandardVisual::Switch { .. }) => 38.0,
             _ => 0.0,
         };

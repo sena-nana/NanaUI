@@ -23,6 +23,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         self.resize_window(id);
         self.program.prepare_window_frame(id, &self.context_for(id));
+        self.reconcile_browser_lifetimes();
         let geometry = self.geometry_of(id);
         let material = self.material_of(id);
         let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
@@ -58,6 +59,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .host_failure(HostFailure::MissingDocument { window: id });
             return;
         };
+        self.sync_native_browsers(id, scene.as_ref());
         self.update_image_targets(id, scene.as_ref());
         let format = if id == WindowId::PRIMARY {
             self.graphics.format()

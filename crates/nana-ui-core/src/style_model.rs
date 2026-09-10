@@ -207,6 +207,57 @@ impl SemanticColorRole {
     }
 }
 
+/// A theme-relative, premultiplied-alpha sRGB mix. Weights use basis points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SemanticColorMix {
+    first: SemanticColorRole,
+    second: Option<SemanticColorRole>,
+    weight: u16,
+}
+impl SemanticColorMix {
+    pub fn new(first: SemanticColorRole, second: SemanticColorRole, ratio: f32) -> Self {
+        Self {
+            first,
+            second: Some(second),
+            weight: Self::weight(ratio),
+        }
+    }
+    /// Mix a palette role with transparent without fading descendants.
+    pub fn alpha(role: SemanticColorRole, alpha: f32) -> Self {
+        Self {
+            first: role,
+            second: None,
+            weight: Self::weight(alpha),
+        }
+    }
+    fn weight(ratio: f32) -> u16 {
+        if ratio.is_finite() {
+            (ratio.clamp(0.0, 1.0) * 10000.0).round() as u16
+        } else {
+            0
+        }
+    }
+    pub fn resolve(self, model: StyleModelRef) -> SemanticColor {
+        let first = model.color(self.first);
+        let second = self
+            .second
+            .map(|role| model.color(role))
+            .unwrap_or(SemanticColor::rgba(0.0, 0.0, 0.0, 0.0));
+        let weight = f32::from(self.weight.min(10000)) / 10000.0;
+        let a = first.a * weight + second.a * (1.0 - weight);
+        if a <= 0.0 {
+            return SemanticColor::rgba(0.0, 0.0, 0.0, 0.0);
+        }
+        let channel = |x: f32, y: f32| (x * first.a * weight + y * second.a * (1.0 - weight)) / a;
+        SemanticColor::rgba(
+            channel(first.r, second.r),
+            channel(first.g, second.g),
+            channel(first.b, second.b),
+            a,
+        )
+    }
+}
+
 /// Semantic palette roles shared across backends.
 ///
 /// Field set mirrors the Lilia hierarchy used by `nana-ui::theme::Colors`.

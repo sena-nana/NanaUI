@@ -67,7 +67,17 @@ impl AppContext {
     /// Resolve inherited style for the supplied dirty nodes.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), FrameworkError> {
         let started = self.stage_clock();
+        let previous_focus = ids
+            .iter()
+            .filter_map(|id| self.world.document_of(*id))
+            .filter_map(|document| self.world.focused(document).map(|node| (document, node)))
+            .collect::<HashMap<_, _>>();
         let result = self.world.resolve_styles(ids).map_err(FrameworkError::from);
+        if result.is_ok() {
+            for (document, previous) in previous_focus {
+                self.seal_blurred_editor_history(document, Some(previous));
+            }
+        }
         self.record_stage(FrameStage::Style, started);
         result
     }

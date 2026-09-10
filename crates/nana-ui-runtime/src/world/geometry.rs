@@ -149,12 +149,7 @@ impl UiWorld {
         };
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_width();
-        let content = LayoutBox {
-            x: bounds.x + border + padding.left,
-            y: bounds.y + border + padding.top,
-            width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
-            height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
-        };
+        let content = self.component_content_box(id)?;
         let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
             crate::ComponentTextRegion {
                 bounds,
@@ -283,56 +278,53 @@ impl UiWorld {
             }
             StandardVisual::Button {
                 label,
-                size,
                 loading,
+                icon,
+                icon_size,
+                icon_gap,
                 ..
             } => {
-                // Loading reserves `BUTTON_LOADING_RESERVE_X` per side through
-                // symmetric intrinsic padding in the layout pass. That
-                // reservation grows the outer button; it is not additional
-                // visual padding, so return it to the inline content box before
-                // centering spinner + label.
-                let reserve = crate::view_components::BUTTON_LOADING_RESERVE_X;
-                let button_content = if *loading {
-                    LayoutBox {
-                        x: content.x - reserve,
-                        width: content.width + reserve * 2.0,
-                        ..content
-                    }
-                } else {
-                    content
-                };
-                let label_width = self
-                    .text_metrics(id)
-                    .map_or(0.0, |metrics| metrics.width.min(button_content.width));
-                let spinner_extent = size.icon_size().min(button_content.height);
-                let gap = if *loading {
-                    crate::view_components::BUTTON_LOADING_GAP
+                let has_leading = *loading || icon.is_some();
+                let extent = if has_leading {
+                    icon_size.min(content.height).min(content.width).max(0.0)
                 } else {
                     0.0
                 };
-                let group_width = (label_width + if *loading { spinner_extent + gap } else { 0.0 })
-                    .min(button_content.width);
-                let group_x = button_content.x + (button_content.width - group_width) / 2.0;
-                let spinner = (*loading).then_some(LayoutBox {
-                    x: group_x,
-                    y: button_content.y + (button_content.height - spinner_extent) / 2.0,
-                    width: spinner_extent,
-                    height: spinner_extent,
+                let gap = if has_leading && !label.is_empty() {
+                    icon_gap.min((content.width - extent).max(0.0))
+                } else {
+                    0.0
+                };
+                let label_width = self.text_metrics(id).map_or(0.0, |metrics| {
+                    metrics.width.min((content.width - extent - gap).max(0.0))
                 });
-                let label_x = group_x + if *loading { spinner_extent + gap } else { 0.0 };
+                let group_width = label_width + extent + gap;
+                let group_x = content.x + (content.width - group_width) / 2.0;
+                let leading = LayoutBox {
+                    x: group_x,
+                    y: content.y + (content.height - extent) / 2.0,
+                    width: extent,
+                    height: extent,
+                };
+                let spinner = (*loading).then_some(leading);
+                let label_x = group_x + extent + gap;
                 Some(crate::ComponentGeometry::Button {
+                    icon: if *loading {
+                        None
+                    } else {
+                        icon.map(|icon| (icon, leading))
+                    },
                     label: text_region(
                         LayoutBox {
                             x: label_x,
-                            y: button_content.y,
+                            y: content.y,
                             width: (group_x + group_width - label_x).max(0.0),
-                            height: button_content.height,
+                            height: content.height,
                         },
                         Arc::clone(label),
                         false,
-                        size.text_size(),
-                        Some(500),
+                        style.font_size,
+                        style.font_weight,
                     ),
                     spinner,
                     background: style.background,
@@ -1003,6 +995,10 @@ impl UiWorld {
                     )
                 });
                 Some(crate::ComponentGeometry::TextInput {
+                    resize_grip: matches!(visual, StandardVisual::TextInput { editor_options, .. } if editor_options.resize_vertical).then_some(LayoutBox {
+                        x: bounds.x + (bounds.width - 14.0).max(0.0), y: bounds.y + (bounds.height - 14.0).max(0.0),
+                        width: bounds.width.min(14.0), height: bounds.height.min(14.0),
+                    }),
                     diagnostic_markers,
                     diagnostic_labels,
                     match_markers,
@@ -2267,6 +2263,47 @@ impl UiWorld {
                 &self.style_model.palette,
             )),
             #[cfg(feature = "charts")]
+            StandardVisual::DonutChart {
+                slices,
+                cutout,
+                separator,
+                active,
+            } => {
+                let mut chart = crate::DonutChart::new(slices.iter().copied()).cutout(*cutout);
+                chart.separator = *separator;
+                chart.active = *active;
+                let (width, regions) = chart.ring_regions(bounds);
+                Some(crate::ComponentGeometry::DonutChart {
+                    width,
+                    regions: regions
+                        .into_iter()
+                        .map(|(circle, polygon, role)| {
+                            (
+                                circle,
+                                polygon,
+                                self.style_model.color(role).as_rgba_array(),
+                            )
+                        })
+                        .collect(),
+                })
+            }
+            #[cfg(feature = "charts")]
+            StandardVisual::StackedTimeSeriesChart {
+                title,
+                values,
+                layers,
+                labels,
+                active,
+            } => Some(stacked_time_series_geometry(
+                bounds,
+                title,
+                values,
+                layers,
+                labels,
+                *active,
+                &self.style_model.palette,
+            )),
+            #[cfg(feature = "charts")]
             StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
                 bounds,
                 values,
@@ -2313,17 +2350,35 @@ impl UiWorld {
                 ))
             }
             #[cfg(feature = "rich-text")]
-            StandardVisual::NativeMarkdown { text, selection } => {
-                let (text, selection, selection_color) = selectable_text_regions(
+            StandardVisual::NativeMarkdown {
+                text,
+                blocks,
+                selection,
+            } => {
+                let selection_range = selection;
+                let (text, _, selection_color) = selectable_text_regions(
                     content,
                     text,
                     *selection,
                     style,
                     &self.style_model.palette,
                 );
+                let geometry = self.markdown_layout(id, blocks, content);
                 Some(crate::ComponentGeometry::NativeMarkdown {
+                    drawing: crate::markdown_drawing::document_with_geometry(
+                        blocks, content, &geometry,
+                    ),
                     text,
-                    selection,
+                    selection: match selection_range {
+                        Some((start, end)) => geometry
+                            .blocks
+                            .into_iter()
+                            .flat_map(|block| block.graphemes)
+                            .filter(|g| g.index >= *start.min(end) && g.index < *start.max(end))
+                            .map(|g| g.bounds)
+                            .collect(),
+                        _ => Vec::new(),
+                    },
                     selection_color,
                 })
             }
@@ -2380,6 +2435,7 @@ impl UiWorld {
             )),
             #[cfg(feature = "image-viewer")]
             StandardVisual::ImageViewer {
+                intrinsic_size,
                 name,
                 metadata,
                 zoom,
@@ -2387,6 +2443,7 @@ impl UiWorld {
                 offset_y,
             } => Some(image_viewer_geometry(
                 bounds,
+                *intrinsic_size,
                 name.as_ref(),
                 metadata.as_ref(),
                 *zoom,

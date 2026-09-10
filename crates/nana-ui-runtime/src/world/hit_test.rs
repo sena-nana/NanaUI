@@ -22,6 +22,7 @@ pub(super) struct HitIndex {
     pub(super) roots: Vec<Option<StableNodeId>>,
     pub(super) entries: hashbrown::HashMap<StableNodeId, IndexedHit>,
     root_bounds: BoundsTree,
+    viewport_roots: HashSet<StableNodeId>,
 }
 
 // Preorder construction data; parents precede their children.
@@ -93,6 +94,13 @@ fn union_bounds(a: LayoutBox, b: LayoutBox) -> LayoutBox {
 }
 
 impl HitIndex {
+    fn viewport_hit_at(&self, x: f32, y: f32) -> bool {
+        !self.viewport_roots.is_empty()
+            && self.root_bounds.visit(x, y, &mut |slot| {
+                self.roots[slot].is_some_and(|id| self.viewport_roots.contains(&id))
+            })
+    }
+
     #[cfg(test)]
     fn from_forest(forest: Vec<HitEntry>) -> Self {
         let mut index = Self::default();
@@ -323,6 +331,7 @@ impl HitIndex {
     }
 
     fn remove(&mut self, id: StableNodeId) {
+        self.viewport_roots.remove(&id);
         let Some(node) = self.entries.remove(&id) else {
             return;
         };
@@ -507,14 +516,23 @@ pub(super) fn then_hit(
 
 pub(super) fn transformed_contains(
     bounds: LayoutBox,
+    transform: [f32; 6],
+    persp: [f32; 2],
+    x: f32,
+    y: f32,
+) -> bool {
+    transformed_point(transform, persp, x, y).is_some_and(|(x, y)| bounds.contains(x, y))
+}
+
+fn transformed_point(
     [a, b, c, d, e, f]: [f32; 6],
     [g, h]: [f32; 2],
     x: f32,
     y: f32,
-) -> bool {
+) -> Option<(f32, f32)> {
     let det = a * (d - f * h) - c * (b - f * g) + e * (b * h - d * g);
     if !det.is_finite() || det.abs() <= f32::EPSILON {
-        return false;
+        return None;
     }
     let inv = 1.0 / det;
     let ia = (d - f * h) * inv;
@@ -527,18 +545,216 @@ pub(super) fn transformed_contains(
     let ih = (c * g - a * h) * inv;
     let ii = (a * d - c * b) * inv;
     if !ii.is_finite() || ii.abs() < 1e-8 {
-        return false;
+        return None;
     }
     let w = ig * x + ih * y + ii;
     if !w.is_finite() || w.abs() < 1e-8 {
-        return false;
+        return None;
     }
     let local_x = (ia * x + ic * y + ie) / w;
     let local_y = (ib * x + id * y + if_) / w;
-    bounds.contains(local_x, local_y)
+    (local_x.is_finite() && local_y.is_finite()).then_some((local_x, local_y))
 }
 
 impl UiWorld {
+    /// Current viewport geometry for layout-time anchors. The hit index is
+    /// published only after the frame settles, so it cannot serve this query.
+    pub(crate) fn viewport_layout_box(&self, target: StableNodeId) -> Option<LayoutBox> {
+        if !self.is_mounted(target) {
+            return None;
+        }
+        let mut chain = Vec::new();
+        let mut cursor = Some(target);
+        while let Some(id) = cursor {
+            let node = self.nodes.get(id)?;
+            chain.push(id);
+            if node.style.layout.position == PositionSpec::Fixed {
+                break;
+            }
+            cursor = node.hierarchy.parent;
+        }
+        let mut transform = (IDENTITY_AFFINE, [0.0, 0.0]);
+        let mut blocks_3d = false;
+        for id in chain.into_iter().rev() {
+            let node = self.nodes.get(id)?;
+            let style = self.motion_layout(id, &node.style.layout);
+            let b = node.layout;
+            let local = if blocks_3d && style.transform_3d.is_some() {
+                (IDENTITY_AFFINE, [0.0, 0.0])
+            } else {
+                style
+                    .world_scene_transform(b.x, b.y, b.width, b.height)
+                    .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
+            };
+            transform = then_hit(transform, local);
+            blocks_3d |= style.fails_closed_3d_context();
+            if id != target {
+                transform = then_hit(
+                    transform,
+                    (
+                        [
+                            1.0,
+                            0.0,
+                            0.0,
+                            1.0,
+                            -node.scroll_offset.x,
+                            -node.scroll_offset.y,
+                        ],
+                        [0.0, 0.0],
+                    ),
+                );
+            }
+        }
+        let b = self.layout_box(target)?;
+        let ([a, by, c, d, e, f], [g, h]) = transform;
+        let mut x = f32::INFINITY;
+        let mut y = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        for (px, py) in [
+            (b.x, b.y),
+            (b.x + b.width, b.y),
+            (b.x, b.y + b.height),
+            (b.x + b.width, b.y + b.height),
+        ] {
+            let w = g * px + h * py + 1.0;
+            if !w.is_finite() || w.abs() < 1e-8 {
+                return None;
+            }
+            let tx = (a * px + c * py + e) / w;
+            let ty = (by * px + d * py + f) / w;
+            if !tx.is_finite() || !ty.is_finite() {
+                return None;
+            }
+            x = x.min(tx);
+            y = y.min(ty);
+            right = right.max(tx);
+            bottom = bottom.max(ty);
+        }
+        Some(LayoutBox {
+            x,
+            y,
+            width: right - x,
+            height: bottom - y,
+        })
+    }
+
+    /// Map a window point into this node's untransformed layout coordinates.
+    /// Uses the current hit projection, including inherited scroll offsets.
+    pub fn pointer_layout_position(
+        &self,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<(f32, f32)> {
+        if !self.is_mounted(target) {
+            return None;
+        }
+        let document = self.document_of(target)?;
+        let index = self.hit_test_index.get(&document)?;
+        let entry = &index.entries.get(&target)?.entry;
+        let shift = index.inherited_shift(target);
+        transformed_point(entry.transform, entry.persp, x - shift[0], y - shift[1])
+    }
+
+    /// Map layout geometry to window coordinates through the current hit projection.
+    pub fn layout_pointer_position(
+        &self,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<(f32, f32)> {
+        if !self.is_mounted(target) {
+            return None;
+        }
+        let document = self.document_of(target)?;
+        let index = self.hit_test_index.get(&document)?;
+        let entry = &index.entries.get(&target)?.entry;
+        let [a, b, c, d, e, f] = entry.transform;
+        let [g, h] = entry.persp;
+        let w = g * x + h * y + 1.0;
+        if !w.is_finite() || w.abs() < 1e-8 {
+            return None;
+        }
+        let shift = index.inherited_shift(target);
+        let result = (
+            (a * x + c * y + e) / w + shift[0],
+            (b * x + d * y + f) / w + shift[1],
+        );
+        (result.0.is_finite() && result.1.is_finite()).then_some(result)
+    }
+}
+
+impl UiWorld {
+    // Fixed branches share the document's paint order despite having separate
+    // spatial roots. Structural paths compare exactly like preorder ordinals,
+    // without walking or numbering every document node on pointer movement.
+    fn hit_paint_key(
+        &self,
+        index: &HitIndex,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Vec<(i32, Vec<usize>)> {
+        let shift = index.inherited_shift(target);
+        let menu_hit = index.entries.get(&target).is_some_and(|node| {
+            node.entry.menu.is_some_and(|menu| {
+                transformed_contains(
+                    menu,
+                    node.entry.transform,
+                    node.entry.persp,
+                    x - shift[0],
+                    y - shift[1],
+                )
+            })
+        });
+        let mut chain = Vec::new();
+        let mut cursor = Some(target);
+        while let Some(id) = cursor {
+            chain.push(id);
+            cursor = self.parent_id(id);
+        }
+        let mut path = Vec::new();
+        let mut groups = Vec::new();
+        let mut inherited_z = 0;
+        for id in chain.into_iter().rev() {
+            let node = self.record(id);
+            let style = &node.style.layout;
+            path.push(index.entries.get(&id).map_or(0, |entry| entry.entry.order));
+            inherited_z = style.z_index.unwrap_or(inherited_z);
+            let children = node
+                .hierarchy
+                .children
+                .iter()
+                .any(|child| self.is_mounted(*child));
+            let opacity = style.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+            let filter_group = style
+                .paint
+                .filter
+                .filter(|filter| !filter.is_identity())
+                .is_some_and(|filter| {
+                    filter.blur_radius > 0.0
+                        || filter.drop_shadow.is_some()
+                        || children
+                        || !node.text.value.is_empty()
+                        || self.nodes.custom_render(id).is_some()
+                });
+            let group = (children
+                && (style.creates_paint_stacking_context() || (opacity > 0.0 && opacity < 1.0)))
+                || filter_group
+                || !style.paint.mix_blend.is_normal();
+            if group || id == target {
+                let z = if id == target && !group && menu_hit {
+                    inherited_z.max(1000)
+                } else {
+                    inherited_z
+                };
+                groups.push((z, path.clone()));
+            }
+        }
+        groups
+    }
+
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
         let Some(forest) = self.hit_test_index.get(&document) else {
             return Vec::new();
@@ -549,6 +765,10 @@ impl UiWorld {
             false
         });
         candidates.retain(|id| !self.motion_blocks_input(*id));
+        if forest.viewport_hit_at(x, y) {
+            candidates
+                .sort_by_cached_key(|id| std::cmp::Reverse(self.hit_paint_key(forest, *id, x, y)));
+        }
         candidates
     }
 }
@@ -560,7 +780,12 @@ impl UiWorld {
     /// first hit, so pointer dispatch on every move does not collect and then
     /// discard the full candidate list.
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        if !self.closing_surfaces.is_empty() {
+        if !self.closing_surfaces.is_empty()
+            || self
+                .hit_test_index
+                .get(&document)
+                .is_some_and(|index| index.viewport_hit_at(x, y))
+        {
             return self.hit_test_candidates(document, x, y).into_iter().next();
         }
         let forest = self.hit_test_index.get(&document)?;
@@ -667,6 +892,15 @@ impl UiWorld {
             let layout = self.record(id).layout;
             let motion_layout = self.motion_layout(id, &self.record(id).style.layout);
             let node_style = motion_layout.as_ref();
+            // This is a projection root, not a Runtime reparent. Fixed layout
+            // is viewport-relative; ancestors still control lifecycle and
+            // inherited pointer-events, but cannot clip or scroll this branch.
+            let (parent_hit, parent, parent_blocks_3d) =
+                if node_style.position == PositionSpec::Fixed {
+                    ((IDENTITY_AFFINE, [0.0, 0.0]), None, false)
+                } else {
+                    (parent_hit, parent, parent_blocks_3d)
+                };
             let local = if parent_blocks_3d && node_style.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {
@@ -823,6 +1057,53 @@ impl UiWorld {
     /// needed. Returns `false` when the splice point is missing and the caller
     /// must rebuild the document.
     pub(super) fn patch_hit_subtree(&mut self, document: DocumentId, root: StableNodeId) -> bool {
+        // A structural branch containing another viewport root spans multiple
+        // projection trees. Rebuild only for that case; ordinary fixed-surface
+        // edits and ancestor scrolling retain their normal incremental paths.
+        if self.hit_test_index.get(&document).is_some_and(|index| {
+            index.roots.iter().flatten().any(|id| {
+                *id != root
+                    && self.parent_id(*id).is_some()
+                    && self.is_descendant_or_self(*id, root)
+            })
+        }) {
+            return false;
+        }
+        if self.record(root).style.layout.position == PositionSpec::Fixed {
+            let mut forest = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
+            if forest.len() > 1 {
+                return false;
+            }
+            let entry = forest.pop().map(|mut entry| {
+                entry.order = self
+                    .parent_id(root)
+                    .and_then(|parent| {
+                        self.record(parent)
+                            .hierarchy
+                            .children
+                            .iter()
+                            .position(|id| *id == root)
+                    })
+                    .unwrap_or_default();
+                sort_hit_children(&mut entry);
+                entry
+            });
+            if let Some(entry) = &entry {
+                self.note_hit_nodes_built(std::slice::from_ref(entry));
+            }
+            let viewport_root = entry.is_some() && self.parent_id(root).is_some();
+            let index = self
+                .hit_test_index
+                .get_mut(&document)
+                .expect("existing index");
+            index.replace(root, None, entry);
+            if viewport_root {
+                index.viewport_roots.insert(root);
+            } else {
+                index.viewport_roots.remove(&root);
+            }
+            return true;
+        }
         let parent = self.parent_id(root);
         let Some(parent) = parent else {
             // Document roots: membership is owned by `live_document_roots`, so a
@@ -843,6 +1124,9 @@ impl UiWorld {
             }
             let position = roots.iter().position(|id| *id == root).unwrap_or_default();
             let mut rebuilt = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
+            if rebuilt.len() > 1 {
+                return false;
+            }
             let Some(mut entry) = rebuilt.pop() else {
                 return false;
             };
@@ -886,6 +1170,9 @@ impl UiWorld {
             return false;
         };
         let mut rebuilt = self.build_hit_forest(vec![(root, child_transform)]);
+        if rebuilt.len() > 1 {
+            return false;
+        }
         let entry = rebuilt.pop().map(|mut entry| {
             entry.order = position;
             sort_hit_children(&mut entry);
@@ -985,9 +1272,15 @@ impl UiWorld {
             .map(|id| (id, IDENTITY_AFFINE))
             .collect::<Vec<_>>();
         let entries = self.build_hit_entries(seeds);
+        let viewport_roots = entries
+            .iter()
+            .filter(|node| node.parent.is_none() && self.parent_id(node.entry.id).is_some())
+            .map(|node| node.entry.id)
+            .collect();
         self.bump_last_counters(|counters| counters.record_hit_test_rebuild(entries.len()));
-        self.hit_test_index
-            .insert(document, HitIndex::from_entries(entries));
+        let mut index = HitIndex::from_entries(entries);
+        index.viewport_roots = viewport_roots;
+        self.hit_test_index.insert(document, index);
     }
 }
 

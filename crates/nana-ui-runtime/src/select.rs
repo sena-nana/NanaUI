@@ -253,6 +253,7 @@ impl Select {
             foreground: Some(SemanticColorRole::Faint),
             background: Some(SemanticColorRole::Subtle),
             border: Some(SemanticColorRole::Border),
+            ..SemanticPaint::default()
         };
         let layout = Arc::make_mut(&mut style.layout);
         if layout.width.is_none() {
@@ -584,6 +585,7 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
                 foreground: Some(SemanticColorRole::Faint),
                 background: Some(SemanticColorRole::Subtle),
                 border: Some(SemanticColorRole::Border),
+                ..SemanticPaint::default()
             },
             ..InteractionStyle::default()
         },

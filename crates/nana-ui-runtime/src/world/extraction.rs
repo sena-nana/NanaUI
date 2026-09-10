@@ -195,7 +195,9 @@ impl UiWorld {
             StandardVisual::CalendarHeatmap { .. } => self.style_model.palette.text.as_rgba_array(),
             #[cfg(feature = "charts")]
             StandardVisual::TimeSeriesChart { .. }
-            | StandardVisual::TimestampSeriesChart { .. } => {
+            | StandardVisual::TimestampSeriesChart { .. }
+            | StandardVisual::DonutChart { .. }
+            | StandardVisual::StackedTimeSeriesChart { .. } => {
                 self.style_model.palette.text.as_rgba_array()
             }
             #[cfg(feature = "controls")]

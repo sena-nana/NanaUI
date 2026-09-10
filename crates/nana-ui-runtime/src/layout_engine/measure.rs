@@ -193,7 +193,7 @@ pub(super) fn intrinsic_size_scoped(
             (extent - chrome).max(0.0)
         }
     };
-    let content_available = Size::new(
+    let mut content_available = Size::new(
         content_axis(
             style.width,
             available.width,
@@ -207,6 +207,23 @@ pub(super) fn intrinsic_size_scoped(
             chrome.height,
         ),
     );
+    // Width limits constrain wrapping descendants before their heights are
+    // measured. Applying them only to the final box leaves an auto-height
+    // parent sized for wider text than its children can actually use.
+    let vp = Some((viewport.width, viewport.height));
+    let min_width = style.resolved_min_width_fonts(Some(available.width), vp, fonts)
+        + if matches!(style.box_sizing, BoxSizing::ContentBox)
+            && style.width.is_some_and(LengthSpec::is_definite_declared)
+        {
+            chrome.width
+        } else {
+            0.0
+        };
+    let mut measured_width = (content_available.width + chrome.width).max(min_width);
+    if let Some(max) = style.resolved_max_width_fonts(Some(available.width), vp, fonts) {
+        measured_width = measured_width.min(max);
+    }
+    content_available.width = (measured_width - chrome.width).max(0.0);
     // A node whose own width and height both resolve from its style needs no
     // measurement of its children: the content-derived defaults below are
     // consumed only through `unwrap_or`, so they would be discarded.
@@ -400,6 +417,25 @@ pub(super) fn intrinsic_size_scoped(
         children.width.max(text.width),
         children.height.max(text.height),
     );
+    #[cfg(feature = "rich-text")]
+    if let Some(crate::StandardVisual::NativeMarkdown { blocks, .. }) =
+        nodes.world.standard_visual(id)
+    {
+        let geometry = nodes.world.markdown_layout(
+            id,
+            &blocks,
+            crate::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: content_available.width,
+                height: 0.0,
+            },
+        );
+        content = Size::new(
+            crate::rich_text::markdown_content_width(&blocks, &geometry),
+            geometry.bounds.height,
+        );
+    }
     if text_metrics.is_none()
         && flow_children.is_empty()
         && let Some(fs) = style.font_size.filter(|value| *value > 0.0)
@@ -407,6 +443,28 @@ pub(super) fn intrinsic_size_scoped(
         content.height = content
             .height
             .max(text_line_box_height_px(fs, style.line_height));
+    }
+    if let Some(crate::StandardVisual::Button {
+        label,
+        icon,
+        icon_size,
+        icon_gap,
+        loading,
+        ..
+    }) = nodes.world.standard_visual(id)
+        && (loading || icon.is_some())
+    {
+        content.width += icon_size + if label.is_empty() { 0.0 } else { icon_gap };
+        content.height = content.height.max(icon_size);
+    }
+    if let Some(crate::StandardVisual::Checkbox { size, .. }) = nodes.world.standard_visual(id) {
+        content.width += size.indicator_size()
+            + if nodes.world.text(id).is_some_and(|label| !label.is_empty()) {
+                size.indicator_gap()
+            } else {
+                0.0
+            };
+        content.height = content.height.max(size.indicator_size());
     }
     let max_content_w = content.width + chrome.width;
     let stacked_min_w = child_sizes

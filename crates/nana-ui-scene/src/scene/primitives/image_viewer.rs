@@ -13,6 +13,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             scrim,
             surface,
             stage,
+            content,
             close,
             name,
             metadata,
@@ -52,9 +53,27 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 scene_rect(*stage),
                 VisualQuadStyle::solid(*stage_color),
             ));
+            if let Some(custom) = node.custom_render.clone() {
+                let mut content_clips = clips.to_vec();
+                content_clips.push(ClipRegion::axis_aligned(scene_rect(*stage), transform));
+                emit(ScenePrimitive {
+                    id: PrimitiveId { node: id, slot: 13 },
+                    node: id,
+                    bounds: scene_rect(*content),
+                    transform,
+                    clips: content_clips.into(),
+                    opacity,
+                    z_index: node.z_index,
+                    document_order: node_order,
+                    kind: ScenePrimitiveKind::Custom {
+                        node: custom,
+                        mask: node.source_style.layout.paint.mask.clone(),
+                    },
+                });
+            }
             emit(visual_quad(
                 &context,
-                13,
+                14,
                 scene_rect(*close),
                 VisualQuadStyle {
                     background: None,
@@ -65,7 +84,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             ));
             emit(component_text_primitive(
                 id,
-                16,
+                17,
                 &ComponentTextRegion {
                     bounds: *close,
                     content: Arc::from("×"),
@@ -84,7 +103,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             if let Some(name) = name {
                 emit(component_text_primitive(
                     id,
-                    14,
+                    15,
                     name,
                     TextHorizontalAlignment::Start,
                     true,
@@ -98,7 +117,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             if let Some(metadata) = metadata {
                 emit(component_text_primitive(
                     id,
-                    15,
+                    16,
                     metadata,
                     TextHorizontalAlignment::Start,
                     true,

@@ -79,6 +79,8 @@ Card 的可选标题与其正文子节点分别绘制。可以直接挂载独立
 
 对话框、菜单、抽屉、气泡必须用[控件](components.md)里的浮层（`Dialog`、`ActionMenu`、`Popover`、`Drawer`），锚定到触发控件的槽位；不要用绝对定位或 `fixed` 自己摆。
 
+框架内部的 `PositionSpec::Fixed` 以窗口视口为坐标基准：自身及普通后代不继承边界外的滚动、变换和裁剪，自身的变换、滚动与裁剪仍然生效。节点仍属于原 Runtime 树，保留结构上的透明度、叠放顺序、指针属性继承和 park 生命周期；绘制与命中采用相同边界。切换定位方式时，未重新提取的后代也会更新投影。
+
 ## 边距归属与覆盖
 
 | 容器 | 默认责任 |
@@ -118,3 +120,16 @@ let flush_page = page.content_padding(PaddingSpec::uniform(0.0));
 ### 旧用法迁移
 
 原来依赖 `.padding_xy(...).padding(0)` 未生效的布局，应直接保留需要的最终 padding；原来借 Card `.style(...)` 清零的地方，改为显式 `.padding(0.0)`。SettingsCard 不再默认附带 12px 底部 margin；多卡片页面使用父级 `Stack::column(gap)`，需要保留特定外边距时显式声明。修复后的容器量测计入子项 margin；百分比 padding 四边均相对包含块宽度，Grid 项相对最终单元格。
+
+### 随主题解析的混色
+
+`SemanticColorMix::new(first_role, second_role, first_weight)` 对当前主题两种
+语义色做预乘 alpha 的 sRGB 混合；权重表示第一种颜色的占比，精度为万分之一，
+超范围有限值夹到 0–1，非有限值按零。`SemanticColorMix::alpha(role, alpha)`
+只降低该颜色的 alpha，不降低后代文字的不透明度。
+
+`NodeStyle::surface_mix(mix)` 与 `outline_mix(mix, width)` 设置基态混色。
+交互态显式角色或混色覆盖基态，主题切换重新解析；原始 `LayoutStyle` 的显式颜色
+仍有最高优先级。`surface` / `surface_mix`、`outline` / `outline_mix` 后调用者
+覆盖先前的对应基态设置。`InteractionStyle::base` 提供基态的可选语义覆盖，随后依次
+合并 selected、hovered、pressed、focused、disabled；默认空值保持原有外观。

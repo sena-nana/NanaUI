@@ -95,6 +95,7 @@ descriptors! {
     TABLE_ROW => { type_id: "nana.table-row", tags: &["tr"] },
     TABLE_CELL => { type_id: "nana.table-cell", tags: &["td"] },
     REORDER_LIST => { type_id: "nana.reorder-list", tags: &["reorder-list"], feature: "controls" },
+    DONUT_CHART => { type_id: "nana.donut-chart", tags: &["donut-chart"], feature: "charts" },
     TIME_SERIES_CHART => { type_id: "nana.time-series-chart", tags: &["time-series-chart"], feature: "charts" },
     DESKTOP_SHELL => { type_id: "nana.desktop-shell", tags: &["desktop-shell"] },
     APP_TITLE_BAR => { type_id: "nana.app-title-bar", tags: &["app-title-bar"] },

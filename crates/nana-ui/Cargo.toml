@@ -37,7 +37,7 @@ syntax-highlighting = [
 accesskit-tree = ["dep:accesskit"]
 graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas"]
 image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer"]
-rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text"]
+rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui-core/bundled-font-regular"]
 # Full generated Tabler catalog as typed `Icon` constants. Off by default:
 # the built-in catalog covers shell chrome only, and products that need
 # product glyphs (user, keyboard, message, play …) should not have to
@@ -136,4 +136,8 @@ required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "hosted-file-dialog-probe"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "native-browser"
 required-features = ["hosted", "bundled-fonts"]

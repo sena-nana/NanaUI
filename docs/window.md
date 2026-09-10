@@ -183,3 +183,41 @@ python scripts/validate-desktop-overlay.py
 ```
 
 探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。
+
+## Runtime 中的原生网页内容
+
+`runtime::BrowserView` 是保留树中的布局和可访问性节点；应用工具条、地址输入和
+业务状态仍由 Runtime 承载。开启 `hosted` 后，`RuntimeProgram::native_browser_requests`
+返回 `NativeBrowserRequest { id, node, policy, restore_url, visible, revision, command }`。宿主只为
+当前窗口文档中、`browser_id` 与请求 `id` 一致的 `BrowserView` 创建原生内容。
+同窗重复 `id`、跨文档节点和已销毁节点均不附着原生视图。
+
+`revision` 是应用单调递增的命令身份；相同版本重复投影不会再次后退、刷新或截图。
+已存在实例的 `command: None` 只同步状态。事件通过平台回调主动唤醒当前宿主，再经
+`native_browser_event(window, NativeBrowserEvent { id, node, revision, event }, context)`
+回流。事件保留产生它的命令版本；宿主再次核对窗口、当前请求和节点，迟到结果不会
+被重新标记为后来的请求。截图通过 `Captured(Vec<u8>)` 返回 PNG，失败通过
+`CaptureFailed`；截图过程中换页或隐藏会使原截图失效。
+
+当前 macOS 后端使用主线程 `WKWebView` 子视图，绑定父窗口，支持 HTTP(S) 导航、
+后退/前进、刷新/停止、聚焦和异步截图。`BrowserPolicy::allow_web` 默认关闭；
+`about:blank` 始终允许，启用后仍拒绝文件、脚本和带凭据的 URL。重定向与新窗口链接
+经过同一策略，新窗口链接留在同一浏览内容中。Windows/Linux 当前返回明确的不可用
+状态，不创建占位浏览器；此边界不影响它们已有的窗口、文件对话框与 NativeContent
+能力。
+
+已挂载节点的隐藏保留浏览历史，原生视图隐藏并释放焦点；park 或销毁节点、撤回请求、
+改变节点/策略或关闭父窗会移除原生视图，晚到回调被丢弃。节点再次挂载时创建新实例，
+只导航至当前 Navigate 命令的目标或 `restore_url`，不会重放后退、停止或截图。
+恢复页面后原生历史从新实例开始；应用应等待回流状态更新按钮。应用仍须在业务任务切换或
+关闭时撤销自己的截图意图，不能仅在完成时比较当前任务（切走再切回也是新意图）。
+
+原生子视图只支持有限平移和矩形裁剪，布局使用窗口逻辑坐标并跟随滚动。圆角裁剪、
+非平移变换、透明度/滤镜组，或随后绘制的重叠 Runtime 内容，会暂时隐藏网页，避免
+它遮住菜单和浮层。隐藏不缩小网页自身的布局尺寸；重复帧不会重新设置相同原生几何。
+原生网页内容不会出现在 Runtime 离屏截图中；用户截图须使用 `BrowserCommand::Capture`。
+
+可运行 `cargo run -p nana-ui --example native-browser --features hosted,bundled-fonts`，
+通过示例页、说明页、后退、隐藏和截图按钮验证真实父窗。设置
+`NANA_BROWSER_CAPTURE_OUTPUT=/tmp/nanaui-browser.png` 可保存网页 PNG。必须实际查看
+原生窗口与 PNG 后才能宣称平台视觉和交互通过；编译及离屏树检查不能替代 WebKit 验收。

@@ -34,6 +34,7 @@ impl RuntimeProgram for Probe {
         let id = DocumentId::new(1).unwrap();
         let mut document = RuntimeDocument::new(id);
         let cx = document.context_mut();
+        cx.set_theme(nana_ui::ThemeMode::Light)?;
         let root = cx.create_component(id, Stack::fill_column(16.0))?;
         let counter = cx.create_detached_component(id, Text::new("0"))?;
         cx.append_child(root, counter)?;
@@ -106,9 +107,7 @@ impl RuntimeProgram for Probe {
                 let _ = self
                     .document
                     .context_mut()
-                    .update_component(self.counter, |text, _| {
-                        text.value = self.ticks.to_string().into()
-                    });
+                    .update_component(self.counter, |text, _| text.value = self.ticks.to_string());
                 return RuntimeProgramUpdate::redraw_all();
             }
             Message::Command(command) => command,
@@ -133,7 +132,11 @@ impl RuntimeProgram for Probe {
         self.active_request.get_or_insert(id);
         let request = FileDialogRequest::new(id, kind)
             .title("选择文件")
-            .directory(std::env::temp_dir())
+            .directory(
+                std::env::var_os("NANA_FILE_DIALOG_DIRECTORY")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(std::env::temp_dir),
+            )
             .file_name("nana-dialog-selection.txt")
             .filters([FileFilter::new("文本", ["txt"])]);
         report(format_args!("request {id} {kind:?}"));
@@ -207,11 +210,11 @@ impl RuntimeProgram for Probe {
 }
 fn report(message: std::fmt::Arguments<'_>) {
     println!("{message}");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("nana-hosted-file-dialog-probe.log"))
-    {
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(
+        std::env::var_os("NANA_FILE_DIALOG_EVENT_LOG")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("nana-hosted-file-dialog-probe.log")),
+    ) {
         let _ = writeln!(file, "{message}");
     }
 }

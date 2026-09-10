@@ -9,6 +9,9 @@ export const NanaTimeSeriesChart = {
     values: { type: Array, default: () => [] },
     data: { type: Array, default: undefined },
     label: { type: String, default: "" },
+    layers: { type: Array, default: () => [] },
+    axisLabels: { type: Array, default: () => [] },
+    tooltipDetails: { type: Array, default: () => [] },
   },
   setup(props, { attrs }) {
     return () => {
@@ -17,6 +20,9 @@ export const NanaTimeSeriesChart = {
         ...attrs,
         class: ["nana-time-series-chart", attrs.class].flat().filter(Boolean).join(" "),
         label: props.label,
+        layers: props.layers,
+        "axis-labels": props.axisLabels,
+        "tooltip-details": props.tooltipDetails,
         values,
         data: values,
         "data-agent-id": attrs["data-agent-id"] || "nana.time-series-chart",

@@ -193,6 +193,31 @@ impl RuntimeInputAdapter {
             }
         }
         if let InputEvent::Keyboard {
+            pressed,
+            key,
+            repeat,
+            modifiers,
+            ..
+        } = event
+            && !keyboard_barrier
+            && context.dispatch_focused_key(
+                document,
+                &nana_ui_runtime::KeyInput::new(
+                    *pressed,
+                    key,
+                    modifiers.alt,
+                    modifiers.control,
+                    modifiers.shift,
+                    modifiers.meta,
+                    *repeat,
+                ),
+            )
+        {
+            return Ok(InputDisposition {
+                prevent_default: true,
+            });
+        }
+        if let InputEvent::Keyboard {
             pressed: true,
             key,
             text,
@@ -352,6 +377,33 @@ impl RuntimeInputAdapter {
                 };
                 let component_handled = match phase {
                     PointerPhase::Move => {
+                        if context.update_text_area_resize(document, *pointer_id, *x, *y)? {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        if optional_input!(
+                            "rich-text",
+                            context.update_rich_text_pointer(document, *pointer_id, *x, *y),
+                            Ok::<bool, FrameworkError>(false)
+                        )? {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        #[cfg(feature = "image-viewer")]
+                        if let Some(viewer) = context
+                            .world()
+                            .pointer_capture(document, *pointer_id)
+                            .and_then(|target| {
+                                context.view_entity::<nana_ui_runtime::ImageViewer>(target)
+                            })
+                            && context.image_viewer_pointer_move(viewer, *pointer_id, *x, *y)?
+                        {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         if let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
                             && context.text_editor_pointer_drag(
                                 document,
@@ -471,6 +523,15 @@ impl RuntimeInputAdapter {
                         // Scrollbars overlay content, so they claim the press
                         // before the node underneath sees it.
                         if *button == 0
+                            && !activation_click
+                            && let Some(target) = target
+                            && context.begin_text_area_resize(*pointer_id, target, *x, *y)?
+                        {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        if *button == 0
                             && let Some((view, axis)) =
                                 context.scrollbar_target_near(document, *x, *y)
                             && context.begin_scrollbar_drag(*pointer_id, view, axis, *x, *y)?
@@ -510,6 +571,37 @@ impl RuntimeInputAdapter {
                             )?;
                         }
                         if let Some(target) = hit {
+                            if *button == 0
+                                && !activation_click
+                                && optional_input!(
+                                    "rich-text",
+                                    context.begin_rich_text_pointer(
+                                        document,
+                                        *pointer_id,
+                                        target,
+                                        *x,
+                                        *y
+                                    ),
+                                    Ok::<bool, FrameworkError>(false)
+                                )?
+                            {
+                                return Ok(InputDisposition {
+                                    prevent_default: true,
+                                });
+                            }
+                            #[cfg(feature = "image-viewer")]
+                            if *button == 0
+                                && !activation_click
+                                && let Some(viewer) =
+                                    context.view_entity::<nana_ui_runtime::ImageViewer>(target)
+                                && context
+                                    .image_viewer_pointer_down(viewer, *pointer_id, *x, *y)?
+                                    .is_some()
+                            {
+                                return Ok(InputDisposition {
+                                    prevent_default: true,
+                                });
+                            }
                             if optional_input!(
                                 "graph-canvas",
                                 context.is_graph_canvas(target),
@@ -619,6 +711,33 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                        if context.end_text_area_resize(document, *pointer_id, false)? {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        if optional_input!(
+                            "rich-text",
+                            context.end_rich_text_pointer(document, *pointer_id, *x, *y, false),
+                            Ok::<bool, FrameworkError>(false)
+                        )? {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
+                        #[cfg(feature = "image-viewer")]
+                        if let Some(viewer) = context
+                            .world()
+                            .pointer_capture(document, *pointer_id)
+                            .and_then(|target| {
+                                context.view_entity::<nana_ui_runtime::ImageViewer>(target)
+                            })
+                            && context.image_viewer_pointer_up(viewer, *pointer_id)?
+                        {
+                            return Ok(InputDisposition {
+                                prevent_default: true,
+                            });
+                        }
                         // 拖拽移动选中的落点执行先于通用释放清理：active 态
                         // 落文本、pending 态回落为点击。
                         let mut drop_handled = false;
@@ -689,6 +808,22 @@ impl RuntimeInputAdapter {
                         }
                     }
                     PointerPhase::Cancel => {
+                        context.end_text_area_resize(document, *pointer_id, true)?;
+                        optional_input!(
+                            "rich-text",
+                            context.end_rich_text_pointer(document, *pointer_id, *x, *y, true),
+                            Ok::<bool, FrameworkError>(false)
+                        )?;
+                        #[cfg(feature = "image-viewer")]
+                        if let Some(viewer) = context
+                            .world()
+                            .pointer_capture(document, *pointer_id)
+                            .and_then(|target| {
+                                context.view_entity::<nana_ui_runtime::ImageViewer>(target)
+                            })
+                        {
+                            context.image_viewer_pointer_up(viewer, *pointer_id)?;
+                        }
                         context.text_editor_pointer_release(*pointer_id);
                         let scrollbar = context.end_scrollbar_drag(document, *pointer_id, true)?;
                         let range = context.end_range_drag(document, *pointer_id, true)?;
@@ -770,6 +905,17 @@ impl RuntimeInputAdapter {
                     *y,
                 )?;
                 // 锚定浮层（补全弹层 / hover 浮窗）优先：指针落在浮层面板
+                #[cfg(feature = "image-viewer")]
+                if let Some(viewer) = overlay
+                    .target
+                    .or_else(|| context.pointer_target(document, *x, *y))
+                    .and_then(|target| context.view_entity::<nana_ui_runtime::ImageViewer>(target))
+                    && context.image_viewer_wheel(viewer, *x, *y, dy)?
+                {
+                    return Ok(InputDisposition {
+                        prevent_default: true,
+                    });
+                }
                 // 上时滚轮滚动浮层自身（按行，方向跟随滚轮），不再落到
                 // 编辑器或文档滚动。
                 let overlay_rows = if *delta_y > 0.0 {
@@ -1572,6 +1718,116 @@ mod tests {
     }
 
     #[test]
+    fn text_area_resize_routes_grip_drag_cancel_and_park_without_editing_text() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(
+                document,
+                TextArea::new("retained text")
+                    .height(100.0)
+                    .resize_vertical(true),
+            )
+            .unwrap();
+        let viewport = nana_ui_runtime::LayoutViewport::new(320.0, 500.0);
+        context.resolve_styles(&[area.stable_id()]).unwrap();
+        context
+            .shape_text(&[area.stable_id()], &mut MeasureTextShaper)
+            .unwrap();
+        context.layout_document(document, viewport).unwrap();
+        context.rebuild_hit_test(document);
+        let Some(ComponentGeometry::TextInput {
+            resize_grip: Some(grip),
+            ..
+        }) = context.world().component_geometry(area.stable_id())
+        else {
+            panic!("resize grip must be projected")
+        };
+        let x = grip.x + grip.width / 2.0;
+        let y = grip.y + grip.height / 2.0;
+        let initial = context.world().layout_box(area.stable_id()).unwrap().height;
+        let mut adapter = RuntimeInputAdapter::default();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &pointer(PointerPhase::Down, x, y))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().pointer_capture(document, 1),
+            Some(area.stable_id())
+        );
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Move, x, y + 45.0),
+            )
+            .unwrap();
+        context.layout_document(document, viewport).unwrap();
+        assert!(
+            (context.world().layout_box(area.stable_id()).unwrap().height - initial - 45.0).abs()
+                < 0.01
+        );
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(PointerPhase::Cancel, x, y + 45.0),
+            )
+            .unwrap();
+        context.layout_document(document, viewport).unwrap();
+        context.rebuild_hit_test(document);
+        assert_eq!(
+            context.world().layout_box(area.stable_id()).unwrap().height,
+            initial
+        );
+        assert_eq!(context.world().pointer_capture(document, 1), None);
+        context.resolve_styles(&[area.stable_id()]).unwrap();
+        adapter
+            .dispatch(&mut context, document, &pointer(PointerPhase::Down, x, y))
+            .unwrap();
+        context
+            .update_text_area_resize(document, 1, x, y + 30.0)
+            .unwrap();
+        let other = context
+            .create_component(document, Button::new("other capture"))
+            .unwrap();
+        let mut steal = MutationQueue::new();
+        steal.capture_pointer(1, other.stable_id());
+        context.commit_mutations(steal).unwrap();
+        assert!(context.end_text_area_resize(document, 1, false).unwrap());
+        assert_eq!(
+            context.world().pointer_capture(document, 1),
+            Some(other.stable_id())
+        );
+        context.remove_view(other).unwrap();
+        context.resolve_styles(&[area.stable_id()]).unwrap();
+        context.layout_document(document, viewport).unwrap();
+        context.rebuild_hit_test(document);
+        assert_eq!(
+            context.world().layout_box(area.stable_id()).unwrap().height,
+            initial
+        );
+        adapter
+            .dispatch(&mut context, document, &pointer(PointerPhase::Down, x, y))
+            .unwrap();
+        let mut queue = MutationQueue::new();
+        queue.park_subtree(area.stable_id());
+        context.commit_mutations(queue).unwrap();
+        assert!(
+            !context
+                .update_text_area_resize(document, 1, x, y + 70.0)
+                .unwrap()
+        );
+        assert_eq!(context.world().pointer_capture(document, 1), None);
+        assert_eq!(
+            context.read(area, |area| area.state.value.clone()).unwrap(),
+            "retained text"
+        );
+    }
+
+    #[test]
     fn macos_activation_click_does_not_activate_the_hit_target() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -1614,6 +1870,75 @@ mod tests {
             &pointer_with(PointerPhase::Up, 30.0, 30.0, true),
         );
         assert_eq!(context.world().text(button.stable_id()), Some("Build"));
+    }
+
+    #[cfg(feature = "rich-text")]
+    #[test]
+    fn markdown_link_pointer_uses_the_painted_padded_content_and_cancels_stolen_capture() {
+        use nana_ui_runtime::{MarkdownDrawingCommand, NativeMarkdown, RichTextEvent};
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut markdown = NativeMarkdown::from_source("[Open](https://example.com)");
+        let layout = Arc::make_mut(&mut markdown.style.layout);
+        layout.padding = Some(nana_ui_core::LengthSpec::Px(28.0));
+        layout.border_width = Some(3.0);
+        let markdown = context.create_component(document, markdown).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        context
+            .on(markdown, move |_, event: &RichTextEvent, _| {
+                sink.lock().unwrap().push(event.clone())
+            })
+            .unwrap();
+        context.resolve_styles(&[markdown.stable_id()]).unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(300.0, 160.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let Some(ComponentGeometry::NativeMarkdown { drawing, .. }) =
+            context.world().component_geometry(markdown.stable_id())
+        else {
+            panic!("markdown geometry")
+        };
+        let bounds = drawing
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                MarkdownDrawingCommand::Text { bounds, .. } => Some(*bounds),
+                _ => None,
+            })
+            .expect("painted link text");
+        let x = bounds.x + 1.0;
+        let y = bounds.y + bounds.height / 2.0;
+        assert!(bounds.x >= 31.0);
+        let mut adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch(&mut context, document, &pointer(PointerPhase::Down, x, y))
+            .unwrap();
+        adapter
+            .dispatch(&mut context, document, &pointer(PointerPhase::Up, x, y))
+            .unwrap();
+        assert!(events.lock().unwrap().iter().any(|event| matches!(event, RichTextEvent::LinkActivated(url) if url.as_ref() == "https://example.com")));
+        events.lock().unwrap().clear();
+        adapter
+            .dispatch(&mut context, document, &pointer(PointerPhase::Down, x, y))
+            .unwrap();
+        let other = context
+            .create_component(document, Button::new("new owner"))
+            .unwrap();
+        let mut queue = MutationQueue::new();
+        queue.capture_pointer(1, other.stable_id());
+        context.commit_mutations(queue).unwrap();
+        assert!(
+            context
+                .end_rich_text_pointer(document, 1, x, y, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context.world().pointer_capture(document, 1),
+            Some(other.stable_id())
+        );
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[test]

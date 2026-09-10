@@ -533,6 +533,10 @@ impl AppContext {
         let Some(view) = self.views.get(&root) else {
             return false;
         };
+        #[cfg(feature = "image-viewer")]
+        if view.downcast_ref::<crate::ImageViewer>().is_some() {
+            return matches!(trigger, DialogCloseTrigger::Escape);
+        }
         view.downcast_ref::<Dialog>()
             .is_some_and(|dialog| dialog.close_policy.allows(trigger))
             || view.downcast_ref::<ConfirmDialog>().is_some_and(|dialog| {

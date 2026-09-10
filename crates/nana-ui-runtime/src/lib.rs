@@ -47,9 +47,13 @@ mod layout_engine;
 /// from "the frame was cheap".
 #[cfg(feature = "benchmark")]
 pub use layout_engine::plan_stats;
+mod browser_view;
 mod menus;
 mod mutation;
 mod native_content;
+pub use browser_view::BrowserView;
+#[cfg(feature = "rich-text")]
+mod markdown_drawing;
 mod overlay_surfaces;
 mod overlay_visibility;
 mod pane;
@@ -64,6 +68,8 @@ mod qr_code;
 mod query;
 #[cfg(feature = "controls")]
 mod reorder_list;
+#[cfg(feature = "rich-text")]
+pub use markdown_drawing::{MarkdownDrawing, MarkdownDrawingCommand};
 #[cfg(feature = "rich-text")]
 mod rich_text;
 mod schedule;
@@ -83,6 +89,7 @@ mod store;
 mod tabs;
 mod terminal;
 mod text_editing;
+mod text_input_limit;
 mod text_layout_cache;
 mod thumbnail;
 mod toast;
@@ -113,7 +120,9 @@ pub use calendar::{
     build_calendar_heatmap_model, calendar_cell_fill,
 };
 #[cfg(feature = "charts")]
-pub use charts::{TimeSeriesChart, TimeSeriesPaint, time_series_paint};
+pub use charts::{
+    DonutChart, DonutSlice, TimeSeriesChart, TimeSeriesLayer, TimeSeriesPaint, time_series_paint,
+};
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
     ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
@@ -246,9 +255,9 @@ pub use reorder_list::{
 };
 #[cfg(feature = "rich-text")]
 pub use rich_text::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
-    MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent, SelectableRichText,
-    TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
+    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownImageResource, MarkdownSpan,
+    MarkdownTable, MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent,
+    SelectableRichText, TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
 };
 pub use schedule::SystemWork;
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};

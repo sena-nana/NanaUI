@@ -1,4 +1,4 @@
-//! Compact non-interactive time series. Application owns values and labels.
+//! Retained charts. Applications own values and localized labels.
 
 use std::sync::Arc;
 
@@ -10,12 +10,21 @@ use crate::{
     MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
 };
 
+mod donut;
+mod stacked;
+pub use donut::{DonutChart, DonutSlice};
+pub use stacked::TimeSeriesLayer;
+
 const DEFAULT_LABEL: &str = "Time series";
 
 /// Backend-neutral time-series geometry. Scene paint of the grid/area/line is not here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimeSeriesChart {
     pub values: Vec<f64>,
+    pub layers: Vec<TimeSeriesLayer>,
+    pub axis_labels: Vec<Arc<str>>,
+    pub tooltip_details: Vec<Arc<str>>,
+    pub active: Option<usize>,
     /// Unix milliseconds and optional samples. None and non-finite samples leave gaps.
     pub samples: Option<Vec<(i64, Option<f64>)>>,
     pub unit: Option<Arc<str>>,
@@ -41,6 +50,10 @@ impl TimeSeriesChart {
     pub fn new(values: impl IntoIterator<Item = f64>) -> Self {
         Self {
             values: values.into_iter().map(sanitize_value).collect(),
+            layers: Vec::new(),
+            axis_labels: Vec::new(),
+            tooltip_details: Vec::new(),
+            active: None,
             samples: None,
             unit: None,
             time_labels: None,
@@ -176,9 +189,13 @@ impl TimeSeriesChart {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
-        layout.min_height = Some(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
+        layout.width.get_or_insert(LengthSpec::Fill);
+        layout
+            .height
+            .get_or_insert(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
+        layout
+            .min_height
+            .get_or_insert(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
         style
     }
 }
@@ -207,6 +224,7 @@ fn sanitize_value(value: f64) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn inert() -> InteractionState {
     InteractionState {
         pointer_events: false,
@@ -228,6 +246,14 @@ impl ComponentView for TimeSeriesChart {
                 unit: self.unit.clone(),
                 time_labels: self.time_labels.clone(),
             }
+        } else if !self.layers.is_empty() {
+            StandardVisual::StackedTimeSeriesChart {
+                title: self.resolved_label(),
+                values: self.values.clone().into(),
+                layers: self.layers.clone().into(),
+                labels: self.axis_labels.clone().into(),
+                active: self.active,
+            }
         } else {
             StandardVisual::TimeSeriesChart {
                 values: self.values.clone().into(),
@@ -241,7 +267,10 @@ impl ComponentView for TimeSeriesChart {
             world,
             mutations,
             &self.effective_style(),
-            inert(),
+            InteractionState {
+                pointer_events: self.samples.is_none() && !self.layers.is_empty(),
+                focusable: false,
+            },
             AccessibilityState {
                 role: AccessibilityRole::Image,
                 label: Some(self.resolved_label()),

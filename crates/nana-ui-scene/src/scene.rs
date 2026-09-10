@@ -433,6 +433,9 @@ pub struct UiScene {
     visibility: OnceLock<VisibilityIndex>,
     attribute_epoch: u64,
     projections: HashMap<StableNodeId, (u64, AffineTransform, usize)>,
+    /// Projections that cannot be adjusted by an inverse delta. Usually empty;
+    /// ordinary scrolling must not scan every retained descendant.
+    unadjustable_projections: HashSet<StableNodeId>,
     draw_attributes: std::sync::Mutex<HashMap<StableNodeId, DrawAttributes>>,
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
@@ -454,6 +457,7 @@ impl Default for UiScene {
             visibility: OnceLock::new(),
             attribute_epoch: 0,
             projections: HashMap::new(),
+            unadjustable_projections: HashSet::new(),
             draw_attributes: std::sync::Mutex::new(HashMap::new()),
             nodes: HashMap::new(),
             node_order: HashMap::new(),
@@ -471,6 +475,7 @@ impl Clone for UiScene {
             visibility: self.visibility.clone(),
             attribute_epoch: self.attribute_epoch,
             projections: self.projections.clone(),
+            unadjustable_projections: self.unadjustable_projections.clone(),
             draw_attributes: std::sync::Mutex::new(
                 self.draw_attributes
                     .lock()
@@ -571,10 +576,16 @@ impl UiScene {
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
+        let mut inherited_roots = HashSet::new();
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
                 delta.removed.push(id);
                 self.projections.remove(&id);
+                self.unadjustable_projections.remove(&id);
+                if !old.children.is_empty() {
+                    self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+                    inherited_roots.insert(id);
+                }
                 self.draw_attributes
                     .get_mut()
                     .expect("scene attributes")
@@ -588,9 +599,24 @@ impl UiScene {
         let mut scroll_rebuild = Vec::new();
         let mut scroll_translations = Vec::new();
         let mut stacking_changed = false;
+        let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             previous_structure.insert(node.id, self.node_structure(node.id));
             let previous = self.nodes.get(&node.id);
+            let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
+                old.parent != node.parent
+                    || old.layout != node.layout
+                    || old.source_style.layout != node.source_style.layout
+                    || inherited_component_clip(old) != inherited_component_clip(&node)
+            });
+            if inherited_changed {
+                // Retained descendants may not be extracted when an ancestor's
+                // clip or transform changes. Refresh their inherited projection
+                // without rebuilding invertible retained geometry.
+                self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+                inherited_geometry_changed = true;
+                inherited_roots.insert(node.id);
+            }
             if previous.is_none() {
                 delta.added.push(node.id);
             }
@@ -602,13 +628,19 @@ impl UiScene {
             // Layout/style can affect inherited clips; consumers resolve the
             // changed attribute roots rather than guessing from paint counts.
             if previous.is_none_or(|old| {
-                old.layout != node.layout || old.source_style.layout != node.source_style.layout
+                old.parent != node.parent
+                    || old.layout != node.layout
+                    || old.source_style.layout != node.source_style.layout
+                    || inherited_component_clip(old) != inherited_component_clip(&node)
             }) {
                 delta.clips.push(node.id);
             }
             delta.paint.push(node.id);
-            hierarchy_changed |= previous
-                .is_none_or(|old| old.parent != node.parent || old.children != node.children);
+            hierarchy_changed |= previous.is_none_or(|old| {
+                old.parent != node.parent
+                    || old.children != node.children
+                    || old.source_style.layout.position != node.source_style.layout.position
+            });
             let scroll_changed =
                 previous.is_some_and(|old| old.scroll_offset != node.scroll_offset);
             // A node's z_index and group opacity are part of every descendant's
@@ -625,6 +657,7 @@ impl UiScene {
             });
             changed.push(node.id);
             if scroll_changed {
+                inherited_roots.insert(node.id);
                 let old = self.nodes.get(&node.id).expect("scrolling retained node");
                 let (parent, _, _, blocks_3d) = self.ancestor_state(old);
                 let transform = parent.then(node_scene_transform(
@@ -669,6 +702,21 @@ impl UiScene {
                     collect_unextracted_descendants(&self.nodes, root, &extracted, &mut rebuild);
                 }
             }
+            // An old projective/singular base cannot be mapped to the new
+            // inherited transform. Rebuild only those affected projections;
+            // invertible siblings and the ordinary scroll fast path stay retained.
+            let mut rebuilding: HashSet<_> = rebuild.iter().copied().collect();
+            for &id in &self.unadjustable_projections {
+                if !rebuilding.contains(&id)
+                    && inherited_roots
+                        .iter()
+                        .any(|root| self.node_descends_from(id, *root))
+                {
+                    rebuilding.insert(id);
+                    rebuild.push(id);
+                }
+            }
+            rebuild.retain(|id| rebuilding.remove(id));
             for &id in &rebuild {
                 previous_structure
                     .entry(id)
@@ -688,6 +736,9 @@ impl UiScene {
                     .any(|(id, before)| *before != self.node_structure(*id))
             {
                 self.frame_plan.take();
+                self.visibility.take();
+            }
+            if inherited_geometry_changed {
                 self.visibility.take();
             }
             if let Some(mut visibility) = self.visibility.take() {
@@ -861,19 +912,37 @@ impl UiScene {
             parent = node.parent;
         }
         ancestors.reverse();
+        // Layout resolves fixed boxes against the viewport even below a
+        // transformed ancestor. Keep structural opacity, but begin geometry at
+        // the nearest fixed boundary instead of inheriting its outer scroll,
+        // transform and clip chain.
+        let geometry_start =
+            if node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
+                ancestors.len()
+            } else {
+                ancestors
+                    .iter()
+                    .rposition(|ancestor| {
+                        ancestor.source_style.layout.position == nana_ui_core::PositionSpec::Fixed
+                    })
+                    .unwrap_or(0)
+            };
         let mut transform = AffineTransform::IDENTITY;
         let mut opacity = 1.0;
         let mut clips = Vec::new();
         let mut blocks_3d = false;
-        for ancestor in ancestors {
+        for (index, ancestor) in ancestors.into_iter().enumerate() {
+            if !is_opacity_group(&self.nodes, ancestor) {
+                opacity *= local_opacity(ancestor);
+            }
+            if index < geometry_start {
+                continue;
+            }
             let layout = ancestor.layout;
             let local = node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false);
             transform = transform.then(local);
             if ancestor.source_style.layout.fails_closed_3d_context() {
                 blocks_3d = true;
-            }
-            if !is_opacity_group(&self.nodes, ancestor) {
-                opacity *= local_opacity(ancestor);
             }
             if let Some((x, y, w, h)) = ancestor.source_style.layout.overflow_clip_box(
                 layout.x,
@@ -1017,6 +1086,36 @@ fn collect_unextracted_descendants(
             out.push(child);
         }
         collect_unextracted_descendants(nodes, child, extracted, out);
+    }
+}
+
+#[derive(PartialEq)]
+enum InheritedComponentClip {
+    EmptyState(LayoutBox),
+    ModalFrame {
+        surface: LayoutBox,
+        body: LayoutBox,
+        body_root: Option<StableNodeId>,
+    },
+}
+
+fn inherited_component_clip(node: &ExtractedNode) -> Option<InheritedComponentClip> {
+    match node.component_geometry.as_deref() {
+        Some(ComponentGeometry::EmptyState { root_clip, .. }) => {
+            Some(InheritedComponentClip::EmptyState(*root_clip))
+        }
+        Some(ComponentGeometry::ModalFrame { surface, body, .. }) => {
+            let body_root = match node.standard_visual.as_ref() {
+                Some(StandardVisual::ModalFrame { slots, .. }) => slots.body,
+                _ => None,
+            };
+            Some(InheritedComponentClip::ModalFrame {
+                surface: *surface,
+                body: *body,
+                body_root,
+            })
+        }
+        _ => None,
     }
 }
 

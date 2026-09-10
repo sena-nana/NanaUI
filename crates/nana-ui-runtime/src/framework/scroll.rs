@@ -10,7 +10,7 @@ impl AppContext {
         scroll: Entity<ScrollView>,
         enabled: bool,
     ) -> Result<bool, FrameworkError> {
-        self.update_component(scroll, |view, _| {
+        self.update_scroll_view_visual(scroll, |view, _| {
             view.follow_end = enabled;
             if enabled {
                 // An explicit return-to-latest command supersedes a deferred
@@ -58,7 +58,7 @@ impl AppContext {
         if !anchor.viewport_y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        self.update_component(scroll, |view, _| view.pending_anchor = Some(anchor))?;
+        self.update_scroll_view_visual(scroll, |view, _| view.pending_anchor = Some(anchor))?;
         // Anchor restoration depends on measured geometry. Include this
         // container in the next scoped layout even when its style is unchanged.
         self.world.mark_layout(scroll.id);
@@ -92,7 +92,7 @@ impl AppContext {
         }
         let current = self.world.scroll_offset(scroll.id).unwrap_or_default();
         if let Some(anchor) = anchor {
-            self.update_component(scroll, |view, _| view.pending_anchor = None)?;
+            self.update_scroll_view_visual(scroll, |view, _| view.pending_anchor = None)?;
             if self.scroll_contains_row(scroll.id, anchor.row)
                 && let (Some(viewport), Some(row)) = (
                     self.world.layout_box(scroll.id),
@@ -129,6 +129,18 @@ impl AppContext {
             .is_some_and(|metrics| offset.y >= metrics.max_offset().y - 2.0);
         self.update(scroll, |_, cx| {
             cx.emit(crate::UserScroll { offset, at_end })
+        })
+    }
+
+    // Hover/drag/retention own scrollbar state, not the style of a scrollport
+    // borrowed by a Workspace region. Reuse the normal event/commit transaction.
+    fn update_scroll_view_visual<R>(
+        &mut self,
+        entity: Entity<ScrollView>,
+        update: impl FnOnce(&mut ScrollView, &mut ViewContext<'_, ScrollView>) -> R,
+    ) -> Result<R, FrameworkError> {
+        self.update_inner(entity, update, |scroll, world, mutations| {
+            scroll.project_scrollbar_visual(entity.stable_id(), world, mutations);
         })
     }
 
@@ -511,7 +523,7 @@ impl AppContext {
             }
             track.thumb_length / 2.0
         };
-        self.update_component(entity, |scroll, cx| {
+        self.update_scroll_view_visual(entity, |scroll, cx| {
             scroll.dragging = Some(crate::ScrollbarDragState {
                 pointer_id,
                 axis,
@@ -588,7 +600,7 @@ impl AppContext {
         if cancel {
             self.scroll_to(entity, drag.initial_offset)?;
         }
-        self.update_component(entity, |scroll, cx| {
+        self.update_scroll_view_visual(entity, |scroll, cx| {
             scroll.dragging = None;
             cx.mutations().release_pointer(pointer_id, target);
         })?;
@@ -624,7 +636,7 @@ impl AppContext {
         if self.read(entity, |scroll| scroll.hovered)? == hovered {
             return Ok(());
         }
-        self.update_component(entity, |scroll, _| {
+        self.update_scroll_view_visual(entity, |scroll, _| {
             scroll.hovered = hovered;
         })?;
         Ok(())

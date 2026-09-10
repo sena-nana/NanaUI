@@ -1,10 +1,10 @@
 //! Backend-neutral markdown blocks and selectable rich text.
 //!
 //! Runtime owns the block model, source parse, grapheme selection ranges, and
-//! leaf projection. Applications own link handling, image decode, mermaid/math
-//! rendering, and clipboard writes. [`NativeMarkdown::from_source`] maps GFM
+//! leaf projection and native mathematics/diagram drawing. Applications own link
+//! handling, image loading/decoding, and clipboard writes. [`NativeMarkdown::from_source`] maps GFM
 //! blocks onto [`MarkdownBlock`] / [`MarkdownSpan`]. Scene paint consumes the
-//! projected visual; hosts own mermaid/math presenter slots.
+//! projected drawing; images and formula SVGs share its normal texture path.
 //!
 //! [`ComponentView`] projection keeps [`TextContent`] as fallback text and
 //! writes [`StandardVisual::NativeMarkdown`] /
@@ -52,6 +52,7 @@ pub struct MarkdownSpan {
     pub inline_math: bool,
     pub link: Option<String>,
     pub image: Option<String>,
+    pub image_resource: Option<MarkdownImageResource>,
 }
 
 impl MarkdownSpan {
@@ -61,6 +62,14 @@ impl MarkdownSpan {
             ..Self::default()
         }
     }
+}
+
+/// An application-resolved image. Fetching and decoding remain outside Runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownImageResource {
+    pub source: Arc<str>,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -247,7 +256,8 @@ impl NativeMarkdown {
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_MATH;
-        for event in Parser::new_ext(source, options) {
+        let normalized = normalize_math_delimiters(source);
+        for event in Parser::new_ext(&normalized, options) {
             parser.push(event);
         }
         let mut markdown = parser.finish();
@@ -307,6 +317,46 @@ impl NativeMarkdown {
         images
     }
 
+    /// Publishes an already resolved image to every matching occurrence.
+    pub fn resolve_image(
+        &mut self,
+        source: &str,
+        resource: impl Into<Arc<str>>,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if width == 0 || height == 0 {
+            return false;
+        }
+        let resource = MarkdownImageResource {
+            source: resource.into(),
+            width,
+            height,
+        };
+        let mut changed = false;
+        let mut resolve = |span: &mut MarkdownSpan| {
+            if span.image.as_deref() == Some(source)
+                && span.image_resource.as_ref() != Some(&resource)
+            {
+                span.image_resource = Some(resource.clone());
+                changed = true;
+            }
+        };
+        for block in &mut self.blocks {
+            match block {
+                MarkdownBlock::Text { spans, .. } => spans.iter_mut().for_each(&mut resolve),
+                MarkdownBlock::Table(table) => table
+                    .header
+                    .iter_mut()
+                    .chain(table.rows.iter_mut().flatten())
+                    .flatten()
+                    .for_each(&mut resolve),
+                _ => {}
+            }
+        }
+        changed
+    }
+
     pub fn code_highlights(&self) -> Vec<(usize, HighlightRequest)> {
         self.blocks
             .iter()
@@ -335,27 +385,82 @@ impl NativeMarkdown {
         layout_markdown(&self.blocks, bounds)
     }
 
+    pub fn drawing(&self, bounds: LayoutBox) -> crate::MarkdownDrawing {
+        crate::markdown_drawing::document(&self.blocks, bounds)
+    }
+
     pub fn pointer_down(&self, x: f32, y: f32, bounds: LayoutBox) -> bool {
         let geometry = self.layout(bounds);
+        self.pointer_down_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_down_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &MarkdownGeometry,
+    ) -> bool {
         self.selection.begin(&geometry.run, x, y)
     }
 
     pub fn pointer_move(&self, x: f32, y: f32, bounds: LayoutBox) -> bool {
         let geometry = self.layout(bounds);
+        self.pointer_move_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_move_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &MarkdownGeometry,
+    ) -> bool {
         self.selection.drag(&geometry.run, x, y)
     }
 
     pub fn pointer_up(&self, x: f32, y: f32, bounds: LayoutBox) -> Option<RichTextEvent> {
         let geometry = self.layout(bounds);
-        self.selection.finish(&geometry.run, x, y)
+        self.pointer_up_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_up_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &MarkdownGeometry,
+    ) -> Option<RichTextEvent> {
+        let event = self.selection.finish(&geometry.run, x, y)?;
+        if matches!(event, RichTextEvent::LinkActivated(_)) {
+            let hit = geometry
+                .run
+                .graphemes
+                .iter()
+                .find(|item| item.bounds.contains(x, y));
+            if let Some(hit) = hit {
+                let span = match self.blocks.get(hit.block_index) {
+                    Some(MarkdownBlock::Text { spans, .. }) => spans.get(hit.span_index),
+                    Some(MarkdownBlock::Table(table)) => table
+                        .header
+                        .iter()
+                        .chain(table.rows.iter().flatten())
+                        .flatten()
+                        .nth(hit.span_index),
+                    _ => None,
+                };
+                if let Some(span) = span
+                    && let Some(source) = &span.image
+                {
+                    return Some(RichTextEvent::ImageActivated(MarkdownImage {
+                        source: source.clone(),
+                        alt: span.text.clone(),
+                    }));
+                }
+            }
+        }
+        Some(event)
     }
 
     pub fn link_at(&self, x: f32, y: f32, bounds: LayoutBox) -> Option<Arc<str>> {
         self.layout(bounds).run.link_at(x, y)
-    }
-
-    fn intrinsic_height(&self) -> f32 {
-        markdown_intrinsic_height(&self.blocks)
     }
 }
 
@@ -376,6 +481,7 @@ struct MarkdownParser {
     strike_depth: usize,
     link: Option<String>,
     image: Option<String>,
+    image_start: usize,
     code_block: Option<(Option<String>, String)>,
     quote_depth: usize,
     lists: Vec<Option<u64>>,
@@ -480,7 +586,10 @@ impl MarkdownParser {
             Tag::Link { dest_url, .. } => {
                 self.link = Some(dest_url.into_string());
             }
-            Tag::Image { dest_url, .. } => self.image = Some(dest_url.into_string()),
+            Tag::Image { dest_url, .. } => {
+                self.image_start = self.spans.len();
+                self.image = Some(dest_url.into_string());
+            }
             Tag::Table(alignments) => {
                 self.flush_text();
                 self.table_row.clear();
@@ -522,7 +631,15 @@ impl MarkdownParser {
             TagEnd::Strong => self.strong_depth = self.strong_depth.saturating_sub(1),
             TagEnd::Strikethrough => self.strike_depth = self.strike_depth.saturating_sub(1),
             TagEnd::Link => self.link = None,
-            TagEnd::Image => self.image = None,
+            TagEnd::Image => {
+                if self.spans.len() == self.image_start {
+                    self.spans.push(MarkdownSpan {
+                        image: self.image.clone(),
+                        ..Default::default()
+                    });
+                }
+                self.image = None;
+            }
             TagEnd::TableCell => {
                 self.table_row.push(std::mem::take(&mut self.spans));
                 self.in_table_cell = false;
@@ -564,6 +681,7 @@ impl MarkdownParser {
             inline_math,
             link: self.link.clone(),
             image: self.image.clone(),
+            image_resource: None,
         };
         if let Some(last) = self.spans.last_mut()
             && last.strong == next.strong
@@ -572,7 +690,8 @@ impl MarkdownParser {
             && last.code == next.code
             && last.inline_math == next.inline_math
             && last.link == next.link
-            && last.image == next.image
+            && last.image.is_none()
+            && next.image.is_none()
         {
             last.text.push_str(&next.text);
         } else {
@@ -690,6 +809,59 @@ fn normalize_table_row(
     row
 }
 
+fn normalize_math_delimiters(source: &str) -> String {
+    let mut output = String::with_capacity(source.len());
+    let mut fence: Option<char> = None;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let marker = trimmed.chars().next().unwrap();
+            if fence == Some(marker) {
+                fence = None
+            } else if fence.is_none() {
+                fence = Some(marker)
+            }
+            output.push_str(line);
+            continue;
+        }
+        if fence.is_some() {
+            output.push_str(line);
+            continue;
+        }
+        let mut chars = line.chars().peekable();
+        let mut code = false;
+        while let Some(c) = chars.next() {
+            if c == '`' {
+                code = !code;
+                output.push(c);
+                continue;
+            }
+            if !code && c == '\\' {
+                match chars.peek().copied() {
+                    Some('(') | Some(')') => {
+                        chars.next();
+                        output.push('$');
+                        continue;
+                    }
+                    Some('[') | Some(']') => {
+                        chars.next();
+                        output.push_str("$$");
+                        continue;
+                    }
+                    Some('\\') => {
+                        output.push(c);
+                        output.push(chars.next().unwrap());
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            output.push(c)
+        }
+    }
+    output
+}
+
 impl ComponentView for NativeMarkdown {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -708,6 +880,7 @@ impl ComponentView for NativeMarkdown {
             );
         }
         let visual = StandardVisual::NativeMarkdown {
+            blocks: self.blocks.clone().into(),
             text: Arc::from(plain),
             selection: projected_selection(&self.selection),
         };
@@ -716,10 +889,9 @@ impl ComponentView for NativeMarkdown {
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        let height = self.intrinsic_height();
-        layout.height = Some(LengthSpec::Px(height));
-        layout.min_height = Some(LengthSpec::Px(height));
+        layout.width.get_or_insert(LengthSpec::Fill);
+        layout.height = None;
+        layout.min_height = Some(LengthSpec::Px(LINE_HEIGHT));
         project_common(
             id,
             world,
@@ -1096,6 +1268,7 @@ impl GroupState {
 pub enum RichTextEvent {
     SelectionChanged(Option<TextSelectionSnapshot>),
     LinkActivated(Arc<str>),
+    ImageActivated(MarkdownImage),
 }
 
 #[derive(Clone, Debug)]
@@ -1359,31 +1532,53 @@ impl DocumentRun {
     }
 }
 
-struct LayoutCursor {
+type MarkdownMeasure<'a> = dyn Fn(&str, f32, u16) -> f32 + 'a;
+
+struct LayoutCursor<'a> {
+    measure: Option<&'a MarkdownMeasure<'a>>,
+    font_size: Option<f32>,
+    font_weight: u16,
     origin_x: f32,
     max_width: f32,
     line_height: f32,
+    // Inline advance stays local: accumulating viewport coordinates changes
+    // rounding and can wrap a final glyph that fitted during origin-zero measure.
     x: f32,
     y: f32,
     line_start_x: f32,
 }
 
-impl LayoutCursor {
+impl<'a> LayoutCursor<'a> {
     fn new(origin_x: f32, y: f32, max_width: f32, line_height: f32) -> Self {
         Self {
+            measure: None,
+            font_size: None,
+            font_weight: 400,
             origin_x,
             max_width,
             line_height,
-            x: origin_x,
+            x: 0.0,
             y,
-            line_start_x: origin_x,
+            line_start_x: 0.0,
         }
+    }
+
+    fn markdown(
+        mut self,
+        measure: Option<&'a MarkdownMeasure<'a>>,
+        size: f32,
+        weight: u16,
+    ) -> Self {
+        self.measure = measure;
+        self.font_size = Some(size);
+        self.font_weight = weight;
+        self
     }
 
     fn place(&mut self, grapheme: &str) -> LayoutBox {
         if is_newline(grapheme) {
             let bounds = LayoutBox {
-                x: self.x,
+                x: self.origin_x + self.x,
                 y: self.y,
                 width: 0.0,
                 height: self.line_height,
@@ -1392,20 +1587,28 @@ impl LayoutCursor {
             self.y += self.line_height;
             return bounds;
         }
+        let advance = self
+            .font_size
+            .map(|size| {
+                self.measure
+                    .map(|measure| measure(grapheme, size, self.font_weight))
+                    .unwrap_or_else(|| crate::markdown_drawing::text_advance(grapheme, size))
+            })
+            .unwrap_or(GRAPHEME_ADVANCE);
         if self.max_width.is_finite()
             && self.x > self.line_start_x
-            && self.x + GRAPHEME_ADVANCE - self.origin_x > self.max_width
+            && self.x + advance > self.max_width
         {
             self.x = self.line_start_x;
             self.y += self.line_height;
         }
         let bounds = LayoutBox {
-            x: self.x,
+            x: self.origin_x + self.x,
             y: self.y,
-            width: GRAPHEME_ADVANCE,
+            width: advance,
             height: self.line_height,
         };
-        self.x += GRAPHEME_ADVANCE;
+        self.x += advance;
         bounds
     }
 
@@ -1447,7 +1650,15 @@ fn layout_rich_spans(spans: &[RichSpan], bounds: LayoutBox) -> DocumentRun {
     }
 }
 
-fn layout_markdown(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownGeometry {
+pub(crate) fn layout_markdown(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownGeometry {
+    layout_markdown_measured(blocks, bounds, None)
+}
+
+pub(crate) fn layout_markdown_measured(
+    blocks: &[MarkdownBlock],
+    bounds: LayoutBox,
+    measure: Option<&MarkdownMeasure<'_>>,
+) -> MarkdownGeometry {
     let mut run = DocumentRun::empty(bounds);
     let mut block_geometry = Vec::with_capacity(blocks.len());
     let mut y = bounds.y;
@@ -1455,7 +1666,7 @@ fn layout_markdown(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownGeome
         if index > 0 {
             y += BLOCK_GAP;
         }
-        let geometry = layout_block(index, block, bounds.x, y, bounds.width, &mut run);
+        let geometry = layout_block(index, block, bounds.x, y, bounds.width, &mut run, measure);
         y = geometry.bounds.y + geometry.bounds.height;
         block_geometry.push(geometry);
     }
@@ -1468,6 +1679,23 @@ fn layout_markdown(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownGeome
     }
 }
 
+pub(crate) fn markdown_content_width(blocks: &[MarkdownBlock], geometry: &MarkdownGeometry) -> f32 {
+    blocks
+        .iter()
+        .zip(&geometry.blocks)
+        .map(|(block, geometry)| {
+            if let Some(drawing) = crate::markdown_drawing::block_drawing(block) {
+                return drawing.width.min(geometry.bounds.width);
+            }
+            geometry
+                .graphemes
+                .iter()
+                .map(|grapheme| grapheme.bounds.x + grapheme.bounds.width - geometry.bounds.x)
+                .fold(0.0, f32::max)
+        })
+        .fold(0.0, f32::max)
+}
+
 fn layout_block(
     index: usize,
     block: &MarkdownBlock,
@@ -1475,6 +1703,7 @@ fn layout_block(
     y: f32,
     width: f32,
     run: &mut DocumentRun,
+    measure: Option<&MarkdownMeasure<'_>>,
 ) -> MarkdownBlockGeometry {
     match block {
         MarkdownBlock::Text { kind, spans } => {
@@ -1485,6 +1714,11 @@ fn layout_block(
                 y,
                 usable_width((width - indent).max(0.0)),
                 line_height,
+            )
+            .markdown(
+                measure,
+                crate::markdown_drawing::text_style(*kind).0,
+                crate::markdown_drawing::text_style(*kind).1,
             );
             let start = run.graphemes.len();
             push_spans(
@@ -1506,7 +1740,8 @@ fn layout_block(
             )
         }
         MarkdownBlock::Code { language, source } => {
-            let mut cursor = LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT);
+            let mut cursor = LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT)
+                .markdown(measure, 13.0, 400);
             let start = run.graphemes.len();
             push_source(
                 run,
@@ -1529,27 +1764,54 @@ fn layout_block(
                 run.graphemes[start..].to_vec(),
             )
         }
-        MarkdownBlock::DisplayMath(source) => labeled_block(
-            index,
-            x,
-            y,
-            width,
-            LINE_HEIGHT,
-            None,
-            Some(Arc::from(format!("math:{source}"))),
-            Vec::new(),
-        ),
-        MarkdownBlock::Mermaid(source) => labeled_block(
-            index,
-            x,
-            y,
-            width,
-            LINE_HEIGHT,
-            None,
-            Some(Arc::from(format!("mermaid:{source}"))),
-            Vec::new(),
-        ),
-        MarkdownBlock::Table(table) => layout_table(index, table, x, y, width, run),
+        MarkdownBlock::DisplayMath(source) | MarkdownBlock::Mermaid(source) => {
+            let drawing = crate::markdown_drawing::block_drawing(block);
+            let mut cursor = LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT)
+                .markdown(measure, 13.0, 400);
+            let start = run.graphemes.len();
+            push_source(
+                run,
+                &mut cursor,
+                index,
+                source,
+                if start == 0 { "" } else { "\n\n" },
+            );
+            let height = drawing
+                .as_ref()
+                .map(|drawing| {
+                    drawing
+                        .placed(LayoutBox {
+                            x,
+                            y,
+                            width,
+                            height: 0.0,
+                        })
+                        .height
+                })
+                .unwrap_or_else(|| cursor.height_from(y));
+            if drawing.is_some() {
+                let count = (run.graphemes.len() - start).max(1) as f32;
+                for (offset, grapheme) in run.graphemes[start..].iter_mut().enumerate() {
+                    grapheme.bounds = LayoutBox {
+                        x: x + offset as f32 * width / count,
+                        y,
+                        width: width / count,
+                        height,
+                    };
+                }
+            }
+            labeled_block(
+                index,
+                x,
+                y,
+                width,
+                height,
+                None,
+                None,
+                run.graphemes[start..].to_vec(),
+            )
+        }
+        MarkdownBlock::Table(table) => layout_table(index, table, x, y, width, run, measure),
         MarkdownBlock::Rule => labeled_block(
             index,
             x,
@@ -1570,10 +1832,13 @@ fn layout_table(
     y: f32,
     width: f32,
     run: &mut DocumentRun,
+    measure: Option<&MarkdownMeasure<'_>>,
 ) -> MarkdownBlockGeometry {
     let start = run.graphemes.len();
-    let mut cursor = LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT);
+    let mut cursor =
+        LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT).markdown(measure, 13.0, 400);
     let mut first_cell = true;
+    let mut span_offset = 0;
     for (row_index, row) in std::iter::once(table.header.as_slice())
         .chain(table.rows.iter().map(Vec::as_slice))
         .enumerate()
@@ -1590,7 +1855,12 @@ fn layout_table(
                 cursor.x = cursor.line_start_x;
                 cursor.y += cursor.line_height;
             }
+            let cell_start = run.graphemes.len();
             push_spans(run, &mut cursor, index, cell, separator);
+            for grapheme in &mut run.graphemes[cell_start..] {
+                grapheme.span_index += span_offset;
+            }
+            span_offset += cell.len();
             first_cell = false;
         }
     }
@@ -1639,7 +1909,82 @@ fn push_spans(
     first_separator: &'static str,
 ) {
     let mut first = true;
+    let base_weight = cursor.font_weight;
     for (span_index, span) in spans.iter().enumerate() {
+        cursor.font_weight = if span.strong { 700 } else { base_weight };
+        if let Some(resource) = span
+            .image_resource
+            .as_ref()
+            .filter(|resource| resource.width > 0 && resource.height > 0)
+        {
+            let scale = (cursor.max_width / resource.width as f32).clamp(0.0, 1.0);
+            let width = resource.width as f32 * scale;
+            let height = resource.height as f32 * scale;
+            if cursor.x > cursor.line_start_x && cursor.x + width > cursor.max_width {
+                cursor.x = cursor.line_start_x;
+                cursor.y += cursor.line_height;
+            }
+            cursor.line_height = cursor.line_height.max(height);
+            let mut graphemes = span.text.graphemes(true).collect::<Vec<_>>();
+            if graphemes.is_empty() {
+                graphemes.push("");
+            }
+            for (offset, grapheme) in graphemes.iter().enumerate() {
+                run.separators
+                    .push(if first { first_separator } else { "" });
+                first = false;
+                run.graphemes.push(GraphemeGeometry {
+                    index: run.graphemes.len(),
+                    bounds: LayoutBox {
+                        x: cursor.origin_x
+                            + cursor.x
+                            + offset as f32 * width / graphemes.len() as f32,
+                        y: cursor.y,
+                        width: width / graphemes.len() as f32,
+                        height,
+                    },
+                    grapheme: Arc::from(*grapheme),
+                    span_index,
+                    block_index,
+                    link: span.image.as_deref().map(Arc::from),
+                });
+            }
+            cursor.x += width;
+            continue;
+        }
+        if span.inline_math {
+            let drawing = crate::markdown_drawing::math(&span.text, 13.0);
+            let scale = (cursor.max_width / drawing.width.max(1.0)).min(1.0);
+            let width = drawing.width * scale;
+            if cursor.x > cursor.line_start_x && cursor.x + width > cursor.max_width {
+                cursor.x = cursor.line_start_x;
+                cursor.y += cursor.line_height;
+            }
+            cursor.line_height = cursor.line_height.max(drawing.height * scale);
+            let graphemes = span.text.graphemes(true).collect::<Vec<_>>();
+            for (offset, grapheme) in graphemes.iter().enumerate() {
+                run.separators
+                    .push(if first { first_separator } else { "" });
+                first = false;
+                run.graphemes.push(GraphemeGeometry {
+                    index: run.graphemes.len(),
+                    bounds: LayoutBox {
+                        x: cursor.origin_x
+                            + cursor.x
+                            + offset as f32 * width / graphemes.len().max(1) as f32,
+                        y: cursor.y,
+                        width: width / graphemes.len().max(1) as f32,
+                        height: cursor.line_height,
+                    },
+                    grapheme: Arc::from(*grapheme),
+                    span_index,
+                    block_index,
+                    link: None,
+                });
+            }
+            cursor.x += width;
+            continue;
+        }
         for grapheme in span.text.graphemes(true) {
             if grapheme.is_empty() {
                 continue;
@@ -1652,7 +1997,10 @@ fn push_spans(
                 block_index,
                 span_index,
                 grapheme,
-                span.link.as_deref().map(Arc::from),
+                span.image
+                    .as_deref()
+                    .or(span.link.as_deref())
+                    .map(Arc::from),
                 separator,
             );
         }
@@ -1742,32 +2090,6 @@ fn collect_markdown_images(spans: &[MarkdownSpan], images: &mut Vec<MarkdownImag
             images.push(image);
         }
     }
-}
-
-fn markdown_intrinsic_height(blocks: &[MarkdownBlock]) -> f32 {
-    if blocks.is_empty() {
-        return LINE_HEIGHT;
-    }
-    let mut height = 0.0;
-    for (index, block) in blocks.iter().enumerate() {
-        if index > 0 {
-            height += BLOCK_GAP;
-        }
-        height += match block {
-            MarkdownBlock::Text { kind, spans } => {
-                line_count(&markdown_spans_plain_text(spans)).max(1) as f32
-                    * text_line_height(*kind)
-            }
-            MarkdownBlock::Code { source, .. } => line_count(source).max(1) as f32 * LINE_HEIGHT,
-            MarkdownBlock::Table(table) => {
-                let rows = usize::from(!table.header.is_empty()) + table.rows.len();
-                rows.max(1) as f32 * LINE_HEIGHT
-            }
-            MarkdownBlock::DisplayMath(_) | MarkdownBlock::Mermaid(_) => LINE_HEIGHT,
-            MarkdownBlock::Rule => 1.0,
-        };
-    }
-    height
 }
 
 fn text_indent(kind: MarkdownBlockKind) -> f32 {
@@ -1868,6 +2190,31 @@ mod tests {
     }
 
     #[test]
+    fn markdown_line_breaks_are_invariant_under_viewport_translation() {
+        let markdown = NativeMarkdown::parse("NATIVE_PARITY_FORK_A_20260903");
+        let measure = |_: &str, _: f32, _: u16| 7.2;
+        let natural =
+            layout_markdown_measured(markdown.blocks(), bounds(1000.0, 100.0), Some(&measure));
+        let width = markdown_content_width(markdown.blocks(), &natural);
+        for x in [0.0, 681.0, 10000.0] {
+            let placed = layout_markdown_measured(
+                markdown.blocks(),
+                LayoutBox {
+                    x,
+                    width,
+                    ..bounds(width, 100.0)
+                },
+                Some(&measure),
+            );
+            assert_eq!(
+                placed.bounds.height, natural.bounds.height,
+                "moving a paragraph must not introduce another line at x={x}"
+            );
+            assert_eq!(placed.run.graphemes.len(), natural.run.graphemes.len());
+        }
+    }
+
+    #[test]
     fn from_source_markdown_maps_list_quote_code_table_and_rule() {
         let markdown = NativeMarkdown::from_source(
             "> quoted\n\n- item\n\n```rust\nfn main() {}\n```\n\n| A | B |\n| --- | ---: |\n| **x** | `1` |\n\n---\n\nSee [docs](https://example.com) and ~~old~~.\n",
@@ -1942,18 +2289,14 @@ mod tests {
         );
         let geometry = markdown.layout(bounds(400.0, 200.0));
         assert_eq!(geometry.blocks.len(), 4);
-        assert_eq!(
-            geometry.blocks[2].label.as_deref(),
-            Some("math:\\frac{1}{2}")
-        );
+        assert!(geometry.blocks[2].bounds.height > LINE_HEIGHT * 2.0);
+        assert!(geometry.blocks[3].bounds.height > LINE_HEIGHT * 2.0);
+        assert!(!geometry.blocks[2].graphemes.is_empty());
+        assert!(!geometry.blocks[3].graphemes.is_empty());
         assert!(
-            geometry.blocks[3]
-                .label
-                .as_deref()
-                .is_some_and(|label| label.starts_with("mermaid:"))
+            geometry.blocks[3].bounds.y
+                >= geometry.blocks[2].bounds.y + geometry.blocks[2].bounds.height
         );
-        assert!(geometry.blocks[2].graphemes.is_empty());
-        assert!(geometry.blocks[3].graphemes.is_empty());
     }
 
     #[test]
@@ -2090,6 +2433,9 @@ mod tests {
         assert_eq!(
             context.world().standard_visual(id),
             Some(StandardVisual::NativeMarkdown {
+                blocks: NativeMarkdown::from_source("## Title\n\nBody")
+                    .blocks
+                    .into(),
                 text: Arc::from("Title\n\nBody"),
                 selection: None,
             })
@@ -2145,6 +2491,7 @@ mod tests {
         assert_eq!(
             context.world().standard_visual(id),
             Some(StandardVisual::NativeMarkdown {
+                blocks: NativeMarkdown::from_source("Hello\n\nWorld").blocks.into(),
                 text: Arc::from("Hello\n\nWorld"),
                 selection: Some((0, 10)),
             })
@@ -2291,7 +2638,7 @@ mod tests {
         assert!(
             matches!(
                 context.world().standard_visual(id),
-                Some(StandardVisual::NativeMarkdown { text, selection: None })
+                Some(StandardVisual::NativeMarkdown { text, selection: None, .. })
                     if text.contains("flowchart LR")
                         && text.contains("\\frac{1}{2}")
                         && text.contains("fn main() {}")

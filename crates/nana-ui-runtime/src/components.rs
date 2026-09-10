@@ -36,6 +36,9 @@ pub enum MountState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SemanticPaint {
+    pub foreground_mix: Option<nana_ui_core::SemanticColorMix>,
+    pub background_mix: Option<nana_ui_core::SemanticColorMix>,
+    pub border_mix: Option<nana_ui_core::SemanticColorMix>,
     pub foreground: Option<SemanticColorRole>,
     pub background: Option<SemanticColorRole>,
     pub border: Option<SemanticColorRole>,
@@ -44,6 +47,27 @@ pub struct SemanticPaint {
 impl SemanticPaint {
     pub fn overlay(self, overlay: Self) -> Self {
         Self {
+            foreground_mix: overlay.foreground_mix.or_else(|| {
+                overlay
+                    .foreground
+                    .is_none()
+                    .then_some(self.foreground_mix)
+                    .flatten()
+            }),
+            background_mix: overlay.background_mix.or_else(|| {
+                overlay
+                    .background
+                    .is_none()
+                    .then_some(self.background_mix)
+                    .flatten()
+            }),
+            border_mix: overlay.border_mix.or_else(|| {
+                overlay
+                    .border
+                    .is_none()
+                    .then_some(self.border_mix)
+                    .flatten()
+            }),
             foreground: overlay.foreground.or(self.foreground),
             background: overlay.background.or(self.background),
             border: overlay.border.or(self.border),
@@ -57,6 +81,8 @@ impl SemanticPaint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InteractionStyle {
+    /// Base paint before selected, hovered, pressed, focused and disabled states.
+    pub base: SemanticPaint,
     pub selected: SemanticPaint,
     pub selected_hovered: SemanticPaint,
     pub selected_pressed: SemanticPaint,
@@ -644,6 +670,9 @@ pub enum StandardVisual {
     },
     Button {
         label: Arc<str>,
+        icon: Option<nana_ui_core::Icon>,
+        icon_size: f32,
+        icon_gap: f32,
         kind: nana_ui_core::ButtonKind,
         size: ControlSize,
         loading: bool,
@@ -878,6 +907,21 @@ pub enum StandardVisual {
         active_title: Option<Arc<str>>,
     },
     #[cfg(feature = "charts")]
+    DonutChart {
+        slices: Arc<[crate::DonutSlice]>,
+        cutout: f32,
+        separator: f32,
+        active: Option<usize>,
+    },
+    #[cfg(feature = "charts")]
+    StackedTimeSeriesChart {
+        title: Arc<str>,
+        values: Arc<[f64]>,
+        layers: Arc<[crate::TimeSeriesLayer]>,
+        labels: Arc<[Arc<str>]>,
+        active: Option<usize>,
+    },
+    #[cfg(feature = "charts")]
     TimeSeriesChart {
         values: Arc<[f64]>,
     },
@@ -896,6 +940,7 @@ pub enum StandardVisual {
     },
     #[cfg(feature = "rich-text")]
     NativeMarkdown {
+        blocks: Arc<[crate::MarkdownBlock]>,
         text: Arc<str>,
         selection: Option<(usize, usize)>,
     },
@@ -927,6 +972,7 @@ pub enum StandardVisual {
     },
     #[cfg(feature = "image-viewer")]
     ImageViewer {
+        intrinsic_size: Option<(u32, u32)>,
         name: Option<Arc<str>>,
         metadata: Option<Arc<str>>,
         zoom: f32,
@@ -1156,6 +1202,7 @@ pub enum ComponentGeometry {
         elevation: ComponentElevation,
     },
     Button {
+        icon: Option<(nana_ui_core::Icon, LayoutBox)>,
         label: ComponentTextRegion,
         spinner: Option<LayoutBox>,
         background: Option<[f32; 4]>,
@@ -1164,6 +1211,7 @@ pub enum ComponentGeometry {
         focus_ring: Option<[f32; 4]>,
     },
     TextInput {
+        resize_grip: Option<LayoutBox>,
         text: ComponentTextRegion,
         multiline: bool,
         selection: Vec<LayoutBox>,
@@ -1382,6 +1430,20 @@ pub enum ComponentGeometry {
         labels: Vec<ComponentTextRegion>,
         hover: Option<CalendarHoverGeometry>,
     },
+    DonutChart {
+        regions: Vec<(LayoutBox, Vec<[f32; 2]>, [f32; 4])>,
+        width: f32,
+    },
+    StackedTimeSeriesChart {
+        bars: Vec<(LayoutBox, [f32; 4])>,
+        legend: Vec<(LayoutBox, [f32; 4])>,
+        grid: Vec<LayoutBox>,
+        line: Vec<[f32; 2]>,
+        labels: Vec<ComponentTextRegion>,
+        marker: Option<LayoutBox>,
+        grid_color: [f32; 4],
+        line_color: [f32; 4],
+    },
     TimeSeriesChart {
         grid: Vec<LayoutBox>,
         area: Vec<LayoutBox>,
@@ -1404,6 +1466,8 @@ pub enum ComponentGeometry {
         insert: Option<(LayoutBox, [f32; 4])>,
     },
     NativeMarkdown {
+        #[cfg(feature = "rich-text")]
+        drawing: crate::MarkdownDrawing,
         text: ComponentTextRegion,
         selection: Vec<LayoutBox>,
         selection_color: [f32; 4],
@@ -1525,15 +1589,34 @@ impl NodeStyle {
         }
     }
 
+    /// Resolve a background mix from the current theme, before interaction overrides.
+    pub fn surface_mix(mut self, mix: nana_ui_core::SemanticColorMix) -> Self {
+        self.interaction.base.background = None;
+        self.interaction.base.background_mix = Some(mix);
+        self
+    }
+
+    /// Set a theme-relative outline color together with its width.
+    pub fn outline_mix(mut self, mix: nana_ui_core::SemanticColorMix, width: f32) -> Self {
+        self.interaction.base.border = None;
+        self.interaction.base.border_mix = Some(mix);
+        Arc::make_mut(&mut self.layout).border_width = Some(width.max(0.0));
+        self
+    }
+
     /// 设置语义背景色角色。
     pub fn surface(mut self, role: SemanticColorRole) -> Self {
         self.background = Some(role);
+        self.interaction.base.background = None;
+        self.interaction.base.background_mix = None;
         self
     }
 
     /// 一次性写全边框：语义色角色与宽度必须同时给出，缺一边框不会绘制。
     pub fn outline(mut self, role: SemanticColorRole, width: f32) -> Self {
         self.border = Some(role);
+        self.interaction.base.border = None;
+        self.interaction.base.border_mix = None;
         let layout = Arc::make_mut(&mut self.layout);
         layout.border_width = Some(width.max(0.0));
         self
@@ -1960,6 +2043,7 @@ pub struct TextSwatchMark {
 /// 路径零分配短路。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextEditorRenderOptions {
+    pub resize_vertical: bool,
     /// 光标处单词/选中文本的出现高亮（内部派生，聚焦时绘制）。
     pub occurrence_highlight: bool,
     /// 相对行号：光标行显示绝对行号，其余行显示与光标所在显示行的距离
@@ -1988,6 +2072,7 @@ pub struct TextEditorRenderOptions {
 impl Default for TextEditorRenderOptions {
     fn default() -> Self {
         Self {
+            resize_vertical: false,
             occurrence_highlight: false,
             relative_line_numbers: false,
             show_whitespace: false,
@@ -2956,7 +3041,10 @@ impl StandardVisual {
             #[cfg(feature = "calendar")]
             Self::CalendarHeatmap { .. } => Some("calendar"),
             #[cfg(feature = "charts")]
-            Self::TimeSeriesChart { .. } | Self::TimestampSeriesChart { .. } => Some("charts"),
+            Self::TimeSeriesChart { .. }
+            | Self::TimestampSeriesChart { .. }
+            | Self::DonutChart { .. }
+            | Self::StackedTimeSeriesChart { .. } => Some("charts"),
             #[cfg(feature = "controls")]
             Self::ReorderList { .. } => Some("controls"),
             #[cfg(feature = "rich-text")]

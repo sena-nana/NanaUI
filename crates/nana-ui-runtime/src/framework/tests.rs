@@ -12,6 +12,61 @@ use crate::{
     ToggleChanged,
 };
 
+#[test]
+fn content_sized_checkbox_reserves_indicator_and_label_width() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(915).unwrap();
+    let root = context
+        .create_component(document, Stack::column(4.0))
+        .unwrap();
+    for size in [
+        nana_ui_core::ControlSize::Small,
+        nana_ui_core::ControlSize::Medium,
+        nana_ui_core::ControlSize::Large,
+    ] {
+        let mut checkbox = Checkbox::new("启用这条记忆", true).size(size);
+        Arc::make_mut(&mut checkbox.style.layout).width = Some(LengthSpec::Shrink);
+        let checkbox = context
+            .create_detached_component(document, checkbox)
+            .unwrap();
+        context.append_child(root, checkbox).unwrap();
+        context
+            .shape_text(&[checkbox.id], &mut crate::MeasureTextShaper)
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        context
+            .shape_text_for_layout(document, &mut crate::MeasureTextShaper)
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        let bounds = context.world().layout_box(checkbox.id).unwrap();
+        let text = context.world().text_metrics(checkbox.id).unwrap();
+        assert!(text.width > 0.0, "the label must have been shaped");
+        assert!(
+            bounds.width >= text.width + size.indicator_size() + size.indicator_gap() - 0.01,
+            "checkbox must reserve its label and indicator: {bounds:?}, {text:?}"
+        );
+        let mut empty = Checkbox::new("", false).size(size);
+        Arc::make_mut(&mut empty.style.layout).width = Some(LengthSpec::Shrink);
+        let empty = context.create_detached_component(document, empty).unwrap();
+        context.append_child(root, empty).unwrap();
+        context
+            .shape_text(&[empty.id], &mut crate::MeasureTextShaper)
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        assert_eq!(
+            context.world().layout_box(empty.id).unwrap().width,
+            size.indicator_size(),
+            "an empty label does not reserve a text gap"
+        );
+    }
+}
+
 #[derive(Debug)]
 struct Counter {
     value: usize,

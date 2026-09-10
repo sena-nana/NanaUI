@@ -1,5 +1,6 @@
 //! Geometry-to-primitive projection; has no Scene index or Runtime access.
 use super::*;
+const DONUT_RING_REGIONS: u32 = 40;
 pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(ScenePrimitive)) {
     let node = context.node;
     let bounds = context.bounds;
@@ -154,6 +155,181 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
         }
+        #[cfg(feature = "charts")]
+        Some(ComponentGeometry::DonutChart { regions, width }) => {
+            let visual = VisualPrimitiveContext {
+                node: id,
+                transform,
+                clips,
+                opacity,
+                z_index: node.z_index,
+                document_order: node_order,
+            };
+            for (index, (circle, polygon, color)) in regions.iter().enumerate() {
+                let mut primitive = visual_quad(
+                    &visual,
+                    collection_slot(DONUT_RING_REGIONS, index),
+                    scene_rect(*circle),
+                    VisualQuadStyle {
+                        background: None,
+                        border_color: Some(*color),
+                        border_width: *width,
+                        corner_radius: corner_radii(circle.width / 2.0),
+                    },
+                );
+                if let ScenePrimitiveKind::Quad { surface, .. } = &mut primitive.kind {
+                    surface.polygon_clip = Some(polygon.clone());
+                }
+                emit(primitive);
+            }
+        }
+        #[cfg(feature = "charts")]
+        Some(ComponentGeometry::StackedTimeSeriesChart {
+            bars,
+            legend,
+            grid,
+            line,
+            labels,
+            marker,
+            grid_color,
+            line_color,
+        }) => {
+            let visual = VisualPrimitiveContext {
+                node: id,
+                transform,
+                clips,
+                opacity,
+                z_index: node.z_index,
+                document_order: node_order,
+            };
+            emit(visual_quad_batch(
+                &visual,
+                10,
+                grid.iter().copied().map(scene_rect),
+                VisualQuadStyle::solid(*grid_color),
+            ));
+            for (index, (bar, color)) in bars.iter().enumerate() {
+                let mut primitive = visual_quad(
+                    &visual,
+                    11,
+                    scene_rect(*bar),
+                    VisualQuadStyle {
+                        background: Some(*color),
+                        border_color: None,
+                        border_width: 0.0,
+                        corner_radius: corner_radii(3.0),
+                    },
+                );
+                primitive.id.slot = 100 + index as u64;
+                emit(primitive);
+            }
+            if line.len() >= 2 {
+                emit(visual_stroke(
+                    &visual,
+                    12,
+                    bounds,
+                    smooth_chart_line(line),
+                    2.0,
+                    *line_color,
+                ));
+            }
+            for (index, point) in line.iter().enumerate() {
+                let mut primitive = visual_quad(
+                    &visual,
+                    13,
+                    SceneRect {
+                        x: point[0] - 2.0,
+                        y: point[1] - 2.0,
+                        width: 4.0,
+                        height: 4.0,
+                    },
+                    VisualQuadStyle {
+                        background: Some(*line_color),
+                        border_color: None,
+                        border_width: 0.0,
+                        corner_radius: corner_radii(2.0),
+                    },
+                );
+                primitive.id.slot = 100 + bars.len() as u64 + index as u64;
+                emit(primitive);
+            }
+            for (index, (disc, color)) in legend.iter().enumerate() {
+                let mut primitive = visual_quad(
+                    &visual,
+                    16,
+                    scene_rect(*disc),
+                    VisualQuadStyle {
+                        background: Some(*color),
+                        border_color: None,
+                        border_width: 0.0,
+                        corner_radius: corner_radii(5.0),
+                    },
+                );
+                primitive.id.slot = 100
+                    + bars.len() as u64
+                    + line.len() as u64
+                    + labels.len() as u64
+                    + index as u64;
+                emit(primitive);
+            }
+            for (index, label) in labels.iter().enumerate() {
+                let mut primitive = component_text_primitive(
+                    id,
+                    14,
+                    label,
+                    TextHorizontalAlignment::Start,
+                    false,
+                    node,
+                    transform,
+                    clips.clone(),
+                    opacity,
+                    node_order,
+                );
+                primitive.id.slot = 100 + bars.len() as u64 + line.len() as u64 + index as u64;
+                emit(primitive);
+            }
+            if let Some(marker) = marker {
+                emit(visual_quad(
+                    &visual,
+                    15,
+                    scene_rect(*marker),
+                    VisualQuadStyle {
+                        background: Some(*line_color),
+                        border_color: None,
+                        border_width: 0.0,
+                        corner_radius: corner_radii(3.0),
+                    },
+                ));
+            }
+        }
         _ => {}
     }
+}
+
+#[cfg(feature = "charts")]
+fn smooth_chart_line(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut result = Vec::new();
+    for index in 0..points.len().saturating_sub(1) {
+        let p0 = points[index.saturating_sub(1)];
+        let p1 = points[index];
+        let p2 = points[index + 1];
+        let p3 = points[(index + 2).min(points.len() - 1)];
+        for step in 0..12 {
+            let t = step as f32 / 12.0;
+            let u = 1.0 - t;
+            result.push(std::array::from_fn(|axis| {
+                let c1 = p1[axis] + (p2[axis] - p0[axis]) * 0.25 / 3.0;
+                let c2 = p2[axis] - (p3[axis] - p1[axis]) * 0.25 / 3.0;
+                (u * u * u * p1[axis]
+                    + 3.0 * u * u * t * c1
+                    + 3.0 * u * t * t * c2
+                    + t * t * t * p2[axis])
+                    .clamp(p1[axis].min(p2[axis]), p1[axis].max(p2[axis]))
+            }));
+        }
+    }
+    if let Some(last) = points.last() {
+        result.push(*last);
+    }
+    result
 }

@@ -1,12 +1,18 @@
+#[cfg(feature = "charts")]
+mod charts;
 mod choice;
 mod events;
 mod frame;
+mod keyboard;
 mod lifecycle;
 mod modal;
 mod registry;
 mod scroll;
 mod selection;
 pub use selection::FormValidity;
+#[cfg(feature = "rich-text")]
+mod rich_text_input;
+mod text_area_resize;
 mod text_input;
 mod value_input;
 mod virtualize;
@@ -146,6 +152,10 @@ impl EditableText for TextInput {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        self.commit_limited_ime(text)
     }
 
     fn state(&self) -> &TextInputState {
@@ -447,8 +457,13 @@ struct HoverCardLifecycle {
 #[derive(Default)]
 struct ComponentLifecycle {
     now: Duration,
+    text_area_resizes: HashMap<(DocumentId, u64), StableNodeId>,
+    #[cfg(feature = "rich-text")]
+    rich_text_presses: HashMap<(DocumentId, u64), StableNodeId>,
     pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
     tooltips: HashMap<StableNodeId, TooltipLifecycle>,
+    #[cfg(feature = "charts")]
+    chart_tooltips: HashMap<StableNodeId, StableNodeId>,
     hover_cards: HashMap<StableNodeId, HoverCardLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
     next_loading_frame: Option<Duration>,
@@ -804,6 +819,7 @@ pub struct AppContext {
     /// Guards reentrant drains while a reproject commits its own mutations.
     draining_child_reprojects: bool,
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
+    key_handlers: HashMap<StableNodeId, keyboard::KeyHandler>,
     event_dependencies: HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
@@ -984,6 +1000,7 @@ impl AppContext {
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             event_handlers: HashMap::new(),
+            key_handlers: HashMap::new(),
             event_dependencies: HashMap::new(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
@@ -1075,7 +1092,8 @@ impl AppContext {
         !self.program_messages.is_empty()
     }
 
-    fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
+    /// Resolve a retained node only when it currently owns the requested view type.
+    pub fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
         self.views
             .get(&id)
             .is_some_and(|view| view.is::<C>())
@@ -1101,6 +1119,26 @@ impl AppContext {
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
         self.prepare_surface_closing(&mut mutations);
+        let previous_focus = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::RequestFocus { document, .. } => Some(*document),
+                crate::UiMutation::RestoreFocusWithin { root }
+                | crate::UiMutation::ParkSubtree { root }
+                | crate::UiMutation::DespawnSubtree { root }
+                | crate::UiMutation::Detach { id: root }
+                | crate::UiMutation::Insert { child: root, .. }
+                | crate::UiMutation::SetInteraction { id: root, .. }
+                | crate::UiMutation::SetStyle { id: root, .. }
+                | crate::UiMutation::SetOverlayHost { host: root, .. }
+                | crate::UiMutation::SetSurfaceOpen { id: root, .. } => {
+                    self.world.document_of(*root)
+                }
+                _ => None,
+            })
+            .filter_map(|document| self.world.focused(document).map(|node| (document, node)))
+            .collect::<HashMap<_, _>>();
         let retired_documents = mutations
             .as_slice()
             .iter()
@@ -1125,6 +1163,9 @@ impl AppContext {
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
+        for (document, previous) in previous_focus {
+            self.seal_blurred_editor_history(document, Some(previous));
+        }
         for (document, id) in deleted_layout_nodes {
             self.layout_cache.remove_node(document, id);
         }
@@ -1720,6 +1761,8 @@ impl AppContext {
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }
+        #[cfg(feature = "charts")]
+        self.sync_chart_hover(previous, target)?;
         Ok(previous)
     }
 
@@ -1765,6 +1808,7 @@ impl AppContext {
         {
             return Ok(false);
         }
+        let previous_focus = self.world.focused(document);
         // A numeric draft settles before focus leaves it, so a half-typed value
         // never survives as the visible text of an unfocused field.
         if self.world.focused(document) != Some(target) {
@@ -1825,17 +1869,20 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.world.commit(mutations)?;
+        self.seal_blurred_editor_history(document, previous_focus);
         Ok(true)
     }
 
     pub fn clear_focus(&mut self, document: DocumentId) -> Result<bool, FrameworkError> {
-        if self.world.focused(document).is_none() {
+        let previous_focus = self.world.focused(document);
+        if previous_focus.is_none() {
             return Ok(false);
         }
         self.commit_focused_number_input(document)?;
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
         self.world.commit(mutations)?;
+        self.seal_blurred_editor_history(document, previous_focus);
         Ok(true)
     }
 
@@ -2311,11 +2358,22 @@ impl AppContext {
 
     fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {
         self.remove_event_handlers_for(removed);
+        self.component_lifecycle
+            .text_area_resizes
+            .retain(|_, target| !removed.contains(target));
+        #[cfg(feature = "rich-text")]
+        self.component_lifecycle
+            .rich_text_presses
+            .retain(|_, target| !removed.contains(target));
         for id in removed {
             self.component_lifecycle.tooltips.remove(id);
             self.component_lifecycle.loading.remove(id);
             self.views.remove(id);
         }
+        #[cfg(feature = "charts")]
+        self.component_lifecycle
+            .chart_tooltips
+            .retain(|owner, tooltip| !removed.contains(owner) && !removed.contains(tooltip));
         self.child_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects

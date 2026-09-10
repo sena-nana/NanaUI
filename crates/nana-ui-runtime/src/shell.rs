@@ -1768,27 +1768,34 @@ fn region_slots(
     resources: Option<StableNodeId>,
 ) -> Vec<WorkspaceRegionSlot> {
     let present = |id: Option<StableNodeId>| id.filter(|id| context.world().contains(*id));
+    let region_slot = |id, content| {
+        if is_scroll_node(context, content) {
+            WorkspaceRegionSlot::borrowed(id, content)
+        } else {
+            WorkspaceRegionSlot::new(id, content)
+        }
+    };
     let mut slots = Vec::new();
     if let Some(content) = present(resources) {
-        slots.push(WorkspaceRegionSlot::new(RegionId::Resources, content));
+        slots.push(region_slot(RegionId::Resources, content));
     }
     if let Some(content) = present(shell.primary) {
-        slots.push(WorkspaceRegionSlot::new(RegionId::Primary, content));
+        slots.push(region_slot(RegionId::Primary, content));
     }
     if let Some(content) = present(shell.inspector) {
-        slots.push(WorkspaceRegionSlot::new(RegionId::Inspector, content));
+        slots.push(region_slot(RegionId::Inspector, content));
     }
     if let Some(content) = present(shell.bottom) {
-        slots.push(WorkspaceRegionSlot::new(RegionId::Diagnostics, content));
+        slots.push(region_slot(RegionId::Diagnostics, content));
     }
     for (id, content) in &shell.extra_regions {
         let Some(content) = present(Some(*content)) else {
             continue;
         };
         if let Some(existing) = slots.iter_mut().find(|slot| slot.id == *id) {
-            existing.content = Some(content);
+            *existing = region_slot(id.clone(), content);
         } else {
-            slots.push(WorkspaceRegionSlot::new(id.clone(), content));
+            slots.push(region_slot(id.clone(), content));
         }
     }
     slots

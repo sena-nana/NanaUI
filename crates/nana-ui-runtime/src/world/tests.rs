@@ -6595,6 +6595,24 @@ fn hit_test_follows_perspective_rotate_y_homography() {
     world.commit(queue).unwrap();
     world.rebuild_hit_test(document(1));
     assert_eq!(world.hit_test(document(1), 100.0, 40.0), Some(node(1)));
+    let local = (70.0, 20.0);
+    let projected = world
+        .layout_pointer_position(node(1), local.0, local.1)
+        .unwrap();
+    assert_eq!(
+        world.hit_test(document(1), projected.0, projected.1),
+        Some(node(1))
+    );
+    let restored = world
+        .pointer_layout_position(node(1), projected.0, projected.1)
+        .unwrap();
+    assert!((restored.0 - local.0).abs() < 0.001);
+    assert!((restored.1 - local.1).abs() < 0.001);
+    assert!(
+        world
+            .pointer_layout_position(node(1), f32::NAN, 0.0)
+            .is_none()
+    );
     assert_eq!(
         world.hit_test(document(1), empty_corner_x, empty_corner_y),
         None
@@ -7775,6 +7793,14 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
     assert_eq!(world.hit_test(document(1), 10.0, 5.0), Some(node(2)));
     let patched_scroller = hit_entry_transform(&world, document(1), node(2));
     let patched_item = hit_entry_transform(&world, document(1), node(3));
+    assert_eq!(
+        world.pointer_layout_position(node(3), 10.0, 25.0),
+        Some((10.0, 85.0))
+    );
+    assert_eq!(
+        world.layout_pointer_position(node(3), 10.0, 85.0),
+        Some((10.0, 25.0))
+    );
     // The in-place patch must agree with a full rebuild, including the
     // scroller's own transform.
     world.rebuild_hit_test(document(1));

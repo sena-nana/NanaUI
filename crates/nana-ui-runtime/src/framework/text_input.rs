@@ -407,7 +407,7 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_selection)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let changed = self.update_component(entity, |editable, cx| {
             let selection = TextSelection {
                 anchor: 0,
                 focus: editable.state().value.len(),
@@ -426,7 +426,11 @@ impl AppContext {
                 selection,
             });
             true
-        })
+        })?;
+        if changed {
+            self.seal_editor_history(entity.stable_id());
+        }
+        Ok(changed)
     }
 
     pub(super) fn delete_editable_backward<C: EditableText>(
@@ -535,7 +539,7 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_selection)? {
             return Ok(false);
         }
-        self.update_component(entity, |editable, cx| {
+        let changed = self.update_component(entity, |editable, cx| {
             if editable.state().selection == selection
                 || !selection.is_valid_for(&editable.state().value)
             {
@@ -547,7 +551,11 @@ impl AppContext {
                 selection,
             });
             true
-        })
+        })?;
+        if changed {
+            self.seal_editor_history(entity.stable_id());
+        }
+        Ok(changed)
     }
 
     /// Replace the active UTF-8 selection and notify typed observers without

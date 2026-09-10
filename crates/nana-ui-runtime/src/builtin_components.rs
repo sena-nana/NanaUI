@@ -11,8 +11,6 @@ use nana_ui_core::{
 
 #[cfg(feature = "rich-text")]
 use crate::NativeMarkdown;
-#[cfg(feature = "charts")]
-use crate::TimeSeriesChart;
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Avatar, Button, Card, Checkbox, Chip,
     ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
@@ -30,6 +28,8 @@ use crate::{
 };
 #[cfg(feature = "calendar")]
 use crate::{CalendarHeatmap, CalendarHeatmapDatum, CalendarHeatmapOptions, CalendarLevelStrategy};
+#[cfg(feature = "charts")]
+use crate::{DonutChart, DonutSlice, TimeSeriesChart};
 #[cfg(feature = "graph-canvas")]
 use crate::{GraphCanvas, GraphModel};
 #[cfg(feature = "image-viewer")]
@@ -81,6 +81,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<TextArea>()?;
         registrar.register_component::<crate::TerminalView>()?;
         registrar.register_component::<crate::NativeContent>()?;
+        registrar.register_component::<crate::BrowserView>()?;
         registrar.register_component::<HostedTextarea>()?;
         registrar.register_component::<RangeField>()?;
         registrar.register_component::<Progress>()?;
@@ -141,6 +142,8 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<ReorderList>()?;
         #[cfg(feature = "charts")]
         registrar.register_component::<TimeSeriesChart>()?;
+        #[cfg(feature = "charts")]
+        registrar.register_component::<DonutChart>()?;
         registrar.register_component::<DesktopShell>()?;
         registrar.register_component::<AppTitleBar>()?;
         registrar.register_component::<PaneChrome>()?;
@@ -211,6 +214,13 @@ impl RegisterableComponent for Button {
             .disabled(spec.disabled)
             .loading(spec.loading)
             .invalid(spec.invalid);
+        component.icon = spec.icon;
+        if let Some(size) = attr_f32(spec, &["icon-size", "iconSize"]) {
+            component = component.icon_size(size);
+        }
+        if let Some(gap) = attr_f32(spec, &["icon-gap", "iconGap"]) {
+            component = component.icon_gap(gap);
+        }
         overlay_l2_css_size(&mut component.style.layout, spec.layout.as_ref());
         component
     }
@@ -1599,16 +1609,111 @@ impl RegisterableComponent for ReorderList {
 
 #[cfg(feature = "charts")]
 impl RegisterableComponent for TimeSeriesChart {
+    const RETAIN_SEMANTIC_STATE: bool = true;
     const TYPE_ID: &'static str = crate::component_descriptors::TIME_SERIES_CHART.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::TIME_SERIES_CHART.tags;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut component = Self::from_semantic(spec);
+        component.active = previous
+            .and_then(|previous| previous.active)
+            .filter(|&index| !component.layers.is_empty() && index < component.values.len());
+        component
+    }
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut component =
-            TimeSeriesChart::new(time_series_values_from_spec(spec)).style(layout_only_style(spec));
+        let mut component = TimeSeriesChart::new(time_series_values_from_spec(spec))
+            .style(layout_only_style(spec))
+            .axis_labels(chart_strings(spec, &["axis-labels", "axisLabels"]))
+            .tooltip_details(chart_strings(spec, &["tooltip-details", "tooltipDetails"]));
+        if let Some(layers) = spec_json(spec, &["layers"]) {
+            component = component.stacked(json_array(&layers).into_iter().enumerate().map(
+                |(i, layer)| {
+                    crate::TimeSeriesLayer::new(
+                        layer.get("label").map(json_text).unwrap_or_default(),
+                        layer
+                            .get("values")
+                            .map(json_array)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|value| chart_value(value).unwrap_or(0.0)),
+                        chart_color(layer.get("color"), i),
+                    )
+                },
+            ));
+        }
         if !spec.display_label().is_empty() {
             component = component.label(Arc::<str>::from(spec.display_label()));
         }
         component
     }
+}
+
+#[cfg(feature = "charts")]
+impl RegisterableComponent for DonutChart {
+    const RETAIN_SEMANTIC_STATE: bool = true;
+    const TYPE_ID: &'static str = crate::component_descriptors::DONUT_CHART.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DONUT_CHART.tags;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut component = Self::from_semantic(spec);
+        component.active = previous
+            .and_then(|previous| previous.active)
+            .filter(|&index| {
+                component
+                    .slices
+                    .get(index)
+                    .is_some_and(|slice| slice.value.is_finite() && slice.value > 0.0)
+            });
+        component
+    }
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let slices = if let Some(slices) = spec_json(spec, &["slices"]) {
+            json_array(&slices)
+                .into_iter()
+                .enumerate()
+                .map(|(i, slice)| DonutSlice {
+                    value: slice.get("value").and_then(chart_value).unwrap_or(0.0),
+                    color: chart_color(slice.get("color"), i),
+                })
+                .collect()
+        } else {
+            time_series_values_from_spec(spec)
+                .into_iter()
+                .enumerate()
+                .map(|(i, value)| DonutSlice {
+                    value,
+                    color: chart_color(None, i),
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut component = DonutChart::new(slices)
+            .labels(chart_strings(spec, &["labels"]))
+            .style(layout_only_style(spec));
+        if !spec.display_label().is_empty() {
+            component = component.label(Arc::<str>::from(spec.display_label()));
+        }
+        if let Some(cutout) = attr_f32(spec, &["cutout"]) {
+            component = component.cutout(cutout);
+        }
+        component
+    }
+}
+
+#[cfg(feature = "charts")]
+fn chart_color(value: Option<&serde_json::Value>, index: usize) -> nana_ui_core::SemanticColorRole {
+    use nana_ui_core::SemanticColorRole as R;
+    const ROLES: [R; 5] = [R::Accent, R::Success, R::Warning, R::Text, R::Muted];
+    value
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or(ROLES[index % ROLES.len()])
+}
+#[cfg(feature = "charts")]
+fn chart_value(value: &serde_json::Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+#[cfg(feature = "charts")]
+fn chart_strings(spec: &SemanticSpec<'_>, names: &[&str]) -> Vec<String> {
+    spec_json(spec, names)
+        .map(|value| json_array(&value).into_iter().map(json_text).collect())
+        .unwrap_or_default()
 }
 
 impl RegisterableComponent for DesktopShell {
@@ -1797,7 +1902,7 @@ fn time_series_values_from_spec(spec: &SemanticSpec<'_>) -> Vec<f64> {
     if let Some(value) = spec_json(spec, &["values", "data", "series"]) {
         let values = json_array(&value)
             .into_iter()
-            .filter_map(|item| json_f32(item).map(f64::from))
+            .map(|value| chart_value(value).unwrap_or(0.0))
             .collect::<Vec<_>>();
         if !values.is_empty() {
             return values;
@@ -3153,6 +3258,81 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[cfg(feature = "charts")]
+    #[test]
+    fn semantic_charts_preserve_datum_alignment_and_theme_roles() {
+        let ty = ComponentTypeId::new("nana.time-series-chart").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [
+            ("values", "[16777217,null,4]"),
+            ("axis-labels", r#"["A","B","C"]"#),
+            (
+                "layers",
+                r#"[{"label":"Input","values":[2,null,4],"color":"Warning"}]"#,
+            ),
+            ("tooltip-details", r#"["Cost 2","Cost 0","Cost 4"]"#),
+        ];
+        let spec = spec_with(&ty, &layout, &attrs, &[], &[], "", "");
+        let chart = TimeSeriesChart::from_semantic(&spec);
+        assert_eq!(chart.values, [16777217.0, 0.0, 4.0]);
+        assert_eq!(chart.layers[0].values, [2.0, 0.0, 4.0]);
+        assert_eq!(
+            chart.layers[0].color,
+            nana_ui_core::SemanticColorRole::Warning
+        );
+        assert!(chart.tooltip(1).unwrap().contains("Cost 0"));
+        let mut chart = chart;
+        chart.active = Some(1);
+        assert_eq!(
+            TimeSeriesChart::reconcile_semantic(&spec, Some(&chart)).active,
+            Some(1)
+        );
+        chart.active = Some(9);
+        assert_eq!(
+            TimeSeriesChart::reconcile_semantic(&spec, Some(&chart)).active,
+            None
+        );
+        let ty = ComponentTypeId::new("nana.donut-chart").unwrap();
+        let attrs = [
+            (
+                "slices",
+                r#"[{"value":null},{"value":4,"color":"Success"}]"#,
+            ),
+            ("labels", r#"["Missing","Valid"]"#),
+        ];
+        let spec = spec_with(&ty, &layout, &attrs, &[], &[], "", "");
+        let chart = DonutChart::from_semantic(&spec);
+        assert_eq!(chart.slices[0].value, 0.0);
+        assert_eq!(
+            chart.slices[1].color,
+            nana_ui_core::SemanticColorRole::Success
+        );
+        assert_eq!(
+            chart.slice_at(
+                crate::LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 100.0
+                },
+                95.0,
+                50.0
+            ),
+            Some(1)
+        );
+        let mut chart = chart;
+        chart.active = Some(1);
+        assert_eq!(
+            DonutChart::reconcile_semantic(&spec, Some(&chart)).active,
+            Some(1)
+        );
+        chart.active = Some(0);
+        assert_eq!(
+            DonutChart::reconcile_semantic(&spec, Some(&chart)).active,
+            None
+        );
     }
 
     #[test]

@@ -4801,3 +4801,104 @@ fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
     assert_eq!(world.layout_box(id(4)).unwrap().y, 134.0);
     assert_eq!(world.layout_box(id(3)).unwrap().height, 208.0);
 }
+
+#[cfg(feature = "rich-text")]
+#[test]
+fn constrained_auto_height_contains_wrapped_markdown_and_flow_actions() {
+    use crate::{AppContext, NativeMarkdown, Stack};
+    for (maximum, sizing, declared, minimum) in [
+        (
+            LengthSpec::Percent(76.0),
+            BoxSizing::BorderBox,
+            LengthSpec::FitContent,
+            None,
+        ),
+        (
+            LengthSpec::Min2(
+                nana_ui_core::LengthAtom::Percent(76.0),
+                nana_ui_core::LengthAtom::Px(620.0),
+            ),
+            BoxSizing::BorderBox,
+            LengthSpec::FitContent,
+            None,
+        ),
+        (
+            LengthSpec::Px(620.0),
+            BoxSizing::ContentBox,
+            LengthSpec::Px(50.0),
+            Some(LengthSpec::Px(100.0)),
+        ),
+        (
+            LengthSpec::Px(620.0),
+            BoxSizing::BorderBox,
+            LengthSpec::Px(50.0),
+            Some(LengthSpec::Px(100.0)),
+        ),
+    ] {
+        let document = DocumentId::new(601).unwrap();
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document, Stack::fill_column(0.0))
+            .unwrap();
+        let bubble = context
+            .create_detached_component(
+                document,
+                Stack::column(6.0)
+                    .width(declared)
+                    .padding_xy(14.0, 10.0)
+                    .with_layout(|layout| {
+                        layout.max_width = Some(maximum);
+                        layout.min_width = minimum;
+                        layout.box_sizing = sizing;
+                    }),
+            )
+            .unwrap();
+        let markdown = context
+            .create_detached_component(
+                document,
+                NativeMarkdown::parse(&"换行内容需要完整参与父容器的自然高度。".repeat(32)),
+            )
+            .unwrap();
+        context.assemble_markdown(markdown).unwrap();
+        let actions = context
+            .create_detached_component(document, Stack::row(0.0).height(LengthSpec::Px(28.0)))
+            .unwrap();
+        let following = context
+            .create_detached_component(document, Stack::row(0.0).height(LengthSpec::Px(22.0)))
+            .unwrap();
+        context.append_child(root, bubble).unwrap();
+        context.append_child(bubble, markdown).unwrap();
+        context.append_child(bubble, actions).unwrap();
+        context.append_child(root, following).unwrap();
+        for width in [1000.0, 640.0, 400.0, 1000.0] {
+            context
+                .layout_document(document, LayoutViewport::new(width, 1200.0))
+                .unwrap();
+            let world = context.world();
+            let parent = world.layout_box(bubble.stable_id()).unwrap();
+            if minimum.is_some() {
+                let expected = if sizing == BoxSizing::ContentBox {
+                    128.0
+                } else {
+                    100.0
+                };
+                assert_eq!(parent.width, expected);
+            }
+            let text = world.layout_box(markdown.stable_id()).unwrap();
+            let action = world.layout_box(actions.stable_id()).unwrap();
+            let next = world.layout_box(following.stable_id()).unwrap();
+            assert!(
+                action.y >= text.y + text.height,
+                "{parent:?} {text:?} {action:?}"
+            );
+            assert!(
+                action.y + action.height + 10.0 <= parent.y + parent.height + 0.1,
+                "flow content and padding must fit at {width}: {parent:?} {text:?} {action:?}"
+            );
+            assert!(
+                next.y >= parent.y + parent.height,
+                "following row must start after the complete bubble"
+            );
+        }
+    }
+}

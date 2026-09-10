@@ -11,7 +11,23 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let style = context.node.source_style.layout.as_ref();
     let id = context.node.id;
     match context.node.component_geometry.as_deref() {
-        Some(ComponentGeometry::Button { label, .. }) => {
+        Some(ComponentGeometry::Button { label, icon, .. }) => {
+            if let Some((icon, bounds)) = icon {
+                emit(ScenePrimitive {
+                    id: PrimitiveId { node: id, slot: 4 },
+                    node: id,
+                    bounds: scene_rect(*bounds),
+                    transform,
+                    clips: clips.clone(),
+                    opacity,
+                    z_index: node.z_index,
+                    document_order: node_order,
+                    kind: ScenePrimitiveKind::Icon {
+                        icon: *icon,
+                        color: label.color,
+                    },
+                });
+            }
             emit(component_text_primitive(
                 id,
                 2,
@@ -848,7 +864,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             }
             emit(component_text_primitive(
                 id,
-                2,
+                11,
                 badge,
                 TextHorizontalAlignment::Center,
                 false,
@@ -882,7 +898,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             ));
             emit(component_text_primitive(
                 id,
-                2,
+                11,
                 badge,
                 TextHorizontalAlignment::Center,
                 false,

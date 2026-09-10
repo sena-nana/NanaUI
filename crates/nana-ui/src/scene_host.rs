@@ -3,6 +3,7 @@
 //! Paint goes through [`crate::SceneWgpuPainter`].
 
 mod accessibility;
+mod browser;
 mod dialogs;
 mod input;
 mod present;
@@ -145,6 +146,8 @@ impl Drop for SceneAuxiliary {
 
 struct SceneReady<Program: RuntimeProgram> {
     program: Program,
+    // Native children drop before their owning GPU/window resources.
+    browsers: HashMap<(WindowId, String), browser::HostedBrowser>,
     graphics: HostedGpuContext,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     native_renderers:
@@ -435,6 +438,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         while let Ok(message) = ready.messages.try_recv() {
             ready.process_message(event_loop, message);
         }
+        ready.drain_browser_events(event_loop);
     }
 
     fn window_event(
@@ -559,6 +563,7 @@ fn initialize<Program: RuntimeProgram>(
         message_tx,
         messages: message_rx,
         file_dialogs: dialogs::FileDialogs::default(),
+        browsers: HashMap::new(),
         tasks,
         geometry,
         animation_clock,
@@ -675,6 +680,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         painting: Option<WindowId>,
     ) {
         if update.exit {
+            self.browsers.clear();
             self.close_all_file_dialogs();
             event_loop.exit();
             return;
@@ -685,6 +691,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         }
+        self.reconcile_browser_lifetimes();
         for id in windows_to_redraw(update.redraw, &self.known_window_ids()) {
             if painting == Some(id) {
                 continue;

@@ -1,6 +1,11 @@
 //! Platform-owned native window support for Nana applications.
 
+mod browser;
 mod chrome;
+pub use browser::{
+    BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
+    NativeBrowser,
+};
 mod file_dialog;
 mod material;
 mod menu;

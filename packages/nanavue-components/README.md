@@ -56,6 +56,7 @@ import "@nanaui/nanavue-components/controls.css";
 | `NanaLevelMeter` | `LevelMeter` |
 | `NanaTable` / `NanaTableRow` / `NanaTableCell` | `Table` / `TableRow` / `TableCell` |
 | `NanaReorderList` | `ReorderList` |
+| `NanaDonutChart` | `DonutChart` |
 | `NanaTimeSeriesChart` | `TimeSeriesChart` |
 | `NanaDialog` | `Dialog` / `ConfirmDialog` |
 | `NanaDrawer` | `Drawer` |

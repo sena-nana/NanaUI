@@ -134,6 +134,7 @@ fn text_field_style(multiline: bool) -> NodeStyle {
                 foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                 background: Some(nana_ui_core::SemanticColorRole::Subtle),
                 border: Some(nana_ui_core::SemanticColorRole::Border),
+                ..SemanticPaint::default()
             },
             ..crate::InteractionStyle::default()
         },
@@ -353,6 +354,9 @@ impl ComponentView for Text {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Button {
     pub label: String,
+    pub icon: Option<nana_ui_core::Icon>,
+    pub icon_size: Option<f32>,
+    pub icon_gap: f32,
     pub kind: nana_ui_core::ButtonKind,
     pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
@@ -363,11 +367,6 @@ pub struct Button {
     pub(crate) style_override: bool,
 }
 
-/// Width a loading `Button` reserves on each side for the spinner and its gap.
-///
-/// Applied as intrinsic padding while laying the button out and given back to
-/// the inline content box when the spinner and label are placed, so the two
-/// sides must agree. Keep them reading the same constants.
 /// Font size of a `Card` title.
 pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::UI_BASE_TEXT_SIZE;
 /// Font weight of a `Card` title.
@@ -384,10 +383,6 @@ pub(crate) const CARD_TITLE_BAND: f32 = CARD_TITLE_LINE + CARD_TITLE_GAP;
 /// Width a loading `Card` reserves for its spinner beside the title.
 pub(crate) const CARD_LOADING_RESERVE: f32 = 22.0;
 
-pub(crate) const BUTTON_LOADING_RESERVE_X: f32 = 10.0;
-/// Gap between a loading `Button`'s spinner and its label.
-pub(crate) const BUTTON_LOADING_GAP: f32 = 6.0;
-
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
         let mut layout = (*control_layout(nana_ui_core::UI_METRICS.control_padding_x)).clone();
@@ -395,6 +390,9 @@ impl Button {
         layout.white_space_nowrap = true;
         Self {
             label: label.into(),
+            icon: None,
+            icon_size: None,
+            icon_gap: 6.0,
             kind: nana_ui_core::ButtonKind::Ghost,
             size: nana_ui_core::ControlSize::Medium,
             disabled: false,
@@ -419,6 +417,7 @@ impl Button {
                         foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
                         border: Some(nana_ui_core::SemanticColorRole::Border),
+                        ..SemanticPaint::default()
                     },
                     ..crate::InteractionStyle::default()
                 },
@@ -427,6 +426,23 @@ impl Button {
             },
             style_override: false,
         }
+    }
+
+    pub fn icon(mut self, icon: nana_ui_core::Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    pub fn icon_size(mut self, size: f32) -> Self {
+        if size.is_finite() && size >= 0.0 {
+            self.icon_size = Some(size);
+        }
+        self
+    }
+    pub fn icon_gap(mut self, gap: f32) -> Self {
+        if gap.is_finite() && gap >= 0.0 {
+            self.icon_gap = gap;
+        }
+        self
     }
 
     pub fn kind(mut self, kind: nana_ui_core::ButtonKind) -> Self {
@@ -491,6 +507,16 @@ impl ComponentView for Button {
         }
         let visual = StandardVisual::Button {
             label: Arc::from(self.label.as_str()),
+            icon: self.icon,
+            icon_size: self
+                .icon_size
+                .filter(|size| size.is_finite() && *size >= 0.0)
+                .unwrap_or(self.size.icon_size()),
+            icon_gap: if self.icon_gap.is_finite() {
+                self.icon_gap.max(0.0)
+            } else {
+                6.0
+            },
             kind: self.kind,
             size: self.size,
             loading: self.loading,
@@ -501,17 +527,6 @@ impl ComponentView for Button {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
-        let layout = Arc::make_mut(&mut effective_style.layout);
-        if self.loading {
-            layout.padding_left = Some(layout.padding_left.map_or(
-                nana_ui_core::LengthSpec::Px(BUTTON_LOADING_RESERVE_X),
-                |padding| add_length_px(padding, BUTTON_LOADING_RESERVE_X),
-            ));
-            layout.padding_right = Some(layout.padding_right.map_or(
-                nana_ui_core::LengthSpec::Px(BUTTON_LOADING_RESERVE_X),
-                |padding| add_length_px(padding, BUTTON_LOADING_RESERVE_X),
-            ));
-        }
         if !self.style_override {
             effective_style.foreground = Some(match self.kind {
                 nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentOnSoft,
@@ -664,6 +679,7 @@ impl IconButton {
                     foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                     ..SemanticPaint::default()
                 },
+                ..crate::InteractionStyle::default()
             },
             text_horizontal_alignment: TextHorizontalAlignment::Center,
             text_vertical_alignment: TextVerticalAlignment::Center,
@@ -1157,6 +1173,7 @@ impl ListItem {
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
                         ..SemanticPaint::default()
                     },
+                    ..crate::InteractionStyle::default()
                 },
                 text_vertical_alignment: TextVerticalAlignment::Center,
                 ..NodeStyle::default()
@@ -1391,6 +1408,7 @@ pub struct OverlayClosing {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextInput {
     pub state: TextInputState,
+    pub max_length: Option<usize>,
     pub label: Option<Arc<str>>,
     pub placeholder: Arc<str>,
     pub size: nana_ui_core::ControlSize,
@@ -1408,6 +1426,7 @@ impl TextInput {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             state: TextInputState::new(value),
+            max_length: None,
             label: None,
             placeholder: Arc::from(""),
             size: nana_ui_core::ControlSize::Medium,
@@ -1487,8 +1506,25 @@ impl TextInput {
         self
     }
 
+    /// Limit user edits to UTF-16 code units, as HTML `maxlength` does.
+    /// Programmatic initial/state values are preserved even when longer.
+    /// Existing over-limit values may be shortened or replaced without growth.
+    /// IME preedit is unrestricted; only its committed text is limited.
+    pub fn max_length(mut self, limit: usize) -> Self {
+        self.max_length = Some(limit);
+        self
+    }
+
+    pub(crate) fn accepts_edit_value(&self, value: &str) -> bool {
+        crate::text_input_limit::accepts_value(&self.state.value, value, self.max_length)
+    }
+
     pub fn replace_selection(&mut self, text: &str) -> bool {
-        self.state.replace_selection(text)
+        crate::text_input_limit::replace(&mut self.state, text, self.max_length, false)
+    }
+
+    pub(crate) fn commit_limited_ime(&mut self, text: &str) -> bool {
+        crate::text_input_limit::replace(&mut self.state, text, self.max_length, true)
     }
 }
 
@@ -1849,9 +1885,20 @@ impl CodeEditing {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TextAreaResizeDrag {
+    pub pointer: u64,
+    pub start_y: f32,
+    pub start_height: f32,
+    pub previous_height: Option<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextArea {
     pub state: TextInputState,
+    pub resize_vertical: bool,
+    pub(crate) resized_height: Option<f32>,
+    pub(crate) resize_drag: Option<TextAreaResizeDrag>,
     pub label: Option<Arc<str>>,
     pub placeholder: Arc<str>,
     pub disabled: bool,
@@ -1942,6 +1989,9 @@ impl TextArea {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             state: TextInputState::new(value),
+            resize_vertical: false,
+            resized_height: None,
+            resize_drag: None,
             label: None,
             placeholder: Arc::from(""),
             disabled: false,
@@ -2122,6 +2172,24 @@ impl TextArea {
         self
     }
 
+    pub(crate) fn supports_vertical_resize(&self) -> bool {
+        self.resize_vertical
+            && (self.style.layout.box_sizing == nana_ui_core::BoxSizing::BorderBox
+                || (self.style.layout.min_height.is_none()
+                    && self.style.layout.max_height.is_none()
+                    && (self.resized_height.is_some()
+                        || matches!(
+                            self.style.layout.height,
+                            Some(nana_ui_core::LengthSpec::Px(_))
+                        ))))
+    }
+
+    /// Enables a vertical grip. Content-box layouts require an unconstrained pixel height.
+    pub fn resize_vertical(mut self, enabled: bool) -> Self {
+        self.resize_vertical = enabled;
+        self
+    }
+
     pub fn height(mut self, height: f32) -> Self {
         if height.is_finite() {
             Arc::make_mut(&mut self.style.layout).height = Some(nana_ui_core::LengthSpec::Px(
@@ -2187,6 +2255,7 @@ impl ComponentView for TextArea {
             folds: Arc::clone(&self.code_folds),
             git_marks: Arc::clone(&self.git_gutter),
             editor_options: TextEditorRenderOptions {
+                resize_vertical: self.supports_vertical_resize(),
                 occurrence_highlight: self.occurrence_highlight,
                 relative_line_numbers: self.relative_line_numbers,
                 show_whitespace: self.show_whitespace,
@@ -2250,6 +2319,12 @@ impl ComponentView for TextArea {
             }
         }
         let mut effective_style = self.style.clone();
+        if self.resize_vertical
+            && let Some(height) = self.resized_height
+        {
+            Arc::make_mut(&mut effective_style.layout).height =
+                Some(nana_ui_core::LengthSpec::Px(height));
+        }
         if self.line_numbers || !self.code_folds.is_empty() || !self.git_gutter.is_empty() {
             // Reserve the left marker lane even before fold/git results arrive,
             // so asynchronous decorations do not move the source horizontally.
@@ -2875,7 +2950,9 @@ fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
                 foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 background: Some(nana_ui_core::SemanticColorRole::Subtle),
                 border: Some(nana_ui_core::SemanticColorRole::Border),
+                ..SemanticPaint::default()
             },
+            ..crate::InteractionStyle::default()
         },
         text_vertical_alignment: TextVerticalAlignment::Center,
         ..NodeStyle::default()
@@ -3625,6 +3702,25 @@ impl ScrollView {
     }
 }
 
+impl ScrollView {
+    pub(crate) fn project_scrollbar_visual(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        let visual = crate::StandardVisual::Scrollbar {
+            axes: self.axes,
+            visibility: self.scrollbars,
+            revealed: self.scrollbars_revealed(),
+            dragging: self.dragging.map(|drag| drag.axis),
+        };
+        if world.standard_visual(id) != Some(visual.clone()) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+    }
+}
+
 impl ComponentView for ScrollView {
     fn reconcile(&mut self, mut next: Self) {
         next.hovered = self.hovered;
@@ -3640,15 +3736,7 @@ impl ComponentView for ScrollView {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = crate::StandardVisual::Scrollbar {
-            axes: self.axes,
-            visibility: self.scrollbars,
-            revealed: self.scrollbars_revealed(),
-            dragging: self.dragging.map(|drag| drag.axis),
-        };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
-        }
+        self.project_scrollbar_visual(id, world, mutations);
         self.project_scrollport(id, world, mutations);
     }
 }
