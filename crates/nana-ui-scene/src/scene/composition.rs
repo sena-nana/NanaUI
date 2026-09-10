@@ -121,6 +121,10 @@ impl UiScene {
                 .entry(custom.resource.clone())
                 .or_insert((primitive.id, custom.clone()));
         }
+        let custom_renderers = custom_nodes
+            .iter()
+            .map(|(resource, (_, custom))| (resource.clone(), custom.renderer.clone()))
+            .collect::<HashMap<Arc<str>, Arc<str>>>();
         let custom_resources = custom_nodes
             .into_iter()
             .map(|(resource, (representative, _))| {
@@ -140,18 +144,31 @@ impl UiScene {
             })?;
         }
         let mut pass_id = 1_u64;
+        // One preparation pass per renderer, not per resource. A pass per
+        // resource makes the graph grow with the number of custom nodes, and
+        // compile()'s hazard and dependency sets are quadratic in pass count.
+        // Operation order inside a pass stays resource-label order.
         let mut ordered_resources = custom_resources.iter().collect::<Vec<_>>();
         ordered_resources.sort_by_key(|(label, _)| *label);
+        let mut prepare_passes: BTreeMap<&Arc<str>, (Vec<ResourceAccess>, Vec<RenderOperation>)> =
+            BTreeMap::new();
         for (label, (resource, representative)) in ordered_resources {
+            let entry = prepare_passes
+                .entry(&custom_renderers[label])
+                .or_default();
+            entry.0.push(ResourceAccess {
+                resource: *resource,
+                mode: AccessMode::Write,
+            });
+            entry.1.push(RenderOperation::PrepareExternal(*representative));
+        }
+        for (renderer, (resources, operations)) in prepare_passes {
             graph.add_pass(RenderPass {
                 id: PassId(pass_id),
-                label: format!("prepare:{label}"),
+                label: format!("prepare:{renderer}"),
                 dependencies: Vec::new(),
-                resources: vec![ResourceAccess {
-                    resource: *resource,
-                    mode: AccessMode::Write,
-                }],
-                operations: vec![RenderOperation::PrepareExternal(*representative)],
+                resources,
+                operations,
             })?;
             pass_id += 1;
         }
@@ -176,32 +193,70 @@ impl UiScene {
             *pass_id += 1;
             Ok(())
         };
+        // A run of consecutive custom primitives sharing a renderer becomes one
+        // pass. Scene order is untouched: the run is bounded by the next
+        // standard primitive or a different renderer, so a custom node can
+        // never move across ordinary UI. FramePlan flattens passes into one
+        // ordered operation list, so its contents are unchanged either way.
+        let mut custom_run: Option<(Arc<str>, Vec<ResourceAccess>, Vec<RenderOperation>)> = None;
+        let flush_custom = |graph: &mut RenderGraph,
+                            pass_id: &mut u64,
+                            run: &mut Option<(Arc<str>, Vec<ResourceAccess>, Vec<RenderOperation>)>|
+         -> Result<(), GraphError> {
+            let Some((renderer, resources, operations)) = run.take() else {
+                return Ok(());
+            };
+            graph.add_pass(RenderPass {
+                id: PassId(*pass_id),
+                label: format!("custom:{renderer}"),
+                dependencies: Vec::new(),
+                resources,
+                operations,
+            })?;
+            *pass_id += 1;
+            Ok(())
+        };
         for primitive in self.primitives() {
             match &primitive.kind {
                 ScenePrimitiveKind::Custom { node: custom, .. } => {
                     flush_standard(&mut graph, &mut pass_id, &mut standard)?;
                     let resource = custom_resources[&custom.resource].0;
-                    graph.add_pass(RenderPass {
-                        id: PassId(pass_id),
-                        label: format!("custom:{}", custom.renderer),
-                        dependencies: Vec::new(),
-                        resources: vec![
-                            ResourceAccess {
-                                resource: target,
-                                mode: AccessMode::ReadWrite,
-                            },
-                            ResourceAccess {
-                                resource,
-                                mode: AccessMode::Read,
-                            },
-                        ],
-                        operations: vec![RenderOperation::InvokeCustom(primitive.id)],
-                    })?;
-                    pass_id += 1;
+                    let read = ResourceAccess {
+                        resource,
+                        mode: AccessMode::Read,
+                    };
+                    match custom_run.as_mut() {
+                        Some((renderer, resources, operations))
+                            if *renderer == custom.renderer =>
+                        {
+                            if !resources.contains(&read) {
+                                resources.push(read);
+                            }
+                            operations.push(RenderOperation::InvokeCustom(primitive.id));
+                        }
+                        _ => {
+                            flush_custom(&mut graph, &mut pass_id, &mut custom_run)?;
+                            custom_run = Some((
+                                custom.renderer.clone(),
+                                vec![
+                                    ResourceAccess {
+                                        resource: target,
+                                        mode: AccessMode::ReadWrite,
+                                    },
+                                    read,
+                                ],
+                                vec![RenderOperation::InvokeCustom(primitive.id)],
+                            ));
+                        }
+                    }
                 }
-                _ => standard.push(RenderOperation::Draw(primitive.id)),
+                _ => {
+                    flush_custom(&mut graph, &mut pass_id, &mut custom_run)?;
+                    standard.push(RenderOperation::Draw(primitive.id));
+                }
             }
         }
+        flush_custom(&mut graph, &mut pass_id, &mut custom_run)?;
         flush_standard(&mut graph, &mut pass_id, &mut standard)?;
         graph.compile()
     }

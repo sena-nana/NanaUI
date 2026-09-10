@@ -531,6 +531,60 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
 }
 
 #[test]
+fn adjacent_custom_nodes_share_one_graph_pass_and_keep_operation_order() {
+    let graph_for = |count: u64| {
+        let mut nodes = Vec::new();
+        let mut children = Vec::new();
+        for index in 0..count {
+            let child_id = index + 2;
+            children.push(id(child_id));
+            let mut child = node(child_id, Some(1), &[]);
+            child.custom_render = Some(CustomRenderNode::new(
+                "gpu-view",
+                format!("slot-{index}"),
+                1,
+            ));
+            nodes.push(child);
+        }
+        let mut root = node(1, None, &[]);
+        root.children = std::sync::Arc::new(children);
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        (scene.frame_graph(ResourceId(7)).unwrap(), scene)
+    };
+
+    let (one, _) = graph_for(1);
+    let (many, many_scene) = graph_for(32);
+    // One preparation pass per renderer plus one pass for the contiguous run:
+    // the graph must not grow a pass per node.
+    assert_eq!(
+        many.passes.len(),
+        one.passes.len(),
+        "32 adjacent same-renderer custom nodes must not add graph passes: {} vs {}",
+        many.passes.len(),
+        one.passes.len()
+    );
+    // Scene order is the contract; only the pass partitioning changed.
+    let invoked = many
+        .passes
+        .iter()
+        .flat_map(|pass| pass.operations.iter())
+        .filter_map(|operation| match operation {
+            RenderOperation::InvokeCustom(id) => Some(*id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected = many_scene
+        .primitives()
+        .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
+        .map(|primitive| primitive.id)
+        .collect::<Vec<_>>();
+    assert_eq!(invoked, expected, "custom invocations must stay in scene order");
+    assert_eq!(many.resources.len(), 33, "each slot is still its own external resource");
+}
+
+#[test]
 fn extraction_preserves_custom_interleaving_and_removals() {
     let mut root = node(1, None, &[2]);
     root.source_style = NodeStyle {
@@ -577,7 +631,9 @@ fn extraction_preserves_custom_interleaving_and_removals() {
     assert_eq!(graph.passes.len(), 4);
     assert_eq!(graph.resources.len(), 2);
     assert_eq!(graph.resources[1].label, "preview");
-    assert_eq!(graph.passes[0].label, "prepare:preview");
+    // Preparation passes are grouped by renderer, not by resource, so the graph
+    // stays flat as custom nodes multiply. `resources[1]` is still the slot.
+    assert_eq!(graph.passes[0].label, "prepare:host-texture");
     assert_eq!(graph.passes[2].resources.len(), 2);
     assert!(graph.passes[2].dependencies.contains(&graph.passes[0].id));
     let root_before = scene

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::PrimitiveId;
@@ -100,6 +100,10 @@ impl std::error::Error for GraphError {}
 pub struct RenderGraph {
     resources: Vec<RenderResource>,
     passes: Vec<RenderPass>,
+    /// Duplicate rejection. A linear scan per insert is quadratic once a scene
+    /// carries one external resource per custom node.
+    resource_ids: HashSet<ResourceId>,
+    pass_ids: HashSet<PassId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +118,7 @@ impl RenderGraph {
     }
 
     pub fn add_resource(&mut self, resource: RenderResource) -> Result<(), GraphError> {
-        if self.resources.iter().any(|item| item.id == resource.id) {
+        if !self.resource_ids.insert(resource.id) {
             return Err(GraphError::DuplicateResource(resource.id));
         }
         self.resources.push(resource);
@@ -122,7 +126,7 @@ impl RenderGraph {
     }
 
     pub fn add_pass(&mut self, pass: RenderPass) -> Result<(), GraphError> {
-        if self.passes.iter().any(|item| item.id == pass.id) {
+        if !self.pass_ids.insert(pass.id) {
             return Err(GraphError::DuplicatePass(pass.id));
         }
         self.passes.push(pass);
@@ -198,26 +202,33 @@ impl RenderGraph {
             }
         }
 
-        let mut ready = BTreeSet::new();
-        let mut emitted = BTreeSet::new();
+        // Kahn over precomputed in-degrees. Re-scanning every pass after each
+        // emit is O(passes^3) once every pass shares the target resource, which
+        // a scene with many custom nodes does. Emission order is unchanged:
+        // the lowest ready index still goes first.
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); self.passes.len()];
+        let mut indegree: Vec<usize> = Vec::with_capacity(self.passes.len());
         for (index, deps) in dependencies.iter().enumerate() {
-            if deps.is_empty() {
-                ready.insert(index);
+            indegree.push(deps.len());
+            for dependency in deps {
+                successors[pass_indices[dependency]].push(index);
             }
         }
+        let mut ready: BTreeSet<usize> = indegree
+            .iter()
+            .enumerate()
+            .filter(|(_, degree)| **degree == 0)
+            .map(|(index, _)| index)
+            .collect();
         let mut ordered = Vec::with_capacity(self.passes.len());
         while let Some(index) = ready.pop_first() {
-            if !emitted.insert(self.passes[index].id) {
-                continue;
-            }
             let mut pass = self.passes[index].clone();
             pass.dependencies = dependencies[index].iter().copied().collect();
             ordered.push(pass);
-            for (candidate, deps) in dependencies.iter().enumerate() {
-                if !emitted.contains(&self.passes[candidate].id)
-                    && deps.iter().all(|dependency| emitted.contains(dependency))
-                {
-                    ready.insert(candidate);
+            for successor in &successors[index] {
+                indegree[*successor] -= 1;
+                if indegree[*successor] == 0 {
+                    ready.insert(*successor);
                 }
             }
         }
