@@ -33,13 +33,13 @@ use nana_ui::runtime::{
     ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots, ContextMenu as RuntimeContextMenu,
     ContextMenuItem as RuntimeContextMenuItem, DesktopShell as RuntimeDesktopShell,
     Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
-    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
-    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
-    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
-    GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
-    GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
-    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
-    ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    DockPanel as RuntimeDockPanel, DocumentId, DonutChart as RuntimeDonutChart,
+    DonutSlice as RuntimeDonutSlice, Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown,
+    DropdownOption as RuntimeDropdownOption, EmptyState as RuntimeEmptyState, Entity,
+    FormField as RuntimeFormField, GpuTextureView as RuntimeGpuTextureView,
+    GpuView as RuntimeGpuView, GpuViewPalette as RuntimeGpuViewPalette,
+    GraphCanvas as RuntimeGraphCanvas, HostedTextarea as RuntimeHostedTextarea,
+    IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
     InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
     KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
@@ -156,6 +156,7 @@ enum Component {
     AppTitleBar,
     CalendarHeatmap,
     TimeSeriesChart,
+    DonutChart,
     ReorderList,
     NativeMarkdown,
     SelectableRichText,
@@ -236,6 +237,7 @@ impl Component {
             Self::AppTitleBar => component_ids::APP_TITLE_BAR,
             Self::CalendarHeatmap => component_ids::CALENDAR_HEATMAP,
             Self::TimeSeriesChart => component_ids::TIME_SERIES_CHART,
+            Self::DonutChart => component_ids::DONUT_CHART,
             Self::ReorderList => component_ids::REORDER_LIST,
             Self::NativeMarkdown => component_ids::NATIVE_MARKDOWN,
             Self::SelectableRichText => component_ids::SELECTABLE_RICH_TEXT,
@@ -422,6 +424,7 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::AppTitleBar, _) => Size::new(560, 80),
         (Component::CalendarHeatmap, _) => Size::new(280, 180),
         (Component::TimeSeriesChart, _) => Size::new(420, 180),
+        (Component::DonutChart, _) => Size::new(220, 180),
         (Component::NativeMarkdown, _) => Size::new(420, 140),
         (Component::ImageViewer, _) => Size::new(420, 240),
         (Component::GraphCanvas, _) => Size::new(420, 180),
@@ -647,6 +650,27 @@ fn runtime_fixture(
             .create_component(
                 document_id,
                 RuntimeTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0]),
+            )?
+            .stable_id(),
+        Component::DonutChart => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeDonutChart::new([
+                    RuntimeDonutSlice {
+                        value: 5.0,
+                        color: SemanticColorRole::Accent,
+                    },
+                    RuntimeDonutSlice {
+                        value: 3.0,
+                        color: SemanticColorRole::Success,
+                    },
+                    RuntimeDonutSlice {
+                        value: 2.0,
+                        color: SemanticColorRole::Warning,
+                    },
+                ])
+                .labels(["Accent", "Success", "Warning"]),
             )?
             .stable_id(),
         Component::ReorderList => document

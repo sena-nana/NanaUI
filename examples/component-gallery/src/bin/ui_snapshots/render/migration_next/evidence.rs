@@ -791,6 +791,7 @@ pub(super) fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         (
             Component::CalendarHeatmap
             | Component::TimeSeriesChart
+            | Component::DonutChart
             | Component::ReorderList
             | Component::NativeMarkdown
             | Component::SelectableRichText
