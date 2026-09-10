@@ -26,6 +26,12 @@
     "text-editor",
     "gpu-scene-ui"
   ],
+  "nana_gpu_scale_ids": [
+    "gpu-scene-shader-nodes-256",
+    "gpu-scene-shader-nodes-256-independent",
+    "gpu-scene-ui-dense-2k",
+    "gpu-scene-host-textures-64"
+  ],
   "issue12": {
     "same_scenario_ids": [
       "static-tree-100",
@@ -66,7 +72,7 @@
         "text_len": 32,
         "item_extent_px": 20
       },
-      "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
+      "note": "Required by #8 \u00a73.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
       "id": "virtual-tree-1m",
@@ -78,19 +84,23 @@
         "text_len": 32,
         "item_extent_px": 20
       },
-      "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M tree row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
+      "note": "Required by #8 \u00a73.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M tree row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
       "id": "gpu-scene-ui-live2d",
       "kind": "GpuScene",
-      "params": { "composition": "UiLive2d" },
-      "note": "Required by #8 §3.8."
+      "params": {
+        "composition": "UiLive2d"
+      },
+      "note": "Required by #8 \u00a73.8."
     },
     {
       "id": "gpu-scene-ui-live2d-effect",
       "kind": "GpuScene",
-      "params": { "composition": "UiLive2dEffect" },
-      "note": "Required by #8 §3.8. Required by #8 / not implemented as a shared Scenario runner."
+      "params": {
+        "composition": "UiLive2dEffect"
+      },
+      "note": "Required by #8 \u00a73.8. Required by #8 / not implemented as a shared Scenario runner."
     }
   ]
 }

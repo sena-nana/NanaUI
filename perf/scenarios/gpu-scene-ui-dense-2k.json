@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-ui-dense-2k",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [1280, 800],
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 360
+    },
+    "ui_nodes": ["list", "text", "gpu-texture-view", "icon", "button"],
+    "node_repeat": {
+      "text": 1000,
+      "button": 500,
+      "icon": 500
+    }
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "draw_batch_count",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "draw_calls_observed_on_encode",
+      "path": "work_counters.draw_calls",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "A painted dense-UI frame must issue at least one real draw. Missing stays not-evaluable."
+    },
+    {
+      "name": "gpu_upload_bytes_observed_on_encode",
+      "path": "work_counters.gpu_upload_bytes",
+      "op": "gte",
+      "value": 0,
+      "status": "required",
+      "note": "Count only after a host encodes/submits. Missing stays not-evaluable and must never be treated as 0."
+    }
+  ],
+  "notes": "NanaUI-internal draw-call scale row; not Issue #8 DoD and has no Iced/GPUI analog. Ordinary UI only, one GPU content slot. Rows emit Quad/Text/Icon in document order, and adjacent-run merging cannot cross them, so this measures the framework's per-node draw-call floor. This is the row that decides whether overlap-aware batch merging is worth building."
+}

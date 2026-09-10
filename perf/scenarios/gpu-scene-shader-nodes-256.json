@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-shader-nodes-256",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [1280, 800],
+    "shared_gpu_view_slot": true,
+    "host_texture": {
+      "slot": "content",
+      "width": 640,
+      "height": 360
+    },
+    "ui_nodes": ["list", "text", "gpu-texture-view", "gpu-view", "button"],
+    "node_repeat": {
+      "gpu-view": 256,
+      "text": 256,
+      "button": 64
+    }
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "draw_batch_count",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "draw_calls_observed_on_encode",
+      "path": "work_counters.draw_calls",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "A painted UI+shader-node frame must issue at least one real draw. Missing stays not-evaluable."
+    },
+    {
+      "name": "gpu_upload_bytes_observed_on_encode",
+      "path": "work_counters.gpu_upload_bytes",
+      "op": "gte",
+      "value": 0,
+      "status": "required",
+      "note": "Count only after a host encodes/submits. Missing stays not-evaluable and must never be treated as 0."
+    }
+  ],
+  "notes": "NanaUI-internal GPU scale row; not Issue #8 DoD and has no Iced/GPUI analog. 256 GpuView nodes sharing one slot_id, interleaved with ordinary UI. Measures per-node draw/bind/upload cost with the frame-graph resource count held at one. Ratchets on batch_rebuilds, gpu_buffer_reallocations and draw_batches land with the commits that make them pass."
+}

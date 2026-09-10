@@ -750,7 +750,10 @@ def _size2(value: Any) -> bool:
 
 
 
-_UI_ONLY_NODE_KINDS = {"list", "text", "gpu-texture-view", "button"}
+_UI_ONLY_NODE_KINDS = {"list", "text", "gpu-texture-view", "gpu-view", "icon", "button"}
+
+_UI_ONLY_GPU_NODE_KINDS = {"gpu-texture-view", "gpu-view"}
+_UI_ONLY_CHROME_KINDS = {"list", "text", "button", "icon"}
 
 
 
@@ -775,10 +778,67 @@ def _validate_gpu_scene_ui_only(params: Mapping[str, Any]) -> list[str]:
         errors.append(f"GpuScene UiOnly ui_nodes unknown: {unknown}")
     if "list" not in nodes:
         errors.append("GpuScene UiOnly ui_nodes must include list")
-    if "gpu-texture-view" not in nodes:
-        errors.append("GpuScene UiOnly ui_nodes must include gpu-texture-view")
-    if not any(node in {"list", "text", "button"} for node in nodes if node != "gpu-texture-view"):
-        errors.append("GpuScene UiOnly ui_nodes must include UI chrome (list/text/button)")
+    if not any(node in _UI_ONLY_GPU_NODE_KINDS for node in nodes):
+        errors.append(
+            "GpuScene UiOnly ui_nodes must include a GPU content node "
+            "(gpu-texture-view or gpu-view)"
+        )
+    if not any(node in _UI_ONLY_CHROME_KINDS for node in nodes):
+        errors.append("GpuScene UiOnly ui_nodes must include UI chrome (list/text/button/icon)")
+    errors.extend(_validate_ui_only_node_repeat(params, nodes))
+    if "shared_gpu_view_slot" in params and not isinstance(
+        params["shared_gpu_view_slot"], bool
+    ):
+        errors.append("GpuScene UiOnly params.shared_gpu_view_slot must be a boolean")
+    return errors
+
+
+
+def _validate_ui_only_node_repeat(
+    params: Mapping[str, Any], nodes: list[Any]
+) -> list[str]:
+    """Per-kind child counts. A 1000-entry ui_nodes array would be unreadable and
+    would defeat the runner's ui_nodes echo check, so scale rides here instead."""
+    if "node_repeat" not in params:
+        return []
+    repeat = params["node_repeat"]
+    if not isinstance(repeat, dict):
+        return ["GpuScene UiOnly params.node_repeat must be an object"]
+    errors: list[str] = []
+    for kind, count in repeat.items():
+        if kind not in _UI_ONLY_NODE_KINDS:
+            errors.append(f"GpuScene UiOnly node_repeat unknown kind: {kind!r}")
+        elif kind not in nodes:
+            errors.append(f"GpuScene UiOnly node_repeat {kind!r} is not in ui_nodes")
+        if not _positive_int(count):
+            errors.append(
+                f"GpuScene UiOnly node_repeat[{kind!r}] must be a positive integer"
+            )
+    return errors
+
+
+
+def _validate_gpu_scale_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
+    """NanaUI-internal GPU scale rows. They are deliberately outside harness_ids:
+    they have no Iced/GPUI analog and are not Issue #8 DoD. Their invariants
+    still gate through the runner envelope."""
+    ids = catalog.get("nana_gpu_scale_ids")
+    if ids is None:
+        return []
+    if not isinstance(ids, list):
+        return ["catalog nana_gpu_scale_ids must be a list"]
+    errors: list[str] = []
+    harness = set(catalog.get("harness_ids") or [])
+    for scenario_id in ids:
+        if not isinstance(scenario_id, str):
+            errors.append(f"catalog nana_gpu_scale_ids entry must be a string: {scenario_id!r}")
+            continue
+        if scenario_id in harness:
+            errors.append(
+                f"catalog nana_gpu_scale_ids {scenario_id} must stay out of harness_ids"
+            )
+        if not (base / f"{scenario_id}.json").is_file():
+            errors.append(f"catalog nana_gpu_scale_ids entry missing file: {scenario_id}.json")
     return errors
 
 
@@ -804,6 +864,7 @@ def validate_all_scenarios(root: Path | None = None) -> list[str]:
             errors.append(f"{path.name}: {message}")
         if payload.get("id") != path.stem:
             errors.append(f"{path.name}: id must equal file stem")
+    errors.extend(_validate_gpu_scale_ids(catalog, base))
     issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
     same = list(issue12.get("same_scenario_ids") or [])
     unsupported = list(issue12.get("unsupported_ids") or [])

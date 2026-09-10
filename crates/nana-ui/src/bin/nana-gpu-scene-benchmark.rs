@@ -12,13 +12,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui::runtime::{
-    Button, DocumentId, FrameProfile, FrameProfiler, GpuTextureView, GpuWorkObservation,
-    HOST_TEXTURE_RENDERER, LayoutStyle, LayoutViewport, LengthSpec, List, NodeStyle,
-    RuntimeDocument, StageStatus, Text,
+    Button, DocumentId, FrameProfile, FrameProfiler, GpuTextureView, GpuView, GpuViewPalette,
+    FlexDirection, FlexWrap, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph, LayoutStyle,
+    LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, StageStatus, Text,
 };
 use nana_ui::{
-    ButtonKind, GpuStageTimings, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
-    NanaTextShaper, ScenePaintViewport, SceneWgpuPainter,
+    ButtonKind, GpuStageTimings, HostTexture, HostTextureAlphaMode, HostTextureRegistry, Icon,
+    NanaTextShaper, ScenePaintViewport, SceneGpuRendererRegistry, SceneWgpuPainter,
+    default_scene_gpu_renderers,
 };
 use nana_ui_scene::ScenePrimitiveKind;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,9 @@ static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocato
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const WARMUP: usize = 3;
 const FRAMES: usize = 20;
+/// Logical edge of one `gpu-view` node. Small on purpose: the scale scenarios
+/// pack many of them into one viewport.
+const GPU_VIEW_EXTENT: u32 = 24;
 
 #[derive(Serialize)]
 struct Report {
@@ -46,6 +50,8 @@ struct Report {
     composition: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialization: Option<Materialization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_graph: Option<FrameGraphReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,6 +82,8 @@ struct Materialization {
     viewport: [u32; 2],
     host_texture: HostTextureParams,
     ui_nodes: Vec<String>,
+    node_repeat: BTreeMap<String, usize>,
+    shared_gpu_view_slot: bool,
     ui_entity_count: usize,
     host_texture_resources: usize,
     scene_primitive_kinds: Vec<String>,
@@ -113,6 +121,16 @@ struct StageReport {
     gpu_upload_ms: Distribution,
     encode_ms: Distribution,
     submit_ms: Distribution,
+}
+
+/// Structural cost of the render graph for this scene. `frame_plan()` memoizes
+/// per structure, so this is what one add/remove of a custom node pays, not a
+/// per-frame cost.
+#[derive(Serialize, Clone, Copy)]
+struct FrameGraphReport {
+    build_ms: f64,
+    pass_count: usize,
+    resource_count: usize,
 }
 
 #[derive(Serialize)]
@@ -153,6 +171,15 @@ struct ScenarioParams {
     composition: String,
     #[serde(default)]
     independent_textures: bool,
+    /// Per-kind child count. Scale rides here so `ui_nodes` stays readable and
+    /// the runner can echo-compare both.
+    #[serde(default)]
+    node_repeat: BTreeMap<String, usize>,
+    /// `false` gives every `gpu-view` node its own `slot_id`, so the scene
+    /// carries N distinct `CustomRenderNode::resource` strings and the render
+    /// graph builds N external resources. `true` shares one slot.
+    #[serde(default)]
+    shared_gpu_view_slot: bool,
     viewport: [u32; 2],
     host_texture: HostTextureParams,
     ui_nodes: Vec<String>,
@@ -165,6 +192,18 @@ impl ScenarioParams {
         } else {
             self.host_texture.slot.clone()
         }
+    }
+
+    fn repeat(&self, kind: &str) -> usize {
+        self.node_repeat.get(kind).copied().unwrap_or(1).max(1)
+    }
+
+    fn node_count(&self, kind: &str) -> usize {
+        self.ui_nodes
+            .iter()
+            .filter(|node| node.as_str() == kind)
+            .map(|_| self.repeat(kind))
+            .sum()
     }
 }
 
@@ -308,6 +347,7 @@ fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -
         scenario_id,
         composition: composition.to_string(),
         materialization: None,
+        frame_graph: None,
         adapter: None,
         frames: None,
         gpu_work: None,
@@ -341,12 +381,10 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         );
     };
     let slot = params.host_texture.slot.as_str();
+    // Every gpu-texture-view child claims its own slot when textures are
+    // independent, so this must follow node_repeat, not the ui_nodes length.
     let resource_count = if params.independent_textures {
-        params
-            .ui_nodes
-            .iter()
-            .filter(|kind| kind.as_str() == "gpu-texture-view")
-            .count()
+        params.node_count("gpu-texture-view")
     } else {
         1
     };
@@ -383,6 +421,8 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         viewport: params.viewport,
         host_texture: params.host_texture.clone(),
         ui_nodes: params.ui_nodes.clone(),
+        node_repeat: params.node_repeat.clone(),
+        shared_gpu_view_slot: params.shared_gpu_view_slot,
         host_texture_resources: resource_count,
         ui_entity_count: document
             .context()
@@ -391,6 +431,13 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
             .entities_total,
         scene_primitive_kinds: scene_primitive_kinds(document.scene(), slot),
     };
+    let graph = measure_frame_graph(document.scene());
+
+    // A `gpu-view` node fails scene validation without a registered "gpu-view"
+    // renderer, and that rejects the whole frame. Measure the product reference
+    // painter rather than a private one.
+    let renderers: Option<SceneGpuRendererRegistry> =
+        (params.node_count("gpu-view") > 0).then(default_scene_gpu_renderers);
 
     let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
     let target = color_target(&device, params.viewport[0], params.viewport[1]);
@@ -459,7 +506,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
                     &target,
                     paint_viewport,
                     Some(&textures),
-                    None,
+                    renderers.as_ref(),
                 )
                 .expect("gpu-scene-ui paint")
         });
@@ -527,6 +574,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         scenario_id: Some(scenario.id),
         composition: "UiOnly".into(),
         materialization: Some(materialization),
+        frame_graph: graph,
         adapter: Some(adapter),
         frames: Some(batch.len()),
         gpu_work: Some(GpuWorkSnapshot::from(work)),
@@ -569,71 +617,132 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
     if !params
         .ui_nodes
         .iter()
-        .any(|node| node == "gpu-texture-view")
+        .any(|node| node == "gpu-texture-view" || node == "gpu-view")
     {
         return Err(
-            "UiOnly ui_nodes must include gpu-texture-view for the GPU content slot".into(),
+            "UiOnly ui_nodes must include gpu-texture-view or gpu-view for the GPU content slot"
+                .into(),
         );
     }
     let document_id = DocumentId::new(1).expect("gpu-scene document");
     let mut document = RuntimeDocument::new(document_id);
     let root = document
         .context_mut()
-        .create_component(document_id, List::new().label("gpu-scene-ui"))
+        .create_component(
+            document_id,
+            List::new().label("gpu-scene-ui").style(root_style()),
+        )
         .expect("list");
     let mut texture_index = 0;
+    let mut gpu_view_index = 0u64;
     for kind in &params.ui_nodes {
-        match kind.as_str() {
-            "list" => {}
-            "text" => {
-                let child = document
-                    .context_mut()
-                    .create_component(document_id, Text::new("UiOnly"))
-                    .expect("text");
-                document
-                    .context_mut()
-                    .append_child(root, child)
-                    .expect("text child");
-            }
-            "gpu-texture-view" => {
-                let slot = params.texture_slot(texture_index);
-                texture_index += 1;
-                let child = document
-                    .context_mut()
-                    .create_component(
-                        document_id,
-                        GpuTextureView::new(slot.as_str()).style(slot_style(
-                            params.host_texture.width,
-                            params.host_texture.height,
-                        )),
-                    )
-                    .expect("gpu-texture-view");
-                document
-                    .context_mut()
-                    .append_child(root, child)
-                    .expect("slot child");
-            }
-            "button" => {
-                let child = document
-                    .context_mut()
-                    .create_component(
-                        document_id,
-                        Button::new("HostTexture").kind(ButtonKind::Primary),
-                    )
-                    .expect("button");
-                document
-                    .context_mut()
-                    .append_child(root, child)
-                    .expect("button child");
-            }
-            other => {
-                return Err(format!(
-                    "UiOnly ui_nodes contains unknown node {other}; catalog allows list/text/gpu-texture-view/button"
-                ));
+        for _ in 0..params.repeat(kind) {
+            match kind.as_str() {
+                "list" => {}
+                "text" => {
+                    let child = document
+                        .context_mut()
+                        .create_component(document_id, Text::new("UiOnly"))
+                        .expect("text");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("text child");
+                }
+                "icon" => {
+                    let child = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            IconGlyph::new(Icon::File),
+                        )
+                        .expect("icon");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("icon child");
+                }
+                "gpu-texture-view" => {
+                    let slot = params.texture_slot(texture_index);
+                    texture_index += 1;
+                    let child = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            GpuTextureView::new(slot.as_str()).style(slot_style(
+                                params.host_texture.width,
+                                params.host_texture.height,
+                            )),
+                        )
+                        .expect("gpu-texture-view");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("slot child");
+                }
+                "gpu-view" => {
+                    // A shared slot keeps one external resource for the whole run;
+                    // distinct slots are the worst case the render graph must build.
+                    let slot_id = if params.shared_gpu_view_slot {
+                        0
+                    } else {
+                        gpu_view_index
+                    };
+                    gpu_view_index += 1;
+                    let child = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            GpuView::new(slot_id)
+                                .palette(GpuViewPalette {
+                                    background: [0.05, 0.06, 0.09, 1.0],
+                                    accent: [0.35, 0.72, 0.98, 1.0],
+                                })
+                                .seed(slot_id as f32 * 0.125)
+                                .style(slot_style(GPU_VIEW_EXTENT, GPU_VIEW_EXTENT)),
+                        )
+                        .expect("gpu-view");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("gpu-view child");
+                }
+                "button" => {
+                    let child = document
+                        .context_mut()
+                        .create_component(
+                            document_id,
+                            Button::new("HostTexture").kind(ButtonKind::Primary),
+                        )
+                        .expect("button");
+                    document
+                        .context_mut()
+                        .append_child(root, child)
+                        .expect("button child");
+                }
+                other => {
+                    return Err(format!(
+                        "UiOnly ui_nodes contains unknown node {other}; catalog allows \
+                         list/text/icon/gpu-texture-view/gpu-view/button"
+                    ));
+                }
             }
         }
     }
     Ok(document)
+}
+
+/// Wrapping row. A column would push every repeated node past the viewport, and
+/// viewport culling would then measure an empty frame instead of the workload.
+fn root_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    *layout = LayoutStyle {
+        direction: Some(FlexDirection::Row),
+        flex_wrap: FlexWrap::Wrap,
+        ..LayoutStyle::default()
+    };
+    style
 }
 
 fn slot_style(width: u32, height: u32) -> NodeStyle {
@@ -645,6 +754,17 @@ fn slot_style(width: u32, height: u32) -> NodeStyle {
         ..LayoutStyle::default()
     };
     style
+}
+
+fn measure_frame_graph(scene: &nana_ui_scene::UiScene) -> Option<FrameGraphReport> {
+    let started = Instant::now();
+    let graph = scene.frame_graph(nana_ui_scene::ResourceId(1)).ok()?;
+    let build_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    Some(FrameGraphReport {
+        build_ms,
+        pass_count: graph.passes.len(),
+        resource_count: graph.resources.len(),
+    })
 }
 
 fn scene_primitive_kinds(scene: &nana_ui_scene::UiScene, slot: &str) -> Vec<String> {

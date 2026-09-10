@@ -16,6 +16,17 @@ perf/
 └── reports/                 # generated runner output (gitignored)
 ```
 
+## NanaUI 内部优化行
+
+`catalog.json` 的 `nana_gpu_scale_ids` 列出四个 `GpuScene` / `UiOnly` 场景，量的是 GPU
+节点规模与框架层 draw call：`gpu-scene-shader-nodes-256`、
+`gpu-scene-shader-nodes-256-independent`、`gpu-scene-ui-dense-2k`、
+`gpu-scene-host-textures-64`。它们**不在** `harness_ids` 里，不是 #8 DoD，也没有
+Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆进跨框架表格只会
+重新引入本文件开头警告的不可比性。规模写在 `params.node_repeat`，runner 必须原样回显，
+否则 extractor 拒绝该报告。基线与判据见
+[`docs/gpu-node-scale.md`](../docs/gpu-node-scale.md)。
+
 ## Vue vs Rust L3 输入成本
 
 不在这套 Scenario 里，因为它测的不是一个 toolkit 跑一个负载，而是**同一个进程里**建立

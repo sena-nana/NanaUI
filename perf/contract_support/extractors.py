@@ -886,8 +886,8 @@ def _extract_nana_gpu_scene(
             f"nana-gpu-scene-benchmark FrameProfiler ran GPU stages but omitted {missing}"
         )
     notes = [
-        "Loaded perf/scenarios/gpu-scene-ui.json and materialized its UiOnly params "
-        "(viewport, host_texture slot, ui_nodes).",
+        f"Loaded perf/scenarios/{scenario['id']}.json and materialized its UiOnly params "
+        "(viewport, host_texture slot, ui_nodes, node_repeat).",
         "RuntimeDocument flush + HostTexture content slot + SceneWgpuPainter encode/submit. "
         "Not a private hosted-gpu-demo tree. No CPU readback.",
         "gpu_upload_bytes counts observed queue.write_buffer on that path. cryoglyph atlas "
@@ -933,17 +933,31 @@ def _require_ui_only_materialization(
                 f"nana-gpu-scene-benchmark materialization.{key}={echoed.get(key)!r} "
                 f"does not match scenario JSON {params.get(key)!r}"
             )
-    kinds = echoed.get("scene_primitive_kinds") or []
-    if "host-texture" not in kinds:
+    # Scale rides in node_repeat, so a runner that silently ran a smaller N would
+    # otherwise still match ui_nodes. Echo-compare it the same way.
+    repeat = params.get("node_repeat") or {}
+    if (echoed.get("node_repeat") or {}) != repeat:
         raise KeyError(
-            "UiOnly scene must contain a host-texture primitive for the GPU content slot"
+            f"nana-gpu-scene-benchmark materialization.node_repeat={echoed.get('node_repeat')!r} "
+            f"does not match scenario JSON {repeat!r}"
+        )
+    if bool(echoed.get("shared_gpu_view_slot")) != bool(params.get("shared_gpu_view_slot")):
+        raise KeyError(
+            "nana-gpu-scene-benchmark materialization.shared_gpu_view_slot="
+            f"{echoed.get('shared_gpu_view_slot')!r} does not match scenario JSON "
+            f"{params.get('shared_gpu_view_slot')!r}"
+        )
+    kinds = echoed.get("scene_primitive_kinds") or []
+    if not any(kind in kinds for kind in ("host-texture", "custom")):
+        raise KeyError(
+            "UiOnly scene must contain a host-texture or custom primitive for the GPU content slot"
         )
     if not any(kind in kinds for kind in ("text", "quad")):
         raise KeyError(
             "UiOnly scene must contain UI primitives (text/quad), not a slot-only triangle"
         )
     entities = echoed.get("ui_entity_count")
-    expected = len(params.get("ui_nodes") or [])
+    expected = sum(repeat.get(node, 1) for node in (params.get("ui_nodes") or []))
     if not isinstance(entities, int) or isinstance(entities, bool) or entities < expected:
         raise KeyError(
             f"UiOnly ui_entity_count={entities!r} must cover catalog ui_nodes ({expected})"
