@@ -105,8 +105,15 @@ pub(super) struct TextPipeline {
     /// every repaint (scroll, hover, unrelated animations), so the shaped
     /// `Buffer` is cached and only glyph vertices are regenerated per frame.
     shape_cache: ShapeCache,
-    frame_texts: usize,
-    prev_frame_texts: usize,
+    /// Cryoglyph areas waiting for their run's single `TextRenderer::prepare`.
+    /// One `Vec` per run; run `i` is prepared into `renderers[i]`. A run names
+    /// its shaped buffers by hash, so it must be flushed before the shape cache
+    /// can evict one.
+    runs: Vec<Vec<PendingArea>>,
+    /// How many runs have already been handed to a renderer. Runs below this
+    /// are closed and can no longer be extended.
+    flushed: usize,
+    prev_frame_runs: usize,
     frame_affines: usize,
     prev_frame_affines: usize,
     /// GPU allocations the affine cache could not avoid this frame. Drained into
@@ -290,6 +297,10 @@ impl ShapeCache {
                 None
             }
         }
+    }
+
+    fn at_capacity(&self) -> bool {
+        self.entries.len() >= SHAPE_CACHE_CAP
     }
 
     fn buffer(&self, hash: u64) -> Option<&Buffer> {
@@ -497,6 +508,20 @@ impl ShapeKey {
 pub(super) struct PreparedText {
     pub index: usize,
     kind: PreparedKind,
+    /// Local-space rectangle the glyphs can cover, `bounds` overflow included.
+    pub ink: LogicalRect,
+}
+
+/// One cryoglyph text area held until its run is flushed.
+///
+/// `shape` names an entry in the shape cache rather than borrowing it, so the
+/// run stays a plain owned value; [`TextPipeline::flush_runs`] resolves it.
+struct PendingArea {
+    shape: u64,
+    left: f32,
+    top: f32,
+    bounds: cryoglyph::TextBounds,
+    color: Color,
 }
 
 enum PreparedKind {
@@ -530,8 +555,9 @@ impl TextPipeline {
             affine_cache: AffineCache::default(),
             frame: 0,
             shape_cache: ShapeCache::default(),
-            frame_texts: 0,
-            prev_frame_texts: 0,
+            runs: Vec::new(),
+            flushed: 0,
+            prev_frame_runs: 0,
             frame_affines: 0,
             prev_frame_affines: 0,
             frame_gpu_allocations: 0,
@@ -540,15 +566,16 @@ impl TextPipeline {
     }
 
     pub(super) fn begin_frame(&mut self, queue: &wgpu::Queue, physical_size: [u32; 2]) {
-        self.prev_frame_texts = self.frame_texts;
-        self.frame_texts = 0;
+        self.prev_frame_runs = self.runs.len();
+        self.runs.clear();
+        self.flushed = 0;
         self.prev_frame_affines = self.frame_affines;
         self.frame_affines = 0;
         self.frame_gpu_allocations = 0;
         self.frame = self.frame.wrapping_add(1);
         // Renderer high-water decay: keep the GPU-side working set near the
-        // last frame's text count instead of retaining a peak forever.
-        let keep = self.prev_frame_texts + 8;
+        // last frame's run count instead of retaining a peak forever.
+        let keep = self.prev_frame_runs + 8;
         if self.renderers.len() > keep {
             self.renderers.truncate(keep);
         }
@@ -714,6 +741,12 @@ impl TextPipeline {
         };
         let hash = key.hash64();
         if self.shape_cache.get(hash, &key).is_none() {
+            // An open run names its shaped buffers by hash. Shaping one more
+            // paragraph into a full cache evicts an entry, so close the runs
+            // first; the new paragraph then starts a fresh run.
+            if self.shape_cache.at_capacity() {
+                self.flush_runs(device, queue, encoder);
+            }
             let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
             let mut buffer = Buffer::new(
                 &mut fonts,
@@ -757,9 +790,9 @@ impl TextPipeline {
             drop(fonts);
             self.shape_cache.insert(hash, key.to_owned_key(), buffer);
         }
-        let laid_out_height = {
+        let (measured_width, laid_out_height) = {
             let buffer = self.shape_cache.buffer(hash).expect("shaped above");
-            measure(buffer).1
+            measure(buffer)
         };
         let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
         aligned[0] += paint_offset[0];
@@ -774,23 +807,33 @@ impl TextPipeline {
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
         }
+        // What the glyphs can actually cover, in the same local space as
+        // `bounds`. Not the content box: `overflow: visible` text (a fixed
+        // height holding three lines, `wrap: false` in a narrow box) paints
+        // outside it, and the caller uses this to decide whether reordering a
+        // batch would cross this text.
+        //
+        // The laid-out box is the union of the line boxes. Ink leaves it
+        // vertically exactly when the requested line height is shorter than
+        // what the face needs, so pad by that shortfall against a 1.25em
+        // natural height — nothing at a normal line height, a few pixels at
+        // `line-height: 1`. Horizontally the pad covers side bearings, which
+        // an italic or a swash can push past the advance box.
+        let pad_y = (size * 1.25 - line_height).max(0.0);
+        let pad_x = size * 0.25;
+        let ink = LogicalRect::from_xywh(
+            aligned[0] - pad_x,
+            aligned[1] - pad_y,
+            bounds.width.max(measured_width / scale) + pad_x * 2.0,
+            laid_out_height / scale + pad_y * 2.0,
+        );
         // Cryoglyph TextBounds is an AABB. Rotated / projective overflow must
         // go through the glyph-quad path so the same homography as Quad is
         // applied to each glyph (4 corners, no triangulation).
         if clip::is_translation_projective(affine, persp)
             && fragment_clip == clip::FragmentClip::PASS
         {
-            self.prepare_cryoglyph(
-                device,
-                queue,
-                encoder,
-                hash,
-                aligned,
-                clip,
-                scale,
-                affine,
-                default_color,
-            )
+            self.prepare_cryoglyph(hash, aligned, clip, scale, affine, default_color, ink)
         } else {
             self.prepare_affine_glyphs(
                 device,
@@ -802,6 +845,7 @@ impl TextPipeline {
                 persp,
                 fragment_clip,
                 default_color,
+                ink,
             )
         }
     }
@@ -809,15 +853,13 @@ impl TextPipeline {
     #[allow(clippy::too_many_arguments)]
     fn prepare_cryoglyph(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
         shape: u64,
         aligned: [f32; 2],
         clip: LogicalRect,
         scale: f32,
         affine: [f32; 6],
         default_color: [f32; 4],
+        ink: LogicalRect,
     ) -> Option<PreparedText> {
         let buffer = self.shape_cache.buffer(shape).expect("shaped above");
         let [world_x, world_y] = clip::transform_point(affine, aligned[0], aligned[1]);
@@ -829,61 +871,132 @@ impl TextPipeline {
             right: ((clip.x + clip.width) * scale).round() as i32,
             bottom: ((clip.y + clip.height) * scale).round() as i32,
         };
-        let index = self.frame_texts;
-        self.frame_texts += 1;
-        if self.renderers.len() <= index {
-            self.renderers.push(cryoglyph::TextRenderer::new(
-                &mut self.atlas,
+        // `TextRenderer::prepare` drops whole layout runs outside the area's
+        // vertical band, so a text with no run in the band emits no glyph and
+        // `render` returns before `pass.draw`. Preparing it anyway costs a
+        // renderer, a vertex buffer and a `draw_calls` tick that never reaches
+        // the GPU. This is cryoglyph's own predicate with `TextArea::scale`
+        // pinned to the 1.0 we always pass; it must stay byte-identical or a
+        // visible line can be dropped.
+        let any_run_in_band = buffer.layout_runs().any(|run| {
+            let start = (top + run.line_top) as i32;
+            let end = start + run.line_height as i32;
+            start <= text_bounds.bottom && text_bounds.top <= end
+        });
+        if !any_run_in_band {
+            return None;
+        }
+        self.runs.push(vec![PendingArea {
+            shape,
+            left,
+            top,
+            bounds: text_bounds,
+            color: rgba8_color(default_color),
+        }]);
+        Some(PreparedText {
+            index: self.runs.len() - 1,
+            kind: PreparedKind::Cryoglyph,
+            ink,
+        })
+    }
+
+    /// Fold the run just opened by `next` into `previous`, so both draw as one
+    /// `TextRenderer`. Returns `false` when the two cannot share a run and the
+    /// caller must keep `next` as its own command.
+    ///
+    /// Mirrors [`super::push_icon`] / [`super::push_quad`]: only runs that are
+    /// already neighbours in document order merge, and glyph order inside the
+    /// merged prepare is area order, so a text shadow still paints under the
+    /// text it belongs to.
+    pub(super) fn can_merge_runs(&self, previous: &PreparedText, next: &PreparedText) -> bool {
+        matches!(previous.kind, PreparedKind::Cryoglyph)
+            && matches!(next.kind, PreparedKind::Cryoglyph)
+            // `next` must be the run just opened, so folding it away is a pop.
+            && next.index + 1 == self.runs.len()
+            && previous.index < next.index
+            && previous.index >= self.flushed
+    }
+
+    pub(super) fn merge_runs(&mut self, previous: &PreparedText, next: &PreparedText) {
+        debug_assert!(self.can_merge_runs(previous, next));
+        let folded = self.runs.pop().expect("checked by can_merge_runs");
+        self.runs[previous.index].extend(folded);
+    }
+
+    /// Hand every still-open run to its renderer. Must run before `draw` and
+    /// before the shape cache may evict a buffer a run names.
+    pub(super) fn flush_runs(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        if self.flushed >= self.runs.len() {
+            return;
+        }
+        let Self {
+            font_system,
+            atlas,
+            viewport,
+            swash,
+            renderers,
+            shape_cache,
+            runs,
+            flushed,
+            ..
+        } = self;
+        while renderers.len() < runs.len() {
+            renderers.push(cryoglyph::TextRenderer::new(
+                atlas,
                 device,
                 wgpu::MultisampleState::default(),
                 None,
             ));
         }
-        let area = cryoglyph::TextArea {
-            text: buffer.layout_runs(),
-            left,
-            top,
-            scale: 1.0,
-            bounds: text_bounds,
-            default_color: rgba8_color(default_color),
+        let areas = |run: &'_ Vec<PendingArea>| {
+            run.iter()
+                .map(|area| cryoglyph::TextArea {
+                    text: shape_cache
+                        .buffer(area.shape)
+                        .expect("a pending run is flushed before its buffer can be evicted")
+                        .layout_runs(),
+                    left: area.left,
+                    top: area.top,
+                    scale: 1.0,
+                    bounds: area.bounds,
+                    default_color: area.color,
+                })
+                .collect::<Vec<_>>()
         };
-        let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
-        let result = self.renderers[index].prepare(
-            device,
-            queue,
-            encoder,
-            &mut fonts,
-            &mut self.atlas,
-            &self.viewport,
-            [area],
-            &mut self.swash,
-        );
-        if matches!(result, Err(cryoglyph::PrepareError::AtlasFull)) {
-            self.atlas.trim();
-            let area = cryoglyph::TextArea {
-                text: buffer.layout_runs(),
-                left,
-                top,
-                scale: 1.0,
-                bounds: text_bounds,
-                default_color: rgba8_color(default_color),
-            };
-            let _ = self.renderers[index].prepare(
+        let mut fonts = crate::nana_text::lock_font_system(font_system);
+        for index in *flushed..runs.len() {
+            let run = &runs[index];
+            let result = renderers[index].prepare(
                 device,
                 queue,
                 encoder,
                 &mut fonts,
-                &mut self.atlas,
-                &self.viewport,
-                [area],
-                &mut self.swash,
+                atlas,
+                viewport,
+                areas(run),
+                swash,
             );
+            if matches!(result, Err(cryoglyph::PrepareError::AtlasFull)) {
+                atlas.trim();
+                let _ = renderers[index].prepare(
+                    device,
+                    queue,
+                    encoder,
+                    &mut fonts,
+                    atlas,
+                    viewport,
+                    areas(run),
+                    swash,
+                );
+            }
         }
         drop(fonts);
-        Some(PreparedText {
-            index,
-            kind: PreparedKind::Cryoglyph,
-        })
+        *flushed = runs.len();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -898,6 +1011,7 @@ impl TextPipeline {
         persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
         default_color: [f32; 4],
+        ink: LogicalRect,
     ) -> Option<PreparedText> {
         let cache_key = AffineKey {
             shape,
@@ -913,6 +1027,7 @@ impl TextPipeline {
             return Some(PreparedText {
                 index,
                 kind: PreparedKind::Affine,
+                ink,
             });
         }
 
@@ -1042,6 +1157,7 @@ impl TextPipeline {
         Some(PreparedText {
             index,
             kind: PreparedKind::Affine,
+            ink,
         })
     }
 
@@ -1919,6 +2035,9 @@ mod tests {
                 [0.0, 0.0],
             )
             .expect("text must prepare");
+        // Cryoglyph areas are queued into a run; nothing is on the GPU until
+        // the run is flushed.
+        pipeline.flush_runs(device, queue, &mut encoder);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui text affine target"),
             size: wgpu::Extent3d {
@@ -2013,6 +2132,7 @@ mod tests {
                 [0.0, 0.0],
             )
             .expect("block text must prepare");
+        pipeline.flush_runs(device, queue, &mut encoder);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui text clip target"),
             size: wgpu::Extent3d {
@@ -2176,8 +2296,9 @@ pub(super) struct TextPipelineTarget {
     viewport: cryoglyph::Viewport,
     renderers: Vec<cryoglyph::TextRenderer>,
     affine_cache: AffineCache,
-    frame_texts: usize,
-    prev_frame_texts: usize,
+    runs: Vec<Vec<PendingArea>>,
+    flushed: usize,
+    prev_frame_runs: usize,
     frame_affines: usize,
     prev_frame_affines: usize,
     frame_gpu_allocations: usize,
@@ -2211,8 +2332,9 @@ impl TextPipeline {
                 viewport: cryoglyph::Viewport::new(device, &self.cache),
                 renderers: Vec::new(),
                 affine_cache: AffineCache::default(),
-                frame_texts: 0,
-                prev_frame_texts: 0,
+                runs: Vec::new(),
+                flushed: 0,
+                prev_frame_runs: 0,
                 frame_affines: 0,
                 prev_frame_affines: 0,
                 frame_gpu_allocations: 0,
@@ -2232,8 +2354,9 @@ impl TextPipeline {
         std::mem::swap(&mut self.viewport, &mut target.viewport);
         std::mem::swap(&mut self.renderers, &mut target.renderers);
         std::mem::swap(&mut self.affine_cache, &mut target.affine_cache);
-        std::mem::swap(&mut self.frame_texts, &mut target.frame_texts);
-        std::mem::swap(&mut self.prev_frame_texts, &mut target.prev_frame_texts);
+        std::mem::swap(&mut self.runs, &mut target.runs);
+        std::mem::swap(&mut self.flushed, &mut target.flushed);
+        std::mem::swap(&mut self.prev_frame_runs, &mut target.prev_frame_runs);
         std::mem::swap(&mut self.frame_affines, &mut target.frame_affines);
         std::mem::swap(&mut self.prev_frame_affines, &mut target.prev_frame_affines);
         std::mem::swap(

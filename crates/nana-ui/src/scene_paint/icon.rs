@@ -408,8 +408,7 @@ impl IconPipeline {
         ) else {
             return false;
         };
-        head.key == candidate.key
-            && last.first_vertex + last.vertex_count == candidate.first_vertex
+        head.key == candidate.key && last.first_vertex + last.vertex_count == candidate.first_vertex
     }
 
     /// Draw one run of adjacent slots sharing an atlas as a single call. A

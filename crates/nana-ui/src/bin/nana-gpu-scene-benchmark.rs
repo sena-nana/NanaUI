@@ -12,13 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui::runtime::{
-    Button, DocumentId, FrameProfile, FrameProfiler, GpuTextureView, GpuView, GpuViewPalette,
-    FlexDirection, FlexWrap, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph, LayoutStyle,
+    Button, DocumentId, FlexDirection, FlexWrap, FrameProfile, FrameProfiler, GpuTextureView,
+    GpuView, GpuViewPalette, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph, LayoutStyle,
     LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, StageStatus, Text,
 };
 use nana_ui::{
     ButtonKind, GpuStageTimings, HostTexture, HostTextureAlphaMode, HostTextureRegistry, Icon,
-    NanaTextShaper, ScenePaintViewport, SceneGpuRendererRegistry, SceneWgpuPainter,
+    NanaTextShaper, SceneGpuRendererRegistry, ScenePaintViewport, SceneWgpuPainter,
     default_scene_gpu_renderers,
 };
 use nana_ui_scene::ScenePrimitiveKind;
@@ -652,10 +652,7 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
                 "icon" => {
                     let child = document
                         .context_mut()
-                        .create_component(
-                            document_id,
-                            IconGlyph::new(Icon::File),
-                        )
+                        .create_component(document_id, IconGlyph::new(Icon::File))
                         .expect("icon");
                     document
                         .context_mut()

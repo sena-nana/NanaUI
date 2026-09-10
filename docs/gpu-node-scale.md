@@ -69,7 +69,14 @@ pass 数本身是 `frame_graph`（`composition.rs:171-201`）在每个 Custom �
 
 `gpu-scene-ui-dense-2k`：2002 个普通节点，**1528 次 draw call**，而且这是一个完全静止、display list 已缓存的帧。
 
-原因是 `push_quad`（`mod.rs:1384`）只合并**紧邻**的、同 scissor 的连续段。普通行按 document order 发 `Quad(slot 0)`、`Text(slot 2)`、`Icon(slot 3)`，中间的 Text/Icon 每次都打断 quad 的连续段，于是每行都要重开一次 draw。
+> **2026-09-10 更正**：下面这段归因是**错的**，按命令类型实测后被推翻。那 1528（后为 1503）
+> 次里**没有一次是 quad**——1500 次是文字，1 次是图标，1 次 host texture，1 次 blit。
+> 场景里 500 个 button 全部落在视口外，背景 quad 一个都没进 display list，而它们的
+> **文字**因为 Text 图元不参与视口剔除全部进来了，其中 500 次在 GPU 上根本没有
+> `pass.draw`（计数器虚报）。完整拆解、四种合并策略的实测对比与落地顺序见
+> [`gpu-ui-draw-call-plan.md`](gpu-ui-draw-call-plan.md)。
+
+（以下为当时的推测，保留以便对照）原因是 `push_quad`（`mod.rs:1384`）只合并**紧邻**的、同 scissor 的连续段。普通行按 document order 发 `Quad(slot 0)`、`Text(slot 2)`、`Icon(slot 3)`，中间的 Text/Icon 每次都打断 quad 的连续段，于是每行都要重开一次 draw。
 
 对比：256 个 shader 节点的场景是 642 次 draw（2N + host texture + 若干 quad/text + blit），确实随节点线性增长，但绝对量比密集 UI 小一个量级。
 
@@ -146,12 +153,14 @@ O(P³)」这堵墙没有了。
 与既有的 `push_quad` / `push_mesh_draw` 同一套合并规则（scissor 相同、顶点连续、
 同一 atlas）。`IconBatch` 的 N 个 item 因此塌成一次 draw。
 
-`gpu-scene-ui-dense-2k`：1528 → 1503 draw calls。**收益小是预期之内**——密集列表每行
-是 `Quad, Text, Icon`，中间的 quad 把 icon 隔开，合并很少触发。它真正帮到的是工具栏、
+`gpu-scene-ui-dense-2k`：1528 → 1503 draw calls。**收益小是预期之内**，不过原因与
+当时的判断不同：该场景可见的图标只有 26 个（其余被视口剔除），这 26 个正好相邻，
+一次就合完了，所以只省下 25 次。它真正帮到的是工具栏、
 图标条和 `IconBatch` 这类图标本来就相邻的地方（回归测试
 `adjacent_same_atlas_icons_batch_into_one_draw` 断言 12 个相邻图标与 1 个图标的
-draw call 数相同）。密集列表那 1500 次 draw 要靠重叠感知的批次合并（见下），
-不是这一步能解决的。
+draw call 数相同）。密集列表那 1500 次 draw **不是**靠重叠感知的批次合并解决的——它们全是文字，
+需要的是跨节点的文字 run 合并与文字视口剔除，见
+[`gpu-ui-draw-call-plan.md`](gpu-ui-draw-call-plan.md)。
 
 ## 已落地：`SceneGpuRenderer` 批绘制 + 实例化参考实现
 
@@ -224,3 +233,119 @@ dest 尺寸去 `set_viewport`，那本来就是错的；实例化之后它还会
 | 重叠感知批次合并 | `gpu-scene-ui-dense-2k` 的 `draw_calls` | 1528 | 取决于实现，先量再定 |
 
 **不用快照套件做视觉门禁**——本机字体栅格化与基线不符。正确性用 `crates/nana-ui/src/scene_paint/tests.rs` 的回读断言和 `cargo test -p nana-ui-scene` 覆盖。
+
+## 已落地：屏外文字不再进 display list
+
+`crates/nana-ui/src/scene_paint/text.rs` 的 `prepare_cryoglyph` 在建 area 之前
+先跑一遍 cryoglyph 自己的 run 可见性判据（`TextRenderer::prepare` 会按
+`TextArea::bounds` 的 Y 轴整段丢弃 layout run）。没有任何一条 run 落在带内的文字
+直接返回 `None`：不建 renderer、不建顶点缓冲、不进 display list。
+
+这修的是一个**计数虚报**：`text.rs` 原来无条件 `record_draw_call()`，而 cryoglyph 的
+`render` 在 `glyphs_to_render == 0` 时根本不发 `pass.draw`。
+
+| 场景 | draw calls |
+|---|---|
+| `gpu-scene-ui-dense-2k` | 1503 → **1003** |
+| 其余四个场景 | 不变 |
+
+差的正好是那 500 个落在视口外的 button 文字。判据是逐字抄 cryoglyph 的
+（`TextArea::scale` 固定为我们一直传的 1.0），所以**像素不可能变**：一张含 24 条
+跨上下边界、6 条跨左右边界、其中若干条旋转的文字的帧，改动前后整帧字节哈希相同
+（`42750967d8bbac49`），只有 draw call 从 32 掉到 28。
+
+回归测试 `text_below_the_clip_band_costs_no_draw_and_no_pixels`：8 条完全在视口下方的
+label 与没有它们的同一棵树 draw call 相同、整帧像素相同；一条跨底边的 label 必须仍然
+上墨。
+
+## 已落地：相邻同 scissor 文字合并成一次 draw
+
+`cryoglyph::TextRenderer::prepare` 本来就收 area 迭代器，一次 `render` 只发一次
+`pass.draw`。改动把 cryoglyph 路径的 `prepare` 从「边遍历边发」改成**攒成 run、
+建完 display list 再发一次**：
+
+- `TextPipeline` 持有 `runs: Vec<Vec<PendingArea>>`，run `i` 准备进 `renderers[i]`；
+- `mod.rs` 新增 `push_text_run`，与 `push_quad` / `push_icon` 同一套规则——只有
+  document order 上**紧邻**且 **scissor 逐字节相同**的文字才并进上一条 run，
+  中间任何一条 Quads / Mesh / Icon / HostTexture / Backdrop / PushGroup / PopGroup
+  都终止它；
+- run 里的 glyph 顺序就是 area 顺序，一次 draw 内的实例按顺序混合，所以
+  text-shadow 仍然压在正文下面，重叠的两条 label 仍然后者在上；
+- 一条未 flush 的 run 用 hash 指名它的 shaped buffer，所以 `ShapeCache` 满了要插入
+  新段落之前必须先 flush（`at_capacity()` 那一处），否则 run 会引用被淘汰的 buffer。
+
+| 场景 | draw calls | encode p50 /ms |
+|---|---|---|
+| `gpu-scene-ui-dense-2k` | 1003 → **4** | 0.0325 → **0.0012** |
+| `gpu-scene-shader-nodes-256` | 387 → **132** | 0.0226 → 0.0139 |
+| `gpu-scene-shader-nodes-256-independent` | 387 → **132** | 0.0191 → 0.0130 |
+| `gpu-scene-host-textures-64` | 68 → 68 | 0.0087 → 0.0091 |
+| `gpu-scene-ui`（参照） | 5 → 5 | 0.0013 → 0.0012 |
+
+`gpu-scene-ui-dense-2k` 两步合计 **1503 → 4**：1 次文字（1000 条 label 一次画完）、
+1 次图标（26 个）、1 次 host texture、1 次 blit。这就是这棵树的下限。
+`shader-nodes-256` 的 387 → 132 是那 255 条 button/text 塌成 1 条。
+
+回归测试：
+- `adjacent_same_scissor_text_batches_into_one_draw`——8 条相邻 label 与 1 条 label
+  draw call 相同，且合并后每一行仍然上墨；中间插一个 quad 则恰好多 2 次 draw。
+- `merged_text_run_keeps_document_order_between_overlapping_labels`——两条完全重叠的
+  label 合成一条 run 后，后者仍在上（把两者颜色对调，这条断言会挂）。
+- `open_text_run_survives_shape_cache_eviction`——900 条不同段落（`SHAPE_CACHE_CAP`
+  是 512）压过缓存，屏内那几行必须照常画出来（去掉 `at_capacity()` 那次 flush，
+  这条测试会在 `expect` 上 panic）。
+
+整帧像素证据：同一张跨边界 + 旋转文字的帧，两步改动前后字节哈希都是
+`42750967d8bbac49`，draw call 32 → 28 → 9。
+
+## 已落地：重叠感知的批次合并
+
+前两步只合并 document order 上**紧邻**的同类命令。第三步让一个图元可以并进一条
+**更早打开**的批次——也就是让它比自己的文档位置更早绘制——当且仅当它与那条批次之后
+打开的所有批次**一个像素都不相交**。
+
+为什么这是充分的：能被跳过的内容只可能落在「目标批次之后打开、且仍然打开」的批次里。
+任何位置属于 GPU 合同的命令（`HostTexture` / `Custom` / `Backdrop` / `PushGroup` /
+`PopGroup`）都会**无条件关闭全部打开的批次**，所以目标批次之后不存在已关闭的内容。
+重叠的图元因此逐像素保持画家算法顺序，GPU 内容一次也不动。
+
+三处实现要点：
+
+- **包围盒必须是上界，不能是下界。** quad 按「最大外阴影 + outline」外扩，stroke 按
+  「最大线宽 + 1px」外扩，带 filter / backdrop-filter 的 quad 没有矩形上界，直接按整张
+  dest 处理（既进不了别的批次，也没人能跳过它）。文字的墨迹盒不是内容盒——
+  `overflow: visible` 的文字会画到盒外——用的是**排版盒**，纵向按「请求行高比 1.25em
+  自然行高少多少」外扩（正常行高时接近 0，`line-height: 1` 时几个像素），横向按 0.25em
+  外扩覆盖 side bearing。
+- **抗锯齿边不需要额外余量**：`physical_scissor` 把盒子向外取整到整像素。实测把 quad
+  的余量从 1px 降到 0 会改变整帧哈希，降到 1px 不会——所以余量就是 1px 的 outline 基线。
+- **MSAA 判定冻结在 document order 上**。`gpu_interleaved` 原来是扫描最终命令表算的；
+  合并会把字形推成后缀，那个标志就会翻转并重建整张 dest。现在它在建表时按发射顺序算好，
+  并随 `PreparedBatch` 一起缓存。回归测试
+  `batch_merging_does_not_flip_the_dest_sample_count` 断言这一点（改回扫描最终表，
+  它会挂）。
+
+| 场景 | draw calls（基线 → 前两步 → 三步） | encode p50 /ms |
+|---|---|---|
+| `gpu-scene-ui-dense-2k` | 1503 → 4 → **4** | 0.0337 → **0.0012** |
+| `gpu-scene-shader-nodes-256` | 387 → 132 → **16** | 0.0226 → **0.0062** |
+| `gpu-scene-shader-nodes-256-independent` | 387 → 132 → **16** | 0.0191 → **0.0061** |
+| `gpu-scene-host-textures-64` | 68 → 68 → 68 | 0.0087 → 0.0101 |
+| `gpu-scene-ui`（参照） | 5 → 5 → 5 | 0.0013 → 0.0012 |
+
+密集 UI 那条线前两步就到底了（全是文字），第三步对它是 0；它真正管的是
+**「背景 quad 与自己的标签交错」**的列表。一棵 9 行 `(quad, label)` 的树：基线 40 次
+draw，前两步 39 次，第三步 **26** 次；整帧字节哈希三种状态下都是 `f210e0828d88122b`。
+`shader-nodes-256` 的 132 → 16 是同一回事——那 255 条 button/text/quad 塌成了几条。
+
+回归测试（三条都做过反向验证）：
+- `quad_and_label_rows_keep_a_constant_draw_count`——9 行 `(quad, label)` 与 1 行的
+  draw call 相同，且每一行仍然画出自己的背景和标签。只看最后一条打开的批次，它给出
+  19 vs 3。
+- `a_quad_over_earlier_text_is_not_folded_ahead_of_it`——一个盖住前面几行标签的
+  scrim，必须仍然压在那些标签上面。去掉重叠判定，标签会浮到 scrim 之上。
+- `batch_merging_does_not_flip_the_dest_sample_count`——文字后面的 quad 被折进前面的
+  批次之后，帧仍然是单采样。
+
+`nana-ui` 全量 464 个测试通过。（`async_host_texture_mask_rebinds_after_image_completion`
+在 HEAD 上就间歇性失败，是 URL 图片异步加载的竞态，与本轮无关。）

@@ -126,6 +126,9 @@ struct PreparedBatch {
     commands: Vec<DrawCommand>,
     max_group_depth: usize,
     group_slots: Vec<dest::GroupSlot>,
+    /// Sample-count decision taken on the document order that built
+    /// `commands`; it cannot be recovered from the merged list.
+    interleaved: bool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -463,12 +466,13 @@ impl SceneWgpuPainter {
                 && batch.image_revision == self.image_revision
         });
         let reused = cached.is_some();
-        let (commands, max_group_depth, group_slots_uniforms, batch, gpu_upload) =
+        let (commands, max_group_depth, group_slots_uniforms, interleaved, batch, gpu_upload) =
             if let Some(cached) = cached {
                 (
                     cached.commands,
                     cached.max_group_depth,
                     cached.group_slots,
+                    cached.interleaved,
                     std::time::Duration::ZERO,
                     std::time::Duration::ZERO,
                 )
@@ -482,6 +486,7 @@ impl SceneWgpuPainter {
                 self.backdrop.begin_frame();
 
                 let mut commands = Vec::new();
+                let mut batching = Batching::default();
                 let mut group_stack: Vec<nana_ui_scene::OpacityGroup> = Vec::new();
                 let mut group_depth = 0usize;
                 let mut group_slots = 0u32;
@@ -506,7 +511,7 @@ impl SceneWgpuPainter {
                     let Some(primitive) = scene.draw_primitive(id) else {
                         continue;
                     };
-                    sync_opacity_groups(
+                    match sync_opacity_groups(
                         &mut commands,
                         &mut group_stack,
                         &mut group_depth,
@@ -517,7 +522,11 @@ impl SceneWgpuPainter {
                         scene,
                         origin,
                         scale,
-                    );
+                    ) {
+                        GroupEdit::Emitted => batching.barrier(),
+                        GroupEdit::Removed => batching.close(),
+                        GroupEdit::None => {}
+                    }
                     let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin)
                     else {
                         continue;
@@ -529,6 +538,12 @@ impl SceneWgpuPainter {
                     let (affine, persp) =
                         paint_transform(primitive.transform.0, primitive.transform.1, origin);
                     let bounds = local_rect(primitive.bounds);
+                    // Wrapping drains and re-inserts this primitive's commands
+                    // behind a `PushGroup`, so no batch may span the edit.
+                    let clip_dests = clip_dests_for(&primitive.kind, &primitive.clips, origin);
+                    if !clip_dests.is_empty() {
+                        batching.close();
+                    }
                     let command_start = commands.len();
                     match &primitive.kind {
                         ScenePrimitiveKind::Quad {
@@ -539,6 +554,12 @@ impl SceneWgpuPainter {
                             shadow,
                             surface,
                         } => {
+                            let painted = quad_outset(shadow.as_ref(), surface).map_or(
+                                whole_dest(dest_physical),
+                                |outset| {
+                                    painted_bounds(bounds, outset, affine, persp, scale, scissor)
+                                },
+                            );
                             if let Some(index) = self.quads.push(
                                 &self.device,
                                 &self.queue,
@@ -582,10 +603,17 @@ impl SceneWgpuPainter {
                                         bounds,
                                         affine,
                                     );
+                                    batching.barrier();
                                     commands.push(DrawCommand::Backdrop { index: bidx });
                                 }
                                 for quad_index in index..self.quads.pending_len() {
-                                    push_quad(&mut commands, quad_index, scissor);
+                                    push_quad(
+                                        &mut commands,
+                                        &mut batching,
+                                        quad_index,
+                                        scissor,
+                                        painted,
+                                    );
                                 }
                             }
                         }
@@ -598,8 +626,19 @@ impl SceneWgpuPainter {
                             shadow,
                             surface,
                         } => {
+                            let outset = quad_outset(shadow.as_ref(), surface);
                             for item in batch {
                                 let item_bounds = local_rect(*item);
+                                let painted = outset.map_or(whole_dest(dest_physical), |outset| {
+                                    painted_bounds(
+                                        item_bounds,
+                                        outset,
+                                        affine,
+                                        persp,
+                                        scale,
+                                        scissor,
+                                    )
+                                });
                                 if let Some(index) = self.quads.push(
                                     &self.device,
                                     &self.queue,
@@ -647,10 +686,17 @@ impl SceneWgpuPainter {
                                             item_bounds,
                                             affine,
                                         );
+                                        batching.barrier();
                                         commands.push(DrawCommand::Backdrop { index: bidx });
                                     }
                                     for quad_index in index..self.quads.pending_len() {
-                                        push_quad(&mut commands, quad_index, scissor);
+                                        push_quad(
+                                            &mut commands,
+                                            &mut batching,
+                                            quad_index,
+                                            scissor,
+                                            painted,
+                                        );
                                     }
                                 }
                             }
@@ -679,8 +725,11 @@ impl SceneWgpuPainter {
                             opentype,
                         } => {
                             let mut push_text =
-                                |extra_offset: [f32; 2], color_override: Option<[f32; 4]>| {
-                                    self.text.prepare(
+                                |commands: &mut Vec<DrawCommand>,
+                                 batching: &mut Batching,
+                                 extra_offset: [f32; 2],
+                                 color_override: Option<[f32; 4]>| {
+                                    let prepared = self.text.prepare(
                                         &self.device,
                                         &self.queue,
                                         encoder,
@@ -710,7 +759,25 @@ impl SceneWgpuPainter {
                                         frag_clip,
                                         primitive.opacity,
                                         extra_offset,
-                                    )
+                                    );
+                                    if let Some(prepared) = prepared {
+                                        let painted = painted_bounds(
+                                            prepared.ink,
+                                            0.0,
+                                            affine,
+                                            persp,
+                                            scale,
+                                            scissor,
+                                        );
+                                        push_text_run(
+                                            commands,
+                                            batching,
+                                            &mut self.text,
+                                            prepared,
+                                            scissor,
+                                            painted,
+                                        );
+                                    }
                                 };
                             if let Some(shadow) = text_shadow {
                                 let base_color = with_opacity(shadow.color, primitive.opacity);
@@ -721,17 +788,15 @@ impl SceneWgpuPainter {
                                         base_color[2],
                                         base_color[3] * alpha_scale,
                                     ];
-                                    if let Some(prepared) = push_text(
+                                    push_text(
+                                        &mut commands,
+                                        &mut batching,
                                         [shadow.offset_x + dx, shadow.offset_y + dy],
                                         Some(scaled),
-                                    ) {
-                                        commands.push(DrawCommand::Text { prepared, scissor });
-                                    }
+                                    );
                                 }
                             }
-                            if let Some(prepared) = push_text([0.0, 0.0], None) {
-                                commands.push(DrawCommand::Text { prepared, scissor });
-                            }
+                            push_text(&mut commands, &mut batching, [0.0, 0.0], None);
                         }
                         ScenePrimitiveKind::QuadColorBatch {
                             bounds: batch,
@@ -745,8 +810,18 @@ impl SceneWgpuPainter {
                             // batch collapses to one quads.push per item.
                             let no_shadow: Option<nana_ui_runtime::ComponentElevation> = None;
                             let default_surface = nana_ui_scene::QuadSurfacePaint::default();
+                            let outset = quad_outset(None, &default_surface)
+                                .expect("the default surface carries no filter");
                             for (item, color) in batch.iter().zip(colors.iter()) {
                                 let item_bounds = local_rect(*item);
+                                let painted = painted_bounds(
+                                    item_bounds,
+                                    outset,
+                                    affine,
+                                    persp,
+                                    scale,
+                                    scissor,
+                                );
                                 if let Some(index) = self.quads.push(
                                     &self.device,
                                     &self.queue,
@@ -764,7 +839,13 @@ impl SceneWgpuPainter {
                                     &default_surface,
                                 ) {
                                     for quad_index in index..self.quads.pending_len() {
-                                        push_quad(&mut commands, quad_index, scissor);
+                                        push_quad(
+                                            &mut commands,
+                                            &mut batching,
+                                            quad_index,
+                                            scissor,
+                                            painted,
+                                        );
                                     }
                                 }
                             }
@@ -782,7 +863,14 @@ impl SceneWgpuPainter {
                                 primitive.opacity,
                                 frag_clip,
                             ) {
-                                push_icon(&mut commands, &self.icons, prepared, scissor);
+                                push_icon(
+                                    &mut commands,
+                                    &mut batching,
+                                    &self.icons,
+                                    prepared,
+                                    scissor,
+                                    painted_bounds(bounds, 0.0, affine, persp, scale, scissor),
+                                );
                             }
                         }
                         ScenePrimitiveKind::IconBatch {
@@ -804,7 +892,21 @@ impl SceneWgpuPainter {
                                     primitive.opacity,
                                     frag_clip,
                                 ) {
-                                    push_icon(&mut commands, &self.icons, prepared, scissor);
+                                    push_icon(
+                                        &mut commands,
+                                        &mut batching,
+                                        &self.icons,
+                                        prepared,
+                                        scissor,
+                                        painted_bounds(
+                                            item_bounds,
+                                            0.0,
+                                            affine,
+                                            persp,
+                                            scale,
+                                            scissor,
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -817,7 +919,20 @@ impl SceneWgpuPainter {
                                 primitive.opacity,
                                 frag_clip,
                             ) {
-                                push_mesh_draw(&mut commands, range, scissor);
+                                push_mesh_draw(
+                                    &mut commands,
+                                    &mut batching,
+                                    range,
+                                    scissor,
+                                    painted_bounds(
+                                        bounds,
+                                        0.0,
+                                        mesh_affine(affine, persp),
+                                        [0.0, 0.0],
+                                        scale,
+                                        scissor,
+                                    ),
+                                );
                             }
                         }
                         ScenePrimitiveKind::Stroke {
@@ -854,7 +969,24 @@ impl SceneWgpuPainter {
                                 frag_clip,
                                 path_length,
                             ) {
-                                push_mesh_draw(&mut commands, range, scissor);
+                                // Caps and joins reach half a stroke width past
+                                // the polyline; one more pixel covers AA.
+                                let reach =
+                                    widths.iter().copied().fold(*width, f32::max).max(0.0) + 1.0;
+                                push_mesh_draw(
+                                    &mut commands,
+                                    &mut batching,
+                                    range,
+                                    scissor,
+                                    painted_bounds(
+                                        polyline_bounds(points).unwrap_or(bounds),
+                                        reach,
+                                        mesh_affine(affine, persp),
+                                        [0.0, 0.0],
+                                        scale,
+                                        scissor,
+                                    ),
+                                );
                             }
                         }
                         ScenePrimitiveKind::Custom { node: custom, mask } => {
@@ -894,6 +1026,7 @@ impl SceneWgpuPainter {
                                         _ => None,
                                     })
                                     .unwrap_or((bounds, 0.0));
+                                batching.barrier();
                                 commands.push(DrawCommand::HostTexture(
                                     self.host_textures.prepare(
                                         &self.device,
@@ -946,6 +1079,7 @@ impl SceneWgpuPainter {
                                         gpu_work: Some(&gpu_work),
                                     },
                                 );
+                                batching.barrier();
                                 commands.push(DrawCommand::Custom {
                                     node,
                                     renderer,
@@ -955,18 +1089,22 @@ impl SceneWgpuPainter {
                             }
                         }
                     }
-                    wrap_drawn_with_clip_dests(
-                        &mut commands,
-                        command_start,
-                        &mut group_depth,
-                        &mut group_slots,
-                        &mut max_group_depth,
-                        &mut group_slots_uniforms,
-                        &clip_dests_for(&primitive.kind, &primitive.clips, origin),
-                        scale,
-                    );
+                    if !clip_dests.is_empty()
+                        && wrap_drawn_with_clip_dests(
+                            &mut commands,
+                            command_start,
+                            &mut group_depth,
+                            &mut group_slots,
+                            &mut max_group_depth,
+                            &mut group_slots_uniforms,
+                            &clip_dests,
+                            scale,
+                        )
+                    {
+                        batching.barrier();
+                    }
                 }
-                sync_opacity_groups(
+                if sync_opacity_groups(
                     &mut commands,
                     &mut group_stack,
                     &mut group_depth,
@@ -977,7 +1115,13 @@ impl SceneWgpuPainter {
                     scene,
                     origin,
                     scale,
-                );
+                ) == GroupEdit::Emitted
+                {
+                    batching.barrier();
+                }
+                // Text prepare stays inside the batch window: it is the same
+                // work the per-primitive prepare did, only once per run.
+                self.text.flush_runs(&self.device, &self.queue, encoder);
                 let batch = batch_started.elapsed();
 
                 let upload_started = Instant::now();
@@ -1005,6 +1149,7 @@ impl SceneWgpuPainter {
                     commands,
                     max_group_depth,
                     group_slots_uniforms,
+                    batching.interleaved,
                     batch,
                     gpu_upload,
                 )
@@ -1013,20 +1158,10 @@ impl SceneWgpuPainter {
         let encode_started = Instant::now();
         // The MSAA-geometry then single-sample-glyph optimization is valid
         // only when glyphs form a suffix. A later panel, modal scrim or mesh
-        // must cover earlier text/icons in document order.
-        let mut saw_glyph = false;
-        let gpu_interleaved = commands.iter().any(|command| match command {
-            DrawCommand::Text { .. } | DrawCommand::Icon { .. } => {
-                saw_glyph = true;
-                false
-            }
-            DrawCommand::Quads { .. } | DrawCommand::Mesh { .. } => saw_glyph,
-            DrawCommand::HostTexture(_)
-            | DrawCommand::Custom { .. }
-            | DrawCommand::PushGroup { .. }
-            | DrawCommand::PopGroup
-            | DrawCommand::Backdrop { .. } => true,
-        }) || self.backdrop.needs_backdrop();
+        // must cover earlier text/icons in document order. `Batching` reads
+        // this off document order while the list is built, so folding a
+        // primitive into an earlier batch cannot change the dest sample count.
+        let gpu_interleaved = interleaved || self.backdrop.needs_backdrop();
         DestTarget::ensure(
             &mut self.dest,
             &self.device,
@@ -1176,6 +1311,7 @@ impl SceneWgpuPainter {
                 commands,
                 max_group_depth,
                 group_slots: group_slots_uniforms,
+                interleaved,
             });
         }
         Ok(())
@@ -1202,17 +1338,27 @@ fn custom_paint_bounds(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -
     }
 }
 
-fn push_mesh_draw(commands: &mut Vec<DrawCommand>, range: MeshRange, scissor: PhysicalRect) {
-    if let Some(DrawCommand::Mesh {
-        range: previous,
-        scissor: previous_scissor,
-    }) = commands.last_mut()
-        && *previous_scissor == scissor
-        && previous.first_instance + previous.instance_count == range.first_instance
-    {
+fn push_mesh_draw(
+    commands: &mut Vec<DrawCommand>,
+    batching: &mut Batching,
+    range: MeshRange,
+    scissor: PhysicalRect,
+    painted: PhysicalRect,
+) {
+    if let Some(target) = batching.target(BatchKind::Mesh, scissor, painted, commands, |command| {
+        matches!(command, DrawCommand::Mesh { range: previous, .. }
+            if previous.first_instance + previous.instance_count == range.first_instance)
+    }) {
+        let DrawCommand::Mesh {
+            range: previous, ..
+        } = &mut commands[target]
+        else {
+            unreachable!("a mesh batch names a mesh command")
+        };
         previous.instance_count += range.instance_count;
         return;
     }
+    batching.open(BatchKind::Mesh, scissor, painted, commands.len());
     commands.push(DrawCommand::Mesh { range, scissor });
 }
 
@@ -1250,9 +1396,9 @@ fn wrap_drawn_with_clip_dests(
     uniforms: &mut Vec<GroupSlot>,
     clips: &[FragmentClip],
     scale: f32,
-) {
+) -> bool {
     if clips.is_empty() || commands.len() == start {
-        return;
+        return false;
     }
     let drawn: Vec<_> = commands.drain(start..).collect();
     for clip in clips {
@@ -1269,12 +1415,17 @@ fn wrap_drawn_with_clip_dests(
         *depth = depth.saturating_sub(1);
         commands.push(DrawCommand::PopGroup);
     }
+    true
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "Explicit fields of the host or GPU projection contract"
 )]
+///
+/// Reports what it did to the display list: batching may not span an edit, and
+/// an emitted group command is also what makes a frame ineligible for the 4x
+/// MSAA dest.
 fn sync_opacity_groups(
     commands: &mut Vec<DrawCommand>,
     stack: &mut Vec<nana_ui_scene::OpacityGroup>,
@@ -1286,14 +1437,15 @@ fn sync_opacity_groups(
     scene: &nana_ui_scene::UiScene,
     origin: [f32; 2],
     scale: f32,
-) {
+) -> GroupEdit {
     let common = stack
         .iter()
         .zip(needed.iter())
         .take_while(|(open, want)| open.node == want.node)
         .count();
+    let mut edit = GroupEdit::None;
     while stack.len() > common {
-        pop_opacity_group(commands, stack, depth, slots, uniforms);
+        edit = edit.max(pop_opacity_group(commands, stack, depth, slots, uniforms));
     }
     for group in needed.into_iter().skip(common) {
         let layer = *depth;
@@ -1304,7 +1456,9 @@ fn sync_opacity_groups(
         uniforms.push(dest_group_slot(&group, scene, origin, scale));
         commands.push(DrawCommand::PushGroup { layer, slot });
         stack.push(group);
+        edit = GroupEdit::Emitted;
     }
+    edit
 }
 
 fn dest_group_slot(
@@ -1375,56 +1529,320 @@ fn pop_opacity_group(
     depth: &mut usize,
     slots: &mut u32,
     uniforms: &mut Vec<GroupSlot>,
-) {
+) -> GroupEdit {
     stack.pop();
     *depth = depth.saturating_sub(1);
     if matches!(commands.last(), Some(DrawCommand::PushGroup { .. })) {
         commands.pop();
         uniforms.pop();
         *slots = slots.saturating_sub(1);
-        return;
+        return GroupEdit::Removed;
     }
     commands.push(DrawCommand::PopGroup);
+    GroupEdit::Emitted
 }
 
-/// Extend the previous icon run when the new slot shares its atlas, scissor and
-/// vertex adjacency. Mirrors [`push_quad`] / [`push_mesh_draw`]: merging is
-/// confined to commands that are already neighbours in document order.
+/// What an opacity-group sync did to the display list.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupEdit {
+    /// Nothing opened or closed; the list is untouched and batches stay open.
+    None,
+    /// A group opened and closed with nothing inside, so its `PushGroup` was
+    /// taken back out. The list moved, but no group command remains.
+    Removed,
+    /// A `PushGroup` or `PopGroup` is now in the list.
+    Emitted,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatchKind {
+    Quads,
+    Mesh,
+    Icon,
+    Text,
+}
+
+/// A draw command later primitives may still be folded into.
+struct OpenBatch {
+    kind: BatchKind,
+    scissor: PhysicalRect,
+    /// Position of the command in the display list.
+    command: usize,
+    /// Union of the dest-pixel bounds of everything already in it.
+    painted: PhysicalRect,
+}
+
+/// Display-list batching state.
+///
+/// A primitive may join a batch that is not the newest one, which draws it
+/// earlier than its document position. That is sound exactly when it covers no
+/// pixel of anything emitted after that batch — and everything emitted after it
+/// is still open, because every command whose place in the list is part of the
+/// GPU contract (`HostTexture`, `Custom`, `Backdrop`, `PushGroup`, `PopGroup`)
+/// closes all of them. Overlapping primitives therefore keep painter's-algorithm
+/// order to the pixel, and GPU content never moves.
+#[derive(Default)]
+struct Batching {
+    open: Vec<OpenBatch>,
+    saw_glyph: bool,
+    /// Glyphs are not a suffix of **document order**, or a command that forbids
+    /// the 4x MSAA dest appeared. Read from the emit order rather than from the
+    /// merged list, so batching can never change the dest sample count.
+    interleaved: bool,
+}
+
+impl Batching {
+    /// Close every batch, for a command that must keep its exact position.
+    fn barrier(&mut self) {
+        self.open.clear();
+        self.interleaved = true;
+    }
+
+    /// Close every batch without touching the sample-count decision. For the
+    /// display-list edits that move commands around (opacity groups, clip
+    /// dests) — those push their own `PushGroup` / `PopGroup`, which is what
+    /// makes the frame interleaved.
+    fn close(&mut self) {
+        self.open.clear();
+    }
+
+    /// Position in `commands` of the batch this primitive may join.
+    fn target(
+        &mut self,
+        kind: BatchKind,
+        scissor: PhysicalRect,
+        painted: PhysicalRect,
+        commands: &[DrawCommand],
+        extendable: impl Fn(&DrawCommand) -> bool,
+    ) -> Option<usize> {
+        self.note(kind);
+        let position = self.open.iter().rposition(|batch| {
+            batch.kind == kind && batch.scissor == scissor && extendable(&commands[batch.command])
+        })?;
+        if self.open[position + 1..]
+            .iter()
+            .any(|later| physical_overlaps(painted, later.painted))
+        {
+            return None;
+        }
+        let batch = &mut self.open[position];
+        batch.painted = physical_union(batch.painted, painted);
+        Some(batch.command)
+    }
+
+    fn open(
+        &mut self,
+        kind: BatchKind,
+        scissor: PhysicalRect,
+        painted: PhysicalRect,
+        command: usize,
+    ) {
+        self.open.push(OpenBatch {
+            kind,
+            scissor,
+            command,
+            painted,
+        });
+    }
+
+    /// Fold one emitted primitive into the sample-count decision, in document
+    /// order and regardless of which batch it lands in.
+    fn note(&mut self, kind: BatchKind) {
+        match kind {
+            BatchKind::Icon | BatchKind::Text => self.saw_glyph = true,
+            BatchKind::Quads | BatchKind::Mesh => self.interleaved |= self.saw_glyph,
+        }
+    }
+}
+
+fn physical_overlaps(left: PhysicalRect, right: PhysicalRect) -> bool {
+    if left.width == 0 || left.height == 0 || right.width == 0 || right.height == 0 {
+        return false;
+    }
+    left.x < right.x.saturating_add(right.width)
+        && right.x < left.x.saturating_add(left.width)
+        && left.y < right.y.saturating_add(right.height)
+        && right.y < left.y.saturating_add(left.height)
+}
+
+fn physical_union(left: PhysicalRect, right: PhysicalRect) -> PhysicalRect {
+    if left.width == 0 || left.height == 0 {
+        return right;
+    }
+    if right.width == 0 || right.height == 0 {
+        return left;
+    }
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    PhysicalRect {
+        x,
+        y,
+        width: left
+            .x
+            .saturating_add(left.width)
+            .max(right.x.saturating_add(right.width))
+            - x,
+        height: left
+            .y
+            .saturating_add(left.height)
+            .max(right.y.saturating_add(right.height))
+            - y,
+    }
+}
+
+/// Dest-pixel bounds a primitive can paint, used only to decide whether folding
+/// it into an earlier batch would cross something. It must never under-cover
+/// what the GPU paints, so callers pass the outset their paint adds (shadow,
+/// outline, stroke half-width) before the transform.
+fn painted_bounds(
+    local: LogicalRect,
+    outset: f32,
+    affine: [f32; 6],
+    persp: [f32; 2],
+    scale: f32,
+    scissor: PhysicalRect,
+) -> PhysicalRect {
+    let padded = LogicalRect::from_xywh(
+        local.x - outset,
+        local.y - outset,
+        local.width + outset * 2.0,
+        local.height + outset * 2.0,
+    );
+    physical_bounds(
+        transformed_aabb_projective(padded, affine, persp),
+        scale,
+        scissor,
+    )
+}
+
+/// AABB of a polyline in its own local space. `None` when it has no finite
+/// point, which is also when the mesh pipeline refuses it.
+fn polyline_bounds(points: &[[f32; 2]]) -> Option<LogicalRect> {
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for point in points {
+        if !point[0].is_finite() || !point[1].is_finite() {
+            return None;
+        }
+        min = [min[0].min(point[0]), min[1].min(point[1])];
+        max = [max[0].max(point[0]), max[1].max(point[1])];
+    }
+    (min[0] <= max[0])
+        .then(|| LogicalRect::from_xywh(min[0], min[1], max[0] - min[0], max[1] - min[1]))
+}
+
+/// The whole dest, for paint whose reach is not bounded by a rectangle. Such a
+/// primitive can neither join a batch nor be jumped over.
+fn whole_dest(dest_physical: [u32; 2]) -> PhysicalRect {
+    PhysicalRect {
+        x: 0,
+        y: 0,
+        width: dest_physical[0],
+        height: dest_physical[1],
+    }
+}
+
+/// How far a quad's paint reaches past its box: the largest outer shadow plus
+/// the outline. The antialiased edge needs no margin of its own — the box is
+/// rounded outwards to whole pixels when it is put in dest space. A filtered
+/// surface has no rectangular reach and is never reordered.
+fn quad_outset(
+    shadow: Option<&nana_ui_runtime::ComponentElevation>,
+    surface: &nana_ui_scene::QuadSurfacePaint,
+) -> Option<f32> {
+    if surface.filter.is_some() || surface.backdrop_filter.is_some() {
+        return None;
+    }
+    Some(
+        shadow
+            .into_iter()
+            .chain(surface.extra_shadows.iter())
+            .filter(|shadow| !shadow.inset)
+            .map(|shadow| {
+                shadow.offset_x.abs().max(shadow.offset_y.abs())
+                    + shadow.blur_radius * 3.0
+                    + shadow.spread_radius.max(0.0)
+            })
+            .fold(surface.outline_width.max(0.0) + 1.0, f32::max),
+    )
+}
+
+/// Extend an open icon batch when the new slot shares its atlas, scissor and
+/// vertex adjacency.
 fn push_icon(
     commands: &mut Vec<DrawCommand>,
+    batching: &mut Batching,
     icons: &IconPipeline,
     prepared: PreparedIcon,
     scissor: PhysicalRect,
+    painted: PhysicalRect,
 ) {
-    if let Some(DrawCommand::Icon {
-        first,
-        count,
-        scissor: last,
-    }) = commands.last_mut()
-        && *last == scissor
-        && icons.can_extend_run(*first, *count, prepared.index)
-    {
+    let slot = prepared.index;
+    if let Some(target) = batching.target(BatchKind::Icon, scissor, painted, commands, |command| {
+        matches!(command, DrawCommand::Icon { first, count, .. }
+            if icons.can_extend_run(*first, *count, slot))
+    }) {
+        let DrawCommand::Icon { count, .. } = &mut commands[target] else {
+            unreachable!("an icon batch names an icon command")
+        };
         *count += 1;
         return;
     }
+    batching.open(BatchKind::Icon, scissor, painted, commands.len());
     commands.push(DrawCommand::Icon {
-        first: prepared.index,
+        first: slot,
         count: 1,
         scissor,
     });
 }
 
-fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect) {
-    if let Some(DrawCommand::Quads {
-        range,
-        scissor: last,
-    }) = commands.last_mut()
-        && *last == scissor
-        && range.end == index
-    {
+/// Fold a prepared text into an open text run.
+fn push_text_run(
+    commands: &mut Vec<DrawCommand>,
+    batching: &mut Batching,
+    text: &mut TextPipeline,
+    prepared: PreparedText,
+    scissor: PhysicalRect,
+    painted: PhysicalRect,
+) {
+    if let Some(target) = batching.target(BatchKind::Text, scissor, painted, commands, |command| {
+        matches!(command, DrawCommand::Text { prepared: previous, .. }
+            if text.can_merge_runs(previous, &prepared))
+    }) {
+        let DrawCommand::Text {
+            prepared: previous, ..
+        } = &commands[target]
+        else {
+            unreachable!("a text batch names a text command")
+        };
+        text.merge_runs(previous, &prepared);
+        return;
+    }
+    batching.open(BatchKind::Text, scissor, painted, commands.len());
+    commands.push(DrawCommand::Text { prepared, scissor });
+}
+
+fn push_quad(
+    commands: &mut Vec<DrawCommand>,
+    batching: &mut Batching,
+    index: u32,
+    scissor: PhysicalRect,
+    painted: PhysicalRect,
+) {
+    if let Some(target) = batching.target(
+        BatchKind::Quads,
+        scissor,
+        painted,
+        commands,
+        |command| matches!(command, DrawCommand::Quads { range, .. } if range.end == index),
+    ) {
+        let DrawCommand::Quads { range, .. } = &mut commands[target] else {
+            unreachable!("a quad batch names a quad command")
+        };
         range.end = index + 1;
         return;
     }
+    batching.open(BatchKind::Quads, scissor, painted, commands.len());
     commands.push(DrawCommand::Quads {
         range: index..index + 1,
         scissor,

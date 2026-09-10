@@ -6699,7 +6699,14 @@ fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
         let (texture, target) = test_copy_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .paint(
+                scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded gpu-view frame");
         let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
@@ -6713,7 +6720,10 @@ fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
     let scene = scene_with(&view);
     let (cold, _) = paint(&mut painter, &scene);
     let (warm, first_pixels) = paint(&mut painter, &scene);
-    assert!(cold.batch_rebuilds > 0, "the first frame must build a batch");
+    assert!(
+        cold.batch_rebuilds > 0,
+        "the first frame must build a batch"
+    );
     assert_eq!(
         warm.batch_rebuilds, 0,
         "an unchanged gpu-view node must not rebuild the whole display list"
@@ -6768,7 +6778,14 @@ fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
         scene.apply_delta([root, node], []);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(&scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .paint(
+                &scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
             .unwrap();
         queue.submit([encoder.finish()]);
     }
@@ -6852,6 +6869,517 @@ fn adjacent_same_atlas_icons_batch_into_one_draw() {
     );
 }
 
+/// `(background quad, label)` rows: the shape overlap-aware batching exists
+/// for. Each label sits inside its own row, so no label ever covers a later
+/// row's background and every row can join the batch the first row opened.
+#[test]
+fn quad_and_label_rows_keep_a_constant_draw_count() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 224;
+    let rows = |count: u64| {
+        let mut nodes = Vec::new();
+        let mut children = Vec::new();
+        let mut id = 2u64;
+        for row in 0..count {
+            let y = 4.0 + row as f32 * 20.0;
+            let mut quad = colored_quad_node(id, 2.0, y, 200.0, 18.0, [0.15, 0.2, 0.4, 1.0]);
+            quad.parent = Some(StableNodeId::new(1).unwrap());
+            children.push(StableNodeId::new(id).unwrap());
+            nodes.push(quad);
+            id += 1;
+            let mut label = extracted_div(
+                id,
+                &[],
+                6.0,
+                y + 1.0,
+                190.0,
+                16.0,
+                nana_ui_core::LayoutStyle::default(),
+                None,
+            );
+            label.parent = Some(StableNodeId::new(1).unwrap());
+            label.style = Arc::new(ComputedStyle {
+                color: Some([1.0, 0.9, 0.2, 1.0]),
+                font_size: 11.0,
+                ..ComputedStyle::default()
+            });
+            label.text = Some(TextContent {
+                value: format!("Row {row}"),
+            });
+            children.push(StableNodeId::new(id).unwrap());
+            nodes.push(label);
+            id += 1;
+        }
+        let mut root = colored_quad_node(
+            1,
+            0.0,
+            0.0,
+            SIDE as f32,
+            SIDE as f32,
+            [0.05, 0.06, 0.1, 1.0],
+        );
+        root.children = Arc::new(children);
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let paint = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let work = painter.last_gpu_work().expect("encoded row frame");
+        (
+            work,
+            readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE),
+        )
+    };
+    let (one, _) = paint(&rows(1));
+    let (many, pixels) = paint(&rows(9));
+    assert_eq!(
+        many.draw_calls, one.draw_calls,
+        "a (quad, label) list must not cost a draw per row: {} rows vs 1 row is {} vs {}",
+        9, many.draw_calls, one.draw_calls
+    );
+    // Every row still paints its own background and its own label.
+    let page = pixel(&pixels, SIDE, SIDE - 4, SIDE - 4);
+    for row in 0..9u32 {
+        let band = 4 + row * 20;
+        let mut background = false;
+        let mut ink = false;
+        for y in band..band + 18 {
+            for x in 2..202 {
+                let color = pixel(&pixels, SIDE, x, y);
+                background |= color != page;
+                ink |= color[0] > 150 && color[1] > 130 && color[2] < 120;
+            }
+        }
+        assert!(background, "row {row} must paint its background");
+        assert!(ink, "row {row} must paint its label over that background");
+    }
+}
+
+/// The other half of the contract: a quad that *does* cover earlier text must
+/// stay behind it in the list, however many quad batches are open.
+#[test]
+fn a_quad_over_earlier_text_is_not_folded_ahead_of_it() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 128;
+    let mut nodes = Vec::new();
+    let mut children = Vec::new();
+    let mut id = 2u64;
+    // Three rows of label, then a scrim over the middle one, then a fourth row.
+    for row in 0..4u64 {
+        let y = 4.0 + row as f32 * 28.0;
+        let mut quad = colored_quad_node(id, 2.0, y, 120.0, 26.0, [0.1, 0.12, 0.3, 1.0]);
+        quad.parent = Some(StableNodeId::new(1).unwrap());
+        children.push(StableNodeId::new(id).unwrap());
+        nodes.push(quad);
+        id += 1;
+        let mut label = extracted_div(
+            id,
+            &[],
+            6.0,
+            y + 4.0,
+            110.0,
+            20.0,
+            nana_ui_core::LayoutStyle::default(),
+            None,
+        );
+        label.parent = Some(StableNodeId::new(1).unwrap());
+        label.style = Arc::new(ComputedStyle {
+            color: Some([1.0, 0.95, 0.1, 1.0]),
+            font_size: 16.0,
+            ..ComputedStyle::default()
+        });
+        label.text = Some(TextContent {
+            value: "HHHH".into(),
+        });
+        children.push(StableNodeId::new(id).unwrap());
+        nodes.push(label);
+        id += 1;
+        if row == 2 {
+            // Opaque, and it covers the rows above it.
+            let mut scrim = colored_quad_node(id, 0.0, 0.0, 128.0, 92.0, [0.8, 0.05, 0.05, 1.0]);
+            scrim.parent = Some(StableNodeId::new(1).unwrap());
+            children.push(StableNodeId::new(id).unwrap());
+            nodes.push(scrim);
+            id += 1;
+        }
+    }
+    let mut root = colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.0, 1.0]);
+    root.children = Arc::new(children);
+    nodes.insert(0, root);
+    let mut scene = UiScene::new();
+    scene.apply_delta(nodes, []);
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
+    let label_ink = |pixels: &[u8], top: u32, bottom: u32| {
+        (top..bottom)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let color = pixel(pixels, SIDE, *x, *y);
+                color[0] > 150 && color[1] > 140 && color[2] < 120
+            })
+            .count()
+    };
+    assert_eq!(
+        label_ink(&pixels, 0, 92),
+        0,
+        "the scrim comes after those labels in document order and must cover them"
+    );
+    assert!(
+        label_ink(&pixels, 92, SIDE) > 0,
+        "the row below the scrim must still paint its label"
+    );
+}
+
+/// Folding a quad into an earlier batch can leave glyphs at the end of the
+/// list. The dest sample count is decided on document order, so that must not
+/// turn a single-sample frame into a 4x MSAA one.
+#[test]
+fn batch_merging_does_not_flip_the_dest_sample_count() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 64;
+    let mut first = colored_quad_node(2, 2.0, 2.0, 24.0, 12.0, [0.2, 0.3, 0.9, 1.0]);
+    first.parent = Some(StableNodeId::new(1).unwrap());
+    let mut label = extracted_div(
+        3,
+        &[],
+        2.0,
+        18.0,
+        60.0,
+        14.0,
+        nana_ui_core::LayoutStyle::default(),
+        None,
+    );
+    label.parent = Some(StableNodeId::new(1).unwrap());
+    label.style = Arc::new(ComputedStyle {
+        color: Some([1.0, 1.0, 1.0, 1.0]),
+        font_size: 10.0,
+        ..ComputedStyle::default()
+    });
+    label.text = Some(TextContent { value: "Hi".into() });
+    // Clear of the label, so it folds into the first quad's batch and the
+    // merged list ends with the glyphs.
+    let mut second = colored_quad_node(4, 2.0, 40.0, 24.0, 12.0, [0.9, 0.3, 0.2, 1.0]);
+    second.parent = Some(StableNodeId::new(1).unwrap());
+    let mut root = colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.0, 1.0]);
+    root.children = Arc::new(vec![
+        StableNodeId::new(2).unwrap(),
+        StableNodeId::new(3).unwrap(),
+        StableNodeId::new(4).unwrap(),
+    ]);
+    let mut scene = UiScene::new();
+    scene.apply_delta(vec![root, first, label, second], []);
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let target = test_target(&device, format, SIDE, SIDE);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .unwrap();
+    queue.submit([encoder.finish()]);
+    let work = painter.last_gpu_work().expect("encoded frame");
+    let counts = painter.last_dest_pass_counts.expect("encoded frame");
+    assert_eq!(
+        work.draw_calls, 3,
+        "the two quads must share one draw: quads, glyphs, blit"
+    );
+    assert_eq!(
+        counts.msaa, 0,
+        "a quad after a glyph keeps the frame single-sampled even once the \
+         quad is folded in front of it, got {counts:?}"
+    );
+}
+
+#[test]
+fn open_text_run_survives_shape_cache_eviction() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 96;
+    // More distinct paragraphs than the shape cache holds. The visible ones
+    // open a run that names its shaped buffers; shaping the rest must not
+    // evict a buffer the open run still needs.
+    const LABELS: u64 = 900;
+    let mut nodes = Vec::new();
+    let mut children = Vec::new();
+    for index in 0..LABELS {
+        let id = index + 2;
+        children.push(StableNodeId::new(id).unwrap());
+        let mut node = extracted_div(
+            id,
+            &[],
+            2.0,
+            index as f32 * 12.0,
+            90.0,
+            12.0,
+            nana_ui_core::LayoutStyle::default(),
+            None,
+        );
+        node.parent = Some(StableNodeId::new(1).unwrap());
+        node.style = Arc::new(ComputedStyle {
+            color: Some([1.0, 1.0, 1.0, 1.0]),
+            font_size: 10.0,
+            ..ComputedStyle::default()
+        });
+        node.text = Some(TextContent {
+            value: format!("row-{index}"),
+        });
+        nodes.push(node);
+    }
+    let mut root = colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.3, 1.0]);
+    root.children = Arc::new(children);
+    nodes.insert(0, root);
+    let mut scene = UiScene::new();
+    scene.apply_delta(nodes, []);
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    painter
+        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
+    for row in 0..8u32 {
+        let inked = (row * 12..row * 12 + 12)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .any(|(x, y)| {
+                let color = pixel(&pixels, SIDE, x, y);
+                color[0] > 120 && color[1] > 120 && color[2] > 120
+            });
+        assert!(
+            inked,
+            "row {row} must survive the shape-cache pressure from the offscreen rows"
+        );
+    }
+}
+
+#[test]
+fn merged_text_run_keeps_document_order_between_overlapping_labels() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 96;
+    // Two solid blocks on the same box: they merge into one run, and the run's
+    // glyph order must still be document order or the first label wins.
+    let scene_of = |both: bool| {
+        let under = overflowing_text_child(2, 1, 4.0, 4.0, 88.0, 88.0, [1.0, 0.0, 0.0, 1.0]);
+        let over = overflowing_text_child(3, 1, 4.0, 4.0, 88.0, 88.0, [0.0, 0.0, 1.0, 1.0]);
+        let mut root =
+            colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.0, 1.0]);
+        let mut nodes = vec![over];
+        root.children = Arc::new(if both {
+            nodes.insert(0, under);
+            vec![StableNodeId::new(2).unwrap(), StableNodeId::new(3).unwrap()]
+        } else {
+            vec![StableNodeId::new(3).unwrap()]
+        });
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let scene = scene_of(true);
+
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let paint = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let work = painter.last_gpu_work().expect("encoded frame");
+        (
+            work,
+            readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE),
+        )
+    };
+    let (lone, _) = paint(&scene_of(false));
+    let (both, pixels) = paint(&scene);
+    assert_eq!(
+        both.draw_calls, lone.draw_calls,
+        "the two labels must share one run, or this test says nothing about \
+         order inside a merged run"
+    );
+    let covered = (0..SIDE)
+        .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+        .map(|(x, y)| pixel(&pixels, SIDE, x, y))
+        .filter(|color| color[0] > 40 || color[2] > 40)
+        .collect::<Vec<_>>();
+    assert!(
+        !covered.is_empty(),
+        "the overlapping blocks must paint something"
+    );
+    assert!(
+        covered.iter().all(|color| color[2] >= color[0]),
+        "the later label must stay on top inside the merged run"
+    );
+}
+
+#[test]
+fn text_below_the_clip_band_costs_no_draw_and_no_pixels() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    const SIDE: u32 = 64;
+    // `y` places the label's content box; `None` means "no extra label".
+    let scene_with = |extra: &[f32]| {
+        let mut nodes = Vec::new();
+        let mut children = vec![StableNodeId::new(2).unwrap()];
+        let label = |id: u64, y: f32| {
+            let mut node = extracted_div(
+                id,
+                &[],
+                2.0,
+                y,
+                60.0,
+                20.0,
+                nana_ui_core::LayoutStyle::default(),
+                None,
+            );
+            node.parent = Some(StableNodeId::new(1).unwrap());
+            node.style = Arc::new(ComputedStyle {
+                color: Some([1.0, 1.0, 1.0, 1.0]),
+                font_size: 16.0,
+                ..ComputedStyle::default()
+            });
+            node.text = Some(TextContent { value: "AB".into() });
+            node
+        };
+        nodes.push(label(2, 2.0));
+        for (index, y) in extra.iter().enumerate() {
+            let id = index as u64 + 3;
+            children.push(StableNodeId::new(id).unwrap());
+            nodes.push(label(id, *y));
+        }
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
+        root.children = Arc::new(children);
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let viewport = ScenePaintViewport {
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let paint = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let work = painter.last_gpu_work().expect("encoded text frame");
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
+        (work, pixels)
+    };
+
+    let (lone, lone_pixels) = paint(&scene_with(&[]));
+    assert!(lone.draw_calls > 0, "the single-label scene must draw");
+
+    // Eight labels far below the 64px viewport: cryoglyph drops every one of
+    // their layout runs, so they must cost neither a draw call nor a pixel.
+    let (below, below_pixels) = paint(&scene_with(&[
+        200.0, 220.0, 240.0, 260.0, 280.0, 300.0, 320.0, 340.0,
+    ]));
+    assert_eq!(
+        below.draw_calls, lone.draw_calls,
+        "labels entirely below the clip band must not be prepared or drawn: {} vs {}",
+        below.draw_calls, lone.draw_calls
+    );
+    assert!(
+        below_pixels == lone_pixels,
+        "labels entirely below the clip band must not change any pixel"
+    );
+
+    // One label straddling the bottom edge still has a run in the band, so it
+    // must reach the GPU. It shares the first label's scissor and is its
+    // document-order neighbour, so it rides the same merged run rather than
+    // adding a draw — the ink is what proves it was not dropped.
+    let (straddling, straddling_pixels) = paint(&scene_with(&[56.0]));
+    assert_eq!(
+        straddling.draw_calls, lone.draw_calls,
+        "a label crossing the bottom edge merges into the run before it"
+    );
+    let ink_in_last_rows = |pixels: &[u8]| {
+        (SIDE - 6..SIDE)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let color = pixel(pixels, SIDE, *x, *y);
+                color[0] > 120 && color[1] > 120
+            })
+            .count()
+    };
+    assert_eq!(
+        ink_in_last_rows(&lone_pixels),
+        0,
+        "the baseline scene must leave the bottom rows empty"
+    );
+    assert!(
+        ink_in_last_rows(&straddling_pixels) > 0,
+        "a label crossing the bottom edge must still paint ink there"
+    );
+}
+
 #[test]
 fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
     use crate::{DefaultGpuViewRenderer, GpuView, GpuViewPalette};
@@ -6890,15 +7418,8 @@ fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
         for index in which {
             let id = *index as u64 + 2;
             children.push(StableNodeId::new(id).unwrap());
-            let mut node = host_texture_child(
-                id,
-                1,
-                *index as f32 * 20.0 + 2.0,
-                2.0,
-                16.0,
-                16.0,
-                "0",
-            );
+            let mut node =
+                host_texture_child(id, 1, *index as f32 * 20.0 + 2.0, 2.0, 16.0, 16.0, "0");
             node.custom_render = Some(
                 GpuView::new(0)
                     .palette(palettes[*index])
@@ -6919,10 +7440,20 @@ fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
         let (texture, target) = test_copy_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .paint(
+                scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded gpu-view frame");
-        (readback_rgba(&device, &queue, encoder, &texture, 64, 64), work)
+        (
+            readback_rgba(&device, &queue, encoder, &texture, 64, 64),
+            work,
+        )
     };
 
     let (together, batched_work) = render(&scene_of(&[0, 1, 2]));
@@ -6988,15 +7519,8 @@ fn ordinary_ui_and_dedicated_passes_split_a_gpu_view_run() {
                 if middle && interrupt == "dedicated" {
                     view = view.mode(GpuViewMode::Standalone);
                 }
-                let mut node = host_texture_child(
-                    id,
-                    1,
-                    index as f32 * 20.0 + 2.0,
-                    2.0,
-                    16.0,
-                    16.0,
-                    "0",
-                );
+                let mut node =
+                    host_texture_child(id, 1, index as f32 * 20.0 + 2.0, 2.0, 16.0, 16.0, "0");
                 node.custom_render = Some(view.custom_render());
                 node
             };
@@ -7015,7 +7539,14 @@ fn ordinary_ui_and_dedicated_passes_split_a_gpu_view_run() {
         let target = test_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .paint(
+                scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
             .unwrap();
         queue.submit([encoder.finish()]);
         painter.last_gpu_work().expect("encoded frame").draw_calls

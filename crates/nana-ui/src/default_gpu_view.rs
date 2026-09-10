@@ -285,7 +285,11 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let Some(first_node) = nodes.first() else {
             return 0;
         };
-        let Some(first) = prepared.slots.get(&first_node.node.id).map(|slot| slot.index) else {
+        let Some(first) = prepared
+            .slots
+            .get(&first_node.node.id)
+            .map(|slot| slot.index)
+        else {
             return 0;
         };
         let clip = first_node.clip;
@@ -559,7 +563,6 @@ struct GpuViewInstance {
     color_b: [f32; 4],
     parameters: [f32; 4],
 }
-
 
 #[cfg(test)]
 mod tests {
