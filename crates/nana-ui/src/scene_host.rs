@@ -3,6 +3,7 @@
 //! Paint goes through [`crate::SceneWgpuPainter`].
 
 mod accessibility;
+mod dialogs;
 mod input;
 mod present;
 mod schedule;
@@ -152,6 +153,7 @@ struct SceneReady<Program: RuntimeProgram> {
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
     messages: Receiver<Program::Message>,
+    file_dialogs: dialogs::FileDialogs,
     tasks: SyncSender<Task<Program::Message>>,
     geometry: WindowGeometry,
     animation_clock: RuntimeAnimationClock,
@@ -429,6 +431,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         let Self::Ready(ready) = self else {
             return;
         };
+        ready.complete_file_dialogs(event_loop);
         while let Ok(message) = ready.messages.try_recv() {
             ready.process_message(event_loop, message);
         }
@@ -555,6 +558,7 @@ fn initialize<Program: RuntimeProgram>(
         proxy,
         message_tx,
         messages: message_rx,
+        file_dialogs: dialogs::FileDialogs::default(),
         tasks,
         geometry,
         animation_clock,
@@ -671,6 +675,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         painting: Option<WindowId>,
     ) {
         if update.exit {
+            self.close_all_file_dialogs();
             event_loop.exit();
             return;
         }
@@ -1393,9 +1398,7 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::SetIcon { id, .. } if known(*id) => RoutedWindowCommand::SetIcon(*id),
         WindowCommand::SetMenuBar { id, .. } if known(*id) => RoutedWindowCommand::SetMenuBar(*id),
-        WindowCommand::OpenFileDialog { id, .. } if known(*id) => {
-            RoutedWindowCommand::OpenFileDialog(*id)
-        }
+        WindowCommand::OpenFileDialog { id, .. } => RoutedWindowCommand::OpenFileDialog(*id),
         WindowCommand::SetApplicationIcon { .. } => RoutedWindowCommand::SetApplicationIcon,
         WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
         _ => RoutedWindowCommand::Ignore,

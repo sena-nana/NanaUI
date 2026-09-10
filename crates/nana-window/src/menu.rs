@@ -52,6 +52,7 @@ fn activations() -> &'static Mutex<Vec<u32>> {
 }
 
 /// Records a chosen id. Called from the platform's menu callback.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub(crate) fn push_activation(id: u32) {
     if let Ok(mut queue) = activations().lock() {
         queue.push(id);

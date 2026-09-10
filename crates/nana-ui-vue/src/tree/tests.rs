@@ -5981,7 +5981,11 @@ fn every_effective_store_change_moves_the_revision() {
 
     let before = store.revision();
     store.translate(node, 0.0, -5.0).expect("scroll overlay");
-    assert_ne!(store.revision(), before, "a scroll overlay changes geometry");
+    assert_ne!(
+        store.revision(),
+        before,
+        "a scroll overlay changes geometry"
+    );
 
     let before = store.revision();
     store.begin_frame();
@@ -6562,5 +6566,44 @@ fn spacing_card_class_does_not_override_runtime_defaults_or_partial_css() {
             .layout;
         assert_eq!(layout.resolved_padding(), expected);
         assert_ne!(layout.padding, Some(LengthSpec::Px(12.0)));
+    }
+}
+
+#[test]
+fn settings_row_stack_below_flows_from_vue_semantics_to_retained_layout() {
+    use nana_ui_core::FlexDirection;
+    let mut doc = NanaTreeDocument::new(1200, 800, 1.0);
+    let mut bridge = crate::MessageBridge::new();
+    let (label, _, _) = register_settings_row(&mut doc, &mut bridge, "Preference", None, false);
+    let copy = doc.parent_node(label).unwrap();
+    let row = doc.parent_node(copy).unwrap();
+    let parent = doc.create_element("div");
+    doc.insert(parent, doc.mount_root(), None);
+    doc.insert(row, parent, None);
+    let mut props = crate::WidgetProps::default();
+    props.class_names = vec!["nana-settings-row".into()];
+    props.label = "Preference".into();
+    props.attrs.insert("stack-below".into(), "480".into());
+    bridge.register(row.0, crate::WidgetKind::SettingsRow, props);
+    for (width, expected) in [(360.0, FlexDirection::Column), (480.0, FlexDirection::Row)] {
+        let mut parent_props = crate::WidgetProps::default();
+        parent_props.apply_prop(
+            "style",
+            &nana_js_engine::HostValue::string(format!(
+                "width:{width}px;display:flex;flex-direction:column"
+            )),
+        );
+        bridge.register(parent.0, crate::WidgetKind::Column, parent_props);
+        bridge.insert_child(row.0, parent.0, None);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        runtime_layout(&mut doc, 1200.0, 800.0);
+        runtime_layout(&mut doc, 1200.0, 800.0);
+        let id = StableNodeId::try_from(row).unwrap();
+        assert_eq!(doc.runtime.layout_box(id).unwrap().width, width);
+        assert_eq!(
+            doc.runtime.node_style(id).unwrap().layout.direction,
+            Some(expected)
+        );
+        assert_eq!(doc.parent_node(label), Some(copy));
     }
 }

@@ -278,17 +278,26 @@ impl AppContext {
                     mutations.write_layout(id, layout);
                 }
             }
-            let terminal_sizes = scope
-                .iter()
-                .filter_map(|id| {
-                    self.views
-                        .get(id)
-                        .is_some_and(|view| view.is::<crate::TerminalView>())
-                        .then_some(*id)
-                })
-                .collect::<Vec<_>>();
+            let mut settings_rows = Vec::new();
+            let mut terminal_sizes = Vec::new();
+            for id in &scope {
+                let Some(view) = self.views.get(id) else {
+                    continue;
+                };
+                if view.is::<crate::TerminalView>() {
+                    terminal_sizes.push(*id);
+                } else if view
+                    .downcast_ref::<crate::SettingsRow>()
+                    .is_some_and(|row| row.stack_below.is_some() && !row.stacked)
+                {
+                    settings_rows.push(*id);
+                }
+            }
             self.last_layout_scope = scope;
             let report = self.commit_mutations(mutations)?;
+            for id in settings_rows {
+                self.refresh_settings_row_layout(id)?;
+            }
             for id in terminal_sizes {
                 if let Some(bounds) = self.world.layout_box(id) {
                     self.resize_terminal_view(

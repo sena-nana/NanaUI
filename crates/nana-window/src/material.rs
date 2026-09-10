@@ -86,8 +86,7 @@ pub enum PlatformMaterialSupport {
 impl PlatformMaterialSupport {
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::Vibrancy => "可申请 Vibrancy；未申请或调用失败时使用实色背景。",
-            Self::MicaAcrylic => "可申请 Mica 或 Acrylic；未申请或调用失败时使用实色背景。",
+            Self::Vibrancy | Self::MicaAcrylic => "可使用系统透明效果；不可用时显示实色背景。",
             Self::None => "当前设备使用实色窗口背景。",
         }
     }

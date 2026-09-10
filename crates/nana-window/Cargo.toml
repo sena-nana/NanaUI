@@ -28,6 +28,7 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_System_Threading",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_Controls",
@@ -36,3 +37,16 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+rfd = "0.15.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["async-std", "raw_handle", "wayland"] }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+# Match the host's dynamically loaded Wayland backend, including standalone users.
+wayland-backend = { version = "0.3", features = ["dlopen"] }
+futures-lite = "2"
+async-channel = "2"
+async-process = "2"
+rand = "0.9"
+url = "2"

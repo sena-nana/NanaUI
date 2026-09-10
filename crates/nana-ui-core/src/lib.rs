@@ -69,7 +69,9 @@ pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month,
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 pub use drag::{DropAccepts, DropEffect, DropKind};
 pub use expansion::ExpansionState;
-pub use file_dialog::{FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter};
+pub use file_dialog::{
+    FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+};
 pub use geometry::{
     ContentFit, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect,
     TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH,

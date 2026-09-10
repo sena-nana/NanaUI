@@ -5566,7 +5566,11 @@ fn the_component_index_follows_retyping_and_despawn() {
     let calendar = ComponentTypeId::new("nana.calendar-heatmap").unwrap();
     let mut queue = MutationQueue::new();
     queue.create(node(1), document(1), NodeKind::Document);
-    queue.create(node(2), document(1), NodeKind::Element { tag: "div".into() });
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
     queue.insert(node(1), node(2), None);
     queue.set_component_type(node(2), Some(split.clone()));
     world.commit(queue).unwrap();

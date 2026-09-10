@@ -104,6 +104,18 @@ pub fn fit_window_to_displays(
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
+    /// Rejected before opening. DuplicateRequest does not finish the active
+    /// request with that same identity.
+    FileDialogRejected {
+        id: WindowId,
+        request_id: u64,
+        error: nana_ui_core::FileDialogError,
+    },
+    /// Completion of one accepted window-owned dialog request.
+    FileDialogCompleted {
+        id: WindowId,
+        result: nana_ui_core::FileDialogResult,
+    },
     /// Auxiliary creation failed; no window is retained for this id.
     OpenFailed {
         id: WindowId,
@@ -458,7 +470,7 @@ pub enum WindowCommand {
     /// The host opens it because the dialog needs the parent window handle,
     /// which controls never reach; `PathField` still only emits
     /// `BrowseRequested`. The outcome — including a cancel — arrives through
-    /// `nana_window::take_file_dialog_results`.
+    /// [`WindowEvent::FileDialogCompleted`], waking the host immediately.
     OpenFileDialog {
         id: WindowId,
         request: nana_ui_core::FileDialogRequest,

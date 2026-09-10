@@ -3533,27 +3533,7 @@ fn reconcile_ids(
     parent: StableNodeId,
     ordered: &[StableNodeId],
 ) -> Result<bool, FrameworkError> {
-    let current = context
-        .world()
-        .node(parent)
-        .ok_or(FrameworkError::MissingView(parent))?
-        .children
-        .clone();
-    if current.as_slice() == ordered {
-        return Ok(false);
-    }
-    let keep = ordered.iter().copied().collect::<HashSet<_>>();
-    let mut mutations = MutationQueue::new();
-    for child in &current {
-        if !keep.contains(child) {
-            mutations.park_subtree(*child);
-        }
-    }
-    for child in ordered {
-        mutations.insert(parent, *child, None);
-    }
-    context.commit_mutations(mutations)?;
-    Ok(true)
+    context.reconcile_children(parent, ordered)
 }
 
 #[cfg(test)]

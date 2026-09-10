@@ -70,6 +70,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
             WinitWindowEvent::CloseRequested if id == WindowId::PRIMARY => {
                 self.forward_window_event(event_loop, id, &event);
+                self.close_all_file_dialogs();
                 event_loop.exit();
             }
             WinitWindowEvent::CloseRequested => {
@@ -80,6 +81,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
             WinitWindowEvent::Destroyed if id == WindowId::PRIMARY => {
                 self.forward_window_event(event_loop, id, &event);
+                self.close_all_file_dialogs();
                 event_loop.exit();
             }
             WinitWindowEvent::Destroyed => {

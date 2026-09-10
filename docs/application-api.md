@@ -102,6 +102,13 @@ set_component(entity, Button::new(…))     // 整体换 props，保留交互态
 什么该活下来（`Select` / `Dropdown` / `SearchDropdown` 保留展开与高亮，
 `SearchDropdown` 还保留用户已输入的查询与光标）。props 真的变了仍会重置交互态。
 
+已经持有实体、切换时还要保留其状态的区域，可用
+`reconcile_children(parent_id, &[child_id, ...]) -> Result<bool, FrameworkError>`。
+它发布父节点的完整子节点顺序，省略的子树停放而不销毁，合法跨父节点移动以及
+停放父节点上的装配都支持；同序返回 `false`。缺失节点、重复项、环和跨文档移动
+会在同一 Runtime 事务中失败，不会先停放其他孩子。它不创建组件或替代带语义的
+slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组件的动态区域。
+
 `create_component` / `append_child` / `on` 仍是底层 primitive。
 
 对外身份是 `StableNodeId` / `Entity<V>`。不要依赖内部实体编码。

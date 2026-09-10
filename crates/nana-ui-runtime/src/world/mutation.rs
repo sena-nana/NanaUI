@@ -2152,4 +2152,67 @@ impl UiWorld {
     pub fn commit(&mut self, queue: MutationQueue) -> Result<CommitReport, UiWorldError> {
         self.commit_ref(&queue)
     }
+
+    /// Commit through the normal atomic validator, then derive lifecycle work
+    /// from the final topology. A descendant extracted from a parked ancestor
+    /// must not inherit that ancestor's suspension bookkeeping.
+    pub(crate) fn commit_with_mount_lifecycle(
+        &mut self,
+        queue: MutationQueue,
+    ) -> Result<(CommitReport, HashSet<StableNodeId>, HashSet<StableNodeId>), UiWorldError> {
+        let mut roots = Vec::new();
+        for mutation in queue.as_slice() {
+            match mutation {
+                UiMutation::ParkSubtree { root } => roots.push(*root),
+                UiMutation::Insert { child, .. } => roots.push(*child),
+                _ => {}
+            }
+        }
+        let mut report = self.commit(queue)?;
+        let mut parked = HashSet::new();
+        let mut inserted = HashSet::new();
+        let mut visited = HashSet::new();
+        while let Some(id) = roots.pop() {
+            if !self.contains(id) || !visited.insert(id) {
+                continue;
+            }
+            // Insert roots can be nested in the final tree; visit their union
+            // once instead of rescanning each ancestor's entire subtree.
+            roots.extend(self.record(id).hierarchy.children.iter().copied());
+            if self.mount_state(id) == Some(MountState::Parked) {
+                parked.insert(id);
+            } else if self.is_mounted(id) {
+                inserted.insert(id);
+            }
+        }
+        for &id in &parked {
+            let Some(StandardVisual::Icon {
+                icon,
+                size,
+                tooltip: Some(mut tooltip),
+            }) = self.standard_visual(id)
+            else {
+                continue;
+            };
+            if tooltip.open {
+                tooltip.open = false;
+                // This is a derived write to a validated, surviving node. Use
+                // normal mutation application (dirty/extract accounting) within
+                // the same generation, without a second observable commit.
+                self.apply(
+                    &UiMutation::SetStandardVisual {
+                        id,
+                        visual: Some(StandardVisual::Icon {
+                            icon,
+                            size,
+                            tooltip: Some(tooltip),
+                        }),
+                    },
+                    &mut report,
+                );
+                report.mutations += 1;
+            }
+        }
+        Ok((report, parked, inserted))
+    }
 }

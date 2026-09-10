@@ -664,6 +664,9 @@ struct ContainerPlan {
     /// entry. Scanning the entries instead would leave the fast path O(number
     /// of children), which is the cost it exists to remove.
     by_child: Vec<(StableNodeId, u32)>,
+    /// Direct children excluded from flow when the plan was recorded. A change
+    /// here can introduce a new entry without changing the retained child list.
+    omitted_children: HashSet<StableNodeId>,
 }
 
 impl ContainerPlan {

@@ -284,22 +284,25 @@ pub(crate) fn configure_panel(
 ///
 /// A sheet rather than `runModal`: a modal run would block the event loop, so
 /// the window behind the dialog would stop rendering. The completion handler
-/// pushes the outcome onto the queue `take_file_dialog_results` drains, which
-/// is the same shape the menu uses.
+/// invokes the requesting host callback, which wakes its event loop.
 pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
     window: &W,
     request: nana_ui_core::FileDialogRequest,
-) {
+    completion: Box<dyn FnOnce(nana_ui_core::FileDialogResult) + Send>,
+) -> Result<crate::file_dialog::FileDialogHandle, nana_ui_core::FileDialogError> {
     use block2::RcBlock;
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWindow};
+    use objc2_app_kit::{
+        NSModalResponse, NSModalResponseCancel, NSModalResponseOK, NSOpenPanel, NSSavePanel,
+        NSWindow,
+    };
 
     let Some(mtm) = MainThreadMarker::new() else {
-        // AppKit panels are main-thread only. Report a cancel rather than
-        // leaving the caller waiting for a result that will never arrive.
-        crate::file_dialog::push_result(nana_ui_core::FileDialogResult::cancelled(request.id));
-        return;
+        // AppKit panels are main-thread only. This is a host error, not Cancel.
+        return Err(nana_ui_core::FileDialogError::Platform(
+            "file dialog requires the main thread".into(),
+        ));
     };
 
     let id = request.id;
@@ -312,7 +315,10 @@ pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
         (NSSavePanel::savePanel(mtm), None)
     } else {
         let open = NSOpenPanel::openPanel(mtm);
-        let folder = matches!(request.kind, nana_ui_core::FileDialogKind::PickFolder);
+        let folder = matches!(
+            request.kind,
+            nana_ui_core::FileDialogKind::PickFolder | nana_ui_core::FileDialogKind::PickFolders
+        );
         open.setCanChooseFiles(!folder);
         open.setCanChooseDirectories(folder);
         open.setAllowsMultipleSelection(multiple);
@@ -320,7 +326,13 @@ pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
     };
     configure_panel(&panel, &request);
 
+    let Some(parent) = ns_window(window, mtm) else {
+        return Err(nana_ui_core::FileDialogError::WindowClosed);
+    };
     let sheet = panel.clone();
+    let callback = std::cell::RefCell::new(Some(completion));
+    let finished = std::rc::Rc::new(std::cell::Cell::new(false));
+    let callback_finished = finished.clone();
     let completion = RcBlock::new(move |response: NSModalResponse| {
         let mut paths = Vec::new();
         if response == NSModalResponseOK {
@@ -336,17 +348,31 @@ pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
                 paths.push(std::path::PathBuf::from(path.to_string()));
             }
         }
-        crate::file_dialog::push_result(nana_ui_core::FileDialogResult { id, paths });
+        callback_finished.set(true);
+        if let Some(callback) = callback.borrow_mut().take() {
+            callback(
+                if response == NSModalResponseOK || response == NSModalResponseCancel {
+                    nana_ui_core::FileDialogResult::selected(id, paths)
+                } else {
+                    nana_ui_core::FileDialogResult::failed(
+                        id,
+                        nana_ui_core::FileDialogError::Platform(format!(
+                            "file dialog ended with response {response}"
+                        )),
+                    )
+                },
+            );
+        }
     });
 
-    let Some(parent) = ns_window(window, mtm) else {
-        // No parent to hang a sheet on: report a cancel instead of opening a
-        // detached dialog the user cannot associate with anything.
-        crate::file_dialog::push_result(nana_ui_core::FileDialogResult::cancelled(id));
-        return;
-    };
     let _: &NSWindow = &parent;
     sheet.beginSheetModalForWindow_completionHandler(&parent, &completion);
+    Ok(crate::file_dialog::FileDialogHandle::new(move || {
+        if !finished.replace(true) {
+            parent.endSheet_returnCode(&sheet, NSModalResponseCancel);
+            sheet.orderOut(None);
+        }
+    }))
 }
 
 /// The `NSWindow` behind a raw handle.

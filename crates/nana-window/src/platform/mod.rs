@@ -14,5 +14,5 @@ pub(crate) use macos::{
 };
 #[cfg(target_os = "windows")]
 pub(crate) use windows::{
-    apply, clear, install_menu_bar, open_file_dialog, set_application_icon_png,
+    DialogCancellation, apply, clear, install_menu_bar, set_application_icon_png,
 };

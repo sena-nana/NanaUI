@@ -75,17 +75,22 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 系统文件对话框需要父窗口句柄——macOS 挂成 sheet,Windows 需要 owner HWND——而句柄只在宿主层。所以对话框和菜单栏走同一条路:模型在 `nana-ui-core`(`FileDialogRequest` / `FileDialogResult` / `FileFilter`),打开由宿主经 `WindowCommand::OpenFileDialog { id, request }` 执行。控件仍然拿不到句柄:`PathField` 只发 `BrowseRequested`,由应用翻译成一个请求。
 
-结果是**异步**的:`take_file_dialog_results()` 每帧 drain,拿到 `FileDialogResult { id, paths }`。`id` 是请求里带的,应用有多个浏览按钮时靠它对上号。
+结果是**异步**的：宿主通过 `WindowEvent::FileDialogCompleted { id, result }` 回流并主动唤醒事件循环。`id` 是窗口身份，`result.id` 是应用的 `u64` 请求身份；应用保存请求对应的业务对象和编辑基线，再消费结果。没有全局结果队列，也无需每帧轮询。
 
-**取消不是错误**,是 `paths` 为空的正常结果。让调用方去 match 一个错误才能发现「用户按了取消」,会诱导把它当失败处理。平台不支持时也立刻回一个取消,而不是把请求悄悄丢掉——等一个永远不来的结果比明确的取消更糟。
+每个窗口只能有一个活动对话框。拒绝通过独立 `WindowEvent::FileDialogRejected { id, request_id, error }` 回流。第二个不同身份的请求收到 `FileDialogError::Busy`，不会覆盖第一个请求；重复活动身份收到 `DuplicateRequest`，消费方保留原 pending，不把拒绝当作该活动请求完成。窗口关闭时活动请求收到 `WindowClosed`。宿主为每次打开分配内部 token，关闭后晚到的回调（包括窗口或请求 ID 重用）不会完成新请求，每个接受的请求只完成一次。宿主同时持有原生会话句柄，关闭时结束 macOS sheet、关闭 Windows worker 的 picker 或取消 portal/zenity；保留父句柄的 worker 不会留下可见孤儿窗口。
 
-| 平台 | 结果 | 说明 |
-| --- | --- | --- |
-| macOS | `System` | `NSOpenPanel` / `NSSavePanel` 以 **sheet** 呈现。不用 `runModal`:那会阻塞事件循环,对话框背后的窗口会停止渲染 |
-| Windows | `System` | `GetOpenFileNameW` / `GetSaveFileNameW`,模态。选目录尚未接(需要 shell item API),目前直接回取消而不是打开错的对话框 |
-| 其它 | `Unavailable` | 立刻回取消 |
+**取消不是错误**：`result.error` 为 `None` 且 `paths` 为空。可观察的平台/线程错误通过 `FileDialogError::Platform` 返回；不支持的目标返回 `Unavailable`。rfd 本身只返回 `Option`，其 `None` 保持取消语义，不能据此推断系统失败。`PickFolders` 和 `OpenFiles` 返回多个路径，其余返回单路径或取消。过滤器、初始目录和保存文件名保留在请求中。
 
-`describe_configured_dialog(&request)` 读回平台实际配置(标题、起始目录、扩展名),不呈现任何东西——对话框是模态的、没法在测试里驱动,所以验证的是「请求有没有完整到达平台」这一半。`crates/nana-window/examples/file-dialog-probe.rs` 就是拿它做真机验收的。
+| 平台 | 执行方式 |
+| --- | --- |
+| macOS | 主线程 `NSOpenPanel` / `NSSavePanel` sheet，回调完成；支持文件、多个文件、目录、多个目录和保存 |
+| Windows | 独立 rfd 工作线程持有父窗口，支持文件/目录的单选与多选及保存，不阻塞宿主渲染 |
+| Linux | 独立 portal 工作线程，带父窗口标识；响应在打开前订阅并按实际返回的 request path 关联，兼容旧 portal；不可用时沿用可取消并回收子进程的 zenity fallback |
+| 其它 | 返回 `Unavailable`，不静默悬挂 |
+
+Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback 多选采用换行分隔的 CLI 输出，文件名本身包含换行时无法无歧义拆分；单选只剥离一个协议结尾换行，保留实际文件名。该 fallback 多选边界不能作为任意路径支持通过的依据。
+
+`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名），不呈现对话框；`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出，并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
 
 ## 图标
 

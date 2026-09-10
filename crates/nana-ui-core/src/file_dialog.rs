@@ -22,12 +22,14 @@ pub enum FileDialogKind {
     SaveFile,
     /// One existing directory.
     PickFolder,
+    /// Several existing directories.
+    PickFolders,
 }
 
 impl FileDialogKind {
     /// Whether the dialog can return more than one path.
     pub fn is_multiple(self) -> bool {
-        matches!(self, Self::OpenFiles)
+        matches!(self, Self::OpenFiles | Self::PickFolders)
     }
 
     /// Whether the chosen path is allowed not to exist.
@@ -62,7 +64,7 @@ impl FileFilter {
 pub struct FileDialogRequest {
     /// Echoed back in the result, so an application with several browse
     /// buttons knows which one answered.
-    pub id: u32,
+    pub id: u64,
     pub kind: FileDialogKind,
     pub title: Option<Arc<str>>,
     /// Empty means every file type.
@@ -73,7 +75,7 @@ pub struct FileDialogRequest {
 }
 
 impl FileDialogRequest {
-    pub fn new(id: u32, kind: FileDialogKind) -> Self {
+    pub fn new(id: u64, kind: FileDialogKind) -> Self {
         Self {
             id,
             kind,
@@ -107,6 +109,21 @@ impl FileDialogRequest {
     }
 }
 
+/// A host or platform failure, distinct from the user choosing Cancel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileDialogError {
+    /// This window already owns an active request.
+    Busy,
+    /// The active request already uses this identity; it remains active.
+    DuplicateRequest,
+    /// The requested window closed or does not exist.
+    WindowClosed,
+    /// No backend is available on this target.
+    Unavailable,
+    /// An observable backend or worker failure.
+    Platform(String),
+}
+
 /// What the user did.
 ///
 /// A cancelled dialog is an empty `paths`, not an error: the user declining is
@@ -115,21 +132,39 @@ impl FileDialogRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDialogResult {
     /// The `id` of the request this answers.
-    pub id: u32,
+    pub id: u64,
     pub paths: Vec<PathBuf>,
+    pub error: Option<FileDialogError>,
 }
 
 impl FileDialogResult {
-    pub fn cancelled(id: u32) -> Self {
+    pub fn selected(id: u64, paths: Vec<PathBuf>) -> Self {
+        Self {
+            id,
+            paths,
+            error: None,
+        }
+    }
+
+    pub fn failed(id: u64, error: FileDialogError) -> Self {
         Self {
             id,
             paths: Vec::new(),
+            error: Some(error),
+        }
+    }
+
+    pub fn cancelled(id: u64) -> Self {
+        Self {
+            id,
+            paths: Vec::new(),
+            error: None,
         }
     }
 
     /// Whether the user chose nothing.
     pub fn is_cancelled(&self) -> bool {
-        self.paths.is_empty()
+        self.error.is_none() && self.paths.is_empty()
     }
 
     /// The single chosen path, for the dialogs that return at most one.

@@ -20,6 +20,45 @@ pub struct AssemblyScope<'a> {
 }
 
 impl AppContext {
+    /// Publish the complete order of existing children without destroying omitted
+    /// subtrees. Omitted children are parked and may be inserted again later.
+    ///
+    /// Unlike [`Self::mount`], this does not own keyed component construction or
+    /// replace component values. Legal reparenting and parked parents are allowed.
+    /// Invalid nodes, duplicate children, cycles and cross-document moves fail
+    /// before any tree or component lifecycle change. An unchanged order is a no-op.
+    pub fn reconcile_children(
+        &mut self,
+        parent: StableNodeId,
+        ordered: &[StableNodeId],
+    ) -> Result<bool, FrameworkError> {
+        let current = self
+            .world
+            .node(parent)
+            .ok_or(FrameworkError::MissingView(parent))?
+            .children;
+        if current.as_slice() == ordered {
+            return Ok(false);
+        }
+        let mut seen = HashSet::with_capacity(ordered.len());
+        for &child in ordered {
+            if !self.world.contains(child) {
+                return Err(FrameworkError::MissingView(child));
+            }
+            if child == parent || !seen.insert(child) {
+                return Err(FrameworkError::InvalidComponentHierarchy { parent, child });
+            }
+        }
+        let mut mutations = MutationQueue::new();
+        if !reconcile_child_order(parent, ordered, &self.world, &mut mutations) {
+            return Ok(false);
+        }
+        // commit_mutations validates the entire queue before changing either
+        // the world or retained component lifecycles.
+        self.commit_mutations(mutations)?;
+        Ok(true)
+    }
+
     /// Reconcile keyed children of `parent` without rebuilding the tree.
     pub fn mount<P: View>(
         &mut self,
@@ -170,4 +209,33 @@ impl AssemblyScope<'_> {
         self.context.commit_mutations(mutations)?;
         Ok(())
     }
+}
+
+/// Shared projection path for framework components already building one batch.
+/// Input validity is checked by that batch's normal Runtime transaction.
+pub(crate) fn reconcile_child_order(
+    parent: StableNodeId,
+    ordered: &[StableNodeId],
+    world: &crate::UiWorld,
+    mutations: &mut MutationQueue,
+) -> bool {
+    let current = world
+        .node(parent)
+        .map(|node| node.children)
+        .unwrap_or_default();
+    if current.as_slice() == ordered {
+        return false;
+    }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    // Extract retained descendants before parking their former ancestors. A
+    // live-to-live reparent must never retire focus, IME or pointer ownership.
+    for &child in ordered {
+        mutations.insert(parent, child, None);
+    }
+    for child in &current {
+        if !keep.contains(child) {
+            mutations.park_subtree(*child);
+        }
+    }
+    true
 }

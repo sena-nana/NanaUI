@@ -46,10 +46,10 @@ use crate::{
     ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
     ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
     SecondaryPress, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId,
-    StandardVisual, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput,
-    TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld,
-    UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch,
+    Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState,
+    TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError,
+    Workspace, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod assemble;
@@ -58,6 +58,7 @@ mod overlay;
 pub(crate) mod text_edit;
 mod text_history;
 pub use assemble::AssemblyScope;
+pub(crate) use assemble::reconcile_child_order;
 pub use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
 pub use overlay::{
@@ -1120,46 +1121,10 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
-        let parked = mutations
-            .as_slice()
-            .iter()
-            .filter_map(|mutation| match mutation {
-                crate::UiMutation::ParkSubtree { root } => Some(*root),
-                _ => None,
-            })
-            .flat_map(|root| self.retained_subtree(root))
-            .collect::<HashSet<_>>();
-        for id in &parked {
-            let Some(StandardVisual::Icon {
-                icon,
-                size,
-                tooltip: Some(mut tooltip),
-            }) = self.world.standard_visual(*id)
-            else {
-                continue;
-            };
-            if tooltip.open {
-                tooltip.open = false;
-                mutations.set_standard_visual(
-                    *id,
-                    Some(StandardVisual::Icon {
-                        icon,
-                        size,
-                        tooltip: Some(tooltip),
-                    }),
-                );
-            }
-        }
-        let inserted = mutations
-            .as_slice()
-            .iter()
-            .filter_map(|mutation| match mutation {
-                crate::UiMutation::Insert { child, .. } => Some(*child),
-                _ => None,
-            })
-            .flat_map(|root| self.retained_subtree(root))
-            .collect::<HashSet<_>>();
-        let report = self.world.commit(mutations).map_err(FrameworkError::from)?;
+        let (report, parked, inserted) = self
+            .world
+            .commit_with_mount_lifecycle(mutations)
+            .map_err(FrameworkError::from)?;
         for (document, id) in deleted_layout_nodes {
             self.layout_cache.remove_node(document, id);
         }

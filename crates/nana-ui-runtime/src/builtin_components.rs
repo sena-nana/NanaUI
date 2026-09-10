@@ -452,6 +452,9 @@ impl RegisterableComponent for Thumbnail {
     const TAGS: &'static [&'static str] = crate::component_descriptors::THUMBNAIL.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut thumbnail = Thumbnail::new(spec.value).size(spec.size);
+        if spec.attr("fit") == Some("cover") {
+            thumbnail = thumbnail.fit(nana_ui_core::ContentFit::Cover);
+        }
         if !spec.display_label().is_empty() {
             thumbnail = thumbnail.label(Arc::<str>::from(spec.display_label()));
         }
@@ -1389,6 +1392,8 @@ impl RegisterableComponent for SidebarRow {
 }
 
 impl RegisterableComponent for SettingsRow {
+    // Responsive layout reprojects after the row's actual width is available.
+    const RETAIN_SEMANTIC_STATE: bool = true;
     const TYPE_ID: &'static str = crate::component_descriptors::SETTINGS_ROW.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::SETTINGS_ROW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
@@ -1396,6 +1401,9 @@ impl RegisterableComponent for SettingsRow {
             .stacked(flag_attr(spec, &["stacked"]))
             .divided(flag_attr(spec, &["divided"]))
             .loose(flag_attr(spec, &["loose"]));
+        if let Some(width) = attr_f32(spec, &["stack-below", "stackBelow"]) {
+            component = component.stack_below(width);
+        }
         if !spec.hint.is_empty() {
             component = component.hint(Arc::<str>::from(spec.hint));
         }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use nana_ui_core::{
@@ -33,6 +33,9 @@ pub struct SettingsRow {
     pub label: Arc<str>,
     pub hint: Option<Arc<str>>,
     pub stacked: bool,
+    /// Stack below this row's laid-out width in logical pixels. `stacked`
+    /// remains an unconditional override; `None` preserves inline layout.
+    pub stack_below: Option<f32>,
     pub divided: bool,
     pub loose: bool,
     pub first_in_group: bool,
@@ -50,6 +53,7 @@ impl SettingsRow {
             label: label.into(),
             hint: None,
             stacked: false,
+            stack_below: None,
             divided: false,
             loose: false,
             first_in_group: false,
@@ -69,6 +73,13 @@ impl SettingsRow {
 
     pub fn stacked(mut self, stacked: bool) -> Self {
         self.stacked = stacked;
+        self
+    }
+
+    /// Opt into responsive stacking using the row width, not the window width.
+    /// Non-finite or non-positive thresholds disable responsive stacking.
+    pub fn stack_below(mut self, width: f32) -> Self {
+        self.stack_below = (width.is_finite() && width > 0.0).then_some(width);
         self
     }
 
@@ -117,8 +128,8 @@ impl SettingsRow {
         self
     }
 
-    fn gap(&self) -> f32 {
-        match (self.stacked, self.loose) {
+    fn gap(&self, stacked: bool) -> f32 {
+        match (stacked, self.loose) {
             (true, true) => ROW_STACK_GAP_LOOSE,
             (true, false) => ROW_STACK_GAP,
             (false, true) => ROW_INLINE_GAP_LOOSE,
@@ -126,30 +137,41 @@ impl SettingsRow {
         }
     }
 
-    fn effective_style(&self) -> NodeStyle {
+    fn effective_stacked(&self, id: StableNodeId, world: &UiWorld) -> bool {
+        self.stacked
+            || self.stack_below.is_some_and(|threshold| {
+                threshold.is_finite()
+                    && threshold > 0.0
+                    && world
+                        .layout_box(id)
+                        .is_some_and(|bounds| bounds.width < threshold)
+            })
+    }
+
+    fn effective_style(&self, stacked: bool) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = None;
         style.border = self.divided.then_some(SemanticColorRole::BorderSoft);
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Percent(100.0));
-        layout.direction = Some(if self.stacked {
+        layout.direction = Some(if stacked {
             FlexDirection::Column
         } else {
             FlexDirection::Row
         });
-        layout.align_items = if self.stacked {
+        layout.align_items = if stacked {
             AlignSpec::Stretch
         } else {
             AlignSpec::Center
         };
-        layout.justify_content = if self.stacked {
+        layout.justify_content = if stacked {
             JustifySpec::Start
         } else {
             JustifySpec::SpaceBetween
         };
         layout.flex_wrap = FlexWrap::NoWrap;
-        layout.gap = Some(LengthSpec::Px(self.gap()));
+        layout.gap = Some(LengthSpec::Px(self.gap(stacked)));
         layout.padding_top = Some(LengthSpec::Px(if self.first_in_group {
             ROW_GROUP_PADDING_Y
         } else {
@@ -204,7 +226,7 @@ impl ComponentView for SettingsRow {
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(self.effective_stacked(id, world)),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -216,17 +238,14 @@ impl ComponentView for SettingsRow {
                 ..AccessibilityState::default()
             },
         );
-        self.project_slots(world, mutations);
+        self.project_slots(world, mutations, self.effective_stacked(id, world));
     }
 }
 
 impl SettingsRow {
-    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue) {
+    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue, stacked: bool) {
         if let Some(copy) = self.copy_slot {
-            SettingsRowCopy {
-                stacked: self.stacked,
-            }
-            .project(copy, world, mutations);
+            SettingsRowCopy { stacked }.project(copy, world, mutations);
         }
         if let Some(label) = self.label_slot {
             let mut text = Text::new(self.label.as_ref());
@@ -1311,28 +1330,7 @@ fn reconcile_children<C: ComponentView>(
     parent: Entity<C>,
     ordered: &[StableNodeId],
 ) -> Result<bool, FrameworkError> {
-    let parent_id = parent.stable_id();
-    let current = context
-        .world()
-        .node(parent_id)
-        .ok_or(FrameworkError::MissingView(parent_id))?
-        .children
-        .clone();
-    if current.as_slice() == ordered {
-        return Ok(false);
-    }
-    let keep = ordered.iter().copied().collect::<HashSet<_>>();
-    context.update_component(parent, |_, cx| {
-        for child in &current {
-            if !keep.contains(child) {
-                cx.mutations().park_subtree(*child);
-            }
-        }
-        for child in ordered {
-            cx.mutations().insert(parent_id, *child, None);
-        }
-    })?;
-    Ok(true)
+    context.reconcile_children(parent.stable_id(), ordered)
 }
 
 fn styled_text(value: impl Into<String>, color: SemanticColorRole, size: f32, weight: u16) -> Text {
@@ -1413,39 +1411,22 @@ fn mount_settings_row(
         }
     }
     let label_text = sync_text(context, document, &mut label_slot, row_label_text(label))?;
-    let hint_text = if let Some(hint) = hint {
-        Some(sync_text(
-            context,
-            document,
-            &mut hint_slot,
-            row_hint_text(hint, false),
-        )?)
+    let hint_text = sync_text(
+        context,
+        document,
+        &mut hint_slot,
+        row_hint_text(hint.unwrap_or(""), hint.is_none()),
+    )?;
+    let copy = if let Some(id) = copy_slot {
+        Entity::<SettingsRowCopy>::from_stable_id(id)
     } else {
-        if let Some(id) = hint_slot {
-            context.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
-                *text = row_hint_text("", true);
-            })?;
-        }
-        None
+        let entity =
+            context.create_detached_component(document, SettingsRowCopy { stacked: false })?;
+        copy_slot = Some(entity.stable_id());
+        entity
     };
-    let use_copy = hint_text.is_some() || copy_slot.is_some();
-    let copy = if use_copy {
-        Some(if let Some(id) = copy_slot {
-            Entity::<SettingsRowCopy>::from_stable_id(id)
-        } else {
-            let entity =
-                context.create_detached_component(document, SettingsRowCopy { stacked: false })?;
-            copy_slot = Some(entity.stable_id());
-            entity
-        })
-    } else {
-        None
-    };
-    let hint_id = hint_text
-        .as_ref()
-        .map(|text| text.stable_id())
-        .or(hint_slot);
-    let copy_id = copy.map(|entity| entity.stable_id()).or(copy_slot);
+    let hint_id = Some(hint_text.stable_id());
+    let copy_id = Some(copy.stable_id());
     let apply = |row: &mut SettingsRow, _: &mut crate::ViewContext<'_, SettingsRow>| {
         row.label = Arc::from(label);
         row.hint = hint.map(Arc::from);
@@ -1469,9 +1450,7 @@ fn mount_settings_row(
         if let Some(hint) = hint {
             row = row.hint(hint);
         }
-        if let Some(hint_entity) = &hint_text {
-            row = row.hint_slot(hint_entity.stable_id());
-        }
+        row = row.hint_slot(hint_text.stable_id());
         if first {
             row = row.first_in_group();
         }
@@ -1483,16 +1462,12 @@ fn mount_settings_row(
         *slot = Some(entity.stable_id());
         entity
     };
-    if let Some(copy) = copy {
-        let mut copy_children = vec![label_text.stable_id()];
-        if let Some(hint_entity) = &hint_text {
-            copy_children.push(hint_entity.stable_id());
-        }
-        reconcile_children(context, copy, &copy_children)?;
-        reconcile_children(context, row, &[copy.stable_id(), control])?;
-    } else {
-        reconcile_children(context, row, &[label_text.stable_id(), control])?;
-    }
+    reconcile_children(
+        context,
+        copy,
+        &[label_text.stable_id(), hint_text.stable_id()],
+    )?;
+    reconcile_children(context, row, &[copy.stable_id(), control])?;
     Ok(row)
 }
 
@@ -1677,6 +1652,29 @@ fn ensure_range(
 }
 
 impl AppContext {
+    pub(crate) fn refresh_settings_row_layout(
+        &mut self,
+        id: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let row = Entity::<SettingsRow>::from_stable_id(id);
+        let needs_projection = self
+            .read(row, |row| {
+                let direction = if row.effective_stacked(id, self.world()) {
+                    FlexDirection::Column
+                } else {
+                    FlexDirection::Row
+                };
+                self.world()
+                    .node_style(id)
+                    .is_some_and(|style| style.layout.direction != Some(direction))
+            })
+            .unwrap_or(false);
+        if needs_projection {
+            self.update_component(row, |_, _| {})?;
+        }
+        Ok(())
+    }
+
     /// Mount a settings row with painted label / optional hint / control slots.
     pub fn mount_settings_leaf_row(
         &mut self,
@@ -2389,6 +2387,106 @@ mod tests {
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    #[test]
+    fn settings_row_responds_to_its_own_width_and_preserves_control() {
+        let mut context = AppContext::new();
+        let parent = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).width(LengthSpec::Px(360.0)),
+            )
+            .unwrap();
+        let control = context
+            .create_detached_component(document(), crate::Switch::new("enabled", true))
+            .unwrap();
+        let row = context
+            .mount_settings_leaf_row(document(), "Preference", None, control.stable_id())
+            .unwrap();
+        context
+            .update_component(row, |row, _| row.stack_below = Some(480.0))
+            .unwrap();
+        context.append_child(parent, row).unwrap();
+        let viewport = crate::LayoutViewport::new(1200.0, 800.0);
+        let copy = context.read(row, |row| row.copy_slot.unwrap()).unwrap();
+        for (width, stacked) in [(360.0, true), (480.0, false), (640.0, false), (479.0, true)] {
+            context
+                .update_component(parent, |parent, _| {
+                    *parent = crate::Stack::column(0.0).width(LengthSpec::Px(width));
+                })
+                .unwrap();
+            // The frame driver settles layout feedback before publishing Scene.
+            context.layout_document(document(), viewport).unwrap();
+            context.layout_document(document(), viewport).unwrap();
+            let row_box = context.world().layout_box(row.stable_id()).unwrap();
+            assert_eq!(row_box.width, width);
+            let control_box = context.world().layout_box(control.stable_id()).unwrap();
+            let copy_box = context.world().layout_box(copy).unwrap();
+            if stacked {
+                assert!(control_box.y >= copy_box.y + copy_box.height);
+            } else {
+                assert!(control_box.x >= copy_box.x + copy_box.width);
+            }
+            assert!(context.read(control, |control| control.checked).unwrap());
+        }
+        context
+            .update_component(row, |row, _| {
+                row.stack_below = None;
+            })
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(row.stable_id())
+                .unwrap()
+                .layout
+                .direction,
+            Some(FlexDirection::Row)
+        );
+        context
+            .update_component(row, |row, _| {
+                row.stacked = true;
+                row.stack_below = Some(1.0);
+            })
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .node_style(row.stable_id())
+                .unwrap()
+                .layout
+                .direction,
+            Some(FlexDirection::Column)
+        );
+    }
+
+    #[test]
+    fn settings_leaf_row_can_show_and_clear_a_hint_after_mounting_without_one() {
+        let mut context = AppContext::new();
+        let control = context
+            .create_detached_component(document(), crate::Switch::new("enabled", true))
+            .unwrap();
+        let row = context
+            .mount_settings_leaf_row(document(), "Preference", None, control.stable_id())
+            .unwrap();
+        let (hint, copy) = context
+            .read(row, |row| (row.hint_slot.unwrap(), row.copy_slot.unwrap()))
+            .unwrap();
+        for next in [Some("Details"), None, Some("Updated details")] {
+            context
+                .update_component(row, |row, _| row.hint = next.map(Arc::from))
+                .unwrap();
+            assert_eq!(
+                visible_hint_text(&context, row.stable_id()).as_deref(),
+                next
+            );
+            assert_eq!(context.world().node(hint).unwrap().parent, Some(copy));
+            assert_eq!(
+                context.read(row, |row| row.control).unwrap(),
+                Some(control.stable_id())
+            );
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Hosts declare a HostTexture slot and an optional aspect. The box is
 //! [`ControlSize`] height × aspect (default 1:1). Empty, loading, ready, and
 //! unavailable share that geometry. Ready samples `"nana.host-texture"` with
-//! Contain; empty identities omit the Scene node.
+//! configurable fit (Contain by default); empty identities omit the Scene node.
 
 use std::sync::Arc;
 
@@ -47,6 +47,7 @@ pub struct Thumbnail {
     pub state: ThumbnailState,
     pub size: ControlSize,
     pub aspect: f32,
+    pub fit: ContentFit,
     pub label: Arc<str>,
     pub style: NodeStyle,
 }
@@ -67,6 +68,7 @@ impl Thumbnail {
             state,
             size: ControlSize::Small,
             aspect: DEFAULT_ASPECT,
+            fit: ContentFit::Contain,
             label: Arc::from(""),
             style: NodeStyle::default(),
         }
@@ -91,6 +93,11 @@ impl Thumbnail {
 
     pub fn aspect(mut self, aspect: f32) -> Self {
         self.aspect = sanitize_aspect(aspect);
+        self
+    }
+
+    pub fn fit(mut self, fit: ContentFit) -> Self {
+        self.fit = fit;
         self
     }
 
@@ -150,7 +157,7 @@ impl Thumbnail {
                 Arc::clone(&self.resource),
                 self.revision(),
             )
-            .with_fit(ContentFit::Contain),
+            .with_fit(self.fit),
         )
     }
 
@@ -165,16 +172,20 @@ impl Thumbnail {
         style.border = None;
         style.foreground = Some(SemanticColorRole::Muted);
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(width));
-        layout.height = Some(LengthSpec::Px(height));
-        layout.min_width = Some(LengthSpec::Px(width));
-        layout.min_height = Some(LengthSpec::Px(height));
-        layout.max_width = Some(LengthSpec::Px(width));
-        layout.max_height = Some(LengthSpec::Px(height));
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
+        if layout.width.is_none() {
+            layout.width = Some(LengthSpec::Px(width));
+            layout.min_width.get_or_insert(LengthSpec::Px(width));
+            layout.max_width.get_or_insert(LengthSpec::Px(width));
+        }
+        if layout.height.is_none() {
+            layout.height = Some(LengthSpec::Px(height));
+            layout.min_height.get_or_insert(LengthSpec::Px(height));
+            layout.max_height.get_or_insert(LengthSpec::Px(height));
+        }
+        layout.flex_grow.get_or_insert(0.0);
+        layout.flex_shrink.get_or_insert(0.0);
         layout.border_width = Some(0.0);
-        layout.border_radius = Some(metrics.radius_xs);
+        layout.border_radius.get_or_insert(metrics.radius_xs);
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
         style
@@ -329,6 +340,58 @@ mod tests {
                 focusable: false,
             })
         );
+    }
+
+    #[test]
+    fn responsive_cover_keeps_geometry_across_resource_states() {
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0)
+                    .width(LengthSpec::Fill)
+                    .height(LengthSpec::Px(135.0)),
+            )
+            .unwrap();
+        let mut style = NodeStyle::default();
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Fill);
+        layout.height = Some(LengthSpec::Fill);
+        layout.border_radius = Some(10.0);
+        let thumbnail = context
+            .create_detached_component(
+                document(),
+                Thumbnail::loading().fit(ContentFit::Cover).style(style),
+            )
+            .unwrap();
+        context.append_child(root, thumbnail).unwrap();
+        for width in [240.0, 360.0] {
+            for state in [
+                ThumbnailState::Empty,
+                ThumbnailState::Loading,
+                ThumbnailState::Ready,
+                ThumbnailState::Unavailable,
+            ] {
+                context
+                    .update_component(thumbnail, |view, _| {
+                        view.state = state;
+                        view.resource = "cover".into();
+                    })
+                    .unwrap();
+                context
+                    .layout_document(document(), LayoutViewport::new(width, 200.0))
+                    .unwrap();
+                let bounds = context.world().layout_box(thumbnail.stable_id()).unwrap();
+                assert_eq!((bounds.width, bounds.height), (width, 135.0));
+                assert_eq!(
+                    context
+                        .world()
+                        .custom_render(thumbnail.stable_id())
+                        .map(|node| node.fit),
+                    (state == ThumbnailState::Ready).then_some(ContentFit::Cover)
+                );
+            }
+        }
     }
 
     #[test]

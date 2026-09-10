@@ -149,9 +149,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 let WindowCommand::OpenFileDialog { request, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id) {
-                    nana_window::open_file_dialog(window.as_ref(), request.clone());
-                }
+                self.open_file_dialog(event_loop, id, request);
             }
             RoutedWindowCommand::SetApplicationIcon => {
                 let WindowCommand::SetApplicationIcon { icon } = command else {
@@ -246,6 +244,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         let size_move = LiveSizeMove::install(window.as_ref())?;
+        self.file_dialogs.reopened(id);
         self.window_ids.insert(window.id(), id);
         self.auxiliary.insert(
             id,
@@ -274,6 +273,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if id == WindowId::PRIMARY {
             return;
         }
+        if let Some(window) = self.window(id) {
+            window.set_visible(false);
+        }
+        self.close_file_dialog(event_loop, id);
         self.chrome.remove(&id);
         self.frame_schedules.remove(&id);
         self.texture_subscriptions.remove(&id);

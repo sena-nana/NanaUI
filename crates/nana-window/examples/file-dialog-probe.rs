@@ -7,7 +7,6 @@
 
 use nana_window::{
     FileDialogKind, FileDialogRequest, FileFilter, describe_configured_dialog, file_dialog_support,
-    take_file_dialog_results,
 };
 
 fn main() -> std::process::ExitCode {
@@ -38,11 +37,6 @@ fn main() -> std::process::ExitCode {
     }
     if extensions != ["png", "jpg", "pdf"] {
         failures.push("filters did not reach the panel");
-    }
-
-    // Nothing was presented, so nothing should have completed.
-    if !take_file_dialog_results().is_empty() {
-        failures.push("a result appeared without a dialog being presented");
     }
 
     if failures.is_empty() {

@@ -5665,3 +5665,281 @@ fn outside_press_dismisses_a_hosted_context_menu_and_reports_it_to_the_view() {
     assert!(!context.read(menu, |menu| menu.open).unwrap());
     assert_eq!(*dismissals.lock().unwrap(), 1);
 }
+
+#[test]
+fn retained_child_reconciliation_preserves_identity_focus_and_parked_state() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let first = context
+        .create_detached_component(document, TextInput::new("draft"))
+        .unwrap();
+    let second = context
+        .create_detached_component(document, Button::new("second"))
+        .unwrap();
+    context
+        .reconcile_children(parent.id, &[first.id, second.id])
+        .unwrap();
+    context
+        .on(second, |button, _: &Activate, _| {
+            button.label = "activated".into()
+        })
+        .unwrap();
+    context.focus_node(document, first.id).unwrap();
+    assert!(
+        context
+            .reconcile_children(parent.id, &[second.id, first.id])
+            .unwrap()
+    );
+    assert_eq!(context.world.focused(document), Some(first.id));
+    let generation = context.world.generation();
+    assert!(
+        !context
+            .reconcile_children(parent.id, &[second.id, first.id])
+            .unwrap()
+    );
+    assert_eq!(context.world.generation(), generation);
+    context.reconcile_children(parent.id, &[second.id]).unwrap();
+    assert!(!context.world.is_mounted(first.id));
+    assert_eq!(
+        context
+            .read(first, |input| input.state.value.clone())
+            .unwrap(),
+        "draft"
+    );
+    context
+        .reconcile_children(parent.id, &[first.id, second.id])
+        .unwrap();
+    assert!(context.world.is_mounted(first.id));
+    context.activate_button(second).unwrap();
+    assert_eq!(
+        context.read(second, |button| button.label.clone()).unwrap(),
+        "activated"
+    );
+    assert_eq!(
+        context.world.node(parent.id).unwrap().children.as_slice(),
+        &[first.id, second.id]
+    );
+    let parked = context
+        .create_detached_component(document, Stack::column(0.0))
+        .unwrap();
+    context.reconcile_children(parked.id, &[first.id]).unwrap();
+    assert_eq!(
+        context.world.node(first.id).unwrap().parent,
+        Some(parked.id)
+    );
+    assert!(!context.world.is_mounted(first.id));
+    context
+        .reconcile_children(parent.id, &[parked.id, second.id])
+        .unwrap();
+    assert!(context.world.is_mounted(first.id));
+}
+
+#[test]
+fn retained_child_reconciliation_extracts_live_editor_before_parking_ancestor() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let parked = context
+        .create_detached_component(document, Stack::column(0.0))
+        .unwrap();
+    let first = context
+        .create_detached_component(document, TextInput::new("draft"))
+        .unwrap();
+    context.append_child(parent, parked).unwrap();
+    context.append_child(parked, first).unwrap();
+    // Extract a live editor from an omitted ancestor in the same transaction.
+    // The editor never leaves the live tree, so its editing session must survive.
+    context.focus_node(document, first.id).unwrap();
+    context.replace_text_input_selection(first, "!").unwrap();
+    let edited = context.read(first, |input| input.state.clone()).unwrap();
+    context
+        .set_ime_preedit(document, "输入".into(), Some((0, 3)))
+        .unwrap();
+    let ime = context.world.ime(first.id).cloned().unwrap();
+    context.reconcile_children(parent.id, &[first.id]).unwrap();
+    assert!(!context.world.is_mounted(parked.id));
+    assert_eq!(
+        context.world.node(first.id).unwrap().parent,
+        Some(parent.id)
+    );
+    assert_eq!(context.world.focused(document), Some(first.id));
+    assert_eq!(context.world.ime(first.id), Some(&ime));
+    assert_eq!(
+        context.read(first, |input| input.state.clone()).unwrap(),
+        edited
+    );
+    context.clear_ime(document).unwrap();
+    assert!(context.undo_focused_text(document).unwrap());
+    assert_eq!(
+        context
+            .read(first, |input| input.state.value.clone())
+            .unwrap(),
+        "draft"
+    );
+    assert!(context.redo_focused_text(document).unwrap());
+    assert_eq!(
+        context
+            .read(first, |input| input.state.value.clone())
+            .unwrap(),
+        edited.value
+    );
+}
+
+#[test]
+fn retained_child_reconciliation_preserves_extracted_tooltip_and_loading_lifecycles() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let old = context
+        .create_detached_component(document, Stack::column(0.0))
+        .unwrap();
+    let icon = context
+        .create_detached_component(
+            document,
+            IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                "Details",
+                nana_ui_core::TooltipConfig {
+                    delay_ms: 0,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    let loading = context
+        .create_detached_component(document, Button::new("Work").loading(true))
+        .unwrap();
+    context.append_child(parent, old).unwrap();
+    context.append_child(old, icon).unwrap();
+    context.append_child(old, loading).unwrap();
+    context
+        .set_pointer_hover_at(document, 1, Some(icon.id), Duration::ZERO)
+        .unwrap();
+    let tooltip = context.world.overlay_host(icon.id).unwrap().active.unwrap();
+    let deadline = context.next_animation_deadline();
+    let generation = context.world.generation();
+    let mut invalid = MutationQueue::new();
+    invalid.park_subtree(old.id);
+    invalid.insert(icon.id, old.id, None);
+    assert!(context.commit_mutations(invalid).is_err());
+    assert_eq!(context.world.generation(), generation);
+    assert!(context.read(icon, |icon| icon.tooltip_open).unwrap());
+    assert_eq!(
+        context.world.overlay_host(icon.id).unwrap().active,
+        Some(tooltip)
+    );
+    assert_eq!(context.next_animation_deadline(), deadline);
+
+    context
+        .reconcile_children(parent.id, &[icon.id, loading.id])
+        .unwrap();
+    assert!(!context.world.is_mounted(old.id));
+    assert!(context.read(icon, |icon| icon.tooltip_open).unwrap());
+    assert!(matches!(
+        context.world.standard_visual(icon.id),
+        Some(StandardVisual::Icon {
+            tooltip: Some(crate::TooltipVisual { open: true, .. }),
+            ..
+        })
+    ));
+    assert_eq!(
+        context.world.overlay_host(icon.id).unwrap().active,
+        Some(tooltip)
+    );
+    assert_eq!(context.next_animation_deadline(), deadline);
+    assert!(
+        context
+            .advance_animations(Duration::from_millis(160))
+            .component_updates
+            .contains(&loading.id)
+    );
+
+    let generation = context.world.generation();
+    let mut park = MutationQueue::new();
+    park.park_subtree(icon.id);
+    park.park_subtree(loading.id);
+    let report = context.commit_mutations(park).unwrap();
+    assert_eq!(report.generation, generation + 1);
+    assert!(!context.read(icon, |icon| icon.tooltip_open).unwrap());
+    assert!(matches!(
+        context.world.standard_visual(icon.id),
+        Some(StandardVisual::Icon {
+            tooltip: Some(crate::TooltipVisual { open: false, .. }),
+            ..
+        })
+    ));
+    assert_eq!(context.next_animation_deadline(), None);
+    context
+        .reconcile_children(parent.id, &[icon.id, loading.id])
+        .unwrap();
+    assert!(!context.read(icon, |icon| icon.tooltip_open).unwrap());
+    assert!(context.next_animation_deadline().is_some());
+}
+
+#[test]
+fn retained_child_reconciliation_rejects_invalid_batches_without_parking_siblings() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let parent = context
+        .create_detached_component(document, Stack::column(0.0))
+        .unwrap();
+    let child = context
+        .create_detached_component(document, TextInput::new("kept"))
+        .unwrap();
+    context.append_child(root, parent).unwrap();
+    context.append_child(parent, child).unwrap();
+    context.focus_node(document, child.id).unwrap();
+    let foreign = context
+        .create_component(DocumentId::new(2).unwrap(), Button::new("foreign"))
+        .unwrap();
+    for desired in [
+        vec![child.id, child.id],
+        vec![parent.id],
+        vec![root.id],
+        vec![foreign.id],
+        vec![StableNodeId::new(u64::MAX).unwrap()],
+    ] {
+        let generation = context.world.generation();
+        assert!(context.reconcile_children(parent.id, &desired).is_err());
+        assert_eq!(context.world.generation(), generation);
+        assert_eq!(
+            context.world.node(parent.id).unwrap().children.as_slice(),
+            &[child.id]
+        );
+        assert!(context.world.is_mounted(child.id));
+        assert_eq!(context.world.focused(document), Some(child.id));
+    }
+}
+
+#[test]
+fn rejected_reconciliation_keeps_active_overlay_and_focus_lifecycle_untouched() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let host = context
+        .create_component(document, crate::OverlayHost::new())
+        .unwrap();
+    let panel = context
+        .create_detached_component(document, crate::Panel::new("Task"))
+        .unwrap();
+    context.append_child(host, panel).unwrap();
+    context.activate_overlay(host, panel).unwrap();
+    let foreign = context
+        .create_component(DocumentId::new(2).unwrap(), Button::new("foreign"))
+        .unwrap();
+    let before = context.world.overlay_host(host.id).unwrap();
+    let generation = context.world.generation();
+    assert!(context.reconcile_children(host.id, &[foreign.id]).is_err());
+    assert_eq!(context.world.overlay_host(host.id).unwrap(), before);
+    assert_eq!(context.world.generation(), generation);
+    assert!(context.world.is_mounted(panel.id));
+    assert_eq!(context.world.node(panel.id).unwrap().parent, Some(host.id));
+}

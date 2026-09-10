@@ -1165,26 +1165,7 @@ fn reconcile_children(
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
-    let desired = desired
-        .iter()
-        .copied()
-        .filter(|id| *id != parent && world.contains(*id))
-        .collect::<Vec<_>>();
-    let current = world
-        .node(parent)
-        .map(|node| node.children)
-        .unwrap_or_default();
-    if current.as_slice() == desired.as_slice() {
-        return;
-    }
-    for child in &current {
-        if !desired.contains(child) {
-            mutations.park_subtree(*child);
-        }
-    }
-    for child in desired {
-        mutations.insert(parent, child, None);
-    }
+    crate::framework::reconcile_child_order(parent, desired, world, mutations);
 }
 
 #[cfg(test)]

@@ -18,8 +18,9 @@ pub use chrome::resize_custom_frame;
 pub use chrome::set_present_transaction;
 pub use chrome::suppress_system_caption;
 pub use file_dialog::{
-    FileDialogKind, FileDialogRequest, FileDialogResult, FileDialogSupport, FileFilter,
-    describe_configured_dialog, file_dialog_support, open_file_dialog, take_file_dialog_results,
+    FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,
+    FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,
+    open_file_dialog,
 };
 pub use material::{
     Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome,

@@ -302,3 +302,7 @@ pub use window_chrome::{
 pub use workspace::{WorkspaceAction, WorkspaceController};
 
 pub use nana_ui_scene::DocumentAccessError;
+
+pub use nana_ui_core::{
+    FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+};

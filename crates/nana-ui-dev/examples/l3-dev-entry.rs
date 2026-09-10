@@ -217,7 +217,10 @@ fn run_headless() -> Option<ExitCode> {
     }
     // A headless run has no previous process to restore from, so it always
     // renders the first-launch tree. That is the point: reproducible evidence.
-    Some(cli::runtime_main(build_document(&Session::default()), &args))
+    Some(cli::runtime_main(
+        build_document(&Session::default()),
+        &args,
+    ))
 }
 
 #[cfg(not(feature = "headless"))]

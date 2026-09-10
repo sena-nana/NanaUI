@@ -368,6 +368,10 @@ pub(super) fn place_node_scoped(
             &style_arc,
             &child_ids,
         )
+        && !scope
+            .affected
+            .iter()
+            .any(|child| plan.omitted_children.contains(child))
         && nodes.world.children_layout_style_is_local(id)
         && triggered_menu_overlay(nodes.world, id).is_none()
     {
@@ -931,6 +935,19 @@ pub(super) fn place_node_scoped(
                 content_origin,
                 gap,
                 sequential: plan_sequential,
+                omitted_children: if entries.len() == child_ids.len() {
+                    HashSet::new()
+                } else {
+                    let placed = entries
+                        .iter()
+                        .map(|entry| entry.child)
+                        .collect::<HashSet<_>>();
+                    child_ids
+                        .iter()
+                        .copied()
+                        .filter(|child| !placed.contains(child))
+                        .collect()
+                },
                 by_child: {
                     let mut by_child: Vec<(StableNodeId, u32)> = entries
                         .iter()

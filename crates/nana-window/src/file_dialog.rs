@@ -1,92 +1,137 @@
-//! System file dialog, opened by the host on the application's behalf.
-//!
-//! The request and result model is in `nana-ui-core`; this is the platform
-//! half. A dialog needs the parent window handle so it can hang off the right
-//! window — on macOS as a sheet, on Windows as an owned modal — and that
-//! handle only exists in the host, which is why this is not a control API.
-//! `PathField` still just emits `BrowseRequested`.
-//!
-//! Results arrive asynchronously: the dialog must not block the event loop, or
-//! the window behind it stops rendering. Drain [`take_file_dialog_results`]
-//! once a frame, the same way menu activations are drained.
+//! Window-owned system dialogs. Completion invokes the host's callback once;
+//! no process-global queue or per-frame polling is involved.
 
-use std::sync::{Mutex, OnceLock};
+pub use nana_ui_core::{
+    FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use std::sync::Arc;
 
-pub use nana_ui_core::{FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter};
-
-/// How much of the file dialog the running platform provides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDialogSupport {
-    /// The system dialog opens.
     System,
-    /// Nothing opens; every request is answered with a cancel so a caller
-    /// waiting on a result is not left hanging.
     Unavailable,
 }
 
-/// What [`open_file_dialog`] will do on this platform.
 pub const fn file_dialog_support() -> FileDialogSupport {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    )) {
         FileDialogSupport::System
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
+    } else {
         FileDialogSupport::Unavailable
     }
 }
 
-fn results() -> &'static Mutex<Vec<FileDialogResult>> {
-    static RESULTS: OnceLock<Mutex<Vec<FileDialogResult>>> = OnceLock::new();
-    RESULTS.get_or_init(|| Mutex::new(Vec::new()))
+/// Owns the native presentation. Dropping it dismisses an unfinished picker.
+/// Keep it on the host thread (AppKit sheet teardown is main-thread only).
+pub struct FileDialogHandle(Option<Box<dyn FnOnce()>>);
+impl FileDialogHandle {
+    pub(crate) fn new(cancel: impl FnOnce() + 'static) -> Self {
+        Self(Some(Box::new(cancel)))
+    }
 }
-
-/// Records an outcome. Called from the platform's completion handler.
-pub(crate) fn push_result(result: FileDialogResult) {
-    if let Ok(mut queue) = results().lock() {
-        queue.push(result);
+impl Drop for FileDialogHandle {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.0.take() {
+            cancel();
+        }
     }
 }
 
-/// File dialog outcomes since the last call, in completion order.
-///
-/// A cancelled dialog still produces a result, so a caller can drop whatever
-/// it was holding for that request instead of waiting forever.
-pub fn take_file_dialog_results() -> Vec<FileDialogResult> {
-    results()
-        .lock()
-        .map(|mut queue| std::mem::take(&mut *queue))
-        .unwrap_or_default()
-}
-
-/// Opens the system file dialog for `request` on `window`.
-///
-/// Returns immediately; the outcome shows up in [`take_file_dialog_results`].
-/// On a platform without a dialog the request is answered with a cancel right
-/// away rather than silently dropped.
-pub fn open_file_dialog<W: raw_window_handle::HasWindowHandle + ?Sized>(
-    window: &W,
+/// Open a dialog without blocking the host event loop. The caller retains
+/// request/window identity and must reject callbacks for closed windows.
+/// A retained parent keeps raw handles valid for the worker's lifetime.
+pub fn open_file_dialog<W>(
+    window: Arc<W>,
     request: FileDialogRequest,
-) -> FileDialogSupport {
-    let _ = window;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    completion: impl FnOnce(FileDialogResult) + Send + 'static,
+) -> Result<FileDialogHandle, FileDialogError>
+where
+    W: HasWindowHandle + HasDisplayHandle + Send + Sync + ?Sized + 'static,
+{
+    window
+        .window_handle()
+        .map_err(|_| FileDialogError::WindowClosed)?;
+    #[cfg(target_os = "macos")]
     {
-        crate::platform::open_file_dialog(window, request);
-        FileDialogSupport::System
+        crate::platform::open_file_dialog(window.as_ref(), request, Box::new(completion))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "windows")]
     {
-        push_result(FileDialogResult::cancelled(request.id));
-        FileDialogSupport::Unavailable
+        let mut dialog = rfd::FileDialog::new().set_parent(&window.as_ref());
+        if let Some(title) = &request.title {
+            dialog = dialog.set_title(title.as_ref());
+        }
+        if let Some(directory) = &request.directory {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(name) = &request.file_name {
+            dialog = dialog.set_file_name(name.as_ref());
+        }
+        for filter in &request.filters {
+            dialog = dialog.add_filter(filter.name.as_ref(), &filter.extensions);
+        }
+        let cancellation = crate::platform::DialogCancellation::default();
+        let cancel = cancellation.clone();
+        std::thread::Builder::new()
+            .name("nana-file-dialog".into())
+            .spawn(move || {
+                // Keep the owner alive until the native dialog has stopped using it.
+                let _parent = window;
+                let _hook = match cancellation.install() {
+                    Ok(hook) => hook,
+                    Err(error) => {
+                        completion(FileDialogResult::failed(request.id, error));
+                        return;
+                    }
+                };
+                if cancellation.cancelled() {
+                    completion(FileDialogResult::cancelled(request.id));
+                    return;
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let paths = match request.kind {
+                        FileDialogKind::OpenFile => dialog.pick_file().map(|path| vec![path]),
+                        FileDialogKind::OpenFiles => dialog.pick_files(),
+                        FileDialogKind::SaveFile => dialog.save_file().map(|path| vec![path]),
+                        FileDialogKind::PickFolder => dialog.pick_folder().map(|path| vec![path]),
+                        FileDialogKind::PickFolders => dialog.pick_folders(),
+                    };
+                    // rfd does not expose an error channel; None is cancellation.
+                    // Do not invent a platform error from that ambiguous outcome.
+                    FileDialogResult::selected(request.id, paths.unwrap_or_default())
+                }))
+                .unwrap_or_else(|_| {
+                    FileDialogResult::failed(
+                        request.id,
+                        FileDialogError::Platform("file dialog backend panicked".into()),
+                    )
+                });
+                completion(result);
+            })
+            .map(|_| FileDialogHandle::new(move || cancel.cancel()))
+            .map_err(|error| FileDialogError::Platform(error.to_string()))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::open(window, request, completion)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (window, request, completion);
+        Err(FileDialogError::Unavailable)
     }
 }
 
 /// Reads back how the platform configured a dialog for `request`, without
 /// presenting it: title, starting directory, allowed extensions.
 ///
-/// A modal dialog cannot be driven from a test, so this verifies the half that
-/// is ours — that the request reached the platform intact. Returns `None`
-/// where the platform cannot be queried.
+/// This complements hosted interaction checks by inspecting configuration
+/// without displaying a native picker. Returns `None` where the platform
+/// cannot be queried.
 pub fn describe_configured_dialog(
     request: &FileDialogRequest,
 ) -> Option<(Option<String>, Option<String>, Vec<String>)> {
@@ -101,22 +146,22 @@ pub fn describe_configured_dialog(
     }
 }
 
+#[cfg(target_os = "linux")]
+#[path = "file_dialog_linux.rs"]
+mod linux;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn results_drain_in_order_and_leave_the_queue_empty() {
-        let _ = take_file_dialog_results();
-        push_result(FileDialogResult {
-            id: 1,
-            paths: vec!["/tmp/a".into()],
+    fn releasing_a_native_session_runs_its_cancellation_once() {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = count.clone();
+        let handle = FileDialogHandle::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
-        push_result(FileDialogResult::cancelled(2));
-        let drained = take_file_dialog_results();
-        assert_eq!(drained.len(), 2);
-        assert_eq!(drained[0].id, 1);
-        assert!(drained[1].is_cancelled());
-        assert!(take_file_dialog_results().is_empty());
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(handle);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

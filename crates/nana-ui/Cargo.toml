@@ -133,3 +133,7 @@ required-features = ["hosted", "bundled-fonts"]
 [[example]]
 name = "native-content-probe"
 required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "hosted-file-dialog-probe"
+required-features = ["hosted", "bundled-fonts"]

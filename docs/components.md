@@ -57,6 +57,11 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
+`SettingsRow::stack_below(480.0)` 可选开启按**该行实际布局宽度**的响应式排列：小于阈值时标签与控件上下排列，等于或大于时同行。默认未开启，`stacked(true)` 始终上下排列；无效阈值视为未开启。控件节点不重建，容器调整宽度由 Runtime 布局回流处理，应用不需要每帧扫描行。Vue 对应 `NanaSettingsRow` 的 `stackBelow` 属性。
+
+`mount_settings_leaf_row` 保留标签、提示和控件槽，初始没有提示也可以随后通过 `update_component(row, |row, _| row.hint = Some(...))` 显示提示，设置 `None` 隐藏。`assemble_appearance_section` 刷新已有行时保留应用设置的 `stack_below` 与 `stacked`。
+
+
 部分族需要 Cargo feature（`calendar`、`charts`、`graph-canvas`、`rich-text` 等），见 [应用 API](application-api.md)。这些 feature 会转发到 `nana-ui-runtime` 和 `nana-ui-scene`，控制对应实现、几何投影和公开导出。`components` 启用全部可选控件族；精简宿主按需选择。Vue 标签也受相同功能开关约束，缺失时会报告组件不可用。
 
 `DatePicker` 是月历网格：由现有控件组合而成（表头图标按钮 + 日期按钮），`assemble_date_picker` 建好并复用这 6×7 个按钮，翻月只换标签不重建。选中发 `DateChanged`，翻月发 `DateCursorMoved`；`range` 之外与非本月的日期不可选。**月份标题由应用给**（`month_label`）——月名是 locale 相关的，框架不带 locale 数据。日期类型是 `nana_ui_core::CivilDate`，只有年月日，不是日期时间库。
@@ -166,3 +171,5 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 实时画面不要做成「自己往窗口上画的控件」，走 [实时画面](gpu.md)。不支持动态加载 dylib 插件。
 
 没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。
+
+`Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。

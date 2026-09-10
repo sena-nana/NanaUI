@@ -4682,3 +4682,122 @@ fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires
         );
     }
 }
+
+#[test]
+fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(320.0, 620.0);
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for node in 1..=3 {
+        queue.create(id(node), document, NodeKind::Element { tag: "div".into() });
+    }
+    queue.insert(id(1), id(2), None);
+    queue.insert(id(1), id(3), None);
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(320.0)),
+                height: Some(LengthSpec::Px(620.0)),
+                direction: Some(FlexDirection::Column),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                height: Some(LengthSpec::Px(30.0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let branch = LayoutStyle {
+        width: Some(LengthSpec::Fill),
+        height: Some(LengthSpec::Px(300.0)),
+        flex_shrink: Some(0.0),
+        ..Default::default()
+    };
+    queue.set_style(
+        id(3),
+        NodeStyle {
+            layout: Arc::new(branch.clone()),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    let full = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &full);
+    let _ = world.take_system_work();
+    let mut hidden = branch.clone();
+    hidden.hidden = true;
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(3),
+        NodeStyle {
+            layout: Arc::new(hidden),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    let hidden_boxes = RuntimeLayoutEngine
+        .layout_document_scoped(
+            &world,
+            document,
+            viewport,
+            &work.layout,
+            &mut retained,
+            false,
+        )
+        .unwrap();
+    write_changed_boxes(&mut world, &hidden_boxes);
+    let _ = world.take_system_work();
+    // An omitted box has no meaningful origin; only its zero extent matters.
+    let hidden_box = world.layout_box(id(3)).unwrap();
+    assert_eq!((hidden_box.width, hidden_box.height), (0.0, 0.0));
+    let mut queue = MutationQueue::new();
+    queue.create(id(4), document, NodeKind::Element { tag: "div".into() });
+    queue.insert(id(3), id(4), None);
+    queue.set_style(
+        id(4),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                position: PositionSpec::Absolute,
+                offset_top: Some(LengthSpec::Px(104.0)),
+                width: Some(LengthSpec::Percent(100.0)),
+                height: Some(LengthSpec::Px(104.0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    queue.set_style(
+        id(3),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                height: Some(LengthSpec::Px(208.0)),
+                ..branch
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "reveal with changed content",
+    );
+    assert_eq!(world.layout_box(id(4)).unwrap().height, 104.0);
+    assert_eq!(world.layout_box(id(4)).unwrap().y, 134.0);
+    assert_eq!(world.layout_box(id(3)).unwrap().height, 208.0);
+}

@@ -276,132 +276,108 @@ unsafe extern "system" fn menu_subclass_proc(
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
-/// Opens the common file dialog owned by `window`.
-///
-/// `GetOpenFileNameW` / `GetSaveFileNameW` run modally, so this returns after
-/// the user is done; the result is pushed onto the same queue the async macOS
-/// sheet uses, so callers drain one place on both platforms.
-///
-/// Folder picking is not served by the common dialog and needs the shell item
-/// API; until that is wired it reports a cancel rather than opening the wrong
-/// dialog.
-pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
-    window: &W,
-    request: nana_ui_core::FileDialogRequest,
-) {
-    use nana_ui_core::{FileDialogKind, FileDialogResult};
-    use windows_sys::Win32::UI::Controls::Dialogs::{
-        GetOpenFileNameW, GetSaveFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST,
-        OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-    };
-
-    let cancel = || crate::file_dialog::push_result(FileDialogResult::cancelled(request.id));
-    if request.kind == FileDialogKind::PickFolder {
-        cancel();
-        return;
+/// The worker owns a CBT hook so cancellation before the picker is created
+/// also closes it when it activates. Later cancellation closes that thread's
+/// dialog directly; the host never blocks on the native modal loop.
+#[derive(Clone, Default)]
+pub(crate) struct DialogCancellation {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::sync::Arc<std::sync::Mutex<u32>>,
+}
+thread_local! {
+    static DIALOG_CANCEL: std::cell::RefCell<Option<DialogCancellation>> = const { std::cell::RefCell::new(None) };
+}
+pub(crate) struct DialogHook {
+    hook: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK,
+    cancellation: DialogCancellation,
+}
+impl DialogCancellation {
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
     }
-    let Some(owner) = hwnd(window) else {
-        cancel();
-        return;
-    };
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    // The filter is a run of NUL-separated pairs terminated by an extra NUL.
-    let mut filter = Vec::new();
-    for group in &request.filters {
-        filter.extend(wide(&group.name));
-        let patterns = group
-            .extensions
-            .iter()
-            .map(|extension| format!("*.{extension}"))
-            .collect::<Vec<_>>()
-            .join(";");
-        filter.extend(wide(&patterns));
-    }
-    filter.push(0);
-
-    let title = request.title.as_ref().map(|title| wide(title));
-    let directory = request
-        .directory
-        .as_ref()
-        .map(|directory| wide(&directory.to_string_lossy()));
-
-    // The dialog writes the chosen path (or a NUL-separated list) into place.
-    let mut buffer = vec![0_u16; 32 * 1024];
-    if let Some(name) = &request.file_name {
-        let name = wide(name);
-        let take = name.len().min(buffer.len());
-        buffer[..take].copy_from_slice(&name[..take]);
-    }
-
-    let mut flags = OFN_EXPLORER | OFN_PATHMUSTEXIST;
-    if request.kind.is_save() {
-        flags |= OFN_OVERWRITEPROMPT;
-    } else {
-        flags |= OFN_FILEMUSTEXIST;
-    }
-    if request.kind.is_multiple() {
-        flags |= OFN_ALLOWMULTISELECT;
-    }
-
-    let mut options: OPENFILENAMEW = unsafe { std::mem::zeroed() };
-    options.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    options.hwndOwner = owner;
-    options.lpstrFile = buffer.as_mut_ptr();
-    options.nMaxFile = buffer.len() as u32;
-    options.Flags = flags;
-    if !request.filters.is_empty() {
-        options.lpstrFilter = filter.as_ptr();
-        options.nFilterIndex = 1;
-    }
-    if let Some(title) = &title {
-        options.lpstrTitle = title.as_ptr();
-    }
-    if let Some(directory) = &directory {
-        options.lpstrInitialDir = directory.as_ptr();
-    }
-
-    let chosen = unsafe {
-        if request.kind.is_save() {
-            GetSaveFileNameW(&raw mut options)
-        } else {
-            GetOpenFileNameW(&raw mut options)
-        }
-    };
-    if chosen == 0 {
-        cancel();
-        return;
-    }
-
-    // Multi-select writes the directory, then each file name, all NUL
-    // separated; a single selection is one full path.
-    let mut segments = Vec::new();
-    let mut start = 0;
-    for (index, unit) in buffer.iter().enumerate() {
-        if *unit == 0 {
-            if index == start {
-                break;
+    pub(crate) fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Hold registration while enumerating: the worker cannot exit and
+        // let Windows reuse its thread ID for an unrelated picker.
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if *thread != 0 {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::EnumThreadWindows(
+                    *thread,
+                    Some(close_picker),
+                    0,
+                );
             }
-            segments.push(String::from_utf16_lossy(&buffer[start..index]));
-            start = index + 1;
         }
     }
-    let paths = match segments.len() {
-        0 => Vec::new(),
-        1 => vec![std::path::PathBuf::from(&segments[0])],
-        _ => {
-            let directory = std::path::PathBuf::from(&segments[0]);
-            segments[1..]
-                .iter()
-                .map(|name| directory.join(name))
-                .collect()
+    pub(crate) fn install(&self) -> Result<DialogHook, nana_ui_core::FileDialogError> {
+        use windows_sys::Win32::{
+            System::Threading::GetCurrentThreadId,
+            UI::WindowsAndMessaging::{SetWindowsHookExW, WH_CBT},
+        };
+        let thread = unsafe { GetCurrentThreadId() };
+        DIALOG_CANCEL.with(|slot| *slot.borrow_mut() = Some(self.clone()));
+        let hook =
+            unsafe { SetWindowsHookExW(WH_CBT, Some(dialog_hook), std::ptr::null_mut(), thread) };
+        if hook.is_null() {
+            DIALOG_CANCEL.with(|slot| slot.borrow_mut().take());
+            return Err(nana_ui_core::FileDialogError::Platform(
+                std::io::Error::last_os_error().to_string(),
+            ));
         }
-    };
-    crate::file_dialog::push_result(FileDialogResult {
-        id: request.id,
-        paths,
-    });
+        *self
+            .thread
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = thread;
+        Ok(DialogHook {
+            hook,
+            cancellation: self.clone(),
+        })
+    }
+}
+impl Drop for DialogHook {
+    fn drop(&mut self) {
+        *self
+            .cancellation
+            .thread
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = 0;
+        DIALOG_CANCEL.with(|slot| slot.borrow_mut().take());
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(self.hook);
+        }
+    }
+}
+unsafe extern "system" fn close_picker(
+    window: windows_sys::Win32::Foundation::HWND,
+    _: isize,
+) -> i32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CLOSE};
+    let mut class = [0u16; 32];
+    let length = unsafe { GetClassNameW(window, class.as_mut_ptr(), class.len() as i32) };
+    if length == 6 && class[..6] == [35, 51, 50, 55, 55, 48] {
+        unsafe {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+    1
+}
+unsafe extern "system" fn dialog_hook(code: i32, wparam: usize, lparam: isize) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HCBT_ACTIVATE};
+    if code == HCBT_ACTIVATE as i32
+        && DIALOG_CANCEL.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(DialogCancellation::cancelled)
+        })
+    {
+        unsafe {
+            close_picker(wparam as _, 0);
+        }
+    }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
