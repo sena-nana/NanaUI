@@ -6853,7 +6853,8 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
             icon.standard_visual_foreground = Some([1.0; 4]);
             nodes.push(icon);
         }
-        let mut root = colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.2, 1.0]);
+        let mut root =
+            colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.2, 1.0]);
         root.children = Arc::new(children);
         let mut scene = UiScene::new();
         nodes.insert(0, root);
@@ -6886,7 +6887,10 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
     let (one, _) = paint(&icon_row(1, &same));
     assert!(one.draw_calls > 0, "the single-icon scene must draw");
     for (label, vary) in [
-        ("one glyph", &same as &dyn Fn(usize) -> (nana_ui_core::Icon, f32)),
+        (
+            "one glyph",
+            &same as &dyn Fn(usize) -> (nana_ui_core::Icon, f32),
+        ),
         ("distinct glyphs", &|index: usize| {
             (
                 [
@@ -6928,14 +6932,21 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
                     }
                 }
             }
-            assert!(inked, "icon {index} ({label}) must paint inside its own slot");
+            assert!(
+                inked,
+                "icon {index} ({label}) must paint inside its own slot"
+            );
         }
     }
     // Sanity: the glyph list the toolbar case draws from really is distinct.
     let mut pointers: Vec<_> = glyphs.iter().map(|glyph| glyph.as_ptr()).collect();
     pointers.sort();
     pointers.dedup();
-    assert_eq!(pointers.len(), glyphs.len(), "the toolbar glyphs must differ");
+    assert_eq!(
+        pointers.len(),
+        glyphs.len(),
+        "the toolbar glyphs must differ"
+    );
 }
 
 /// `(background quad, label)` rows: the shape overlap-aware batching exists

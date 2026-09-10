@@ -867,7 +867,10 @@ mod tests {
                 break;
             }
             before = pipeline.entries.len();
-            assert!(idle < 400, "a {ATLAS_START_PX}² sheet of 66px cells must fill first");
+            assert!(
+                idle < 400,
+                "a {ATLAS_START_PX}² sheet of 66px cells must fill first"
+            );
         }
         assert_eq!(
             pipeline.atlas.edge, ATLAS_START_PX,

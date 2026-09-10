@@ -153,14 +153,14 @@ impl UiScene {
         let mut prepare_passes: BTreeMap<&Arc<str>, (Vec<ResourceAccess>, Vec<RenderOperation>)> =
             BTreeMap::new();
         for (label, (resource, representative)) in ordered_resources {
-            let entry = prepare_passes
-                .entry(&custom_renderers[label])
-                .or_default();
+            let entry = prepare_passes.entry(&custom_renderers[label]).or_default();
             entry.0.push(ResourceAccess {
                 resource: *resource,
                 mode: AccessMode::Write,
             });
-            entry.1.push(RenderOperation::PrepareExternal(*representative));
+            entry
+                .1
+                .push(RenderOperation::PrepareExternal(*representative));
         }
         for (renderer, (resources, operations)) in prepare_passes {
             graph.add_pass(RenderPass {
@@ -199,23 +199,24 @@ impl UiScene {
         // never move across ordinary UI. FramePlan flattens passes into one
         // ordered operation list, so its contents are unchanged either way.
         let mut custom_run: Option<(Arc<str>, Vec<ResourceAccess>, Vec<RenderOperation>)> = None;
-        let flush_custom = |graph: &mut RenderGraph,
-                            pass_id: &mut u64,
-                            run: &mut Option<(Arc<str>, Vec<ResourceAccess>, Vec<RenderOperation>)>|
-         -> Result<(), GraphError> {
-            let Some((renderer, resources, operations)) = run.take() else {
-                return Ok(());
+        let flush_custom =
+            |graph: &mut RenderGraph,
+             pass_id: &mut u64,
+             run: &mut Option<(Arc<str>, Vec<ResourceAccess>, Vec<RenderOperation>)>|
+             -> Result<(), GraphError> {
+                let Some((renderer, resources, operations)) = run.take() else {
+                    return Ok(());
+                };
+                graph.add_pass(RenderPass {
+                    id: PassId(*pass_id),
+                    label: format!("custom:{renderer}"),
+                    dependencies: Vec::new(),
+                    resources,
+                    operations,
+                })?;
+                *pass_id += 1;
+                Ok(())
             };
-            graph.add_pass(RenderPass {
-                id: PassId(*pass_id),
-                label: format!("custom:{renderer}"),
-                dependencies: Vec::new(),
-                resources,
-                operations,
-            })?;
-            *pass_id += 1;
-            Ok(())
-        };
         for primitive in self.primitives() {
             match &primitive.kind {
                 ScenePrimitiveKind::Custom { node: custom, .. } => {
@@ -226,9 +227,7 @@ impl UiScene {
                         mode: AccessMode::Read,
                     };
                     match custom_run.as_mut() {
-                        Some((renderer, resources, operations))
-                            if *renderer == custom.renderer =>
-                        {
+                        Some((renderer, resources, operations)) if *renderer == custom.renderer => {
                             if !resources.contains(&read) {
                                 resources.push(read);
                             }
