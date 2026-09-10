@@ -1782,7 +1782,7 @@ fn quad_surface_from_style(
     }
 }
 
-#[cfg(any(feature = "charts", feature = "graph-canvas"))]
+#[cfg(any(feature = "charts", feature = "graph-canvas", feature = "rich-text"))]
 fn visual_stroke(
     context: &VisualPrimitiveContext<'_>,
     slot: u64,
