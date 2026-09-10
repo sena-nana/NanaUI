@@ -6664,6 +6664,377 @@ fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
 }
 
 #[test]
+fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
+    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewPalette};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
+
+    // A quad sibling makes this the real shape: a shader node inside ordinary
+    // UI. batch_rebuilds is recorded from the quad/mesh upload, so a lone
+    // custom node would leave the counter silent whether or not the display
+    // list was rebuilt.
+    let scene_with = |view: &GpuView| {
+        let mut node = host_texture_child(2, 1, 0.0, 0.0, 32.0, 32.0, "0");
+        node.custom_render = Some(view.custom_render());
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
+        root.children = Arc::new(vec![StableNodeId::new(2).unwrap()]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([root, node], []);
+        scene
+    };
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let paint = |painter: &mut SceneWgpuPainter, scene: &UiScene| {
+        let (texture, target) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .unwrap();
+        let work = painter.last_gpu_work().expect("encoded gpu-view frame");
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+        (work, pixels)
+    };
+
+    let view = GpuView::new(0).palette(GpuViewPalette {
+        background: [0.0, 0.0, 0.0, 1.0],
+        accent: [1.0, 1.0, 1.0, 1.0],
+    });
+    let scene = scene_with(&view);
+    let (cold, _) = paint(&mut painter, &scene);
+    let (warm, first_pixels) = paint(&mut painter, &scene);
+    assert!(cold.batch_rebuilds > 0, "the first frame must build a batch");
+    assert_eq!(
+        warm.batch_rebuilds, 0,
+        "an unchanged gpu-view node must not rebuild the whole display list"
+    );
+
+    // The version must move with `params`, or a palette change would silently
+    // reuse the previous frame's uniforms.
+    let recolored = view.palette(GpuViewPalette {
+        background: [1.0, 0.0, 0.0, 1.0],
+        accent: [1.0, 0.0, 0.0, 1.0],
+    });
+    let recolored_scene = scene_with(&recolored);
+    let (_, recolored_pixels) = paint(&mut painter, &recolored_scene);
+    assert_ne!(
+        first_pixels, recolored_pixels,
+        "changing gpu-view params must repaint, not reuse the prepared uniforms"
+    );
+}
+
+#[test]
+fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
+    use crate::{DefaultGpuViewRenderer, GpuView};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let renderer = Arc::new(DefaultGpuViewRenderer::new());
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("gpu-view", renderer.clone());
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (_texture, target) = test_copy_target(&device, format, 64, 64);
+
+    // A scrolling list retires one PrimitiveId per frame. Slots are keyed by
+    // that id, so without eviction every id that ever painted keeps a buffer
+    // and a bind group alive.
+    const FRAMES: u64 = 24;
+    for index in 0..FRAMES {
+        let id = index + 2;
+        let mut node = host_texture_child(id, 1, 0.0, 0.0, 32.0, 32.0, "0");
+        node.custom_render = Some(GpuView::new(0).custom_render());
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
+        root.children = Arc::new(vec![StableNodeId::new(id).unwrap()]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([root, node], []);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(&scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    }
+    // The renderer keeps a few passes of grace so scrolling a node just out of
+    // view and back does not rebuild it; what must not happen is growth with
+    // the number of ids that ever painted.
+    let live = renderer.prepared_slot_count();
+    assert!(
+        live <= 8,
+        "retired gpu-view nodes must not keep their uniform buffers alive: {live} slots after \
+         {FRAMES} distinct nodes"
+    );
+}
+
+#[test]
+fn adjacent_same_atlas_icons_batch_into_one_draw() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let icon_row = |count: u64| {
+        let mut nodes = Vec::new();
+        let mut children = Vec::new();
+        for index in 0..count {
+            let id = index + 2;
+            children.push(StableNodeId::new(id).unwrap());
+            // No background: an icon node that also paints a quad would put a
+            // Quad command between every pair of icons, which is the dense-list
+            // shape, not the run this merge is about.
+            let mut icon = extracted_div(
+                id,
+                &[],
+                index as f32 * 4.0,
+                0.0,
+                4.0,
+                4.0,
+                nana_ui_core::LayoutStyle::default(),
+                None,
+            );
+            icon.parent = Some(StableNodeId::new(1).unwrap());
+            icon.standard_visual = Some(StandardVisual::Icon {
+                icon: nana_ui_core::Icon::Close,
+                size: 4.0,
+                tooltip: None,
+            });
+            icon.standard_visual_foreground = Some([1.0; 4]);
+            nodes.push(icon);
+        }
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
+        root.children = Arc::new(children);
+        let mut scene = UiScene::new();
+        nodes.insert(0, root);
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let work_for = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let target = test_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &target, viewport, None, None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_gpu_work().expect("encoded icon frame")
+    };
+    let one = work_for(&icon_row(1));
+    let many = work_for(&icon_row(12));
+    assert!(one.draw_calls > 0, "the single-icon scene must draw");
+    assert_eq!(
+        many.draw_calls, one.draw_calls,
+        "12 adjacent icons sharing one atlas and scissor must collapse into the same \
+         single draw as one icon: {} vs {}",
+        many.draw_calls, one.draw_calls
+    );
+}
+
+#[test]
+fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
+    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewPalette};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let palettes = [
+        GpuViewPalette {
+            background: [0.9, 0.1, 0.1, 1.0],
+            accent: [0.9, 0.4, 0.4, 1.0],
+        },
+        GpuViewPalette {
+            background: [0.1, 0.9, 0.1, 1.0],
+            accent: [0.4, 0.9, 0.4, 1.0],
+        },
+        GpuViewPalette {
+            background: [0.1, 0.1, 0.9, 1.0],
+            accent: [0.4, 0.4, 0.9, 1.0],
+        },
+    ];
+    // Same geometry either way; only how many of the three are in the scene.
+    let scene_of = |which: &[usize]| {
+        let mut nodes = Vec::new();
+        let mut children = Vec::new();
+        for index in which {
+            let id = *index as u64 + 2;
+            children.push(StableNodeId::new(id).unwrap());
+            let mut node = host_texture_child(
+                id,
+                1,
+                *index as f32 * 20.0 + 2.0,
+                2.0,
+                16.0,
+                16.0,
+                "0",
+            );
+            node.custom_render = Some(
+                GpuView::new(0)
+                    .palette(palettes[*index])
+                    .seed(*index as f32 * 0.25)
+                    .custom_render(),
+            );
+            nodes.push(node);
+        }
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 0.0, 1.0]);
+        root.children = Arc::new(children);
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let render = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let (texture, target) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .unwrap();
+        let work = painter.last_gpu_work().expect("encoded gpu-view frame");
+        (readback_rgba(&device, &queue, encoder, &texture, 64, 64), work)
+    };
+
+    let (together, batched_work) = render(&scene_of(&[0, 1, 2]));
+    let (_, lone_work) = render(&scene_of(&[0]));
+    assert_eq!(
+        batched_work.draw_calls, lone_work.draw_calls,
+        "three adjacent gpu-view nodes must cost the same draws as one"
+    );
+    for index in 0..3 {
+        let (alone, _) = render(&scene_of(&[index]));
+        let x = index as u32 * 20 + 10;
+        assert_eq!(
+            pixel(&together, 64, x, 10),
+            pixel(&alone, 64, x, 10),
+            "node {index} must paint the same batched as it does alone"
+        );
+    }
+    assert_ne!(
+        pixel(&together, 64, 10, 10),
+        pixel(&together, 64, 30, 10),
+        "each instance must carry its own palette"
+    );
+}
+
+#[test]
+fn ordinary_ui_and_dedicated_passes_split_a_gpu_view_run() {
+    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewMode};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    // `interrupt` names the middle child: a plain gpu-view, one that paints a
+    // quad of its own, or one that asked for a dedicated pass.
+    let scene_of = |interrupt: &str| {
+        let mut nodes = Vec::new();
+        let mut children = Vec::new();
+        for index in 0..3u64 {
+            let id = index + 2;
+            children.push(StableNodeId::new(id).unwrap());
+            let middle = index == 1;
+            let mut node = if middle && interrupt == "quad" {
+                colored_quad_child(
+                    id,
+                    1,
+                    index as f32 * 20.0 + 2.0,
+                    2.0,
+                    16.0,
+                    16.0,
+                    [1.0, 1.0, 0.0, 1.0],
+                )
+            } else {
+                let mut view = GpuView::new(0);
+                if middle && interrupt == "dedicated" {
+                    view = view.mode(GpuViewMode::Standalone);
+                }
+                let mut node = host_texture_child(
+                    id,
+                    1,
+                    index as f32 * 20.0 + 2.0,
+                    2.0,
+                    16.0,
+                    16.0,
+                    "0",
+                );
+                node.custom_render = Some(view.custom_render());
+                node
+            };
+            node.parent = Some(StableNodeId::new(1).unwrap());
+            nodes.push(node);
+        }
+        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 0.0, 1.0]);
+        root.children = Arc::new(children);
+        nodes.insert(0, root);
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        scene
+    };
+    let draws = |scene: &UiScene| {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let target = test_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(scene, &mut encoder, &target, viewport, None, Some(&registry))
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_gpu_work().expect("encoded frame").draw_calls
+    };
+
+    let contiguous = draws(&scene_of("none"));
+    let split_by_quad = draws(&scene_of("quad"));
+    let split_by_dedicated = draws(&scene_of("dedicated"));
+    assert!(
+        split_by_quad > contiguous,
+        "a quad between two gpu-view nodes must end the run: {split_by_quad} vs {contiguous}"
+    );
+    assert!(
+        split_by_dedicated > contiguous,
+        "a dedicated-pass node must end the run: {split_by_dedicated} vs {contiguous}"
+    );
+}
+
+#[test]
 fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
     use crate::{SceneResourceEncodeContext, SceneResourceProducer, SceneResourceProducerRegistry};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

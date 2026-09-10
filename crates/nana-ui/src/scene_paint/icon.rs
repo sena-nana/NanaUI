@@ -118,7 +118,7 @@ struct FrameSlot {
 
 #[derive(Clone, Copy)]
 pub(super) struct PreparedIcon {
-    index: usize,
+    pub(super) index: usize,
 }
 
 pub(super) struct IconPipeline {
@@ -397,20 +397,42 @@ impl IconPipeline {
         }
     }
 
+    /// Whether `next` can extend a run that starts at `first` and holds `count`
+    /// slots: same atlas texture, and vertices already adjacent in the shared
+    /// buffer. `AtlasKey` stays private to this module.
+    pub(super) fn can_extend_run(&self, first: usize, count: usize, next: usize) -> bool {
+        let (Some(head), Some(last), Some(candidate)) = (
+            self.frame_slots.get(first),
+            self.frame_slots.get(first + count - 1),
+            self.frame_slots.get(next),
+        ) else {
+            return false;
+        };
+        head.key == candidate.key
+            && last.first_vertex + last.vertex_count == candidate.first_vertex
+    }
+
+    /// Draw one run of adjacent slots sharing an atlas as a single call. A
+    /// batch of N identical icons is N contiguous slots, so it costs one draw.
     pub(super) fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
-        prepared: &PreparedIcon,
+        first: usize,
+        count: usize,
         scissor: PhysicalRect,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let Some(slot) = self.frame_slots.get(prepared.index) else {
+        let (Some(head), Some(last)) = (
+            self.frame_slots.get(first),
+            self.frame_slots.get(first + count.max(1) - 1),
+        ) else {
             return;
         };
-        let Some(atlas) = self.atlas.get(&slot.key) else {
+        let Some(atlas) = self.atlas.get(&head.key) else {
             return;
         };
-        if slot.vertex_count == 0 {
+        let end = last.first_vertex + last.vertex_count;
+        if end <= head.first_vertex {
             return;
         }
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
@@ -418,10 +440,7 @@ impl IconPipeline {
         pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         pass.set_bind_group(1, &atlas.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.draw(
-            slot.first_vertex..slot.first_vertex + slot.vertex_count,
-            0..1,
-        );
+        pass.draw(head.first_vertex..end, 0..1);
         if let Some(work) = gpu_work {
             work.record_draw_batch();
             work.record_draw_call();

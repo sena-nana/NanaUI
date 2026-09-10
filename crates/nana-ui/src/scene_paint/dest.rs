@@ -136,6 +136,37 @@ fn blend_screen() -> wgpu::BlendState {
     }
 }
 
+fn group_layer_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    uniforms: &wgpu::Buffer,
+    view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.group.bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniforms,
+                    offset: 0,
+                    size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
+                }),
+            },
+        ],
+    })
+}
+
 fn make_group_pipeline(
     device: &wgpu::Device,
     pipeline_cache: Option<&wgpu::PipelineCache>,
@@ -504,11 +535,24 @@ impl DestTarget {
             mapped_at_creation: false,
         });
         self.group_uniform_slots = slots;
-        let layers = std::mem::take(&mut self.group_layers);
-        let count = layers.len();
-        drop(layers);
-        for _ in 0..count {
-            self.push_group_layer(device);
+        // Only the bind groups reference `group_uniforms`. Recreating the layer
+        // textures here would throw away full dest-sized attachments that the
+        // resize does not touch.
+        let rebound = self
+            .group_layers
+            .iter()
+            .map(|layer| {
+                group_layer_bind_group(
+                    device,
+                    &self.group_bind_layout,
+                    &self.group_sampler,
+                    &self.group_uniforms,
+                    &layer.view,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (layer, bind_group) in self.group_layers.iter_mut().zip(rebound) {
+            layer.bind_group = bind_group;
         }
     }
 
@@ -528,28 +572,13 @@ impl DestTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.group.bind"),
-            layout: &self.group_bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.group_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.group_uniforms,
-                        offset: 0,
-                        size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
-                    }),
-                },
-            ],
-        });
+        let bind_group = group_layer_bind_group(
+            device,
+            &self.group_bind_layout,
+            &self.group_sampler,
+            &self.group_uniforms,
+            &view,
+        );
         self.group_layers.push(GroupLayer {
             _texture: texture,
             view,

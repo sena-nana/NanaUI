@@ -3,8 +3,10 @@
 //! Uses the caller's Device/Queue and the current frame encoder/target. It does
 //! not request a GPU context or perform CPU readback.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
@@ -12,9 +14,10 @@ use nana_ui_runtime::{CustomRenderNode, GPU_VIEW_RENDERER, GpuViewPalette, gpu_v
 use nana_ui_scene::PrimitiveId;
 
 use crate::gpu_view::GPU_VIEW_SHADER;
+use crate::gpu_work::GpuWorkSink;
 use crate::scene_gpu::{
-    SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
-    SceneGpuRenderer, SceneGpuRendererRegistry,
+    SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
+    SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
 };
 
 /// Scene painter for [`GPU_VIEW_RENDERER`] (`"gpu-view"`).
@@ -28,6 +31,10 @@ use crate::scene_gpu::{
 /// Per-node palette and seed arrive in [`nana_ui_runtime::CustomRenderNode`]
 /// `params` under [`gpu_view_params`]. The constructor palette is the fallback
 /// for nodes that carry no params.
+/// Prepare passes a culled slot survives before its buffer and bind group are
+/// dropped. Scrolling a node just out of view and back must not rebuild it.
+const SLOT_RETAIN_PASSES: u64 = 4;
+
 pub struct DefaultGpuViewRenderer {
     palette: GpuViewPalette,
     device: Option<Arc<wgpu::Device>>,
@@ -72,6 +79,16 @@ impl DefaultGpuViewRenderer {
             queue: Some(queue),
             state: Mutex::new(None),
         }
+    }
+
+    /// Live per-node slots. Test probe for the eviction contract.
+    #[cfg(test)]
+    pub(crate) fn prepared_slot_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("default gpu-view pipeline")
+            .as_ref()
+            .map_or(0, |prepared| prepared.slots.len())
     }
 
     fn prepare_device<'a>(&'a self, context: &'a SceneGpuPrepareContext<'_>) -> &'a wgpu::Device {
@@ -126,6 +143,30 @@ impl fmt::Debug for DefaultGpuViewRenderer {
 }
 
 impl SceneGpuRenderer for DefaultGpuViewRenderer {
+    /// Everything [`Self::prepare`] reads off the node: `revision` (the seed
+    /// fallback) and `params` (palette and seed). Geometry is deliberately
+    /// absent — a bounds or scale change moves `UiScene::instance_id` or the
+    /// paint viewport, which already fails the painter's prepared-batch key.
+    ///
+    /// Without this the painter treats the whole frame as uncacheable and
+    /// rebuilds every quad, glyph and icon of the entire tree each frame.
+    fn preparation_version(&self, node: &CustomRenderNode) -> Option<u64> {
+        let mut hasher = DefaultHasher::new();
+        node.revision.hash(&mut hasher);
+        match node.params.as_deref() {
+            // Bit patterns, not values: `with_params` already replaced every
+            // non-finite entry, so there is no NaN to compare unequal to itself.
+            Some(params) => {
+                params.len().hash(&mut hasher);
+                for value in params {
+                    value.to_bits().hash(&mut hasher);
+                }
+            }
+            None => u64::MAX.hash(&mut hasher),
+        }
+        Some(hasher.finish())
+    }
+
     fn prepare(&self, node: &SceneGpuNode, context: SceneGpuPrepareContext<'_>) {
         let device = self.prepare_device(&context);
         let queue = self.prepare_queue(&context);
@@ -135,55 +176,29 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         if prepared.format != context.target_format {
             *prepared = PreparedGpuView::new(device, context.target_format);
         }
+        prepared.begin_prepare_pass();
         let scale = if context.scale_factor.is_finite() && context.scale_factor > 0.0 {
             context.scale_factor
         } else {
             1.0
         };
-        let viewport = [
+        let rect = [
             context.bounds.x * scale,
             context.bounds.y * scale,
             context.bounds.width * scale,
             context.bounds.height * scale,
         ];
         let palette = self.node_palette(&node.custom);
-        let uniform = ViewUniform {
+        let instance = GpuViewInstance {
+            rect,
             color_a: palette.background,
             color_b: palette.accent,
             parameters: [self.node_seed(&node.custom), 0.0, 0.0, 0.0],
         };
-        if !prepared.slots.contains_key(&node.id) {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui default gpu-view uniform"),
-                size: std::mem::size_of::<ViewUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nana-ui default gpu-view bind group"),
-                layout: &prepared.bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
-            });
-            prepared.slots.insert(
-                node.id,
-                PreparedSlot {
-                    buffer,
-                    bind_group,
-                    viewport,
-                },
-            );
-        }
-        let entry = prepared
-            .slots
-            .get_mut(&node.id)
-            .expect("default gpu-view slot prepared");
-        entry.viewport = viewport;
-        queue.write_buffer(&entry.buffer, 0, bytemuck::bytes_of(&uniform));
+        prepared.dest_size = context.dest_size;
+        prepared.write_slot(device, queue, node.id, instance);
         if let Some(work) = context.gpu_work {
-            work.record_upload(std::mem::size_of::<ViewUniform>());
+            work.record_upload(std::mem::size_of::<GpuViewInstance>());
         }
     }
 
@@ -217,18 +232,17 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
                 queue: context.queue,
                 bounds: context.bounds,
                 clip: context.clip,
-                dest_size: [
-                    context.bounds.x.saturating_add(context.bounds.width).max(1),
-                    context
-                        .bounds
-                        .y
-                        .saturating_add(context.bounds.height)
-                        .max(1),
-                ],
+                dest_size: context.dest_size,
                 gpu_work: context.gpu_work,
             },
         );
         drop(render_pass);
+    }
+
+    fn batch_capacity(&self) -> usize {
+        // No bound of its own: the painter already caps a run at the next
+        // non-matching display-list command.
+        usize::MAX
     }
 
     fn draw_in_pass(
@@ -237,46 +251,60 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         pass: &mut wgpu::RenderPass<'_>,
         context: SceneGpuPassContext<'_>,
     ) -> bool {
-        let state = self.state.lock().expect("default gpu-view pipeline");
-        let Some(prepared) = state.as_ref() else {
-            return false;
-        };
-        let Some(slot) = prepared.slots.get(&node.id) else {
-            return false;
-        };
         if context.bounds.width == 0 || context.bounds.height == 0 {
             return false;
         }
-        pass.set_viewport(
-            slot.viewport[0],
-            slot.viewport[1],
-            slot.viewport[2].max(1.0),
-            slot.viewport[3].max(1.0),
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(
-            context.clip.x,
-            context.clip.y,
-            context.clip.width,
-            context.clip.height,
-        );
-        pass.set_pipeline(&prepared.pipeline);
-        pass.set_bind_group(0, &slot.bind_group, &[]);
-        pass.draw(0..3, 0..1);
-        pass.set_viewport(
-            0.0,
-            0.0,
-            context.dest_size[0].max(1) as f32,
-            context.dest_size[1].max(1) as f32,
-            0.0,
-            1.0,
-        );
-        if let Some(work) = context.gpu_work {
-            work.record_draw_batch();
-            work.record_draw_call();
-        }
+        let mut state = self.state.lock().expect("default gpu-view pipeline");
+        let Some(prepared) = state.as_mut() else {
+            return false;
+        };
+        prepared.drawn = true;
+        let Some(first) = prepared.slots.get(&node.id).map(|slot| slot.index) else {
+            return false;
+        };
+        prepared.restage_all(context.queue);
+        prepared.draw(pass, context.clip, first, 1, context.gpu_work);
         true
+    }
+
+    /// Encodes the longest leading stretch of the run whose instances are
+    /// already adjacent in the shared buffer, as one instanced draw. Indices are
+    /// handed out lowest-free-first in preparation order, so a stable tree keeps
+    /// a whole run adjacent; churn costs extra draws, never wrong pixels.
+    fn draw_batch_in_pass(
+        &self,
+        nodes: &[SceneGpuBatchNode<'_>],
+        pass: &mut wgpu::RenderPass<'_>,
+        context: SceneGpuBatchPassContext<'_>,
+    ) -> usize {
+        let mut state = self.state.lock().expect("default gpu-view pipeline");
+        let Some(prepared) = state.as_mut() else {
+            return 0;
+        };
+        prepared.drawn = true;
+        let Some(first_node) = nodes.first() else {
+            return 0;
+        };
+        let Some(first) = prepared.slots.get(&first_node.node.id).map(|slot| slot.index) else {
+            return 0;
+        };
+        let clip = first_node.clip;
+        let mut count = 1u32;
+        for item in &nodes[1..] {
+            let Some(slot) = prepared.slots.get(&item.node.id) else {
+                break;
+            };
+            if item.clip != clip || slot.index != first + count {
+                break;
+            }
+            count += 1;
+        }
+        if count < 2 {
+            return 0;
+        }
+        prepared.restage_all(context.queue);
+        prepared.draw(pass, clip, first, count, context.gpu_work);
+        count as usize
     }
 }
 
@@ -311,35 +339,37 @@ pub fn resolve_scene_gpu_renderers(
     }
 }
 
+/// Instances a run of `gpu-view` nodes draws from. One vertex buffer, one bind
+/// group, one pipeline: N nodes cost one draw when their slots are adjacent.
+const INITIAL_INSTANCES: u32 = 32;
+
 struct PreparedGpuView {
     pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
+    /// Dest size the staged instances carry. Stamped during preparation, which
+    /// a resize always re-runs because it invalidates the prepared batch.
+    dest_size: [u32; 2],
+    instances: wgpu::Buffer,
+    instance_capacity: u32,
+    /// The instance buffer was replaced; every live slot needs rewriting.
+    restaged: bool,
     format: wgpu::TextureFormat,
     slots: HashMap<PrimitiveId, PreparedSlot>,
+    /// Lowest-free-first, so preparation order keeps a run adjacent.
+    free_indices: BinaryHeap<Reverse<u32>>,
+    next_index: u32,
+    generation: u64,
+    drawn: bool,
 }
 
 impl PreparedGpuView {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui default gpu-view shader"),
-            source: wgpu::ShaderSource::Wgsl(GPU_VIEW_SHADER.into()),
-        });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui default gpu-view bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(GPU_VIEW_SHADER)),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui default gpu-view pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -348,7 +378,16 @@ impl PreparedGpuView {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vertex_main"),
-                buffers: &[],
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuViewInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x4,
+                        1 => Float32x4,
+                        2 => Float32x4,
+                        3 => Float32x4,
+                    ],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -369,26 +408,158 @@ impl PreparedGpuView {
         });
         Self {
             pipeline,
-            bind_group_layout,
+            dest_size: [0, 0],
+            instances: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui default gpu-view instances"),
+                size: (INITIAL_INSTANCES as usize * std::mem::size_of::<GpuViewInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_capacity: INITIAL_INSTANCES,
+            restaged: false,
             format,
             slots: HashMap::new(),
+            free_indices: BinaryHeap::new(),
+            next_index: 0,
+            generation: 0,
+            drawn: false,
+        }
+    }
+
+    /// Start of a new prepare pass. Slots are keyed by `PrimitiveId`, so a list
+    /// that scrolls shader nodes in and out would otherwise retain an instance
+    /// index per id that ever existed.
+    ///
+    /// The painter reuses a prepared batch when nothing changed, so `prepare`
+    /// does not run every frame; eviction rides the passes that do run.
+    fn begin_prepare_pass(&mut self) {
+        if !self.drawn {
+            return;
+        }
+        self.drawn = false;
+        self.generation = self.generation.saturating_add(1);
+        let oldest = self.generation.saturating_sub(SLOT_RETAIN_PASSES);
+        let mut freed = Vec::new();
+        self.slots.retain(|_, slot| {
+            let live = slot.last_seen >= oldest;
+            if !live {
+                freed.push(slot.index);
+            }
+            live
+        });
+        for index in freed {
+            self.free_indices.push(Reverse(index));
+        }
+    }
+
+    fn write_slot(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: PrimitiveId,
+        instance: GpuViewInstance,
+    ) {
+        let generation = self.generation;
+        let index = match self.slots.get(&id) {
+            Some(slot) => slot.index,
+            None => {
+                let index = match self.free_indices.pop() {
+                    Some(Reverse(index)) => index,
+                    None => {
+                        let index = self.next_index;
+                        self.next_index = self.next_index.saturating_add(1);
+                        index
+                    }
+                };
+                self.grow_instances(device, index + 1);
+                index
+            }
+        };
+        let mut instance = instance;
+        instance.parameters[2] = self.dest_size[0] as f32;
+        instance.parameters[3] = self.dest_size[1] as f32;
+        self.slots.insert(
+            id,
+            PreparedSlot {
+                index,
+                instance,
+                last_seen: generation,
+            },
+        );
+        queue.write_buffer(
+            &self.instances,
+            index as u64 * std::mem::size_of::<GpuViewInstance>() as u64,
+            bytemuck::bytes_of(&instance),
+        );
+    }
+
+    fn grow_instances(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_capacity {
+            return;
+        }
+        self.instance_capacity = needed.next_power_of_two();
+        self.instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui default gpu-view instances"),
+            size: (self.instance_capacity as usize * std::mem::size_of::<GpuViewInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.restaged = true;
+    }
+
+    /// Rewrite every live instance after the buffer was replaced. Slots not
+    /// re-prepared this pass would otherwise point at uninitialized memory.
+    fn restage_all(&mut self, queue: &wgpu::Queue) {
+        if !self.restaged {
+            return;
+        }
+        self.restaged = false;
+        for slot in self.slots.values() {
+            queue.write_buffer(
+                &self.instances,
+                slot.index as u64 * std::mem::size_of::<GpuViewInstance>() as u64,
+                bytemuck::bytes_of(&slot.instance),
+            );
+        }
+    }
+
+    fn draw(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        clip: crate::PhysicalRect,
+        first: u32,
+        count: u32,
+        gpu_work: Option<&GpuWorkSink>,
+    ) {
+        if count == 0 || clip.width == 0 || clip.height == 0 {
+            return;
+        }
+        pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.draw(0..6, first..first + count);
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
         }
     }
 }
 
 struct PreparedSlot {
-    buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    viewport: [f32; 4],
+    index: u32,
+    instance: GpuViewInstance,
+    last_seen: u64,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct ViewUniform {
+#[derive(Clone, Copy, Default, Pod, Zeroable)]
+struct GpuViewInstance {
+    rect: [f32; 4],
     color_a: [f32; 4],
     color_b: [f32; 4],
     parameters: [f32; 4],
 }
+
 
 #[cfg(test)]
 mod tests {

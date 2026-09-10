@@ -28,8 +28,8 @@ use crate::{
     HostTextureRegistry, PhysicalRect,
     gpu_work::{GpuStageTimings, GpuWorkSink},
     scene_gpu::{
-        SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext,
-        SceneGpuRenderer, SceneGpuRendererRegistry,
+        SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
+        SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
     },
 };
 
@@ -151,7 +151,8 @@ enum DrawCommand {
         scissor: PhysicalRect,
     },
     Icon {
-        prepared: PreparedIcon,
+        first: usize,
+        count: usize,
         scissor: PhysicalRect,
     },
     HostTexture(PreparedHostTexture),
@@ -781,7 +782,7 @@ impl SceneWgpuPainter {
                                 primitive.opacity,
                                 frag_clip,
                             ) {
-                                commands.push(DrawCommand::Icon { prepared, scissor });
+                                push_icon(&mut commands, &self.icons, prepared, scissor);
                             }
                         }
                         ScenePrimitiveKind::IconBatch {
@@ -803,7 +804,7 @@ impl SceneWgpuPainter {
                                     primitive.opacity,
                                     frag_clip,
                                 ) {
-                                    commands.push(DrawCommand::Icon { prepared, scissor });
+                                    push_icon(&mut commands, &self.icons, prepared, scissor);
                                 }
                             }
                         }
@@ -941,6 +942,7 @@ impl SceneWgpuPainter {
                                         target_format: self.format,
                                         bounds: custom_bounds.to_core(),
                                         scale_factor: scale,
+                                        dest_size: dest_physical,
                                         gpu_work: Some(&gpu_work),
                                     },
                                 );
@@ -1113,9 +1115,13 @@ impl SceneWgpuPainter {
                             self.text
                                 .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
                         }
-                        DrawCommand::Icon { prepared, scissor } => {
+                        DrawCommand::Icon {
+                            first,
+                            count,
+                            scissor,
+                        } => {
                             self.icons
-                                .draw(&mut pass, prepared, *scissor, Some(&gpu_work));
+                                .draw(&mut pass, *first, *count, *scissor, Some(&gpu_work));
                         }
                         _ => {}
                     }
@@ -1381,6 +1387,33 @@ fn pop_opacity_group(
     commands.push(DrawCommand::PopGroup);
 }
 
+/// Extend the previous icon run when the new slot shares its atlas, scissor and
+/// vertex adjacency. Mirrors [`push_quad`] / [`push_mesh_draw`]: merging is
+/// confined to commands that are already neighbours in document order.
+fn push_icon(
+    commands: &mut Vec<DrawCommand>,
+    icons: &IconPipeline,
+    prepared: PreparedIcon,
+    scissor: PhysicalRect,
+) {
+    if let Some(DrawCommand::Icon {
+        first,
+        count,
+        scissor: last,
+    }) = commands.last_mut()
+        && *last == scissor
+        && icons.can_extend_run(*first, *count, prepared.index)
+    {
+        *count += 1;
+        return;
+    }
+    commands.push(DrawCommand::Icon {
+        first: prepared.index,
+        count: 1,
+        scissor,
+    });
+}
+
 fn push_quad(commands: &mut Vec<DrawCommand>, index: u32, scissor: PhysicalRect) {
     if let Some(DrawCommand::Quads {
         range,
@@ -1549,10 +1582,15 @@ fn encode_ordered(
                                 Some(pipelines.gpu_work),
                             );
                         }
-                        DrawCommand::Icon { prepared, scissor } => {
+                        DrawCommand::Icon {
+                            first,
+                            count,
+                            scissor,
+                        } => {
                             pipelines.icons.draw(
                                 &mut pass,
-                                prepared,
+                                *first,
+                                *count,
                                 *scissor,
                                 Some(pipelines.gpu_work),
                             );
@@ -1572,8 +1610,23 @@ fn encode_ordered(
                             bounds,
                             clip,
                         } if bounds.width > 0 && bounds.height > 0 => {
-                            if !node.custom.dedicated_pass
-                                && renderer.draw_in_pass(
+                            if !node.custom.dedicated_pass {
+                                let encoded = draw_custom_run(
+                                    commands,
+                                    index,
+                                    renderer,
+                                    &mut pass,
+                                    dest_physical,
+                                    pipelines.device,
+                                    pipelines.queue,
+                                    pipelines.gpu_work,
+                                );
+                                if encoded > 0 {
+                                    restore_dest_viewport(&mut pass, dest_physical);
+                                    index += encoded;
+                                    continue;
+                                }
+                                if renderer.draw_in_pass(
                                     node,
                                     &mut pass,
                                     SceneGpuPassContext {
@@ -1584,11 +1637,11 @@ fn encode_ordered(
                                         dest_size: dest_physical,
                                         gpu_work: Some(pipelines.gpu_work),
                                     },
-                                )
-                            {
-                                restore_dest_viewport(&mut pass, dest_physical);
-                                index += 1;
-                                continue;
+                                ) {
+                                    restore_dest_viewport(&mut pass, dest_physical);
+                                    index += 1;
+                                    continue;
+                                }
                             }
                             break;
                         }
@@ -1618,6 +1671,7 @@ fn encode_ordered(
                                 target,
                                 bounds: *bounds,
                                 clip: *clip,
+                                dest_size: dest_physical,
                                 gpu_work: Some(pipelines.gpu_work),
                             },
                         );
@@ -1627,6 +1681,69 @@ fn encode_ordered(
             }
         }
     }
+}
+
+/// Offer the renderer the run of `Custom` commands starting at `start` that
+/// share its renderer instance and want no dedicated pass.
+///
+/// The run is a contiguous slice of the display list, so any other command
+/// between two custom nodes ends it and document order is untouched. Returns
+/// how many commands the renderer encoded; `0` means it declined and the caller
+/// falls back to the single-node path.
+#[allow(clippy::too_many_arguments)]
+fn draw_custom_run(
+    commands: &[DrawCommand],
+    start: usize,
+    renderer: &Arc<dyn SceneGpuRenderer>,
+    pass: &mut wgpu::RenderPass<'_>,
+    dest_physical: [u32; 2],
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    gpu_work: &GpuWorkSink,
+) -> usize {
+    let capacity = renderer.batch_capacity();
+    if capacity <= 1 {
+        return 0;
+    }
+    let mut run: Vec<SceneGpuBatchNode<'_>> = Vec::new();
+    for command in &commands[start..] {
+        let DrawCommand::Custom {
+            node,
+            renderer: candidate,
+            bounds,
+            clip,
+        } = command
+        else {
+            break;
+        };
+        if !Arc::ptr_eq(renderer, candidate)
+            || node.custom.dedicated_pass
+            || bounds.width == 0
+            || bounds.height == 0
+            || run.len() == capacity
+        {
+            break;
+        }
+        run.push(SceneGpuBatchNode {
+            node,
+            bounds: *bounds,
+            clip: *clip,
+        });
+    }
+    if run.len() < 2 {
+        return 0;
+    }
+    let encoded = renderer.draw_batch_in_pass(
+        &run,
+        pass,
+        SceneGpuBatchPassContext {
+            device,
+            queue,
+            dest_size: dest_physical,
+            gpu_work: Some(gpu_work),
+        },
+    );
+    encoded.min(run.len())
 }
 
 fn group_layer_load(ready: &mut Vec<bool>, layer: usize) -> wgpu::LoadOp<wgpu::Color> {

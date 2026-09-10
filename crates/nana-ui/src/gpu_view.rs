@@ -6,44 +6,66 @@
 use crate::geometry::{LogicalRect, PhysicalRect};
 
 pub(crate) const GPU_VIEW_SHADER: &str = r#"
-struct ViewUniform {
-    color_a: vec4<f32>,
-    color_b: vec4<f32>,
-    parameters: vec4<f32>,
+struct Instance {
+    // Destination rect in physical pixels, unclipped. This is the region the
+    // pattern is mapped over, so a partially clipped node keeps its mapping.
+    // Ancestor clipping stays on the pass scissor: a run shares one clip.
+    @location(0) rect: vec4<f32>,
+    @location(1) color_a: vec4<f32>,
+    @location(2) color_b: vec4<f32>,
+    // x = seed, zw = dest size in physical pixels. The dest size rides the
+    // instance so a run needs no bound uniform and no per-frame upload.
+    @location(3) parameters: vec4<f32>,
 }
-
-@group(0) @binding(0)
-var<uniform> view: ViewUniform;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) color_a: vec4<f32>,
+    @location(2) color_b: vec4<f32>,
+    @location(3) parameters: vec4<f32>,
 }
 
 @vertex
-fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
+fn vertex_main(@builtin(vertex_index) index: u32, instance: Instance) -> VertexOutput {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0),
     );
+    let corner = corners[index];
+    let pixel = instance.rect.xy + corner * instance.rect.zw;
+    let size = max(instance.parameters.zw, vec2<f32>(1.0));
     var output: VertexOutput;
-    output.position = vec4<f32>(positions[index], 0.0, 1.0);
-    output.uv = positions[index] * 0.5 + vec2<f32>(0.5);
+    output.position = vec4<f32>(
+        pixel.x / size.x * 2.0 - 1.0,
+        1.0 - pixel.y / size.y * 2.0,
+        0.0,
+        1.0,
+    );
+    // Matches the viewport-mapped fullscreen triangle this shader replaced:
+    // uv.y runs from 0 at the bottom edge to 1 at the top.
+    output.uv = vec2<f32>(corner.x, 1.0 - corner.y);
+    output.color_a = instance.color_a;
+    output.color_b = instance.color_b;
+    output.parameters = instance.parameters;
     return output;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.uv;
-    let seed = view.parameters.x;
+    let seed = input.parameters.x;
     let wave = 0.5 + 0.5 * sin((uv.x * 5.5 + uv.y * 3.0 + seed) * 3.14159265);
     let radial = smoothstep(0.82, 0.05, distance(uv, vec2<f32>(0.64, 0.42)));
     let grid_x = 1.0 - smoothstep(0.0, 0.035, abs(fract(uv.x * 12.0) - 0.5));
     let grid_y = 1.0 - smoothstep(0.0, 0.035, abs(fract(uv.y * 8.0) - 0.5));
     let grid = max(grid_x, grid_y) * 0.08;
     let mix_amount = clamp(0.18 + wave * 0.34 + radial * 0.28, 0.0, 1.0);
-    let color = mix(view.color_a.rgb, view.color_b.rgb, mix_amount) + grid;
+    let color = mix(input.color_a.rgb, input.color_b.rgb, mix_amount) + grid;
     return vec4<f32>(color, 1.0);
 }
 "#;

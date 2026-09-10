@@ -260,9 +260,10 @@ pub use runtime_host::{
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]
 pub use scene_gpu::{
-    PreparedSceneResources, SceneGpuNode, SceneGpuPassContext, SceneGpuPrepareContext,
-    SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry, SceneResourceEncodeContext,
-    SceneResourceProduceError, SceneResourceProducer, SceneResourceProducerRegistry,
+    PreparedSceneResources, SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode,
+    SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
+    SceneGpuRendererRegistry, SceneResourceEncodeContext, SceneResourceProduceError,
+    SceneResourceProducer, SceneResourceProducerRegistry,
 };
 #[cfg(feature = "hosted")]
 pub use scene_host::run_runtime_scene;

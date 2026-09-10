@@ -21,6 +21,10 @@ pub struct SceneGpuPrepareContext<'a> {
     pub target_format: wgpu::TextureFormat,
     pub bounds: LogicalRect,
     pub scale_factor: f32,
+    /// Destination size in physical pixels. A change to it invalidates the
+    /// painter's prepared batch, so preparation always sees the size its
+    /// commands will be encoded against.
+    pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
@@ -31,6 +35,9 @@ pub struct SceneGpuRenderContext<'a> {
     pub target: &'a wgpu::TextureView,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
+    /// Size of `target` in physical pixels. A dedicated pass covers the same
+    /// destination as the main pass, so viewport and scissor math match.
+    pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
@@ -43,6 +50,27 @@ pub struct SceneGpuPassContext<'a> {
     pub queue: &'a wgpu::Queue,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
+    pub dest_size: [u32; 2],
+    pub gpu_work: Option<&'a GpuWorkSink>,
+}
+
+/// One node of a contiguous, document-ordered run handed to
+/// [`SceneGpuRenderer::draw_batch_in_pass`].
+pub struct SceneGpuBatchNode<'a> {
+    pub node: &'a SceneGpuNode,
+    /// Destination rect in physical pixels, inside the current dest or group
+    /// target.
+    pub bounds: PhysicalRect,
+    /// Physical scissor, already intersected with every ancestor clip. Items in
+    /// one run may carry different clips.
+    pub clip: PhysicalRect,
+}
+
+/// In-pass encode context for a run. `dest_size` is the current dest viewport in
+/// physical pixels so implementations can restore it.
+pub struct SceneGpuBatchPassContext<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
     pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
@@ -77,6 +105,37 @@ pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
         _context: SceneGpuPassContext<'_>,
     ) -> bool {
         false
+    }
+
+    /// Longest run this renderer wants in one [`Self::draw_batch_in_pass`].
+    /// `1` (the default) keeps the one-node-per-call path.
+    fn batch_capacity(&self) -> usize {
+        1
+    }
+
+    /// Encode a contiguous, document-ordered run into the caller's pass.
+    ///
+    /// Returns how many **leading** nodes were encoded. `0` makes the painter
+    /// fall back to [`Self::draw_in_pass`] for `nodes[0]`, so an implementation
+    /// may encode a prefix — the leading items that share one scissor, say —
+    /// and let the painter offer the rest.
+    ///
+    /// This is not a frame-end batch. The run is a slice of the display list:
+    /// any quad, glyph, icon, host texture, backdrop or group boundary between
+    /// two nodes ends it, so a node can never be drawn across ordinary UI.
+    /// Document order is exactly what it would be without batching; only the
+    /// number of draws changes.
+    ///
+    /// Implementations restore the viewport to `context.dest_size` just as
+    /// [`Self::draw_in_pass`] must, and record one draw batch and one draw call
+    /// per draw they issue.
+    fn draw_batch_in_pass(
+        &self,
+        _nodes: &[SceneGpuBatchNode<'_>],
+        _pass: &mut wgpu::RenderPass<'_>,
+        _context: SceneGpuBatchPassContext<'_>,
+    ) -> usize {
+        0
     }
 }
 
