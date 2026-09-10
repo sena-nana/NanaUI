@@ -98,35 +98,79 @@ impl HostTextureSceneResolver {
     }
 }
 
-pub(crate) fn validate_scene(
+/// What the painter resolved about the frame's custom nodes.
+///
+/// [`validate_scene`] produces this from the lookups it already has to do, so
+/// the painter never walks `FramePlan::custom_nodes` a second time.
+#[derive(Debug, Default)]
+pub(super) struct ResolvedCustomNodes {
+    /// Host-texture binding identities, in `custom_nodes` order.
+    pub(super) resources: Vec<super::TextureBindingKey>,
+    /// `(renderer identity, preparation version)`, in `custom_nodes` order.
+    pub(super) renderers: Vec<(usize, u64)>,
+    /// `false` once a renderer declines to version its preparation: it can
+    /// then change what it prepared without saying so, and nothing built this
+    /// frame may be reused.
+    pub(super) cacheable: bool,
+}
+
+/// Reject the frame if a custom node's host-texture slot or GPU renderer is
+/// missing, and collect the [`super::PreparedBatch`] key while doing it.
+///
+/// Rejection has to stay ahead of every draw, the dest-reuse fast path
+/// included, so the painter calls this first. The key falls out of the same
+/// walk: resolving a node means looking its resource or renderer up, which is
+/// exactly what keying it needs.
+pub(super) fn validate_scene(
     scene: &UiScene,
     host_textures: Option<&HostTextureRegistry>,
     gpu_renderers: Option<&SceneGpuRendererRegistry>,
-) -> Result<Arc<[RenderOperation]>, ScenePaintError> {
+) -> Result<ResolvedCustomNodes, ScenePaintError> {
     let plan = scene
         .frame_plan()
         .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
+    let mut resolved = ResolvedCustomNodes {
+        resources: Vec::with_capacity(plan.custom_nodes.len()),
+        renderers: Vec::new(),
+        cacheable: true,
+    };
     for id in plan.custom_nodes.iter() {
         let primitive = scene
             .primitive(*id)
             .ok_or(ScenePaintError::MissingNode(id.node))?;
-        if let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind {
-            if custom.renderer.as_ref() == "nana.host-texture" {
-                let Some(host_textures) = host_textures else {
-                    return Err(ScenePaintError::CustomPrimitive(primitive.id));
-                };
-                if host_textures.get(custom.resource.as_ref()).is_none() {
-                    return Err(ScenePaintError::MissingCustomResource(primitive.id));
-                }
-            } else if gpu_renderers
+        let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
+            continue;
+        };
+        if custom.renderer.as_ref() != "nana.host-texture" {
+            let renderer = gpu_renderers
                 .and_then(|renderers| renderers.get(custom.renderer.as_ref()))
-                .is_none()
-            {
-                return Err(ScenePaintError::UnsupportedCustomRenderer(primitive.id));
+                .ok_or(ScenePaintError::UnsupportedCustomRenderer(primitive.id))?;
+            match renderer.preparation_version(custom) {
+                Some(version) => resolved
+                    .renderers
+                    .push((Arc::as_ptr(&renderer) as *const () as usize, version)),
+                None => resolved.cacheable = false,
             }
+            continue;
         }
+        let Some(host_textures) = host_textures else {
+            return Err(ScenePaintError::CustomPrimitive(primitive.id));
+        };
+        let binding = host_textures
+            .get(custom.resource.as_ref())
+            .ok_or(ScenePaintError::MissingCustomResource(primitive.id))?;
+        // Contents can change without replacing a sampled view, so only
+        // binding identity and geometry invalidate prepared UI data;
+        // re-encoding still samples the latest host pixels every frame.
+        resolved.resources.push(super::TextureBindingKey {
+            identity: binding.texture.instance_identity(),
+            generation: binding.texture.generation(),
+            width: binding.width,
+            height: binding.height,
+            alpha: binding.alpha_mode,
+        });
     }
-    Ok(Arc::clone(&plan.operations))
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -203,6 +247,13 @@ mod tests {
         (scene, view.stable_id())
     }
 
+    /// `validate_scene` no longer returns the plan's operations — it returns
+    /// what the painter resolved. Tests that assert operation order read the
+    /// plan, which is where that order lives.
+    fn plan_operations(scene: &UiScene) -> Arc<[RenderOperation]> {
+        Arc::clone(&scene.frame_plan().expect("frame plan").operations)
+    }
+
     fn assert_gpu_view_operation(
         operations: &[RenderOperation],
         scene: &UiScene,
@@ -245,8 +296,8 @@ mod tests {
             context.world().extract_nodes(&work.render_extraction),
             work.render_removals,
         );
-        let operations = validate_scene(&scene, None, None).unwrap();
-        assert!(!operations.is_empty());
+        validate_scene(&scene, None, None).expect("a plain button validates");
+        assert!(!plan_operations(&scene).is_empty());
         assert_eq!(scene.primitives().count(), 2);
 
         let mut custom = MutationQueue::new();
@@ -301,8 +352,8 @@ mod tests {
         );
         let mut renderers = SceneGpuRendererRegistry::new();
         renderers.insert("live2d.direct", Arc::new(NoopSceneRenderer));
-        let operations = validate_scene(&scene, None, Some(&renderers)).unwrap();
-        assert!(operations.iter().any(|operation| matches!(
+        validate_scene(&scene, None, Some(&renderers)).expect("registered renderer validates");
+        assert!(plan_operations(&scene).iter().any(|operation| matches!(
             operation,
             RenderOperation::InvokeCustom(id) if *id == PrimitiveId {
                 node: button.stable_id(),
@@ -400,8 +451,8 @@ mod tests {
         let renderers = default_scene_gpu_renderers();
         assert!(renderers.get(GPU_VIEW_RENDERER).is_some());
         assert!(renderers.get("gpu-view").is_some());
-        let operations = validate_scene(&scene, None, Some(&renderers)).unwrap();
-        assert_gpu_view_operation(&operations, &scene, id);
+        validate_scene(&scene, None, Some(&renderers)).expect("default renderers validate");
+        assert_gpu_view_operation(&plan_operations(&scene), &scene, id);
     }
 
     #[test]
@@ -430,8 +481,8 @@ mod tests {
     #[test]
     fn empty_button_scene_validates_without_gpu_registry() {
         let (scene, _) = button_scene();
-        let operations = validate_scene(&scene, None, None).unwrap();
-        assert!(!operations.is_empty());
+        validate_scene(&scene, None, None).expect("a button scene validates");
+        assert!(!plan_operations(&scene).is_empty());
     }
 
     #[test]
@@ -472,8 +523,8 @@ mod tests {
             work.render_removals,
         );
 
-        let operations = validate_scene(&scene, None, None).unwrap();
-        assert!(!operations.is_empty());
+        validate_scene(&scene, None, None).expect("rotation and tracking validate");
+        assert!(!plan_operations(&scene).is_empty());
         let mut saw_rotation = false;
         let mut saw_tracking = false;
         let mut saw_named_font = false;

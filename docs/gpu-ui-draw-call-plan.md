@@ -189,7 +189,7 @@ painter 侧不为空包围盒的文字生成 `DrawCommand::Text`（顺带省掉 
 | 1 ✅ | 屏外文字不进 display list + 计数器不再虚报 | `dense-2k` 1503 → ~1003 | **1503 → 1003** | 低 |
 | 2 ✅ | 相邻文字 run 合并（与 `push_quad` 同构） | `dense-2k` 1002 → 4 | **1003 → 4** | 中 |
 | 3 ✅ | 重叠感知批次合并（方向 1） | `column-list` 23 → 5 | **9 行 `(quad, label)` 39 → 26；`shader-nodes-256` 132 → 16** | 高。采样数判定已冻结在 document order 上 |
-| — | 打包 icon atlas | 暂缓 | — | 基准场景里图标已经是 1 次 draw；等有真实的多字形图标条场景再说 |
+| 4 ✅ | 打包 icon atlas | 暂缓 | **真实 shell（20 字形工具栏 + 4 个裁剪面板 × 40 行）34 → 15** | 中。见 [`gpu-node-scale.md`](gpu-node-scale.md) |
 
 **第 1 步的实现与这里原先的设计不同，原设计不成立。** 原计划改
 `nana-ui-scene/src/scene/visibility.rs`，给 Text 一个「保守外扩的包围盒」。做不了：
@@ -269,7 +269,7 @@ scissor，变体也就定死了 kind。开合组时也不需要三态——一�
 ### 怎么验证
 
 照抄 `scene_paint/tests.rs` 里已有的精确增量断言写法
-（`adjacent_same_atlas_icons_batch_into_one_draw`）。已落地的三条：
+（`adjacent_icons_batch_into_one_draw_whatever_their_glyphs`）。已落地的三条：
 
 - `text_below_the_clip_band_costs_no_draw_and_no_pixels`——8 条完全在视口下方的
   label 与没有它们的同一棵树 `draw_calls` 相同、**整帧像素相同**；一条跨底边的

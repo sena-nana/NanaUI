@@ -149,6 +149,10 @@ O(P³)」这堵墙没有了。
 
 ## 已落地：相邻同 atlas 图标合并成一次 draw
 
+> **2026-09-10 后续**：这一节说的「同一 atlas」限制已经不存在了——图标现在共享一张
+> 打包 atlas，相邻图标无论字形是否相同都合成一次 draw。见下面
+> [「已落地：图标共享一张打包 atlas」](#已落地图标共享一张打包-atlas)。
+
 `crates/nana-ui/src/scene_paint/icon.rs` 加 `can_extend_run`，`mod.rs` 加 `push_icon`，
 与既有的 `push_quad` / `push_mesh_draw` 同一套合并规则（scissor 相同、顶点连续、
 同一 atlas）。`IconBatch` 的 N 个 item 因此塌成一次 draw。
@@ -157,8 +161,8 @@ O(P³)」这堵墙没有了。
 当时的判断不同：该场景可见的图标只有 26 个（其余被视口剔除），这 26 个正好相邻，
 一次就合完了，所以只省下 25 次。它真正帮到的是工具栏、
 图标条和 `IconBatch` 这类图标本来就相邻的地方（回归测试
-`adjacent_same_atlas_icons_batch_into_one_draw` 断言 12 个相邻图标与 1 个图标的
-draw call 数相同）。密集列表那 1500 次 draw **不是**靠重叠感知的批次合并解决的——它们全是文字，
+`adjacent_icons_batch_into_one_draw_whatever_their_glyphs` 断言 12 个相邻图标与
+1 个图标的 draw call 数相同）。密集列表那 1500 次 draw **不是**靠重叠感知的批次合并解决的——它们全是文字，
 需要的是跨节点的文字 run 合并与文字视口剔除，见
 [`gpu-ui-draw-call-plan.md`](gpu-ui-draw-call-plan.md)。
 
@@ -350,3 +354,95 @@ draw，前两步 39 次，第三步 **26** 次；整帧字节哈希三种状态�
 
 `nana-ui` 全量 464 个测试通过。（`async_host_texture_mask_rebinds_after_image_completion`
 在 HEAD 上就间歇性失败，是 URL 图片异步加载的竞态，与本轮无关。）
+
+## 已落地：图标共享一张打包 atlas
+
+`AtlasKey { icon, px }` 原来是**每个键一张 wgpu 纹理 + 一个 bind group**
+（`icon.rs`，128 条 LRU）。`can_extend_run` 要求 run 内 atlas 相同，所以一条 20 个
+**不同字形**的工具栏就是 20 次 draw，而同一个字形在不同渲染尺寸下也算不同的键
+（`px = dest_px * 2`，所以一次 hover 缩放会造出好几张纹理）。
+
+改成一张共享纹理：
+
+- **分配器是按格宽分行的 shelf**。图标是正方形，一行只收自己那个格宽，所以行内不会
+  碎片化。行是自上而下追加的，条目永不移动。
+- **容量是面积不是条目数**，起始 256²（256 KiB），需要时倍增到
+  `min(2048, max_texture_dimension_2d)`。这 256 KiB 是**每个渲染目标一次性**付的，
+  比原来「每字形一张纹理」在典型窗口上的开销更大（20 个 16px 字形约 82 KiB）——这是
+  那一个共享 bind group 的代价。起始尺寸按「真实 shell 一次重排都不用做」选：
+  20 个 34px 格子加一个行字形只占 24 KiB。
+- **满了就重排**（`repack`）：新建一张纹理，只放**这一帧用到的**字形（从各自的 SVG
+  重新栅格化），因此重排同时就是淘汰策略与去碎片。新纹理的边长按「留出再一个工作集
+  的余量」选，避免逐帧交替图标集时每帧重排。已经发出的顶点会被 `patch_frame_uvs`
+  按新格子改写 UV，所以重排可以发生在建 display list 的中途。
+- **每个格子留 1 texel 的透明边**。采样器在纹理边界而不是格子边界 clamp，而一个
+  quad 最多能采到自己格子外半个 texel（旋转图标，或画得比 `MAX_ATLAS_PX` 还大），
+  这一圈「谁的都不是」的像素就是不让它读到邻居的东西。边框像素**没有**复制成
+  `ClampToEdge` 那样——复制先实现了又删掉了：造不出一张它会改变像素的帧，包括一个
+  满格出血的自定义字形，因为栅格化把 UV 限制在 `[0, 1]`，而越界采样只发生在最后
+  半个 texel 里。
+
+`ATLAS_CAP` 这个条目上限随之消失（容量变成面积）。原来的
+`live_oldest_icon_does_not_hide_idle_entries_or_retain_frame_peaks` 测的是那条按条目
+计数的 LRU，已换成两条测新契约的：`a_full_sheet_keeps_this_frames_glyphs_and_drops_the_idle_ones`
+（沉睡字形被回收、在用字形必须活下来、工作集小的时候纹理不长大）与
+`a_frame_larger_than_the_sheet_grows_it_instead_of_dropping_glyphs`（一帧自己的字形
+装不下时纹理必须增长，而不是丢字形）。两条都做过反向验证。
+
+| 树 | draw calls |
+|---|---|
+| 一条 20 个**不同字形**的工具栏（+ 4 个裁剪面板 × 40 行） | 34 → **15** |
+| 12 个不同字形 + 3 个面板 × 40 行 | 23 → **12** |
+| 12 个不同字形 + 1 个面板 × 20 行 | 17 → **6** |
+| 五个基准场景（`gpu-scene-ui` / `dense-2k` / `host-textures-64` / `shader-nodes-256` ×2） | 5 / 4 / 68 / 16 / 16，**不变** |
+
+基准场景不变是因为它们只用一个字形（`Icon::File`）一个尺寸，早就已经是一次 draw；
+这一步管的是工具栏、侧栏、图标条——真实 shell 上它占今天 draw call 的 **59%**。
+
+**渲染差异：没有。** 两张对照帧改动前后字节哈希相同：
+
+- 12 个不同字形 + 一个字形 5 种尺寸 + 3 个旋转图标 + 一个 200px 图标 + 一个被
+  overflow 裁剪的图标 + 一个分数偏移的图标：`db94505a59558ebc`，draw call 25 → 5。
+- 一个满格出血的自定义字形（相邻两个 + 旋转 + 放大）：`99c98d511c739fb8`，
+  draw call 4 → 3。
+
+`gpu_upload_bytes` 的记账口径不变（仍然按栅格化出的字节数计），所以那一列可以跨这次
+改动对照：真实 shell 上 288,432 → 288,432。
+
+## 已落地：静止帧不再重复扫描 GPU 节点
+
+一帧里 `plan.custom_nodes` 原来被走**四遍**：`validate_scene` 里的 `frame_plan()`
+（记忆化路径上仍然跑一遍 O(N) 的 `validate_plan_resources`）、`validate_scene` 自己的
+循环、`paint` 里**第二次** `frame_plan()`、以及 `paint` 的 `resources` /
+`renderer_versions` 键循环。后两遍与前两遍做的是同一组 `scene.primitive()` 与注册表
+查找。
+
+`validate_scene` 现在返回它解析出来的东西（`ResolvedCustomNodes`：host texture 绑定
+键、renderer 版本键、`cacheable`），`paint` 直接用，不再调 `frame_plan()`、也不再走
+一遍自定义节点。四遍变两遍。
+
+静止帧（display list 全部命中缓存）的整个 `paint` + runtime flush，p50：
+
+| 场景 | 改前 | 改后 |
+|---|---:|---:|
+| gpu-view × 64 | 0.0093 ms | **0.0072 ms** |
+| gpu-view × 256 | 0.0329 ms | **0.0232 ms** |
+| gpu-view × 1024 | 0.1470 ms | **0.0942 ms** |
+| `gpu-scene-host-textures-64` | 0.0215 ms | **0.0175 ms** |
+| `gpu-scene-ui-dense-2k`（参照） | 0.0022 ms | 0.0016 ms |
+
+剩下的两遍都是**必需**的，不能再合：
+
+- `paint` 那一遍必须每帧重算 N 个 `preparation_version` 才能判断 display list 能不能
+  复用，这是 O(N) 的下限。
+- `frame_plan()` 记忆化路径上的 `validate_plan_resources` **是承重的**，不是重复。
+  它查的是「两个节点声明了同一个 resource 但 `(renderer, revision)` 不同」，而
+  `revision` 的低 32 位是**内容版本**（`pack_gpu_revision`），一个视频面板每帧都会改
+  它——`node_structure()` 故意不含 `revision`，否则每帧都要重编译渲染图。所以这个冲突
+  可以在两帧之间凭空出现，每帧必须重查。要把它也变成 O(1)，得让 `UiScene` 增量维护
+  一张 resource → `(renderer, revision)` 声明表（`rebuild_node_primitives` 是唯一的
+  写入口，revision 变更都经过它）。**没有做**：1024 个节点上它值 0.024 ms/帧，而它要
+  动的是 scene 的核心变更路径。
+
+原始报告与完整拆解见
+[`gpu-draw-call-residual-audit.md`](gpu-draw-call-residual-audit.md)。

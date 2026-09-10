@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
 
@@ -8,9 +8,47 @@ use super::{
 };
 use crate::{PhysicalRect, icons::Icon};
 
-const ATLAS_CAP: usize = 128;
+/// Per-glyph raster edge cap. A glyph is rasterized at twice its dest size,
+/// so this also caps the biggest cell the shared atlas has to place.
 const MAX_ATLAS_PX: u32 = 256;
+/// Starting edge of the shared atlas, one sheet per render target. Not a cap:
+/// [`IconPipeline::repack`] doubles it when one frame's glyphs do not fit.
+///
+/// 256² RGBA is 256 KiB, and it is spent up front rather than per glyph. That
+/// is *more* than the per-glyph textures cost a typical window — a 20-glyph
+/// 16px toolbar was ~82 KiB — and it is the price of the single bind group
+/// that lets those 20 glyphs be one draw. It is sized so a real shell needs no
+/// repack at all: 20 cells of 34px plus a row glyph is 24 KiB of the sheet.
+const ATLAS_START_PX: u32 = 256;
+/// Largest atlas edge we will grow to, independent of what the device allows.
+/// 2048² RGBA is 16 MiB, which is already far past any real icon working set.
+const MAX_ATLAS_EDGE: u32 = 2048;
+/// Transparent border around every cell. The sampler clamps at the texture
+/// border, not at the cell, and a quad can sample up to half a texel outside
+/// its own cell — a rotated icon, or one drawn wider than `MAX_ATLAS_PX`. One
+/// texel of nobody's pixels is what keeps such a tap from reading a
+/// neighbouring glyph.
+///
+/// It reads transparent rather than replicating the glyph's own edge, which
+/// is what a per-glyph texture's `ClampToEdge` used to give. Replicating was
+/// implemented first and then dropped: no frame could be built where it
+/// changed a pixel, a full-bleed glyph included, because the rasterizer
+/// confines UV to `[0, 1]` and the taps only leave the cell inside the last
+/// half texel.
+const CELL_GUTTER: u32 = 1;
 const INITIAL_VERTICES: usize = 256;
+
+/// Vertex order of one icon quad, shared by [`IconPipeline::prepare`] and
+/// [`IconPipeline::repack`] so the two cannot disagree about which corner a
+/// vertex holds.
+const CORNER_UV: [[f32; 2]; 6] = [
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    [1.0, 0.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+];
 
 const ICON_SHADER: &str = concat!(
     include_str!("shader/color.wgsl"),
@@ -105,9 +143,33 @@ struct AtlasKey {
     px: u32,
 }
 
-struct AtlasSlot {
-    _texture: wgpu::Texture,
+/// One glyph's placement in the shared atlas.
+struct AtlasEntry {
+    /// Glyph origin in atlas texels, gutter excluded.
+    origin: [u32; 2],
+    px: u32,
+    /// Kept so a repack can re-rasterize without the caller handing the icon
+    /// back. `Icon` geometry is `'static`, so this borrows nothing per frame.
+    svg: &'static str,
+}
+
+/// A row of equal-sized cells. Glyphs are square, so a shelf that only takes
+/// its own cell size never fragments internally.
+struct Shelf {
+    /// Cell edge including both gutters.
+    cell: u32,
+    y: u32,
+    next_x: u32,
+}
+
+/// The one texture every icon draws from. A single bind group is what lets a
+/// run of *different* glyphs collapse into one `pass.draw`.
+struct Atlas {
+    texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    edge: u32,
+    shelves: Vec<Shelf>,
+    next_y: u32,
 }
 
 struct FrameSlot {
@@ -134,10 +196,12 @@ pub(super) struct IconPipeline {
     physical_size: [u32; 2],
     uploaded_size: Option<[u32; 2]>,
     frame_slots: Vec<FrameSlot>,
-    atlas: HashMap<AtlasKey, AtlasSlot>,
-    atlas_order: VecDeque<AtlasKey>,
+    atlas: Atlas,
+    entries: HashMap<AtlasKey, AtlasEntry>,
     frame_keys: HashSet<AtlasKey>,
-    eviction_candidates: usize,
+    /// Set when even a maximal atlas could not hold this frame's glyphs, so
+    /// the remaining misses fail straight away instead of repacking per icon.
+    exhausted: bool,
     pending_texture_bytes: usize,
 }
 
@@ -246,6 +310,7 @@ impl IconPipeline {
             multiview_mask: None,
             cache: None,
         });
+        let atlas = new_atlas(device, &atlas_layout, &sampler, ATLAS_START_PX);
         Self {
             pipeline,
             atlas_layout,
@@ -264,10 +329,10 @@ impl IconPipeline {
             physical_size: [0; 2],
             uploaded_size: None,
             frame_slots: Vec::new(),
-            atlas: HashMap::new(),
-            atlas_order: VecDeque::new(),
+            atlas,
+            entries: HashMap::new(),
             frame_keys: HashSet::new(),
-            eviction_candidates: 0,
+            exhausted: false,
             pending_texture_bytes: 0,
         }
     }
@@ -276,16 +341,8 @@ impl IconPipeline {
         self.pending_vertices.clear();
         self.frame_slots.clear();
         self.frame_keys.clear();
+        self.exhausted = false;
         self.pending_texture_bytes = 0;
-        // A previous frame can exceed the idle budget because all entries were
-        // in use. Its commands have now been invalidated, so trim that peak.
-        while self.atlas.len() > ATLAS_CAP {
-            let Some(oldest) = self.atlas_order.pop_front() else {
-                break;
-            };
-            self.atlas.remove(&oldest);
-        }
-        self.eviction_candidates = self.atlas_order.len();
         self.physical_size = physical_size;
     }
 
@@ -313,27 +370,23 @@ impl IconPipeline {
             icon: icon.as_ptr() as usize,
             px,
         };
-        if !self.atlas.contains_key(&key) {
+        if !self.entries.contains_key(&key) {
             let rgba = rasterize_icon(icon.svg(), px)?;
-            self.insert_atlas(device, queue, key, px, &rgba);
+            if !self.insert(device, queue, key, px, icon.svg(), &rgba) {
+                return None;
+            }
         }
         self.frame_keys.insert(key);
+        let uv_rect = UvRect::of(self.entries.get(&key)?, self.atlas.edge);
         let color = pack_linear(with_opacity(color, opacity));
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
         let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
-        let corners = [
-            (tl, [0.0, 0.0]),
-            (tr, [1.0, 0.0]),
-            (bl, [0.0, 1.0]),
-            (tr, [1.0, 0.0]),
-            (br, [1.0, 1.0]),
-            (bl, [0.0, 1.0]),
-        ];
-        for (position, uv) in corners {
+        let positions = [tl, tr, bl, tr, br, bl];
+        for (position, corner) in positions.into_iter().zip(CORNER_UV) {
             self.pending_vertices.push(IconVertex {
                 position,
-                uv,
+                uv: uv_rect.at(corner),
                 color,
                 clip_rect: clip.rect,
                 clip_inv_abcd: clip.inv_abcd,
@@ -397,22 +450,22 @@ impl IconPipeline {
         }
     }
 
-    /// Whether `next` can extend a run that starts at `first` and holds `count`
-    /// slots: same atlas texture, and vertices already adjacent in the shared
-    /// buffer. `AtlasKey` stays private to this module.
+    /// Whether `next` can extend a run that starts at `first` and holds
+    /// `count` slots. Every glyph lives in the one shared atlas, so the only
+    /// requirement left is that the vertices are already adjacent in the
+    /// shared buffer — a toolbar of distinct glyphs is one run.
     pub(super) fn can_extend_run(&self, first: usize, count: usize, next: usize) -> bool {
-        let (Some(head), Some(last), Some(candidate)) = (
-            self.frame_slots.get(first),
+        let (Some(last), Some(candidate)) = (
             self.frame_slots.get(first + count - 1),
             self.frame_slots.get(next),
         ) else {
             return false;
         };
-        head.key == candidate.key && last.first_vertex + last.vertex_count == candidate.first_vertex
+        last.first_vertex + last.vertex_count == candidate.first_vertex
     }
 
-    /// Draw one run of adjacent slots sharing an atlas as a single call. A
-    /// batch of N identical icons is N contiguous slots, so it costs one draw.
+    /// Draw one run of adjacent slots as a single call, whatever glyphs it
+    /// holds: they all sample the same atlas and the same bind group.
     pub(super) fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -427,9 +480,6 @@ impl IconPipeline {
         ) else {
             return;
         };
-        let Some(atlas) = self.atlas.get(&head.key) else {
-            return;
-        };
         let end = last.first_vertex + last.vertex_count;
         if end <= head.first_vertex {
             return;
@@ -437,7 +487,7 @@ impl IconPipeline {
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        pass.set_bind_group(1, &atlas.bind_group, &[]);
+        pass.set_bind_group(1, &self.atlas.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.draw(head.first_vertex..end, 0..1);
         if let Some(work) = gpu_work {
@@ -446,46 +496,196 @@ impl IconPipeline {
         }
     }
 
-    fn insert_atlas(
+    /// Place one glyph in the shared atlas. Returns `false` only when even a
+    /// maximal atlas cannot hold this frame's glyphs, which is also the one
+    /// case where the icon does not paint.
+    fn insert(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: AtlasKey,
         px: u32,
+        svg: &'static str,
         rgba: &[u8],
-    ) {
-        // Examine each old candidate at most once per frame. A live oldest
-        // entry must not hide other unused entries, nor trigger repeated scans.
-        while self.atlas.len() >= ATLAS_CAP && self.eviction_candidates > 0 {
-            self.eviction_candidates -= 1;
-            let Some(oldest) = self.atlas_order.pop_front() else {
+    ) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        if let Some(cell) = self.allocate(px + CELL_GUTTER * 2) {
+            self.write_cell(queue, cell, px, rgba);
+            self.entries.insert(
+                key,
+                AtlasEntry {
+                    origin: [cell[0] + CELL_GUTTER, cell[1] + CELL_GUTTER],
+                    px,
+                    svg,
+                },
+            );
+            return true;
+        }
+        // Full for this cell size. Rebuilding the atlas around exactly this
+        // frame's glyphs both reclaims every idle entry and compacts the
+        // shelves, so it is the eviction policy as well as the growth path.
+        self.repack(device, queue, (key, svg, rgba))
+    }
+
+    /// Reserve a `cell`-sized square. Shelves are homogeneous, so a glyph
+    /// either extends a shelf of its own cell size or opens a new one.
+    fn allocate(&mut self, cell: u32) -> Option<[u32; 2]> {
+        let edge = self.atlas.edge;
+        if cell > edge {
+            return None;
+        }
+        if let Some(shelf) = self
+            .atlas
+            .shelves
+            .iter_mut()
+            .find(|shelf| shelf.cell == cell && shelf.next_x + cell <= edge)
+        {
+            let origin = [shelf.next_x, shelf.y];
+            shelf.next_x += cell;
+            return Some(origin);
+        }
+        if self.atlas.next_y + cell > edge {
+            return None;
+        }
+        let y = self.atlas.next_y;
+        self.atlas.next_y += cell;
+        self.atlas.shelves.push(Shelf {
+            cell,
+            y,
+            next_x: cell,
+        });
+        Some([0, y])
+    }
+
+    /// Rebuild the atlas holding this frame's glyphs plus `extra`.
+    ///
+    /// The new texture is sized to leave room for another working set's worth
+    /// of glyphs, so a frame that alternates icon sets does not repack every
+    /// frame. Every kept glyph is re-rasterized from its own SVG — the atlas
+    /// is the only copy of the pixels, and re-rasterizing is bounded by the
+    /// frame's glyph count.
+    fn repack(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        extra: (AtlasKey, &'static str, &[u8]),
+    ) -> bool {
+        let (extra_key, extra_svg, extra_rgba) = extra;
+        // `frame_keys` gains the caller's key only after `prepare` has placed
+        // it, so the glyph that triggered this repack arrives as `extra`.
+        let mut keep: Vec<(AtlasKey, &'static str)> = self
+            .frame_keys
+            .iter()
+            .filter_map(|key| Some((*key, self.entries.get(key)?.svg)))
+            .collect();
+        keep.push((extra_key, extra_svg));
+        // Biggest cells first: a shelf is only reused by its own size, so
+        // placing large cells while the sheet is empty avoids stranding them.
+        // The glyph order behind that is `frame_keys` iteration order, which
+        // is a hash set's — pin it so one frame packs the same way twice.
+        keep.sort_unstable_by(|left, right| {
+            right
+                .0
+                .px
+                .cmp(&left.0.px)
+                .then(left.0.icon.cmp(&right.0.icon))
+        });
+        let needed: u64 = keep
+            .iter()
+            .map(|(key, _)| {
+                let cell = (key.px + CELL_GUTTER * 2) as u64;
+                cell * cell
+            })
+            .sum();
+        let max_edge = MAX_ATLAS_EDGE.min(device.limits().max_texture_dimension_2d);
+        let mut edge = self.atlas.edge.max(ATLAS_START_PX).min(max_edge);
+        while (edge as u64) * (edge as u64) < needed * 2 && edge < max_edge {
+            edge = (edge * 2).min(max_edge);
+        }
+        loop {
+            self.atlas = new_atlas(device, &self.atlas_layout, &self.sampler, edge);
+            self.entries.clear();
+            let placed = keep.iter().all(|(key, svg)| {
+                let Some(cell) = self.allocate(key.px + CELL_GUTTER * 2) else {
+                    return false;
+                };
+                self.entries.insert(
+                    *key,
+                    AtlasEntry {
+                        origin: [cell[0] + CELL_GUTTER, cell[1] + CELL_GUTTER],
+                        px: key.px,
+                        svg,
+                    },
+                );
+                true
+            });
+            if placed {
                 break;
+            }
+            if edge >= max_edge {
+                self.entries.clear();
+                self.exhausted = true;
+                return false;
+            }
+            edge = (edge * 2).min(max_edge);
+        }
+        for (key, svg) in &keep {
+            let Some(entry) = self.entries.get(key) else {
+                continue;
             };
-            if self.frame_keys.contains(&oldest) {
-                self.atlas_order.push_back(oldest);
+            let cell = [entry.origin[0] - CELL_GUTTER, entry.origin[1] - CELL_GUTTER];
+            if *key == extra_key {
+                self.write_cell(queue, cell, key.px, extra_rgba);
                 continue;
             }
-            self.atlas.remove(&oldest);
+            let Some(rgba) = rasterize_icon(svg, key.px) else {
+                continue;
+            };
+            self.write_cell(queue, cell, key.px, &rgba);
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui.scene.icon.atlas"),
-            size: wgpu::Extent3d {
-                width: px,
-                height: px,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        self.patch_frame_uvs();
+        true
+    }
+
+    /// Rewrite the UVs of vertices already emitted this frame. A repack moves
+    /// every cell, and those vertices still name the old ones.
+    fn patch_frame_uvs(&mut self) {
+        let Self {
+            frame_slots,
+            entries,
+            pending_vertices,
+            atlas,
+            ..
+        } = self;
+        for slot in frame_slots.iter() {
+            let Some(entry) = entries.get(&slot.key) else {
+                continue;
+            };
+            let uv_rect = UvRect::of(entry, atlas.edge);
+            let first = slot.first_vertex as usize;
+            for (offset, corner) in CORNER_UV.iter().enumerate() {
+                if let Some(vertex) = pending_vertices.get_mut(first + offset) {
+                    vertex.uv = uv_rect.at(*corner);
+                }
+            }
+        }
+    }
+
+    /// Upload one glyph into its cell. The gutter is left at the texture's
+    /// initial zero, which is all it has to be: no other glyph writes there,
+    /// so a tap that leaves a cell reads transparent instead of a neighbour.
+    fn write_cell(&mut self, queue: &wgpu::Queue, cell: [u32; 2], px: u32, rgba: &[u8]) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &self.atlas.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: wgpu::Origin3d {
+                    x: cell[0] + CELL_GUTTER,
+                    y: cell[1] + CELL_GUTTER,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             rgba,
@@ -501,29 +701,74 @@ impl IconPipeline {
             },
         );
         self.pending_texture_bytes += rgba.len();
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.icon.atlas.bind"),
-            layout: &self.atlas_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
-        self.atlas_order.push_back(key);
-        self.atlas.insert(
-            key,
-            AtlasSlot {
-                _texture: texture,
-                bind_group,
+    }
+}
+
+/// Normalized UV rect of one atlas cell.
+#[derive(Clone, Copy)]
+struct UvRect {
+    origin: [f32; 2],
+    size: [f32; 2],
+}
+
+impl UvRect {
+    fn of(entry: &AtlasEntry, edge: u32) -> Self {
+        let edge = edge as f32;
+        Self {
+            origin: [entry.origin[0] as f32 / edge, entry.origin[1] as f32 / edge],
+            size: [entry.px as f32 / edge, entry.px as f32 / edge],
+        }
+    }
+
+    fn at(self, corner: [f32; 2]) -> [f32; 2] {
+        [
+            self.origin[0] + corner[0] * self.size[0],
+            self.origin[1] + corner[1] * self.size[1],
+        ]
+    }
+}
+
+fn new_atlas(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    edge: u32,
+) -> Atlas {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui.scene.icon.atlas"),
+        size: wgpu::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.icon.atlas.bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
             },
-        );
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    Atlas {
+        texture,
+        bind_group,
+        edge,
+        shelves: Vec::new(),
+        next_y: 0,
     }
 }
 
@@ -594,42 +839,82 @@ mod tests {
         (min_x as u32, min_y as u32, max_x as u32, max_y as u32)
     }
 
+    /// Every glyph shares one sheet now, so capacity is area rather than an
+    /// entry count. When the sheet fills, the glyphs this frame already
+    /// emitted vertices for must survive and the idle ones must go — the
+    /// repack is the eviction policy.
     #[test]
-    fn live_oldest_icon_does_not_hide_idle_entries_or_retain_frame_peaks() {
+    fn a_full_sheet_keeps_this_frames_glyphs_and_drops_the_idle_ones() {
         let (device, queue) = crate::scene_paint::tests::test_device();
         let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
-        let key = |icon| AtlasKey { icon, px: 1 };
-        for icon in 0..ATLAS_CAP {
-            pipeline.insert_atlas(&device, &queue, key(icon), 1, &[255; 4]);
+        const PX: u32 = 64;
+        let rgba = vec![255u8; (PX * PX * 4) as usize];
+        let svg = Icon::Close.svg();
+        let key = |icon: usize| AtlasKey { icon, px: PX };
+
+        pipeline.begin_frame([64; 2]);
+        for icon in 0..3 {
+            assert!(pipeline.insert(&device, &queue, key(icon), PX, svg, &rgba));
+            pipeline.frame_keys.insert(key(icon));
         }
-        for frame in 0..32 {
-            pipeline.begin_frame([64; 2]);
-            pipeline.frame_keys.insert(key(0));
-            for offset in 0..8 {
-                let next = key(ATLAS_CAP + frame * 8 + offset);
-                pipeline.insert_atlas(&device, &queue, next, 1, &[255; 4]);
-                pipeline.frame_keys.insert(next);
+        // Then fill the sheet with glyphs nothing is using this frame.
+        let mut idle = 100usize;
+        let mut before = pipeline.entries.len();
+        loop {
+            assert!(pipeline.insert(&device, &queue, key(idle), PX, svg, &rgba));
+            idle += 1;
+            if pipeline.entries.len() < before {
+                break;
             }
-            assert!(pipeline.atlas.contains_key(&key(0)));
-            assert_eq!(pipeline.atlas.len(), ATLAS_CAP);
+            before = pipeline.entries.len();
+            assert!(idle < 400, "a {ATLAS_START_PX}² sheet of 66px cells must fill first");
         }
-        pipeline.begin_frame([64; 2]);
-        pipeline.frame_keys.extend(pipeline.atlas.keys().copied());
-        for icon in 1000..1000 + ATLAS_CAP {
-            let next = key(icon);
-            pipeline.insert_atlas(&device, &queue, next, 1, &[255; 4]);
-            pipeline.frame_keys.insert(next);
-        }
-        assert_eq!(pipeline.atlas.len(), ATLAS_CAP * 2);
-        assert!(
-            pipeline
-                .frame_keys
-                .iter()
-                .all(|key| pipeline.atlas.contains_key(key))
+        assert_eq!(
+            pipeline.atlas.edge, ATLAS_START_PX,
+            "a working set this small must be repacked into the same sheet, not a bigger one"
         );
+        for icon in 0..3 {
+            assert!(
+                pipeline.entries.contains_key(&key(icon)),
+                "glyph {icon} is in use this frame and must survive the repack"
+            );
+        }
+        assert_eq!(
+            pipeline.entries.len(),
+            4,
+            "a repack keeps this frame's glyphs plus the one that triggered it"
+        );
+    }
+
+    /// The other half: when one frame's own glyphs do not fit, the sheet grows
+    /// instead of dropping a glyph that still has to paint.
+    #[test]
+    fn a_frame_larger_than_the_sheet_grows_it_instead_of_dropping_glyphs() {
+        let (device, queue) = crate::scene_paint::tests::test_device();
+        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        const PX: u32 = 128;
+        let rgba = vec![255u8; (PX * PX * 4) as usize];
+        let svg = Icon::Close.svg();
+        let key = |icon: usize| AtlasKey { icon, px: PX };
+
         pipeline.begin_frame([64; 2]);
-        assert_eq!(pipeline.atlas.len(), ATLAS_CAP);
-        assert_eq!(pipeline.atlas_order.len(), ATLAS_CAP);
+        for icon in 0..16 {
+            assert!(
+                pipeline.insert(&device, &queue, key(icon), PX, svg, &rgba),
+                "glyph {icon} must find room"
+            );
+            pipeline.frame_keys.insert(key(icon));
+        }
+        assert!(
+            pipeline.atlas.edge > ATLAS_START_PX,
+            "16 cells of {PX}px cannot fit {ATLAS_START_PX}², so the sheet must grow"
+        );
+        for icon in 0..16 {
+            assert!(
+                pipeline.entries.contains_key(&key(icon)),
+                "glyph {icon} must still be placed after the growth"
+            );
+        }
     }
 
     #[test]
@@ -663,10 +948,10 @@ pub(super) struct IconPipelineTarget {
     physical_size: [u32; 2],
     uploaded_size: Option<[u32; 2]>,
     frame_slots: Vec<FrameSlot>,
-    atlas: HashMap<AtlasKey, AtlasSlot>,
-    atlas_order: VecDeque<AtlasKey>,
+    atlas: Atlas,
+    entries: HashMap<AtlasKey, AtlasEntry>,
     frame_keys: HashSet<AtlasKey>,
-    eviction_candidates: usize,
+    exhausted: bool,
     pending_texture_bytes: usize,
 }
 
@@ -705,10 +990,10 @@ impl IconPipeline {
                 physical_size: [0; 2],
                 uploaded_size: None,
                 frame_slots: Vec::new(),
-                atlas: HashMap::new(),
-                atlas_order: VecDeque::new(),
+                atlas: new_atlas(device, &self.atlas_layout, &self.sampler, ATLAS_START_PX),
+                entries: HashMap::new(),
                 frame_keys: HashSet::new(),
-                eviction_candidates: 0,
+                exhausted: false,
                 pending_texture_bytes: 0,
             }
         });
@@ -722,12 +1007,9 @@ impl IconPipeline {
         std::mem::swap(&mut self.uploaded_size, &mut target.uploaded_size);
         std::mem::swap(&mut self.frame_slots, &mut target.frame_slots);
         std::mem::swap(&mut self.atlas, &mut target.atlas);
-        std::mem::swap(&mut self.atlas_order, &mut target.atlas_order);
+        std::mem::swap(&mut self.entries, &mut target.entries);
         std::mem::swap(&mut self.frame_keys, &mut target.frame_keys);
-        std::mem::swap(
-            &mut self.eviction_candidates,
-            &mut target.eviction_candidates,
-        );
+        std::mem::swap(&mut self.exhausted, &mut target.exhausted);
         std::mem::swap(
             &mut self.pending_texture_bytes,
             &mut target.pending_texture_bytes,

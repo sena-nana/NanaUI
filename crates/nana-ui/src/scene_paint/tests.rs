@@ -143,8 +143,10 @@ impl SceneGpuRenderer for FillClipRenderer {
 
 #[test]
 fn empty_scene_validates() {
-    let operations = validate_scene(&UiScene::new(), None, None).unwrap();
-    assert!(operations.is_empty());
+    let resolved = validate_scene(&UiScene::new(), None, None).unwrap();
+    assert!(resolved.resources.is_empty());
+    assert!(resolved.renderers.is_empty());
+    assert!(resolved.cacheable);
 }
 
 #[test]
@@ -6801,38 +6803,57 @@ fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
 }
 
 #[test]
-fn adjacent_same_atlas_icons_batch_into_one_draw() {
+fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let icon_row = |count: u64| {
+    const SIDE: u32 = 256;
+    let glyphs = [
+        nana_ui_core::Icon::About,
+        nana_ui_core::Icon::Add,
+        nana_ui_core::Icon::Appearance,
+        nana_ui_core::Icon::ArrowLeft,
+        nana_ui_core::Icon::ArrowRight,
+        nana_ui_core::Icon::ArrowUp,
+        nana_ui_core::Icon::Bot,
+        nana_ui_core::Icon::ChevronDown,
+        nana_ui_core::Icon::Chart,
+        nana_ui_core::Icon::Close,
+        nana_ui_core::Icon::Eye,
+        nana_ui_core::Icon::Folder,
+    ];
+    // `vary` picks each icon's glyph and size, so one builder covers a row of
+    // identical icons, a toolbar of distinct glyphs, and one glyph at many
+    // sizes. All three used to be one atlas texture per `(glyph, size)`.
+    let icon_row = |count: u64, vary: &dyn Fn(usize) -> (nana_ui_core::Icon, f32)| {
         let mut nodes = Vec::new();
         let mut children = Vec::new();
         for index in 0..count {
             let id = index + 2;
             children.push(StableNodeId::new(id).unwrap());
+            let (glyph, size) = vary(index as usize);
             // No background: an icon node that also paints a quad would put a
             // Quad command between every pair of icons, which is the dense-list
             // shape, not the run this merge is about.
             let mut icon = extracted_div(
                 id,
                 &[],
-                index as f32 * 4.0,
-                0.0,
+                4.0 + index as f32 * 20.0,
                 4.0,
-                4.0,
+                size,
+                size,
                 nana_ui_core::LayoutStyle::default(),
                 None,
             );
             icon.parent = Some(StableNodeId::new(1).unwrap());
             icon.standard_visual = Some(StandardVisual::Icon {
-                icon: nana_ui_core::Icon::Close,
-                size: 4.0,
+                icon: glyph,
+                size,
                 tooltip: None,
             });
             icon.standard_visual_foreground = Some([1.0; 4]);
             nodes.push(icon);
         }
-        let mut root = colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]);
+        let mut root = colored_quad_node(1, 0.0, 0.0, SIDE as f32, SIDE as f32, [0.0, 0.0, 0.2, 1.0]);
         root.children = Arc::new(children);
         let mut scene = UiScene::new();
         nodes.insert(0, root);
@@ -6840,33 +6861,81 @@ fn adjacent_same_atlas_icons_batch_into_one_draw() {
         scene
     };
     let viewport = ScenePaintViewport {
-        logical_size: [64.0, 64.0],
-        physical_size: [64, 64],
+        logical_size: [SIDE as f32, SIDE as f32],
+        physical_size: [SIDE, SIDE],
         scale_factor: 1.0,
         scene_origin: [0.0, 0.0],
         target_origin: [0.0, 0.0],
         clear_color: [0.0, 0.0, 0.0, 1.0],
         clear: true,
     };
-    let work_for = |scene: &UiScene| {
+    let paint = |scene: &UiScene| {
         let mut painter = SceneWgpuPainter::new(&device, &queue, format);
-        let target = test_target(&device, format, 64, 64);
+        let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &target, viewport, None, None)
+            .paint(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
-        queue.submit([encoder.finish()]);
-        painter.last_gpu_work().expect("encoded icon frame")
+        let work = painter.last_gpu_work().expect("encoded icon frame");
+        (
+            work,
+            readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE),
+        )
     };
-    let one = work_for(&icon_row(1));
-    let many = work_for(&icon_row(12));
+    let same = |_: usize| (nana_ui_core::Icon::Close, 16.0);
+    let (one, _) = paint(&icon_row(1, &same));
     assert!(one.draw_calls > 0, "the single-icon scene must draw");
-    assert_eq!(
-        many.draw_calls, one.draw_calls,
-        "12 adjacent icons sharing one atlas and scissor must collapse into the same \
-         single draw as one icon: {} vs {}",
-        many.draw_calls, one.draw_calls
-    );
+    for (label, vary) in [
+        ("one glyph", &same as &dyn Fn(usize) -> (nana_ui_core::Icon, f32)),
+        ("distinct glyphs", &|index: usize| {
+            (
+                [
+                    nana_ui_core::Icon::About,
+                    nana_ui_core::Icon::Add,
+                    nana_ui_core::Icon::Appearance,
+                    nana_ui_core::Icon::ArrowLeft,
+                    nana_ui_core::Icon::ArrowRight,
+                    nana_ui_core::Icon::ArrowUp,
+                    nana_ui_core::Icon::Bot,
+                    nana_ui_core::Icon::ChevronDown,
+                    nana_ui_core::Icon::Chart,
+                    nana_ui_core::Icon::Close,
+                    nana_ui_core::Icon::Eye,
+                    nana_ui_core::Icon::Folder,
+                ][index % 12],
+                16.0,
+            )
+        }),
+        ("one glyph at distinct sizes", &|index: usize| {
+            (nana_ui_core::Icon::Close, 8.0 + index as f32)
+        }),
+    ] {
+        let (many, pixels) = paint(&icon_row(12, vary));
+        assert_eq!(
+            many.draw_calls, one.draw_calls,
+            "12 adjacent icons ({label}) must collapse into the same single draw as one              icon: {} vs {}",
+            many.draw_calls, one.draw_calls
+        );
+        // One draw is worthless if the shared atlas lost a glyph, so every
+        // icon must still ink inside its own cell of the row.
+        for index in 0..12u32 {
+            let left = 4 + index * 20;
+            let mut inked = false;
+            for y in 4..24 {
+                for x in left..left + 20 {
+                    if x < SIDE && pixel(&pixels, SIDE, x, y)[0] > 100 {
+                        inked = true;
+                    }
+                }
+            }
+            assert!(inked, "icon {index} ({label}) must paint inside its own slot");
+        }
+    }
+    // Sanity: the glyph list the toolbar case draws from really is distinct.
+    let mut pointers: Vec<_> = glyphs.iter().map(|glyph| glyph.as_ptr()).collect();
+    pointers.sort();
+    pointers.dedup();
+    assert_eq!(pointers.len(), glyphs.len(), "the toolbar glyphs must differ");
 }
 
 /// `(background quad, label)` rows: the shape overlap-aware batching exists

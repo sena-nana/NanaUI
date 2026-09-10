@@ -36,7 +36,7 @@ use crate::{
 pub use image_url::{
     resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
 };
-pub(crate) use validate::validate_scene;
+use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use backdrop::BackdropPipeline;
@@ -131,7 +131,7 @@ struct PreparedBatch {
     glyph_then_quad: bool,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct TextureBindingKey {
     identity: u64,
     generation: u64,
@@ -351,7 +351,9 @@ impl SceneWgpuPainter {
             self.host_textures.invalidate_image_bindings();
         }
         let instance = scene.instance_id();
-        validate_scene(scene, host_textures, gpu_renderers)?;
+        // Also resolves this frame's `PreparedBatch` key, so nothing below
+        // walks `FramePlan::custom_nodes` again.
+        let resolved = validate_scene(scene, host_textures, gpu_renderers)?;
         if viewport.physical_size[0] == 0 || viewport.physical_size[1] == 0 {
             self.last_gpu_work = None;
             self.last_gpu_timings = None;
@@ -419,50 +421,11 @@ impl SceneWgpuPainter {
             return Ok(());
         }
 
-        // Contents can change without replacing a sampled view. Only binding
-        // identity/geometry invalidate prepared UI data; re-encoding still
-        // samples the latest host pixels every frame.
-        let plan = scene
-            .frame_plan()
-            .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
-        let mut resources = Vec::with_capacity(plan.custom_nodes.len());
-        let mut renderer_versions = Vec::new();
-        let mut cacheable = true;
-        for id in plan.custom_nodes.iter() {
-            if let Some(nana_ui_scene::ScenePrimitive {
-                kind: ScenePrimitiveKind::Custom { node, .. },
-                ..
-            }) = scene.primitive(*id)
-            {
-                if node.renderer.as_ref() != "nana.host-texture" {
-                    let renderer = gpu_renderers
-                        .and_then(|registry| registry.get(&node.renderer))
-                        .ok_or(ScenePaintError::UnsupportedCustomRenderer(*id))?;
-                    if let Some(version) = renderer.preparation_version(node) {
-                        renderer_versions
-                            .push((Arc::as_ptr(&renderer) as *const () as usize, version));
-                        continue;
-                    }
-                    cacheable = false;
-                    break;
-                }
-                let binding = host_textures
-                    .and_then(|registry| registry.get(&node.resource))
-                    .ok_or(ScenePaintError::MissingCustomResource(*id))?;
-                resources.push(TextureBindingKey {
-                    identity: binding.texture.instance_identity(),
-                    generation: binding.texture.generation(),
-                    width: binding.width,
-                    height: binding.height,
-                    alpha: binding.alpha_mode,
-                });
-            }
-        }
         let cached = self.prepared_batch.take().filter(|batch| {
-            cacheable
+            resolved.cacheable
                 && batch.key == painted
-                && batch.resources == resources
-                && batch.renderers == renderer_versions
+                && batch.resources == resolved.resources
+                && batch.renderers == resolved.renderers
                 && batch.image_revision == self.image_revision
         });
         let reused = cached.is_some();
@@ -1315,11 +1278,11 @@ impl SceneWgpuPainter {
                 )
             })
             .then_some(painted);
-        if cacheable {
+        if resolved.cacheable {
             self.prepared_batch = Some(PreparedBatch {
                 key: painted,
-                resources,
-                renderers: renderer_versions,
+                resources: resolved.resources,
+                renderers: resolved.renderers,
                 image_revision: self.image_revision,
                 commands,
                 max_group_depth,
